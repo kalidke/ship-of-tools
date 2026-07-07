@@ -1,0 +1,40 @@
+#!/bin/bash
+# ccb — start (or resume) a comm-aware backend Claude session for ANY project.
+#
+# Thin launcher: runs `claude --dangerously-skip-permissions` and bakes the
+# /sot-session-start bootstrap skill in as the first-turn prompt, so the session
+# comes up already RECEIVING fast-comm on the sot-comm network (durable relay
+# listener + the inbox Monitor that wakes it). Project-agnostic: use it for any
+# backend session that should receive cross-session messages.
+#
+# For Ship of Tools *backend* sessions use `ccbe` instead — it runs /sot-be-session-start,
+# which does everything /sot-session-start does and adds sot-specific checks
+# (frontend reachability, FE count, the .claude-bus git fallback).
+#
+# Usage:
+#   ccb               # fresh comm-aware session
+#   ccb --continue    # resume the last session AND re-arm comm (harness Monitors
+#                     # do NOT survive `claude --continue`, so the bootstrap re-runs)
+#   ccb <flags...>    # any extra flags are forwarded to claude, before the skill
+#
+# The skill MUST stay the LAST positional arg so it lands as claude's first-turn
+# prompt AFTER any --continue / flags. Self-contained (no `ccdspy` dependency).
+# Source of truth: comm/adapters/claude/bin/ccb in Ship of Tools, deployed to
+# ~/.local/bin by `ShipTools.update_comm()`. Edit it there, not in ~/.local/bin.
+# Scrub teammate/fork/nesting env that leaks from a spawning parent (or the tmux
+# server env) into this otherwise-standalone session. CLAUDE_CODE_{FORK_SUBAGENT,
+# CHILD_SESSION,TEAMMATE_MODE,EXPERIMENTAL_AGENT_TEAMS} make a fresh claude
+# mis-detect itself as a nested/forked teammate; CLAUDECODE + AI_AGENT +
+# CLAUDE_CODE_SESSION_ID make it mis-detect itself as NESTED inside another claude
+# and exit cleanly at init. The daemon-boot path (ADR 0023) exposed this: a daemon
+# restarted from within a claude session propagates CLAUDECODE into every spawned
+# tmux pane, so a daemon-booted ccb's claude saw CLAUDECODE=1 and exited silently.
+# A ccb session is a fresh top-level session; claude repopulates what it needs.
+unset CLAUDE_CODE_FORK_SUBAGENT CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_TEAMMATE_MODE CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS CLAUDECODE AI_AGENT CLAUDE_CODE_SESSION_ID
+# A daemon-spawned tmux pane does NOT inherit a login PATH (it lacks ~/.local/bin),
+# so a bare `exec claude` fails with "claude: not found" → the pane dies in <1s and
+# the daemon-boot fails. Put ~/.local/bin on PATH and call claude by full path (the
+# same reason ccb itself is invoked by full path); the export also covers any
+# ~/.local/bin tools the spawned session uses.
+export PATH="$HOME/.local/bin:$PATH"
+exec "$HOME/.local/bin/claude" --dangerously-skip-permissions "$@" /sot-session-start

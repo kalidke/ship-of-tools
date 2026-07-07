@@ -1,0 +1,65 @@
+---
+title: "Quarto + Julia — Ship of Tools preview fixture"
+author: "Ship of Tools"
+format: html
+---
+
+## What this is
+
+A Quarto (`.qmd`) fixture for Ship of Tools's preview pipeline. In the file
+navigator it renders **as markdown in-pane** — this prose, the headings,
+the fenced chunks, and the math below — with the YAML header above
+skipped. Press **`o`** to render the full document *without* running code
+(fast) in the browser, or **`O`** to execute the Julia chunks and open the
+computed result.
+
+## Prose, math, and a list
+
+Inline math like $f(x) = \sin(x) + \cos(x)$ renders, and so does a display
+block:
+
+$$
+\int_0^{\pi} \sin(x)\,\mathrm{d}x = 2.
+$$
+
+- Quarto markdown is a superset of CommonMark.
+- Code chunks are `` ```{julia} `` fences with `#|` cell options.
+- `o` shows the chunks as source; `O` runs them and embeds the output.
+
+## Executable Julia (base only — runs under `O`)
+
+These use only base Julia, so `O` executes cleanly with just the Quarto
+`julia` engine — no extra packages required.
+
+```{julia}
+#| echo: true
+# Sum of squares 1..10
+xs = 1:10
+squares = [x^2 for x in xs]
+total = sum(squares)
+println("sum of squares 1..10 = ", total)
+total
+```
+
+```{julia}
+#| echo: true
+f(x) = sin(x) + cos(x)
+[round(f(x); digits = 3) for x in range(0, 2π; length = 5)]
+```
+
+## A plot (CairoMakie — Ship of Tools's plotting convention)
+
+Shown for reference and marked `eval: false`, so the fixture still renders
+under `O` even when CairoMakie isn't installed in the Quarto Julia env.
+Remove the `eval: false` option to actually produce the figure.
+
+```{julia}
+#| eval: false
+#| echo: true
+using CairoMakie
+fig = Figure()
+ax = Axis(fig[1, 1]; title = "sin + cos", xlabel = "x", ylabel = "f(x)")
+xs = range(0, 2π; length = 200)
+lines!(ax, xs, sin.(xs) .+ cos.(xs))
+fig
+```

@@ -1,0 +1,71 @@
+*.jl.*.cov
+*.jl.cov
+*.jl.mem
+/Manifest*.toml
+/docs/Manifest*.toml
+/docs/build/
+
+# Documenter build-time staged pages (docs/make.jl copies these from their
+# canonical locations so published docs never drift from source-of-truth).
+# Tracked: the hand-written pages + docs/src/adr/index.md. Generated copies:
+/docs/src/adr/0*.md
+/docs/src/design/requirements.md
+/docs/src/design/roadmap.md
+/docs/src/ref/comm.md
+
+# Rust
+/rust/target/
+/rust/target-capture/
+/rust/scratch/*/target/
+**/*.rs.bk
+
+# Julia (nested package envs)
+/core/Manifest*.toml
+/julia/kernel/Manifest*.toml
+/julia/repl/Manifest*.toml
+/examples/plugins/*/Manifest*.toml
+/julia/plugins/*/Manifest*.toml
+/docs/fixtures/DemoProject/Manifest*.toml
+
+# Cross-machine bus per-machine cursors (the bus content itself is committed)
+/.claude-bus/.cursor-*
+# Per-session poll-start markers for /loop /bus-sync auto-cancel logic
+/.claude-bus/.poll-start-*
+
+# Local-only artefacts
+/captures/
+/.capture/
+/sot/
+/rust/sot/
+# ADR 0022: image.crop ROI captures (when this repo is the active workspace)
+/.sot/captures/
+
+# Node sidecars — package.json + render scripts are committed; installed
+# trees are not.
+/rust/backend/sidecars/*/node_modules/
+
+# Idle counter for /loop /bus-sync (per-machine state)
+/.claude-bus/.idle-*
+/.claude-bus/.loop-last-activity-*
+
+# Cygwin/bash crash dumps
+*.stackdump
+
+# Claude Code scheduling lock (per-session)
+/.claude/scheduled_tasks.lock
+
+# Claude Code agent worktrees (transient linked git checkouts; never committed)
+/.claude/worktrees/
+
+# SlackClaw runtime state (thread->session cursors) — written here when a
+# SlackClaw instance runs with this repo as its cwd; runtime bookkeeping, never content
+/.slackclaw_state.json
+
+# machine/user-local config (ADR 0030 §6) — templates: .sot/*.toml.example
+/.sot/hosts.toml
+/.sot/settings.toml
+/.sot/keybindings.toml
+
+# Relocated to the private ship-of-tools-ops sibling repo (ADR 0030 §7)
+.claude-bus/
+.claude-memory/

@@ -1,0 +1,44 @@
+# Rust PR gate (ADR 0030 §3): build + test on the blocking platforms.
+#
+# Deliberately NO `cargo fmt --check` / `clippy -D warnings` yet — the
+# workspace predates the gate and isn't fmt/clippy-clean; normalizing it is a
+# fleet-coordinated one-time pass (would conflict with in-flight branches).
+# Add both steps here when that lands. macOS joins the matrix at the release
+# workflow first (experimental, non-blocking per ADR 0030) — as a private
+# repo, macOS runners burn 10x Actions minutes for a platform nobody
+# dogfoods yet.
+
+name: Rust
+
+on:
+  push:
+    branches: [main]
+    paths: ["rust/**", ".github/workflows/rust.yml"]
+  pull_request:
+    paths: ["rust/**", ".github/workflows/rust.yml"]
+
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build+test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build workspace
+        run: cargo build --workspace --locked
+      - name: Test workspace
+        run: cargo test --workspace --locked

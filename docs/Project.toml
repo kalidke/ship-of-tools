@@ -1,0 +1,17 @@
+[deps]
+ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"
+ShipTools = "6593d88f-a2aa-42a2-9eee-07370402defc"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+
+# Documenter floor 1.17 = the version validated in the local wt/docs build
+# (supersedes Dependabot PR #4, which targeted the pre-rename file).
+[compat]
+Documenter = "1.17"
+
+# ShipTools and ConceptExplorerCore are unregistered local packages; without
+# [sources] Pkg's resolve hits check_registered and the CI docs job fails
+# (julia-docdeploy's Pkg.develop/instantiate). Paths resolve relative to this
+# file's directory, same pattern as julia/kernel/Project.toml.
+[sources]
+ConceptExplorerCore = { path = "../core" }
+ShipTools = { path = ".." }

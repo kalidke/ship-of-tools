@@ -1,0 +1,407 @@
+// files_mode.rs — Files-mode tree walking + filesystem-backed previews.
+//
+// Per requirements.md: Files mode is the simplest of the seven mode roots.
+// Col 1 = parent dir, Col 2 = current dir, Col 3 = contents. For the backend
+// we don't yet model the column layout — we just answer `tree.root` and
+// `tree.children` against an actual filesystem, plus serve real bytes via
+// `preview.get`.
+//
+// Node id format:
+//   files:                       → the project root itself
+//   files:<relative-path>        → any descendant of the project root
+// Relative-path uses forward slashes on all OSes for stability on the wire.
+// `node_id_to_path` rejects `..` segments and absolute paths so a misbehaving
+// frontend can't walk outside the configured root.
+//
+// Directory listings skip hidden entries (leading `.`) UNLESS the per-
+// workspace `show_hidden` flag is set — the frontend flips it with the `.`
+// key via the `nav.toggle_hidden` op. Sort order is directories first, then
+// files, both case-insensitive alphabetical.
+//
+// Kinds the frontend can specialise on:
+//   "dir", "mdfile", "jlfile", "tomlfile", "imagefile", "svgfile", "file"
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use anyhow::{anyhow, Context, Result};
+use sot_protocol::TreeNode;
+
+pub struct FilesMode {
+    root: PathBuf,
+    /// When true, directory listings include hidden entries (leading `.`).
+    /// Interior mutability: `FilesMode` is shared as `Arc<FilesMode>` and
+    /// never held `&mut`, so the toggle op flips this atomically in place.
+    show_hidden: AtomicBool,
+}
+
+const ID_PREFIX: &str = "files:";
+
+impl FilesMode {
+    pub fn new(root: PathBuf) -> Result<Self> {
+        // simplify_verbatim: canonicalize yields `\\?\` verbatim paths on
+        // Windows, which disable Win32 slash normalization — this root is
+        // ADVERTISED (HelloRes.project_root) and every FE/kernel path
+        // composition builds on it, so a verbatim root poisons them all
+        // (the concept-stale drift-badge saga). De-verbatim at the source.
+        let canon = crate::paths::simplify_verbatim(
+            std::fs::canonicalize(&root)
+                .with_context(|| format!("canonicalize project root {root:?}"))?,
+        );
+        if !canon.is_dir() {
+            return Err(anyhow!("project root {canon:?} is not a directory"));
+        }
+        Ok(Self {
+            root: canon,
+            show_hidden: AtomicBool::new(false),
+        })
+    }
+
+    pub fn root_path(&self) -> &Path {
+        &self.root
+    }
+
+    /// Whether directory listings currently include hidden entries.
+    pub fn show_hidden(&self) -> bool {
+        self.show_hidden.load(Ordering::Relaxed)
+    }
+
+    /// Flip the show-hidden flag and return the NEW value. `fetch_xor`
+    /// returns the previous value, so the new value is its negation.
+    pub fn toggle_hidden(&self) -> bool {
+        !self.show_hidden.fetch_xor(true, Ordering::Relaxed)
+    }
+
+    pub fn root_node(&self) -> TreeNode {
+        let label = self
+            .root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("/")
+            .to_string();
+        TreeNode {
+            id: ID_PREFIX.to_string(),
+            label,
+            kind: "dir".to_string(),
+            has_children: true,
+            badges: Vec::new(),
+            payload: serde_json::Map::new(),
+        }
+    }
+
+    pub fn children_of(&self, node_id: &str) -> Result<Vec<TreeNode>> {
+        let path = self.node_id_to_path(node_id)?;
+        if !path.is_dir() {
+            return Err(anyhow!("not a directory: {node_id}"));
+        }
+        list_dir(&path, &self.root, self.show_hidden())
+    }
+
+    /// Reverse of `node_id_to_path`: given an absolute path under the root,
+    /// derive its files-mode node id. Returns `None` if the path is outside
+    /// the root (e.g. the user has a symlink jumping out, or notify reports
+    /// a path the FilesMode never exposed). Forward slashes regardless of
+    /// platform to match `node_id_to_path`'s splitter.
+    pub fn path_to_node_id(&self, path: &Path) -> Option<String> {
+        // Symmetry with the de-verbatimed root (paths::simplify_verbatim in
+        // `new`): callers hand us canonicalized paths, which on Windows are
+        // `\\?\` verbatim and would never prefix-match the plain root.
+        let path = crate::paths::simplify_verbatim(path.to_path_buf());
+        let rel = path.strip_prefix(&self.root).ok()?;
+        if rel.as_os_str().is_empty() {
+            return Some(ID_PREFIX.to_string());
+        }
+        let mut s = String::from(ID_PREFIX);
+        let joined = rel.to_string_lossy().replace('\\', "/");
+        s.push_str(&joined);
+        Some(s)
+    }
+
+    /// Returns the absolute filesystem path for a node id, or an error if the
+    /// id points outside the configured root.
+    pub fn node_id_to_path(&self, node_id: &str) -> Result<PathBuf> {
+        let rel = node_id
+            .strip_prefix(ID_PREFIX)
+            .ok_or_else(|| anyhow!("not a files-mode id: {node_id}"))?;
+        if rel.is_empty() {
+            return Ok(self.root.clone());
+        }
+        if rel.starts_with('/') || rel.starts_with('\\') {
+            return Err(anyhow!("absolute paths not allowed in node id: {node_id}"));
+        }
+        for seg in rel.split(['/', '\\']) {
+            if seg == ".." {
+                return Err(anyhow!("parent-dir segment not allowed in node id: {node_id}"));
+            }
+        }
+        let mut p = self.root.clone();
+        for seg in rel.split('/') {
+            if !seg.is_empty() {
+                p.push(seg);
+            }
+        }
+        // Symlink escape guard (security review): the `..`/absolute-path
+        // checks above are string-level and can't catch a symlink INSIDE the
+        // root pointing outside it (a real risk on NFS-shared homes, where a
+        // symlink can legitimately cross machines/mounts). Canonicalize the
+        // longest existing ancestor of `p` (the target may not exist yet —
+        // e.g. a `file.write` to a brand-new path) and confirm it's still
+        // under `self.root`, which is already canonical (`FilesMode::new`).
+        if let Some(canon) = crate::paths::canonicalize_existing_ancestor(&p) {
+            if !canon.starts_with(&self.root) {
+                return Err(anyhow!(
+                    "node id resolves outside the project root (symlink?): {node_id}"
+                ));
+            }
+        }
+        Ok(p)
+    }
+}
+
+fn list_dir(dir: &Path, root: &Path, show_hidden: bool) -> Result<Vec<TreeNode>> {
+    let mut entries: Vec<(PathBuf, bool, String)> = Vec::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("read_dir {dir:?}"))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = match name.to_str() {
+            Some(s) => s.to_string(),
+            None => continue, // skip non-utf8 entries; the wire is JSON
+        };
+        // `.` and `..` are never returned by read_dir, so a leading dot here
+        // always means a genuine hidden entry — skip unless the toggle is on.
+        if !show_hidden && name_str.starts_with('.') {
+            continue; // skip hidden
+        }
+        let path = entry.path();
+        // Follow symlinks via metadata (not entry.file_type, which only
+        // sees lstat on Linux) so a symlink to a directory shows up as a
+        // navigable dir entry instead of a leaf "file". Broken symlinks
+        // skip silently.
+        let is_dir = match std::fs::metadata(&path) {
+            Ok(m) => m.is_dir(),
+            Err(_) => continue,
+        };
+        entries.push((path, is_dir, name_str));
+    }
+    entries.sort_by(|a, b| match (a.1, b.1) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.2.to_lowercase().cmp(&b.2.to_lowercase()),
+    });
+
+    let mut out = Vec::with_capacity(entries.len());
+    for (path, is_dir, name) in entries {
+        let rel = path
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let kind = if is_dir {
+            "dir"
+        } else {
+            kind_for_extension(&path)
+        };
+        let label = if is_dir { format!("{name}/") } else { name };
+        out.push(TreeNode {
+            id: format!("{ID_PREFIX}{rel}"),
+            label,
+            kind: kind.to_string(),
+            has_children: is_dir,
+            badges: Vec::new(),
+            payload: serde_json::Map::new(),
+        });
+    }
+    Ok(out)
+}
+
+fn kind_for_extension(path: &Path) -> &'static str {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("md") | Some("markdown") => "mdfile",
+        Some("jl") => "jlfile",
+        Some("toml") => "tomlfile",
+        Some("png") | Some("jpg") | Some("jpeg") | Some("gif") | Some("webp") | Some("bmp") => {
+            "imagefile"
+        }
+        Some("svg") => "svgfile",
+        _ => "file",
+    }
+}
+
+/// Best-effort mime guess for the preview blob. The frontend renders based
+/// on the mime, not the extension, so anything we don't recognise gets
+/// `text/plain; charset=utf-8` — which is the right fallback for source code.
+pub fn mime_for_path(path: &Path) -> &'static str {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        // Quarto docs preview as markdown in-pane (instant, no quarto
+        // invocation) — `o`/`O` render the real thing via `quarto.open`.
+        Some("md") | Some("markdown") | Some("qmd") => "text/markdown",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("bmp") => "image/bmp",
+        Some("svg") => "image/svg+xml",
+        Some("json") => "application/json",
+        Some("toml") => "text/x-toml",
+        Some("jl") => "text/x-julia",
+        Some("rs") => "text/x-rust",
+        // The frontend's `o`-in-Preview handler is gated on `text/html`
+        // exactly, so .html / .htm needs to advertise as such or the
+        // browser-open keystroke silently no-ops.
+        Some("html") | Some("htm") => "text/html",
+        _ => "text/plain; charset=utf-8",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    struct Tmp(PathBuf);
+    impl Tmp {
+        fn new() -> Self {
+            let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+            let p = std::env::temp_dir().join(format!(
+                "sot-fm-test-{}-{}-{}",
+                std::process::id(),
+                n,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            Tmp(p)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn path_to_node_id_round_trips() {
+        let dir = Tmp::new();
+        let fm = FilesMode::new(dir.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(dir.path().join("src/inner")).unwrap();
+        std::fs::write(dir.path().join("src/inner/lib.rs"), b"//").unwrap();
+        let abs = std::fs::canonicalize(dir.path().join("src/inner/lib.rs")).unwrap();
+        let id = fm.path_to_node_id(&abs).expect("inside root");
+        assert!(id.starts_with("files:"));
+        let back = fm.node_id_to_path(&id).unwrap();
+        // The round-trip yields the DE-VERBATIMED form by design (the root is
+        // simplified at construction, so composed paths are plain even when
+        // the input was `\\?\` verbatim). Identity on non-Windows.
+        assert_eq!(back, crate::paths::simplify_verbatim(abs));
+    }
+
+    #[test]
+    fn path_to_node_id_root_returns_bare_prefix() {
+        let dir = Tmp::new();
+        let fm = FilesMode::new(dir.path().to_path_buf()).unwrap();
+        let id = fm.path_to_node_id(fm.root_path()).unwrap();
+        assert_eq!(id, "files:");
+    }
+
+    #[test]
+    fn path_to_node_id_rejects_outside_root() {
+        let dir = Tmp::new();
+        let fm = FilesMode::new(dir.path().to_path_buf()).unwrap();
+        let outside = std::env::temp_dir().join("sot-fm-test-definitely-outside-xyz");
+        assert!(fm.path_to_node_id(&outside).is_none());
+    }
+
+    /// Security regression: a symlink INSIDE the project root pointing
+    /// OUTSIDE it must not resolve — the `..`/absolute-path string checks in
+    /// `node_id_to_path` can't catch this, only the canonicalize+confine
+    /// guard can. Unix-only (`std::os::unix::fs::symlink`).
+    #[test]
+    #[cfg(unix)]
+    fn node_id_to_path_rejects_symlink_escape() {
+        let dir = Tmp::new();
+        let outside = Tmp::new();
+        std::fs::write(outside.path().join("secret.txt"), b"outside").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).unwrap();
+
+        let fm = FilesMode::new(dir.path().to_path_buf()).unwrap();
+        // The symlink itself resolves outside the root — rejected.
+        assert!(fm.node_id_to_path("files:escape").is_err());
+        // So does a path THROUGH it to a real file on the other side.
+        assert!(fm.node_id_to_path("files:escape/secret.txt").is_err());
+    }
+
+    /// A brand-new (not-yet-created) path under a legitimately-in-root
+    /// directory must still resolve normally — the escape guard walks up to
+    /// the nearest EXISTING ancestor, which here is the root itself, and
+    /// must not false-reject a normal `file.write` to a new file.
+    #[test]
+    fn node_id_to_path_allows_new_file_under_root() {
+        let dir = Tmp::new();
+        let fm = FilesMode::new(dir.path().to_path_buf()).unwrap();
+        let p = fm.node_id_to_path("files:brand/new/file.txt").unwrap();
+        // Compare against the CANONICALIZED root (matches `path_to_node_id_round_trips`'s
+        // pattern above) — `dir.path()` itself may not be canonical on every
+        // platform (e.g. macOS's `/tmp` -> `/private/tmp`).
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        assert_eq!(p, root.join("brand").join("new").join("file.txt"));
+    }
+
+    #[test]
+    fn list_dir_hides_dotfiles_until_toggled() {
+        let dir = Tmp::new();
+        std::fs::write(dir.path().join("visible.jl"), b"# hi").unwrap();
+        std::fs::write(dir.path().join(".hidden"), b"secret").unwrap();
+        let fm = FilesMode::new(dir.path().to_path_buf()).unwrap();
+
+        // Default: hidden entries excluded.
+        assert!(!fm.show_hidden());
+        let names: Vec<String> = fm
+            .children_of("files:")
+            .unwrap()
+            .into_iter()
+            .map(|n| n.label)
+            .collect();
+        assert!(names.iter().any(|l| l == "visible.jl"));
+        assert!(!names.iter().any(|l| l == ".hidden"));
+
+        // Toggle on: hidden entries now appear. `toggle_hidden` returns the
+        // NEW value.
+        assert!(fm.toggle_hidden());
+        assert!(fm.show_hidden());
+        let names: Vec<String> = fm
+            .children_of("files:")
+            .unwrap()
+            .into_iter()
+            .map(|n| n.label)
+            .collect();
+        assert!(names.iter().any(|l| l == "visible.jl"));
+        assert!(names.iter().any(|l| l == ".hidden"));
+
+        // Toggle back off.
+        assert!(!fm.toggle_hidden());
+        assert!(!fm.show_hidden());
+    }
+
+    #[test]
+    fn mime_for_path_recognises_html() {
+        // Regression: .html/.htm fell through to text/plain, which
+        // silently disabled the frontend's `o` open-in-browser handler.
+        assert_eq!(mime_for_path(Path::new("foo.html")), "text/html");
+        assert_eq!(mime_for_path(Path::new("foo.htm")), "text/html");
+        assert_eq!(mime_for_path(Path::new("FOO.HTML")), "text/html");
+    }
+}

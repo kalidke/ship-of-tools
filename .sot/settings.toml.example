@@ -1,0 +1,46 @@
+# Ship of Tools frontend settings — TEMPLATE (copy to settings.toml and edit).
+#
+# The real settings.toml is machine/user-specific and NOT committed
+# (ADR 0030 §6): copy this next to it, or to ~/.config/sot/settings.toml.
+#
+# Discovery order: $SOT_SETTINGS → <repo-root>/.sot/settings.toml →
+# $HOME/.config/sot/settings.toml → built-in defaults.
+# Any value missing or out-of-range silently falls back to the default;
+# the chrome should never crash because the user wrote a malformed
+# settings file.
+#
+# Sibling to .sot/keybindings.toml — the same layered discovery
+# pattern, kept in a separate file for single-responsibility.
+
+[layout]
+# Width of the left column (TL navigation + BL llm/pty) as a percentage
+# of total window width. The right column (TR preview + BR repl) gets
+# the remainder. Range [10, 90]; default 50.
+left_col_pct = 50
+
+# Height of the top row (TL navigation + TR preview) as a percentage of
+# total window height. The bottom row (BL llm/pty + BR repl) gets the
+# remainder. Range [10, 90]; default 50.
+top_row_pct = 50
+
+[terminal]
+# Command auto-run in the Terminal drawer when the supervisor respawns the
+# frontend after a self-relaunch (--relaunched, ADR 0017). The trailing
+# positional `/sot-fe-session-start` is submitted as the resumed session's
+# FIRST turn, invoking the project skill that re-arms the fast-comm
+# fe-inbox Monitor + catches the relaunch deaf-window gap.
+resume_command = "claude --continue /sot-fe-session-start"
+
+[sessions]
+# Directory the Sessions-mode "create workspace" picker (nav pane → new
+# session) starts browsing from. This is a BACKEND path — the picker lists
+# the daemon host's filesystem, not the frontend's — so point it at your
+# dev root so "new session" opens there instead of $HOME.
+new_session_root = "/home/me/dev"
+
+[font]
+# Default text-scale multiplier at startup, used only when this machine has
+# no persisted zoom yet (Ctrl+= / Ctrl+- / Ctrl+0 persist per host and always
+# win). Unset: a built-in monitor tier applies — displays >= 3440 px wide
+# default to 1.1, others 1.0.
+# scale = 1.1

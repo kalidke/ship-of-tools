@@ -1,0 +1,13 @@
+# Line-ending normalization.
+#
+# Keep tracked TOML at LF on every OS. A Windows checkout — or a Pkg operation
+# that rewrites a TOML in place (e.g. `Pkg.instantiate` re-sorting
+# julia/kernel/Project.toml on Windows) — would otherwise introduce CRLF churn
+# into tracked config and pollute cross-OS diffs. `eol=lf` makes git store and
+# check out LF regardless of platform.
+#
+# NOTE for reviewers: a Pkg op also REORDERS [deps]/[sources] and STRIPS TOML
+# comments (it cannot preserve them). Do NOT commit a Pkg-rewritten Project.toml
+# that drops the [sources]/[compat] rationale comments or reorders entries —
+# revert it with `git checkout -- <file>` and keep the hand-authored version.
+*.toml text eol=lf

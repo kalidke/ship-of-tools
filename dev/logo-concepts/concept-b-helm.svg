@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Ship of Tools logo concept B: ship's helm with Julia-dot hub">
+  <title>Concept B — Helm (drive agents / ship of tools)</title>
+  <g stroke="#3b4252" stroke-width="6" fill="none" stroke-linecap="round">
+    <circle cx="64" cy="64" r="34"/>
+    <line x1="64" y1="16" x2="64" y2="112"/>
+    <line x1="16" y1="64" x2="112" y2="64"/>
+    <line x1="30" y1="30" x2="98" y2="98"/>
+    <line x1="98" y1="30" x2="30" y2="98"/>
+  </g>
+  <g fill="#3b4252">
+    <circle cx="64" cy="13" r="6"/><circle cx="64" cy="115" r="6"/>
+    <circle cx="13" cy="64" r="6"/><circle cx="115" cy="64" r="6"/>
+    <circle cx="27" cy="27" r="6"/><circle cx="101" cy="101" r="6"/>
+    <circle cx="101" cy="27" r="6"/><circle cx="27" cy="101" r="6"/>
+  </g>
+  <!-- hub: the three Julia dots -->
+  <circle cx="64" cy="64" r="15" fill="#eceff4"/>
+  <circle cx="59" cy="60" r="6" fill="#cb3c33"/>
+  <circle cx="71" cy="61" r="6" fill="#389826"/>
+  <circle cx="64" cy="71" r="6" fill="#9558b2"/>
+</svg>

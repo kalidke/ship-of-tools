@@ -1,0 +1,12 @@
+{
+  "name": "sot-comm",
+  "version": "0.1.0",
+  "description": "Ship of Tools state-nav hooks: work-state reporting for the session strip.",
+  "license": "MIT",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Ship of Tools comm",
+    "shortDescription": "State-nav work-state hooks",
+    "developerName": "Ship of Tools"
+  }
+}

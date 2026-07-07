@@ -1,0 +1,42 @@
+#!/bin/bash
+# ccbe — start (or resume) a comm-aware Ship of Tools *backend* Claude session.
+#
+# Thin launcher: runs `claude --dangerously-skip-permissions` and bakes the
+# /sot-be-session-start bootstrap skill in as the first-turn prompt, so the
+# session comes up already RECEIVING fast-comm — the durable relay listener
+# plus the inbox Monitor that actually wakes the session. This is the backend
+# analog of the FE's ADR-0017 resume_command, which auto-runs
+# /sot-fe-session-start on every frontend relaunch.
+#
+# Usage:
+#   ccbe                # fresh comm-aware backend session
+#   ccbe --continue     # resume the last session AND re-arm comm. This is the
+#                       # deaf-on-restart fix: harness Monitors do NOT survive
+#                       # `claude --continue`, so the bootstrap must re-run.
+#   ccbe <flags...>     # any extra flags are forwarded to claude, before the skill
+#
+# The skill MUST stay the LAST positional arg: that way it lands as claude's
+# first-turn prompt AFTER any --continue / flags you pass.
+#
+# Self-contained on purpose — it does NOT depend on the machine-local `ccdspy`
+# wrapper (which has broken fresh boxes). Source of truth:
+# comm/adapters/claude/bin/ccbe in Ship of Tools, deployed to ~/.local/bin by
+# `ShipTools.update_comm()`. Edit it there, not in ~/.local/bin.
+# Scrub teammate/fork/nesting env that leaks from a spawning parent (or the tmux
+# server env) into this otherwise-standalone session. CLAUDE_CODE_{FORK_SUBAGENT,
+# CHILD_SESSION,TEAMMATE_MODE,EXPERIMENTAL_AGENT_TEAMS} make a fresh claude
+# mis-detect itself as a nested/forked teammate; CLAUDECODE + AI_AGENT +
+# CLAUDE_CODE_SESSION_ID make it mis-detect itself as NESTED inside another claude
+# and exit cleanly at init. The daemon-boot path (ADR 0023) exposed this: a daemon
+# restarted from within a claude session (or a tmux server first started by one)
+# propagates CLAUDECODE/CLAUDE_CODE_SESSION_ID into every spawned pane's global
+# env, so a daemon-booted ccbe's claude saw CLAUDECODE=1 and exited silently to a
+# bare bash prompt (ship-of-tools-docs, 2026-06-25). MUST match ccb's scrub set —
+# the two launchers drifted and ccbe was missing these three. A ccbe session is a
+# fresh top-level session; claude repopulates whatever it legitimately needs.
+unset CLAUDE_CODE_FORK_SUBAGENT CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_TEAMMATE_MODE CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS CLAUDECODE AI_AGENT CLAUDE_CODE_SESSION_ID
+# A daemon-spawned tmux pane does NOT inherit a login PATH (it lacks ~/.local/bin),
+# so a bare `exec claude` fails with "claude: not found" → the pane dies in <1s.
+# Put ~/.local/bin on PATH and call claude by full path (mirrors ccb).
+export PATH="$HOME/.local/bin:$PATH"
+exec "$HOME/.local/bin/claude" --dangerously-skip-permissions "$@" /sot-be-session-start

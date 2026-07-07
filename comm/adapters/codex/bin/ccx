@@ -1,0 +1,93 @@
+#!/bin/bash
+# ccx — start a comm-aware CODEX session for any project (ADR 0031).
+#
+# Codex counterpart of ccb. Unlike ccb (whose claude session bootstraps its
+# own receive path via the /sot-session-start skill + a harness Monitor),
+# codex has NO background-wake primitive — so ccx does the comm bootstrap
+# DETERMINISTICALLY in the launcher before exec'ing codex:
+#   1. join sot-comm as $SOT_COMM_NAME (default: <repo>-cx-<host> — the -cx-
+#      infix keeps a codex session from colliding with a claude session on
+#      the same repo);
+#   2. start the durable relay listener (files inbound into the inbox);
+#   3. start codex-watch.sh — the pane-injection wake: it polls the inbox
+#      (NFS! poll, never tail -F) and types new directed frames into THIS
+#      tmux pane, which is how an idle codex session gets woken by comm.
+# Then exec codex, which reads AGENTS.md (identity, comm CLI usage, state
+# discipline) from the repo/checkout natively.
+#
+# Source of truth: comm/adapters/codex/bin/ccx in Ship of Tools, deployed to
+# ~/.local/bin by `ShipTools.update_comm()`. Edit it there.
+
+# Same env scrub as ccb: a daemon-spawned pane inherits the tmux SERVER env,
+# which may carry another agent's nesting markers.
+unset CLAUDE_CODE_FORK_SUBAGENT CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_TEAMMATE_MODE CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS CLAUDECODE AI_AGENT CLAUDE_CODE_SESSION_ID
+
+# Daemon-spawned panes lack a login PATH (ADR 0023 gotcha): put ~/.local/bin
+# on it, and resolve codex by full path — it typically lives in an nvm bin
+# dir that the tmux server env has never heard of.
+export PATH="$HOME/.local/bin:$PATH"
+CODEX_BIN="$(command -v codex 2>/dev/null || true)"
+if [ -z "$CODEX_BIN" ]; then
+    for d in "$HOME"/.nvm/versions/node/*/bin; do
+        [ -x "$d/codex" ] && CODEX_BIN="$d/codex"
+    done
+fi
+if [ -z "$CODEX_BIN" ]; then
+    echo "ccx: codex not found (install codex-cli and run 'codex login')" >&2
+    exec bash   # leave a usable shell in the pane rather than dying silently
+fi
+# codex is a node script (#!/usr/bin/env node): the daemon-spawned pane's
+# PATH has no nvm dir, so exec'ing codex dies on a missing `node` — pane and
+# session vanish silently (the 2026-07-05 boot_failed class). node lives
+# next to codex in the nvm bin dir; put that dir on PATH.
+export PATH="$(dirname "$CODEX_BIN"):$PATH"
+
+COMM="${SOT_COMM_HOME:-$HOME/.sot-comm}/bin"
+
+# Default handle: <repo>-cx-<host>. SOT_COMM_NAME (set by the daemon's boot
+# wrapper from workspace.agent_name) wins when present.
+if [ -z "${SOT_COMM_NAME:-}" ]; then
+    repo="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
+    host="$(hostname -s 2>/dev/null || hostname)"
+    SOT_COMM_NAME="${repo}-cx-${host}"
+fi
+export SOT_COMM_NAME
+
+if [ -x "$COMM/comm-join.sh" ]; then
+    "$COMM/comm-join.sh" --name "$SOT_COMM_NAME" >/dev/null 2>&1 || true
+    "$COMM/comm-listen.sh" >/dev/null 2>&1 || true
+    # The wake half: pane injection. Backgrounded; dies with the pane.
+    if [ -x "$COMM/codex-watch.sh" ] && [ -n "${TMUX_PANE:-}" ]; then
+        nohup "$COMM/codex-watch.sh" "$SOT_COMM_NAME" "$TMUX_PANE" \
+            >/dev/null 2>&1 &
+    fi
+fi
+
+# Pre-trust the workspace dir (idempotent): without this codex blocks on an
+# interactive "do you trust this directory" prompt on every first visit —
+# fatal in a daemon-booted pane nobody is watching. Trusting is correct by
+# construction here: the daemon only creates workspaces at user-chosen roots.
+CODEX_CFG="$HOME/.codex/config.toml"
+CWD_ABS="$(pwd -P)"
+if ! grep -qF "[projects.\"$CWD_ABS\"]" "$CODEX_CFG" 2>/dev/null; then
+    printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$CWD_ABS" >> "$CODEX_CFG"
+fi
+
+# First-turn brief: identity + where the conventions live. AGENTS.md carries
+# the full contract; this just anchors the session's handle and backlog.
+# --sandbox danger-full-access: the ccb-equivalent trust posture (ccb runs
+# claude --dangerously-skip-permissions). Without it codex's sandbox makes
+# $HOME read-only, which breaks every comm CLI (registry, inbox cursors,
+# comm-send) — observed live: comm-poll.sh died on a read-only cursor file.
+# --dangerously-bypass-approvals-and-sandbox is the TRUE ccb equivalent
+# (claude runs --dangerously-skip-permissions): full access AND no trust /
+# approval prompts — a [projects] trust_level entry alone still left an
+# interactive trust prompt blocking daemon-booted panes. exec (not a child)
+# so the pane's foreground command reads node/codex and the daemon's boot
+# poll detects it; with node's dir on PATH the exec-death class is gone.
+# --dangerously-bypass-hook-trust: our state hooks ship as the sot-comm
+# plugin; trust is persisted per hook hash, so any hook-script update would
+# silently disable state reporting until a human re-trusts in /hooks. The
+# hooks are ours by construction — bypass keeps daemon-spawned sessions
+# reporting unconditionally.
+exec "$CODEX_BIN" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust "You are the comm-aware agent @$SOT_COMM_NAME on the sot-comm network. House conventions are in your GLOBAL ~/.codex/AGENTS.md (plus the project's own AGENTS.md when it has one, and \$SOT_MANUAL/docs/USING.md for product help). Then run: $COMM/comm-poll.sh — and handle anything queued. Inbound messages will be typed into this session prefixed '[relay]'."

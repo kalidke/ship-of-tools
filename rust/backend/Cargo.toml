@@ -1,0 +1,33 @@
+[package]
+name = "sot-backend"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+sot-protocol = { path = "../protocol" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+notify = { workspace = true }
+interprocess = { workspace = true }
+anyhow = { workspace = true }
+base64 = "0.22"
+futures-util = "0.3"
+gethostname = "0.5"
+portable-pty = "0.9"
+image = { workspace = true }
+# Half-open connection reaper (ADR 0027): set SO_KEEPALIVE + TCP_KEEPIDLE/
+# INTVL/CNT on accepted TCP sockets so the OS RSTs a vanished peer. Already in
+# the lock as a transitive tokio dep, so direct use compiles nothing new.
+socket2 = "0.6"
+# `umask(2)` (main.rs, security review) isn't exposed by std; already in the
+# lock as a transitive dep, so direct use compiles nothing new.
+libc = "0.2"
+
+[[bin]]
+name = "sotd"
+path = "src/main.rs"

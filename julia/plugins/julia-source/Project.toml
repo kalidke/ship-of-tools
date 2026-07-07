@@ -1,0 +1,14 @@
+name = "ShipToolsJuliaSource"
+uuid = "8d873b42-dda4-4ff1-aa80-a0ec50d38541"
+authors = ["kalidke"]
+version = "0.3.0"
+
+[deps]
+ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+JuliaSyntax = "70703baa-626e-46a2-a12c-08ffd08c73b4"
+
+[compat]
+JSON3 = "1"
+JuliaSyntax = "1.0.2"
+julia = "1.12"

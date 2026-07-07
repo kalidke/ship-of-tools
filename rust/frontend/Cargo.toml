@@ -1,0 +1,108 @@
+[package]
+name = "sot-frontend"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+# User-facing launch binary. The crate is `sot-frontend` but the installed
+# command is `sot`; an explicit [[bin]] decouples the two (the binary would
+# otherwise default to the crate name).
+[[bin]]
+name = "sot"
+path = "src/main.rs"
+
+[dependencies]
+sot-protocol = { path = "../protocol" }
+
+# Async + plumbing
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+interprocess = { workspace = true }
+
+# Rendering surface (ADR 0012). Terminal protocols not used.
+winit = { workspace = true }
+wgpu = { workspace = true }
+ratatui = { workspace = true }
+cosmic-text = { workspace = true }
+glyphon = { workspace = true }
+image = { workspace = true }
+resvg = { workspace = true }
+usvg = { workspace = true }
+tiny-skia = { workspace = true }
+comrak = { workspace = true }
+pollster = { workspace = true }
+bytemuck = { workspace = true }
+bytemuck_derive = { workspace = true }
+vt100 = { package = "vt100-ctt", version = "0.17", default-features = false }
+base64 = "0.22"
+# OS-independent local wall-clock for the upper-right chrome clock. chrono's
+# `Local` reads the host timezone the same way on Windows/macOS/Linux (no
+# libc/winapi call in our code, no shell-out). Default features include the
+# `clock` feature that provides `Local::now()`.
+chrono = "0.4"
+# OS-independent battery level for the upper-right chrome (left of the clock).
+# starship-battery exposes one cross-platform API over Windows/macOS/Linux
+# (no winapi/IOKit/sysfs in our code). We query at most once per ~30s and
+# cache the result; a missing battery (desktop/CI) yields nothing rendered.
+battery = "0.7"
+# Cross-platform user directory resolution for the OS-independent file
+# download destination (`[downloads] dir` unset → dirs::download_dir():
+# Win %USERPROFILE%\Downloads, Linux XDG_DOWNLOAD_DIR/~/Downloads, mac
+# ~/Downloads). Tiny, ubiquitous; reimplementing the XDG user-dirs spec
+# by hand isn't worth it.
+dirs = "5"
+# Native OS file picker for upload (`u`). Cross-platform, no shell-outs:
+# Win common dialog / macOS NSOpenPanel / Linux XDG desktop portal. We pick
+# the portal backend (not GTK) on Linux so the build needs no libgtk system
+# dep — keeps the frontend buildable on a headless box. Windows/macOS use
+# their native backend regardless of these features.
+rfd = { version = "0.14", default-features = false, features = ["xdg-portal", "tokio"] }
+# OS clipboard for explicit paste (winit doesn't deliver paste events on the
+# platforms we ship to; we intercept Ctrl+V / Cmd+V / Shift+Insert and read
+# the clipboard ourselves before forwarding to the LLM pane's pty).
+arboard = { version = "3", default-features = false }
+# Tree-sitter syntax highlighting for the markdown preview's fenced code
+# blocks and (later) the editor pane. Replaces the hand-rolled Julia lexer
+# in `preview/markdown.rs` — see ADR (TODO) for the migration rationale.
+# v1 covers Julia only; rust/python/markdown grammars layer on later via
+# the same `HighlightService::LanguageRegistry`. C compiler required at
+# build time (every grammar crate has its own `build.rs` invoking `cc`);
+# already provisioned on the Linux dev box (gcc) and Windows (MSVC build tools).
+tree-sitter = "0.26"
+tree-sitter-highlight = "0.26"
+tree-sitter-julia = "0.23"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-bash = "0.25"
+tree-sitter-json = "0.24"
+tree-sitter-toml-ng = "0.7"
+# Local terminal (G2 + G5): PTY host for the built-in terminal pane.
+# Same dep as the backend; version locked here to match.
+portable-pty = "0.9"
+
+# Windows-only: force the relaunched window to the OS foreground. winit's
+# focus_window() is blocked by the Win32 foreground lock for a freshly
+# spawned process (ADR 0017 self-relaunch), so we do the AttachThreadInput
+# dance via raw user32 calls (see force_os_foreground in gpu.rs). Scoped to
+# Windows; the frontend builds on Linux/macOS untouched.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    # SetCurrentProcessExplicitAppUserModelID — taskbar grouping (see main.rs).
+    "Win32_UI_Shell",
+] }
+
+# Windows-only: embed logo.ico into sot.exe as its icon resource (see build.rs).
+# Gives the *running app's* taskbar button the wheel — the runtime window icon
+# only covers Alt-Tab / title bar; the taskbar resolves from the exe identity.
+# Uses the MSVC toolchain's rc.exe; Linux/macOS builds never see this crate.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

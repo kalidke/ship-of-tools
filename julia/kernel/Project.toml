@@ -1,0 +1,48 @@
+name = "ShipToolsKernel"
+uuid = "64598b89-5d1c-44fd-9e35-7c2309593cff"
+version = "0.3.0"
+authors = ["kalidke"]
+
+[deps]
+Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
+ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"
+ShipToolsJsonDoc = "72e6c987-93b4-4e21-9781-81866db8c14a"
+ShipToolsJuliaSource = "8d873b42-dda4-4ff1-aa80-a0ec50d38541"
+ShipToolsMarkdown = "f621c3d9-14c6-4a51-ac71-8003b27da8ac"
+ShipToolsPDFFile = "ecef8775-a305-4cb8-98a3-a338ce2c81b5"
+ShipToolsPlainText = "570c5370-7903-4b49-8614-fedc5536a8d9"
+ShipToolsTomlDoc = "89374b2f-bbbb-4ed7-b4b7-d86c059b142c"
+ShipToolsVideoFile = "d492e98d-174d-4d50-b448-4f6643170ffd"
+HDF5Preview = "c0d7e0f3-5a1c-4b8e-9f23-2e5a6c4b1f88"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+JuliaSyntax = "70703baa-626e-46a2-a12c-08ffd08c73b4"
+SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+
+[compat]
+JSON3 = "1"
+JuliaSyntax = "1.0.2"
+SHA = "0.7.0"
+# Bumped 1.10 -> 1.11 because [sources] below requires Julia >= 1.11. A 1.10
+# runtime would SILENTLY IGNORE [sources] and fail to find the local path-deps
+# (the exact post-rename "Missing source file" crash this section fixes).
+julia = "1.12"
+
+# Local path-deps declared RELATIVE to this Project.toml's directory (Pkg
+# resolves [sources] paths against dirname(project_file)). This makes
+# `Pkg.instantiate` wire core + the plugins on ANY user / machine / OS with no
+# absolute paths anywhere — the (gitignored, regenerated) Manifest never pins a
+# machine-specific path again. Previously these were `Pkg.develop`'d, which
+# baked absolute paths into the Manifest; the sot -> ship-of-tools dir rename
+# orphaned every one of them and crash-looped the kernel. Forward slashes are
+# normalized cross-platform by Pkg. ConceptExplorerCore stays a direct [deps]
+# entry, so the plugins' own dependency on it resolves to this same source.
+[sources]
+ConceptExplorerCore  = { path = "../../core" }
+ShipToolsJsonDoc     = { path = "../plugins/json-doc" }
+ShipToolsJuliaSource = { path = "../plugins/julia-source" }
+ShipToolsMarkdown    = { path = "../plugins/markdown" }
+ShipToolsPDFFile     = { path = "../plugins/pdf-file" }
+ShipToolsPlainText   = { path = "../plugins/plain-text" }
+ShipToolsTomlDoc     = { path = "../plugins/toml-doc" }
+ShipToolsVideoFile   = { path = "../plugins/video-file" }
+HDF5Preview          = { path = "../../examples/plugins/HDF5Preview" }

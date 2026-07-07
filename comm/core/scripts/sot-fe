@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# sot-fe — drive the Ship of Tools frontend(s) with an imperative UI command from
+# the backend (ADR 0025, op::FE_COMMAND). A BE-side CLI: it frames an
+# `fe.command.send` request, sends it to the running sotd daemon over its
+# socket (no comm relay, no FE LLM), and the daemon re-emits it as an
+# `fe.command` evt to every connected frontend. The FE switches + shows the
+# target regardless of its current view (badge floor without --fe; force-show
+# to one FE with --fe <handle>).
+#
+# Usage:
+#   sot-fe preview <workspace> <path> [--urgent] [--fe <handle>]
+#   sot-fe reveal  <workspace> <path> [--urgent] [--fe <handle>]
+#   sot-fe goto    <workspace>        [--boot] [--fe <handle>]
+#   sot-fe mode    <mode>             [--fe <handle>]
+#   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <handle>]
+#
+#   preview  — switch the FE to <workspace>, Files mode, and preview <path>.
+#   reveal   — switch + reveal <path> in the file tree (cursor it, no preview).
+#   goto     — switch the FE to <workspace> (no path).
+#   mode     — switch the FE's active mode (files | modules | project | ...).
+#   notify   — surface a one-line notice (optionally scoped to a workspace).
+#   open-url — open an http(s) URL in the FE machine's OS BROWSER (not a
+#              forwarded port — the FE just opens it). Broadcast opens on
+#              every attached FE; use --fe to target one.
+#
+#   --fe <handle>  scope delivery to one FE by its sot-comm handle (sets the
+#                  wire `target`); absent = every FE acts (the badge floor).
+#   --urgent       hint the FE to force-show now (preview/reveal); sets args.urgent.
+#   --boot         (goto) seed autostart so the FE boots ccb on the switch — the
+#                  scriptable spawn->goto->boot primitive. Send DIRECTED (--fe
+#                  <handle>); a broadcast --boot would switch+boot on EVERY FE.
+#   --endpoint     daemon address; else $SOT_FE_ENDPOINT / $SOT_SPAWN_ENDPOINT /
+#                  $SOT_SOCKET / auto-detected from the running sotd daemon.
+set -euo pipefail
+
+if ! command -v jq >/dev/null 2>&1; then
+    echo "ERROR: jq not found — needed to build the request payload." >&2; exit 1
+fi
+# nc is preferred, but git-bash on Windows ships none — so for TCP endpoints we
+# fall back to bash's /dev/tcp (see sot_send). Only a unix-socket endpoint hard-
+# requires nc -U (/dev/tcp can't speak AF_UNIX). Mirrors comm-relay.sh's
+# fallback so sot-fe works on Windows without netcat.
+HAVE_NC=0; command -v nc >/dev/null 2>&1 && HAVE_NC=1
+
+usage() {
+    sed -n '10,27p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-1}"
+}
+
+CMD="${1:-}"; [ -n "$CMD" ] && shift || usage 1
+ENDPOINT=""
+FE=""          # --fe handle → wire `target`
+URGENT=false
+BOOT=false
+LEVEL=""
+NOTIFY_WS=""
+POS=()         # positional args for the subcommand
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --fe)       FE="$2"; shift 2 ;;
+        --endpoint) ENDPOINT="$2"; shift 2 ;;
+        --urgent)   URGENT=true; shift ;;
+        --boot)     BOOT=true; shift ;;
+        --level)    LEVEL="$2"; shift 2 ;;
+        --ws)       NOTIFY_WS="$2"; shift 2 ;;
+        -h|--help)  usage 0 ;;
+        *)          POS+=("$1"); shift ;;
+    esac
+done
+
+# --- resolve the daemon endpoint ---
+resolve_endpoint() {
+    [ -n "$ENDPOINT" ] && { echo "$ENDPOINT"; return 0; }
+    [ -n "${SOT_FE_ENDPOINT:-}" ] && { echo "$SOT_FE_ENDPOINT"; return 0; }
+    [ -n "${SOT_SPAWN_ENDPOINT:-}" ] && { echo "$SOT_SPAWN_ENDPOINT"; return 0; }
+    [ -n "${SOT_SOCKET:-}" ] && { echo "unix:$SOT_SOCKET"; return 0; }
+    # Match ONLY a real daemon invocation — a line carrying a --tcp/--socket
+    # launch flag — and exclude our own comm-*/sot-* argv. Without this, a
+    # message/path containing the substring "sotd" makes this command's own argv
+    # match `sotd`; once kernel PIDs wrap past pid_max a fresh
+    # process sorts before the daemon and `head -1` picks ourselves (the
+    # self-match footgun fixed in comm-relay.sh).
+    local a; a="$(pgrep -af 'sotd' 2>/dev/null \
+        | grep -Ev 'grep|pgrep|comm-relay|comm-spawn|comm-despawn|comm-listen|comm-watch|comm-poll|sot-fe|sot-nav' \
+        | grep -E -- '--tcp|--socket' | head -1 || true)"
+    if [[ "$a" =~ --tcp[[:space:]]+([^[:space:]]+) ]]; then echo "tcp:${BASH_REMATCH[1]}"; return 0; fi
+    if [[ "$a" =~ --socket[[:space:]]+([^[:space:]]+) ]]; then echo "unix:${BASH_REMATCH[1]}"; return 0; fi
+    return 1
+}
+
+# Send a frame to the daemon, return the first response line matching op $2.
+# Uses nc when present; otherwise falls back to bash /dev/tcp for tcp endpoints
+# (so this works in git-bash on Windows). A unix-socket endpoint still needs
+# nc -U. The exec lives in a subshell: a redirect-only exec whose redirect fails
+# would otherwise EXIT a non-interactive shell outright (same class as the
+# comm-relay.sh /dev/tcp fix).
+# App-level auth (ADR 0010 hardening): the daemon requires a token-valid hello
+# before serving any op, so prepend one to every connection. Empty token = open
+# mode (gate off). The hello reply is ignored — sot_send greps by op.
+_sot_hello() {
+    local tok; tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
+    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":1,"app_version":"comm","token":"%s"}}\n' "$tok"
+}
+sot_send() {
+    local frame="$1" op="$2" hp host port
+    case "$ENDPOINT" in
+        tcp:*)
+            hp="${ENDPOINT#tcp:}"; host="${hp%:*}"; port="${hp##*:}"
+            if [ "$HAVE_NC" = 1 ]; then
+                { _sot_hello; printf '%s\n' "$frame"; } | timeout 6 nc "$host" "$port" 2>/dev/null | grep -m1 "\"op\":\"$op\""
+            else
+                (
+                    exec 9<>"/dev/tcp/$host/$port" \
+                        || { echo "ERROR: /dev/tcp connect to $host:$port failed (and nc not found)" >&2; exit 1; }
+                    { _sot_hello; printf '%s\n' "$frame"; } >&9
+                    timeout 6 cat <&9
+                    exec 9<&- 9>&- 2>/dev/null || true
+                ) | grep -m1 "\"op\":\"$op\""
+            fi
+            ;;
+        unix:*)
+            if [ "$HAVE_NC" = 1 ]; then
+                { _sot_hello; printf '%s\n' "$frame"; } | timeout 6 nc -U "${ENDPOINT#unix:}" 2>/dev/null | grep -m1 "\"op\":\"$op\""
+            else
+                echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2; return 1
+            fi
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# Frame an `fe.command.send` req from a cmd verb ($1) + an args JSON object ($2),
+# attaching `target` from --fe when set, and send it to the daemon.
+send_fe_command() {
+    local fe_cmd="$1" args_json="$2"
+    if ! ENDPOINT="$(resolve_endpoint)"; then
+        echo "ERROR: could not find the sotd daemon. Set --endpoint tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
+        exit 1
+    fi
+    local payload
+    if [ -n "$FE" ]; then
+        payload="$(jq -nc --arg c "$fe_cmd" --argjson a "$args_json" --arg t "$FE" \
+            '{cmd:$c, args:$a, target:$t}')"
+    else
+        payload="$(jq -nc --arg c "$fe_cmd" --argjson a "$args_json" \
+            '{cmd:$c, args:$a}')"
+    fi
+    local req
+    req="$(jq -nc --argjson p "$payload" \
+        '{v:1, id:1, kind:"req", op:"fe.command.send", payload:$p}')"
+    local resp
+    resp="$(sot_send "$req" fe.command.send || true)"
+    local ok
+    ok="$(printf '%s' "$resp" | jq -r '.payload.ok // empty' 2>/dev/null || true)"
+    if [ "$ok" != "true" ]; then
+        echo "ERROR: fe.command.send ($fe_cmd) failed via $ENDPOINT" >&2
+        [ -n "$resp" ] && printf '  daemon said: %s\n' "$resp" >&2
+        exit 1
+    fi
+    echo "fe.command sent: cmd=$fe_cmd${FE:+ target=$FE} via $ENDPOINT"
+    # Two sessions burned on the same traps (MyAnalysis, MyDocs) — say the
+    # delivery semantics out loud instead of letting 'sent' read as 'shown'.
+    if [ -n "${FE:-}" ]; then
+        case "$FE" in
+            win-fe-*) ;; # a real per-host handle
+            *) echo "WARNING: --fe '$FE' is not a per-host handle (win-fe-<host>); FEs self-filter on their EXACT handle, so this likely matched NO frontend and was dropped silently. Omit --fe to reach all FEs." >&2 ;;
+        esac
+        echo "note: --fe/--urgent are deprecated (2026-06-29, badge-floor only — we never force-switch the user's view)." >&2
+    fi
+    case "$fe_cmd" in
+        preview|reveal)
+            echo "note: if the user's ACTIVE workspace differs from the target, this BADGES the workspace row (shows on their next switch) — it does not change their current view." ;;
+    esac
+}
+
+case "$CMD" in
+    preview|reveal)
+        WS="${POS[0]:-}"; PATH_ARG="${POS[1]:-}"
+        [ -n "$WS" ] && [ -n "$PATH_ARG" ] || { echo "usage: sot-fe $CMD <workspace> <path> [--urgent] [--fe <handle>]" >&2; exit 1; }
+        # Keep the file nav INSIDE the repo: a node_id must be REPO-RELATIVE (the
+        # daemon rejects absolute node_ids, and the FE tree positions its cursor by
+        # relative id — an absolute path would show a "floating" file the nav can't
+        # follow). Agents naturally hold an ABSOLUTE path of a file they just made,
+        # so relativize it here against the caller's repo root. The strip is LEXICAL
+        # (string prefix) — NOT `git -C <dir>` / realpath on the file — so a file
+        # under a symlinked dir (e.g. data/results/myproject -> external storage) keeps its
+        # in-repo relative path instead of resolving out to the external storage root.
+        case "$PATH_ARG" in
+            /*)
+                _repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+                if [ -n "$_repo_root" ] && [ "$PATH_ARG" != "${PATH_ARG#"$_repo_root"/}" ]; then
+                    PATH_ARG="${PATH_ARG#"$_repo_root"/}"
+                else
+                    echo "ERROR: '$PATH_ARG' is absolute and not under the current repo (${_repo_root:-<not in a repo>}). Pass a path relative to the workspace root — the file nav can only show files inside the repo." >&2
+                    exit 1
+                fi
+                ;;
+        esac
+        if [ "$URGENT" = true ]; then
+            ARGS="$(jq -nc --arg w "$WS" --arg p "$PATH_ARG" '{workspace:$w, path:$p, urgent:true}')"
+        else
+            ARGS="$(jq -nc --arg w "$WS" --arg p "$PATH_ARG" '{workspace:$w, path:$p}')"
+        fi
+        send_fe_command "$CMD" "$ARGS"
+        ;;
+    goto)
+        WS="${POS[0]:-}"
+        [ -n "$WS" ] || { echo "usage: sot-fe goto <workspace> [--boot] [--fe <handle>]" >&2; exit 1; }
+        if [ "$BOOT" = true ]; then
+            ARGS="$(jq -nc --arg w "$WS" '{workspace:$w, boot:true}')"
+        else
+            ARGS="$(jq -nc --arg w "$WS" '{workspace:$w}')"
+        fi
+        send_fe_command goto_workspace "$ARGS"
+        ;;
+    mode)
+        MODE="${POS[0]:-}"
+        [ -n "$MODE" ] || { echo "usage: sot-fe mode <mode> [--fe <handle>]" >&2; exit 1; }
+        ARGS="$(jq -nc --arg m "$MODE" '{mode:$m}')"
+        send_fe_command goto_mode "$ARGS"
+        ;;
+    notify)
+        TEXT="${POS[0]:-}"
+        [ -n "$TEXT" ] || { echo "usage: sot-fe notify <text> [--level <l>] [--ws <workspace>] [--fe <handle>]" >&2; exit 1; }
+        ARGS="$(jq -nc --arg t "$TEXT" '{text:$t}')"
+        [ -n "$LEVEL" ]     && ARGS="$(printf '%s' "$ARGS" | jq -c --arg l "$LEVEL" '. + {level:$l}')"
+        [ -n "$NOTIFY_WS" ] && ARGS="$(printf '%s' "$ARGS" | jq -c --arg w "$NOTIFY_WS" '. + {workspace:$w}')"
+        send_fe_command notify "$ARGS"
+        ;;
+    open-url)
+        URL="${POS[0]:-}"
+        case "$URL" in
+            http://*|https://*) : ;;
+            *) echo "usage: sot-fe open-url <http(s)-url> [--fe <handle>]  (http/https only)" >&2; exit 1 ;;
+        esac
+        ARGS="$(jq -nc --arg u "$URL" '{url:$u}')"
+        send_fe_command open_url "$ARGS"
+        ;;
+    -h|--help|help) usage 0 ;;
+    *) echo "ERROR: unknown subcommand '$CMD'" >&2; usage 1 ;;
+esac

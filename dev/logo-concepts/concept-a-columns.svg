@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Ship of Tools logo concept A: Miller columns with Julia dots">
+  <title>Concept A — Columns + Julia dots</title>
+  <!-- three Miller columns drilling down into structure -->
+  <g fill="#3b4252">
+    <rect x="18" y="64" width="22" height="46" rx="7"/>
+    <rect x="53" y="44" width="22" height="66" rx="7"/>
+    <rect x="88" y="24" width="22" height="86" rx="7"/>
+  </g>
+  <!-- Julia-colored dots, one capping each column (the concept being explored) -->
+  <circle cx="29" cy="48" r="10" fill="#cb3c33"/>
+  <circle cx="64" cy="28" r="10" fill="#389826"/>
+  <circle cx="99" cy="12" r="10" fill="#9558b2"/>
+</svg>

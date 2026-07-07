@@ -1,0 +1,16 @@
+name = "ShipToolsVideoFile"
+uuid = "d492e98d-174d-4d50-b448-4f6643170ffd"
+authors = ["kalidke"]
+version = "0.3.0"
+
+[deps]
+ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"
+
+[compat]
+julia = "1.12"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

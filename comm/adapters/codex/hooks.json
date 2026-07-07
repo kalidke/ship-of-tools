@@ -1,0 +1,49 @@
+{
+  "_comment": "Ship of Tools codex adapter (ADR 0031) \u2014 state-nav hooks. EVENT KEYS ARE snake_case (verified against the codex 0.142 binary: user_prompt_submit/post_tool_use/stop/permission_request \u2014 PascalCase keys are silently ignored, the original silent-no-color bug). Deployed to ~/.codex/hooks.json by ShipTools.update_comm(). Same bin scripts as the Claude Code adapter (the payloads share the field names that matter \u2014 notably `prompt`), so the state HIERARCHY (blocked/red > working/green > waiting/purple, 2360fca) is enforced identically: the working hook's machine-turn guard, the heartbeat's waiting->working promotion, soft idle's sticky demote. All scripts self-gate on the pane's registry row, so codex sessions OUTSIDE Ship of Tools are silent no-ops. PermissionRequest maps to blocked (codex's nearest 'needs the user').",
+  "hooks": {
+    "user_prompt_submit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.sot-comm/bin/comm-status-working.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "post_tool_use": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.sot-comm/bin/comm-status-heartbeat.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.sot-comm/bin/comm-status-idle.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "permission_request": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.sot-comm/bin/codex-status-blocked.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

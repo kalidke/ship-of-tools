@@ -1,0 +1,10 @@
+{
+  "name": "sot-mathjax-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Line-delimited LaTeX→SVG sidecar driven by the Ship of Tools backend over stdio. Per ADR 0012, MathJax-SVG is the inline-math path; this is the rendering engine.",
+  "dependencies": {
+    "mathjax-full": "^3.2.2"
+  }
+}

@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# show-result — surface a result you just produced in the user's Ship of Tools
+# nav/preview pane. A thin, friction-free wrapper over `sot-fe preview`
+# (op::FE_COMMAND, ADR 0025) that auto-discovers your workspace slug, so a session
+# can run ONE short command right after it saves an artifact — "producing it ==
+# surfacing it." See the /show-result skill for the discipline.
+#
+# Usage:
+#   show-result <path>                        # BADGE it (default; non-intrusive — PREFERRED)
+#   show-result <path> --urgent --fe <handle> # force-show (RARE: only when the user is
+#                                             # actively waiting; re-targets the single
+#                                             # foreground pty — never broadcast --urgent)
+#
+# <path> is workspace-relative (an absolute path under the workspace auto-relativizes).
+# Bind it to production, e.g. in Julia:  save(p, fig); run(`show-result $p`)
+set -euo pipefail
+
+case "${1:-}" in
+  ""|-h|--help)
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+esac
+
+REL="$1"; shift
+
+# Discover the workspace slug — never guess it. Prefer the backend-stamped
+# SOT_WORKSPACE; else strip the `sot-be-` prefix off the tmux session name.
+WS="${SOT_WORKSPACE:-$(tmux display-message -p '#S' 2>/dev/null | sed -n 's/^sot-be-//p')}"
+if [ -z "$WS" ]; then
+  echo "show-result: workspace slug unknown — SOT_WORKSPACE unset and not a sot-be-<slug> tmux session." >&2
+  echo "             run this from inside your workspace's backend pane." >&2
+  exit 3
+fi
+
+SFE="$HOME/.sot-comm/bin/sot-fe"
+[ -x "$SFE" ] || SFE="sot-fe"   # fall back to PATH
+
+# Near-blank guard (best-effort, never blocks): a recurring trap is badging a
+# visually-empty image blind — e.g. full-field scientific renders (fine features in a
+# µm field) read as solid black at overview scale. When ImageMagick is
+# available, warn loudly on a low pixel-stddev image so the agent VIEWS it
+# before the user does (2026-07-03 incident: three near-black renders badged
+# in a row, never viewed). Warning only — dark-but-legitimate images exist,
+# and the agent gates.
+case "$(printf '%s' "$REL" | tr '[:upper:]' '[:lower:]')" in
+  *.png|*.jpg|*.jpeg|*.gif|*.webp|*.tif|*.tiff)
+    IM="$(command -v magick || command -v convert || true)"
+    if [ -n "$IM" ] && [ -f "$REL" ]; then
+      stddev="$("$IM" "$REL" -format "%[fx:standard_deviation]" info: 2>/dev/null || true)"
+      case "$stddev" in
+        0.0*|0)
+          if awk -v s="${stddev:-1}" 'BEGIN{exit !(s < 0.02)}'; then
+            echo "note: '$REL' looks NEAR-BLANK (pixel stddev=$stddev < 0.02). The badge still goes through" >&2
+            echo "      (showing is unconditional) — VIEW it with Read and tell the user what they're looking at;" >&2
+            echo "      if a cropped/panel export is the legible one, badge that too and say which is which." >&2
+          fi ;;
+      esac
+    fi ;;
+esac
+
+# Default is the badge floor (no --urgent). Any extra flags (--urgent --fe <h>) pass through.
+exec "$SFE" preview "$WS" "$REL" "$@"

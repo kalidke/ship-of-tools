@@ -1,0 +1,17 @@
+name = "ShipTools"
+uuid = "6593d88f-a2aa-42a2-9eee-07370402defc"
+version = "0.3.0"
+authors = ["kalidke"]
+
+[deps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+
+[compat]
+CairoMakie = "0.15.10"
+julia = "1.12"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

@@ -1,0 +1,66 @@
+# Ship of Tools frontend keybindings — TEMPLATE (copy to keybindings.toml).
+#
+# The real keybindings.toml is a user preference and NOT committed
+# (ADR 0030 §6); absent, every action falls through to built-in defaults.
+#
+# Discovery order: $SOT_KEYBINDINGS → <repo-root>/.sot/keybindings.toml
+# (this file) → $HOME/.config/sot/keybindings.toml → built-in defaults.
+# Each action's chord(s) here override the built-in default; absent actions
+# fall through to the default. Multiple chords per action: use a list.
+#
+# Chord grammar: zero or more modifier+ tokens followed by one key.
+#   modifiers: ctrl, alt (alias: option, meta), shift  (case-insensitive)
+#   key:       a single character ("=", "z", "+") OR a NamedKey
+#              (Tab, Enter, Escape, Space, Backspace, Delete, ArrowUp,
+#              ArrowDown, ArrowLeft, ArrowRight, PageUp, PageDown,
+#              Home, End)
+#
+# Shift is enforced only when the chord declares it — typing `+` already
+# carries shift on a US layout, so writing `Alt+=` matches both `=` and `+`
+# when alt is held; writing `Alt+Shift+=` enforces the shift state.
+
+[keys]
+# Maximise the focused pane to fill the window.
+pane.maximize = "Alt+="
+# Restore the full layout (un-maximize). Esc only triggers this while a pane
+# is maximized; otherwise Esc passes through to the pty / edit mode / etc.
+pane.restore = "Escape"
+# Sessions picker — commit the cursored directory as a new workspace.
+#   session.create      → start the comm-aware agent (ccb) in the pane
+#   session.create_bare → bare session, NO LLM agent (plain shell/REPL)
+# session.create_bare is matched BEFORE session.create, so a non-shift
+# session.create chord still fires when its shifted bare variant is held —
+# keep create_bare on a strictly-more-specific chord (e.g. add Shift).
+session.create = "Enter"
+session.create_bare = "Shift+Enter"
+# Mode switches (active only in nav focus — single-char chords stay literal
+# text in the pty / editor / prompts).
+mode.files = "f"
+mode.modules = "m"
+mode.sessions = "s"
+mode.hosts = "h"
+# Files mode: show/hide hidden dotfiles (nav focus only). Toggling collapses
+# the tree to its root; deeper dirs pick up the change on next expand.
+files.toggle_hidden = "."
+# Drawer toggles (global): REPL / Terminal / Monitor panes.
+drawer.repl = "Ctrl+j"
+drawer.terminal = "Ctrl+t"
+drawer.monitor = "Ctrl+m"
+# Spatial pane focus (global, 4-way). Keep disjoint from plain arrows
+# (per-pane nav) and Shift+Arrow (workspace cycle).
+focus.pane_left = "Ctrl+ArrowLeft"
+focus.pane_right = "Ctrl+ArrowRight"
+focus.pane_up = "Ctrl+ArrowUp"
+focus.pane_down = "Ctrl+ArrowDown"
+# Cycle the active workspace (global; ignored while editing a file).
+workspace.cycle_next = "Shift+ArrowRight"
+workspace.cycle_prev = "Shift+ArrowLeft"
+# Global chrome.
+quit = "Ctrl+q"                 # nav focus only (won't fire in the pty panes)
+help.toggle = "?"               # nav / preview focus, outside edit mode
+view.fullscreen = "F11"
+transport.reconnect = "F5"
+# Font scale. "=" and shifted "+" both zoom in; "-" and "_" both zoom out.
+font.scale_up = ["Ctrl+=", "Ctrl++"]
+font.scale_down = ["Ctrl+-", "Ctrl+_"]
+font.scale_reset = "Ctrl+0"

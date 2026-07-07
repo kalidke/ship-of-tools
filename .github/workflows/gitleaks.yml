@@ -1,0 +1,27 @@
+# Secret scan (ADR 0030 §7 pre-flip gate, made durable): gitleaks over the
+# FULL history on every push/PR. Plain binary rather than gitleaks-action —
+# no license key machinery, same engine. Baseline: 1737 commits / 0 leaks
+# at 7cc3be9 (2026-07-05, the go-public eval).
+name: gitleaks
+on:
+  push:
+    branches: ["main"]
+  pull_request: {}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download -R gitleaks/gitleaks -p "*linux_x64.tar.gz" -D /tmp/gl
+          tar xzf /tmp/gl/gitleaks*linux_x64.tar.gz -C /tmp/gl
+          install -m 0755 /tmp/gl/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Scan full history
+        run: gitleaks git --redact --exit-code 1 .

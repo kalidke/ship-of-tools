@@ -1,0 +1,55 @@
+# Ship of Tools host registry — TEMPLATE (copy to hosts.toml and edit).
+#
+# The real hosts.toml is machine/user-specific and NOT committed (ADR 0030 §6):
+#   cp .sot/hosts.toml.example .sot/hosts.toml     # repo-local override, or
+#   ~/.config/sot/hosts.toml / %APPDATA%\sot\hosts.toml   # per-user config
+#
+# Discovery order: $SOT_HOSTS → <repo-root>/.sot/hosts.toml →
+# $XDG_CONFIG_HOME/sot/hosts.toml or %APPDATA%\sot\hosts.toml.
+# Format kept deliberately simple — section per host, scalar
+# key = value lines — so the PowerShell launcher can parse it with
+# regex without pulling in a TOML library.
+#
+# The frontend's `Mode::Hosts` lists every `[host.<name>]` section and
+# writes the chosen name to `state-<hostname>.toml` as `last_host`.
+# On next launch the launcher reads that, resolves the matching host
+# entry here, and sets SOT_HOST / SOT_REMOTE_REPO /
+# SOT_TCP_PORT before starting the tunnel.
+#
+# If no last_host is set yet, the launcher falls back to `default_host`.
+#
+# Frontend↔backend transport is SSH (also for a same-machine backend —
+# point ssh_alias at localhost); key-based auth to the backend host is
+# a hard requirement (ADR 0030 §5).
+
+default_host = "myserver"
+
+[host.myserver]
+ssh_alias = "myserver"                       # entry in your ~/.ssh/config
+remote_repo = "/home/me/path/to/project"     # project root the daemon serves
+tcp_port = 18743
+remote_home = "/home/me"
+
+# A second remote:
+#
+# [host.otherbox]
+# ssh_alias = "otherbox"
+# remote_repo = "/home/me/path/to/project"
+# tcp_port = 18744
+#
+# A local entry (no SSH; backend on the same machine). Note the parser
+# passes values through verbatim — no TOML escape processing — so
+# Windows pipe paths use single backslashes:
+#
+# [host.local]
+# socket = "\\.\pipe\sot-local"
+
+# Hosts sampled for the Ctrl+M server-monitor drawer (ADR 0020). Each line is
+# <display-name> = "<ssh-alias>". The host whose name (or alias) matches this
+# machine's hostname is sampled locally (no SSH); the rest over `ssh <alias>`.
+# nvidia-smi + /proc are world-readable, so no sudo/privileges are needed on
+# any host. Remove a line to stop monitoring that host.
+#
+# [monitor]
+# myserver = "myserver"
+# otherbox = "otherbox"

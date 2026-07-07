@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Ship of Tools logo concept C: agent constellation on a comm bus">
+  <title>Concept C — Agent constellation (drive agents + inter-agent comm)</title>
+  <g stroke="#3b4252" stroke-width="5" stroke-linecap="round">
+    <line x1="64" y1="64" x2="26" y2="34"/>
+    <line x1="64" y1="64" x2="104" y2="42"/>
+    <line x1="64" y1="64" x2="58" y2="106"/>
+  </g>
+  <!-- central node: you / the orchestrator -->
+  <circle cx="64" cy="64" r="17" fill="#3b4252"/>
+  <!-- agents, Julia-colored -->
+  <circle cx="26" cy="34" r="12" fill="#cb3c33"/>
+  <circle cx="104" cy="42" r="12" fill="#389826"/>
+  <circle cx="58" cy="106" r="12" fill="#9558b2"/>
+</svg>

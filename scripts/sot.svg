@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f6feb"/>
+      <stop offset="1" stop-color="#0b3d91"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="224" height="224" rx="44" fill="url(#bg)"/>
+  <!-- three stacked Miller columns, the Ship of Tools visual motif -->
+  <rect x="56"  y="72" width="36" height="112" rx="8" fill="#e6edf3" opacity="0.95"/>
+  <rect x="110" y="72" width="36" height="112" rx="8" fill="#e6edf3" opacity="0.70"/>
+  <rect x="164" y="72" width="36" height="112" rx="8" fill="#e6edf3" opacity="0.45"/>
+  <!-- cursor row highlight in the first column -->
+  <rect x="56" y="100" width="36" height="22" rx="5" fill="#f0883e"/>
+</svg>

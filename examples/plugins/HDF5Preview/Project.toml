@@ -1,0 +1,20 @@
+name = "HDF5Preview"
+uuid = "c0d7e0f3-5a1c-4b8e-9f23-2e5a6c4b1f88"
+authors = ["kalidke"]
+version = "0.3.0"
+
+[deps]
+ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"
+HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
+
+[compat]
+HDF5 = "0.17"
+julia = "1.12"
+
+# ConceptExplorerCore is unregistered; without [sources] a STANDALONE
+# instantiate of this env dies in check_registered (found on the one dev machine
+# capture box). Loading through the kernel env never hit it — the kernel's
+# own [sources] resolved core — but this plugin is the documented external-
+# plugin example and must instantiate on its own.
+[sources]
+ConceptExplorerCore = { path = "../../../core" }
