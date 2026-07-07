@@ -112,7 +112,7 @@ while :; do
     tail -n +"$((pos + 1))" "$INBOX" | while IFS= read -r line; do
         from=$(printf '%s' "$line" | jq -r '.from // ""' 2>/dev/null)
         to=$(printf '%s' "$line" | jq -r 'if has("to") then .to else "__legacy__" end' 2>/dev/null)
-        text=$(printf '%s' "$line" | jq -r '.text // .message // ""' 2>/dev/null)
+        text=$(printf '%s' "$line" | jq -r '.text // .message // .msg // ""' 2>/dev/null)
         [ "$from" = "$HANDLE" ] && continue      # own echo
         [ "$to" = "" ] && continue               # broadcast: file silently
         [ -n "$text" ] || continue

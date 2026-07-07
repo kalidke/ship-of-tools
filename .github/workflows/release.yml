@@ -149,6 +149,7 @@ jobs:
       - name: Boot artifact + version + hello
         shell: bash
         run: |
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "=== sotd.log ==="; cat sotd.log 2>/dev/null || true; fi; exit "$rc"' EXIT
           apt-get update -q && apt-get install -y -q python3 ca-certificates > /dev/null
           tar xzf sot-*-linux-x86_64.tar.gz
           d=$(ls -d sot-*-linux-x86_64/)
@@ -164,12 +165,12 @@ jobs:
             *)          case "$got" in "sotd $expected ("*) ;; *) echo "VERSION MISMATCH"; exit 1;; esac ;;
           esac
           mkdir -p scratch
-          "$d/sotd" --tcp 127.0.0.1:28753 --project-root ./scratch --label smoke > sotd.log 2>&1 &
+          "$d/sotd" --token smoke-token --tcp 127.0.0.1:28753 --project-root ./scratch --label smoke > sotd.log 2>&1 &
           for i in $(seq 1 30); do python3 -c "import socket; socket.create_connection(('127.0.0.1',28753),1)" 2>/dev/null && break; sleep 1; done
           python3 - <<'EOF'
           import json, socket
           s = socket.create_connection(("127.0.0.1", 28753), timeout=10)
-          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke","last_seen_revision":0,"protocol":1,"app_version":"smoke"}}
+          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke","last_seen_revision":0,"protocol":1,"app_version":"smoke","token":"smoke-token"}}
           s.sendall((json.dumps(f)+"\n").encode())
           p = json.loads(s.makefile().readline())["payload"]
           assert "error" not in p, f"hello rejected: {p}"
