@@ -4,13 +4,11 @@ A keyboard-driven Julia development environment that functions as a **concept ex
 
 `requirements.md` is the source of truth for **what** this system does. This document captures the design decisions for **how** it does it.
 
-**Operational handoff:**
+**Operational handoff** — the working-session handoff docs and durable Claude context live in the **PRIVATE ops sidecar** (repo `ship-of-tools-ops`, sibling checkout `../ship-of-tools-ops`, override `$SOT_OPS_DIR`), relocated out of this repo pre-public-flip (ADR 0030 §7):
 
-- `STATUS.md` — what's *done* (current at the last working session).
-- `TODO.md` — what's *next*. **Read this on session start if the user asks "what should we do" or pulls into a fresh machine.** Find the first unchecked item and either do it or confirm with the user before proceeding.
-- **Ops sidecar (PRIVATE repo `ship-of-tools-ops`, sibling checkout `../ship-of-tools-ops`, override `$SOT_OPS_DIR`)** — relocated out of this repo pre-public-flip (ADR 0030 §7):
-  - `<ops>/claude-memory/` — durable cross-OS Claude context (project memories). See "Cross-OS Claude memory" below.
-  - `<ops>/claude-bus/` — ephemeral cross-machine Claude-to-Claude messages; `/bus-note` + `/bus-sync` operate on it (they resolve the ops checkout themselves). See its README.
+- `<ops>/STATUS.md` — what's *done* (current at the last working session); `<ops>/TODO.md` — what's *next*. **Read TODO on session start if the user asks "what should we do" or pulls into a fresh machine** — find the first unchecked item and either do it or confirm with the user before proceeding.
+- `<ops>/claude-memory/` — durable cross-OS Claude context (project memories). See "Cross-OS Claude memory" below.
+- `<ops>/claude-bus/` — ephemeral cross-machine Claude-to-Claude messages; `/bus-note` + `/bus-sync` operate on it (they resolve the ops checkout themselves). See its README.
 
 ## Architecture at a glance
 
