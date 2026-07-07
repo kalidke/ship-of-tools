@@ -23,16 +23,10 @@ INBOX="$COMM_HOME/inbox/$HANDLE.jsonl"
 POS_DIR="$COMM_HOME/state"; mkdir -p "$POS_DIR"
 POS_FILE="$POS_DIR/codex-watch-$HANDLE.pos"
 
-# _sot_secure_dir / sot_tmux_socket — inline copy of comm-lib.sh's
-# resolver (this script doesn't source comm-lib.sh, so the logic is
-# duplicated here VERBATIM; keep the two in sync by hand if either
-# changes). See comm-lib.sh for the full rationale, including F1's
-# hijack-rejection contract on `_sot_secure_dir` (symlink/owner/mode
-# checks, `mkdir -m 700` with no `-p` so creation is atomic, and a hard
-# reject rather than a silent `mkdir -p`+`chmod` of an attacker-controlled
-# dir). Resolves the daemon's private per-user tmux socket so this
-# script's pane-injection `tmux` calls reach the codex pane the daemon
-# actually created it on, not tmux's default server.
+# _sot_secure_dir / sot_tmux_socket — inline copy of the secure-dir checks from
+# comm-lib.sh. codex-watch also verifies candidate sockets against the target
+# pane: Codex sessions may live on tmux's default server, while daemon-spawned
+# sessions may live on the SOT private socket.
 _sot_secure_dir() {
     local dir="$1"
     if [ -L "$dir" ]; then
@@ -63,38 +57,52 @@ _sot_secure_dir() {
     return 0
 }
 sot_tmux_socket() {
-    if [ -n "${SOT_TMUX_SOCK:-}" ]; then
-        printf '%s\n' "$SOT_TMUX_SOCK"
-        return 0
-    fi
-    local sock="" sotd_bin
+    local uid sock sotd_bin
+    local -a candidates=()
+    uid="$(id -u)"
+
+    [ -n "${SOT_TMUX_SOCK:-}" ] && candidates+=("$SOT_TMUX_SOCK")
+    [ -n "${TMUX:-}" ] && candidates+=("${TMUX%%,*}")
+
     sotd_bin="$(command -v sotd 2>/dev/null || true)"
     if [ -n "$sotd_bin" ]; then
         sock="$("$sotd_bin" tmux-socket-path 2>/dev/null || true)"
+        [ -n "$sock" ] && candidates+=("$sock")
     fi
-    if [ -z "$sock" ]; then
-        local uid; uid="$(id -u)"
-        if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ ! -L "$XDG_RUNTIME_DIR" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
-            local xowner xmode
-            xowner="$(stat -c '%u' "$XDG_RUNTIME_DIR" 2>/dev/null || true)"
-            xmode="$(stat -c '%a' "$XDG_RUNTIME_DIR" 2>/dev/null || true)"
-            if [ -n "$xowner" ] && [ "$xowner" = "$uid" ] \
-               && [ -n "$xmode" ] && [ $((0$xmode & 0077)) -eq 0 ]; then
-                sock="$XDG_RUNTIME_DIR/sot/tmux.sock"
-            fi
+
+    if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ ! -L "$XDG_RUNTIME_DIR" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
+        local xowner xmode
+        xowner="$(stat -c '%u' "$XDG_RUNTIME_DIR" 2>/dev/null || true)"
+        xmode="$(stat -c '%a' "$XDG_RUNTIME_DIR" 2>/dev/null || true)"
+        if [ -n "$xowner" ] && [ "$xowner" = "$uid" ] \
+           && [ -n "$xmode" ] && [ $((0$xmode & 0077)) -eq 0 ]; then
+            candidates+=("$XDG_RUNTIME_DIR/sot/tmux.sock")
         fi
-        if [ -z "$sock" ] && [ -d "/run/user/$uid" ]; then
-            sock="/run/user/$uid/sot/tmux.sock"
+    fi
+    [ -d "/run/user/$uid" ] && candidates+=("/run/user/$uid/sot/tmux.sock")
+    candidates+=("/tmp/sot-$uid/tmux.sock")
+    candidates+=("/tmp/tmux-$uid/default")
+
+    local seen=""
+    for sock in "${candidates[@]}"; do
+        [ -n "$sock" ] || continue
+        case " $seen " in
+            *" $sock "*) continue ;;
+        esac
+        seen="$seen $sock"
+        _sot_secure_dir "$(dirname "$sock")" || continue
+        [ -S "$sock" ] || continue
+        if tmux -S "$sock" display-message -t "$PANE" -p '#{pane_id}' >/dev/null 2>&1; then
+            printf '%s\n' "$sock"
+            return 0
         fi
-        [ -z "$sock" ] && sock="/tmp/sot-$uid/tmux.sock"
-    fi
-    if ! _sot_secure_dir "$(dirname "$sock")"; then
-        return 1
-    fi
-    printf '%s\n' "$sock"
+    done
+
+    echo "sot_tmux_socket: pane $PANE was not found on candidate tmux sockets:$seen" >&2
+    return 1
 }
 SOT_TMUX_SOCK="$(sot_tmux_socket)" \
-    || { echo "ERROR: could not resolve/secure the private tmux socket dir — see reason above" >&2; exit 1; }
+    || { echo "ERROR: could not resolve a secure tmux socket for pane $PANE — see reason above" >&2; exit 1; }
 
 # Start from the CURRENT end of the inbox — the backlog is comm-poll's job
 # (ccx's first-turn brief runs it); injecting history would replay it.
