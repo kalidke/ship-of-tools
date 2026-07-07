@@ -106,7 +106,7 @@ impl ConceptStore {
             return Ok(out);
         }
         if let Some(canon) = crate::paths::canonicalize_existing_ancestor(&self.root) {
-            if !canon.starts_with(&self.project_root) {
+            if !crate::paths::path_within_root(&canon, &self.project_root) {
                 return Err(anyhow!(
                     ".concept resolves outside the project root (symlink?): {:?}",
                     self.root
@@ -157,7 +157,7 @@ impl ConceptStore {
         // very first concept write, while still catching a symlinked
         // `.concept` dir itself, since canonicalizing walks through it too).
         if let Some(canon) = crate::paths::canonicalize_existing_ancestor(&p) {
-            if !canon.starts_with(&self.project_root) {
+            if !crate::paths::path_within_root(&canon, &self.project_root) {
                 return Err(anyhow!(
                     "target resolves outside the project root (symlink?): {target}"
                 ));

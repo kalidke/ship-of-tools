@@ -26,10 +26,27 @@ pub fn canonicalize_existing_ancestor(p: &Path) -> Option<PathBuf> {
     let mut cur = p;
     loop {
         if let Ok(c) = cur.canonicalize() {
-            return Some(c);
+            return Some(simplify_verbatim(c));
         }
         cur = cur.parent()?;
     }
+}
+
+/// True when `candidate` is exactly `root` or a descendant of it, after
+/// applying the same Windows verbatim-prefix normalization used for canonical
+/// project roots. The comparison is component-wise, so `/a/bc` is not treated
+/// as being under `/a/b`.
+pub fn path_within_root(candidate: &Path, root: &Path) -> bool {
+    let candidate = simplify_verbatim(candidate.to_path_buf());
+    let root = simplify_verbatim(root.to_path_buf());
+    let mut candidate_components = candidate.components();
+    for root_component in root.components() {
+        match candidate_components.next() {
+            Some(candidate_component) if candidate_component == root_component => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Resolve a REPO-ROOT-RELATIVE resource path (e.g. `julia/kernel`,
@@ -109,7 +126,7 @@ pub fn simplify_verbatim(p: std::path::PathBuf) -> std::path::PathBuf {
 
 #[cfg(all(test, windows))]
 mod verbatim_tests {
-    use super::simplify_verbatim;
+    use super::{path_within_root, simplify_verbatim};
     use std::path::PathBuf;
 
     #[test]
@@ -140,6 +157,27 @@ mod verbatim_tests {
             simplify_verbatim(PathBuf::from(r"\\?\Volume{guid}\x")),
             PathBuf::from(r"\\?\Volume{guid}\x")
         );
+    }
+
+    #[test]
+    fn path_within_root_accepts_verbatim_child() {
+        assert!(path_within_root(
+            &PathBuf::from(r"\\?\C:\Users\k\proj\src\lib.rs"),
+            &PathBuf::from(r"C:\Users\k\proj")
+        ));
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::path_within_root;
+    use std::path::Path;
+
+    #[test]
+    fn path_within_root_is_component_based() {
+        assert!(path_within_root(Path::new("/a/b/c"), Path::new("/a/b")));
+        assert!(path_within_root(Path::new("/a/b"), Path::new("/a/b")));
+        assert!(!path_within_root(Path::new("/a/bc"), Path::new("/a/b")));
     }
 }
 

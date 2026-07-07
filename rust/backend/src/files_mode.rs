@@ -148,7 +148,7 @@ impl FilesMode {
         // e.g. a `file.write` to a brand-new path) and confirm it's still
         // under `self.root`, which is already canonical (`FilesMode::new`).
         if let Some(canon) = crate::paths::canonicalize_existing_ancestor(&p) {
-            if !canon.starts_with(&self.root) {
+            if !crate::paths::path_within_root(&canon, &self.root) {
                 return Err(anyhow!(
                     "node id resolves outside the project root (symlink?): {node_id}"
                 ));
@@ -353,10 +353,12 @@ mod tests {
         let dir = Tmp::new();
         let fm = FilesMode::new(dir.path().to_path_buf()).unwrap();
         let p = fm.node_id_to_path("files:brand/new/file.txt").unwrap();
-        // Compare against the CANONICALIZED root (matches `path_to_node_id_round_trips`'s
-        // pattern above) — `dir.path()` itself may not be canonical on every
-        // platform (e.g. macOS's `/tmp` -> `/private/tmp`).
-        let root = std::fs::canonicalize(dir.path()).unwrap();
+        // Compare against the canonicalized, de-verbatimed root (matches
+        // `path_to_node_id_round_trips`'s pattern above) — `dir.path()` itself
+        // may not be canonical on every platform (e.g. macOS's `/tmp` ->
+        // `/private/tmp`), and Windows canonicalization adds a `\\?\` prefix
+        // that FilesMode deliberately strips.
+        let root = crate::paths::simplify_verbatim(std::fs::canonicalize(dir.path()).unwrap());
         assert_eq!(p, root.join("brand").join("new").join("file.txt"));
     }
 

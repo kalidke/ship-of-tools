@@ -183,17 +183,13 @@ fn root_for(nonce: &str) -> Option<PathBuf> {
 }
 
 /// Generate an unguessable token (32 lowercase hex chars = 128 bits from the
-/// OS CSPRNG), or `None` if `/dev/urandom` can't be read. Fails CLOSED
+/// OS CSPRNG), or `None` if the OS CSPRNG can't be read. Fails CLOSED
 /// (security review): a predictable token defeats the whole point of this
-/// scheme. Mirrors `http_serve`'s — `/dev/urandom` never blocks and is
-/// present on every host this backend targets (Linux/macOS); not worth a
-/// `rand` crate dependency for two call sites, and this should never actually
-/// fail.
+/// scheme. Mirrors `http_serve`'s.
 fn random_token() -> Option<String> {
-    use std::io::Read;
     let mut buf = [0u8; 16];
-    if let Err(e) = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)) {
-        tracing::error!(error = %e, "random_token: /dev/urandom read failed — refusing to mint a predictable token");
+    if let Err(e) = getrandom::fill(&mut buf) {
+        tracing::error!(error = %e, "random_token: OS CSPRNG read failed — refusing to mint a predictable token");
         return None;
     }
     Some(buf.iter().map(|b| format!("{b:02x}")).collect())
