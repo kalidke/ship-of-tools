@@ -104,7 +104,7 @@ jobs:
           New-Item -ItemType Directory -Path $stage | Out-Null
           Copy-Item rust/target/release/sot.exe, rust/target/release/sotd.exe $stage/
           Compress-Archive -Path $stage -DestinationPath "$stage.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bin-${{ matrix.target }}
           path: |
