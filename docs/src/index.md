@@ -72,4 +72,4 @@ workspace's Claude Code agent, in the orchestrator pane, answers "how do I…"
 questions straight from this repo. See [`docs/USING.md`](https://github.com/kalidke/ship-of-tools/blob/main/docs/USING.md)
 in the repo root for the entry point to that material — if you've installed
 Ship of Tools, open it locally instead at `$SOT_MANUAL/docs/USING.md`, which
-matches the release tag you installed.
+matches the checkout you installed.

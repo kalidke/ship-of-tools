@@ -36,7 +36,7 @@ site doesn't have the depth you need, the agent does.
 
 ## Getting started
 
-If you haven't already, walk the [Quickstart](https://kalidke.github.io/ship-of-tools/start/quickstart/)
+If you haven't already, walk the [Quickstart](https://kalidke.github.io/ship-of-tools/dev/start/quickstart/)
 in the published docs: shortest install, first launch, connecting, opening a
 project, and the handful of keys that get you moving. (Locally, that's
 `docs/src/start/quickstart.md`.)

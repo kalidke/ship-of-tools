@@ -2,8 +2,7 @@
 
 Session-to-session messaging for Ship of Tools. A fork of the `agent-comm` user skill
 with the single-tmux-session jail removed and a durable inbox fallback added, so
-sessions can address each other across tmux sessions and (on a shared `$HOME`)
-across machines.
+sessions can address each other across tmux sessions and across machines.
 
 This file is the **contract**. Every client — the Claude skill today, a Codex or
 Gemini adapter or the in-app Ship of Tools `Tool` plugin later — implements *this*, so
@@ -22,11 +21,11 @@ all clients are mutually addressable through the same registry and inboxes.
 ```
 
 The registry and inboxes are **data at rest** — discovery and catch-up need a
-shared place to publish, not a live broker. On a shared-`$HOME` Linux cohort,
-`$HOME` is shared, so one `~/.sot-comm` serves all of them.
-For cross-machine with no shared FS (Windows), point `SOT_COMM_HOME` at a
+shared place to publish, not a live broker. In an optional shared-home
+deployment, one `~/.sot-comm` serves every host sharing that home.
+For cross-machine with no shared FS, point `SOT_COMM_HOME` at a
 git-synced directory; the same files then ride the existing bus. (Not auto-wired
-in v1 — the `.claude-bus` git loop still covers Windows<->Linux meanwhile.)
+in v1 — the `.claude-bus` git loop can still cover separate filesystems.)
 
 ## registry.json
 
@@ -119,7 +118,7 @@ task**. A task-named anything is unfindable next to its repo-named siblings
 | Durable BE peer handle | `<repo-lowercase>-<host>` | `myrepo-myhost` (Ship of Tools on the backend host), `lldevtools-myhost` |
 | Spawned agent — repo checkout | `<repo-lowercase>` (bare, **no** descriptor) | `myrepo` |
 | Spawned agent — git **worktree** | `<repo>-wt-<shortname>` (the `-wt-` infix is reserved for worktrees and groups them next to the parent; `<shortname>` names the WORKTREE, never the task). Created via the `/worktree` skill. | `MyAnalysis-wt-rotation` (worktree `rotation`) |
-| FE handle | `win-fe-<host>` (per-machine — a shared `win-fe` breaks echo-filters and targeting) | `win-fe-desktop-uguevs1` |
+| FE handle | `win-fe-<host>` (per-machine — a shared `win-fe` breaks echo-filters and targeting) | `win-fe-laptop` |
 | Workspace label | repo basename (comm-spawn default; task-named labels are **rejected**) | `MyPackage` |
 | Workspace tmux session | `sot-be-<slug>` derived from the label by the daemon | `sot-be-mypackage` |
 | Second workspace on one repo | `<Repo>-<suffix>` label, deliberately | `MyPackage-2` |
@@ -132,8 +131,7 @@ worktree, never the task. Don't hand-roll it: the **`/worktree`** skill
 (`comm-worktree-new.sh`) creates the worktree at
 `<repo-parent>/worktrees/<repo>-wt-<shortname>` on branch `wt/<shortname>` and
 spawns the session with that handle+label, so the slug groups it correctly. (No
-host in the worktree handle — `$HOME` is shared across the cohort, so the machine
-name is noise; the parent is found by repo family, not host.) A deliberate second
+host in the worktree handle — the parent is found by repo family, not host.) A deliberate second
 workspace is `<repo>-2`. Never a suffix on a plain repo open, and never a task
 name (`repo-fix` for a direct checkout was wrong on both counts: a
 task-ish descriptor AND a shortened base; the right handle was
@@ -157,5 +155,3 @@ same briefs in parallel.
 `join`. A mismatch warns loudly (no quiet degradation) and means a machine needs
 `ShipTools.update_comm()`. Bump this integer on any breaking change to the schema,
 frame, or delivery semantics.
-</content>
-</invoke>

@@ -40,10 +40,12 @@ Generate one and add the dependency:
 using Pkg
 Pkg.generate("MyPreview")
 Pkg.activate("MyPreview")
-Pkg.add("ConceptExplorerCore")
+Pkg.develop(path="/path/to/ship-of-tools/core")
 ```
 
-Your `Project.toml` should carry `ConceptExplorerCore` under `[deps]`. The
+`ConceptExplorerCore` is unregistered, so use `Pkg.develop(path=...)` to point at
+the local Ship of Tools `core/` checkout. Your `Project.toml` should carry
+`ConceptExplorerCore` under `[deps]`. The
 built-in Markdown plugin needs nothing else; only depend on what your `preview`
 actually uses (the HDF5 plugin adds `HDF5`, the Julia-source plugin adds
 `JuliaSyntax` and `JSON3`):

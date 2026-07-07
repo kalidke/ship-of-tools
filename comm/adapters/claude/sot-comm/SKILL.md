@@ -6,7 +6,7 @@ description: Session-to-session messaging for Ship of Tools sessions (fork of ag
 # sot-comm
 
 Send messages between Ship of Tools/Claude sessions. Discovery + durable inboxes live
-under `~/.sot-comm/` (shared across the Linux cohort via `$HOME`); live
+under `~/.sot-comm/` (shared in optional shared-home deployments); live
 delivery uses tmux paste-buffer when the recipient is on the same host. Full
 contract: `comm/PROTOCOL.md` in the Ship of Tools repo.
 
@@ -70,7 +70,7 @@ states on your own handle paints real colors on the user's strip (2026-07-04:
 a stale-waiting test left its author purple with "rendering the test figure").
 Join a scratch handle for fixtures, and mutate the registry ONLY through
 `comm-status.sh` — raw `jq > tmp && mv` skips the registry lock and loses
-races against the fleet's hook writers on NFS.
+races against other hook writers on shared filesystems.
 
 **Turn-end audit (Haiku, 2026-07-02):** the Stop hook runs a tiered auditor —
 cheap deterministic filters, then ONE conservative `claude -p` Haiku judgment
@@ -125,8 +125,8 @@ client.
   2. **A Monitor that WAKES you** on each new inbox line — a harness action a script
      can't do for you; YOU must arm it as a persistent Monitor. **Pick the variant
      by filesystem — this matters before you copy anything:**
-     - **Linux cohort (`$HOME` on NFS): POLL — do NOT `tail -F`.** inotify is
-       unreliable over NFS and silently misses/delays writes (seen: a relay
+     - **Shared-home filesystem: POLL — do NOT `tail -F`.** inotify can be
+       unreliable there and silently miss or delay writes (seen: a relay
        message surfaced 45 min late). Use the canonical polling Monitor from
        `/sot-session-start` step 2 — it also demotes relay broadcasts
        (`to:""`) to file-silently so ambient traffic doesn't burn a wake-up.
@@ -348,4 +348,3 @@ joined, run `comm-join.sh` first, then reply with `comm-send.sh @name "..."`.
 - Liveness is heartbeat-based (`comm-list.sh` shows live/stale). `poll`, `send`,
   and `join` all refresh your heartbeat.
 - To poll on a schedule, use the `loop` skill: `/loop 5m comm-poll`.
-</content>

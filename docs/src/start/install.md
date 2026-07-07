@@ -1,6 +1,8 @@
 # Installation
 
-There are three ways to install Ship of Tools:
+There are three ways to install Ship of Tools. At the current public `0.3.0`
+baseline there are no published GitHub Release artifacts, so the working public
+path is [from source](@ref install-source).
 
 - **Agent-driven (recommended)** — start a coding-agent session (Claude Code,
   Codex, …) on the target machine and tell it:
@@ -9,22 +11,22 @@ There are three ways to install Ship of Tools:
   Install Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-tools/main/docs/INSTALL-AGENT.md and follow it.
   ```
 
-  The agent preflights, asks one topology question, runs the release
-  installer below, and verifies the install answers before declaring
-  success. The runbook it follows is `docs/INSTALL-AGENT.md` in this repo.
+  The agent preflights, verifies whether release assets exist, uses the source
+  path when they do not, and proves the result answers before declaring success.
+  The runbook it follows is `docs/INSTALL-AGENT.md` in this repo.
 
-- **[From a release](@ref install-release)** — prebuilt binaries via the
-  `install.sh` installer. No Rust toolchain is needed. The installer downloads
-  release binaries and clones the repo at the release tag for resources, docs,
-  and Julia code. This is the path for using Ship of Tools.
+- **[From release artifacts](@ref install-release)** — prebuilt binaries via the
+  `install.sh` installer once a GitHub Release with matching assets exists. No
+  Rust toolchain is needed on that path.
 - **[From source](@ref install-source)** — clone, build the Rust workspace,
   instantiate the Julia environments. This is the path for developing it, and
   what the guided [Per-Machine Setup](setup.md) flow wraps.
 
-## [From a release (Linux)](@id install-release)
+## [From release artifacts (Linux/macOS)](@id install-release)
 
-`scripts/install.sh` downloads the latest GitHub release, verifies checksums,
-and sets everything up under `~/.local/share/sot` by default:
+When a GitHub Release with matching assets exists, `scripts/install.sh`
+downloads it, verifies checksums, and sets everything up under
+`~/.local/share/sot` by default:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/install.sh | bash -s -- --local
@@ -40,9 +42,9 @@ role explicitly:
 | `--backend <ssh-alias>` | frontend here, backend on a remote host over SSH forwarding — the flag names where the *backend* lives |
 | `--be-only` | headless backend only (servers, canary boxes) |
 
-Plus `--version vX.Y.Z` to pin a release (default: latest), `--prefix <dir>`
-to relocate the install, `--port <n>` for the daemon port, and `--no-service`
-on backend roles when a shared `$HOME` should not get a persistent user
+Plus `--version vX.Y.Z` to pin a release (default: latest), `--prefix <dir>` to
+relocate the install, `--port <n>` for the daemon port, and `--no-service` on
+backend roles when a shared-home deployment should not get a persistent user
 systemd unit.
 
 What the installer lays out under the prefix:
@@ -52,7 +54,7 @@ What the installer lays out under the prefix:
 | `$PREFIX/bin/sot` | prebuilt frontend binary |
 | `$PREFIX/bin/sotd` | prebuilt backend daemon |
 | `$PREFIX/updates` | staging area used by the release/update path |
-| `$PREFIX/repo/current` | blobless partial clone of the repo at the release tag |
+| `$PREFIX/repo/current` | blobless partial clone of the repo at the selected release tag |
 
 The checkout is part of the installed product. `install.sh` runs
 `git clone --filter=blob:none --branch vX.Y.Z`: full history is present for
@@ -60,8 +62,8 @@ blame, but only the selected tag's tree is downloaded. Per the ADR 0030
 amendment, this checkout is the resource tree and the manual. The backend
 exports `SOT_MANUAL` pointing at it, and runtime resources resolve through
 `resource_dir` to `$PREFIX/repo/current` before older layouts. A legacy
-`$PREFIX/julia/current` symlink is still created only so v0.2.3-era binaries
-that look for the retired bundle layout can find the checkout.
+`$PREFIX/julia/current` symlink is still created only so older pre-clone
+binaries that look for the retired bundle layout can find the checkout.
 
 Julia is no longer distributed as a curated bundle. For roles that run a
 backend on this machine (`--local` and `--be-only`), the installer uses
@@ -97,7 +99,7 @@ Config is written under `~/.config/sot`:
 
 ## [Updating](@id updating)
 
-Two mechanisms exist, and they complement rather than compete:
+After release artifacts exist, two mechanisms complement rather than compete:
 
 | Mechanism | What it does | What you do |
 |-----------|--------------|-------------|
@@ -120,7 +122,7 @@ use.
 
 
 
-- **linux-x86_64** (the only released Linux artifacts today).
+- **linux-x86_64** or **macos-aarch64** release artifacts.
 - **git** for the release-tag checkout.
 - **curl** and **tar** for the installer. If using the `$GITHUB_TOKEN` path
   instead of `gh`, `jq` is also required.
@@ -132,12 +134,14 @@ use.
   a set `$GITHUB_TOKEN` is *honored* to avoid the unauthenticated API rate
   limit (60 requests/hour per IP) — relevant only if you install repeatedly.
 
-On **Windows** there is no `install.ps1` yet — install from source via
-[Per-Machine Setup](setup.md). macOS (aarch64) release artifacts exist but are
-experimental and have no installer wiring.
+On **Windows** there is no `install.ps1` and `scripts/install.sh` exits with a
+Windows-specific message — install from source via [Per-Machine Setup](setup.md),
+or use a Windows release zip only after one exists. On **macOS aarch64** the bash
+installer is wired, but support is still experimental and there is no launchd
+service wiring; local roles start `sotd` on demand.
 
-Dev-fleet machines don't use the installer at all — they run from a checkout
-via [Per-Machine Setup](setup.md).
+Development machines don't use the release installer at all — they run from a
+checkout via [Per-Machine Setup](setup.md).
 
 ## [From source](@id install-source)
 

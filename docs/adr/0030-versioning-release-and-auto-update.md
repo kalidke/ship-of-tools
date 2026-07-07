@@ -154,12 +154,12 @@ regenerate CHANGELOG, commit `release: vX.Y.Z`, tag, push. CI does the rest.
 
 ### 5. Public install story
 
-- Public users need **no Rust toolchain** (prebuilt binaries). They need Julia; the
-  installer handles it via juliaup with the bundle's pinned channel.
-- `install.sh` / `install.ps1` one-liners derived from the sot-setup steps: download the
-  latest release, lay out the install dir, instantiate the julia bundle, write config,
-  install shortcut + `sotd.service`. The `sot-setup` skill remains the dev-flavored
-  superset for fleet machines.
+- Once release assets exist, public users need **no Rust toolchain** (prebuilt
+  binaries). They need Julia; the installer handles it via juliaup.
+- `install.sh` one-liners are derived from the sot-setup steps: download the
+  selected release assets, lay out the install dir, instantiate the Julia envs
+  from the repo checkout, write config, and install the launcher + `sotd.service`.
+  Until release assets exist, public installs build from source.
 - **Remote-BE-over-SSH is the design, not a dev quirk.** All-in-one uses the identical SSH
   path to `localhost`. Hard requirement, documented and verified by the installer:
   **SSH key auth to the BE host** (for single-machine installs that means a local sshd —
@@ -183,7 +183,7 @@ the fix:
 - **History: scan, then accept — no rewrite.** Nothing secret is in history (hostnames,
   ssh alias names, candid chatter — messy, not sensitive; tokens were never committed).
   Before flipping visibility, run a secrets scanner (gitleaks) over the full history as a
-  gate. STATUS.md / TODO.md / ADRs stay public — they are good public docs.
+  gate. ADRs stay public; working-session handoff docs live in the private ops sidecar.
 - `requirements.md` gets a scope amendment: distribution/public use is currently explicitly
   out of scope there.
 
@@ -271,15 +271,11 @@ both move on one tag. Risk accepted: checkout weight (media grows per release)
 — mitigated by the blobless clone and, if ever needed, moving heavyweight
 media to release assets.
 
-## Phase D complete — PUBLIC (2026-07-05)
+## Public baseline hygiene
 
-The maintainer's explicit approval ("lets do it") after the go-public eval: all gates
-green (full-history gitleaks clean + permanent CI gate; ops content relocated
-to the private ship-of-tools-ops sidecar; requirements amended; smoke/
-julia-check/clone-install all proven). Flipped via
-`gh repo edit --visibility public`; verified: releases and raw files resolve
-unauthenticated, docs Pages live. History decision: ACCEPTED as-is (old ops
-chatter is gitleaks-clean internal notes; a rewrite would invalidate the
-v0.2.x tags installed canaries pin to). Installer auth requirement relaxed to
-optional (rate-limit dodge only). The repo was born 2026-06-21; public 14
-days later.
+For the sanitized public baseline, operational content lives in the private
+`ship-of-tools-ops` sidecar and public install docs must not assume release
+artifacts exist. Verify current tags and GitHub Releases before using the
+release-installer path; if no matching assets exist, install from source.
+Installer GitHub auth remains optional and is only a rate-limit dodge for public
+API calls.

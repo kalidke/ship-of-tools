@@ -2,7 +2,7 @@
 
 A short tour of inline and display math the preview pane should one day
 typeset. Today most of these will arrive as literal `$…$` text — inline
-math is phase-2 (per STATUS.md) while display math currently lives in
+math is phase-2, while display math currently lives in
 the math pane via `math.render`. This file is here for when the chrome
 stitches them together inline.
 

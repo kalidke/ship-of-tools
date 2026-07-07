@@ -186,12 +186,13 @@ When working in this repo:
 
 ## Cross-OS Claude context — the repo is canonical, not per-machine memory
 
-The user works from Windows local and from Linux remotes (see `.sot/hosts.toml.example`). The Linux machines share `$HOME`; Windows does not.
+The user may work across local and remote machines (see `.sot/hosts.toml.example`).
+Some deployments use a shared `$HOME`; others are per-machine.
 
 **Do not rely on per-machine Claude auto-memory.** It is *not* seeded on every box, and a session that depends on it having been seeded will run on stale or absent context — this has caused real failures (a Windows session followed a deleted memory rule and broke a working flow). The fix is not to seed harder; it is to treat the **repo itself as the single source of truth** and read it on any machine:
 
 - **Operational procedures live in repo docs and are authoritative there** — read them in-repo, no copy step:
-  - `requirements.md` (scope), this `CLAUDE.md` (design + conventions), `STATUS.md` / `TODO.md` (handoff).
+  - `requirements.md` (scope), this `CLAUDE.md` (design + conventions), `<ops>/STATUS.md` / `<ops>/TODO.md` (handoff, in the private ops sidecar).
   - `docs/adr/` for design decisions. **Frontend rebuild/restart is `docs/adr/0017-frontend-self-relaunch.md`** plus the header comments in `scripts/launch-sot.ps1` and `scripts/relaunch-sot.ps1`. **Read ADR 0017 before attempting any frontend restart** — the dev `claude` runs *inside* the frontend's Terminal drawer, so killing the frontend kills your own session; use `scripts/relaunch-sot.ps1` (sentinel → exit-75 respawn), never a process kill.
   - **Session spawn / daemon boot is `docs/adr/0023-daemon-fe-commands-and-spawn.md`** — read its top Update (the current design). A `workspace.create` with `autostart_claude` gets a wait-for-attach wrapper that `exec`s `ccb`, and the daemon boot-pty gives claude a stable init client (comm-spawn *and* nav-pane). **Gotcha: launchers the daemon spawns into a tmux pane must full-path their binaries** — the pane inherits the tmux *server* env, whose `PATH` lacks `~/.local/bin` (a bare `exec claude` → not found → silent <1s boot death). The daemon→FE command channel is **ADR 0025**.
 - **`claude-memory/` (in the PRIVATE ops sidecar `../ship-of-tools-ops`) is a committed mirror of auto-memory, safe to *read* — but never a prerequisite to copy anywhere.** If a fact is load-bearing for operating the project, it belongs in (or is pointed to from) the durable repo docs above, not only in auto-memory.

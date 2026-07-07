@@ -5,7 +5,7 @@
 #   ./scripts/install.sh --local                     # all-in-one on this box
 #   ./scripts/install.sh --backend <ssh-alias>       # FE here → remote BE
 #   ./scripts/install.sh --be-only                   # headless backend/canary
-#   [--version vX.Y.Z] [--prefix <dir>]              # default: latest release
+#   [--version vX.Y.Z] [--prefix <dir>]              # default: latest release when assets exist
 #
 # What it does (idempotent; re-run to upgrade):
 #   1. preflight — arch/glibc floor for the FE, tar/curl present (gh or
@@ -21,7 +21,7 @@
 #   6. backend roles: install+enable the systemd --user sotd unit
 #   7. FE roles: ~/.local/bin/sot-launch wrapper + a .desktop entry
 #
-# Dev-fleet machines DON'T use this — they run from a checkout (sot-setup).
+# Development machines DON'T use this release installer — they run from a checkout.
 set -euo pipefail
 
 REPO="${SOT_INSTALL_REPO:-kalidke/ship-of-tools}"
@@ -29,6 +29,9 @@ PREFIX="${SOT_PREFIX:-$HOME/.local/share/sot}"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sot"
 ROLE="" VERSION="" BE_ALIAS="" PORT=18743 NO_SERVICE=0
 GLIBC_FLOOR_FE="2.35"
+
+say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -38,9 +41,9 @@ while [ $# -gt 0 ]; do
         --version) VERSION="${2:?}"; shift ;;
         --prefix) PREFIX="${2:?}"; shift ;;
         --port) PORT="${2:?}"; shift ;;
-        # Skip the systemd unit install/enable — for shared-$HOME fleet boxes
+        # Skip the systemd unit install/enable — for shared-home deployments
         # (a user-level unit file + its enable symlink live in $HOME, so on an
-        # NFS cohort they'd apply to EVERY machine). The caller supervises
+        # shared home they'd apply to EVERY machine). The caller supervises
         # sotd itself (e.g. systemd-run --user transient unit, per-machine).
         --no-service) NO_SERVICE=1 ;;
         *) echo "unknown flag: $1" >&2; exit 2 ;;
@@ -84,9 +87,6 @@ if [ -z "$ROLE" ]; then
     fi
 fi
 
-say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
-die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
-
 # ---- 1. preflight ------------------------------------------------------------
 OS="$(uname -s)"
 case "$OS" in
@@ -98,7 +98,7 @@ case "$OS" in
         TARGET="macos-aarch64"
         say "macOS support is EXPERIMENTAL — both roles work; please report anything broken" ;;
     MINGW*|MSYS*|CYGWIN*)
-        die "this installer covers Linux and macOS. Windows runs the prebuilt frontend: docs/INSTALL-AGENT.md section 2b — download sot-<ver>-windows-x86_64.zip, forward the ports, sot.exe --tcp" ;;
+        die "this installer covers Linux and macOS. Windows uses source setup unless a release zip exists; see docs/INSTALL-AGENT.md section 2b" ;;
     *)  die "unsupported OS $OS. Linux/macOS: this installer; Windows: docs/INSTALL-AGENT.md section 2b" ;;
 esac
 for t in curl tar; do command -v "$t" >/dev/null || die "$t is required"; done
@@ -116,9 +116,9 @@ if [ "$OS" = Linux ] && [ "$ROLE" != be-only ]; then
         || die "the frontend binary needs glibc >= $GLIBC_FLOOR_FE (this box: $glibc). The backend (musl, --be-only) runs anywhere."
 fi
 
-# Downloader: the repo is PUBLIC (flipped 2026-07-05) — unauthenticated curl
-# works. gh (authed) is preferred when present, and $GITHUB_TOKEN is honored,
-# purely to dodge the unauthenticated API rate limit (60 req/h per IP).
+# Downloader: for a public repo, unauthenticated curl works. gh (authed) is
+# preferred when present, and $GITHUB_TOKEN is honored purely to dodge the
+# unauthenticated API rate limit (60 req/h per IP).
 FETCH=curl
 if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
     FETCH=gh
@@ -214,7 +214,7 @@ want="$(git -C "$CHECKOUT" rev-parse "refs/tags/$VERSION^{commit}" 2>/dev/null)"
     || die "tag $VERSION not present in the checkout"
 have="$(git -C "$CHECKOUT" rev-parse HEAD)"
 [ "$have" = "$want" ] || die "checkout HEAD ($have) != $VERSION commit ($want) — refusing"
-# Compat: pre-clone binaries (<= v0.2.3) resolve resources via julia/current
+# Compat: older pre-clone binaries resolve resources via julia/current
 # (the retired bundle's mount point). Point it at the checkout — repo-shaped
 # either way — so the clone-based install works with any binary generation.
 mkdir -p "$PREFIX/julia"

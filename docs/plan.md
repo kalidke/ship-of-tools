@@ -165,5 +165,5 @@ Noted but not built:
 
 - Plan amendments go through PR (this file is committed; argue in the diff).
 - Decisions get documented — never in code comments or commit messages alone.
-- Per-session state lives in `STATUS.md` at repo root, updated at end of each working session.
+- Working-session handoff state lives outside the public repo in the private ops sidecar.
 - Within-session granular tracking via TaskCreate (ephemeral by design).

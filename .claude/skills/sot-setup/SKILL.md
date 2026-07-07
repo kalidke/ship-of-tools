@@ -155,10 +155,10 @@ From `$REPO/rust` (Windows: ensure `~\.cargo\bin` is on PATH first):
 ```sh
 cargo build --release                       # both binaries
 # frontend-client box:   cargo build --release -p sot-frontend
-# headless backend-only:  cargo build --release -p sotd
+# headless backend-only:  cargo build --release -p sot-backend
 ```
 Outputs:
-- `$REPO/rust/target/release/sot-frontend[.exe]`  (~19 MB)
+- `$REPO/rust/target/release/sot[.exe]`    (~19 MB)
 - `$REPO/rust/target/release/sotd[.exe]`   (~3 MB)
 
 First build is slow (graphics + tree-sitter grammars). Tee the log so failures are
@@ -239,7 +239,7 @@ ssh "$HOST" "test -d '$REMOTE_REPO/.git' && git -C '$REMOTE_REPO' pull --ff-only
 Build `sotd` — **backgrounded + logged**, then poll, so an SSH drop doesn't kill a
 multi-minute build:
 ```sh
-ssh "$HOST" ". \$HOME/.cargo/env; cd '$REMOTE_REPO/rust' && nohup cargo build --release -p sotd >/tmp/sot-be-build.log 2>&1 & echo build-pid=\$!"
+ssh "$HOST" ". \$HOME/.cargo/env; cd '$REMOTE_REPO/rust' && nohup cargo build --release -p sot-backend >/tmp/sot-be-build.log 2>&1 & echo build-pid=\$!"
 ssh "$HOST" "while pgrep -x cargo >/dev/null; do sleep 5; done; ls -l '$REMOTE_REPO/rust/target/release/sotd' && tail -3 /tmp/sot-be-build.log"
 ```
 
@@ -381,10 +381,10 @@ printf '%s\n%s | %s\n' "$l1" \
 ```
 `chmod +x ~/.claude/statusline.sh`; settings.json command = the **absolute
 path** `"/home/<you>/.claude/statusline.sh"` (the §8 forward-slash gotcha is
-Windows-only — POSIX paths are native, no `bash -c` mangling). **On a shared-$HOME
-cohort box** (a set of lab servers) the maintained `statusline-session-model.sh`
-already exists at `~/.claude/` and settings.json there may point at it — leave that
-in place; write this stub only on a fresh / non-cohort machine.
+Windows-only — POSIX paths are native, no `bash -c` mangling). **On an optional
+shared-home deployment** the maintained `statusline-session-model.sh` may already
+exist at `~/.claude/` and settings.json there may point at it — leave that in
+place; write this stub only on a fresh machine that needs it.
 
 ### 8c. Verify the statusline actually fires
 Pipe sample JSON and confirm it prints two colored lines, then confirm CC invokes
@@ -422,8 +422,7 @@ for s in sot-comm sot-install; do
   cp -f "$REPO/comm/adapters/claude/$s/SKILL.md" ~/.claude/skills/$s/SKILL.md
 done
 ```
-Note this XDG `$HOME` may be **per-machine** (a personal laptop is NOT the
-shared-`$HOME` Linux cohort), so its registry is local to the
+Note this XDG `$HOME` may be **per-machine**, so its registry is local to the
 box; the relay still bridges sessions across machines over the tunnel.
 
 (Windows: the FE writes inbound relay messages to
@@ -468,7 +467,7 @@ rm -f "$SOCK"
 BE=$!; trap 'kill $BE 2>/dev/null' EXIT
 for _ in $(seq 1 100); do [ -S "$SOCK" ] && break; sleep 0.1; done   # wait for socket
 [ -S "$SOCK" ] || { echo "backend never opened $SOCK — see /tmp/sotd.log"; exit 1; }
-exec "$REPO/rust/target/release/sot-frontend" --socket "$SOCK"
+exec "$REPO/rust/target/release/sot" --socket "$SOCK"
 ```
 `chmod +x`. Run it; confirm Files mode renders and the REPL drawer (Ctrl+J) gets a
 live Julia. If the FE errors on the socket, check `/tmp/sotd.log` (kernel
@@ -496,7 +495,7 @@ if [ "${SOT_RESTART_BE:-0}" = 1 ] || ! ssh "$HOST" 'pgrep -x sotd >/dev/null 2>&
   ssh "$HOST" "pkill -x sotd 2>/dev/null; sleep 0.3; cd '$REMOTE_REPO' && nohup ./rust/target/release/sotd --tcp 127.0.0.1:$PORT --project-root '$REMOTE_REPO' >/tmp/sotd.log 2>&1 </dev/null & disown" || true
   for _ in $(seq 1 40); do port_open "$PORT" && break; sleep 0.25; done
 fi
-exec "$REPO/rust/target/release/sot-frontend" --tcp "127.0.0.1:$PORT"
+exec "$REPO/rust/target/release/sot" --tcp "127.0.0.1:$PORT"
 ```
 `chmod +x`. (The remote BE must already be **built** on the host — if it's a fresh
 host, provision it over this same SSH first (§6b), or run §1–6 on the box
@@ -539,14 +538,14 @@ own "add to favorites" instead of `gsettings`.
 ### Windows all-in-one
 ```
 sotd --socket \\.\pipe\sot-local --project-root <REPO>
-sot-frontend --socket \\.\pipe\sot-local
+sot --socket \\.\pipe\sot-local
 ```
 
 ---
 
 ## 11. Final checklist (report to the user)
 - [ ] `cargo --version` (and `julia --version` if backend) resolve to user-level installs
-- [ ] `sot-frontend` + `sotd` built
+- [ ] `sot` + `sotd` built
 - [ ] (frontend-client) remote BE provisioned + `sotd` built over SSH (§6b), or confirmed already built (`KERNEL_OK`)
 - [ ] hosts.toml / settings.toml written with the Q&A answers
 - [ ] statusline scripts in `~/.claude/`, settings.json command uses **forward slashes**, prints 2 lines under `bash -c`

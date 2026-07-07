@@ -2856,8 +2856,8 @@ fn handle_response_frame(
             }
             PendingKind::ReplEval { eval_id } => {
                 // Synchronous-collect per ADR 0009: the response carries
-                // the full frame list. Streamed delivery is phase-2 (see
-                // TODO.md backend-polish bullet) and shifts the routing
+                // the full frame list. Streamed delivery is a planned
+                // enhancement and shifts the routing
                 // off this path; this arm only needs to handle the
                 // collected-at-once payload.
                 match serde_json::from_value::<ReplEvalRes>(frame.payload) {

@@ -23,11 +23,11 @@ release from a fresh context.
    origin/main. Coordinate over sot-comm if an FE session announced pending
    pushes (sync-before-push convention).
 3. **Pick the version**: semver, pre-1.0 (minor = anything may change).
-   Check `git tag -l` for the last tag; first-ever public-track tag is
-   `v0.2.0`. Prereleases use `-rc.N` (auto-marked prerelease on the GitHub
-   Release by the workflow).
-4. **STATUS.md / TODO.md current** — the release commit should not be the one
-   that discovers stale handoff docs.
+   Check `git tag -l` for the last tag; if no public-track tags exist, use the
+   current product version as the baseline. Prereleases use `-rc.N`
+   (auto-marked prerelease on the GitHub Release by the workflow).
+4. **Private ops handoff current** — `<ops>/STATUS.md` and `<ops>/TODO.md`
+   should not be stale when cutting the release.
 
 ## Cut it
 
@@ -68,6 +68,5 @@ or before a first-of-its-kind release.
 - **Never** delete/re-cut a published tag that anyone may have fetched — cut a
   patch release instead. A broken `-rc.N` may be deleted (tag + release) since
   rc consumers are just us.
-- The repo is private until ADR 0030 Phase D: releases are visible only to
-  repo collaborators. **The visibility flip is maintainer-approval-gated — never
-  treat a release as permission to publish the repo.**
+- Publishing visibility and release availability are maintainer-gated. **Never
+  treat a local tag or release procedure as permission to publish the repo.**

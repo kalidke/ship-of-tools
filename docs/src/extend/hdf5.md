@@ -22,7 +22,7 @@ this page walks the actual code top to bottom.
 name = "HDF5Preview"
 uuid = "c0d7e0f3-5a1c-4b8e-9f23-2e5a6c4b1f88"
 authors = ["kalidke"]
-version = "0.1.0"
+version = "0.3.0"
 
 [deps]
 ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"

@@ -49,8 +49,7 @@ are forwarded to `claude` ahead of the skill.
 
 ## Cross-machine note
 
-`$HOME` is shared across the Linux cohort (a set of lab servers), so one
-install covers all of them. On a separate-filesystem machine (Windows) you must
-`git pull` the Ship of Tools repo there and run this skill to install locally — the
+In an optional multi-host / shared-home deployment, one install covers every host
+sharing that home directory. On a separate-filesystem machine, `git pull` the
+Ship of Tools repo there and run this skill to install locally — the
 protocol-version check on `comm-join.sh` warns loudly if a machine is out of sync.
-</content>

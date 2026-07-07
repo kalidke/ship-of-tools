@@ -77,39 +77,34 @@ Install Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-t
 The agent runs preflight, asks you one topology question, drives the
 installer, and proves the result answers before it says done.
 
-**Prebuilt (script).** Current version: `0.2.3`. Every
-[release](https://github.com/kalidke/ship-of-tools/releases) ships prebuilt
-Linux and Windows binaries. macOS frontend and backend support is untested.
-The installer also clones this repo at the release tag (a small blobless
-checkout at `$PREFIX/repo/current` — it is the product's resource tree *and*
-its manual: the in-app agent reads it, via `$SOT_MANUAL`, to answer help
-questions). Runtime resources resolve through `resource_dir` to the checkout
-(ADR 0030 amendment 2026-07-04; the curated Julia bundle is retired).
+**Current public baseline.** Current version: `0.3.0`. There are no published
+GitHub Release artifacts at this baseline, so install from source for now. The
+release installer remains the intended user-install path once matching release
+assets exist; source builds are stamped `-dev` and never self-update.
 
-On Linux, `scripts/install.sh` downloads the latest release by default,
-verifies SHA256 checksums, lays out `~/.local/share/sot`, installs Julia via
-juliaup when a backend role needs it, writes config under `~/.config/sot`, and
-wires the launcher and backend service. With no role flag and an interactive
-TTY, it opens a role Q&A; without a TTY, pass a role flag explicitly:
+When release assets exist, `scripts/install.sh` lays out
+`~/.local/share/sot`, installs Julia via juliaup when a backend role needs it,
+writes config under `~/.config/sot`, and wires the launcher and backend
+service. With no role flag and an interactive TTY, it opens a role Q&A; without
+a TTY, pass a role flag explicitly:
 
 ```bash
 bash scripts/install.sh                       # interactive role Q&A (TTY required)
 bash scripts/install.sh --local               # frontend + backend on this machine
 bash scripts/install.sh --backend <host>      # frontend here, backend on <host> over SSH
 bash scripts/install.sh --be-only             # headless backend only
-bash scripts/install.sh --be-only --no-service # shared-$HOME box; skip systemd user unit
+bash scripts/install.sh --be-only --no-service # shared-home deployment; skip systemd user unit
 ```
 
-Requirements: Linux x86_64; frontend roles require glibc ≥ 2.35, while
-`--be-only` skips the frontend floor because the backend binary is static.
-Remote layouts require key-based SSH to the backend host. **Re-running the
-installer is also the updater** — one command moves binaries, the repo
-checkout, and Julia envs together; installed instances additionally notify
-you of new releases and stage fresh binaries themselves. Changing roles backs
-up and rewrites `hosts.toml`. Details:
+Requirements for that release-installer path: Linux x86_64 or macOS aarch64
+assets; Linux frontend roles require glibc ≥ 2.35, while `--be-only` skips the
+frontend floor because the backend binary is static. Remote layouts require
+key-based SSH to the backend host. **Re-running the installer is also the
+updater** once release artifacts exist. Changing roles backs up and rewrites
+`hosts.toml`. Details:
 **[Install](https://kalidke.github.io/ship-of-tools/dev/start/install/)**.
 
-**From source (contributors / dev fleet).**
+**From source (current public path / contributors).**
 
 ```bash
 git clone https://github.com/kalidke/ship-of-tools

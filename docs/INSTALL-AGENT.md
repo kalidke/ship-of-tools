@@ -4,21 +4,23 @@ You are a coding agent (Claude Code, Codex, or similar) with shell access,
 asked to install **Ship of Tools** — an agentic development system for Julia
 (https://github.com/kalidke/ship-of-tools). This document is written for
 *you*: follow it top to bottom, adapt where your judgment says so, and keep
-the human informed at each step. The deterministic engine underneath is
-`scripts/install.sh`; your job is the judgment around it — choosing the
-right topology, verifying prerequisites, and proving the result works.
+the human informed at each step. For the release-artifact path, the
+deterministic engine underneath is `scripts/install.sh`; your job is the
+judgment around it — choosing the right topology, verifying prerequisites, and
+proving the result works.
 
 ## Which install is this?
 
-This runbook produces the **user install**: prebuilt binaries + a
-release-tag-pinned checkout that serves as resource tree and manual. If the
-human says they want to **develop Ship of Tools itself** (hack on the source,
-build from main), do NOT use this runbook — clone the repo to a working
-directory of their choice and follow
-https://kalidke.github.io/ship-of-tools/dev/start/setup/ instead (rustup +
-juliaup, `cargo build --release --manifest-path rust/Cargo.toml`, Julia env
-instantiation; source builds stamp `-dev` and never self-update). Ask if
-their intent is ambiguous.
+At the current public `0.3.0` baseline there are no published GitHub Release
+artifacts, so the working public install path is **from source**: clone the repo
+to a working directory of the human's choice and follow
+https://kalidke.github.io/ship-of-tools/dev/start/setup/ (rustup + juliaup,
+`cargo build --release --manifest-path rust/Cargo.toml`, Julia env
+instantiation; source builds stamp `-dev` and never self-update). Ask if their
+intent is ambiguous.
+
+The release-installer path below applies only after a GitHub Release exists with
+matching assets. Verify that first; if no assets exist, use the source path.
 
 ## 0. Ground rules
 
@@ -37,7 +39,7 @@ their intent is ambiguous.
 ## 1. Preflight (report findings before proceeding)
 
 ```bash
-uname -sm                 # need Linux x86_64 for prebuilt binaries
+uname -sm                 # Linux x86_64 or macOS arm64 for release artifacts
 ldd --version | head -1   # frontend needs glibc >= 2.35 (backend is static)
 command -v git curl tar   # all required; jq required if gh is absent
 ```
@@ -45,10 +47,8 @@ command -v git curl tar   # all required; jq required if gh is absent
 - **Linux x86_64, glibc ≥ 2.35** → full install works.
 - **Linux, older glibc** → only `--be-only` (the backend is static musl);
   the frontend must run on another machine.
-- **Windows** → the prebuilt frontend ships in every release; the backend
-  runs on a Linux machine. Follow **§2b Windows frontend → remote backend**
-  below (no bash installer involved). Building from source is the dev path
-  (https://kalidke.github.io/ship-of-tools/dev/start/setup/).
+- **Windows** → no bash installer. Build from source, or use **§2b Windows
+  frontend → remote backend** only after a Windows release zip exists.
 - **macOS (Apple Silicon)** → fully supported by the installer, same three
   topologies as Linux (EXPERIMENTAL — artifacts build green but are lightly
   dogfooded; say so, then proceed). `--backend <ssh-alias>` is the common
@@ -67,21 +67,21 @@ command -v git curl tar   # all required; jq required if gh is absent
 |--------|-----------------|
 | (a) all-in-one | `--local` |
 | (b) UI here, backend remote | `--backend <ssh-alias>` |
-| (c) headless backend | `--be-only` (add `--no-service` if this $HOME is NFS-shared across machines) |
+| (c) headless backend | `--be-only` (add `--no-service` for an optional shared-home deployment) |
 
 For (b): verify key-based SSH first — `ssh -o BatchMode=yes <alias> true`.
 If it fails, walk the human through `ssh-keygen` + `ssh-copy-id`, then
 recheck. The *remote* machine also needs a `--be-only` install (offer to do
-it over SSH after this one). **On a shared/NFS `$HOME`** (HPC clusters — if
-`df -T ~ | grep -q nfs` hits), always add `--no-service`: a `systemd --user`
-unit written into a shared `$HOME` applies to EVERY node sharing it.
+it over SSH after this one). **On a shared-home deployment**, always add
+`--no-service`: a `systemd --user` unit written into a shared `$HOME` applies to
+every host sharing it.
 
 ## 2b. Windows frontend → remote backend
 
 Windows is a first-class *frontend* host (the backend stays on Linux). No
 bash installer here — four steps (issue #23):
 
-1. **Download + verify** from the latest release
+1. **Download + verify** from the selected release
    (https://github.com/kalidke/ship-of-tools/releases):
    `sot-<ver>-windows-x86_64.zip` + `SHA256SUMS`; check the hash
    (`Get-FileHash -Algorithm SHA256`), extract `sot.exe` somewhere stable
@@ -100,7 +100,7 @@ bash installer here — four steps (issue #23):
    ```
 
 4. **Launch**: `sot.exe --tcp 127.0.0.1:18743` (`sot.exe --help` prints the
-   full flag set since v0.3.1). Optionally persist the connection in
+   full flag set). Optionally persist the connection in
    `%APPDATA%\sot\hosts.toml` (config discovery: `$SOT_HOSTS` →
    `<repo>/.sot/hosts.toml` → `%APPDATA%\sot\hosts.toml`).
 
@@ -111,8 +111,9 @@ bash installer here — four steps (issue #23):
 
 ## 2c. macOS
 
-Use the installer — it handles macOS natively (artifact selection,
-checksum via `shasum`, Gatekeeper de-quarantine, launcher):
+When macOS release artifacts exist, use the installer — it handles macOS
+natively (artifact selection, checksum via `shasum`, Gatekeeper de-quarantine,
+launcher):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/install.sh \
@@ -139,10 +140,11 @@ first is encouraged: download it to a file, read it (it is ~300 commented
 lines, everything under `$HOME`, no sudo, checksums verified before use),
 then run the file with the same flags.
 
-Idempotent; re-running is also the upgrade path. (If you fetched this
-runbook at a pinned commit, still use `main`'s installer as above — the
-installer is the moving part and stays compatible with this runbook.) It downloads the release
-binaries, verifies SHA256 checksums, clones the repo at the release tag into
+Idempotent; re-running is also the upgrade path after release artifacts exist.
+(If you fetched this runbook at a pinned commit, still use `main`'s installer as
+above — the installer is the moving part and stays compatible with this
+runbook.) It downloads the release binaries, verifies SHA256 checksums, clones
+the repo at the release tag into
 `~/.local/share/sot/repo/current` (blobless — small), installs Julia via
 juliaup if a backend role needs it and Julia is missing, instantiates the
 Julia environments, writes `~/.config/sot/hosts.toml` + `settings.toml`
@@ -204,7 +206,7 @@ always shows the pane-switch keys.**
 - The checkout **is the manual**: point yourself (and the human) at
   `~/.local/share/sot/repo/current/docs/USING.md` — inside the app, the
   terminal-drawer agent gets the same path via `$SOT_MANUAL`.
-- Updating later: re-run step 3 (the app also notifies about new releases
-  and stages fresh binaries itself).
+- Updating later after release artifacts exist: re-run step 3 (the app also
+  notifies about new releases and stages fresh binaries itself).
 - Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`
   and `systemctl --user disable --now sotd` if a unit was installed.

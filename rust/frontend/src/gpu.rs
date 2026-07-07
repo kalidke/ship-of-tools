@@ -1331,11 +1331,11 @@ impl TreeView {
 /// only what the pane shows when `--socket` / `--tcp` aren't set.
 const SAMPLE_MARKDOWN: &str = r##"## Offline
 
-`sot-frontend` is running without a backend.
+`sot` is running without a backend.
 
 Pass `--socket <path>` (Unix socket / Windows named pipe) or
 `--tcp <host:port>` to connect, or set `$SOT_SOCKET` /
-`$SOT_TCP`. See `TODO.md` for the spike's two-terminal launch.
+`$SOT_TCP`. Use a planned split-launch setup for two-terminal runs.
 "##;
 use crate::text::TextLayer;
 
@@ -15399,7 +15399,7 @@ fn emit_scan_type(
 /// rect.y + row) with the cell's foreground colour and bold/italic
 /// attributes mapped onto ratatui Style. Background colour is
 /// dropped for now — the chrome pipeline doesn't carry it yet
-/// (TODO.md "bg colour + underline modifiers").
+/// (planned bg colour + underline modifiers).
 /// Translate a key event into the byte sequence a PTY expects. Shared by
 /// the LLM pane (remote tmux pty) and the local terminal drawer (G4). With
 /// `ctrl`, ASCII letters map to control codes (Ctrl+C → 0x03, Ctrl+B →

@@ -23,10 +23,9 @@ script drives that flow directly (the same one gh uses internally), so there is
 nothing to launch and nothing to wedge.
 
 Storage is forced to `~/.config/gh/hosts.yml` (0600) via `--insecure-storage`, on
-purpose: on the NFS-shared **Linux** cluster `$HOME`
-one hosts.yml token covers every node — a
-keyring token would not. **The Windows FE authenticates separately** (different
-`$HOME`); this does not cover it.
+purpose: on an optional multi-host / shared-home deployment, one hosts.yml token
+covers every host sharing that home directory — a per-machine keyring token would
+not. Separate-filesystem machines authenticate separately.
 
 ## How to run it (Claude-driven — the /sot-gh-auth path)
 
@@ -82,8 +81,8 @@ same call).
 ## Blast radius / revoke
 
 The token requests `repo read:org gist workflow` (matching what gh itself
-requests) and is stored **plaintext** in the NFS-shared `hosts.yml` (0600, but
-root-readable on any node and it transits NFS — inherent to shared-`$HOME` gh).
+requests) and is stored **plaintext** in `hosts.yml` (0600, but root-readable on
+any host with access to that home directory — inherent to shared-home gh).
 Drop scopes via `SOT_GH_SCOPES` if you don't need them (`repo` is required for
 private `git push`). To revoke: `gh auth logout -h github.com` **and** revoke the
 "GitHub CLI" authorization at <https://github.com/settings/connections>.
