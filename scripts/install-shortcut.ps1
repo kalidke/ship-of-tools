@@ -13,10 +13,16 @@ $launcher = Join-Path $repo 'scripts\launch-sot.ps1'
 $frontendExe = Join-Path $repo 'rust\target\release\sot.exe'
 $logoIcon = Join-Path $repo 'logo.ico'
 $shortcutPath = Join-Path $env:USERPROFILE 'Desktop\Ship of Tools.lnk'
+$hostsToml = Join-Path $repo '.sot\hosts.toml'
 
 if (-not (Test-Path $launcher)) {
     Write-Error "launcher not found: $launcher"
     exit 1
+}
+
+if (-not (Test-Path $hostsToml)) {
+    Write-Warning "No .sot\hosts.toml found. The shortcut can be installed, but launch will fail until host config exists."
+    Write-Warning "Copy .sot\hosts.toml.example to .sot\hosts.toml, set default_host, then rerun scripts\install-shortcut.ps1."
 }
 
 $wsh = New-Object -ComObject WScript.Shell

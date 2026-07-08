@@ -2,29 +2,37 @@
 
 Ship of Tools runs across machines and operating systems, and each one needs a small
 amount of local state: the toolchains, a host registry, frontend settings, and a
-launcher. Rather than do the [manual install](install.md) and write those files
-by hand, run the guided onboarding flow — it does the whole thing from a short
-Q&A.
+launcher.
 
-## The `sot-setup` flow
+!!! warning "Status: source setup is manual today"
+    The documentation and release plan call the intended guided flow
+    `sot-setup`, but no `sot-setup` command is shipped in the checkout yet.
+    For Windows and source checkouts, follow the checklist below manually. The
+    Linux/macOS release installer (`scripts/install.sh`) automates much of this
+    for packaged installs.
 
-`sot-setup` is a one-shot, cross-OS onboarding for a Ship of Tools machine (Windows,
-Linux, or macOS). It performs **user-level** installs only — nothing system-wide,
-no `sudo` — and is idempotent, so you can re-run it to repair or update a box.
+## Source Setup Checklist
 
-It does, in order:
+The intended `sot-setup` flow is a one-shot, cross-OS onboarding for a Ship of
+Tools machine (Windows, Linux, or macOS). Until that command exists, do these
+steps yourself:
 
 1. **Install the toolchains.** Rust via [rustup](https://rustup.rs/) and Julia
    via [juliaup](https://github.com/JuliaLang/juliaup), where they are missing.
 2. **Build the Rust workspace** (`rust/`) — the frontend and backend binaries.
 3. **Ask a short Q&A** — your machine's role and, if it talks to a remote
    backend, that server's details (see below).
-4. **Write `.sot/hosts.toml` and `.sot/settings.toml`** from your answers.
-5. **Install the Claude statusline**, including a Windows `bash -c`
-   forward-slash path fix.
-6. **Install and join sot-comm**, the session-to-session messaging relay.
+4. **Instantiate Julia environments**: the repo root, `core`, `julia/kernel`,
+   `julia/repl`, and `julia/pluto`.
+5. **Write `.sot/hosts.toml` and `.sot/settings.toml`** from your answers.
+6. **Install agent comm resources**:
+   `julia --project=. -e 'using ShipTools; ShipTools.update_comm()'`.
 7. **Create a launcher / shortcut** so you can start the app without typing the
    build paths.
+
+On Windows frontend machines, run `scripts\install-shortcut.ps1` after
+`.sot\hosts.toml` exists. Re-run it after editing host config so an existing
+taskbar pin is repointed to the launcher.
 
 ## The cross-OS topology
 
@@ -106,6 +114,6 @@ sibling `.sot/keybindings.toml` with the same layered pattern.
 
 ## After setup
 
-Once the flow finishes, the machine has a launcher and a valid host
+Once the checklist is complete, the machine has a launcher and a valid host
 configuration. Continue to [Running & Relaunch](running.md) to start the app, or
 take [A Guided Tour](tour.md) of a first session.

@@ -20,7 +20,8 @@ path is [from source](@ref install-source).
   Rust toolchain is needed on that path.
 - **[From source](@ref install-source)** — clone, build the Rust workspace,
   instantiate the Julia environments. This is the path for developing it, and
-  what the guided [Per-Machine Setup](setup.md) flow wraps.
+  [Per-Machine Setup](setup.md) adds the current manual config and launcher
+  checklist on top of it.
 
 ## [From release artifacts (Linux/macOS)](@id install-release)
 
@@ -136,9 +137,10 @@ use.
   a set `$GITHUB_TOKEN` is *honored* to avoid the unauthenticated API rate
   limit (60 requests/hour per IP) — relevant only if you install repeatedly.
 
-On **Windows** there is no `install.ps1` and `scripts/install.sh` exits with a
-Windows-specific message — install from source via [Per-Machine Setup](setup.md),
-or use a Windows release zip only after one exists. On **macOS aarch64** the bash
+On **Windows** there is no `install.ps1` and no shipped `sot-setup` command yet.
+`scripts/install.sh` exits with a Windows-specific message, so install from
+source via the manual checklist in [Per-Machine Setup](setup.md), or use a
+Windows release zip only after one exists. On **macOS aarch64** the bash
 installer is wired, but support is still experimental and there is no launchd
 service wiring; local roles start `sotd` on demand.
 
@@ -151,9 +153,9 @@ Ship of Tools is a Rust + Julia project: the frontend and backend are Rust binar
 the kernel and plugins are Julia. Installing it means building the Rust
 workspace once and instantiating a handful of Julia environments.
 
-This section is the manual path. If you want the guided, one-command
-onboarding that also installs the toolchains, writes your config, and creates a
-launcher, use [Per-Machine Setup](setup.md) instead — it wraps everything below.
+This section is the manual build path. Machine-specific config and launchers are
+covered by [Per-Machine Setup](setup.md); that page is currently a manual
+source-checkout checklist, not a shipped `sot-setup` command.
 
 ### Prerequisites
 
@@ -239,8 +241,8 @@ julia --project=core -e 'using ConceptExplorerCore; println("core OK")'
 
 ## Next steps
 
-- [Per-Machine Setup](setup.md) — the guided cross-OS onboarding flow
-  (`sot-setup`): toolchains, config files, the statusline, and a launcher.
+- [Per-Machine Setup](setup.md) — the current manual source-checkout checklist:
+  toolchains, config files, comm skills, and a launcher.
 - [Running & Relaunch](running.md) — launching the frontend, the Terminal
   drawer, and the self-relaunch loop.
 - [A Guided Tour](tour.md) — a first session, mode by mode.

@@ -23,6 +23,30 @@ hotkey `h`) resolved against `.sot/hosts.toml`; environment overrides
 (`SOT_HOST`, `SOT_REMOTE_REPO`, `SOT_TCP_PORT`, `SOT_REMOTE_SOCKET`) win over both. See
 [Per-Machine Setup](setup.md).
 
+## Windows Taskbar Launch Looks Dead
+
+The Windows shortcut runs the launcher hidden, so an early failure can look like
+"the taskbar click did nothing." Check these first:
+
+- `%LOCALAPPDATA%\sot\logs\launch-status.txt` — last launcher phase or fatal
+  status.
+- `%LOCALAPPDATA%\sot\logs\supervisor.log` — detailed launcher, rebuild,
+  tunnel, and frontend respawn log.
+- `%APPDATA%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar` —
+  the pinned `.lnk`; stale pins can still point at an old bare `sot.exe` or an
+  old checkout.
+
+After writing or changing `.sot\hosts.toml`, rerun:
+
+```powershell
+pwsh -File scripts\install-shortcut.ps1
+```
+
+That refreshes the desktop shortcut and repoints any existing Ship of Tools
+taskbar pin to `scripts\launch-sot.ps1`. If `.sot\hosts.toml` is missing, the
+shortcut can still be created, but launch will fail with "no backend host
+configured."
+
 ## The Terminal drawer
 
 The frontend hosts a local OS shell in a bottom drawer, toggled with `Ctrl+T`.

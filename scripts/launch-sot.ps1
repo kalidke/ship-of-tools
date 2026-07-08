@@ -316,11 +316,12 @@ $remoteCmd = $remoteCmd -replace "`r`n", "`n"
 # running shared daemon); -RestartBackend forces the full restart-backend.sh path.
 Set-LaunchStatus $(if ($RestartBackend) { "Restarting backend on $backendHost..." } else { "Checking backend on $backendHost..." })
 $remoteStatus = ssh -o ConnectTimeout=10 $backendHost $remoteCmd 2>&1
+$remoteStatusText = ($remoteStatus | Out-String)
 if ($LASTEXITCODE -ne 0) {
     Set-LaunchStatus "ERROR: couldn't reach $backendHost (ssh exit $LASTEXITCODE) - try -Local"
     Stop-Splash
     [System.Windows.Forms.MessageBox]::Show(
-        "Couldn't reach $backendHost (exit $LASTEXITCODE):`n`n$remoteStatus`n`nFall back to local with:`n  pwsh -File scripts\launch-sot.ps1 -Local",
+        "Couldn't reach $backendHost (exit $LASTEXITCODE):`n`n$remoteStatusText`n`nFall back to local with:`n  pwsh -File scripts\launch-sot.ps1 -Local",
         'Ship of Tools launcher',
         'OK', 'Error') | Out-Null
     exit 1
@@ -329,26 +330,26 @@ if ($LASTEXITCODE -ne 0) {
 # the -RestartBackend force path (the default path never touches a running shared
 # daemon), so this can only fire there. Sticky warning, not a stop — if a daemon
 # is up the FE still connects; staleness on the default path is expected and silent.
-if ($remoteStatus -match 'force-restart FAILED') {
+if ($remoteStatusText -match 'force-restart FAILED') {
     Set-LaunchStatus "ERROR: backend force-restart failed on $backendHost (see restart-backend.sh output / supervisor.log)"
 }
-if ($remoteStatus -match 'socket MISSING') {
+if ($remoteStatusText -match 'socket MISSING') {
     Set-LaunchStatus "ERROR: backend socket missing on $backendHost"
     Stop-Splash
     [System.Windows.Forms.MessageBox]::Show(
-        "Backend on $backendHost did not create its socket.`n`nRemote output:`n$remoteStatus",
+        "Backend on $backendHost did not create its socket.`n`nRemote output:`n$remoteStatusText",
         'Ship of Tools launcher',
         'OK', 'Error') | Out-Null
     exit 1
 }
 if (-not $remoteSocket) {
-    if ($remoteStatus -match 'backend-socket:\s*(\S+)') {
+    if ($remoteStatusText -match 'backend-socket:\s*(\S+)') {
         $remoteSocket = $matches[1]
     } else {
         Set-LaunchStatus "ERROR: backend did not report a socket path on $backendHost"
         Stop-Splash
         [System.Windows.Forms.MessageBox]::Show(
-            "Backend on $backendHost did not report a socket path.`n`nRemote output:`n$remoteStatus",
+            "Backend on $backendHost did not report a socket path.`n`nRemote output:`n$remoteStatusText",
             'Ship of Tools launcher',
             'OK', 'Error') | Out-Null
         exit 1

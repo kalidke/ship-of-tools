@@ -114,12 +114,17 @@ julia --project=. -e 'using Pkg; Pkg.instantiate()'     # umbrella env
 julia --project=core -e 'using Pkg; Pkg.instantiate()'
 julia --project=julia/kernel -e 'using Pkg; Pkg.instantiate()'
 julia --project=julia/repl -e 'using Pkg; Pkg.instantiate()'
+julia --project=julia/pluto -e 'using Pkg; Pkg.instantiate()'
 ```
 
 Source builds are version-stamped `-dev` and never self-update. For
 authoritative, OS-specific setup (Rust via rustup, Julia via juliaup, config
-files, a launcher, and the statusline) see
+files, a launcher, and comm skills) see
 **[Per-Machine Setup](https://kalidke.github.io/ship-of-tools/dev/start/setup/)**.
+That page is currently a manual/source checklist; a `sot-setup` command is not
+shipped yet. On Windows, after the build/env steps, write `.sot/hosts.toml` and
+`.sot/settings.toml`, run `ShipTools.update_comm()`, then run
+`scripts\install-shortcut.ps1`.
 
 ## Quick start
 
