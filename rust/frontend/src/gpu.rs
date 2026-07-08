@@ -31,7 +31,6 @@ use ratatui::{
 use crate::chrome::WgpuBackend;
 use crate::edit_buffer::EditBuffer;
 use crate::keybindings::{Action, KeyBindings};
-use crate::settings::Settings;
 use crate::preview::markdown::{
     FigureMetrics, FigureMetricsMap, MarkdownPreview, MathMetrics, MathMetricsMap,
     BODY_SIZE as MD_BODY_SIZE,
@@ -39,6 +38,7 @@ use crate::preview::markdown::{
 use crate::preview::png::quad_from_png_bytes;
 use crate::preview::quad::{Quad, QuadPipeline, ScreenRect};
 use crate::preview::svg::quad_from_svg_bytes;
+use crate::settings::Settings;
 use crate::transport::OutgoingReq;
 use sot_protocol::{ReplFrame, TreeNode};
 
@@ -258,7 +258,10 @@ fn parse_math_svg_dims(svg_bytes: &[u8]) -> (Option<f32>, Option<f32>, Option<f3
     // `<svg ...>` tag.
     let tag = match text.find("<svg") {
         Some(start) => {
-            let end = text[start..].find('>').map(|n| start + n + 1).unwrap_or(text.len());
+            let end = text[start..]
+                .find('>')
+                .map(|n| start + n + 1)
+                .unwrap_or(text.len());
             &text[start..end]
         }
         None => return (None, None, None),
@@ -699,11 +702,10 @@ fn strip_frontmatter(s: &str) -> String {
 fn open_url_in_browser(url: &str) -> std::io::Result<()> {
     #[cfg(target_os = "windows")]
     {
-        // `cmd /c start "" <url>` — the empty quoted string is the
-        // window title argument that `start` parses positionally; it
-        // keeps paths/URLs with spaces from being interpreted as a title.
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "", url])
+        // Avoid `cmd /c start`: shell metacharacters in URLs, especially
+        // `&secret=...` on Pluto links, are otherwise parsed by cmd.exe.
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
             .spawn()
             .map(|_| ())?;
     }
@@ -870,7 +872,10 @@ fn strip_truncate(label: &str) -> String {
     if n <= STRIP_MAX_LABEL {
         label.to_string()
     } else {
-        let mut s: String = label.chars().take(STRIP_MAX_LABEL.saturating_sub(1)).collect();
+        let mut s: String = label
+            .chars()
+            .take(STRIP_MAX_LABEL.saturating_sub(1))
+            .collect();
         s.push('…');
         s
     }
@@ -968,7 +973,13 @@ fn session_strip_lines(
         // explicitly-dimmed colour (text.rs's fixed 0.65 DIM can't be made
         // stronger through the `dim` flag alone). The flash is applied last.
         let (color, dim) = match tones.get(i).copied().flatten() {
-            Some((tone @ (AgentTone::Working | AgentTone::Waiting | AgentTone::Blocked | AgentTone::Done), wilted)) => {
+            Some((
+                tone @ (AgentTone::Working
+                | AgentTone::Waiting
+                | AgentTone::Blocked
+                | AgentTone::Done),
+                wilted,
+            )) => {
                 let (rgb, _bold, d) =
                     contrast_tone_rgb(tone, wilted, is_active, contrast_dim, flash);
                 (rgb, d)
@@ -978,7 +989,10 @@ fn session_strip_lines(
             // than the default DIM by baking the colour; "bright" keeps the
             // pre-state-nav dim styling.
             _ if contrast_dim => (
-                Some(flash_plain(flash, scale_rgb((204, 204, 204), CONTRAST_DIM_FACTOR))),
+                Some(flash_plain(
+                    flash,
+                    scale_rgb((204, 204, 204), CONTRAST_DIM_FACTOR),
+                )),
                 false,
             ),
             // Plain non-active under "bright": keep the default DIM unless a
@@ -1054,9 +1068,12 @@ fn preview_targets_active_ws(
     default_slug: Option<&str>,
     workspace: &str,
 ) -> bool {
-    let is_default =
-        workspace.is_empty() || workspace == "default" || workspace == "<default>";
-    let target = if is_default { default_slug } else { Some(workspace) };
+    let is_default = workspace.is_empty() || workspace == "default" || workspace == "<default>";
+    let target = if is_default {
+        default_slug
+    } else {
+        Some(workspace)
+    };
     let current = active_id.or(default_slug);
     target.is_some() && target == current
 }
@@ -1515,16 +1532,16 @@ const AUTOSTART_LAUNCH_HOLD: std::time::Duration = std::time::Duration::from_sec
 fn pane_shows_running_claude(contents: &str) -> bool {
     let c = contents.to_lowercase();
     const MARKERS: [&str; 7] = [
-        "for shortcuts",        // idle footer: "? for shortcuts"
-        "esc to interrupt",     // working footer
-        "bypass permissions",   // --dangerously-skip-permissions banner
+        "for shortcuts",      // idle footer: "? for shortcuts"
+        "esc to interrupt",   // working footer
+        "bypass permissions", // --dangerously-skip-permissions banner
         "bypassing permissions",
         "welcome to claude code",
-        "/help for",            // help hint
-        "for agents",           // steady-state footer hint ("← for agents"),
-                                // flag-independent — catches a claude started
-                                // WITHOUT --dangerously-skip-permissions, whose
-                                // footer carries no "bypass permissions" banner.
+        "/help for", // help hint
+        "for agents", // steady-state footer hint ("← for agents"),
+                     // flag-independent — catches a claude started
+                     // WITHOUT --dangerously-skip-permissions, whose
+                     // footer carries no "bypass permissions" banner.
     ];
     MARKERS.iter().any(|m| c.contains(m))
 }
@@ -1536,8 +1553,8 @@ fn pane_shows_running_claude(contents: &str) -> bool {
 /// (`PtyOpenRes.pane_command`), and unlike the screen-scrape
 /// `pane_shows_running_claude` it does not depend on fresh post-attach output
 /// or the FE-memory `autostarted_sessions` set — both of which mis-fired on an
-    /// idle, long-lived agent after an FE relaunch and spammed its live prompt
-    /// with the ccb launcher. Bias is toward *suppressing* a
+/// idle, long-lived agent after an FE relaunch and spammed its live prompt
+/// with the ccb launcher. Bias is toward *suppressing* a
 /// launch: a false skip just means the user starts claude themselves, whereas
 /// a false launch corrupts a working session's input.
 fn pane_command_is_claude(cmd: Option<&str>) -> bool {
@@ -2545,10 +2562,7 @@ fn png_cache_key_from_node_id(
 /// (near-black). Without this conversion, two machines whose adapters
 /// happen to land on different swapchain formats render the chrome at
 /// different brightness levels.
-fn clear_color_for_surface(
-    visible_srgb: (f64, f64, f64),
-    is_srgb_target: bool,
-) -> wgpu::Color {
+fn clear_color_for_surface(visible_srgb: (f64, f64, f64), is_srgb_target: bool) -> wgpu::Color {
     let convert = |c: f64| {
         if !is_srgb_target {
             c
@@ -2721,7 +2735,14 @@ fn forward_clipboard_paste_to_local_term(state: &mut State) {
     }
 }
 
-fn cell_grid_for(width: u32, height: u32, cell_w: f32, cell_h: f32, ox: f32, oy: f32) -> (u16, u16) {
+fn cell_grid_for(
+    width: u32,
+    height: u32,
+    cell_w: f32,
+    cell_h: f32,
+    ox: f32,
+    oy: f32,
+) -> (u16, u16) {
     let cols = ((width as f32 - 2.0 * ox).max(0.0) / cell_w).floor() as u16;
     let rows = ((height as f32 - 2.0 * oy).max(0.0) / cell_h).floor() as u16;
     (cols.max(1), rows.max(1))
@@ -2847,8 +2868,8 @@ impl State {
             &wgpu::DeviceDescriptor {
                 label: Some("sot-device"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults()
-                    .using_resolution(adapter.limits()),
+                required_limits:
+                    wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
                 memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
@@ -2915,55 +2936,31 @@ impl State {
         // yellow would either bleach the (204,204,204) fg into a yellow-
         // green blur or force a fg-colour switch that the chrome
         // pipeline doesn't currently carry through selection state.
-        let selection_bg_quad = Quad::from_rgba8(
-            &device,
-            &queue,
-            &quad_pipeline,
-            &[252, 240, 130, 140],
-            1,
-            1,
-        )
-        .context("failed to build selection_bg_quad")?;
+        let selection_bg_quad =
+            Quad::from_rgba8(&device, &queue, &quad_pipeline, &[252, 240, 130, 140], 1, 1)
+                .context("failed to build selection_bg_quad")?;
         // Markdown code-bg panel. (52, 60, 92, 230) is VS-Code Dark+'s
         // `#1e1e1e`-leaning panel tone lifted a touch toward the
         // chrome's midnight-navy surface so the panel reads as "lifted
         // off the page" without looking glued to the deep-navy bg.
         // Slight alpha (230/255) softens the edge against the antialias
         // halo of surrounding non-code glyphs.
-        let code_bg_quad = Quad::from_rgba8(
-            &device,
-            &queue,
-            &quad_pipeline,
-            &[52, 60, 92, 230],
-            1,
-            1,
-        )
-        .context("failed to build code_bg_quad")?;
+        let code_bg_quad =
+            Quad::from_rgba8(&device, &queue, &quad_pipeline, &[52, 60, 92, 230], 1, 1)
+                .context("failed to build code_bg_quad")?;
         // Code-block border — one step lighter than the bg quad so the
         // outline reads against the panel's slate fill. Full alpha
         // because a soft border just looks fuzzy at 1 px width.
-        let code_border_quad = Quad::from_rgba8(
-            &device,
-            &queue,
-            &quad_pipeline,
-            &[88, 100, 140, 255],
-            1,
-            1,
-        )
-        .context("failed to build code_border_quad")?;
+        let code_border_quad =
+            Quad::from_rgba8(&device, &queue, &quad_pipeline, &[88, 100, 140, 255], 1, 1)
+                .context("failed to build code_border_quad")?;
         // Strikethrough line — matches the default-fg tone so the
         // line reads "the same colour as the text it's crossing
         // through" without per-glyph colour lookups. Alpha is full so
         // the line stands out crisply against the navy bg.
-        let strike_line_quad = Quad::from_rgba8(
-            &device,
-            &queue,
-            &quad_pipeline,
-            &[204, 204, 204, 255],
-            1,
-            1,
-        )
-        .context("failed to build strike_line_quad")?;
+        let strike_line_quad =
+            Quad::from_rgba8(&device, &queue, &quad_pipeline, &[204, 204, 204, 255], 1, 1)
+                .context("failed to build strike_line_quad")?;
 
         // Decode the two embedded brand logos into textured quads. Both are
         // purely cosmetic chrome (strip badge flankers + nav wordmark), so a
@@ -3163,11 +3160,21 @@ impl State {
             md_rect_px,
             monitor_view: crate::monitor_view::MonitorView::new(),
             monitor_quad: None,
-            monitor_rect_px: ScreenRect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 },
+            monitor_rect_px: ScreenRect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+            },
             monitor_dirty: false,
             repl_images: std::collections::HashMap::new(),
             repl_image_slots: Vec::new(),
-            repl_scrollback_px: ScreenRect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 },
+            repl_scrollback_px: ScreenRect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+            },
             repl_window: (0, 0),
             evt_rx,
             status: "offline · no transport".to_string(),
@@ -3414,9 +3421,7 @@ impl State {
                         .insert(s.clone(), (st.clone(), now_rfc3339.clone()));
                     // Mirror into prev so a later live transition off this
                     // seeded state would flash, not first-appear.
-                    state
-                        .prev_workspace_states
-                        .insert(s.clone(), st.clone());
+                    state.prev_workspace_states.insert(s.clone(), st.clone());
                 }
             }
             let mid = cli.demo_sessions.len() / 2;
@@ -3428,7 +3433,9 @@ impl State {
         // to a *different* synthetic state so the same slug reads as a real
         // transition under the live diff path (rather than first-appearance).
         for slug in &cli.demo_flash {
-            state.flash_starts.insert(slug.clone(), std::time::Instant::now());
+            state
+                .flash_starts
+                .insert(slug.clone(), std::time::Instant::now());
             // A prior state distinct from whatever was seeded above makes the
             // transition look real; "idle" unless the current seed is idle.
             let prior = match state.workspace_states.get(slug) {
@@ -3444,13 +3451,17 @@ impl State {
         // Ctrl+M arm sends. The unbounded req channel buffers until the
         // transport connects, so sending here is safe pre-hello.
         if cli.start_monitor {
-            let _ = state.req_tx.send(crate::transport::OutgoingReq::MonitorSubscribe);
-            let _ = state.req_tx.send(crate::transport::OutgoingReq::MonitorHistory {
-                window_s: 300.0,
-                points: 300,
-                until: None,
-                host: None,
-            });
+            let _ = state
+                .req_tx
+                .send(crate::transport::OutgoingReq::MonitorSubscribe);
+            let _ = state
+                .req_tx
+                .send(crate::transport::OutgoingReq::MonitorHistory {
+                    window_s: 300.0,
+                    points: 300,
+                    until: None,
+                    host: None,
+                });
             state.monitor_view.subscribed = true;
             state.monitor_dirty = true;
         }
@@ -3563,13 +3574,13 @@ impl State {
                 .and_then(|v| v.as_str())
                 .map(String::from);
             let ws = self.active_workspace_id.clone();
-            module
-                .zip(name)
-                .map(|(module, name)| crate::transport::OutgoingReq::FunctionMethods {
+            module.zip(name).map(
+                |(module, name)| crate::transport::OutgoingReq::FunctionMethods {
                     module,
                     name,
                     workspace_id: ws,
-                })
+                },
+            )
         } else {
             Some(crate::transport::OutgoingReq::TreeChildren {
                 parent_id: row.node.id.clone(),
@@ -3594,9 +3605,7 @@ impl State {
             .as_ref()
             .map(|(m, _)| {
                 m.starts_with("application/vnd.sot.tokens+json")
-                    || (m.starts_with("text/")
-                        && m != "text/markdown"
-                        && m != "text/x-markdown")
+                    || (m.starts_with("text/") && m != "text/markdown" && m != "text/x-markdown")
             })
             .unwrap_or(false)
     }
@@ -3690,18 +3699,15 @@ impl State {
         // be mistaken for this fetch.
         self.preview_page_raster_pending = None;
         let (fit_w, fit_h) = self.preview_fit_px();
-        if let Err(e) = self
-            .req_tx
-            .send(crate::transport::OutgoingReq::PreviewGet {
-                node_id: id.clone(),
-                workspace_id: self.active_workspace_id.clone(),
-                // Cursor-driven fetch always opens at page 1; the reply's
-                // extras re-seed `preview_page` for the n/p transport.
-                page: None,
-                fit_w,
-                fit_h,
-            })
-        {
+        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::PreviewGet {
+            node_id: id.clone(),
+            workspace_id: self.active_workspace_id.clone(),
+            // Cursor-driven fetch always opens at page 1; the reply's
+            // extras re-seed `preview_page` for the n/p transport.
+            page: None,
+            fit_w,
+            fit_h,
+        }) {
             tracing::warn!(error = %e, %id, "drop preview.get request — channel closed");
             return;
         }
@@ -3800,8 +3806,11 @@ impl State {
             // Hold the per-frame preview-follow off the (stale) cursor row so it
             // doesn't clobber the driven preview while ancestors expand; the
             // hold lifts when the cursor lands on the target.
-            self.driven_preview_hold_cursor =
-                self.tree.rows.get(self.tree.selected).map(|r| r.node.id.clone());
+            self.driven_preview_hold_cursor = self
+                .tree
+                .rows
+                .get(self.tree.selected)
+                .map(|r| r.node.id.clone());
             self.pending_reveal = Some(node_id);
             self.reveal_awaiting = None;
             self.drive_reveal_step();
@@ -3869,10 +3878,13 @@ impl State {
                     self.reveal_refetched = None;
                     return;
                 }
-                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeChildren {
-                    parent_id: anc_id.clone(),
-                    workspace_id: self.active_workspace_id.clone(),
-                }) {
+                if let Err(e) = self
+                    .req_tx
+                    .send(crate::transport::OutgoingReq::TreeChildren {
+                        parent_id: anc_id.clone(),
+                        workspace_id: self.active_workspace_id.clone(),
+                    })
+                {
                     tracing::warn!(error = %e, %anc_id,
                         "reveal: drop tree.children refresh — channel closed");
                     self.pending_reveal = None;
@@ -3894,10 +3906,13 @@ impl State {
             if self.reveal_awaiting.as_deref() == Some(anc_id.as_str()) {
                 return;
             }
-            if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeChildren {
-                parent_id: anc_id.clone(),
-                workspace_id: self.active_workspace_id.clone(),
-            }) {
+            if let Err(e) = self
+                .req_tx
+                .send(crate::transport::OutgoingReq::TreeChildren {
+                    parent_id: anc_id.clone(),
+                    workspace_id: self.active_workspace_id.clone(),
+                })
+            {
                 tracing::warn!(error = %e, %anc_id,
                     "reveal: drop tree.children — channel closed");
                 self.pending_reveal = None;
@@ -4135,10 +4150,13 @@ impl State {
         if !shown_expanded {
             return;
         }
-        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeChildren {
-            parent_id: dir_id.to_string(),
-            workspace_id: self.active_workspace_id.clone(),
-        }) {
+        if let Err(e) = self
+            .req_tx
+            .send(crate::transport::OutgoingReq::TreeChildren {
+                parent_id: dir_id.to_string(),
+                workspace_id: self.active_workspace_id.clone(),
+            })
+        {
             tracing::warn!(error = %e, %dir_id, "drop tree.children (watcher refresh)");
         }
     }
@@ -4151,9 +4169,7 @@ impl State {
             FeCommand::Workspace { slug, boot } => {
                 // null/empty/"default"/"<default>" → the daemon-default
                 // workspace (active_workspace_id = None, keep current BL).
-                let slug = slug.filter(|s| {
-                    !s.is_empty() && s != "default" && s != "<default>"
-                });
+                let slug = slug.filter(|s| !s.is_empty() && s != "default" && s != "<default>");
                 if let Some(s) = slug.as_deref() {
                     if !self.workspace_slugs.iter().any(|x| x == s) {
                         tracing::warn!(slug = %s, "fe-command workspace: unknown slug, ignoring");
@@ -4260,7 +4276,11 @@ impl State {
                 tracing::info!("fe-command: capture_roi");
                 self.capture_roi();
             }
-            FeCommand::Preview { workspace, path, urgent } => {
+            FeCommand::Preview {
+                workspace,
+                path,
+                urgent,
+            } => {
                 // Same-ws short-circuit: if the target workspace is the one we're
                 // already viewing, render in place NOW (mirrors handle_nav_envelope
                 // gpu.rs:3399+, the in-place branch the imperative path dropped).
@@ -4312,14 +4332,22 @@ impl State {
                     self.mark_pending_nav(workspace, path);
                 }
             }
-            FeCommand::Reveal { workspace, path, urgent } => {
+            FeCommand::Reveal {
+                workspace,
+                path,
+                urgent,
+            } => {
                 // reveal == preview: the same-ws preview path now performs the
                 // deep tree-expand-and-select (cursor follows the file, ancestor
                 // dirs expand async), so `reveal` and `preview` both drive the
                 // nav cursor onto the file — the BE need not pick the right verb
                 // or issue a separate cursor move. The cross-ws force-show/badge
                 // semantics are shared too.
-                self.dispatch_fe_command(FeCommand::Preview { workspace, path, urgent });
+                self.dispatch_fe_command(FeCommand::Preview {
+                    workspace,
+                    path,
+                    urgent,
+                });
             }
         }
     }
@@ -4438,9 +4466,10 @@ impl State {
             badges: Vec::new(),
             payload: Default::default(),
         };
-        let selected_now = self.selected_host.clone().or_else(|| {
-            self.hosts_config.default_host.clone()
-        });
+        let selected_now = self
+            .selected_host
+            .clone()
+            .or_else(|| self.hosts_config.default_host.clone());
         let children: Vec<TreeNode> = self
             .hosts_config
             .hosts
@@ -4454,10 +4483,15 @@ impl State {
                     badges.push("default".to_string());
                 }
                 let endpoint = if let Some(port) = h.tcp_port {
-                    if let Some(alias) = h.ssh_alias.as_deref() {
+                    let local = if let Some(alias) = h.ssh_alias.as_deref() {
                         format!("{alias}:{port}")
                     } else {
                         format!("127.0.0.1:{port}")
+                    };
+                    if let Some(sock) = h.remote_socket.as_deref() {
+                        format!("{local} -> {sock}")
+                    } else {
+                        local
                     }
                 } else if let Some(sock) = h.socket.as_deref() {
                     sock.to_string()
@@ -4485,12 +4519,7 @@ impl State {
         // first row by accident.
         let cursor = selected_now
             .as_deref()
-            .and_then(|n| {
-                self.hosts_config
-                    .hosts
-                    .iter()
-                    .position(|h| h.name == n)
-            })
+            .and_then(|n| self.hosts_config.hosts.iter().position(|h| h.name == n))
             .unwrap_or(0);
         self.tree.set_root(root, children);
         if self.tree.rows.len() > cursor {
@@ -4521,9 +4550,7 @@ impl State {
         };
         self.selected_host = Some(name.clone());
         self.persist_resume_state();
-        self.status = format!(
-            "host = {name} · Ctrl+Q + relaunch to apply"
-        );
+        self.status = format!("host = {name} · Ctrl+Q + relaunch to apply");
         self.populate_hosts_tree();
     }
 
@@ -4542,7 +4569,9 @@ impl State {
             }
             self.notify_sticky_until = None;
         }
-        let Some(host) = self.host.clone() else { return };
+        let Some(host) = self.host.clone() else {
+            return;
+        };
         let label = self
             .active_workspace_label()
             .unwrap_or_else(|| "default".to_string());
@@ -4737,17 +4766,12 @@ impl State {
     /// derives it from `paths::tmux_session_name(slug)` semantics —
     /// i.e. `sot-be-<slug>`. The default workspace (`slug = None`)
     /// keeps the current BL pane target.
-    fn switch_to_workspace(
-        &mut self,
-        slug: Option<String>,
-        tmux_session: Option<String>,
-    ) {
+    fn switch_to_workspace(&mut self, slug: Option<String>, tmux_session: Option<String>) {
         self.snapshot_current_workspace_ui();
         self.snapshot_current_workspace_repl();
         self.active_workspace_id = slug.clone();
-        if let Some(target) = tmux_session.or_else(|| {
-            slug.as_ref().map(|s| format!("sot-be-{s}"))
-        }) {
+        if let Some(target) = tmux_session.or_else(|| slug.as_ref().map(|s| format!("sot-be-{s}")))
+        {
             self.attach_session_to_bl(target);
         }
         let key = self.current_workspace_key();
@@ -4909,7 +4933,9 @@ impl State {
         });
         if let Err(e) = self
             .req_tx
-            .send(crate::transport::OutgoingReq::DirectoryList { path: start.clone() })
+            .send(crate::transport::OutgoingReq::DirectoryList {
+                path: start.clone(),
+            })
         {
             tracing::warn!(error = %e, %start, "drop initial directory.list — channel closed");
         }
@@ -5160,15 +5186,14 @@ impl State {
         if self.bl_pane_target.as_deref() != Some(session.as_str()) {
             tracing::warn!(%session,
                 "autostart: BL pane left the target before launch decision — deferred to next attach");
-            self.status =
-                format!("autostart deferred · launches on next visit → {session}");
+            self.status = format!("autostart deferred · launches on next visit → {session}");
             self.autostart_scan = None;
             self.window.request_redraw();
             return;
         }
         let now = std::time::Instant::now();
-        let settled = now.duration_since(last_pty) >= SETTLE
-            && now.duration_since(started) >= MIN_WAIT;
+        let settled =
+            now.duration_since(last_pty) >= SETTLE && now.duration_since(started) >= MIN_WAIT;
         let timed_out = now.duration_since(started) >= MAX_WAIT;
         if !settled && !timed_out {
             return; // still replaying — check again next tick
@@ -5297,18 +5322,17 @@ impl State {
         // and that turn alone can run well past the old 60s.
         const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
-        let (pinned, phase, last_pty, started, submitted_at, agent) =
-            match self.delivery.as_ref() {
-                Some(d) => (
-                    d.pinned.clone(),
-                    d.phase,
-                    d.last_pty,
-                    d.started,
-                    d.submitted_at,
-                    d.agent.clone(),
-                ),
-                None => return,
-            };
+        let (pinned, phase, last_pty, started, submitted_at, agent) = match self.delivery.as_ref() {
+            Some(d) => (
+                d.pinned.clone(),
+                d.phase,
+                d.last_pty,
+                d.started,
+                d.submitted_at,
+                d.agent.clone(),
+            ),
+            None => return,
+        };
         let now = std::time::Instant::now();
 
         // Pin: never write to a pane the user switched to. DEFER, don't
@@ -5517,13 +5541,10 @@ impl State {
                 && self.file_parse_fired.insert(path.clone())
             {
                 tracing::debug!(%path, label = %node_label, "→ file.parse for drift check");
-                if let Err(e) = self
-                    .req_tx
-                    .send(crate::transport::OutgoingReq::FileParse {
-                        path: path.clone(),
-                        workspace_id: self.active_workspace_id.clone(),
-                    })
-                {
+                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::FileParse {
+                    path: path.clone(),
+                    workspace_id: self.active_workspace_id.clone(),
+                }) {
                     tracing::warn!(error = %e, %path, "drop file.parse request — channel closed");
                     self.file_parse_fired.remove(&path);
                 }
@@ -5704,7 +5725,11 @@ impl State {
                 out.push('\n');
             }
             let cs = if row == sr { sc } else { 0 };
-            let ce = if row == er { ec } else { pane_cols.saturating_sub(1) };
+            let ce = if row == er {
+                ec
+            } else {
+                pane_cols.saturating_sub(1)
+            };
             let mut line = String::new();
             for col in cs..=ce {
                 match screen.cell(row, col) {
@@ -5811,19 +5836,17 @@ impl State {
                 .iter()
                 .any(|ext| lower.ends_with(ext));
             if abs.ends_with(".jl") {
-                if let Err(e) = self
-                    .req_tx
-                    .send(crate::transport::OutgoingReq::PlutoOpen { path: abs.to_string() })
-                {
+                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::PlutoOpen {
+                    path: abs.to_string(),
+                }) {
                     tracing::warn!(error = %e, "failed to dispatch pluto.open");
                 }
             } else if is_video {
                 // Video plays in the browser (HTML5 <video>, native HW
                 // decode) — the pane only shows the poster still.
-                if let Err(e) = self
-                    .req_tx
-                    .send(crate::transport::OutgoingReq::VideoOpen { path: abs.to_string() })
-                {
+                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::VideoOpen {
+                    path: abs.to_string(),
+                }) {
                     tracing::warn!(error = %e, "failed to dispatch video.open");
                 }
             } else if lower.ends_with(".qmd") {
@@ -5907,10 +5930,13 @@ impl State {
             return;
         }
         let dest = crate::download::non_clobbering_path(&dir, &basename);
-        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::FileDownload {
-            path: abs,
-            dest: dest.clone(),
-        }) {
+        if let Err(e) = self
+            .req_tx
+            .send(crate::transport::OutgoingReq::FileDownload {
+                path: abs,
+                dest: dest.clone(),
+            })
+        {
             tracing::warn!(error = %e, "drop file.download — channel closed");
             return;
         }
@@ -6007,7 +6033,15 @@ impl State {
                     let offset = up.sent;
                     up.sent += n as u64;
                     let eof = up.sent >= up.total;
-                    Ok((up.dir.clone(), up.name.clone(), up.total, up.sent, offset, eof, buf))
+                    Ok((
+                        up.dir.clone(),
+                        up.name.clone(),
+                        up.total,
+                        up.sent,
+                        offset,
+                        eof,
+                        buf,
+                    ))
                 }
                 Err(e) => Err(format!("{e}")),
             }
@@ -6277,9 +6311,7 @@ impl State {
     /// surface it and leave nothing pending.
     fn confirm_delete_file(&mut self) {
         let (node_id, label) = match self.nav_prompt.as_ref() {
-            Some(NavPrompt::ConfirmDelete { node_id, label }) => {
-                (node_id.clone(), label.clone())
-            }
+            Some(NavPrompt::ConfirmDelete { node_id, label }) => (node_id.clone(), label.clone()),
             _ => return,
         };
         if let Err(e) = self.req_tx.send(OutgoingReq::FileDelete {
@@ -6320,9 +6352,7 @@ impl State {
         // Paginated preview (ADR 0021): surface position + the page-turn
         // keys in the title so the affordance is discoverable.
         match self.preview_page {
-            Some((page, count)) if count > 1 => {
-                Some(format!("{rel} · p {page}/{count} · n/p"))
-            }
+            Some((page, count)) if count > 1 => Some(format!("{rel} · p {page}/{count} · n/p")),
             _ => Some(rel.to_string()),
         }
     }
@@ -6408,10 +6438,8 @@ impl State {
         let Some(dims) = self.preview_png_dims else {
             return;
         };
-        let Some(key) = png_cache_key_from_node_id(
-            self.preview_node_id_fired.as_deref(),
-            dims,
-        ) else {
+        let Some(key) = png_cache_key_from_node_id(self.preview_node_id_fired.as_deref(), dims)
+        else {
             return;
         };
         self.preview_png_cache
@@ -6450,10 +6478,8 @@ impl State {
                         // of the same size in the same directory (e.g. the
                         // next render in a time-step series). Miss → fit
                         // to pane, centred.
-                        let cache_key = png_cache_key_from_node_id(
-                            self.preview_node_id_fired.as_deref(),
-                            dims,
-                        );
+                        let cache_key =
+                            png_cache_key_from_node_id(self.preview_node_id_fired.as_deref(), dims);
                         let restored = cache_key
                             .as_ref()
                             .and_then(|k| self.preview_png_cache.get(k))
@@ -6500,7 +6526,11 @@ impl State {
             // (this is what a multi-GB `.h5` whose backend fallback returned
             // raw bytes did). Show a one-line summary instead. The PNG/tokens
             // branches above still handle their real binary formats.
-            let kind = if looks_binary(bytes) { "binary" } else { "large" };
+            let kind = if looks_binary(bytes) {
+                "binary"
+            } else {
+                "large"
+            };
             let msg = format!(
                 "{kind} file — {} bytes\n\nNot previewed as text (mime: {mime}).",
                 bytes.len()
@@ -6575,7 +6605,8 @@ impl State {
         self.cell_h = BASE_CELL_H * s;
         self.chrome_origin_x = BASE_CHROME_ORIGIN_X * s;
         self.chrome_origin_y = BASE_CHROME_ORIGIN_Y * s;
-        self.text.set_metrics(cosmic_text::Metrics::new(14.0 * s, 18.0 * s));
+        self.text
+            .set_metrics(cosmic_text::Metrics::new(14.0 * s, 18.0 * s));
         // Re-measure monospace advance at the new metrics so the cell
         // grid still matches cosmic-text's actual glyph positioning
         // after a runtime font-size change. Fall back to BASE_CELL_W * s
@@ -6719,13 +6750,14 @@ impl State {
             {
                 continue;
             }
-            if let Err(e) = self.req_tx.send(
-                crate::transport::OutgoingReq::MarkdownTokenize {
+            if let Err(e) = self
+                .req_tx
+                .send(crate::transport::OutgoingReq::MarkdownTokenize {
                     lang: lang.clone(),
                     source_hash,
                     source,
-                },
-            ) {
+                })
+            {
                 tracing::warn!(error = %e,
                     "drop markdown.tokenize request — channel closed");
                 continue;
@@ -6793,7 +6825,10 @@ impl State {
                             h: run.line_height,
                         }
                     }
-                    MediaBlock::Math { display: false, latex } => {
+                    MediaBlock::Math {
+                        display: false,
+                        latex,
+                    } => {
                         // Inline: anchor at the FFFC glyph's x position, size
                         // to the cached SVG's natural pixel dimensions, and
                         // baseline-align using MathJax's `vertical-align`
@@ -6997,9 +7032,7 @@ impl State {
                 "── DISCARD UNSAVED EDITS?  [y]/[Esc] throw away changes  [n] keep editing ──",
             );
         } else if has_sel {
-            footer.push_str(
-                "── edit mode · selection · Ctrl+C copy · Ctrl+X cut · Ctrl+S save ──",
-            );
+            footer.push_str("── edit mode · selection · Ctrl+C copy · Ctrl+X cut · Ctrl+S save ──");
         } else if edit.is_dirty() {
             footer.push_str("── edit mode · modified · Ctrl+S save · Esc discard ──");
         } else {
@@ -7030,7 +7063,8 @@ impl State {
         // Tag the eval with the workspace it belongs to so a `ReplEvalDone`
         // reply arriving after a swap routes back to the right log.
         let workspace_key = self.current_workspace_key();
-        self.eval_id_workspace.insert(eval_id, workspace_key.clone());
+        self.eval_id_workspace
+            .insert(eval_id, workspace_key.clone());
         // Bound the scrollback at a reasonable cap so a long session
         // doesn't accumulate forever. Trim from the front.
         if self.repl_log.len() >= 256 {
@@ -7060,11 +7094,7 @@ impl State {
             tracing::warn!(error = %e, eval_id, "drop repl.eval request — channel closed");
             // Mark the entry done with an error frame so the user sees
             // why nothing happened.
-            if let Some(entry) = self
-                .repl_log
-                .iter_mut()
-                .find(|e| e.eval_id == eval_id)
-            {
+            if let Some(entry) = self.repl_log.iter_mut().find(|e| e.eval_id == eval_id) {
                 entry.in_flight = false;
                 entry.frames.push(sot_protocol::ReplFrame::Error {
                     message: format!("transport channel closed: {e}"),
@@ -7084,7 +7114,11 @@ impl State {
     }
 
     fn history_step_forward(&mut self) -> Option<String> {
-        history_step_forward(&self.repl_log, &mut self.history_pos, &mut self.history_saved)
+        history_step_forward(
+            &self.repl_log,
+            &mut self.history_pos,
+            &mut self.history_saved,
+        )
     }
 
     fn drain_events(&mut self) {
@@ -7107,7 +7141,10 @@ impl State {
                         .filter(|s| !s.is_empty())
                         .map(str::to_string);
                     self.daemon_root_basename = project_root.as_deref().and_then(|p| {
-                        p.rsplit(['/', '\\']).next().filter(|s| !s.is_empty()).map(str::to_string)
+                        p.rsplit(['/', '\\'])
+                            .next()
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
                     });
                     self.daemon_project_root = project_root.clone();
                     self.last_revision = revision;
@@ -7125,8 +7162,7 @@ impl State {
                     if self.upload.take().is_some() {
                         self.status =
                             "upload interrupted by reconnect — press u to retry".to_string();
-                        self.notify_sticky_until =
-                            Some(std::time::Instant::now() + NOTIFY_STICKY);
+                        self.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
                     }
                     self.rebuild_connection_status();
                     // Prime the slug→label cache so the status line shows
@@ -7158,12 +7194,10 @@ impl State {
                         }
                         Mode::Files => {
                             if self.active_workspace_id.is_some() {
-                                let _ = self.req_tx.send(
-                                    crate::transport::OutgoingReq::TreeRoot {
-                                        mode: "files".to_string(),
-                                        workspace_id: self.active_workspace_id.clone(),
-                                    },
-                                );
+                                let _ = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
+                                    mode: "files".to_string(),
+                                    workspace_id: self.active_workspace_id.clone(),
+                                });
                             }
                         }
                         Mode::Hosts => {
@@ -7183,17 +7217,15 @@ impl State {
                     // its pre-suspend buffer.
                     if let Some(target) = self.bl_pane_target.clone() {
                         let (cols, rows) = self.pty_size.unwrap_or((80, 24));
-                        let _ = self.req_tx.send(
-                            crate::transport::OutgoingReq::PtyOpen {
-                                cols,
-                                rows,
-                                target: Some(target),
-                                // #5 guard: a reconnect re-attach (sleep /
-                                // tunnel drop) is NOT a user switch — re-stream
-                                // the existing target, don't yank the foreground.
-                                user_switch: false,
-                            },
-                        );
+                        let _ = self.req_tx.send(crate::transport::OutgoingReq::PtyOpen {
+                            cols,
+                            rows,
+                            target: Some(target),
+                            // #5 guard: a reconnect re-attach (sleep /
+                            // tunnel drop) is NOT a user switch — re-stream
+                            // the existing target, don't yank the foreground.
+                            user_switch: false,
+                        });
                     }
                     // And re-fire preview for the currently-cursored node
                     // so any file changes that landed while we were
@@ -7202,18 +7234,16 @@ impl State {
                     // showing right now".
                     if let Some(node_id) = self.preview_node_id_fired.clone() {
                         let (fit_w, fit_h) = self.preview_fit_px();
-                        let _ = self.req_tx.send(
-                            crate::transport::OutgoingReq::PreviewGet {
-                                node_id,
-                                workspace_id: self.active_workspace_id.clone(),
-                                // Hold the page across the reconnect — a
-                                // blip shouldn't yank a paginated preview
-                                // back to page 1.
-                                page: self.preview_page.map(|(p, _)| p),
-                                fit_w,
-                                fit_h,
-                            },
-                        );
+                        let _ = self.req_tx.send(crate::transport::OutgoingReq::PreviewGet {
+                            node_id,
+                            workspace_id: self.active_workspace_id.clone(),
+                            // Hold the page across the reconnect — a
+                            // blip shouldn't yank a paginated preview
+                            // back to page 1.
+                            page: self.preview_page.map(|(p, _)| p),
+                            fit_w,
+                            fit_h,
+                        });
                     }
                 }
                 crate::transport::IncomingEvt::Disconnected { reason } => {
@@ -7263,9 +7293,7 @@ impl State {
                     // CLI --start-selected below still overrides this.
                     let mut resume_landed = false;
                     if let Some((id, scroll)) = self.pending_resume_nav.take() {
-                        if let Some(idx) =
-                            self.tree.rows.iter().position(|r| r.node.id == id)
-                        {
+                        if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == id) {
                             self.tree.selected = idx;
                             self.tree_scroll = scroll;
                             resume_landed = true;
@@ -7302,22 +7330,21 @@ impl State {
                     // eat the selection meant for the modules tree.
                     if matches!(self.mode, Mode::Files) {
                         if let Some(n) = self.pending_initial_selection.take() {
-                            self.tree.selected =
-                                n.min(self.tree.rows.len().saturating_sub(1));
+                            self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
                         }
                         if let Some(rel) = self.capture_preview.take() {
                             let node_id = format!("files:{rel}");
                             tracing::info!(%node_id, "firing --capture-preview");
                             let (fit_w, fit_h) = self.preview_fit_px();
-                            if let Err(e) = self.req_tx.send(
-                                crate::transport::OutgoingReq::PreviewGet {
+                            if let Err(e) =
+                                self.req_tx.send(crate::transport::OutgoingReq::PreviewGet {
                                     node_id: node_id.clone(),
                                     workspace_id: None,
                                     page: None,
                                     fit_w,
                                     fit_h,
-                                },
-                            ) {
+                                })
+                            {
                                 tracing::warn!(error = %e, %node_id, "drop --capture-preview request — channel closed");
                             }
                             // Record the REAL fired node id. The cursor-
@@ -7395,8 +7422,7 @@ impl State {
                     self.tree.set_flat(rows);
                     if matches!(self.mode, Mode::Modules) {
                         if let Some(n) = self.pending_initial_selection.take() {
-                            self.tree.selected =
-                                n.min(self.tree.rows.len().saturating_sub(1));
+                            self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
                         }
                     }
                 }
@@ -7438,8 +7464,7 @@ impl State {
                     self.tree.set_root(root, children);
                     if matches!(self.mode, Mode::Modules) {
                         if let Some(n) = self.pending_initial_selection.take() {
-                            self.tree.selected =
-                                n.min(self.tree.rows.len().saturating_sub(1));
+                            self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
                         }
                     }
                 }
@@ -7475,10 +7500,7 @@ impl State {
                         .iter()
                         .find(|r| {
                             r.node.kind == "module"
-                                && r.node
-                                    .payload
-                                    .get("path")
-                                    .and_then(|v| v.as_str())
+                                && r.node.payload.get("path").and_then(|v| v.as_str())
                                     == Some(path.as_str())
                         })
                         .map(|r| r.node.id.clone());
@@ -7534,11 +7556,7 @@ impl State {
                     // The exact id is what we built when modules-col-2 splice
                     // ran, so reconstruct it from the request echo.
                     let parent_id = format!("modules:{module}:{name}");
-                    let exists = self
-                        .tree
-                        .rows
-                        .iter()
-                        .any(|r| r.node.id == parent_id);
+                    let exists = self.tree.rows.iter().any(|r| r.node.id == parent_id);
                     if !exists {
                         tracing::debug!(
                             %parent_id,
@@ -7596,8 +7614,11 @@ impl State {
                         if let Some(edit) = self.edit_state.as_mut() {
                             let (header, body) = split_frontmatter(&content);
                             edit.header = header;
-                            edit.expected_ast_hash =
-                                if exists { parse_synced_against(&content) } else { None };
+                            edit.expected_ast_hash = if exists {
+                                parse_synced_against(&content)
+                            } else {
+                                None
+                            };
                             edit.original = body.clone();
                             edit.buf = EditBuffer::new(body);
                             edit.stale_banner = false;
@@ -7723,8 +7744,9 @@ impl State {
                         let matches_req =
                             node_id.as_deref() == self.preview_node_id_fired.as_deref();
                         if def_line > 0 && is_code && matches_req {
-                            self.preview_scroll =
-                                self.preview_md.anchor_scroll_for_def_line(def_line as usize);
+                            self.preview_scroll = self
+                                .preview_md
+                                .anchor_scroll_for_def_line(def_line as usize);
                             self.preview_anchored_to = Some(def_line);
                         } else {
                             self.preview_anchored_to = None;
@@ -7787,8 +7809,7 @@ impl State {
                     // relative to body font instead of fit-stretching the
                     // SVG into a fixed-pixel letterbox (which is what
                     // made every display block render ~4× oversized).
-                    let (width_ex, height_ex, vertical_align_ex) =
-                        parse_math_svg_dims(&svg_bytes);
+                    let (width_ex, height_ex, vertical_align_ex) = parse_math_svg_dims(&svg_bytes);
                     let key = (latex.clone(), display);
                     self.math_cache.insert(
                         key,
@@ -7880,16 +7901,14 @@ impl State {
                     let active_key = self.current_workspace_key();
                     match owner.as_deref() {
                         Some(key) if key != active_key.as_str() => {
-                            if let Some(snap) =
-                                self.workspace_repl_snapshots.get_mut(key)
-                            {
-                                if let Some(entry) = snap
-                                    .repl_log
-                                    .iter_mut()
-                                    .find(|e| e.eval_id == eval_id)
+                            if let Some(snap) = self.workspace_repl_snapshots.get_mut(key) {
+                                if let Some(entry) =
+                                    snap.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                                 {
                                     if !acceptance {
-                                        if !frames.is_empty() { entry.frames = frames; }
+                                        if !frames.is_empty() {
+                                            entry.frames = frames;
+                                        }
                                         entry.elapsed_ms = elapsed_ms;
                                         entry.in_flight = false;
                                     }
@@ -7909,18 +7928,21 @@ impl State {
                             }
                         }
                         _ => {
-                            if let Some(entry) = self
-                                .repl_log
-                                .iter_mut()
-                                .find(|e| e.eval_id == eval_id)
+                            if let Some(entry) =
+                                self.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                             {
                                 if !acceptance {
-                                    if !frames.is_empty() { entry.frames = frames; }
+                                    if !frames.is_empty() {
+                                        entry.frames = frames;
+                                    }
                                     entry.elapsed_ms = elapsed_ms;
                                     entry.in_flight = false;
                                 }
                             } else {
-                                tracing::debug!(eval_id, "repl.eval reply for unknown id — ignoring");
+                                tracing::debug!(
+                                    eval_id,
+                                    "repl.eval reply for unknown id — ignoring"
+                                );
                             }
                         }
                     }
@@ -7967,12 +7989,11 @@ impl State {
                     let owner = self.eval_id_workspace.get(&eval_id).cloned();
                     let active_key = self.current_workspace_key();
                     let entry: Option<&mut ReplEntry> = match owner.as_deref() {
-                        Some(key) if key != active_key.as_str() => self
-                            .workspace_repl_snapshots
-                            .get_mut(key)
-                            .and_then(|snap| {
+                        Some(key) if key != active_key.as_str() => {
+                            self.workspace_repl_snapshots.get_mut(key).and_then(|snap| {
                                 snap.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
-                            }),
+                            })
+                        }
                         _ => self.repl_log.iter_mut().find(|e| e.eval_id == eval_id),
                     };
                     if let Some(entry) = entry {
@@ -8119,12 +8140,13 @@ impl State {
                                 // appears without a manual re-expand — same
                                 // tree.children refresh the upload path uses.
                                 let parent = parent_files_node_id(&node_id);
-                                if let Err(e) = self.req_tx.send(
-                                    crate::transport::OutgoingReq::TreeChildren {
-                                        parent_id: parent,
-                                        workspace_id: self.active_workspace_id.clone(),
-                                    },
-                                ) {
+                                if let Err(e) =
+                                    self.req_tx
+                                        .send(crate::transport::OutgoingReq::TreeChildren {
+                                            parent_id: parent,
+                                            workspace_id: self.active_workspace_id.clone(),
+                                        })
+                                {
                                     tracing::warn!(error = %e,
                                         "drop post-create tree.children refresh");
                                 }
@@ -8136,7 +8158,9 @@ impl State {
                                 self.window.request_redraw();
                             }
                         }
-                        crate::transport::FileWriteResult::Conflict { current_version, .. } => {
+                        crate::transport::FileWriteResult::Conflict {
+                            current_version, ..
+                        } => {
                             tracing::warn!(%node_id, %current_version, "file.write refused: conflict");
                             if matches_active {
                                 if let Some(edit) = self.edit_state.as_mut() {
@@ -8183,12 +8207,13 @@ impl State {
                                 // tree.children refresh the create path uses.
                                 // TreeView reconciliation re-clamps the cursor.
                                 let parent = parent_files_node_id(&node_id);
-                                if let Err(e) = self.req_tx.send(
-                                    crate::transport::OutgoingReq::TreeChildren {
-                                        parent_id: parent,
-                                        workspace_id: self.active_workspace_id.clone(),
-                                    },
-                                ) {
+                                if let Err(e) =
+                                    self.req_tx
+                                        .send(crate::transport::OutgoingReq::TreeChildren {
+                                            parent_id: parent,
+                                            workspace_id: self.active_workspace_id.clone(),
+                                        })
+                                {
                                     tracing::warn!(error = %e,
                                         "drop post-delete tree.children refresh");
                                 }
@@ -8213,7 +8238,11 @@ impl State {
                         }
                     }
                 }
-                crate::transport::IncomingEvt::PtyOpened { cols, rows, pane_command } => {
+                crate::transport::IncomingEvt::PtyOpened {
+                    cols,
+                    rows,
+                    pane_command,
+                } => {
                     // Backend confirmed the pty size. Make sure our
                     // emulator matches — if it doesn't (e.g. backend
                     // clamped to a minimum), the redraw will fire a
@@ -8244,8 +8273,9 @@ impl State {
                                 self.launching_sessions.remove(&sess);
                                 tracing::info!(session = %sess, ?pane_command,
                                     "autostart: backend reports claude already foreground in pane — skipping launch (no prompt-spam)");
-                                self.status =
-                                    format!("auto-start: claude already running in {sess} — left as-is");
+                                self.status = format!(
+                                    "auto-start: claude already running in {sess} — left as-is"
+                                );
                             } else {
                                 // Don't launch yet: arm the pre-launch sniff so
                                 // we can still skip a pane that shows claude in
@@ -8272,10 +8302,9 @@ impl State {
                     // delivery only exists after `autostart_claude_in_pane`
                     // put the session in `autostarted_sessions`.)
                     if self.delivery.is_none()
-                        && self
-                            .deferred_delivery
-                            .as_ref()
-                            .is_some_and(|d| self.bl_pane_target.as_deref() == Some(d.pinned.as_str()))
+                        && self.deferred_delivery.as_ref().is_some_and(|d| {
+                            self.bl_pane_target.as_deref() == Some(d.pinned.as_str())
+                        })
                     {
                         let mut d = self.deferred_delivery.take().expect("checked above");
                         let now = std::time::Instant::now();
@@ -8283,8 +8312,7 @@ impl State {
                         d.last_pty = now;
                         tracing::info!(pinned = %d.pinned, phase = ?d.phase,
                             "autostart: resuming deferred task delivery");
-                        self.status =
-                            format!("auto-start: resuming task delivery to @{}", d.agent);
+                        self.status = format!("auto-start: resuming task delivery to @{}", d.agent);
                         self.delivery = Some(d);
                     }
                 }
@@ -8337,7 +8365,9 @@ impl State {
                         // Server pushed a workspace create/destroy; re-list so
                         // the Sessions strip refreshes live (mirror the manual
                         // poll). Idempotent if we triggered the change.
-                        let _ = self.req_tx.send(crate::transport::OutgoingReq::WorkspaceList);
+                        let _ = self
+                            .req_tx
+                            .send(crate::transport::OutgoingReq::WorkspaceList);
                     } else if op == sot_protocol::op::AGENT_MESSAGE {
                         // Server relayed an agent-to-agent message over the
                         // SSH-forwarded socket. Item 2: a session can drive
@@ -8349,8 +8379,7 @@ impl State {
                         // fe-inbox.jsonl so the in-terminal agent on this
                         // machine receives it instantly (mirror the
                         // workspace.changed push leg).
-                        let text =
-                            payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
                         if let Some(env) = parse_nav_envelope(text) {
                             self.handle_nav_envelope(&env);
                         } else {
@@ -8390,8 +8419,7 @@ impl State {
                         // it in the Files nav tree — otherwise the pane shows a
                         // stale listing until a manual re-nav (the reported bug).
                         let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                        let changed_node_id =
-                            payload.get("node_id").and_then(|v| v.as_str());
+                        let changed_node_id = payload.get("node_id").and_then(|v| v.as_str());
                         if kind == "created" || kind == "removed" {
                             if let Some(node_id) = changed_node_id {
                                 let parent = parent_files_node_id(node_id);
@@ -8409,16 +8437,12 @@ impl State {
                             // re-fetch uses); hold the current page so a paginated
                             // preview doesn't snap back to page 1.
                             if let Some(node_id) = changed_node_id {
-                                if self.preview_node_id_fired.as_deref()
-                                    == Some(node_id)
-                                {
+                                if self.preview_node_id_fired.as_deref() == Some(node_id) {
                                     let (fit_w, fit_h) = self.preview_fit_px();
                                     let _ = self.req_tx.send(
                                         crate::transport::OutgoingReq::PreviewGet {
                                             node_id: node_id.to_string(),
-                                            workspace_id: self
-                                                .active_workspace_id
-                                                .clone(),
+                                            workspace_id: self.active_workspace_id.clone(),
                                             page: self.preview_page.map(|(p, _)| p),
                                             fit_w,
                                             fit_h,
@@ -8463,49 +8487,36 @@ impl State {
                     // `sot-be-<slug>`. Until the rename to "Workspaces"
                     // lands we still call this Sessions mode, but the visible
                     // list is workspace-scoped.
-                    children.extend(sessions
-                        .into_iter()
-                        .filter(|s| s.name.starts_with("sot-be-"))
-                        .map(|s| {
-                            let mut payload = serde_json::Map::new();
-                            payload.insert(
-                                "created".to_string(),
-                                serde_json::json!(s.created),
-                            );
-                            payload.insert(
-                                "attached".to_string(),
-                                serde_json::json!(s.attached),
-                            );
-                            payload.insert(
-                                "windows".to_string(),
-                                serde_json::json!(s.windows),
-                            );
-                            payload.insert(
-                                "width".to_string(),
-                                serde_json::json!(s.width),
-                            );
-                            payload.insert(
-                                "height".to_string(),
-                                serde_json::json!(s.height),
-                            );
-                            payload.insert(
-                                "name".to_string(),
-                                serde_json::Value::String(s.name.clone()),
-                            );
-                            TreeNode {
-                                id: format!("sessions:{}", s.name),
-                                label: s.name,
-                                kind: "session".to_string(),
-                                has_children: true,
-                                badges: Vec::new(),
-                                payload,
-                            }
-                        }));
+                    children.extend(
+                        sessions
+                            .into_iter()
+                            .filter(|s| s.name.starts_with("sot-be-"))
+                            .map(|s| {
+                                let mut payload = serde_json::Map::new();
+                                payload.insert("created".to_string(), serde_json::json!(s.created));
+                                payload
+                                    .insert("attached".to_string(), serde_json::json!(s.attached));
+                                payload.insert("windows".to_string(), serde_json::json!(s.windows));
+                                payload.insert("width".to_string(), serde_json::json!(s.width));
+                                payload.insert("height".to_string(), serde_json::json!(s.height));
+                                payload.insert(
+                                    "name".to_string(),
+                                    serde_json::Value::String(s.name.clone()),
+                                );
+                                TreeNode {
+                                    id: format!("sessions:{}", s.name),
+                                    label: s.name,
+                                    kind: "session".to_string(),
+                                    has_children: true,
+                                    badges: Vec::new(),
+                                    payload,
+                                }
+                            }),
+                    );
                     self.tree.set_root(root, children);
                     if matches!(self.mode, Mode::Sessions) {
                         if let Some(n) = self.pending_initial_selection.take() {
-                            self.tree.selected =
-                                n.min(self.tree.rows.len().saturating_sub(1));
+                            self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
                         }
                     }
                 }
@@ -8529,30 +8540,16 @@ impl State {
                                 "window_index".to_string(),
                                 serde_json::json!(p.window_index),
                             );
-                            payload.insert(
-                                "pane_index".to_string(),
-                                serde_json::json!(p.pane_index),
-                            );
+                            payload
+                                .insert("pane_index".to_string(), serde_json::json!(p.pane_index));
                             payload.insert(
                                 "command".to_string(),
                                 serde_json::Value::String(p.command.clone()),
                             );
-                            payload.insert(
-                                "pid".to_string(),
-                                serde_json::json!(p.pid),
-                            );
-                            payload.insert(
-                                "width".to_string(),
-                                serde_json::json!(p.width),
-                            );
-                            payload.insert(
-                                "height".to_string(),
-                                serde_json::json!(p.height),
-                            );
-                            payload.insert(
-                                "active".to_string(),
-                                serde_json::json!(p.active),
-                            );
+                            payload.insert("pid".to_string(), serde_json::json!(p.pid));
+                            payload.insert("width".to_string(), serde_json::json!(p.width));
+                            payload.insert("height".to_string(), serde_json::json!(p.height));
+                            payload.insert("active".to_string(), serde_json::json!(p.active));
                             payload.insert(
                                 "tmux_pane_id".to_string(),
                                 serde_json::Value::String(p.id.clone()),
@@ -8589,20 +8586,18 @@ impl State {
                         }
                     }
                 }
-                crate::transport::IncomingEvt::TmuxSessionKilled { result } => {
-                    match result {
-                        Ok(name) => {
-                            self.status = format!("session killed · {name}");
-                            if matches!(self.mode, Mode::Sessions) {
-                                let _ = self.req_tx.send(OutgoingReq::WorkspaceList);
-                            }
-                        }
-                        Err(msg) => {
-                            self.status = format!("session kill failed · {msg}");
-                            tracing::warn!(error = %msg, "tmux.kill_session failed");
+                crate::transport::IncomingEvt::TmuxSessionKilled { result } => match result {
+                    Ok(name) => {
+                        self.status = format!("session killed · {name}");
+                        if matches!(self.mode, Mode::Sessions) {
+                            let _ = self.req_tx.send(OutgoingReq::WorkspaceList);
                         }
                     }
-                }
+                    Err(msg) => {
+                        self.status = format!("session kill failed · {msg}");
+                        tracing::warn!(error = %msg, "tmux.kill_session failed");
+                    }
+                },
                 crate::transport::IncomingEvt::TmuxPaneCaptured { target, text } => {
                     // Route through render_preview_source as plain text so
                     // the existing markdown-plain renderer shapes it into
@@ -8610,13 +8605,14 @@ impl State {
                     // Drop the result if the cursor has moved off the
                     // target since the request fired — avoids racing
                     // captures painting stale panes.
-                    let still_current = self.tree.rows.get(self.tree.selected).map_or(false, |row| {
-                        row.node
-                            .payload
-                            .get("tmux_pane_id")
-                            .and_then(|v| v.as_str())
-                            == Some(target.as_str())
-                    });
+                    let still_current =
+                        self.tree.rows.get(self.tree.selected).map_or(false, |row| {
+                            row.node
+                                .payload
+                                .get("tmux_pane_id")
+                                .and_then(|v| v.as_str())
+                                == Some(target.as_str())
+                        });
                     if still_current {
                         self.render_preview_source("text/plain", text.as_bytes());
                     } else {
@@ -8696,15 +8692,24 @@ impl State {
                             self.workspace_repl_snapshots.remove(&info.slug);
                             self.workspace_labels.remove(&info.slug);
                             self.workspace_project_roots.remove(&info.slug);
-                            let tmux_note = if info.tmux_killed { "" } else { " (tmux already gone)" };
-                            let toml_note = if info.toml_removed { "" } else { " (toml remove failed)" };
+                            let tmux_note = if info.tmux_killed {
+                                ""
+                            } else {
+                                " (tmux already gone)"
+                            };
+                            let toml_note = if info.toml_removed {
+                                ""
+                            } else {
+                                " (toml remove failed)"
+                            };
                             self.status = format!(
                                 "workspace destroyed · '{}'{}{}",
                                 info.label, tmux_note, toml_note
                             );
                             // Refresh the Sessions tree so the row drops.
-                            if let Err(e) =
-                                self.req_tx.send(crate::transport::OutgoingReq::WorkspaceList)
+                            if let Err(e) = self
+                                .req_tx
+                                .send(crate::transport::OutgoingReq::WorkspaceList)
                             {
                                 tracing::warn!(error = %e, "drop workspace.list after destroy");
                             }
@@ -8716,63 +8721,57 @@ impl State {
                         }
                     }
                 }
-                crate::transport::IncomingEvt::PlutoOpened { result } => {
-                    match result {
-                        Ok(url) => {
-                            if let Err(e) = open_url_in_browser(&url) {
-                                tracing::warn!(error = %e, %url,
+                crate::transport::IncomingEvt::PlutoOpened { result } => match result {
+                    Ok(url) => {
+                        if let Err(e) = open_url_in_browser(&url) {
+                            tracing::warn!(error = %e, %url,
                                     "pluto: open_url_in_browser failed");
-                                self.status = format!("pluto.open browser-launch failed · {e}");
-                            } else {
-                                self.status = format!("pluto · opened {url}");
-                            }
-                            self.window.request_redraw();
+                            self.status = format!("pluto.open browser-launch failed · {e}");
+                        } else {
+                            self.status = format!("pluto · opened {url}");
                         }
-                        Err(msg) => {
-                            tracing::warn!(error = %msg, "pluto.open failed");
-                            self.status = format!("pluto.open failed · {msg}");
-                            self.window.request_redraw();
-                        }
+                        self.window.request_redraw();
                     }
-                }
-                crate::transport::IncomingEvt::DocsOpened { result } => {
-                    match result {
-                        Ok(url) => {
-                            if let Err(e) = open_url_in_browser(&url) {
-                                tracing::warn!(error = %e, %url,
+                    Err(msg) => {
+                        tracing::warn!(error = %msg, "pluto.open failed");
+                        self.status = format!("pluto.open failed · {msg}");
+                        self.window.request_redraw();
+                    }
+                },
+                crate::transport::IncomingEvt::DocsOpened { result } => match result {
+                    Ok(url) => {
+                        if let Err(e) = open_url_in_browser(&url) {
+                            tracing::warn!(error = %e, %url,
                                     "docs: open_url_in_browser failed");
-                                self.status = format!("docs.open browser-launch failed · {e}");
-                            } else {
-                                self.status = format!("docs · opened {url}");
-                            }
-                            self.window.request_redraw();
+                            self.status = format!("docs.open browser-launch failed · {e}");
+                        } else {
+                            self.status = format!("docs · opened {url}");
                         }
-                        Err(msg) => {
-                            tracing::warn!(error = %msg, "docs.open failed");
-                            self.status = format!("docs.open failed · {msg}");
-                            self.window.request_redraw();
-                        }
+                        self.window.request_redraw();
                     }
-                }
-                crate::transport::IncomingEvt::VideoOpened { result } => {
-                    match result {
-                        Ok(url) => {
-                            if let Err(e) = open_url_in_browser(&url) {
-                                tracing::warn!(error = %e, %url,
+                    Err(msg) => {
+                        tracing::warn!(error = %msg, "docs.open failed");
+                        self.status = format!("docs.open failed · {msg}");
+                        self.window.request_redraw();
+                    }
+                },
+                crate::transport::IncomingEvt::VideoOpened { result } => match result {
+                    Ok(url) => {
+                        if let Err(e) = open_url_in_browser(&url) {
+                            tracing::warn!(error = %e, %url,
                                     "video: open_url_in_browser failed");
-                                self.status = format!("video.open browser-launch failed · {e}");
-                            } else {
-                                self.status = "video · opened in browser".to_string();
-                            }
-                            self.window.request_redraw();
+                            self.status = format!("video.open browser-launch failed · {e}");
+                        } else {
+                            self.status = "video · opened in browser".to_string();
                         }
-                        Err(msg) => {
-                            tracing::warn!(error = %msg, "video.open failed");
-                            self.status = format!("video.open failed · {msg}");
-                            self.window.request_redraw();
-                        }
+                        self.window.request_redraw();
                     }
-                }
+                    Err(msg) => {
+                        tracing::warn!(error = %msg, "video.open failed");
+                        self.status = format!("video.open failed · {msg}");
+                        self.window.request_redraw();
+                    }
+                },
                 crate::transport::IncomingEvt::QuartoOpened { result } => {
                     match result {
                         Ok(html) => {
@@ -8818,23 +8817,20 @@ impl State {
                 } => {
                     if done {
                         let (name, dir, dir_node_id) = match self.upload.take() {
-                            Some(up) => (
-                                final_name.unwrap_or(up.name),
-                                up.dir,
-                                up.dir_node_id,
-                            ),
+                            Some(up) => (final_name.unwrap_or(up.name), up.dir, up.dir_node_id),
                             None => (final_name.unwrap_or_default(), String::new(), String::new()),
                         };
                         self.status = format!("uploaded · {name} → {dir}");
                         // Refresh the destination dir's listing so the new file
                         // shows up without a manual re-expand.
                         if !dir_node_id.is_empty() {
-                            if let Err(e) = self.req_tx.send(
-                                crate::transport::OutgoingReq::TreeChildren {
-                                    parent_id: dir_node_id,
-                                    workspace_id: self.active_workspace_id.clone(),
-                                },
-                            ) {
+                            if let Err(e) =
+                                self.req_tx
+                                    .send(crate::transport::OutgoingReq::TreeChildren {
+                                        parent_id: dir_node_id,
+                                        workspace_id: self.active_workspace_id.clone(),
+                                    })
+                            {
                                 tracing::warn!(error = %e, "drop post-upload tree.children refresh");
                             }
                         }
@@ -8972,10 +8968,8 @@ impl State {
                                         }
                                     }
                                     _ => {
-                                        if let Some(entry) = self
-                                            .repl_log
-                                            .iter_mut()
-                                            .find(|e| e.eval_id == eval_id)
+                                        if let Some(entry) =
+                                            self.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                                         {
                                             if !frames.is_empty() {
                                                 entry.frames = frames;
@@ -9011,13 +9005,9 @@ impl State {
                             };
                             match owner.as_deref() {
                                 Some(key) if key != active_key.as_str() => {
-                                    if let Some(snap) =
-                                        self.workspace_repl_snapshots.get_mut(key)
-                                    {
-                                        if let Some(entry) = snap
-                                            .repl_log
-                                            .iter_mut()
-                                            .find(|e| e.eval_id == eval_id)
+                                    if let Some(snap) = self.workspace_repl_snapshots.get_mut(key) {
+                                        if let Some(entry) =
+                                            snap.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                                         {
                                             entry.frames.push(err_frame);
                                             entry.in_flight = false;
@@ -9025,10 +9015,8 @@ impl State {
                                     }
                                 }
                                 _ => {
-                                    if let Some(entry) = self
-                                        .repl_log
-                                        .iter_mut()
-                                        .find(|e| e.eval_id == eval_id)
+                                    if let Some(entry) =
+                                        self.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                                     {
                                         entry.frames.push(err_frame);
                                         entry.in_flight = false;
@@ -9245,8 +9233,7 @@ impl State {
                     self.tree.set_root(root, children);
                     if matches!(self.mode, Mode::Sessions) {
                         if let Some(n) = self.pending_initial_selection.take() {
-                            self.tree.selected =
-                                n.min(self.tree.rows.len().saturating_sub(1));
+                            self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
                         }
                     }
                 }
@@ -9261,7 +9248,8 @@ impl State {
         self.config.width = new_size.width;
         self.config.height = new_size.height;
         self.surface.configure(&self.device, &self.config);
-        self.text.resize(&self.queue, self.config.width, self.config.height);
+        self.text
+            .resize(&self.queue, self.config.width, self.config.height);
 
         let (cols, rows) = cell_grid_for(
             self.config.width,
@@ -9286,8 +9274,7 @@ impl State {
     /// chrome paints nothing for the battery — never a fake `0%` or `N/A`.
     fn refresh_battery_label(&mut self) {
         /// How often to hit the OS for a fresh battery reading.
-        const BATTERY_QUERY_INTERVAL: std::time::Duration =
-            std::time::Duration::from_secs(30);
+        const BATTERY_QUERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
         let now = std::time::Instant::now();
         let fresh = self
@@ -9428,12 +9415,7 @@ impl State {
         // by clearing the pending tuple.
         if let Some((module, name)) = self.pending_demo_function_methods.clone() {
             let target_id = format!("modules:{module}:{name}");
-            if let Some(idx) = self
-                .tree
-                .rows
-                .iter()
-                .position(|r| r.node.id == target_id)
-            {
+            if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == target_id) {
                 self.tree.selected = idx;
                 self.try_expand_selected();
                 self.pending_demo_function_methods = None;
@@ -9564,8 +9546,7 @@ impl State {
                             continue;
                         }
                         use base64::Engine as _;
-                        let Ok(raw) =
-                            base64::engine::general_purpose::STANDARD.decode(data_base64)
+                        let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(data_base64)
                         else {
                             continue;
                         };
@@ -9626,10 +9607,7 @@ impl State {
         // hint) inside tree_lines, so the first picker entry sits at
         // body row 3 + 2 = 5 (+ picker.selected).
         let (nav_cursor_body_pos, nav_has_cursor) = match &self.workspace_picker {
-            Some(p) => (
-                5usize.saturating_add(p.selected),
-                !p.entries.is_empty(),
-            ),
+            Some(p) => (5usize.saturating_add(p.selected), !p.entries.is_empty()),
             None => (
                 3usize.saturating_add(self.tree.selected),
                 !self.tree.rows.is_empty(),
@@ -9656,9 +9634,7 @@ impl State {
         // borrow and the immutable `local_term` screen borrow below.
         if self.drawer == DrawerContent::Terminal {
             if self.local_term.is_none() {
-                let shell = crate::term::resolve_shell(
-                    self.settings.terminal_shell.as_deref(),
-                );
+                let shell = crate::term::resolve_shell(self.settings.terminal_shell.as_deref());
                 let waker = self.window.clone();
                 // cwd = repo root (so `claude --continue` finds the project's
                 // session); resume command runs only on the first spawn after
@@ -9692,8 +9668,7 @@ impl State {
                 // the draw, then read back the clamped value (the ring may
                 // hold fewer rows than requested) — mirrors the pty pane.
                 t.screen_mut().set_scrollback(self.term_scroll as usize);
-                self.term_scroll =
-                    t.screen().scrollback().min(u16::MAX as usize) as u16;
+                self.term_scroll = t.screen().scrollback().min(u16::MAX as usize) as u16;
                 // Diagnostic surfaced on the status line so a blank pane is
                 // debuggable without RUST_LOG: parser size, dead flag, and
                 // whether the screen currently holds any non-blank cell.
@@ -9755,7 +9730,10 @@ impl State {
             (None, _) => "annotation: (no target for this row)".to_string(),
             (Some(t), Some(info)) if info.target == *t => {
                 if info.exists {
-                    let drift = match (info.synced_against.as_deref(), info.target.strip_prefix("files/")) {
+                    let drift = match (
+                        info.synced_against.as_deref(),
+                        info.target.strip_prefix("files/"),
+                    ) {
                         (Some(synced), Some(path)) => match self.file_ast_hashes.get(path) {
                             Some(h) if h == synced => " · in sync",
                             Some(_) => " · STALE (file ast_hash differs from synced_against)",
@@ -9819,101 +9797,109 @@ impl State {
         // `is_pending` (ADR 0025 §1 badge floor) flags a Sessions row whose
         // workspace has a pending nav.preview result waiting — rendered as a
         // non-disruptive indicator distinct from the work-state colours.
-        type NavRow = (String, bool, bool, bool, Option<(AgentTone, bool)>, f32, bool);
-        let (tree_lines, tree_empty): (Vec<NavRow>, bool) =
-            if let Some(p) = &self.workspace_picker {
-                let mut rows: Vec<NavRow> = Vec::with_capacity(p.entries.len() + 2);
+        type NavRow = (
+            String,
+            bool,
+            bool,
+            bool,
+            Option<(AgentTone, bool)>,
+            f32,
+            bool,
+        );
+        let (tree_lines, tree_empty): (Vec<NavRow>, bool) = if let Some(p) = &self.workspace_picker
+        {
+            let mut rows: Vec<NavRow> = Vec::with_capacity(p.entries.len() + 2);
+            rows.push((
+                format!("workspace picker · {}", p.current_path),
+                false,
+                false,
+                false,
+                None,
+                0.0,
+                false,
+            ));
+            // Two footer rows: NAVIGATION first (→ is how you descend into
+            // a folder — Enter does NOT, it creates), then the create keys.
+            // Splitting them stops the common muscle-memory error of hitting
+            // Enter to open a folder and instead spawning a session.
+            rows.push((
+                "  → into folder · ← up · ↑↓ move · Esc cancel".to_string(),
+                false,
+                false,
+                false,
+                None,
+                0.0,
+                false,
+            ));
+            rows.push((
+                "  Enter = create here · Shift+Enter bare · Ctrl+Enter codex".to_string(),
+                false,
+                false,
+                false,
+                None,
+                0.0,
+                false,
+            ));
+            for (i, e) in p.entries.iter().enumerate() {
+                let selected = i == p.selected;
+                let caret = if selected { ">" } else { " " };
+                let disclosure = if e.has_children { "▸" } else { "·" };
                 rows.push((
-                    format!("workspace picker · {}", p.current_path),
-                    false,
+                    format!("{caret} {disclosure} {}/", e.name),
+                    selected,
                     false,
                     false,
                     None,
                     0.0,
                     false,
                 ));
-                // Two footer rows: NAVIGATION first (→ is how you descend into
-                // a folder — Enter does NOT, it creates), then the create keys.
-                // Splitting them stops the common muscle-memory error of hitting
-                // Enter to open a folder and instead spawning a session.
-                rows.push((
-                    "  → into folder · ← up · ↑↓ move · Esc cancel".to_string(),
-                    false,
-                    false,
-                    false,
-                    None,
-                    0.0,
-                    false,
-                ));
-                rows.push((
-                    "  Enter = create here · Shift+Enter bare · Ctrl+Enter codex".to_string(),
-                    false,
-                    false,
-                    false,
-                    None,
-                    0.0,
-                    false,
-                ));
-                for (i, e) in p.entries.iter().enumerate() {
-                    let selected = i == p.selected;
-                    let caret = if selected { ">" } else { " " };
-                    let disclosure = if e.has_children { "▸" } else { "·" };
-                    rows.push((
-                        format!("{caret} {disclosure} {}/", e.name),
+            }
+            let empty = p.entries.is_empty();
+            (rows, empty)
+        } else {
+            let pinned_id = self.pinned_preview_node_id.as_deref();
+            let now = chrono::Utc::now();
+            let flash_now = std::time::Instant::now();
+            let rows: Vec<NavRow> = self
+                .tree
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    let selected = i == self.tree.selected;
+                    let stale = selected && selected_stale;
+                    let pinned = pinned_id == Some(r.node.id.as_str());
+                    // Agent tone + status-change flash only on Sessions
+                    // rows (kind "session"), keyed by the row's slug so it
+                    // matches the bottom strip. `pending` (badge floor, ADR
+                    // 0025 §1) is set when that workspace has a pending
+                    // nav.preview result waiting, keyed by the same slug.
+                    let (agent, flash, pending) = if r.node.kind == "session" {
+                        let slug = r.node.payload.get("slug").and_then(|v| v.as_str());
+                        let flash = slug
+                            .map(|s| self.flash_factor_for(s, flash_now))
+                            .unwrap_or(0.0);
+                        let pending = slug
+                            .map(|s| self.pending_nav.contains_key(s))
+                            .unwrap_or(false);
+                        (agent_tone_for(&r.node.payload, now), flash, pending)
+                    } else {
+                        (None, 0.0, false)
+                    };
+                    (
+                        format_tree_row(r, selected, pinned),
                         selected,
-                        false,
-                        false,
-                        None,
-                        0.0,
-                        false,
-                    ));
-                }
-                let empty = p.entries.is_empty();
-                (rows, empty)
-            } else {
-                let pinned_id = self.pinned_preview_node_id.as_deref();
-                let now = chrono::Utc::now();
-                let flash_now = std::time::Instant::now();
-                let rows: Vec<NavRow> = self
-                    .tree
-                    .rows
-                    .iter()
-                    .enumerate()
-                    .map(|(i, r)| {
-                        let selected = i == self.tree.selected;
-                        let stale = selected && selected_stale;
-                        let pinned = pinned_id == Some(r.node.id.as_str());
-                        // Agent tone + status-change flash only on Sessions
-                        // rows (kind "session"), keyed by the row's slug so it
-                        // matches the bottom strip. `pending` (badge floor, ADR
-                        // 0025 §1) is set when that workspace has a pending
-                        // nav.preview result waiting, keyed by the same slug.
-                        let (agent, flash, pending) = if r.node.kind == "session" {
-                            let slug = r.node.payload.get("slug").and_then(|v| v.as_str());
-                            let flash = slug
-                                .map(|s| self.flash_factor_for(s, flash_now))
-                                .unwrap_or(0.0);
-                            let pending = slug
-                                .map(|s| self.pending_nav.contains_key(s))
-                                .unwrap_or(false);
-                            (agent_tone_for(&r.node.payload, now), flash, pending)
-                        } else {
-                            (None, 0.0, false)
-                        };
-                        (
-                            format_tree_row(r, selected, pinned),
-                            selected,
-                            stale,
-                            pinned,
-                            agent,
-                            flash,
-                            pending,
-                        )
-                    })
-                    .collect();
-                let empty = self.tree.rows.is_empty();
-                (rows, empty)
-            };
+                        stale,
+                        pinned,
+                        agent,
+                        flash,
+                        pending,
+                    )
+                })
+                .collect();
+            let empty = self.tree.rows.is_empty();
+            (rows, empty)
+        };
         // Layout proportions from the user's settings file (or
         // defaults). Snapshotted here so the ratatui closure doesn't
         // borrow `self`. Maximisation overrides the geom inside the
@@ -9964,12 +9950,7 @@ impl State {
                 } else {
                     None
                 };
-                let geom = crate::layout::compute(
-                    area,
-                    &layout_preset,
-                    drawer_open,
-                    maximize_slot,
-                );
+                let geom = crate::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
                 // Names preserved so the rest of the closure reads
                 // unchanged: nav = old TL (left column), preview = old
                 // TR (middle column), llm = old BL (rightmost column
@@ -10041,7 +10022,9 @@ impl State {
                         Style::default().add_modifier(Modifier::DIM),
                     )]));
                 }
-                for (text, is_selected, is_stale, is_pinned, agent, flash, is_pending) in &tree_lines {
+                for (text, is_selected, is_stale, is_pinned, agent, flash, is_pending) in
+                    &tree_lines
+                {
                     let mut style = Style::default();
                     // Cross-cutting colour layer. State-nav agent tone (ADR
                     // 0023) owns the colour of a Sessions row that has one:
@@ -10081,7 +10064,11 @@ impl State {
                         // Tone-less Sessions row that just changed state:
                         // resolve the base fg + flash toward white so the
                         // blink reads even without a state colour.
-                        let base = if *is_selected { (245, 245, 67) } else { (204, 204, 204) };
+                        let base = if *is_selected {
+                            (245, 245, 67)
+                        } else {
+                            (204, 204, 204)
+                        };
                         let (r, g, b) = lerp_to_white(base, *flash);
                         style = style.fg(Color::Rgb(r, g, b));
                         if *is_selected {
@@ -10166,8 +10153,7 @@ impl State {
                         nav_scroll = max_scroll;
                     }
                 }
-                let nav_body =
-                    Paragraph::new(body_lines).scroll((nav_scroll, 0));
+                let nav_body = Paragraph::new(body_lines).scroll((nav_scroll, 0));
 
                 // Other pane titles + body widgets. No Block / borders
                 // — we paint the frame ourselves below so the math is
@@ -10190,11 +10176,8 @@ impl State {
                         Some(name) => {
                             // Budget the name against the pane width so even an
                             // over-long title keeps its basename + the markers.
-                            let avail =
-                                preview_rect.width.saturating_sub(2) as usize;
-                            let fixed = " preview · ".chars().count()
-                                + markers.chars().count()
-                                + 1; // trailing space
+                            let avail = preview_rect.width.saturating_sub(2) as usize;
+                            let fixed = " preview · ".chars().count() + markers.chars().count() + 1; // trailing space
                             let name_budget = avail.saturating_sub(fixed).max(1);
                             let shown = middle_truncate(&name, name_budget);
                             format!(" preview · {shown}{markers} ")
@@ -10296,10 +10279,8 @@ impl State {
                     .map(|(i, seg)| {
                         let mut spans: Vec<Span> = Vec::with_capacity(3);
                         if i == 0 {
-                            spans.push(Span::styled(
-                                prompt_text,
-                                Style::default().fg(prompt_color),
-                            ));
+                            spans
+                                .push(Span::styled(prompt_text, Style::default().fg(prompt_color)));
                         } else {
                             spans.push(Span::raw(cont_pad.clone()));
                         }
@@ -10571,7 +10552,12 @@ impl State {
             border_rects_by_color
                 .entry(bq.color)
                 .or_default()
-                .push(ScreenRect { x: bq.x, y: bq.y, w: bq.w, h: bq.h });
+                .push(ScreenRect {
+                    x: bq.x,
+                    y: bq.y,
+                    w: bq.w,
+                    h: bq.h,
+                });
         }
         // Ensure a cached 1×1 solid Quad exists for each colour BEFORE the
         // render pass — building inside the pass would need &mut
@@ -10719,7 +10705,11 @@ impl State {
                 .strip_anim_last
                 .map(|t| (now - t).as_secs_f32().min(0.1))
                 .unwrap_or(0.0);
-            let k = if dt > 0.0 { 1.0 - (-dt / STRIP_TAU).exp() } else { 0.0 };
+            let k = if dt > 0.0 {
+                1.0 - (-dt / STRIP_TAU).exp()
+            } else {
+                0.0
+            };
             let next = scroll + (target - scroll) * k;
             if (target - next).abs() < 0.5 {
                 self.strip_scroll_px = Some(target);
@@ -11116,9 +11106,7 @@ impl State {
                 // Cull tables fully scrolled off the vertical viewport
                 // — TextBounds would catch them anyway but the cheap
                 // skip saves a glyphon TextArea entry.
-                if rect.y + rect.h < preview_rect.y
-                    || rect.y > preview_rect.y + preview_rect.h
-                {
+                if rect.y + rect.h < preview_rect.y || rect.y > preview_rect.y + preview_rect.h {
                     continue;
                 }
                 // `x` rides the shared horizontal scroll; `y` plants
@@ -11222,8 +11210,14 @@ impl State {
                 // forced to 0 so the letterbox stays centred.
                 let slack_x = (canvas_w - preview_rect.w).max(0.0);
                 let slack_y = (canvas_h - preview_rect.h).max(0.0);
-                let pan_x = self.preview_png_pan_px.0.clamp(-slack_x * 0.5, slack_x * 0.5);
-                let pan_y = self.preview_png_pan_px.1.clamp(-slack_y * 0.5, slack_y * 0.5);
+                let pan_x = self
+                    .preview_png_pan_px
+                    .0
+                    .clamp(-slack_x * 0.5, slack_x * 0.5);
+                let pan_y = self
+                    .preview_png_pan_px
+                    .1
+                    .clamp(-slack_y * 0.5, slack_y * 0.5);
                 self.preview_png_pan_px = (pan_x, pan_y);
                 let canvas_rect = ScreenRect {
                     x: pane_cx - canvas_w * 0.5 + pan_x,
@@ -11335,8 +11329,7 @@ impl State {
                         }
                         let rect = ScreenRect {
                             x: area.x + self.cell_w,
-                            y: area.y
-                                + (slot.line as f32 - win_start as f32) * self.cell_h,
+                            y: area.y + (slot.line as f32 - win_start as f32) * self.cell_h,
                             w: slot.disp_w,
                             h: slot.disp_h,
                         };
@@ -11430,9 +11423,7 @@ impl State {
                 };
                 // Cull rects that fall completely outside the preview
                 // viewport — avoids spending pixels on offscreen media.
-                if rect.y + rect.h < preview_rect.y
-                    || rect.y > preview_rect.y + preview_rect.h
-                {
+                if rect.y + rect.h < preview_rect.y || rect.y > preview_rect.y + preview_rect.h {
                     continue;
                 }
                 let paint_rect = ScreenRect {
@@ -11580,7 +11571,12 @@ impl State {
                         if sw <= 0.0 {
                             continue;
                         }
-                        batched.push(ScreenRect { x: sx, y: sy, w: sw, h: sh });
+                        batched.push(ScreenRect {
+                            x: sx,
+                            y: sy,
+                            w: sw,
+                            h: sh,
+                        });
                     }
                     if !batched.is_empty() {
                         self.code_bg_quad.render_many(
@@ -11609,8 +11605,7 @@ impl State {
                         .code_block_rects()
                         .into_iter()
                         .filter_map(|(by, bh)| {
-                            let sy = md_rect.y + crate::text::EXTRA_TOP_PAD_PX
-                                + by
+                            let sy = md_rect.y + crate::text::EXTRA_TOP_PAD_PX + by
                                 - preview_scroll_px
                                 - BLOCK_PAD_Y;
                             let sh = bh + 2.0 * BLOCK_PAD_Y;
@@ -11635,8 +11630,7 @@ impl State {
                         .collect();
                     if !block_panels.is_empty() {
                         const BORDER: f32 = 1.0;
-                        let mut edges: Vec<ScreenRect> =
-                            Vec::with_capacity(block_panels.len() * 4);
+                        let mut edges: Vec<ScreenRect> = Vec::with_capacity(block_panels.len() * 4);
                         for (r, top_visible, bot_visible) in &block_panels {
                             // Top edge — only if the real top is in-pane.
                             if *top_visible {
@@ -11706,9 +11700,7 @@ impl State {
                             - preview_scroll_px
                             + bh * 0.55
                             - STRIKE_THICKNESS * 0.5;
-                        if line_y + STRIKE_THICKNESS < pane_top
-                            || line_y > pane_bot
-                        {
+                        if line_y + STRIKE_THICKNESS < pane_top || line_y > pane_bot {
                             continue;
                         }
                         let raw_x = md_rect.x + bx;
@@ -11834,8 +11826,7 @@ impl State {
         } else {
             CAPTURE_FRAME
         };
-        let capture_now =
-            self.capture_path.is_some() && self.frame_counter == capture_target_frame;
+        let capture_now = self.capture_path.is_some() && self.frame_counter == capture_target_frame;
         // Ctrl+Shift+S selfie: capture the current frame to a timestamped PNG
         // without exiting. Shares the readback machinery with the --capture
         // harness path; the harness `capture_now` (one-shot + exit) wins if
@@ -11879,16 +11870,14 @@ impl State {
                     tracing::info!(path = %path.display(), "capture wrote PNG");
                     if is_selfie {
                         self.status = format!("selfie saved: {}", path.display());
-                        self.notify_sticky_until =
-                            Some(std::time::Instant::now() + NOTIFY_STICKY);
+                        self.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
                     }
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "capture failed");
                     if is_selfie {
                         self.status = format!("selfie failed: {e}");
-                        self.notify_sticky_until =
-                            Some(std::time::Instant::now() + NOTIFY_STICKY);
+                        self.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
                     }
                 }
             }
@@ -12135,10 +12124,7 @@ fn self_comm_handle() -> String {
 /// ignore. The caller treats a `Some(h) == self_handle` match as force-show
 /// eligible (`urgent` carried through to `dispatch_fe_command`, which still
 /// gates on `fe_is_idle`).
-fn route_fe_command(
-    evt: &sot_protocol::ops::FeCommandEvt,
-    self_handle: &str,
-) -> Option<FeCommand> {
+fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) -> Option<FeCommand> {
     // Target filter first — cheapest reject, and a mis-targeted command
     // shouldn't even be parsed.
     if let Some(h) = evt.target.as_deref() {
@@ -12147,7 +12133,11 @@ fn route_fe_command(
         }
     }
     let args = &evt.args;
-    let str_arg = |key: &str| args.get(key).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let str_arg = |key: &str| {
+        args.get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
     let bool_arg = |key: &str| args.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
     // Force-show is DIRECTED-only. A broadcast (target None = the badge floor)
     // must NEVER force-show — an `urgent` broadcast would otherwise yank EVERY
@@ -12428,9 +12418,7 @@ impl ApplicationHandler for App {
                             // FIFO (writers can prefix a counter/timestamp).
                             let mut paths: Vec<std::path::PathBuf> = entries
                                 .filter_map(|e| e.ok().map(|e| e.path()))
-                                .filter(|p| {
-                                    p.extension().and_then(|x| x.to_str()) == Some("json")
-                                })
+                                .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
                                 .collect();
                             paths.sort();
                             let mut woke = false;
@@ -12489,7 +12477,10 @@ impl ApplicationHandler for App {
         // restages the freshly-built binary and respawns us with
         // `--relaunched`. Abrupt exit is fine: state is saved on events, and
         // the OS reclaims the window/GPU surface.
-        if state.relaunch_flag.load(std::sync::atomic::Ordering::Relaxed) {
+        if state
+            .relaunch_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             tracing::info!("relaunch requested; exiting 75 for supervisor respawn");
             state.persist_resume_state();
             // We currently own the OS foreground, so we're allowed to hand the
@@ -12553,7 +12544,11 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            WindowEvent::MouseInput { state: btn_state, button, .. } => {
+            WindowEvent::MouseInput {
+                state: btn_state,
+                button,
+                ..
+            } => {
                 if button == MouseButton::Left {
                     match btn_state {
                         ElementState::Pressed => {
@@ -12563,9 +12558,7 @@ impl ApplicationHandler for App {
                             // land in the LLM arm. Outside the pane: clear
                             // any existing selection so a click elsewhere
                             // dismisses the highlight.
-                            if let Some(cell) =
-                                state.llm_cell_at_px(state.cursor_px, true)
-                            {
+                            if let Some(cell) = state.llm_cell_at_px(state.cursor_px, true) {
                                 state.focus = PaneFocus::Llm;
                                 state.llm_selection = Some((cell, cell));
                                 state.llm_drag_active = true;
@@ -12614,8 +12607,7 @@ impl ApplicationHandler for App {
                         0.0
                     };
                     if h_px.abs() > 0.0 {
-                        state.md_table_scroll_px =
-                            (state.md_table_scroll_px + h_px).max(0.0);
+                        state.md_table_scroll_px = (state.md_table_scroll_px + h_px).max(0.0);
                         state.window.request_redraw();
                         return;
                     }
@@ -12808,9 +12800,13 @@ impl ApplicationHandler for App {
                 // it's there when wifi comes back and the user
                 // doesn't want to wait the up-to-5s backoff cap.
                 if !event.repeat
-                    && state
-                        .bindings
-                        .matches(Action::Reconnect, &event.logical_key, ctrl, alt, shift)
+                    && state.bindings.matches(
+                        Action::Reconnect,
+                        &event.logical_key,
+                        ctrl,
+                        alt,
+                        shift,
+                    )
                 {
                     state.reconnect_now.notify_one();
                     state.last_key = Some(label);
@@ -12823,9 +12819,13 @@ impl ApplicationHandler for App {
                 // (Ctrl+F clashes with readline forward-char in the
                 // LLM shell, so we avoid it).
                 if !event.repeat
-                    && state
-                        .bindings
-                        .matches(Action::ToggleFullscreen, &event.logical_key, ctrl, alt, shift)
+                    && state.bindings.matches(
+                        Action::ToggleFullscreen,
+                        &event.logical_key,
+                        ctrl,
+                        alt,
+                        shift,
+                    )
                 {
                     let new_fs = if state.window.fullscreen().is_some() {
                         None
@@ -12998,10 +12998,13 @@ impl ApplicationHandler for App {
                 // only un-maximises when a pane is actually maximised —
                 // otherwise Esc falls through to the pty / edit mode / etc.
                 if !event.repeat {
-                    if state
-                        .bindings
-                        .matches(Action::MaximizePane, &event.logical_key, ctrl, alt, shift)
-                    {
+                    if state.bindings.matches(
+                        Action::MaximizePane,
+                        &event.logical_key,
+                        ctrl,
+                        alt,
+                        shift,
+                    ) {
                         state.maximized = true;
                         state.last_key = Some(label);
                         state.window.request_redraw();
@@ -13011,9 +13014,13 @@ impl ApplicationHandler for App {
                     // (it's modal); un-maximize resumes once the overlay closes.
                     if state.maximized
                         && !state.help_open
-                        && state
-                            .bindings
-                            .matches(Action::RestoreLayout, &event.logical_key, ctrl, alt, shift)
+                        && state.bindings.matches(
+                            Action::RestoreLayout,
+                            &event.logical_key,
+                            ctrl,
+                            alt,
+                            shift,
+                        )
                     {
                         state.maximized = false;
                         state.last_key = Some(label);
@@ -13058,13 +13065,10 @@ impl ApplicationHandler for App {
                     // ANY pane — including the terminal/REPL drawers, before
                     // keystrokes route into a pty. The readback runs in the
                     // render loop on the next frame (request_redraw below).
-                    if state.bindings.matches(
-                        Action::Selfie,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    if state
+                        .bindings
+                        .matches(Action::Selfie, &event.logical_key, ctrl, alt, shift)
+                    {
                         state.selfie_pending = Some(selfie_path());
                         state.last_key = Some(label);
                         state.window.request_redraw();
@@ -13127,18 +13131,20 @@ impl ApplicationHandler for App {
                         // 0020): subscribe + prefill on open, unsubscribe on
                         // close. Backend sampling is always-on; this just gates
                         // this connection's live stream to when the drawer is up.
-                        if state.drawer == DrawerContent::Monitor && !state.monitor_view.subscribed {
+                        if state.drawer == DrawerContent::Monitor && !state.monitor_view.subscribed
+                        {
                             let _ = state
                                 .req_tx
                                 .send(crate::transport::OutgoingReq::MonitorSubscribe);
-                            let _ = state.req_tx.send(
-                                crate::transport::OutgoingReq::MonitorHistory {
-                                    window_s: 300.0,
-                                    points: 300,
-                                    until: None,
-                                    host: None,
-                                },
-                            );
+                            let _ =
+                                state
+                                    .req_tx
+                                    .send(crate::transport::OutgoingReq::MonitorHistory {
+                                        window_s: 300.0,
+                                        points: 300,
+                                        until: None,
+                                        host: None,
+                                    });
                             state.monitor_view.subscribed = true;
                             state.monitor_dirty = true;
                         } else if state.drawer != DrawerContent::Monitor
@@ -13207,8 +13213,7 @@ impl ApplicationHandler for App {
                     let step = state.preview_md.body_em().max(8.0);
                     match &event.logical_key {
                         Key::Character(s) if s.as_str() == "h" => {
-                            state.md_table_scroll_px =
-                                (state.md_table_scroll_px - step).max(0.0);
+                            state.md_table_scroll_px = (state.md_table_scroll_px - step).max(0.0);
                             state.window.request_redraw();
                             return;
                         }
@@ -13231,8 +13236,7 @@ impl ApplicationHandler for App {
                         // so PNG previews retain their arrow-driven
                         // pan via the Action::PreviewPngPan* bindings.
                         Key::Named(NamedKey::ArrowLeft) => {
-                            state.md_table_scroll_px =
-                                (state.md_table_scroll_px - step).max(0.0);
+                            state.md_table_scroll_px = (state.md_table_scroll_px - step).max(0.0);
                             state.window.request_redraw();
                             return;
                         }
@@ -13361,10 +13365,7 @@ impl ApplicationHandler for App {
                             // 'y'/'Y' confirms, everything else (incl.
                             // 'n'/'N'/Esc) cancels. CreateFile keeps its
                             // text-input behaviour below — branch on variant.
-                            if matches!(
-                                state.nav_prompt,
-                                Some(NavPrompt::ConfirmDelete { .. })
-                            ) {
+                            if matches!(state.nav_prompt, Some(NavPrompt::ConfirmDelete { .. })) {
                                 match &event.logical_key {
                                     Key::Character(s)
                                         if !ctrl
@@ -13580,17 +13581,35 @@ impl ApplicationHandler for App {
                             // (f/m/s/h) stay literal text everywhere else — this
                             // arm only runs inside the nav-focus match.
                             k if !event.repeat
-                                && state.bindings.matches(Action::ModeFiles, k, ctrl, alt, shift) =>
+                                && state.bindings.matches(
+                                    Action::ModeFiles,
+                                    k,
+                                    ctrl,
+                                    alt,
+                                    shift,
+                                ) =>
                             {
                                 state.enter_mode(Mode::Files);
                             }
                             k if !event.repeat
-                                && state.bindings.matches(Action::ModeModules, k, ctrl, alt, shift) =>
+                                && state.bindings.matches(
+                                    Action::ModeModules,
+                                    k,
+                                    ctrl,
+                                    alt,
+                                    shift,
+                                ) =>
                             {
                                 state.enter_mode(Mode::Modules);
                             }
                             k if !event.repeat
-                                && state.bindings.matches(Action::ModeSessions, k, ctrl, alt, shift) =>
+                                && state.bindings.matches(
+                                    Action::ModeSessions,
+                                    k,
+                                    ctrl,
+                                    alt,
+                                    shift,
+                                ) =>
                             {
                                 state.enter_mode(Mode::Sessions);
                             }
@@ -13608,7 +13627,13 @@ impl ApplicationHandler for App {
                             // side. Cursor on the currently-selected host
                             // is the natural way in.
                             k if !event.repeat
-                                && state.bindings.matches(Action::ModeHosts, k, ctrl, alt, shift) =>
+                                && state.bindings.matches(
+                                    Action::ModeHosts,
+                                    k,
+                                    ctrl,
+                                    alt,
+                                    shift,
+                                ) =>
                             {
                                 state.enter_mode(Mode::Hosts);
                             }
@@ -13617,7 +13642,13 @@ impl ApplicationHandler for App {
                             // literal text in the pty/editor/prompts). Sends
                             // nav.toggle_hidden + re-fetches the files tree.
                             k if !event.repeat
-                                && state.bindings.matches(Action::ToggleHidden, k, ctrl, alt, shift) =>
+                                && state.bindings.matches(
+                                    Action::ToggleHidden,
+                                    k,
+                                    ctrl,
+                                    alt,
+                                    shift,
+                                ) =>
                             {
                                 state.toggle_hidden_files();
                             }
@@ -13633,7 +13664,8 @@ impl ApplicationHandler for App {
                             // handler). Default workspace is rejected
                             // backend-side; that surface as a status
                             // error.
-                            Key::Character(s) if !event.repeat
+                            Key::Character(s)
+                                if !event.repeat
                                 // caps-lock-immune: Shift+d under Caps Lock arrives as "d"
                                 && (s.as_str() == "D" || (shift && s.eq_ignore_ascii_case("D")))
                                 && matches!(state.mode, Mode::Sessions) =>
@@ -13665,14 +13697,15 @@ impl ApplicationHandler for App {
                                     return;
                                 };
                                 if was_destroy_pending.as_deref() == Some(target_id.as_str()) {
-                                    if let Err(e) =
-                                        state.req_tx.send(crate::transport::OutgoingReq::WorkspaceDestroy {
+                                    if let Err(e) = state.req_tx.send(
+                                        crate::transport::OutgoingReq::WorkspaceDestroy {
                                             workspace_id: target_id.clone(),
-                                        })
-                                    {
+                                        },
+                                    ) {
                                         tracing::warn!(error = %e, "drop workspace.destroy");
-                                        state.status =
-                                            format!("destroy '{target_label}' failed · channel closed");
+                                        state.status = format!(
+                                            "destroy '{target_label}' failed · channel closed"
+                                        );
                                     } else {
                                         state.status = format!("destroying '{target_label}'…");
                                     }
@@ -13717,7 +13750,8 @@ impl ApplicationHandler for App {
                             // host; `o` is the fast no-execute path.
                             Key::Character(s)
                                 if !event.repeat
-                                    && (s.as_str() == "O" || (shift && s.eq_ignore_ascii_case("O"))) =>
+                                    && (s.as_str() == "O"
+                                        || (shift && s.eq_ignore_ascii_case("O"))) =>
                             {
                                 let cursored = state.cursored_files_path();
                                 state.quarto_open_execute(cursored);
@@ -13749,8 +13783,7 @@ impl ApplicationHandler for App {
                             // drawer. Future: mirror the last image
                             // frame to the preview pane (TODO row 161).
                             Key::Character(s)
-                                if !event.repeat
-                                    && (s.as_str() == "r" || s.as_str() == "R") =>
+                                if !event.repeat && (s.as_str() == "r" || s.as_str() == "R") =>
                             {
                                 let Some(abs) = state.cursored_files_path() else {
                                     return;
@@ -13787,8 +13820,7 @@ impl ApplicationHandler for App {
                                 // ReplRunFileDone reply can splice frames in by
                                 // eval_id and the drawer scrollback shows the
                                 // run's output alongside everything else.
-                                state.repl_eval_counter =
-                                    state.repl_eval_counter.saturating_add(1);
+                                state.repl_eval_counter = state.repl_eval_counter.saturating_add(1);
                                 let eval_id = state.repl_eval_counter;
                                 let workspace_key = state.current_workspace_key();
                                 state
@@ -13807,30 +13839,26 @@ impl ApplicationHandler for App {
                                     in_flight: true,
                                     pkg_mode: false,
                                 });
-                                if let Err(e) = state.req_tx.send(
-                                    crate::transport::OutgoingReq::ReplRunFile {
-                                        eval_id,
-                                        path: abs.clone(),
-                                        fresh,
-                                        workspace_id: state.active_workspace_id.clone(),
-                                    },
-                                ) {
+                                if let Err(e) =
+                                    state
+                                        .req_tx
+                                        .send(crate::transport::OutgoingReq::ReplRunFile {
+                                            eval_id,
+                                            path: abs.clone(),
+                                            fresh,
+                                            workspace_id: state.active_workspace_id.clone(),
+                                        })
+                                {
                                     tracing::warn!(error = %e,
                                         "failed to dispatch repl.run_file");
-                                    if let Some(entry) = state
-                                        .repl_log
-                                        .iter_mut()
-                                        .find(|e| e.eval_id == eval_id)
+                                    if let Some(entry) =
+                                        state.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                                     {
                                         entry.in_flight = false;
-                                        entry.frames.push(
-                                            sot_protocol::ReplFrame::Error {
-                                                message: format!(
-                                                    "transport channel closed: {e}"
-                                                ),
-                                                stacktrace: Vec::new(),
-                                            },
-                                        );
+                                        entry.frames.push(sot_protocol::ReplFrame::Error {
+                                            message: format!("transport channel closed: {e}"),
+                                            stacktrace: Vec::new(),
+                                        });
                                     }
                                     state.status = format!(
                                         "repl.run_file '{basename}' failed · channel closed"
@@ -13839,8 +13867,7 @@ impl ApplicationHandler for App {
                                     state.status =
                                         format!("running '{basename}' (resetting REPL …)");
                                 } else {
-                                    state.status =
-                                        format!("running '{basename}' (existing repl)");
+                                    state.status = format!("running '{basename}' (existing repl)");
                                 }
                                 // Auto-open (or switch to) the REPL drawer so
                                 // the run's output is visible (settings-gated,
@@ -13913,8 +13940,7 @@ impl ApplicationHandler for App {
                                 // `\n`; embedded newlines stay in the buffer
                                 // (Shift+Enter inserts them too) and the user
                                 // submits with Enter.
-                                let normalized =
-                                    text.replace("\r\n", "\n").replace('\r', "\n");
+                                let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
                                 state.repl_input.push_str(&normalized);
                                 state.repl_scroll = 0;
                             }
@@ -13953,9 +13979,7 @@ impl ApplicationHandler for App {
                                     _ => {}
                                 }
                             }
-                            if let Some(bytes) =
-                                key_to_pty_bytes(&event.logical_key, ctrl)
-                            {
+                            if let Some(bytes) = key_to_pty_bytes(&event.logical_key, ctrl) {
                                 if let Some(t) = state.local_term.as_mut() {
                                     t.send_input(&bytes);
                                 }
@@ -14018,9 +14042,7 @@ impl ApplicationHandler for App {
                                 if state.repl_log.iter().any(|e| e.in_flight) {
                                     if let Err(e) = state.req_tx.send(
                                         crate::transport::OutgoingReq::ReplInterrupt {
-                                            workspace_id: state
-                                                .active_workspace_id
-                                                .clone(),
+                                            workspace_id: state.active_workspace_id.clone(),
                                         },
                                     ) {
                                         tracing::warn!(error = %e, "drop repl.interrupt - channel closed");
@@ -14136,8 +14158,7 @@ impl ApplicationHandler for App {
                             // 1/3-pane step here too so the editor's
                             // cursor doesn't blow past visible context
                             // on PgUp/PgDn.
-                            let page_rows =
-                                (state.pane_rects.preview.height as usize / 3).max(1);
+                            let page_rows = (state.pane_rects.preview.height as usize / 3).max(1);
                             // When the discard-confirm modal is up,
                             // the key handler is just y/n/Esc. Any
                             // other key dismisses the modal and
@@ -14156,8 +14177,9 @@ impl ApplicationHandler for App {
                                         state.edit_state = None;
                                         state.preview_edit = None;
                                     }
-                                    Key::Character(s) if !event.repeat
-                                        && s.as_str().eq_ignore_ascii_case("y") =>
+                                    Key::Character(s)
+                                        if !event.repeat
+                                            && s.as_str().eq_ignore_ascii_case("y") =>
                                     {
                                         state.edit_state = None;
                                         state.preview_edit = None;
@@ -14177,8 +14199,9 @@ impl ApplicationHandler for App {
                             // file changes or the user reloads.
                             if edit.stale_banner {
                                 match &event.logical_key {
-                                    Key::Character(s) if !event.repeat
-                                        && s.as_str().eq_ignore_ascii_case("r") =>
+                                    Key::Character(s)
+                                        if !event.repeat
+                                            && s.as_str().eq_ignore_ascii_case("r") =>
                                     {
                                         // Reload from disk, discarding edits. For
                                         // a file edit re-fire file.read (the
@@ -14189,28 +14212,31 @@ impl ApplicationHandler for App {
                                         let ws = state.active_workspace_id.clone();
                                         if let Some(node_id) = edit.file_node_id.clone() {
                                             state.pending_file_edit = Some(node_id.clone());
-                                            if let Err(e) = state.req_tx.send(OutgoingReq::FileRead {
-                                                node_id,
-                                                workspace_id: ws,
-                                            }) {
+                                            if let Err(e) =
+                                                state.req_tx.send(OutgoingReq::FileRead {
+                                                    node_id,
+                                                    workspace_id: ws,
+                                                })
+                                            {
                                                 tracing::warn!(error = %e,
                                                     "drop file.read for stale reload");
                                             }
                                         } else {
                                             let target = edit.target.clone();
-                                            if let Err(e) = state.req_tx.send(
-                                                OutgoingReq::ConceptRead {
+                                            if let Err(e) =
+                                                state.req_tx.send(OutgoingReq::ConceptRead {
                                                     target,
                                                     workspace_id: ws,
-                                                },
-                                            ) {
+                                                })
+                                            {
                                                 tracing::warn!(error = %e,
                                                     "drop concept.read for stale reload");
                                             }
                                         }
                                     }
-                                    Key::Character(s) if !event.repeat
-                                        && s.as_str().eq_ignore_ascii_case("k") =>
+                                    Key::Character(s)
+                                        if !event.repeat
+                                            && s.as_str().eq_ignore_ascii_case("k") =>
                                     {
                                         edit.stale_banner = false;
                                     }
@@ -14347,14 +14373,11 @@ impl ApplicationHandler for App {
                                 // Normalize line endings to the buffer's `\n`
                                 // convention (Enter inserts `\n`).
                                 Key::Character(s)
-                                    if (ctrl || super_)
-                                        && s.as_str().eq_ignore_ascii_case("v") =>
+                                    if (ctrl || super_) && s.as_str().eq_ignore_ascii_case("v") =>
                                 {
                                     if let Some(text) = read_clipboard_text() {
                                         edit.buf.insert_str(
-                                            &text
-                                                .replace("\r\n", "\n")
-                                                .replace('\r', "\n"),
+                                            &text.replace("\r\n", "\n").replace('\r', "\n"),
                                         );
                                         buf_changed = true;
                                     }
@@ -14363,9 +14386,7 @@ impl ApplicationHandler for App {
                                 Key::Named(NamedKey::Insert) if shift => {
                                     if let Some(text) = read_clipboard_text() {
                                         edit.buf.insert_str(
-                                            &text
-                                                .replace("\r\n", "\n")
-                                                .replace('\r', "\n"),
+                                            &text.replace("\r\n", "\n").replace('\r', "\n"),
                                         );
                                         buf_changed = true;
                                     }
@@ -14568,7 +14589,11 @@ impl ApplicationHandler for App {
                                 let cur = state.preview_png_zoom;
                                 let raw_next = if cur < 1.5 {
                                     let raw = cur * ZOOM_STEP;
-                                    if raw >= 1.5 { 2.0 } else { raw }
+                                    if raw >= 1.5 {
+                                        2.0
+                                    } else {
+                                        raw
+                                    }
                                 } else {
                                     cur + 1.0
                                 };
@@ -14585,7 +14610,11 @@ impl ApplicationHandler for App {
                                 let cur = state.preview_png_zoom;
                                 let next = if cur > 1.5 {
                                     let raw = cur - 1.0;
-                                    if raw < 2.0 { 1.25 } else { raw }
+                                    if raw < 2.0 {
+                                        1.25
+                                    } else {
+                                        raw
+                                    }
                                 } else {
                                     (cur / ZOOM_STEP).max(1.0)
                                 };
@@ -14669,7 +14698,8 @@ impl ApplicationHandler for App {
                             }
                             Key::Character(s)
                                 if !event.repeat
-                                    && (s.as_str() == "W" || (shift && s.eq_ignore_ascii_case("W"))) =>
+                                    && (s.as_str() == "W"
+                                        || (shift && s.eq_ignore_ascii_case("W"))) =>
                             {
                                 let path = state
                                     .previewed_files_path()
@@ -14679,7 +14709,8 @@ impl ApplicationHandler for App {
                             }
                             Key::Character(s)
                                 if !event.repeat
-                                    && (s.as_str() == "O" || (shift && s.eq_ignore_ascii_case("O"))) =>
+                                    && (s.as_str() == "O"
+                                        || (shift && s.eq_ignore_ascii_case("O"))) =>
                             {
                                 let shown = state
                                     .previewed_files_path()
@@ -14691,10 +14722,9 @@ impl ApplicationHandler for App {
                                 // is loaded for the cursored node (content is
                                 // already in `state.concept`).
                                 let mut entered = false;
-                                if let (Some(target), Some(info)) = (
-                                    state.concept_target_fired.clone(),
-                                    state.concept.as_ref(),
-                                ) {
+                                if let (Some(target), Some(info)) =
+                                    (state.concept_target_fired.clone(), state.concept.as_ref())
+                                {
                                     if info.target == target && info.exists {
                                         // Split out frontmatter so the
                                         // editable buffer holds the body
@@ -14702,8 +14732,7 @@ impl ApplicationHandler for App {
                                         // read-only above the edit area
                                         // and is preserved verbatim on
                                         // save.
-                                        let (header, body) =
-                                            split_frontmatter(&info.content);
+                                        let (header, body) = split_frontmatter(&info.content);
                                         state.edit_state = Some(EditState {
                                             target,
                                             expected_ast_hash: info.synced_against.clone(),
@@ -14728,10 +14757,12 @@ impl ApplicationHandler for App {
                                     if let Some(node_id) = state.preview_node_id_fired.clone() {
                                         if node_id.starts_with("files:") {
                                             let ws = state.active_workspace_id.clone();
-                                            if let Err(e) = state.req_tx.send(OutgoingReq::FileRead {
-                                                node_id: node_id.clone(),
-                                                workspace_id: ws,
-                                            }) {
+                                            if let Err(e) =
+                                                state.req_tx.send(OutgoingReq::FileRead {
+                                                    node_id: node_id.clone(),
+                                                    workspace_id: ws,
+                                                })
+                                            {
                                                 tracing::warn!(error = %e, "drop file.read for edit-enter");
                                             } else {
                                                 state.pending_file_edit = Some(node_id);
@@ -14761,12 +14792,10 @@ impl ApplicationHandler for App {
                             // (Action::PreviewPngPanUp/Down) so this
                             // arm only fires for non-PNG content.
                             Key::Named(NamedKey::ArrowUp) => {
-                                state.preview_scroll =
-                                    state.preview_scroll.saturating_sub(1);
+                                state.preview_scroll = state.preview_scroll.saturating_sub(1);
                             }
                             Key::Named(NamedKey::ArrowDown) => {
-                                state.preview_scroll =
-                                    state.preview_scroll.saturating_add(1);
+                                state.preview_scroll = state.preview_scroll.saturating_add(1);
                             }
                             Key::Named(NamedKey::Home) if !event.repeat => {
                                 state.preview_scroll = 0;
@@ -14833,17 +14862,14 @@ impl ApplicationHandler for App {
                             state.window.request_redraw();
                             return;
                         }
-                        let bytes: Option<Vec<u8>> =
-                            key_to_pty_bytes(&event.logical_key, ctrl);
+                        let bytes: Option<Vec<u8>> = key_to_pty_bytes(&event.logical_key, ctrl);
                         if let Some(bytes) = bytes {
                             // Any byte we send to the pty snaps the
                             // view back to live so what the user is
                             // typing is always at the bottom of the
                             // LLM pane next to the prompt.
                             state.pty_scroll = 0;
-                            if let Err(e) =
-                                state.req_tx.send(OutgoingReq::PtyWrite { bytes })
-                            {
+                            if let Err(e) = state.req_tx.send(OutgoingReq::PtyWrite { bytes }) {
                                 tracing::warn!(error = %e, "drop pty.write — channel closed");
                             }
                         }
@@ -15291,8 +15317,7 @@ fn emit_scan_module(
     rows: &mut Vec<TreeRow>,
     parent_id: &str,
 ) {
-    let has_children =
-        !m.types.is_empty() || !m.functions.is_empty() || !m.submodules.is_empty();
+    let has_children = !m.types.is_empty() || !m.functions.is_empty() || !m.submodules.is_empty();
     let id = format!("{}:{}", parent_id, m.name);
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -15326,7 +15351,11 @@ fn emit_scan_module(
             node: TreeNode {
                 id: format!("{}:fn:{}:{}", id, f.name, f.line),
                 label: f.name.clone(),
-                kind: if f.kind.is_empty() { "function".to_string() } else { f.kind.clone() },
+                kind: if f.kind.is_empty() {
+                    "function".to_string()
+                } else {
+                    f.kind.clone()
+                },
                 has_children: false,
                 badges: Vec::new(),
                 payload,
@@ -15364,7 +15393,11 @@ fn emit_scan_type(
         node: TreeNode {
             id: tid.clone(),
             label,
-            kind: if t.kind.is_empty() { "struct".to_string() } else { t.kind.clone() },
+            kind: if t.kind.is_empty() {
+                "struct".to_string()
+            } else {
+                t.kind.clone()
+            },
             has_children,
             badges: Vec::new(),
             payload,
@@ -15434,7 +15467,11 @@ fn key_to_pty_bytes(key: &Key, ctrl: bool) -> Option<Vec<u8>> {
                         out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
                     }
                 }
-                if out.is_empty() { None } else { Some(out) }
+                if out.is_empty() {
+                    None
+                } else {
+                    Some(out)
+                }
             } else {
                 Some(s.as_bytes().to_vec())
             }
@@ -15463,11 +15500,7 @@ fn paint_terminal(
             let contents = cell.contents();
             // Empty cell: nothing to draw — the wireframe / surrounding
             // paint already cleared this area.
-            let glyph = if contents.is_empty() {
-                " "
-            } else {
-                contents
-            };
+            let glyph = if contents.is_empty() { " " } else { contents };
             let mut fg = vt100_color_to_ratatui(cell.fgcolor());
             // Dim on the default foreground would otherwise fall back to
             // the chrome's white default — the Claude Code CLI uses dim
@@ -15691,7 +15724,7 @@ impl AgentTone {
     /// the exact hex.
     fn color(self) -> Color {
         match self {
-            AgentTone::Working => Color::Rgb(56, 152, 38),  // Julia green  #389826
+            AgentTone::Working => Color::Rgb(56, 152, 38), // Julia green  #389826
             AgentTone::Idle => Color::Gray,
             AgentTone::Waiting => Color::Rgb(149, 88, 178), // Julia purple #9558B2
             AgentTone::Blocked => Color::Rgb(203, 60, 51),  // Julia red    #CB3C33
@@ -15960,7 +15993,6 @@ fn allow_next_foreground() {
 ///     but only on the fallback path). No-op on non-Windows targets.
 #[cfg(windows)]
 fn force_os_foreground(window: &winit::window::Window) -> bool {
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
@@ -15969,6 +16001,7 @@ fn force_os_foreground(window: &winit::window::Window) -> bool {
         SetWindowPos, ShowWindow, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE,
         SW_MINIMIZE, SW_RESTORE, SW_SHOW,
     };
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     let Ok(handle) = window.window_handle() else {
         return false;
@@ -16004,12 +16037,18 @@ fn force_os_foreground(window: &winit::window::Window) -> bool {
             AttachThreadInput(our_thread, fg_thread, 0);
         }
         if GetForegroundWindow() == hwnd {
-            tracing::info!(attached, "force_os_foreground: took foreground via attach/topmost");
+            tracing::info!(
+                attached,
+                "force_os_foreground: took foreground via attach/topmost"
+            );
             return true;
         }
         // Hard fallback: minimize→restore is the transition Windows always
         // grants the foreground to. Only reached when the above failed.
-        tracing::info!(attached, "force_os_foreground: attach/topmost failed; trying minimize/restore");
+        tracing::info!(
+            attached,
+            "force_os_foreground: attach/topmost failed; trying minimize/restore"
+        );
         ShowWindow(hwnd, SW_MINIMIZE);
         ShowWindow(hwnd, SW_RESTORE);
         SetForegroundWindow(hwnd);
@@ -16027,7 +16066,10 @@ mod tests {
     // State-nav (ADR 0023): agent work-state tone + staleness aging.
     fn agent_payload(state: &str, status_at: &str) -> serde_json::Map<String, serde_json::Value> {
         let mut p = serde_json::Map::new();
-        p.insert("agent_state".into(), serde_json::Value::String(state.into()));
+        p.insert(
+            "agent_state".into(),
+            serde_json::Value::String(state.into()),
+        );
         p.insert(
             "agent_status_at".into(),
             serde_json::Value::String(status_at.into()),
@@ -16070,7 +16112,7 @@ mod tests {
             .unwrap()
             .with_timezone(&chrono::Utc);
         let old = "2026-06-15T18:40:00Z"; // 20 min ago > AGENT_STALE_MINUTES
-        // A working agent that hasn't re-stamped in >10 min wilts.
+                                          // A working agent that hasn't re-stamped in >10 min wilts.
         assert_eq!(
             agent_tone_for(&agent_payload("working", old), now),
             Some((AgentTone::Working, true))
@@ -16174,16 +16216,16 @@ mod tests {
         assert!(pane_shows_running_claude(
             "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
         ));
-        assert!(pane_shows_running_claude("                    ← for agents"));
+        assert!(pane_shows_running_claude(
+            "                    ← for agents"
+        ));
     }
 
     #[test]
     fn no_false_positive_on_shell_prompt() {
         // A freshly cd'd shell pane — must NOT look like a running claude,
         // else we'd never autostart a genuinely fresh agent.
-        assert!(!pane_shows_running_claude(
-            "user@host:~/dev/some-project$ "
-        ));
+        assert!(!pane_shows_running_claude("user@host:~/dev/some-project$ "));
         assert!(!pane_shows_running_claude(""));
     }
 
@@ -16292,7 +16334,18 @@ mod tests {
         let active = 1;
         // Scroll exactly at the active center → active is screen-centered.
         let scroll = session_strip_target(&labels, active, cell_w);
-        let lines = session_strip_lines(&labels, active, scroll, win_w, cell_w, 500.0, &[], false, &[], &[]);
+        let lines = session_strip_lines(
+            &labels,
+            active,
+            scroll,
+            win_w,
+            cell_w,
+            500.0,
+            &[],
+            false,
+            &[],
+            &[],
+        );
         // All three on-screen here.
         assert_eq!(lines.len(), 3);
         let act = &lines[1];
@@ -16315,8 +16368,22 @@ mod tests {
         let win_w = 300.0;
         let active = 25;
         let scroll = session_strip_target(&labels, active, cell_w);
-        let lines = session_strip_lines(&labels, active, scroll, win_w, cell_w, 500.0, &[], false, &[], &[]);
-        assert!(lines.len() < labels.len(), "off-screen items must be culled");
+        let lines = session_strip_lines(
+            &labels,
+            active,
+            scroll,
+            win_w,
+            cell_w,
+            500.0,
+            &[],
+            false,
+            &[],
+            &[],
+        );
+        assert!(
+            lines.len() < labels.len(),
+            "off-screen items must be culled"
+        );
         // The active one is always present and centered.
         assert!(lines.iter().any(|l| l.bold));
     }
@@ -16334,7 +16401,18 @@ mod tests {
             Some((AgentTone::Working, false)),
             Some((AgentTone::Blocked, false)),
         ];
-        let lines = session_strip_lines(&labels, active, scroll, win_w, cell_w, 500.0, &tones, false, &[], &[]);
+        let lines = session_strip_lines(
+            &labels,
+            active,
+            scroll,
+            win_w,
+            cell_w,
+            500.0,
+            &tones,
+            false,
+            &[],
+            &[],
+        );
         assert_eq!(lines.len(), 3);
         // Active idle keeps the bright default (idle = current colour), bold.
         assert_eq!(lines[0].color, Some((250, 250, 215)));
@@ -16366,19 +16444,45 @@ mod tests {
         ];
         let base = AgentTone::Working.rgb();
         // Bright lever: active (item0) scaled up, non-active (item1) at base.
-        let bright =
-            session_strip_lines(&labels, 0, scroll, win_w, cell_w, 500.0, &tones, false, &[], &[]);
-        assert_eq!(bright[0].color, base.map(|c| scale_rgb(c, CONTRAST_BRIGHT_FACTOR)));
+        let bright = session_strip_lines(
+            &labels,
+            0,
+            scroll,
+            win_w,
+            cell_w,
+            500.0,
+            &tones,
+            false,
+            &[],
+            &[],
+        );
+        assert_eq!(
+            bright[0].color,
+            base.map(|c| scale_rgb(c, CONTRAST_BRIGHT_FACTOR))
+        );
         assert_eq!(bright[1].color, base);
         assert_ne!(
             bright[0].color, bright[1].color,
             "active coloured row must be distinct from a non-active same-tone row"
         );
         // Dim lever: active (item0) at base, non-active (item1) scaled down.
-        let dim =
-            session_strip_lines(&labels, 0, scroll, win_w, cell_w, 500.0, &tones, true, &[], &[]);
+        let dim = session_strip_lines(
+            &labels,
+            0,
+            scroll,
+            win_w,
+            cell_w,
+            500.0,
+            &tones,
+            true,
+            &[],
+            &[],
+        );
         assert_eq!(dim[0].color, base);
-        assert_eq!(dim[1].color, base.map(|c| scale_rgb(c, CONTRAST_DIM_FACTOR)));
+        assert_eq!(
+            dim[1].color,
+            base.map(|c| scale_rgb(c, CONTRAST_DIM_FACTOR))
+        );
         assert_ne!(dim[0].color, dim[1].color);
     }
 
@@ -16389,7 +16493,18 @@ mod tests {
         let cell_w = 10.0;
         let scroll = session_strip_target(&labels, 0, cell_w);
         let tones = vec![Some((AgentTone::Working, true))];
-        let lines = session_strip_lines(&labels, 9, scroll, 800.0, cell_w, 500.0, &tones, false, &[], &[]);
+        let lines = session_strip_lines(
+            &labels,
+            9,
+            scroll,
+            800.0,
+            cell_w,
+            500.0,
+            &tones,
+            false,
+            &[],
+            &[],
+        );
         assert_eq!(lines[0].color, AgentTone::Working.rgb());
         assert!(lines[0].dim, "a wilted working name dims on the strip too");
     }
@@ -16409,8 +16524,7 @@ mod tests {
             "active bright row must be >= base tone and brighter overall"
         );
         // Non-active keeps base, no bold.
-        let (na_rgb, na_bold, _) =
-            contrast_tone_rgb(AgentTone::Working, false, false, false, 0.0);
+        let (na_rgb, na_bold, _) = contrast_tone_rgb(AgentTone::Working, false, false, false, 0.0);
         assert_eq!(na_rgb, Some(base));
         assert!(!na_bold);
     }
@@ -16420,12 +16534,10 @@ mod tests {
         // Dim lever (contrast_dim=true): the active coloured row keeps its
         // base tone + bold; a non-active coloured row is scaled down.
         let base = AgentTone::Blocked.rgb().unwrap();
-        let (act_rgb, act_bold, _) =
-            contrast_tone_rgb(AgentTone::Blocked, false, true, true, 0.0);
+        let (act_rgb, act_bold, _) = contrast_tone_rgb(AgentTone::Blocked, false, true, true, 0.0);
         assert_eq!(act_rgb, Some(base));
         assert!(act_bold);
-        let (na_rgb, na_bold, _) =
-            contrast_tone_rgb(AgentTone::Blocked, false, false, true, 0.0);
+        let (na_rgb, na_bold, _) = contrast_tone_rgb(AgentTone::Blocked, false, false, true, 0.0);
         let na = na_rgb.unwrap();
         assert!(
             na.0 < base.0 && na.1 <= base.1 && na.2 <= base.2,
@@ -16442,7 +16554,18 @@ mod tests {
         let cell_w = 10.0;
         let scroll = session_strip_target(&labels, 0, cell_w);
         let tones: Vec<Option<(AgentTone, bool)>> = vec![None, None];
-        let lines = session_strip_lines(&labels, 0, scroll, 800.0, cell_w, 500.0, &tones, true, &[], &[]);
+        let lines = session_strip_lines(
+            &labels,
+            0,
+            scroll,
+            800.0,
+            cell_w,
+            500.0,
+            &tones,
+            true,
+            &[],
+            &[],
+        );
         // Active plain name stays bright + bold.
         assert_eq!(lines[0].color, Some((250, 250, 215)));
         assert!(lines[0].bold);
@@ -16481,11 +16604,29 @@ mod tests {
             Some((AgentTone::Idle, false)),
         ];
         let lit = session_strip_lines(
-            &labels, 1, scroll, 800.0, cell_w, 500.0, &tones, false, &[1.0, 0.0], &[],
+            &labels,
+            1,
+            scroll,
+            800.0,
+            cell_w,
+            500.0,
+            &tones,
+            false,
+            &[1.0, 0.0],
+            &[],
         );
         assert_eq!(lit[0].color, Some((255, 255, 255)));
         let cold = session_strip_lines(
-            &labels, 1, scroll, 800.0, cell_w, 500.0, &tones, false, &[0.0, 0.0], &[],
+            &labels,
+            1,
+            scroll,
+            800.0,
+            cell_w,
+            500.0,
+            &tones,
+            false,
+            &[0.0, 0.0],
+            &[],
         );
         assert_eq!(cold[0].color, AgentTone::Working.rgb());
     }
@@ -16603,10 +16744,17 @@ mod tests {
             Some("win-fe-host"),
         );
         match route_fe_command(&evt, "win-fe-host") {
-            Some(FeCommand::Preview { workspace, path, urgent }) => {
+            Some(FeCommand::Preview {
+                workspace,
+                path,
+                urgent,
+            }) => {
                 assert_eq!(workspace, "ws");
                 assert_eq!(path, "src/a.jl");
-                assert!(urgent, "directed urgent is carried through (force-show eligible)");
+                assert!(
+                    urgent,
+                    "directed urgent is carried through (force-show eligible)"
+                );
             }
             other => panic!("expected Preview, got {other:?}"),
         }
@@ -16646,7 +16794,11 @@ mod tests {
             Some("win-fe-host"),
         );
         match route_fe_command(&evt, "win-fe-host") {
-            Some(FeCommand::Reveal { workspace, path, urgent }) => {
+            Some(FeCommand::Reveal {
+                workspace,
+                path,
+                urgent,
+            }) => {
                 assert_eq!(workspace, "ws");
                 assert_eq!(path, "src/a.jl");
                 assert!(urgent);
@@ -16657,7 +16809,11 @@ mod tests {
 
     #[test]
     fn route_goto_workspace_maps_to_workspace() {
-        let evt = fe_evt("goto_workspace", serde_json::json!({"workspace": "demo"}), None);
+        let evt = fe_evt(
+            "goto_workspace",
+            serde_json::json!({"workspace": "demo"}),
+            None,
+        );
         match route_fe_command(&evt, "win-fe-host") {
             Some(FeCommand::Workspace { slug, boot }) => {
                 assert_eq!(slug.as_deref(), Some("demo"));
@@ -16670,18 +16826,42 @@ mod tests {
     #[test]
     fn preview_same_ws_decision() {
         // Explicit slug == the active workspace -> render in place.
-        assert!(preview_targets_active_ws(Some("myanalysis"), Some("ship_of_tools"), "myanalysis"));
+        assert!(preview_targets_active_ws(
+            Some("myanalysis"),
+            Some("ship_of_tools"),
+            "myanalysis"
+        ));
         // Explicit slug != active -> NOT same-ws (force-show / badge path).
-        assert!(!preview_targets_active_ws(Some("myanalysis"), Some("ship_of_tools"), "ship_of_tools"));
+        assert!(!preview_targets_active_ws(
+            Some("myanalysis"),
+            Some("ship_of_tools"),
+            "ship_of_tools"
+        ));
         // On the default workspace (active id None): targeting it by slug,
         // or by "default"/"<default>"/"" all resolve to same-ws.
-        assert!(preview_targets_active_ws(None, Some("ship_of_tools"), "ship_of_tools"));
-        assert!(preview_targets_active_ws(None, Some("ship_of_tools"), "default"));
-        assert!(preview_targets_active_ws(None, Some("ship_of_tools"), "<default>"));
+        assert!(preview_targets_active_ws(
+            None,
+            Some("ship_of_tools"),
+            "ship_of_tools"
+        ));
+        assert!(preview_targets_active_ws(
+            None,
+            Some("ship_of_tools"),
+            "default"
+        ));
+        assert!(preview_targets_active_ws(
+            None,
+            Some("ship_of_tools"),
+            "<default>"
+        ));
         assert!(preview_targets_active_ws(None, Some("ship_of_tools"), ""));
         // On a NON-default ws, targeting "default" is a real cross-ws switch,
         // not same-ws (so it must NOT short-circuit to in-place render).
-        assert!(!preview_targets_active_ws(Some("myanalysis"), Some("ship_of_tools"), "default"));
+        assert!(!preview_targets_active_ws(
+            Some("myanalysis"),
+            Some("ship_of_tools"),
+            "default"
+        ));
         // No default slug known yet (pre-hello) + "default" target -> can't
         // resolve, so not same-ws (falls through to the safe badge path).
         assert!(!preview_targets_active_ws(None, None, "default"));
@@ -16782,14 +16962,26 @@ mod tests {
         let tones = vec![None, Some((AgentTone::Working, false))];
         let pendings = vec![false, true];
         let lines = session_strip_lines(
-            &labels, 0, scroll, win_w, cell_w, 500.0, &tones, false, &[], &pendings,
+            &labels,
+            0,
+            scroll,
+            win_w,
+            cell_w,
+            500.0,
+            &tones,
+            false,
+            &[],
+            &pendings,
         );
         assert_eq!(lines.len(), 2);
         // Non-pending name keeps its plain text, no sigil.
         assert!(!lines[0].text.starts_with('●'));
         // Pending name carries the sigil + bright white, overriding the
         // green working tone, and is bold so it pops.
-        assert!(lines[1].text.starts_with('●'), "pending name gets the ● sigil");
+        assert!(
+            lines[1].text.starts_with('●'),
+            "pending name gets the ● sigil"
+        );
         assert_eq!(
             lines[1].color,
             Some((255, 255, 255)),
@@ -16826,7 +17018,10 @@ mod tests {
         let txt = "  \n{\"sot_ui\":{\"v\":1,\"cmd\":\"nav.preview\",\"workspace\":\"w\",\"path\":\"a/b.md\"}}\n ";
         assert_eq!(
             parse_nav_envelope(txt),
-            Some(NavEnvelope { workspace: "w".to_string(), path: "a/b.md".to_string() })
+            Some(NavEnvelope {
+                workspace: "w".to_string(),
+                path: "a/b.md".to_string()
+            })
         );
     }
 
@@ -16844,7 +17039,9 @@ mod tests {
     fn nav_envelope_rejects_wrong_version_cmd_or_missing_fields() {
         // Wrong version.
         assert_eq!(
-            parse_nav_envelope(r#"{"sot_ui":{"v":2,"cmd":"nav.preview","workspace":"w","path":"p"}}"#),
+            parse_nav_envelope(
+                r#"{"sot_ui":{"v":2,"cmd":"nav.preview","workspace":"w","path":"p"}}"#
+            ),
             None
         );
         // Unknown cmd (v1 only handles nav.preview).
@@ -16863,11 +17060,15 @@ mod tests {
         );
         // Empty workspace / path.
         assert_eq!(
-            parse_nav_envelope(r#"{"sot_ui":{"v":1,"cmd":"nav.preview","workspace":"","path":"p"}}"#),
+            parse_nav_envelope(
+                r#"{"sot_ui":{"v":1,"cmd":"nav.preview","workspace":"","path":"p"}}"#
+            ),
             None
         );
         assert_eq!(
-            parse_nav_envelope(r#"{"sot_ui":{"v":1,"cmd":"nav.preview","workspace":"w","path":""}}"#),
+            parse_nav_envelope(
+                r#"{"sot_ui":{"v":1,"cmd":"nav.preview","workspace":"w","path":""}}"#
+            ),
             None
         );
     }
@@ -16972,7 +17173,10 @@ mod tests {
             node("r", "r", true),
             vec![node("a", "a", true), node("b", "b", false)],
         );
-        t.apply_children("a", vec![node("a/1", "a1", false), node("a/2", "a2", false)]);
+        t.apply_children(
+            "a",
+            vec![node("a/1", "a1", false), node("a/2", "a2", false)],
+        );
         // rows: r, a, a1, a2, b
         assert_eq!(
             t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
@@ -17050,7 +17254,11 @@ mod tests {
         t.selected = 2; // on `b`
         t.set_root(
             node("r", "r", true),
-            vec![node("a", "a", false), node("b", "b", false), node("c", "c", false)],
+            vec![
+                node("a", "a", false),
+                node("b", "b", false),
+                node("c", "c", false),
+            ],
         );
         assert_eq!(t.rows[t.selected].node.id, "b");
     }
@@ -17115,7 +17323,10 @@ mod tests {
             vec![node("a", "a", true), node("b", "b", false)],
         );
         t.selected = 2; // on `b`, after the splice point under `a`
-        t.apply_children("a", vec![node("a/1", "a1", false), node("a/2", "a2", false)]);
+        t.apply_children(
+            "a",
+            vec![node("a/1", "a1", false), node("a/2", "a2", false)],
+        );
         // rows: r, a, a/1, a/2, b — cursor follows `b` to its new index
         assert_eq!(t.rows[t.selected].node.id, "b");
         assert_eq!(t.selected, 4);
@@ -17125,9 +17336,12 @@ mod tests {
     fn apply_children_falls_back_to_parent_when_cursored_child_disappears() {
         let mut t = TreeView::new();
         t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
-        t.apply_children("a", vec![node("a/1", "a1", false), node("a/2", "a2", false)]);
+        t.apply_children(
+            "a",
+            vec![node("a/1", "a1", false), node("a/2", "a2", false)],
+        );
         t.selected = 2; // on a/1
-        // Re-apply with a different set; a/1 is gone.
+                        // Re-apply with a different set; a/1 is gone.
         t.apply_children("a", vec![node("a/x", "ax", false)]);
         // rows: r, a, a/x — cursor falls back to the parent (`a`) so the
         // user stays anchored to the surrounding context.
@@ -17140,7 +17354,10 @@ mod tests {
     fn split_frontmatter_returns_header_and_body() {
         let s = "---\ntarget: x\nsynced_against: abc\n---\n# Body\n\nText.\n";
         let (h, b) = split_frontmatter(s);
-        assert_eq!(h.as_deref(), Some("---\ntarget: x\nsynced_against: abc\n---\n"));
+        assert_eq!(
+            h.as_deref(),
+            Some("---\ntarget: x\nsynced_against: abc\n---\n")
+        );
         assert_eq!(b, "# Body\n\nText.\n");
         // Round-trip: header + body == original.
         assert_eq!(h.unwrap() + &b, s);

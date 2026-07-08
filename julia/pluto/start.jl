@@ -10,16 +10,13 @@ session.options.server.port = PORT
 session.options.server.launch_browser = false
 session.options.server.show_file_system = false
 session.options.server.disable_writing_notebook_files = false
-session.options.security.require_secret_for_open_links = false
 # Access-gated (security review): any local user on this shared host could
 # otherwise reach the Pluto UI and run code as the daemon's owner — an RCE
 # as bad as an open protocol port. `require_secret_for_access = true` makes
 # every request need `session.secret` (URL query param or the cookie Pluto
 # sets after the first authenticated hit); the `URL` line below appends it,
 # so the `o`-opens-Pluto flow keeps working with no frontend change.
-# `require_secret_for_open_links` can stay false: once access itself is
-# gated, `auth_required` OSes it regardless (see Pluto's Authentication.jl),
-# so it's a no-op here, not a second hole.
+session.options.security.require_secret_for_open_links = true
 session.options.security.require_secret_for_access = true
 session.options.security.warn_about_untrusted_code = true
 
@@ -41,6 +38,8 @@ end
 println(stdout, "READY http://$(HOST):$(PORT)")
 flush(stdout)
 
+edit_url(nb) = "http://$(HOST):$(PORT)/edit?secret=$(session.secret)&id=$(nb.notebook_id)"
+
 # Service loop: read OPEN <abspath> requests on stdin, write URL <url> or
 # ERR <msg> on stdout. Stays alive until stdin closes.
 for line in eachline(stdin)
@@ -51,18 +50,22 @@ for line in eachline(stdin)
         try
             nb = Pluto.SessionActions.open(session, path; run_async=true)
             # `session.secret` is the same query-param secret
-            # `require_secret_for_access` now demands on every request; embed
-            # it here rather than in the Rust supervisor since Julia already
-            # holds it and builds this URL.
-            url = "http://$(HOST):$(PORT)/edit?id=$(nb.notebook_id)&secret=$(session.secret)"
-            println(stdout, "URL $url")
+            # `require_secret_for_access` now demands on every request. Keep it
+            # before `id`: older Windows FEs using `cmd /c start` split URLs on
+            # `&`, and a secret-first truncation still authenticates Pluto.
+            println(stdout, "URL $(edit_url(nb))")
             flush(stdout)
         catch e
-            msg = sprint(showerror, e)
-            # Collapse newlines so the single-line wire stays one line.
-            msg = replace(msg, '\n' => ' ')
-            println(stdout, "ERR $msg")
-            flush(stdout)
+            if e isa Pluto.SessionActions.NotebookIsRunningException
+                println(stdout, "URL $(edit_url(e.notebook))")
+                flush(stdout)
+            else
+                msg = sprint(showerror, e)
+                # Collapse newlines so the single-line wire stays one line.
+                msg = replace(msg, '\n' => ' ')
+                println(stdout, "ERR $msg")
+                flush(stdout)
+            end
         end
     else
         println(stdout, "ERR unknown command: $line")
