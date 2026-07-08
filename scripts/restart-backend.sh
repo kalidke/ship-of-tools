@@ -45,6 +45,11 @@ socket_open() {
     [ -S "$SOCKET" ] || return 1
     if command -v nc >/dev/null 2>&1; then
         timeout 1 nc -U "$SOCKET" </dev/null >/dev/null 2>&1
+        rc=$?
+        # A reachable backend accepts the connection and then waits for a
+        # hello frame. With empty stdin, nc can sit until timeout; that timeout
+        # still proves the socket accepted a connection.
+        [ "$rc" -eq 0 ] || [ "$rc" -eq 124 ]
         return $?
     fi
     # Minimal environments may not have nc. A socket file proves the daemon
