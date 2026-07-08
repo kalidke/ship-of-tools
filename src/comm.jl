@@ -1,7 +1,8 @@
 # comm.jl — install/update sot-comm, the session-to-session messaging system.
 #
 # Source of truth: comm/ in the repo. install_comm copies the CLI-agnostic core
-# scripts to ~/.sot-comm/bin and each per-CLI adapter to that CLI's dir.
+# scripts to ~/.sot-comm/bin and each per-CLI adapter to that CLI's dir
+# (~/.claude/skills, ~/.codex/skills, ~/.local/bin, hooks/plugins).
 # See comm/PROTOCOL.md for the wire contract.
 #
 # The Claude adapter additionally installs three work-state hooks
@@ -38,8 +39,8 @@ const COMM_DEPRECATED_BIN = String[]
 
 Install sot-comm. Copies the core scripts to `\$SOT_COMM_HOME/bin`
 (default `~/.sot-comm/bin`) and installs the adapter for each CLI in `clis`
-(currently only `:claude`, into `~/.claude/skills/sot-comm/`). Idempotent —
-safe to re-run to update an existing install.
+(`:claude` skills/hooks, `:codex` skills/hooks/plugin). Idempotent — safe to
+re-run to update an existing install.
 """
 function install_comm(; clis = [:claude, :codex])
     bin = joinpath(comm_home(), "bin")
@@ -102,6 +103,20 @@ function _install_adapter(cli::Symbol)
         # deploy above.
         srcdir = joinpath(COMM_SRC, "adapters", "codex")
         isdir(srcdir) || return nothing
+        skills_src = joinpath(srcdir, "skills")
+        if isdir(skills_src)
+            skillsroot = joinpath(homedir(), ".codex", "skills")
+            installed = String[]
+            for name in readdir(skills_src)
+                src = joinpath(skills_src, name, "SKILL.md")
+                isfile(src) || continue
+                dst = joinpath(skillsroot, name)
+                mkpath(dst)
+                cp(src, joinpath(dst, "SKILL.md"); force = true)
+                push!(installed, name)
+            end
+            @info "Installed Codex skills" skills = installed dir = skillsroot
+        end
         _install_launchers(joinpath(srcdir, "bin"))
         hookssrc = joinpath(srcdir, "hooks")
         if isdir(hookssrc)

@@ -27,29 +27,13 @@ ensure_home
 
 ENDPOINT="${SOT_RELAY_ENDPOINT:-}"
 resolve_endpoint() {
-    [ -n "$ENDPOINT" ] && { echo "$ENDPOINT"; return 0; }
-    [ -n "${SOT_SPAWN_ENDPOINT:-}" ] && { echo "$SOT_SPAWN_ENDPOINT"; return 0; }
-    [ -n "${SOT_SOCKET:-}" ] && { echo "unix:$SOT_SOCKET"; return 0; }
-    # Match ONLY a real daemon invocation — one that carries a `--tcp`/`--socket`
-    # launch flag, which our own relay/spawn/listen processes never do. Without
-    # the flag filter, a message that merely CONTAINS the substring "sotd" makes
-    # THIS command's own argv match `sotd`; once the kernel PID
-    # counter has wrapped past pid_max (so a freshly-spawned relay sorts BEFORE
-    # the long-running daemon), `head -1` then picks ourselves — a line with no
-    # `--tcp` — and resolution falsely reports "no daemon found". Excluding the
-    # comm-* scripts by name also covers the rarer message-contains-"--tcp" case.
-    local a; a="$(pgrep -af 'sotd' 2>/dev/null \
-        | grep -Ev 'grep|pgrep|comm-relay|comm-spawn|comm-despawn|comm-listen|comm-watch|comm-poll' \
-        | grep -E -- '--tcp|--socket' | head -1 || true)"
-    if [[ "$a" =~ --tcp[[:space:]]+([^[:space:]]+) ]]; then echo "tcp:${BASH_REMATCH[1]}"; return 0; fi
-    if [[ "$a" =~ --socket[[:space:]]+([^[:space:]]+) ]]; then echo "unix:${BASH_REMATCH[1]}"; return 0; fi
-    return 1
+    sot_daemon_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
 }
 # nc preferred; on hosts without it (e.g. git-bash on Windows, which ships no
 # nc) fall back to bash's /dev/tcp for tcp endpoints. unix-socket endpoints
 # still require nc -U (/dev/tcp can't speak AF_UNIX).
 HAVE_NC=0; command -v nc >/dev/null 2>&1 && HAVE_NC=1
-ENDPOINT="$(resolve_endpoint)" || { echo "ERROR: no sotd daemon found; set SOT_RELAY_ENDPOINT=tcp:HOST:PORT" >&2; exit 1; }
+ENDPOINT="$(resolve_endpoint)" || { echo "ERROR: no sotd daemon found; set SOT_RELAY_ENDPOINT=unix:/path or tcp:HOST:PORT" >&2; exit 1; }
 EP_HOST=""; EP_PORT=""; EP_UNIX=""
 case "$ENDPOINT" in
     tcp:*)  hp="${ENDPOINT#tcp:}"; EP_HOST="${hp%:*}"; EP_PORT="${hp##*:}" ;;

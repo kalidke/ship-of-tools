@@ -93,15 +93,22 @@ case "$MODE" in
         # error bash can't 2>/dev/null-suppress (it fires before the fd dup) —
         # cosmetic, but it derailed a real first-join diagnosis. Append-touch.
         : >> "$INBOX"
-        EP="${SOT_RELAY_ENDPOINT:-}"
-        if [ -z "$EP" ]; then
-            a="$(pgrep -af 'sotd' 2>/dev/null | grep -v 'grep\|pgrep' | head -1 || true)"
-            if [[ "$a" =~ --tcp[[:space:]]+([^[:space:]]+) ]]; then EP="tcp:${BASH_REMATCH[1]}"; fi
-        fi
+        EP="$(sot_daemon_endpoint "${SOT_RELAY_ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}")" \
+            || { echo "selftest @$NAME: no daemon endpoint found (set SOT_RELAY_ENDPOINT=unix:/path or tcp:HOST:PORT)" >&2; exit 1; }
+        SH=""; SP=""; SU=""
         case "$EP" in
-            tcp:*) hp="${EP#tcp:}"; SH="${hp%:*}"; SP="${hp##*:}" ;;
-            *) echo "selftest @$NAME: no TCP daemon endpoint found (got '${EP:-none}')" >&2; exit 1 ;;
+            tcp:*)  hp="${EP#tcp:}"; SH="${hp%:*}"; SP="${hp##*:}" ;;
+            unix:*) SU="${EP#unix:}" ;;
+            *) echo "selftest @$NAME: bad daemon endpoint '$EP'" >&2; exit 1 ;;
         esac
+        _selftest_hello() {
+            local _tok; _tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
+            printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":1,"app_version":"comm","token":"%s"}}\n' "$_tok"
+        }
+        _selftest_frames() {
+            _selftest_hello
+            printf '%s\n' "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"agent.send\",\"payload\":{\"from\":\"__selftest__\",\"to\":\"$NAME\",\"text\":\"receive-path self-test\"}}"
+        }
         _inject() {
             # The connect MUST live in a subshell: `exec` with redirections
             # only EXITS a non-interactive shell on a failed redirect — the
@@ -110,18 +117,28 @@ case "$MODE" in
             # kill site from the 2026-06-11 fresh-join report). In a subshell
             # the death is contained and surfaces as a normal probe failure,
             # which routes into the restart + diagnostics path as designed.
-            (
-                exec 8<>"/dev/tcp/$SH/$SP" 2>/dev/null || exit 1
-                # Auth the injector connection (ADR 0010 hardening): a token-valid
-                # hello must precede the agent.send, else the gated daemon rejects it.
-                _tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
-                printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":1,"app_version":"comm","token":"%s"}}\n' "$_tok" >&8
-                printf '%s\n' "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"agent.send\",\"payload\":{\"from\":\"__selftest__\",\"to\":\"$NAME\",\"text\":\"receive-path self-test\"}}" >&8
-                timeout 3 cat <&8 >/dev/null 2>&1 || true
-                exec 8<&- 8>&- 2>/dev/null || true
-            ) 2>/dev/null || return 1
+            if [ -n "$SH" ]; then
+                (
+                    exec 8<>"/dev/tcp/$SH/$SP" 2>/dev/null || exit 1
+                    _selftest_frames >&8
+                    timeout 3 cat <&8 >/dev/null 2>&1 || true
+                    exec 8<&- 8>&- 2>/dev/null || true
+                ) 2>/dev/null || return 1
+                return 0
+            fi
+            command -v nc >/dev/null 2>&1 || return 1
+            if _selftest_frames | timeout 3 nc -U "$SU" >/dev/null 2>&1; then
+                return 0
+            else
+                rc=$?
+                [ "$rc" -eq 124 ] && return 0
+                return 1
+            fi
         }
-        _estab() { ss -tn 2>/dev/null | awk -v p="127.0.0.1:$SP" '$1=="ESTAB" && $5==p{f=1} END{exit f?0:1}'; }
+        _estab() {
+            [ -n "$SH" ] || return 0
+            ss -tn 2>/dev/null | awk -v p="127.0.0.1:$SP" '$1=="ESTAB" && $5==p{f=1} END{exit f?0:1}'
+        }
         # Is the daemon itself reachable? A bare TCP connect to the resolved
         # endpoint, independent of whether our bridge has come up. This is the
         # discriminator: a failing probe with a REACHABLE daemon is a cold-start
@@ -130,8 +147,20 @@ case "$MODE" in
         # for the same reason _inject does (a redirections-only `exec` that fails
         # EXITS a non-interactive shell rather than running the `||`).
         _daemon_reachable() {
-            ( exec 3<>"/dev/tcp/$SH/$SP" 2>/dev/null || exit 1
-              exec 3<&- 3>&- 2>/dev/null || true ) 2>/dev/null
+            if [ -n "$SH" ]; then
+                ( exec 3<>"/dev/tcp/$SH/$SP" 2>/dev/null || exit 1
+                  exec 3<&- 3>&- 2>/dev/null || true ) 2>/dev/null
+                return $?
+            fi
+            [ -S "$SU" ] || return 1
+            command -v nc >/dev/null 2>&1 || return 1
+            if _selftest_hello | timeout 3 nc -U "$SU" >/dev/null 2>&1; then
+                return 0
+            else
+                rc=$?
+                [ "$rc" -eq 124 ] && return 0
+                return 1
+            fi
         }
         # _probe injects once and re-injects mid-wait: on a cold start the bridge
         # may not be ESTAB when the first frame is sent, so that frame is lost to

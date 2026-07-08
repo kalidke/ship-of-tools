@@ -125,6 +125,66 @@ sot_tmux_socket() {
     printf '%s\n' "$sock"
 }
 
+# sot_daemon_endpoint [EXPLICIT] — resolve the control socket endpoint used by
+# comm relay/spawn/FE commands. Explicit endpoints keep their old behavior; the
+# socket-only default is discovered by asking sotd for the label-derived socket.
+sot_daemon_endpoint() {
+    local explicit="${1:-}"
+    [ -n "$explicit" ] && { printf '%s\n' "$explicit"; return 0; }
+    [ -n "${SOT_SOCKET:-}" ] && { printf 'unix:%s\n' "$SOT_SOCKET"; return 0; }
+
+    # Keep compatibility with development daemons launched with explicit
+    # transport flags.
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+            *comm-relay*|*comm-spawn*|*comm-despawn*|*comm-listen*|*comm-watch*|*comm-poll*|*sot-fe*|*sot-nav*)
+                continue
+                ;;
+        esac
+        if [[ "$line" =~ --tcp[[:space:]]+([^[:space:]]+) ]]; then
+            printf 'tcp:%s\n' "${BASH_REMATCH[1]}"
+            return 0
+        fi
+        if [[ "$line" =~ --socket[[:space:]]+([^[:space:]]+) ]]; then
+            printf 'unix:%s\n' "${BASH_REMATCH[1]}"
+            return 0
+        fi
+    done < <(pgrep -af 'sotd' 2>/dev/null || true)
+
+    # Normal socket-only mode: the daemon may have only --label on argv, so
+    # there is no transport flag to scrape. Query the same binary family the
+    # installer/launcher uses. The default label is the product backend label;
+    # override with SOT_BACKEND_LABEL for a non-default session.
+    local label="${SOT_BACKEND_LABEL:-sot}"
+    local bin sock
+    _try_sotd_socket_bin() {
+        local candidate="$1"
+        [ -n "$candidate" ] || return 1
+        [ -x "$candidate" ] || return 1
+        sock="$("$candidate" session-socket-path "$label" 2>/dev/null || true)"
+        [ -n "$sock" ] && [ -S "$sock" ] || return 1
+        printf 'unix:%s\n' "$sock"
+        return 0
+    }
+
+    _try_sotd_socket_bin "${SOTD_BIN:-}" && return 0
+    bin="$(command -v sotd 2>/dev/null || true)"
+    _try_sotd_socket_bin "$bin" && return 0
+    _try_sotd_socket_bin "$HOME/.local/share/sot/bin/sotd" && return 0
+    _try_sotd_socket_bin "$HOME/.local/bin/sotd" && return 0
+
+    while IFS= read -r line; do
+        local pid="${line%% *}"
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        [ -r "/proc/$pid/exe" ] || continue
+        bin="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+        _try_sotd_socket_bin "$bin" && return 0
+    done < <(pgrep -af 'sotd' 2>/dev/null || true)
+
+    return 1
+}
+
 ensure_home() {
     mkdir -p "$COMM_HOME" "$INBOX_DIR" "$SELF_DIR" "$READ_DIR"
     if [ ! -f "$REGISTRY" ]; then

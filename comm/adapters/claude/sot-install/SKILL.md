@@ -1,13 +1,14 @@
 ---
 name: sot-install
-description: Install or update Ship of Tools' Claude resources (the sot-comm session-to-session messaging skill + scripts) from the package into ~/.claude and ~/.sot-comm. Idempotent. Run after pulling the Ship of Tools repo on a machine to close version skew. Activates for "install sot", "update sot comm", "sync sot", "sot install", "reinstall comm".
+description: Install or update Ship of Tools agent resources (Claude Code skills, Codex skills/hooks, and sot-comm scripts) from the package into ~/.claude, ~/.codex, ~/.local/bin, and ~/.sot-comm. Idempotent. Run after pulling the Ship of Tools repo on a machine to close version skew. Activates for "install sot", "update sot comm", "sync sot", "sot install", "reinstall comm".
 ---
 
 # sot-install
 
-Sync Ship of Tools' Claude-side resources from the package source into your home dir.
+Sync Ship of Tools' agent-side resources from the package source into your home dir.
 This wraps `ShipTools.install_comm()` — copies the comm scripts to
-`~/.sot-comm/bin/` and the per-CLI skills to `~/.claude/skills/`. Idempotent:
+`~/.sot-comm/bin/`, Claude Code skills to `~/.claude/skills/`, and Codex skills
+to `~/.codex/skills/`. Idempotent:
 running it again updates an existing install.
 
 ## Run this
@@ -23,9 +24,13 @@ If Ship of Tools is in the global env instead of a local checkout, drop `--proje
 This:
 1. Copies `comm/core/scripts/*` → `~/.sot-comm/bin/`
 2. Copies the Claude skill adapters (`sot-comm`, `sot-install`,
-   `sot-session-start`, `sot-be-session-start`) → `~/.claude/skills/`
-3. Installs launcher commands (`ccb`, `ccbe`) → `~/.local/bin/`
-4. Stamps/checks the protocol version
+   `sot-session-start`, `sot-be-session-start`, `sot-fe-session-start`) →
+   `~/.claude/skills/`
+3. Copies Codex skills (`sot-comm`, `sot-session-start`,
+   `sot-be-session-start`, `sot-fe-session-start`) → `~/.codex/skills/`
+4. Installs launcher commands (`ccb`, `ccbe`, `ccx`) → `~/.local/bin/`
+5. Installs state-nav hooks/plugin wiring for Claude Code and Codex
+6. Stamps/checks the protocol version
 
 ## After install
 

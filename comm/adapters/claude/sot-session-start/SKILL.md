@@ -117,10 +117,14 @@ wake in a single shot (this replaces the old two-selftest dance):
 - Inline, expect `selftest @<handle>: receive path OK` (or `RECOVERED after
   restart`). Exit codes: **0** OK; **3** = daemon reachable but bridge still
   connecting (cold start — *benign*, re-run `comm-listen.sh --selftest` in a few
-  seconds; this is NOT a daemon problem); **1** = daemon unreachable (set
-  `SOT_RELAY_ENDPOINT=tcp:HOST:PORT` if it's remote, or confirm the relay host
-  is up). The selftest now TCP-probes the daemon directly before ever blaming it,
-  so a cold-start bridge no longer reads as a daemon outage.
+  seconds; this is NOT a daemon problem); **1** = daemon endpoint missing or
+  unreachable. In socket-only mode the scripts auto-discover the backend by
+  querying `sotd session-socket-path ${SOT_BACKEND_LABEL:-sot}` and connecting
+  to that Unix socket. Override only when needed:
+  `SOT_RELAY_ENDPOINT=unix:/path/to/sot.sock` on the backend host, or
+  `SOT_RELAY_ENDPOINT=tcp:127.0.0.1:<local-forward-port>` on a frontend machine
+  whose local port forwards to the remote Unix socket. Do **not** expect a
+  remote `127.0.0.1:18743` listener on socket-only backends.
 - The real proof is the **Monitor notification** `[relay] from __selftest__: …`
   within ~2s — *that event*, not the inline `receive path OK`, confirms your
   session will wake on inbound.

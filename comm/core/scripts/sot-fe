@@ -32,6 +32,8 @@
 #   --endpoint     daemon address; else $SOT_FE_ENDPOINT / $SOT_SPAWN_ENDPOINT /
 #                  $SOT_SOCKET / auto-detected from the running sotd daemon.
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/comm-lib.sh"
 
 if ! command -v jq >/dev/null 2>&1; then
     echo "ERROR: jq not found — needed to build the request payload." >&2; exit 1
@@ -70,22 +72,7 @@ done
 
 # --- resolve the daemon endpoint ---
 resolve_endpoint() {
-    [ -n "$ENDPOINT" ] && { echo "$ENDPOINT"; return 0; }
-    [ -n "${SOT_FE_ENDPOINT:-}" ] && { echo "$SOT_FE_ENDPOINT"; return 0; }
-    [ -n "${SOT_SPAWN_ENDPOINT:-}" ] && { echo "$SOT_SPAWN_ENDPOINT"; return 0; }
-    [ -n "${SOT_SOCKET:-}" ] && { echo "unix:$SOT_SOCKET"; return 0; }
-    # Match ONLY a real daemon invocation — a line carrying a --tcp/--socket
-    # launch flag — and exclude our own comm-*/sot-* argv. Without this, a
-    # message/path containing the substring "sotd" makes this command's own argv
-    # match `sotd`; once kernel PIDs wrap past pid_max a fresh
-    # process sorts before the daemon and `head -1` picks ourselves (the
-    # self-match footgun fixed in comm-relay.sh).
-    local a; a="$(pgrep -af 'sotd' 2>/dev/null \
-        | grep -Ev 'grep|pgrep|comm-relay|comm-spawn|comm-despawn|comm-listen|comm-watch|comm-poll|sot-fe|sot-nav' \
-        | grep -E -- '--tcp|--socket' | head -1 || true)"
-    if [[ "$a" =~ --tcp[[:space:]]+([^[:space:]]+) ]]; then echo "tcp:${BASH_REMATCH[1]}"; return 0; fi
-    if [[ "$a" =~ --socket[[:space:]]+([^[:space:]]+) ]]; then echo "unix:${BASH_REMATCH[1]}"; return 0; fi
-    return 1
+    sot_daemon_endpoint "${ENDPOINT:-${SOT_FE_ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}}"
 }
 
 # Send a frame to the daemon, return the first response line matching op $2.
@@ -134,7 +121,7 @@ sot_send() {
 send_fe_command() {
     local fe_cmd="$1" args_json="$2"
     if ! ENDPOINT="$(resolve_endpoint)"; then
-        echo "ERROR: could not find the sotd daemon. Set --endpoint tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
+        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
         exit 1
     fi
     local payload

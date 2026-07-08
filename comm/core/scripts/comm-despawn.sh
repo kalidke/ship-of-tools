@@ -21,13 +21,7 @@ done
 [ -z "$WHO" ] && { echo "usage: comm-despawn.sh <name|slug|workspace_id> [--endpoint ...]" >&2; exit 1; }
 
 resolve_endpoint() {
-    [ -n "$ENDPOINT" ] && { echo "$ENDPOINT"; return 0; }
-    [ -n "${SOT_SPAWN_ENDPOINT:-}" ] && { echo "$SOT_SPAWN_ENDPOINT"; return 0; }
-    [ -n "${SOT_SOCKET:-}" ] && { echo "unix:$SOT_SOCKET"; return 0; }
-    local a; a="$(pgrep -af 'sotd' 2>/dev/null | grep -v 'grep\|pgrep' | head -1 || true)"
-    if [[ "$a" =~ --tcp[[:space:]]+([^[:space:]]+) ]]; then echo "tcp:${BASH_REMATCH[1]}"; return 0; fi
-    if [[ "$a" =~ --socket[[:space:]]+([^[:space:]]+) ]]; then echo "unix:${BASH_REMATCH[1]}"; return 0; fi
-    return 1
+    sot_daemon_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
 }
 # App-level auth (ADR 0010 hardening): daemon requires a token-valid hello first.
 _sot_hello() {
@@ -53,7 +47,7 @@ fi
 
 # 2) destroy the workspace
 if ! command -v nc >/dev/null 2>&1; then echo "nc not found; cannot reach daemon to destroy workspace" >&2; exit 1; fi
-if ! ENDPOINT="$(resolve_endpoint)"; then echo "ERROR: no sotd daemon found; set --endpoint" >&2; exit 1; fi
+if ! ENDPOINT="$(resolve_endpoint)"; then echo "ERROR: no sotd daemon found; set --endpoint unix:/path or tcp:HOST:PORT" >&2; exit 1; fi
 
 LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list || true)"
 WSID="$(printf '%s' "$LIST" | jq -r --arg w "$WHO" \

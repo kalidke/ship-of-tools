@@ -54,6 +54,27 @@ connected FEs — the `to:` field is an advisory label, **not** enforced routing
   (and `disconnected … connections=N`) on every attach/detach, and returns
   `clients_connected` in `HelloRes`.
 
+## Socket-only relay reality
+
+The backend no longer has to listen on a TCP port. In the normal install it
+listens on the backend user's private Unix socket, discovered with:
+
+```bash
+sotd session-socket-path ${SOT_BACKEND_LABEL:-sot}
+```
+
+The comm scripts auto-detect that socket. Only override the endpoint for unusual
+topologies:
+
+```bash
+export SOT_RELAY_ENDPOINT=unix:/path/to/sot.sock       # backend host
+export SOT_RELAY_ENDPOINT=tcp:127.0.0.1:<local-port>   # FE host local tunnel
+```
+
+Do **not** expect the remote backend to listen on `127.0.0.1:18743`. That port is
+only a frontend-machine tunnel endpoint when a launcher forwards it to the
+remote Unix socket.
+
 ## Step 2 — verify against the frontend(s)
 
 **2a — ping a FE, but DON'T block on it (non-blocking).** Step 1(c) proved your
@@ -62,6 +83,10 @@ don't conflate them. Because the daemon broadcasts, one `send` reaches **all** F
 and any reply confirms reachability — no designated primary needed for roaming.
 `@win-fe` still works as an advisory broadcast label after the per-host migration
 (delivery ignores `to:`); replies come back as `from:win-fe-<host>`.
+Because delivery is daemon-broadcasted, the FE does not need to appear in this
+machine's `~/.sot-comm/registry.json` for this ping to reach an attached
+frontend; the registry is still required for durable `comm-send.sh` delivery
+between backend sessions.
 
 Crucially, **do NOT sit in a ~45s synchronous `ask`** — your Monitor is already
 armed (Step 1(c)), so it will surface a FE reply whenever it lands, even seconds

@@ -114,13 +114,7 @@ TASKMSG=""
 
 # --- resolve the daemon endpoint (workspace mode only) ---
 resolve_endpoint() {
-    [ -n "$ENDPOINT" ] && { echo "$ENDPOINT"; return 0; }
-    [ -n "${SOT_SPAWN_ENDPOINT:-}" ] && { echo "$SOT_SPAWN_ENDPOINT"; return 0; }
-    [ -n "${SOT_SOCKET:-}" ] && { echo "unix:$SOT_SOCKET"; return 0; }
-    local a; a="$(pgrep -af 'sotd' 2>/dev/null | grep -v 'grep\|pgrep' | head -1 || true)"
-    if [[ "$a" =~ --tcp[[:space:]]+([^[:space:]]+) ]]; then echo "tcp:${BASH_REMATCH[1]}"; return 0; fi
-    if [[ "$a" =~ --socket[[:space:]]+([^[:space:]]+) ]]; then echo "unix:${BASH_REMATCH[1]}"; return 0; fi
-    return 1
+    sot_daemon_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
 }
 
 # Send a frame to the daemon, return the first response line matching op $2.
@@ -169,7 +163,7 @@ else
         echo "ERROR: nc not found — needed to reach the daemon. Use --no-workspace for a raw session." >&2; exit 1
     fi
     if ! ENDPOINT="$(resolve_endpoint)"; then
-        echo "ERROR: could not find the sotd daemon. Set --endpoint tcp:HOST:PORT or use --no-workspace." >&2; exit 1
+        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT, or use --no-workspace." >&2; exit 1
     fi
     # task:"" — no brief on the wire; the FE has nothing to paste on attach. Any
     # --task is sent below as an ordinary durable comm message instead.

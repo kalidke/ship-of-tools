@@ -102,9 +102,10 @@ clears two ways:
 
 The git bus and the file inbox are async. For **instant cross-machine** comm
 (Linux ⇄ Windows, which share no filesystem), route through the Ship of Tools
-backend daemon — the one live link between the machines (its SSH-forwarded
-socket). `agent.send` → daemon → `agent.message` evt broadcast to every connected
-client.
+backend daemon — the one live link between the machines. In current socket-only
+mode the backend listens on a private Unix socket; frontend machines reach it
+through a local SSH tunnel whose TCP port forwards to that remote Unix socket.
+`agent.send` → daemon → `agent.message` evt broadcast to every connected client.
 
 ```bash
 ~/.sot-comm/bin/comm-relay.sh send @win-fe "backend restarted, relaunch FE"
@@ -112,6 +113,14 @@ client.
 ~/.sot-comm/bin/comm-listen.sh                           # start durable receive listener (then arm a Monitor — see below)
 ```
 
+- **Endpoint resolution.** On the backend host the scripts auto-detect the Unix
+  socket by checking explicit env, old dev `--tcp`/`--socket` daemon flags, then
+  `sotd session-socket-path ${SOT_BACKEND_LABEL:-sot}`. Override with
+  `SOT_RELAY_ENDPOINT=unix:/path/to/sot.sock` only when auto-detect cannot find
+  the intended daemon. On a frontend host, set
+  `SOT_RELAY_ENDPOINT=tcp:127.0.0.1:<local-forward-port>` if you are sending from
+  the terminal through the local SSH tunnel. Do **not** expect a remote backend
+  `127.0.0.1:18743` TCP listener in socket-only mode.
 - **Send** is one-shot and instant.
 
   **Receiving — REQUIRED two-part setup (do this after joining).** The relay is
@@ -143,13 +152,14 @@ client.
 
   `comm-listen.sh` covers part 1; you arm part 2. Both sides need this for instant
   two-way. `ask`/`listen` are synchronous one-offs that skip the persistent setup.
-- **Receive on Windows**: the frontend writes inbound messages to
+- **Receive on Windows**: the native frontend writes inbound messages to
   `<state-dir>/fe-inbox.jsonl` (`%LOCALAPPDATA%\sot\`); the in-terminal FE agent
-  reads that. To send from Windows, `nc` the forwarded daemon port with an
-  `agent.send` frame.
+  reads that. To send from Windows, use `comm-relay.sh` with
+  `SOT_RELAY_ENDPOINT=tcp:127.0.0.1:<local-forward-port>` or send the same
+  `agent.send` JSON frame to that local tunnel. The port is local to the FE
+  machine and terminates at the backend's Unix socket over SSH.
 - Requires a daemon built with the relay (ships alongside the `workspace.changed`
-  push). Endpoint auto-detected from the running `sotd`; override with
-  `SOT_RELAY_ENDPOINT=tcp:HOST:PORT`.
+  push).
 
 `--name` is optional (defaults to `<repo>-<host>`). **Names derive from the
 repo, never the task** (canonical table: `comm/PROTOCOL.md` § Naming): durable
@@ -276,8 +286,9 @@ with `comm-despawn.sh <name|slug>` (removes it from sot-comm and destroys the
 workspace, so the strip row goes away).
 
 Notes: you must be joined first (the spawner handle comes from your session). The
-daemon endpoint is auto-detected from the running `sotd` (`--tcp` or
-`--socket`); override with `--endpoint tcp:HOST:PORT`. Tune boot wait with
+daemon endpoint is auto-detected from explicit env, old dev `--tcp`/`--socket`
+daemon flags, or `sotd session-socket-path ${SOT_BACKEND_LABEL:-sot}`; override
+with `--endpoint unix:/path/to/sot.sock` or `--endpoint tcp:HOST:PORT`. Tune boot wait with
 `SOT_COMM_SPAWN_WAIT` (default 6s). Use `--no-workspace` for a plain tmux
 session with no daemon (headless; won't appear in the FE strip).
 
