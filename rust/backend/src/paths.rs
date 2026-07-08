@@ -230,14 +230,27 @@ pub fn tmux_session_name(label: &str) -> String {
 }
 
 /// Conventional Unix socket path for a backend with the given label.
-/// Falls back to /tmp if `$XDG_RUNTIME_DIR` isn't set (very rare on Linux,
-/// happens during the bootstrapping of `runuser` shells and some CI).
+/// The root is per-user, not just per-machine: `$XDG_RUNTIME_DIR/sot` when
+/// that directory is private, then `/run/user/<uid>/sot`, then a private
+/// `/tmp/sot-<uid>` fallback.
 pub fn session_socket_path(label: &str) -> PathBuf {
-    let mut p = runtime_dir();
-    p.push("sot");
+    let mut p = runtime_sot_dir();
     p.push("sessions");
     p.push(format!("{}.sock", slug(label)));
     p
+}
+
+/// Per-user runtime root for Ship of Tools sockets.
+pub fn runtime_sot_dir() -> PathBuf {
+    if let Some(dir) = private_xdg_runtime_dir() {
+        return dir.join("sot");
+    }
+    let uid = current_uid();
+    let run_user_dir = PathBuf::from(format!("/run/user/{uid}"));
+    if is_private_dir(&run_user_dir) {
+        return run_user_dir.join("sot");
+    }
+    PathBuf::from(format!("/tmp/sot-{uid}"))
 }
 
 /// Private per-user tmux server socket (security review): tmux's OWN
@@ -250,6 +263,10 @@ pub fn session_socket_path(label: &str) -> PathBuf {
 /// randomized one) so other tooling — the sot-comm shell scripts, and
 /// `sotd tmux-socket-path` (the single-source-of-truth CLI query they use to
 /// stay in sync) — can target the exact same server.
+///
+/// Set `SOT_TMUX_SOCK=/path/to/socket` to intentionally target an existing
+/// tmux server during migration. The caller still verifies the socket parent
+/// directory before spawning tmux.
 ///
 /// Resolution order — deterministic, NO randomness (a prior version of this
 /// fell back to `state_dir()`, i.e. `${XDG_STATE_HOME:-~/.local/state}/sot`;
@@ -264,22 +281,18 @@ pub fn session_socket_path(label: &str) -> PathBuf {
 ///      session by systemd-logind: private, and always a LOCAL mount.
 ///   2. `/run/user/<uid>/sot/tmux.sock` — the well-known path behind that
 ///      same env var, for a shell that didn't inherit it (cron, some
-///      su/sudo paths) but is still on a logind-managed box.
+///      su/sudo paths) but is still on a logind-managed box. Used only when
+///      `/run/user/<uid>` exists and is owner-only.
 ///   3. `/tmp/sot-<uid>/tmux.sock` — last-resort local fallback. `/tmp` is
 ///      always a local mount (never NFS-shared, unlike `$HOME`), so this
 ///      stays correct even though, unlike tier 1, it isn't cleared on
 ///      logout. The parent dir is created `0700` by the caller
 ///      (`ensure_private_dir`) since `/tmp` itself is world-writable+sticky.
 pub fn tmux_socket_path() -> PathBuf {
-    if let Some(dir) = private_xdg_runtime_dir() {
-        return dir.join("sot").join("tmux.sock");
+    if let Some(sock) = std::env::var_os("SOT_TMUX_SOCK") {
+        return PathBuf::from(sock);
     }
-    let uid = current_uid();
-    let run_user_dir = PathBuf::from(format!("/run/user/{uid}"));
-    if run_user_dir.is_dir() {
-        return run_user_dir.join("sot").join("tmux.sock");
-    }
-    PathBuf::from(format!("/tmp/sot-{uid}")).join("tmux.sock")
+    runtime_sot_dir().join("tmux.sock")
 }
 
 /// `$XDG_RUNTIME_DIR` if it's set, exists, and is owner-only (no group/other
@@ -331,6 +344,10 @@ fn is_private_dir(dir: &Path) -> bool {
     }
     meta.permissions().mode() & 0o077 == 0
 }
+#[cfg(not(unix))]
+fn is_private_dir(dir: &Path) -> bool {
+    dir.is_dir()
+}
 
 /// Numeric uid for path derivation (`/run/user/<uid>`, `/tmp/sot-<uid>`).
 /// `0` on non-Unix, where these two tiers are never reached in practice
@@ -345,13 +362,6 @@ fn current_uid() -> u32 {
 #[cfg(not(unix))]
 fn current_uid() -> u32 {
     0
-}
-
-fn runtime_dir() -> PathBuf {
-    match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(v) => PathBuf::from(v),
-        None => PathBuf::from("/tmp"),
-    }
 }
 
 /// `${XDG_STATE_HOME:-~/.local/state}/sot` — private, persistent runtime
@@ -480,6 +490,28 @@ pub fn secure_private_dir(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("create dir {}", dir.display()))
 }
 
+/// Create/verify a socket parent directory. For the canonical runtime tree,
+/// create each private component (`.../sot`, then `.../sot/sessions`) with the
+/// same symlink/owner/mode checks as `secure_private_dir`. Custom socket paths
+/// still get their immediate parent verified; callers using deeper custom
+/// paths should create the higher private parent explicitly.
+pub fn secure_socket_dir(dir: &Path) -> Result<()> {
+    let runtime = runtime_sot_dir();
+    if dir == runtime {
+        return secure_private_dir(dir);
+    }
+    if let Ok(rel) = dir.strip_prefix(&runtime) {
+        secure_private_dir(&runtime)?;
+        let mut cur = runtime;
+        for comp in rel.components() {
+            cur.push(comp.as_os_str());
+            secure_private_dir(&cur)?;
+        }
+        return Ok(());
+    }
+    secure_private_dir(dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +558,23 @@ mod tests {
     }
 
     #[test]
+    fn tmux_socket_path_honours_explicit_env_override() {
+        struct Guard(Option<std::ffi::OsString>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(v) => std::env::set_var("SOT_TMUX_SOCK", v),
+                    None => std::env::remove_var("SOT_TMUX_SOCK"),
+                }
+            }
+        }
+        let _g = Guard(std::env::var_os("SOT_TMUX_SOCK"));
+        let expected = PathBuf::from("/tmp/sot-test-tmux/default");
+        std::env::set_var("SOT_TMUX_SOCK", &expected);
+        assert_eq!(tmux_socket_path(), expected);
+    }
+
+    #[test]
     fn session_socket_path_honours_xdg_runtime_dir() {
         // Temporarily override XDG_RUNTIME_DIR so the test is hermetic.
         // SAFETY: tests in this module don't run concurrently against
@@ -541,9 +590,24 @@ mod tests {
             }
         }
         let _g = Guard(std::env::var_os("XDG_RUNTIME_DIR"));
-        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/9999");
+        let runtime = std::env::temp_dir().join(format!("sot-runtime-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&runtime);
+        std::fs::create_dir_all(&runtime).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        std::env::set_var("XDG_RUNTIME_DIR", &runtime);
         let p = session_socket_path("MyPackage.jl");
-        assert_eq!(p, PathBuf::from("/run/user/9999/sot/sessions/mypackage_jl.sock"));
+        assert_eq!(
+            p,
+            runtime
+                .join("sot")
+                .join("sessions")
+                .join("mypackage_jl.sock")
+        );
+        let _ = std::fs::remove_dir_all(&runtime);
     }
 }
 

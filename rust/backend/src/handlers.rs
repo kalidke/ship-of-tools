@@ -9,19 +9,19 @@
 // the on-the-wire Frame shape stays the same.
 
 use anyhow::{Context, Result};
+use serde_json::json;
 use sot_protocol::{
-    op, AgentSendReq, AgentSendRes, BlobDescriptor, ConceptListRes, ConceptReadReq, ConceptReadRes, ConceptWriteReq,
-    ConceptWriteRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq, FeCommandSendRes, FileChunk, FileDownloadReq, FileReadReq, FileReadRes, FileUploadAck,
-    FileDeleteReq, FileDeleteRes, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
+    op, AgentSendReq, AgentSendRes, BlobDescriptor, ConceptListRes, ConceptReadReq, ConceptReadRes,
+    ConceptWriteReq, ConceptWriteRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
+    FeCommandSendRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq,
+    FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
     HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
     PlutoOpenReq, PlutoOpenRes, PreviewGetReq, PreviewGetRes, QuartoOpenReq, QuartoOpenRes,
-    VideoOpenReq, VideoOpenRes, TmuxCapturePaneReq,
-    TmuxCapturePaneRes, TmuxCreateSessionReq, TmuxKillSessionReq, TmuxListPanesReq,
-    TmuxListPanesRes, TmuxListSessionsRes, TmuxPane, TmuxSession, ToggleHiddenReq, ToggleHiddenRes,
-    TreeChildrenReq, TreeChildrenRes,
-    TreeRootReq, TreeRootRes,
+    TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxCreateSessionReq, TmuxKillSessionReq,
+    TmuxListPanesReq, TmuxListPanesRes, TmuxListSessionsRes, TmuxPane, TmuxSession,
+    ToggleHiddenReq, ToggleHiddenRes, TreeChildrenReq, TreeChildrenRes, TreeRootReq, TreeRootRes,
+    VideoOpenReq, VideoOpenRes,
 };
-use serde_json::json;
 
 use crate::file_io::{self, WriteResult};
 use crate::files_mode::{mime_for_path, FilesMode};
@@ -42,7 +42,8 @@ pub type HandlerOutput = Vec<(Frame, Option<Vec<u8>>)>;
 /// directory itself — directories don't have meaningful byte content, but the
 /// frontend still asks for a preview, so we give it a short blurb describing
 /// where it is. File-backed nodes serve their actual bytes.
-const ROOT_PREVIEW_TEMPLATE: &str = "# {root}\n\nFiles-mode root. Navigate the tree to preview individual files.\n";
+const ROOT_PREVIEW_TEMPLATE: &str =
+    "# {root}\n\nFiles-mode root. Navigate the tree to preview individual files.\n";
 
 /// Cap on the file size we'll send through `preview.get` for text/* mimes,
 /// where truncating mid-stream is lossy-but-rendersable. Phase-1 frontends
@@ -170,13 +171,12 @@ pub async fn handle_hello(
     let req: HelloReq = serde_json::from_value(payload_json).context("hello payload")?;
     let (session_id, revision) = session.snapshot().await;
 
-    // App-level token gate (ADR 0010). Enforced on every transport when the
-    // backend resolved a token (`--token`, `$SOT_TOKEN`, or the canonical
+    // App-level token gate. TCP connections receive the resolved token
+    // (`--token`, `$SOT_TOKEN`, or the canonical
     // `${XDG_CONFIG_HOME:-~/.config}/sot/token` file — see `main::Opts::token`).
-    // Without a configured token, hello accepts whatever the client sends —
-    // open-config mode for loopback dev and nc-driven smoke tests. `main.rs`
-    // refuses to even start this way on a `--tcp` listener unless
-    // `--insecure-no-auth` is passed (security review).
+    // Local-socket connections pass `None` here and rely on OS permissions for
+    // the private socket path. `main.rs` refuses to start a tokenless `--tcp`
+    // listener unless `--insecure-no-auth` is passed (security review).
     //
     // `.filter(|s| !s.is_empty())` is defense-in-depth, not the primary fix:
     // `main::Opts::token` documents that it's never `Some("")`, but this gate
@@ -664,14 +664,14 @@ pub async fn handle_preview_get(
     // untouched with zero overhead. A panicking decode is near-impossible (the
     // helper is all `.ok()?`), so a JoinError propagating as a handler error is
     // acceptable and rare.
-    let (mime, bytes) = if bytes.len() > PREVIEW_DOWNSAMPLE_TRIGGER && is_downsampleable_raster(&mime)
-    {
-        tokio::task::spawn_blocking(move || preview_bytes_for_wire(mime, bytes))
-            .await
-            .context("preview downsample task")?
-    } else {
-        (mime, bytes)
-    };
+    let (mime, bytes) =
+        if bytes.len() > PREVIEW_DOWNSAMPLE_TRIGGER && is_downsampleable_raster(&mime) {
+            tokio::task::spawn_blocking(move || preview_bytes_for_wire(mime, bytes))
+                .await
+                .context("preview downsample task")?
+        } else {
+            (mime, bytes)
+        };
 
     let res = PreviewGetRes {
         mime: mime.clone(),
@@ -712,7 +712,11 @@ pub async fn handle_image_crop(
 
     let err = |code: &str, msg: String| -> Result<HandlerOutput> {
         Ok(vec![(
-            Frame::res(req_id, op::IMAGE_CROP, json!({ "error": msg, "code": code })),
+            Frame::res(
+                req_id,
+                op::IMAGE_CROP,
+                json!({ "error": msg, "code": code }),
+            ),
             None,
         )])
     };
@@ -756,13 +760,20 @@ pub async fn handle_image_crop(
         .to_string();
     let path_for_blk = path.clone();
     type CropOk = (std::path::PathBuf, u32, u32, u32, u32, u32, u32);
-    let crop_result = tokio::task::spawn_blocking(
-        move || -> std::result::Result<CropOk, (String, String)> {
-            let img = image::open(&path_for_blk)
-                .map_err(|e| ("decode_failed".into(), format!("decode {path_for_blk:?}: {e}")))?;
+    let crop_result =
+        tokio::task::spawn_blocking(move || -> std::result::Result<CropOk, (String, String)> {
+            let img = image::open(&path_for_blk).map_err(|e| {
+                (
+                    "decode_failed".into(),
+                    format!("decode {path_for_blk:?}: {e}"),
+                )
+            })?;
             let (src_w, src_h) = (img.width(), img.height());
             if src_w == 0 || src_h == 0 {
-                return Err(("empty_image".into(), format!("{path_for_blk:?} has zero dimension")));
+                return Err((
+                    "empty_image".into(),
+                    format!("{path_for_blk:?} has zero dimension"),
+                ));
             }
             let x = req_x.min(src_w - 1);
             let y = req_y.min(src_h - 1);
@@ -780,9 +791,8 @@ pub async fn handle_image_crop(
                 .save(&out_path)
                 .map_err(|e| ("io_error".into(), format!("write {out_path:?}: {e}")))?;
             Ok((out_path, x, y, w, h, src_w, src_h))
-        },
-    )
-    .await;
+        })
+        .await;
     let (out_path, x, y, w, h, src_w, src_h) = match crop_result {
         Ok(Ok(v)) => v,
         Ok(Err((code, msg))) => return err(&code, msg),
@@ -934,10 +944,7 @@ async fn try_plugin_preview(
 /// with a text/plain blurb (truncating a PNG/JPEG mid-stream produces an
 /// undecodable file, which is worse than not rendering at all). Used when
 /// no plugin claims the path.
-fn read_bytes_preview(
-    path: &std::path::Path,
-    node_id: &str,
-) -> std::io::Result<(String, Vec<u8>)> {
+fn read_bytes_preview(path: &std::path::Path, node_id: &str) -> std::io::Result<(String, Vec<u8>)> {
     // A video reaching the bytes-level reader means no plugin claimed it —
     // the ShipToolsVideoFile kernel plugin isn't loaded (or the kernel is down).
     // Don't ship the raw container (the frontend can't render it and it may be
@@ -1112,10 +1119,7 @@ pub async fn handle_concept_write(
     // Annotation writes mutate the project, so bump the session revision —
     // a reconnecting client wants to know a concept file changed.
     let rev = session
-        .bump(
-            "concept.written",
-            json!({ "target": req.target }),
-        )
+        .bump("concept.written", json!({ "target": req.target }))
         .await;
     Ok(vec![(
         Frame::res(req_id, op::CONCEPT_WRITE, serde_json::to_value(res)?).with_rev(rev),
@@ -1140,7 +1144,13 @@ pub async fn handle_file_read(
         "file.read"
     );
 
-    let path = match resolve_file_node(op::FILE_READ, req_id, &req.node_id, req.workspace_id.as_deref(), workspaces) {
+    let path = match resolve_file_node(
+        op::FILE_READ,
+        req_id,
+        &req.node_id,
+        req.workspace_id.as_deref(),
+        workspaces,
+    ) {
         Ok(p) => p,
         Err(out) => return Ok(out),
     };
@@ -1200,7 +1210,13 @@ pub async fn handle_file_write(
         "file.write"
     );
 
-    let path = match resolve_file_node(op::FILE_WRITE, req_id, &req.node_id, req.workspace_id.as_deref(), workspaces) {
+    let path = match resolve_file_node(
+        op::FILE_WRITE,
+        req_id,
+        &req.node_id,
+        req.workspace_id.as_deref(),
+        workspaces,
+    ) {
         Ok(p) => p,
         Err(out) => return Ok(out),
     };
@@ -1270,7 +1286,13 @@ pub async fn handle_file_delete(
         "file.delete"
     );
 
-    let path = match resolve_file_node(op::FILE_DELETE, req_id, &req.node_id, req.workspace_id.as_deref(), workspaces) {
+    let path = match resolve_file_node(
+        op::FILE_DELETE,
+        req_id,
+        &req.node_id,
+        req.workspace_id.as_deref(),
+        workspaces,
+    ) {
         Ok(p) => p,
         Err(out) => return Ok(out),
     };
@@ -1400,7 +1422,10 @@ pub async fn handle_concept_list(
         .get("workspace_id")
         .and_then(|v| v.as_str())
         .map(String::from);
-    tracing::info!(workspace_id = workspace_id.as_deref().unwrap_or("<default>"), "concept.list");
+    tracing::info!(
+        workspace_id = workspace_id.as_deref().unwrap_or("<default>"),
+        "concept.list"
+    );
     let Some(ws) = workspaces.resolve(workspace_id.as_deref()) else {
         return Ok(vec![(
             Frame::res(
@@ -1675,7 +1700,10 @@ pub async fn handle_repl_interrupt(
         .get("workspace_id")
         .and_then(|v| v.as_str())
         .map(String::from);
-    tracing::info!(workspace_id = workspace_id.as_deref().unwrap_or("<default>"), "repl.interrupt");
+    tracing::info!(
+        workspace_id = workspace_id.as_deref().unwrap_or("<default>"),
+        "repl.interrupt"
+    );
     let Some(ws) = workspaces.resolve(workspace_id.as_deref()) else {
         return Ok(vec![(
             Frame::res(
@@ -1755,8 +1783,7 @@ pub async fn handle_math_render(
     session: &Session,
     mathjax: &MathJax,
 ) -> Result<HandlerOutput> {
-    let req: MathRenderReq =
-        serde_json::from_value(payload_json).context("math.render payload")?;
+    let req: MathRenderReq = serde_json::from_value(payload_json).context("math.render payload")?;
     tracing::info!(latex = %req.latex, display = req.display, "math.render");
 
     match mathjax.render(&req.latex, req.display).await {
@@ -1793,7 +1820,10 @@ pub async fn handle_math_render(
 /// Canonicalizes `path` and returns it if it resolves under `root`'s
 /// canonical form — `None` on any canonicalization failure (missing path,
 /// dangling symlink, ...) or if it escapes `root`.
-fn canonical_under_root(path: &std::path::Path, root: &std::path::Path) -> Option<std::path::PathBuf> {
+fn canonical_under_root(
+    path: &std::path::Path,
+    root: &std::path::Path,
+) -> Option<std::path::PathBuf> {
     let canon_path = path.canonicalize().ok()?;
     let canon_root = root.canonicalize().ok()?;
     canon_path.starts_with(&canon_root).then_some(canon_path)
@@ -1856,8 +1886,7 @@ pub async fn handle_pluto_open(
     pluto: &Pluto,
     workspaces: &Workspaces,
 ) -> Result<HandlerOutput> {
-    let req: PlutoOpenReq =
-        serde_json::from_value(payload_json).context("pluto.open payload")?;
+    let req: PlutoOpenReq = serde_json::from_value(payload_json).context("pluto.open payload")?;
     tracing::info!(path = %req.path, "pluto.open");
 
     let raw_path = std::path::Path::new(&req.path);
@@ -1976,7 +2005,11 @@ pub async fn handle_video_open(
         });
         return Ok(vec![(Frame::res(req_id, op::VIDEO_OPEN, payload), None)]);
     };
-    let url = format!("http://127.0.0.1:{}/{}", crate::http_serve::video_port(), token);
+    let url = format!(
+        "http://127.0.0.1:{}/{}",
+        crate::http_serve::video_port(),
+        token
+    );
     let res = VideoOpenRes { url };
     let (_, rev) = session.snapshot().await;
     Ok(vec![(
@@ -2234,14 +2267,17 @@ pub async fn handle_quarto_open(
 
     let err = |msg: String, code: &str| -> Result<HandlerOutput> {
         Ok(vec![(
-            Frame::res(req_id, op::QUARTO_OPEN, json!({ "error": msg, "code": code })),
+            Frame::res(
+                req_id,
+                op::QUARTO_OPEN,
+                json!({ "error": msg, "code": code }),
+            ),
             None,
         )])
     };
 
     let src = std::path::Path::new(&req.path);
-    let (Some(parent), Some(file_name)) = (src.parent(), src.file_name())
-    else {
+    let (Some(parent), Some(file_name)) = (src.parent(), src.file_name()) else {
         return err(format!("bad path: {}", req.path), "bad_path");
     };
     match tokio::fs::metadata(src).await {
@@ -2313,14 +2349,19 @@ pub async fn handle_quarto_open(
         Err(e) => {
             let _ = tokio::fs::remove_file(&html_path).await;
             return err(
-                format!("quarto succeeded but output unreadable ({}): {e}", html_path.display()),
+                format!(
+                    "quarto succeeded but output unreadable ({}): {e}",
+                    html_path.display()
+                ),
                 "output_missing",
             );
         }
     };
     let _ = tokio::fs::remove_file(&html_path).await;
 
-    let res = QuartoOpenRes { html_base64: STANDARD.encode(&bytes) };
+    let res = QuartoOpenRes {
+        html_base64: STANDARD.encode(&bytes),
+    };
     let (_, rev) = session.snapshot().await;
     Ok(vec![(
         Frame::res(req_id, op::QUARTO_OPEN, serde_json::to_value(res)?).with_rev(rev),
@@ -2389,7 +2430,10 @@ where
             offset,
             total,
             eof,
-            blob: BlobDescriptor { len: n as u64, mime: "application/octet-stream".to_string() },
+            blob: BlobDescriptor {
+                len: n as u64,
+                mime: "application/octet-stream".to_string(),
+            },
         };
         let frame = Frame::res(req_id, op::FILE_DOWNLOAD, serde_json::to_value(&chunk)?);
         sot_protocol::write_frame(tx, &frame, Some(&buf[..n])).await?;
@@ -2420,7 +2464,11 @@ pub async fn handle_file_upload(
 
     let err = |msg: String, code: &str| -> Result<HandlerOutput> {
         Ok(vec![(
-            Frame::res(req_id, op::FILE_UPLOAD, json!({ "error": msg, "code": code })),
+            Frame::res(
+                req_id,
+                op::FILE_UPLOAD,
+                json!({ "error": msg, "code": code }),
+            ),
             None,
         )])
     };
@@ -2452,7 +2500,10 @@ pub async fn handle_file_upload(
         let mut f = if req.offset == 0 {
             tokio::fs::File::create(&path).await?
         } else {
-            tokio::fs::OpenOptions::new().write(true).open(&path).await?
+            tokio::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .await?
         };
         f.seek(std::io::SeekFrom::Start(req.offset)).await?;
         f.write_all(&bytes).await?;
@@ -2532,7 +2583,10 @@ pub async fn handle_tmux_list_sessions(
                 None,
             )])
         }
-        Err(e) => Ok(vec![(tmux_error_frame(req_id, op::TMUX_LIST_SESSIONS, e), None)]),
+        Err(e) => Ok(vec![(
+            tmux_error_frame(req_id, op::TMUX_LIST_SESSIONS, e),
+            None,
+        )]),
     }
 }
 
@@ -2545,11 +2599,10 @@ pub async fn handle_tmux_list_panes(
         serde_json::from_value(payload_json).context("tmux.list_panes payload")?;
     tracing::debug!(session = ?req.session, "tmux.list_panes");
     let session_arg = req.session.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        TmuxClient::new().list_panes(session_arg.as_deref())
-    })
-    .await
-    .context("spawn_blocking list-panes")?;
+    let result =
+        tokio::task::spawn_blocking(move || TmuxClient::new().list_panes(session_arg.as_deref()))
+            .await
+            .context("spawn_blocking list-panes")?;
     let (_, rev) = session.snapshot().await;
     match result {
         Ok(panes) => {
@@ -2561,7 +2614,10 @@ pub async fn handle_tmux_list_panes(
                 None,
             )])
         }
-        Err(e) => Ok(vec![(tmux_error_frame(req_id, op::TMUX_LIST_PANES, e), None)]),
+        Err(e) => Ok(vec![(
+            tmux_error_frame(req_id, op::TMUX_LIST_PANES, e),
+            None,
+        )]),
     }
 }
 
@@ -2640,10 +2696,9 @@ pub async fn handle_tmux_kill_session(
         )]);
     }
     let name = req.name.clone();
-    let result =
-        tokio::task::spawn_blocking(move || TmuxClient::new().kill_session(&name))
-            .await
-            .context("spawn_blocking kill-session")?;
+    let result = tokio::task::spawn_blocking(move || TmuxClient::new().kill_session(&name))
+        .await
+        .context("spawn_blocking kill-session")?;
     let rev = session
         .bump("tmux.session_killed", json!({ "name": req.name }))
         .await;
@@ -2672,18 +2727,16 @@ pub async fn handle_tmux_capture_pane(
     let lines = req.lines.min(TMUX_CAPTURE_LINES_CAP);
     tracing::debug!(target = %req.target, lines, "tmux.capture_pane");
     let target = req.target.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        TmuxClient::new().capture_pane(&target, lines)
-    })
-    .await
-    .context("spawn_blocking capture-pane")?;
+    let result =
+        tokio::task::spawn_blocking(move || TmuxClient::new().capture_pane(&target, lines))
+            .await
+            .context("spawn_blocking capture-pane")?;
     let (_, rev) = session.snapshot().await;
     match result {
         Ok(text) => {
             let res = TmuxCapturePaneRes { text };
             Ok(vec![(
-                Frame::res(req_id, op::TMUX_CAPTURE_PANE, serde_json::to_value(res)?)
-                    .with_rev(rev),
+                Frame::res(req_id, op::TMUX_CAPTURE_PANE, serde_json::to_value(res)?).with_rev(rev),
                 None,
             )])
         }
@@ -2719,14 +2772,20 @@ pub async fn handle_workspace_create(
             "error": format!("project_root does not exist: {}", req.project_root),
             "code": "no_such_path",
         });
-        return Ok(vec![(Frame::res(req_id, op::WORKSPACE_CREATE, payload), None)]);
+        return Ok(vec![(
+            Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+            None,
+        )]);
     }
     if !project_root.is_dir() {
         let payload = json!({
             "error": format!("project_root is not a directory: {}", req.project_root),
             "code": "not_a_directory",
         });
-        return Ok(vec![(Frame::res(req_id, op::WORKSPACE_CREATE, payload), None)]);
+        return Ok(vec![(
+            Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+            None,
+        )]);
     }
 
     // Name validation (security review): `agent_name` is persisted and later
@@ -2743,7 +2802,10 @@ pub async fn handle_workspace_create(
             ),
             "code": "bad_agent_name",
         });
-        return Ok(vec![(Frame::res(req_id, op::WORKSPACE_CREATE, payload), None)]);
+        return Ok(vec![(
+            Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+            None,
+        )]);
     }
 
     // Register the workspace in memory + on disk first; the tmux session
@@ -2759,7 +2821,10 @@ pub async fn handle_workspace_create(
                     "error": format!("unknown agent kind '{other}' (want claude | codex | none)"),
                     "code": "bad_agent",
                 });
-                return Ok(vec![(Frame::res(req_id, op::WORKSPACE_CREATE, payload), None)]);
+                return Ok(vec![(
+                    Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                    None,
+                )]);
             }
         }
     } else if req.autostart_claude {
@@ -2800,12 +2865,20 @@ pub async fn handle_workspace_create(
     let tmux_session = ws_handle.tmux_session.clone();
     let cwd = project_root.clone();
     let boot_cmd: Option<String> = if autostart || boot {
-        Some(crate::pty::boot_wrapper_command(&tmux_session, &req.agent_name, &agent_kind))
+        Some(crate::pty::boot_wrapper_command(
+            &tmux_session,
+            &req.agent_name,
+            &agent_kind,
+        ))
     } else {
         None
     };
     let tmux_result = tokio::task::spawn_blocking(move || {
-        crate::tmux::TmuxClient::new().create_session(&tmux_session, boot_cmd.as_deref(), Some(&cwd))
+        crate::tmux::TmuxClient::new().create_session(
+            &tmux_session,
+            boot_cmd.as_deref(),
+            Some(&cwd),
+        )
     })
     .await
     .context("spawn_blocking workspace tmux create")?;
@@ -2833,8 +2906,7 @@ pub async fn handle_workspace_create(
         tracing::info!(session = %boot_session, agent = %boot_agent, boot,
             "workspace.create autostart — spawning daemon boot-pty for claude (stable init client)");
         tokio::spawn(async move {
-            crate::pty::boot_workspace_claude(boot_session, boot_agent, boot_cwd, boot_slug)
-                .await;
+            crate::pty::boot_workspace_claude(boot_session, boot_agent, boot_cwd, boot_slug).await;
         });
     }
 
@@ -2860,8 +2932,7 @@ pub async fn handle_workspace_create(
         workspace_id: ws_handle.workspace_id.clone(),
     });
     Ok(vec![(
-        Frame::res(req_id, op::WORKSPACE_CREATE, serde_json::to_value(res)?)
-            .with_rev(rev),
+        Frame::res(req_id, op::WORKSPACE_CREATE, serde_json::to_value(res)?).with_rev(rev),
         None,
     )])
 }
@@ -3001,8 +3072,7 @@ pub async fn handle_workspace_destroy(
         toml_removed,
     };
     Ok(vec![(
-        Frame::res(req_id, op::WORKSPACE_DESTROY, serde_json::to_value(res)?)
-            .with_rev(rev),
+        Frame::res(req_id, op::WORKSPACE_DESTROY, serde_json::to_value(res)?).with_rev(rev),
         None,
     )])
 }
@@ -3017,8 +3087,7 @@ pub async fn handle_agent_send(
     payload_json: serde_json::Value,
     agent_tx: &broadcast::Sender<AgentMessage>,
 ) -> Result<HandlerOutput> {
-    let req: AgentSendReq =
-        serde_json::from_value(payload_json).context("agent.send payload")?;
+    let req: AgentSendReq = serde_json::from_value(payload_json).context("agent.send payload")?;
     tracing::info!(from = %req.from, to = %req.to, "agent.send relay");
     let msg = AgentMessage {
         from: req.from,
@@ -3297,7 +3366,10 @@ pub async fn handle_workspace_list(
                         .next()
                         .unwrap_or("");
                     if !asess.is_empty() && asess == tmux_session {
-                        let seen = entry.get("last_seen").and_then(|v| v.as_str()).unwrap_or("");
+                        let seen = entry
+                            .get("last_seen")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         if best.map_or(true, |(_, bseen)| seen > bseen) {
                             best = Some((handle.as_str(), seen));
                         }
@@ -3396,8 +3468,7 @@ pub async fn handle_directory_list(
     let path = std::path::PathBuf::from(&req.path);
     let include_hidden = req.include_hidden;
     let result = tokio::task::spawn_blocking(move || -> Result<Vec<DirectoryEntry>> {
-        let read = std::fs::read_dir(&path)
-            .with_context(|| format!("read_dir {path:?}"))?;
+        let read = std::fs::read_dir(&path).with_context(|| format!("read_dir {path:?}"))?;
         let mut entries: Vec<DirectoryEntry> = Vec::new();
         for ent in read.flatten() {
             let name = match ent.file_name().into_string() {
@@ -3458,8 +3529,7 @@ pub async fn handle_directory_list(
                 entries,
             };
             Ok(vec![(
-                Frame::res(req_id, op::DIRECTORY_LIST, serde_json::to_value(res)?)
-                    .with_rev(rev),
+                Frame::res(req_id, op::DIRECTORY_LIST, serde_json::to_value(res)?).with_rev(rev),
                 None,
             )])
         }
@@ -3469,7 +3539,10 @@ pub async fn handle_directory_list(
                 "code": "directory_list_failed",
                 "path": req.path,
             });
-            Ok(vec![(Frame::res(req_id, op::DIRECTORY_LIST, payload), None)])
+            Ok(vec![(
+                Frame::res(req_id, op::DIRECTORY_LIST, payload),
+                None,
+            )])
         }
     }
 }
@@ -3533,7 +3606,16 @@ mod valid_name_tests {
     fn rejects_shell_and_parser_metacharacters() {
         // The pipe is the specific `tmux.rs` list-parsing corruption vector;
         // the rest are generic shell-injection/whitespace rejects.
-        for bad in ["a|b", "a;b", "a b", "a'b", "a$b", "a`b", "a\nb", "/etc/passwd"] {
+        for bad in [
+            "a|b",
+            "a;b",
+            "a b",
+            "a'b",
+            "a$b",
+            "a`b",
+            "a\nb",
+            "/etc/passwd",
+        ] {
             assert!(!valid_name(bad), "expected {bad:?} to be rejected");
         }
     }
@@ -3583,12 +3665,25 @@ mod preview_gate_tests {
     fn bounded_output_plugins_exempt_from_size_gate() {
         // HDF5 + video are metadata/poster-only → bounded output → must NOT be
         // skipped on big input (the multi-GB .h5 freeze bug).
-        for p in ["data.h5", "scan.hdf5", "old.hdf", "DATA.H5", "clip.mp4", "v.mkv"] {
-            assert!(is_bounded_output_plugin(Path::new(p)), "{p} should be exempt");
+        for p in [
+            "data.h5",
+            "scan.hdf5",
+            "old.hdf",
+            "DATA.H5",
+            "clip.mp4",
+            "v.mkv",
+        ] {
+            assert!(
+                is_bounded_output_plugin(Path::new(p)),
+                "{p} should be exempt"
+            );
         }
         // Plugins whose output scales with input (or plain files) stay gated.
         for p in ["mod.jl", "notes.txt", "data.json", "big.csv", "noext"] {
-            assert!(!is_bounded_output_plugin(Path::new(p)), "{p} should be gated");
+            assert!(
+                !is_bounded_output_plugin(Path::new(p)),
+                "{p} should be gated"
+            );
         }
     }
 }
@@ -3642,10 +3737,22 @@ mod preview_downsample_tests {
 
     #[test]
     fn raster_mime_gate() {
-        for m in ["image/png", "image/jpeg", "image/webp", "image/tiff", "image/gif", "image/bmp"] {
+        for m in [
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/tiff",
+            "image/gif",
+            "image/bmp",
+        ] {
             assert!(is_downsampleable_raster(m), "{m} should be downsampleable");
         }
-        for m in ["image/svg+xml", "text/plain", "application/pdf", "video/mp4"] {
+        for m in [
+            "image/svg+xml",
+            "text/plain",
+            "application/pdf",
+            "video/mp4",
+        ] {
             assert!(!is_downsampleable_raster(m), "{m} must NOT be downsampled");
         }
     }
@@ -3699,6 +3806,10 @@ mod preview_downsample_tests {
             ow.max(oh),
             PREVIEW_DOWNSAMPLE_MAX_DIM
         );
-        assert_eq!(ow.max(oh), PREVIEW_DOWNSAMPLE_MAX_DIM, "longest side scaled to the cap");
+        assert_eq!(
+            ow.max(oh),
+            PREVIEW_DOWNSAMPLE_MAX_DIM,
+            "longest side scaled to the cap"
+        );
     }
 }

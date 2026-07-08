@@ -6,14 +6,10 @@
 // `handle_connection` — the wire format and dispatch are identical on
 // either transport.
 //
-// Auth: when an app-level token is configured (`--token` or SOT_TOKEN),
-// every transport enforces it via the hello payload's `token` field.
-// Without a configured token, hello accepts anything — the open-config
-// mode that's fine for loopback dev and for the spike's nc-driven testing.
-// Per ADR 0010 the token is required on every transport (localhost on a
-// shared remote is not a security boundary), but enforcement is gated on
-// configuration so we can roll out the TCP path without breaking the
-// existing local-socket smoke tests.
+// Auth: TCP enforces an app-level token when configured (`--token`, SOT_TOKEN,
+// or the canonical token file), and `main.rs` refuses a tokenless TCP listener
+// unless `--insecure-no-auth` is explicit. Local sockets do not enforce app
+// tokens; their boundary is OS ownership of the private socket path.
 //
 // Conventional socket strings:
 //   Linux/Mac: filesystem path,  e.g. `/tmp/sot-spike.sock`
@@ -26,13 +22,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use base64::Engine;
-use sot_protocol::{
-    codec, op, FeCommandEvt, Frame, HostLatest, Kind, MonitorHistoryReq, MonitorHistoryRes,
-    MonitorSubscribeRes, MonitorTickEvt, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyWriteReq,
-};
 use interprocess::local_socket::{
     tokio::{prelude::*, Stream as LocalStream},
     GenericFilePath, ListenerOptions,
+};
+use sot_protocol::{
+    codec, op, FeCommandEvt, Frame, HostLatest, Kind, MonitorHistoryReq, MonitorHistoryRes,
+    MonitorSubscribeRes, MonitorTickEvt, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyWriteReq,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
@@ -240,7 +236,9 @@ pub async fn run(opts: Opts) -> Result<()> {
     let workspaces = Workspaces::new();
     match workspaces::scan_disk(&workspaces) {
         Ok(n) => tracing::info!(count = n, "workspaces scanned from disk"),
-        Err(e) => tracing::warn!(error = %e, "workspace scan failed; continuing with empty registry"),
+        Err(e) => {
+            tracing::warn!(error = %e, "workspace scan failed; continuing with empty registry")
+        }
     }
     let default_label = opts
         .label
@@ -253,15 +251,14 @@ pub async fn run(opts: Opts) -> Result<()> {
                 .map(|s| s.to_string())
         })
         .unwrap_or_else(|| "home".to_string());
-    let mut default_ws_seed =
-        Workspace::from_label(
-            &default_label,
-            files_mode.root_path().to_path_buf(),
-            false,
-            "none".to_string(),
-            String::new(),
-            String::new(),
-        );
+    let mut default_ws_seed = Workspace::from_label(
+        &default_label,
+        files_mode.root_path().to_path_buf(),
+        false,
+        "none".to_string(),
+        String::new(),
+        String::new(),
+    );
     // Display the Ship of Tools home/default workspace as ".SoT" — the leading
     // dot is cosmetic (the FE strip renders the label) and marks it as "home".
     // Only the LABEL changes; the slug (hence the tmux session `sot-be-sot` and
@@ -557,7 +554,7 @@ pub async fn run(opts: Opts) -> Result<()> {
 
     if let Some(path) = opts.socket {
         let s = session.clone();
-        let tok = token.clone();
+        let tok = Arc::new(None);
         let mj = mathjax.clone();
         let pl = pluto.clone();
         let fm = files_mode.clone();
@@ -573,7 +570,10 @@ pub async fn run(opts: Opts) -> Result<()> {
         let rfe = repl_frame_tx.clone();
         let cl = clients.clone();
         tasks.push(tokio::spawn(async move {
-            run_local(path, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl).await
+            run_local(
+                path, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl,
+            )
+            .await
         }));
     }
 
@@ -595,7 +595,10 @@ pub async fn run(opts: Opts) -> Result<()> {
         let rfe = repl_frame_tx.clone();
         let cl = clients.clone();
         tasks.push(tokio::spawn(async move {
-            run_tcp(addr, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl).await
+            run_tcp(
+                addr, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl,
+            )
+            .await
         }));
     }
 
@@ -621,12 +624,9 @@ async fn run_local(
     // and to keep the run_local / run_tcp signatures unchanged. All op
     // handlers now route through Workspaces per ADR 0014; these
     // bindings are dead in `handle_connection` itself.
-    #[allow(unused_variables, dead_code)]
-    kernel: Kernel,
-    #[allow(unused_variables, dead_code)]
-    concept: Arc<ConceptStore>,
-    #[allow(unused_variables, dead_code)]
-    repl: Repl,
+    #[allow(unused_variables, dead_code)] kernel: Kernel,
+    #[allow(unused_variables, dead_code)] concept: Arc<ConceptStore>,
+    #[allow(unused_variables, dead_code)] repl: Repl,
     watcher: Option<Arc<Watcher>>,
     label: Arc<Option<String>>,
     workspaces: Workspaces,
@@ -638,9 +638,8 @@ async fn run_local(
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
         if !parent.as_os_str().is_empty() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .with_context(|| format!("create socket dir {parent:?}"))?;
+            paths::secure_socket_dir(parent)
+                .with_context(|| format!("secure socket dir {}", parent.display()))?;
         }
     }
     // Unix sockets leave a filesystem entry that blocks rebind; Windows
@@ -665,10 +664,7 @@ async fn run_local(
     tracing::info!(socket = ?socket_path, "listening (local)");
 
     loop {
-        let stream: LocalStream = listener
-            .accept()
-            .await
-            .context("accept on sot socket")?;
+        let stream: LocalStream = listener.accept().await.context("accept on sot socket")?;
         let s = session.clone();
         let tok = token.clone();
         let mj = mathjax.clone();
@@ -687,8 +683,11 @@ async fn run_local(
         let cl = clients.clone();
         tokio::spawn(async move {
             let (rx, tx) = stream.split();
-            if let Err(e) =
-                handle_connection(rx, tx, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl, "local", None).await
+            if let Err(e) = handle_connection(
+                rx, tx, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl,
+                "local", None,
+            )
+            .await
             {
                 tracing::warn!(error = %e, transport = "local", "connection ended with error");
             } else {
@@ -709,12 +708,9 @@ async fn run_tcp(
     // and to keep the run_local / run_tcp signatures unchanged. All op
     // handlers now route through Workspaces per ADR 0014; these
     // bindings are dead in `handle_connection` itself.
-    #[allow(unused_variables, dead_code)]
-    kernel: Kernel,
-    #[allow(unused_variables, dead_code)]
-    concept: Arc<ConceptStore>,
-    #[allow(unused_variables, dead_code)]
-    repl: Repl,
+    #[allow(unused_variables, dead_code)] kernel: Kernel,
+    #[allow(unused_variables, dead_code)] concept: Arc<ConceptStore>,
+    #[allow(unused_variables, dead_code)] repl: Repl,
     watcher: Option<Arc<Watcher>>,
     label: Arc<Option<String>>,
     workspaces: Workspaces,
@@ -788,8 +784,29 @@ async fn run_tcp(
         tokio::spawn(async move {
             let (rx, tx) = stream.into_split();
             tracing::info!(peer = %peer, transport = "tcp", "client connected");
-            if let Err(e) =
-                handle_connection(rx, tx, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl, "tcp", Some(peer.to_string())).await
+            if let Err(e) = handle_connection(
+                rx,
+                tx,
+                s,
+                tok,
+                mj,
+                pl,
+                fm,
+                ke,
+                co,
+                rp,
+                wa,
+                lb,
+                ws,
+                wse,
+                age,
+                fce,
+                rfe,
+                cl,
+                "tcp",
+                Some(peer.to_string()),
+            )
+            .await
             {
                 tracing::warn!(error = %e, transport = "tcp", peer = %peer, "connection ended with error");
             } else {
@@ -808,17 +825,14 @@ async fn run_tcp(
 /// CANCEL-SAFETY note in `handle_connection`'s loop.
 async fn read_owned<R: AsyncRead + Unpin>(
     mut rx: tokio::io::BufReader<R>,
-) -> (
-    tokio::io::BufReader<R>,
-    Result<(Frame, Option<Vec<u8>>)>,
-) {
+) -> (tokio::io::BufReader<R>, Result<(Frame, Option<Vec<u8>>)>) {
     let res = codec::read_frame(&mut rx).await;
     (rx, res)
 }
 
 /// Generic over the AsyncRead/AsyncWrite halves so both transports share
-/// the same dispatch loop. `transport` is just for logging; auth is on the
-/// token, not the transport identity.
+/// the same dispatch loop. `expected_token` is set for TCP and `None` for
+/// local sockets, whose access check happened at the socket path.
 async fn handle_connection<R, W>(
     rx: R,
     mut tx: W,
@@ -831,12 +845,9 @@ async fn handle_connection<R, W>(
     // and to keep the run_local / run_tcp signatures unchanged. All op
     // handlers now route through Workspaces per ADR 0014; these
     // bindings are dead in `handle_connection` itself.
-    #[allow(unused_variables, dead_code)]
-    kernel: Kernel,
-    #[allow(unused_variables, dead_code)]
-    concept: Arc<ConceptStore>,
-    #[allow(unused_variables, dead_code)]
-    repl: Repl,
+    #[allow(unused_variables, dead_code)] kernel: Kernel,
+    #[allow(unused_variables, dead_code)] concept: Arc<ConceptStore>,
+    #[allow(unused_variables, dead_code)] repl: Repl,
     watcher: Option<Arc<Watcher>>,
     label: Arc<Option<String>>,
     workspaces: Workspaces,
@@ -1136,8 +1147,7 @@ where
                     .await?
             }
             op::PREVIEW_GET => {
-                handlers::handle_preview_get(frame.id, frame.payload, &session, &workspaces)
-                    .await?
+                handlers::handle_preview_get(frame.id, frame.payload, &session, &workspaces).await?
             }
             op::IMAGE_CROP => {
                 handlers::handle_image_crop(frame.id, frame.payload, &session, &workspaces).await?
@@ -1164,9 +1174,7 @@ where
             op::QUARTO_OPEN => {
                 handlers::handle_quarto_open(frame.id, frame.payload, &session).await?
             }
-            op::FILE_UPLOAD => {
-                handlers::handle_file_upload(frame.id, frame.payload).await?
-            }
+            op::FILE_UPLOAD => handlers::handle_file_upload(frame.id, frame.payload).await?,
             op::FILE_DOWNLOAD => {
                 // Streams chunk frames straight to the socket (bounded memory),
                 // so it writes its own frames and skips the response-write below.
@@ -1174,16 +1182,20 @@ where
                 continue;
             }
             op::KERNEL_REQUEST => {
-                handlers::handle_kernel_request(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_kernel_request(frame.id, frame.payload, &session, &workspaces)
+                    .await?
             }
             op::CONCEPT_READ => {
-                handlers::handle_concept_read(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_concept_read(frame.id, frame.payload, &session, &workspaces)
+                    .await?
             }
             op::CONCEPT_WRITE => {
-                handlers::handle_concept_write(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_concept_write(frame.id, frame.payload, &session, &workspaces)
+                    .await?
             }
             op::CONCEPT_LIST => {
-                handlers::handle_concept_list(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_concept_list(frame.id, frame.payload, &session, &workspaces)
+                    .await?
             }
             op::FILE_READ => {
                 handlers::handle_file_read(frame.id, frame.payload, &session, &workspaces).await?
@@ -1198,10 +1210,12 @@ where
                 handlers::handle_repl_eval(frame.id, frame.payload, &session, &workspaces).await?
             }
             op::REPL_RUN_FILE => {
-                handlers::handle_repl_run_file(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_repl_run_file(frame.id, frame.payload, &session, &workspaces)
+                    .await?
             }
             op::REPL_INTERRUPT => {
-                handlers::handle_repl_interrupt(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_repl_interrupt(frame.id, frame.payload, &session, &workspaces)
+                    .await?
             }
             op::TMUX_LIST_SESSIONS => {
                 handlers::handle_tmux_list_sessions(frame.id, frame.payload, &session).await?
@@ -1240,9 +1254,7 @@ where
             op::FE_COMMAND_SEND => {
                 handlers::handle_fe_command_send(frame.id, frame.payload, &fe_command_tx).await?
             }
-            op::UPDATE_CHECK => {
-                crate::update::handle_update_check(frame.id).await?
-            }
+            op::UPDATE_CHECK => crate::update::handle_update_check(frame.id).await?,
             op::WORKSPACE_DESTROY => {
                 handlers::handle_workspace_destroy(
                     frame.id,
@@ -1261,12 +1273,8 @@ where
                             "error": format!("pty.open payload: {e}"),
                             "code": "bad_request",
                         });
-                        write_frame_to(
-                            &mut tx,
-                            &Frame::res(frame.id, op::PTY_OPEN, payload),
-                            None,
-                        )
-                        .await?;
+                        write_frame_to(&mut tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
+                            .await?;
                         continue;
                     }
                 };
@@ -1285,12 +1293,8 @@ where
                             ),
                             "code": "bad_target",
                         });
-                        write_frame_to(
-                            &mut tx,
-                            &Frame::res(frame.id, op::PTY_OPEN, payload),
-                            None,
-                        )
-                        .await?;
+                        write_frame_to(&mut tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
+                            .await?;
                         continue;
                     }
                 }
@@ -1804,7 +1808,11 @@ where
             Ok(true)
         }
         Err(broadcast::error::RecvError::Lagged(n)) => {
-            tracing::warn!(skipped = n, transport, "monitor bus lagged on this connection");
+            tracing::warn!(
+                skipped = n,
+                transport,
+                "monitor bus lagged on this connection"
+            );
             Ok(false)
         }
         Err(broadcast::error::RecvError::Closed) => {
@@ -1858,7 +1866,10 @@ mod tests {
             std::time::Duration::from_millis(50),
         )
         .await;
-        assert!(res.is_err(), "a non-draining peer must trip the write timeout");
+        assert!(
+            res.is_err(),
+            "a non-draining peer must trip the write timeout"
+        );
         assert!(res.unwrap_err().to_string().contains("not draining"));
     }
 

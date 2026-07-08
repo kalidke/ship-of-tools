@@ -117,12 +117,21 @@ launch resolves that name back to its entry here.
 |-----|------|---------|
 | `ssh_alias` | string | SSH alias for the remote host (an entry in your `~/.ssh/config`). |
 | `remote_repo` | string | Absolute path to the project repo on the remote host. |
-| `tcp_port` | integer | TCP port for the SSH-forwarded backend connection (each host gets a distinct port). |
+| `tcp_port` | integer | Local TCP port for the SSH-forwarded backend connection. The remote side should terminate at the per-user backend socket. |
+| `remote_socket` | string | Optional remote Unix socket path for the backend control channel. If omitted, launchers query `sotd session-socket-path sot` on the remote host. |
 | `remote_home` | string | Absolute home directory on the remote host. |
 | `socket` | string | **Local-host form** — a named-pipe / socket path instead of SSH (no remote). On Windows this uses single backslashes, e.g. `\\.\pipe\sot-local`, because values are not escape-processed. |
 
 A remote host sets `ssh_alias` / `remote_repo` / `tcp_port` (and usually
-`remote_home`); a local backend on the same machine sets `socket` instead.
+`remote_home`); `remote_socket` is optional and normally discovered. A local
+backend on the same machine sets `socket` instead.
+
+### Backend tmux socket
+
+`sotd` normally puts workspace tmux sessions on its private per-user tmux
+socket. For a one-time migration to existing `sot-be-*` sessions on another
+same-user tmux server, set `SOT_TMUX_SOCK` in the backend environment. `sotd
+tmux-socket-path` prints the effective path, including this override.
 
 ### `[monitor]`
 
@@ -145,6 +154,7 @@ default_host = "myserver"
 ssh_alias = "myserver"
 remote_repo = "/home/me/ship-of-tools"
 tcp_port = 18743
+# remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
 remote_home = "/home/me"
 
 # A local backend on the same machine (no SSH):

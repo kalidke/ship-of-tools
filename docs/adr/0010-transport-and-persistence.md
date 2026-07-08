@@ -25,7 +25,10 @@ ssh -o ExitOnForwardFailure=yes \
 
 (Where Unix-socket forwarding isn't available — older Windows OpenSSH builds — fall back to a per-session local TCP port allocated at runtime, never fixed.)
 
-**Authentication** is two-layered: SSH itself authenticates the user; an **app-level token** in the connect handshake authenticates the *session*. Localhost on a shared remote is not a security boundary, so the token is required even on Unix-socket transport.
+**Authentication** is transport-specific. SSH itself authenticates the Unix user
+for remote Unix-socket access, and the socket path is private to that user.
+Direct TCP remains app-token-gated because localhost on a shared remote is
+machine-scoped, not user-scoped.
 
 **Reconnect protocol:** every connect carries `{session_id, client_id, last_seen_revision}`. Backend either replays missed events from a bounded ring (last N seconds / N events) or sends a snapshot if the client is too far behind. Heartbeats every ~5 s evict stale clients.
 

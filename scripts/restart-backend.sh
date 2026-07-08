@@ -13,40 +13,65 @@
 #
 # It kills the running daemon by EXPLICIT pid (never `pkill -f`, which self-
 # matches this very shell) and relaunches the on-disk binary detached +
-# reparented (setsid), logging to /tmp/sotd.log. It also reports
-# whether the running daemon was actually STALE vs the binary, so you can see if
-# a restart was even needed.
+# reparented (setsid), logging to /tmp/sotd.log. The daemon identity is the
+# per-user socket derived from `--label sot`, not a machine-wide TCP port.
+# It also reports whether the running daemon was actually STALE vs the binary,
+# so you can see if a restart was even needed.
 #
 # Usage: scripts/restart-backend.sh [--check]
 #   --check : report staleness and exit WITHOUT restarting.
 #             exit 3 = stale (or none running), exit 0 = current.
 set -uo pipefail
-PORT="${SOT_TCP_PORT:-18743}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="${SOT_PROJECT_ROOT:-$REPO}"
 BIN="$REPO/rust/target/release/sotd"
 LOG="${SOT_BACKEND_LOG:-/tmp/sotd.log}"
-
-find_pid() { ps -eo pid,args | grep "[s]otd --tcp 127.0.0.1:$PORT" | grep -v '/bin/bash' | awk '{print $1}' | head -1; }
-port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null && exec 3>&-; }
+LABEL="${SOT_BACKEND_LABEL:-sot}"
+SOCKET="${SOT_SOCKET:-}"
 
 [ -x "$BIN" ] || { echo "ERROR: binary not built: $BIN" >&2
     echo "       build it: (cd '$REPO/rust' && cargo build --release -p sot-backend)" >&2; exit 2; }
 
+if [ -z "$SOCKET" ]; then
+    SOCKET="$("$BIN" session-socket-path "$LABEL")" || exit 2
+fi
+
+find_pid() {
+    ps -eo pid=,args= | awk -v sock="$SOCKET" -v label="$LABEL" '
+        $0 ~ /[s]otd/ && ($0 ~ "--socket " sock || $0 ~ "--label " label) { print $1; exit }
+    '
+}
+socket_open() {
+    [ -S "$SOCKET" ] || return 1
+    if command -v nc >/dev/null 2>&1; then
+        timeout 1 nc -U "$SOCKET" </dev/null >/dev/null 2>&1
+        return $?
+    fi
+    # Minimal environments may not have nc. A socket file proves the daemon
+    # bound its endpoint; launchers will fail loud if the first real connect
+    # cannot complete.
+    return 0
+}
+
 OLD=$(find_pid)
 BIN_MTIME=$(stat -c %Y "$BIN")
 if [ -n "$OLD" ]; then
-    START_EPOCH=$(( $(date +%s) - $(ps -p "$OLD" -o etimes= | tr -d ' ') ))
-    if [ "$BIN_MTIME" -gt "$START_EPOCH" ]; then
+    if ! socket_open; then
         STALE=1
-        echo "running daemon pid $OLD is STALE — started $(date -d "@$START_EPOCH" '+%F %T'), binary built $(date -d "@$BIN_MTIME" '+%F %T')"
+        echo "running daemon pid $OLD has no socket at $SOCKET"
     else
-        STALE=0
-        echo "running daemon pid $OLD is CURRENT — started $(date -d "@$START_EPOCH" '+%F %T') >= binary $(date -d "@$BIN_MTIME" '+%F %T')"
+        START_EPOCH=$(( $(date +%s) - $(ps -p "$OLD" -o etimes= | tr -d ' ') ))
+        if [ "$BIN_MTIME" -gt "$START_EPOCH" ]; then
+            STALE=1
+            echo "running daemon pid $OLD is STALE — started $(date -d "@$START_EPOCH" '+%F %T'), binary built $(date -d "@$BIN_MTIME" '+%F %T')"
+        else
+            STALE=0
+            echo "running daemon pid $OLD is CURRENT — started $(date -d "@$START_EPOCH" '+%F %T') >= binary $(date -d "@$BIN_MTIME" '+%F %T')"
+        fi
     fi
 else
     STALE=1
-    echo "no daemon currently running on $PORT"
+    echo "no daemon currently running for $SOCKET"
 fi
 
 if [ "${1:-}" = "--check" ]; then
@@ -54,18 +79,18 @@ if [ "${1:-}" = "--check" ]; then
 fi
 
 # If sotd is supervised by systemd --user (sotd.service), let systemd own the
-# lifecycle: a manual pkill+nohup here would race its Restart=always and double-
-# bind $PORT. `systemctl restart` picks up the freshly-built on-disk binary too.
+# lifecycle: a manual kill+nohup here would race its Restart=always. `systemctl
+# restart` picks up the freshly-built on-disk binary too.
 if systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
     echo "sotd is systemd-supervised (sotd.service) — restarting via systemctl --user"
     systemctl --user restart sotd.service
-    for _ in $(seq 1 30); do port_open && break; sleep 0.5; done
+    for _ in $(seq 1 30); do socket_open && break; sleep 0.5; done
     NEW=$(find_pid)
-    if [ -n "$NEW" ]; then
-        echo "backend restarted via systemd: pid $NEW on $PORT (binary built $(date -d "@$BIN_MTIME" '+%F %T'))"
+    if [ -n "$NEW" ] && socket_open; then
+        echo "backend restarted via systemd: pid $NEW on $SOCKET (binary built $(date -d "@$BIN_MTIME" '+%F %T'))"
         exit 0
     fi
-    echo "ERROR: systemd sotd did not bind $PORT after restart — see: systemctl --user status sotd" >&2; exit 1
+    echo "ERROR: systemd sotd did not bind $SOCKET after restart — reinstall the socket-based unit or see: systemctl --user status sotd" >&2; exit 1
 fi
 
 # --- legacy path: no systemd supervision, detached-nohup relaunch ---
@@ -73,19 +98,19 @@ fi
 # it matches its own shell's argv and kills the script: classic exit-144).
 if [ -n "$OLD" ]; then
     kill "$OLD" 2>/dev/null
-    for _ in $(seq 1 20); do port_open || break; sleep 0.5; done
+    for _ in $(seq 1 20); do kill -0 "$OLD" 2>/dev/null || break; sleep 0.5; done
     if kill -0 "$OLD" 2>/dev/null; then echo "force-killing $OLD"; kill -9 "$OLD" 2>/dev/null; sleep 1; fi
 fi
 
 # Relaunch detached + reparented (setsid -> own session, outlives this script;
 # nohup -> ignore SIGHUP). Parent dies -> daemon reparents to init (ppid 1).
-setsid nohup "$BIN" --tcp "127.0.0.1:$PORT" --project-root "$ROOT" --label sot >>"$LOG" 2>&1 &
+setsid nohup "$BIN" --project-root "$ROOT" --label "$LABEL" >>"$LOG" 2>&1 &
 disown 2>/dev/null || true
 
-for _ in $(seq 1 30); do port_open && break; sleep 0.5; done
+for _ in $(seq 1 30); do socket_open && break; sleep 0.5; done
 NEW=$(find_pid)
-if [ -n "$NEW" ]; then
-    echo "backend restarted: pid $NEW on $PORT (binary built $(date -d "@$BIN_MTIME" '+%F %T'))"
+if [ -n "$NEW" ] && socket_open; then
+    echo "backend restarted: pid $NEW on $SOCKET (binary built $(date -d "@$BIN_MTIME" '+%F %T'))"
 else
-    echo "ERROR: backend did not bind $PORT after restart — see $LOG" >&2; exit 1
+    echo "ERROR: backend did not bind $SOCKET after restart — see $LOG" >&2; exit 1
 fi

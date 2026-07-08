@@ -20,7 +20,7 @@ machine over a named pipe (offline / debugging).
 
 Which remote you connect to comes from the persisted host choice (Hosts mode,
 hotkey `h`) resolved against `.sot/hosts.toml`; environment overrides
-(`SOT_HOST`, `SOT_REMOTE_REPO`, `SOT_TCP_PORT`) win over both. See
+(`SOT_HOST`, `SOT_REMOTE_REPO`, `SOT_TCP_PORT`, `SOT_REMOTE_SOCKET`) win over both. See
 [Per-Machine Setup](setup.md).
 
 ## The Terminal drawer
@@ -50,6 +50,46 @@ the last revision the client saw, so the daemon replays missed events from a
 bounded ring or sends a fresh snapshot — reconnect feels like reattaching a tmux
 session. The supervisor keeps the SSH tunnel alive across these reconnects; only
 a real quit tears it down.
+
+## Browser-Backed Previews
+
+`W` opens HTML/static sites through backend HTTP ports that must be forwarded to
+the frontend machine: `1236` for normal static pages, plus `1237`-`1240` for
+sites with root-relative assets. Video and Pluto use the same pattern on `1235`
+and `1234`.
+
+If you manually reconnect with only the backend control tunnel, the frontend can
+still talk to `sotd` but the local browser will show `127.0.0.1 refused to
+connect` for `W`/video/Pluto. Open an aux tunnel as well:
+
+```bash
+ssh -N \
+  -L 1234:127.0.0.1:1234 \
+  -L 1235:127.0.0.1:1235 \
+  -L 1236:127.0.0.1:1236 \
+  -L 1237:127.0.0.1:1237 \
+  -L 1238:127.0.0.1:1238 \
+  -L 1239:127.0.0.1:1239 \
+  -L 1240:127.0.0.1:1240 \
+  <backend-ssh-alias>
+```
+
+## Existing tmux sessions are missing
+
+By default `sotd` uses a private per-user tmux socket for workspace panes. If you
+already have long-lived `sot-be-*` sessions on tmux's default server, the
+frontend may show workspace rows but attach to fresh empty panes after a backend
+restart. Point the backend at the existing tmux server for that migration:
+
+```bash
+export SOT_TMUX_SOCK="${TMUX%%,*}"   # from inside the old tmux server
+sotd tmux-socket-path
+```
+
+For a user systemd service, add the same environment variable to the service
+environment and restart `sotd`. The backend still checks the socket parent
+directory before spawning tmux; use this only for a tmux socket owned by the
+same Unix account.
 
 ## Self-relaunch: rebuild without dropping your session
 

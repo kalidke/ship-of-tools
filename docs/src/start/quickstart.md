@@ -35,11 +35,13 @@ frontend window, and connects them.
 ## 3. Attach / connect
 
 The frontend and backend talk over a socket. A `--local` install runs both on
-one box and connects over direct loopback TCP (`127.0.0.1:<port>`) through the
-generated `sot-launch` wrapper — no SSH involved. Remote (`--backend`) installs
-forward that socket over SSH instead. Either way, the default host and config
-live at `~/.config/sot/hosts.toml`, and the frontend connects automatically on
-launch. If the connection ever drops (laptop sleep, network blip), press
+one box and connects to the backend's per-user socket through the generated
+`sot-launch` wrapper — no SSH involved. Remote (`--backend`) installs forward a
+local TCP port to that remote per-user socket over SSH, so the remote endpoint is
+still owned by the selected Unix account. Either way, the default host and
+config live at `~/.config/sot/hosts.toml`, and the frontend connects
+automatically on launch. If the connection ever drops (laptop sleep, network
+blip), press
 **`F5`** to reconnect without losing session state.
 
 ## 4. Open a project

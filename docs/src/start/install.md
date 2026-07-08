@@ -67,12 +67,13 @@ binaries that look for the retired bundle layout can find the checkout.
 
 Julia is no longer distributed as a curated bundle. For roles that run a
 backend on this machine (`--local` and `--be-only`), the installer uses
-[juliaup](https://github.com/JuliaLang/juliaup) if Julia is missing, then runs
-`Pkg.instantiate()` inside the checkout for:
+[juliaup](https://github.com/JuliaLang/juliaup) if Julia is missing, then
+prepares the Julia sidecars inside the checkout:
 
 ```bash
 $PREFIX/repo/current/julia/kernel
 $PREFIX/repo/current/julia/repl
+$PREFIX/repo/current/julia/pluto  # instantiated, precompiled, and load-tested
 ```
 
 `--backend <ssh-alias>` is a frontend-only install on the local machine, so it
@@ -81,11 +82,12 @@ installed as a backend role.
 
 Connection behavior is role-specific:
 
-- `--local` runs frontend and backend on one box over direct loopback TCP.
-  The generated `sot-launch` wrapper starts `sot` with
-  `--tcp 127.0.0.1:<port>`; there is no SSH-to-localhost requirement.
+- `--local` runs frontend and backend on one box over the backend user's
+  per-user socket. The generated `sot-launch` wrapper starts `sot` with
+  `--socket <path>`; there is no SSH-to-localhost requirement.
 - `--backend <ssh-alias>` creates SSH local forwards to the remote backend,
-  then launches the frontend against the forwarded loopback port.
+  forwarding the local frontend port to the remote user's per-user backend
+  socket.
 - `--be-only` installs the headless backend. By default it installs and starts
   the `systemd --user` `sotd.service`; `--no-service` skips that unit so shared
   `$HOME` machines can supervise `sotd` themselves.
@@ -198,19 +200,20 @@ are incremental.
 
 The repo is a set of nested Julia environments, not one flat project. The
 minimum source setup instantiates the umbrella environment, `core`, the kernel,
-and the REPL shim. The umbrella environment at the repo root pins
+the REPL shim, and the Pluto sidecar. The umbrella environment at the repo root pins
 project-level dependencies (e.g. `CairoMakie` for plotting):
 
 ```bash
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 
-Then instantiate the core library, kernel, and REPL shim:
+Then instantiate the core library, kernel, REPL shim, and Pluto sidecar:
 
 ```bash
 julia --project=core            -e 'using Pkg; Pkg.instantiate()'
 julia --project=julia/kernel    -e 'using Pkg; Pkg.instantiate()'
 julia --project=julia/repl      -e 'using Pkg; Pkg.instantiate()'
+julia --project=julia/pluto     -e 'using Pkg; Pkg.instantiate()'
 ```
 
 `core/` is `ConceptExplorerCore` — the abstract types and dispatch contract that

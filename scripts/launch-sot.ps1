@@ -1,5 +1,5 @@
 # launch-sot.ps1 — default launcher: connect to the remote backend
-# over an SSH local-port-forwarded TCP socket. Per the
+# by forwarding a local TCP port to the remote user's per-user Unix socket. Per the
 # project's deployment topology (Windows local · Linux remote-in-tmux)
 # this is the canonical workflow; pass `-Local` to fall back to a
 # locally-spawned backend on a named pipe.
@@ -12,8 +12,9 @@
 # Overrides (env vars):
 #   SOT_HOST         SSH alias for the backend host       (default: none — see .sot/hosts.toml)
 #   SOT_REMOTE_REPO  Path to the repo on the remote       (default: none — see .sot/hosts.toml)
-#   SOT_TCP_PORT     Loopback port for the tunnel         (default: 18743)
-#   SOT_TOKEN        App-level auth token; both sides must match (default: unset, open mode)
+#   SOT_TCP_PORT     Local loopback port for the tunnel   (default: 18743)
+#   SOT_REMOTE_SOCKET Remote socket path                  (default: query sotd)
+#   SOT_TOKEN        App-level auth token for TCP fallback only
 #
 # Logs land at %LOCALAPPDATA%\sot\logs\ so disconnect / reconnect
 # events can be diagnosed without keeping a console window around.
@@ -234,6 +235,9 @@ if ($activeHostName -and $hostsCfg.hosts.ContainsKey($activeHostName)) {
     if (-not $env:SOT_TCP_PORT -and $entry.tcp_port) {
         $env:SOT_TCP_PORT = $entry.tcp_port
     }
+    if (-not $env:SOT_REMOTE_SOCKET -and $entry.remote_socket) {
+        $env:SOT_REMOTE_SOCKET = $entry.remote_socket
+    }
 }
 
 $backendHost = if ($env:SOT_HOST) { $env:SOT_HOST } else { $null }
@@ -252,25 +256,12 @@ if (-not $backendHost -or -not $remoteRepo) {
     exit 1
 }
 $tcpPort = if ($env:SOT_TCP_PORT) { [int]$env:SOT_TCP_PORT } else { 18743 }
+$remoteSocket = if ($env:SOT_REMOTE_SOCKET) { $env:SOT_REMOTE_SOCKET } else { $null }
 $token = $env:SOT_TOKEN  # may be empty
 
-# (Re)start the remote backend on every launch. Always-fresh is more
-# reliable than "skip if running" — the previous behaviour happily
-# reused a stuck backend whose accept loop was up but whose protocol
-# task had wedged, producing instant-EOF on every reconnect.
-#
-# Two critical details:
-#   - `pkill -x sotd` (exact program name) not `-f` (full
-#     command line). `-f` matches against the *bash wrapper's* command
-#     line too — the wrapper that ssh runs to host our heredoc has
-#     "sotd" embedded in it as a literal pattern argument,
-#     so `pkill -f` cheerfully kills the very shell trying to run
-#     the kill, ssh disconnects, exit 255.
-#   - `nohup … &` must redirect ALL THREE streams (`>log 2>&1
-#     </dev/null`) so the backend fully detaches from ssh's stdin
-#     pipe. Without `</dev/null` ssh blocks waiting for the child
-#     to finish or leaves the backend half-dead when ssh exits.
-$tokenArg = if ($token) { "--token $token" } else { '' }
+# Check/start the remote backend on every launch without restarting a live
+# daemon by default. The backend listens on its per-user socket; `$tcpPort`
+# below is only the local side of the SSH forward for the native frontend.
 # Interpolated into the remote script at build time (PS-side switch, bash-side test).
 $restartBackendFlag = if ($RestartBackend) { '1' } else { '0' }
 $remoteCmd = @"
@@ -284,10 +275,16 @@ $remoteCmd = @"
 # is now the force path's job. Protocol skew stays loud via the ADR 0030
 # handshake gate. Echoes stay paren-free - PS 5.1 hands this to ssh unquoted.
 export PATH="`$HOME/.cargo/bin:`$HOME/.local/bin:`$PATH"
+remote_socket='$remoteSocket'
+if [ -z "`$remote_socket" ]; then
+    cd '$remoteRepo'
+    remote_socket="`$(./rust/target/release/sotd session-socket-path sot)"
+fi
+echo "backend-socket: `$remote_socket"
 if [ "$restartBackendFlag" = 1 ]; then
     cd '$remoteRepo'
     scripts/restart-backend.sh && echo "backend: force-restarted at current build" || echo "backend: force-restart FAILED"
-elif pgrep -x sotd >/dev/null 2>&1 || systemctl --user is-active sotd.service >/dev/null 2>&1; then
+elif [ -S "`$remote_socket" ] && { pgrep -x sotd >/dev/null 2>&1 || systemctl --user is-active sotd.service >/dev/null 2>&1; }; then
     cd '$remoteRepo'
     if scripts/restart-backend.sh --check >/dev/null 2>&1; then
         echo "backend: running and current"
@@ -301,11 +298,16 @@ else
         echo "backend: was down - started via systemd"
     else
         cd '$remoteRepo'
-        nohup ./rust/target/release/sotd --tcp 127.0.0.1:$tcpPort --project-root '$remoteRepo' --label sot $tokenArg >/tmp/sotd.log 2>&1 </dev/null &
+        nohup ./rust/target/release/sotd --project-root '$remoteRepo' --label sot >/tmp/sotd.log 2>&1 </dev/null &
         disown
         echo "backend: was down - started nohup, pid=`$!"
     fi
 fi
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ -S "`$remote_socket" ] && break
+    sleep 0.25
+done
+[ -S "`$remote_socket" ] || echo "backend: socket MISSING at `$remote_socket"
 "@
 # Normalize to LF — Windows checkouts (autocrlf=true) leave CRLF in the
 # here-string, which becomes literal $'\r' tokens in bash on the remote.
@@ -330,6 +332,28 @@ if ($LASTEXITCODE -ne 0) {
 if ($remoteStatus -match 'force-restart FAILED') {
     Set-LaunchStatus "ERROR: backend force-restart failed on $backendHost (see restart-backend.sh output / supervisor.log)"
 }
+if ($remoteStatus -match 'socket MISSING') {
+    Set-LaunchStatus "ERROR: backend socket missing on $backendHost"
+    Stop-Splash
+    [System.Windows.Forms.MessageBox]::Show(
+        "Backend on $backendHost did not create its socket.`n`nRemote output:`n$remoteStatus",
+        'Ship of Tools launcher',
+        'OK', 'Error') | Out-Null
+    exit 1
+}
+if (-not $remoteSocket) {
+    if ($remoteStatus -match 'backend-socket:\s*(\S+)') {
+        $remoteSocket = $matches[1]
+    } else {
+        Set-LaunchStatus "ERROR: backend did not report a socket path on $backendHost"
+        Stop-Splash
+        [System.Windows.Forms.MessageBox]::Show(
+            "Backend on $backendHost did not report a socket path.`n`nRemote output:`n$remoteStatus",
+            'Ship of Tools launcher',
+            'OK', 'Error') | Out-Null
+        exit 1
+    }
+}
 
 # SSH local-port-forward. Keepalive tuning so brief wifi flaps and
 # laptop-sleep-then-wake don't immediately tear the tunnel down:
@@ -350,12 +374,15 @@ if ($remoteStatus -match 'force-restart FAILED') {
 $plutoPort = if ($env:SOT_PLUTO_PORT) { [int]$env:SOT_PLUTO_PORT } else { 1234 }
 $videoPort = if ($env:SOT_VIDEO_PORT) { [int]$env:SOT_VIDEO_PORT } else { 1235 }
 $docsPort  = if ($env:SOT_DOCS_PORT)  { [int]$env:SOT_DOCS_PORT }  else { 1236 }
-$sshArgs = @(
+$sshCommonArgs = @(
     '-N',
     '-o', 'ExitOnForwardFailure=yes',
     '-o', 'ServerAliveInterval=30',
-    '-o', 'ServerAliveCountMax=6',
-    '-L', "${tcpPort}:127.0.0.1:${tcpPort}",
+    '-o', 'ServerAliveCountMax=6'
+)
+$sshAuxArgs = @()
+$sshAuxArgs += $sshCommonArgs
+$sshAuxArgs += @(
     # H1.2 — forward the remote Pluto.jl server so `o` on a
     # Pluto-flavored .jl opens in the local browser.
     '-L', "${plutoPort}:127.0.0.1:${plutoPort}",
@@ -374,9 +401,33 @@ $sshArgs = @(
     '-L', "$($docsPort+4):127.0.0.1:$($docsPort+4)",
     $backendHost
 )
+$sshArgs = @()
+$sshArgs += $sshCommonArgs
+$sshArgs += @('-L', "${tcpPort}:$remoteSocket")
+$auxForwardStart = $sshCommonArgs.Count
+$auxForwardEnd = $sshAuxArgs.Count - 1
+$sshArgs += $sshAuxArgs[$auxForwardStart..$auxForwardEnd]
+function Test-LocalPortOpen {
+    param([int]$Port)
+    $client = New-Object Net.Sockets.TcpClient
+    try {
+        $client.Connect('127.0.0.1', $Port)
+        return $true
+    } catch {
+        return $false
+    } finally {
+        $client.Close()
+    }
+}
 function Start-SotTunnel {
     Start-Process -FilePath ssh `
         -ArgumentList $sshArgs `
+        -WindowStyle Hidden `
+        -PassThru
+}
+function Start-SotAuxTunnel {
+    Start-Process -FilePath ssh `
+        -ArgumentList $sshAuxArgs `
         -WindowStyle Hidden `
         -PassThru
 }
@@ -452,7 +503,13 @@ if (-not $env:SOT_SETTINGS) {
 }
 
 Set-LaunchStatus 'Connecting...'
-$sshTunnel = Start-SotTunnel
+$externalControlTunnel = Test-LocalPortOpen -Port $tcpPort
+if ($externalControlTunnel) {
+    Write-SupLog "control port $tcpPort is already open; starting browser aux-only tunnel"
+    $sshTunnel = Start-SotAuxTunnel
+} else {
+    $sshTunnel = Start-SotTunnel
+}
 $sshStartedAt = Get-Date
 Start-Sleep -Milliseconds 400
 
@@ -541,7 +598,11 @@ try {
                 } else {
                     $tunnelBackoffSec = 0
                 }
-                $sshTunnel = Start-SotTunnel
+                if ($externalControlTunnel) {
+                    $sshTunnel = Start-SotAuxTunnel
+                } else {
+                    $sshTunnel = Start-SotTunnel
+                }
                 $sshStartedAt = Get-Date
                 Write-SupLog "tunnel respawned pid=$($sshTunnel.Id) (backoff=${tunnelBackoffSec}s)"
             }

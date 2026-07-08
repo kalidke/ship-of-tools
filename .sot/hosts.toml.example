@@ -14,20 +14,22 @@
 # writes the chosen name to `state-<hostname>.toml` as `last_host`.
 # On next launch the launcher reads that, resolves the matching host
 # entry here, and sets SOT_HOST / SOT_REMOTE_REPO /
-# SOT_TCP_PORT before starting the tunnel.
+# SOT_TCP_PORT / SOT_REMOTE_SOCKET before starting the tunnel.
 #
 # If no last_host is set yet, the launcher falls back to `default_host`.
 #
-# Frontend↔backend transport is SSH (also for a same-machine backend —
-# point ssh_alias at localhost); key-based auth to the backend host is
-# a hard requirement (ADR 0030 §5).
+# Frontend↔backend transport is SSH to a per-user remote socket. `tcp_port`
+# below is the local forwarded port the native frontend dials; the remote side
+# terminates at the Unix socket owned by the SSH user. Key-based auth to the
+# backend host is a hard requirement (ADR 0030 §5).
 
 default_host = "myserver"
 
 [host.myserver]
 ssh_alias = "myserver"                       # entry in your ~/.ssh/config
 remote_repo = "/home/me/path/to/project"     # project root the daemon serves
-tcp_port = 18743
+tcp_port = 18743                             # local side of the SSH forward
+# remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"  # optional; queried if omitted
 remote_home = "/home/me"
 
 # A second remote:
@@ -36,6 +38,7 @@ remote_home = "/home/me"
 # ssh_alias = "otherbox"
 # remote_repo = "/home/me/path/to/project"
 # tcp_port = 18744
+# remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
 #
 # A local entry (no SSH; backend on the same machine). Note the parser
 # passes values through verbatim — no TOML escape processing — so

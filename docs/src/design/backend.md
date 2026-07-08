@@ -65,9 +65,9 @@ client, and not depend on host-specific port allocation.
   `ServerAliveInterval=15`). Where Unix-socket forwarding isn't available — older
   Windows OpenSSH — it falls back to a per-session local TCP port allocated at
   runtime, never fixed.
-- **Two-layer auth.** SSH authenticates the user; an app-level token in the
-  connect handshake authenticates the *session*. localhost on a shared remote is
-  not a security boundary, so the token is required even over a Unix socket.
+- **Transport auth.** SSH authenticates the Unix user for remote socket access,
+  and the socket path is private to that user. Direct TCP remains token-gated
+  because `localhost` on a shared remote is machine-scoped, not user-scoped.
 - **Reconnect carries revision.** Every connect sends
   `{session_id, client_id, last_seen_revision}`. The backend replays missed
   events from a bounded ring or sends a full snapshot if the client is too far

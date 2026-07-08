@@ -11,11 +11,13 @@
 //             -o StreamLocalBindUnlink=yes
 //             -L "$LOCAL_SOCK:$REMOTE_SOCK"
 //             <remote>
-//   - Where pipe-over-SSH is unreliable (older Windows OpenSSH), TCP is the
-//     durable fallback. `ssh -L <local>:127.0.0.1:<remote>` forwards a TCP
-//     port; the backend listens with `--tcp 127.0.0.1:<port>` and the
-//     frontend connects with `--tcp 127.0.0.1:<port>`. App-level token in
-//     the `hello` handshake gates the TCP path.
+//   - Where a native frontend wants a local TCP endpoint (notably Windows),
+//     the launcher forwards that local TCP port to the remote Unix socket:
+//         ssh -L "<local-port>:$REMOTE_SOCK" <remote>
+//     The frontend still connects with `--tcp 127.0.0.1:<local-port>`, but
+//     the remote endpoint is scoped by the SSH user and socket permissions.
+//     A direct backend `--tcp` listener remains an explicit fallback and is
+//     token-gated.
 //   - Connect handshake carries (session_id, client_id, last_seen_revision);
 //     backend either replays missed events or sends a snapshot on reconnect.
 //
@@ -31,27 +33,24 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use base64::Engine;
-use sot_protocol::{
-    codec, op, ConceptReadReq, ConceptReadRes, ConceptWriteReq, ConceptWriteRes,
-    FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq, FileReadRes,
-    FileUploadAck, FileUploadReq,
-    FileWriteReq, FileWriteRes, Frame, HelloReq,
-    HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
-    MonitorHistoryReq, MonitorHistoryRes, MonitorSubscribeRes, MonitorTickEvt,
-    DocsOpenReq, DocsOpenRes,
-    PlutoOpenReq, PlutoOpenRes,
-    QuartoOpenReq, QuartoOpenRes, VideoOpenReq, VideoOpenRes,
-    PreviewGetReq, PreviewGetRes, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyWriteReq, ReplEvalReq,
-    ReplEvalRes, ReplFrame, ReplFrameEvt, ReplRunFileReq, ReplRunFileRes, TmuxCapturePaneReq,
-    TmuxCapturePaneRes, TmuxCreateSessionReq, TmuxKillSessionReq, TmuxListPanesReq,
-    TmuxListPanesRes, TmuxListSessionsRes, TmuxPane, TmuxSession, ToggleHiddenReq, TreeChildrenReq,
-    TreeChildrenRes, TreeNode, TreeRootReq, TreeRootRes, WorkspaceListReq, WorkspaceListRes,
-};
 use interprocess::local_socket::{
     tokio::{prelude::*, Stream as LocalStream},
     GenericFilePath,
 };
 use serde_json::Value;
+use sot_protocol::{
+    codec, op, ConceptReadReq, ConceptReadRes, ConceptWriteReq, ConceptWriteRes, DocsOpenReq,
+    DocsOpenRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq,
+    FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
+    HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
+    MonitorHistoryReq, MonitorHistoryRes, MonitorSubscribeRes, MonitorTickEvt, PlutoOpenReq,
+    PlutoOpenRes, PreviewGetReq, PreviewGetRes, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyWriteReq,
+    QuartoOpenReq, QuartoOpenRes, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt,
+    ReplRunFileReq, ReplRunFileRes, TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxCreateSessionReq,
+    TmuxKillSessionReq, TmuxListPanesReq, TmuxListPanesRes, TmuxListSessionsRes, TmuxPane,
+    TmuxSession, ToggleHiddenReq, TreeChildrenReq, TreeChildrenRes, TreeNode, TreeRootReq,
+    TreeRootRes, VideoOpenReq, VideoOpenRes, WorkspaceListReq, WorkspaceListRes,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{self as tmpsc, UnboundedReceiver, UnboundedSender};
 use winit::window::Window;
@@ -238,7 +237,9 @@ pub enum IncomingEvt {
     /// file unreadable, kernel.request error). The chrome un-latches the
     /// one-shot fire guard so the drift check retries on a later cursor
     /// pass instead of wedging at "checking…" for the whole session.
-    FileParseFailed { path: String },
+    FileParseFailed {
+        path: String,
+    },
     /// `kernel.request function.methods` reply for `module::name`. Methods
     /// become Modules-mode col-3 children of the function row.
     FunctionMethodsReceived {
@@ -471,7 +472,7 @@ pub struct ReplRunFileInfo {
     pub elapsed_ms: u64,
     pub project_dir: Option<String>,
     #[allow(dead_code)] // useful when frontend wants to distinguish
-                        // discovered vs fallback for status copy
+    // discovered vs fallback for status copy
     pub project_source: Option<String>,
     pub frames: Vec<ReplFrame>,
 }
@@ -515,8 +516,8 @@ pub struct WorkspaceInfo {
 #[derive(Debug, Clone)]
 pub struct WorkspaceCreatedInfo {
     #[allow(dead_code)] // exposed by the protocol; frontend currently
-                        // keys off slug for active_workspace_id, but the
-                        // canonical id is what disk/IO consumers want
+    // keys off slug for active_workspace_id, but the
+    // canonical id is what disk/IO consumers want
     pub workspace_id: String,
     pub slug: String,
     pub label: String,
@@ -530,8 +531,8 @@ pub struct WorkspaceCreatedInfo {
 #[derive(Debug, Clone)]
 pub struct WorkspaceDestroyedInfo {
     #[allow(dead_code)] // mirrors WorkspaceCreatedInfo; future routing
-                        // may need the canonical id even though slug is
-                        // what handlers key off today.
+    // may need the canonical id even though slug is
+    // what handlers key off today.
     pub workspace_id: String,
     pub slug: String,
     pub label: String,
@@ -726,7 +727,7 @@ pub enum OutgoingReq {
     /// in the chrome to swap the left pane between modes. Today the backend
     /// only knows "files"; other modes are routed via `ModulesList` etc.
     #[allow(dead_code)] // constructed by the m/f keyboard handler in the
-                        // mode-switch commit; transport plumbing ships first.
+    // mode-switch commit; transport plumbing ships first.
     TreeRoot {
         mode: String,
         /// ADR 0014 workspace routing. Same shape as TreeChildren.
@@ -738,24 +739,18 @@ pub enum OutgoingReq {
     /// after on the same ordered connection so the new visibility shows up.
     /// The response carries the new state but the FE ignores it (the re-fetch
     /// is authoritative), so no PendingKind is stamped.
-    ToggleHidden {
-        workspace_id: Option<String>,
-    },
+    ToggleHidden { workspace_id: Option<String> },
     /// Ask the kernel for its loaded-modules list. Response surfaces as
     /// `IncomingEvt::ModulesList`. Currently the only kernel.request the
     /// frontend issues directly; expand the enum as more land.
     #[allow(dead_code)] // ditto.
-    ModulesList {
-        workspace_id: Option<String>,
-    },
+    ModulesList { workspace_id: Option<String> },
     /// Ask the kernel to scan the project's package source tree
     /// (`<project_root>/src/<PkgName>.jl` + everything it `include`s)
     /// and return a nested {modules → types/functions/submodules}
     /// view. Drives the unified Modules+Types nav mode.
     #[allow(dead_code)] // consumer lands in the unified-tree commit
-    ProjectScan {
-        workspace_id: Option<String>,
-    },
+    ProjectScan { workspace_id: Option<String> },
     /// Fetch the `.concept/<target>.md` annotation for `target`. Response
     /// surfaces as `IncomingEvt::ConceptRead`.
     #[allow(dead_code)] // chrome wires this up in the next commit
@@ -806,10 +801,7 @@ pub enum OutgoingReq {
     /// the response routes back via `IncomingEvt::MathRendered` and
     /// populates the chrome's per-key SVG cache. Backend's MathJax
     /// sidecar (`95f8176`) handles the rendering.
-    MathRender {
-        latex: String,
-        display: bool,
-    },
+    MathRender { latex: String, display: bool },
     /// Crop an image node's visible ROI (source-image px) on the backend and
     /// write it to `<workspace>/.sot/captures/` as a PNG (ADR 0022). Reply
     /// → `IncomingEvt::ImageCropped`, which the chrome pastes into the LLM pane.
@@ -895,9 +887,7 @@ pub enum OutgoingReq {
     /// `InterruptException` into the running eval task and the resulting
     /// error+done frames stream back to finalize the entry. No `eval_id` --
     /// the kernel interrupts its CURRENT_EVAL.
-    ReplInterrupt {
-        workspace_id: Option<String>,
-    },
+    ReplInterrupt { workspace_id: Option<String> },
     /// Open (or attach) the LLM-pane terminal at the given size.
     /// `target` selects the tmux session; `None` uses the historical
     /// `sot-llm`. Sessions mode (ADR 0013) passes a backend session
@@ -913,15 +903,10 @@ pub enum OutgoingReq {
         user_switch: bool,
     },
     /// Resize an already-open pty (BL pane size changed).
-    PtyResize {
-        cols: u16,
-        rows: u16,
-    },
+    PtyResize { cols: u16, rows: u16 },
     /// Keystroke bytes to forward to the pty. Fire-and-forget — no
     /// response.
-    PtyWrite {
-        bytes: Vec<u8>,
-    },
+    PtyWrite { bytes: Vec<u8> },
     /// Sessions-mode ops (ADR 0013 B1 backend; B2-B5 consumes here).
     /// All five round-trip through the host tmux server; responses surface
     /// as the matching `IncomingEvt::Tmux*` variants. Kept as
@@ -940,20 +925,13 @@ pub enum OutgoingReq {
         cwd: Option<String>,
     },
     #[allow(dead_code)]
-    TmuxKillSession {
-        name: String,
-    },
+    TmuxKillSession { name: String },
     #[allow(dead_code)]
-    TmuxCapturePane {
-        target: String,
-        lines: u32,
-    },
+    TmuxCapturePane { target: String, lines: u32 },
     /// List subdirectories of `path`. Used by the Sessions-mode workspace
     /// picker so the user can pick an existing directory as the new
     /// workspace's project_root.
-    DirectoryList {
-        path: String,
-    },
+    DirectoryList { path: String },
     /// Register a new workspace with the daemon and create its tmux
     /// session (ADR 0014). Fired when the user confirms a directory in
     /// the workspace picker. Response surfaces as
@@ -977,36 +955,25 @@ pub enum OutgoingReq {
     /// tmux session, removes the toml, drops the in-memory entry.
     /// Default workspace is refused. Response surfaces as
     /// `IncomingEvt::WorkspaceDestroyed`.
-    WorkspaceDestroy {
-        workspace_id: String,
-    },
+    WorkspaceDestroy { workspace_id: String },
     /// Open a Pluto-flavored `.jl` notebook in the backend-supervised
     /// Pluto server. Path is the absolute backend-side path. Response
     /// surfaces as `IncomingEvt::PlutoOpened` carrying the per-notebook
     /// edit URL on success.
-    PlutoOpen {
-        path: String,
-    },
+    PlutoOpen { path: String },
     /// Ask the backend for a browser URL for a video file (HTTP-served +
     /// SSH-forwarded). Response surfaces as `IncomingEvt::VideoOpened`.
-    VideoOpen {
-        path: String,
-    },
+    VideoOpen { path: String },
     /// Open the project's built Documenter site in the OS browser (HTTP-served
     /// from `docs/build` + SSH-forwarded). `path` is the cursored file's
     /// absolute backend path (deep-links to a built page when applicable, else
     /// the index). Response surfaces as `IncomingEvt::DocsOpened`. ADR 0024.
-    DocsOpen {
-        path: String,
-    },
+    DocsOpen { path: String },
     /// Render a Quarto/markdown doc on the backend and open it in the OS
     /// browser. `execute = false` (`o`) = fast no-execute render; `execute =
     /// true` (`O`) runs code chunks. Response surfaces as
     /// `IncomingEvt::QuartoOpened` carrying the HTML bytes.
-    QuartoOpen {
-        path: String,
-        execute: bool,
-    },
+    QuartoOpen { path: String, execute: bool },
     /// Run a `.jl` file in the workspace's persistent REPL. Priority J:
     /// `r` in NavTree maps to `fresh: true` (REPL reset into the file's
     /// closest-ancestor Project.toml then include), `R` to `fresh:
@@ -1027,10 +994,7 @@ pub enum OutgoingReq {
     /// `preview.get` reach). `dest` is the resolved local destination; the
     /// transport task creates it on the first chunk and writes each streamed
     /// chunk at its offset until `eof`.
-    FileDownload {
-        path: String,
-        dest: PathBuf,
-    },
+    FileDownload { path: String, dest: PathBuf },
     /// Upload one chunk of a local file to a backend directory. The chrome
     /// drives flow control: it sends chunk 0, then sends the next chunk only
     /// after the matching `FileUploadAck`. `dir` is the absolute backend dest
@@ -1078,28 +1042,59 @@ enum PendingKind {
     },
     ModulesList,
     ProjectScan,
-    MarkdownTokenize { lang: String, source_hash: u64 },
-    ConceptRead { target: String },
-    ConceptWrite { target: String },
-    FileRead { node_id: String },
-    FileWrite { node_id: String },
-    FileDelete { node_id: String },
-    MathRender { latex: String, display: bool },
-    ImageCrop { node_id: String },
-    FileParse { path: String },
-    FunctionMethods { module: String, name: String },
+    MarkdownTokenize {
+        lang: String,
+        source_hash: u64,
+    },
+    ConceptRead {
+        target: String,
+    },
+    ConceptWrite {
+        target: String,
+    },
+    FileRead {
+        node_id: String,
+    },
+    FileWrite {
+        node_id: String,
+    },
+    FileDelete {
+        node_id: String,
+    },
+    MathRender {
+        latex: String,
+        display: bool,
+    },
+    ImageCrop {
+        node_id: String,
+    },
+    FileParse {
+        path: String,
+    },
+    FunctionMethods {
+        module: String,
+        name: String,
+    },
     PreviewGet {
         node_id: String,
         workspace_id: Option<String>,
     },
-    FigureGet { url: String },
-    ReplEval { eval_id: u64 },
+    FigureGet {
+        url: String,
+    },
+    ReplEval {
+        eval_id: u64,
+    },
     PtyOpen,
     TmuxListSessions,
-    TmuxListPanes { session: Option<String> },
+    TmuxListPanes {
+        session: Option<String>,
+    },
     TmuxCreateSession,
     TmuxKillSession,
-    TmuxCapturePane { target: String },
+    TmuxCapturePane {
+        target: String,
+    },
     DirectoryList,
     WorkspaceCreate,
     WorkspaceList,
@@ -1108,12 +1103,19 @@ enum PendingKind {
     VideoOpen,
     DocsOpen,
     QuartoOpen,
-    ReplRunFile { eval_id: u64, path: String, fresh: bool },
+    ReplRunFile {
+        eval_id: u64,
+        path: String,
+        fresh: bool,
+    },
     /// A `file.download` is streaming. The pending entry is re-inserted on
     /// each non-`eof` chunk (one request id, many response frames). `file` is
     /// lazily created on the first chunk so a backend error before any chunk
     /// leaves no empty file behind.
-    FileDownload { dest: PathBuf, file: Option<std::fs::File> },
+    FileDownload {
+        dest: PathBuf,
+        file: Option<std::fs::File>,
+    },
     /// A `file.upload` chunk awaiting its ack. 1:1 — each chunk is its own
     /// request id, so no re-insert.
     FileUpload,
@@ -1273,9 +1275,7 @@ async fn connect_and_run(
 
 /// Connect to the local socket / named pipe at `path`.
 async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
-    let path_str = path
-        .to_str()
-        .context("socket path must be valid UTF-8")?;
+    let path_str = path.to_str().context("socket path must be valid UTF-8")?;
     let name = path_str
         .to_fs_name::<GenericFilePath>()
         .with_context(|| format!("interpret {path_str:?} as local-socket name"))?;
@@ -1292,10 +1292,7 @@ async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
 /// `run_protocol`'s steady-state loop.
 async fn read_owned<R: AsyncRead + Unpin>(
     mut rx: tokio::io::BufReader<R>,
-) -> (
-    tokio::io::BufReader<R>,
-    Result<(Frame, Option<Vec<u8>>)>,
-) {
+) -> (tokio::io::BufReader<R>, Result<(Frame, Option<Vec<u8>>)>) {
     let res = codec::read_frame(&mut rx).await;
     (rx, res)
 }
@@ -1387,7 +1384,11 @@ where
             let get_u32 = |k: &str| p.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
             let backend_version = {
                 let v = get_str("backend_version");
-                if v.is_empty() { "<unknown>".to_string() } else { v.to_string() }
+                if v.is_empty() {
+                    "<unknown>".to_string()
+                } else {
+                    v.to_string()
+                }
             };
             let frontend_version = sot_protocol::app_version();
             let message = format!(
@@ -2352,20 +2353,21 @@ fn handle_response_frame(
 ) {
     if let Some(kind) = pending.remove(&frame.id) {
         match kind {
-            PendingKind::TreeChildren { parent_id, workspace_id } => {
-                match serde_json::from_value::<TreeChildrenRes>(frame.payload) {
-                    Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::TreeChildren {
-                            workspace_id,
-                            parent_id,
-                            children: res.children,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, %parent_id, "tree.children res parse failed");
-                    }
+            PendingKind::TreeChildren {
+                parent_id,
+                workspace_id,
+            } => match serde_json::from_value::<TreeChildrenRes>(frame.payload) {
+                Ok(res) => {
+                    let _ = evt_tx.send(IncomingEvt::TreeChildren {
+                        workspace_id,
+                        parent_id,
+                        children: res.children,
+                    });
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(error = %e, %parent_id, "tree.children res parse failed");
+                }
+            },
             PendingKind::TreeRoot { workspace_id } => {
                 match serde_json::from_value::<TreeRootRes>(frame.payload) {
                     Ok(res) => {
@@ -2392,10 +2394,7 @@ fn handle_response_frame(
                         arr.iter()
                             .filter_map(|m| {
                                 let name = m.get("name").and_then(|n| n.as_str())?;
-                                let path = m
-                                    .get("path")
-                                    .and_then(|p| p.as_str())
-                                    .map(String::from);
+                                let path = m.get("path").and_then(|p| p.as_str()).map(String::from);
                                 Some(ModuleInfo {
                                     name: name.to_string(),
                                     path,
@@ -2510,8 +2509,11 @@ fn handle_response_frame(
                                 });
                             }
                             None => {
-                                tracing::warn!(latex_len = latex.len(), is_display,
-                                    "math.render reply missing blob bytes");
+                                tracing::warn!(
+                                    latex_len = latex.len(),
+                                    is_display,
+                                    "math.render reply missing blob bytes"
+                                );
                             }
                         }
                     }
@@ -2553,10 +2555,7 @@ fn handle_response_frame(
                 // ...}`), or any other `{error, code, ...}` failure.
                 // Surface the right variant so the chrome can react
                 // without re-parsing the wire shape itself.
-                let result = if let Some(code) = frame
-                    .payload
-                    .get("code")
-                    .and_then(|v| v.as_str())
+                let result = if let Some(code) = frame.payload.get("code").and_then(|v| v.as_str())
                 {
                     if code == "stale_write" {
                         ConceptWriteResult::Stale
@@ -2588,10 +2587,7 @@ fn handle_response_frame(
                         }
                     }
                 };
-                let _ = evt_tx.send(IncomingEvt::ConceptWriteDone {
-                    target,
-                    result,
-                });
+                let _ = evt_tx.send(IncomingEvt::ConceptWriteDone { target, result });
             }
             PendingKind::FileRead { node_id } => {
                 match serde_json::from_value::<FileReadRes>(frame.payload) {
@@ -2612,8 +2608,7 @@ fn handle_response_frame(
                 // Mirror the backend's three shapes: happy-path FileWriteRes, a
                 // `{code: "conflict", current_content, current_version}`
                 // envelope, or any other `{error, code}` failure.
-                let result = if let Some(code) =
-                    frame.payload.get("code").and_then(|v| v.as_str())
+                let result = if let Some(code) = frame.payload.get("code").and_then(|v| v.as_str())
                 {
                     if code == "conflict" {
                         let current_content = frame
@@ -2664,8 +2659,7 @@ fn handle_response_frame(
             PendingKind::FileDelete { node_id } => {
                 // Mirror the backend's two shapes: happy-path FileDeleteRes or
                 // any `{error, code}` failure (`is_directory`, `not_found`, …).
-                let result = if let Some(code) =
-                    frame.payload.get("code").and_then(|v| v.as_str())
+                let result = if let Some(code) = frame.payload.get("code").and_then(|v| v.as_str())
                 {
                     let message = frame
                         .payload
@@ -2733,18 +2727,11 @@ fn handle_response_frame(
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                let line = d
-                                    .get("line")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0);
-                                let parent = d
-                                    .get("parent")
-                                    .and_then(|v| v.as_str())
-                                    .map(String::from);
-                                let ast_hash = d
-                                    .get("ast_hash")
-                                    .and_then(|v| v.as_str())
-                                    .map(String::from);
+                                let line = d.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
+                                let parent =
+                                    d.get("parent").and_then(|v| v.as_str()).map(String::from);
+                                let ast_hash =
+                                    d.get("ast_hash").and_then(|v| v.as_str()).map(String::from);
                                 Some(DefinitionInfo {
                                     name,
                                     kind,
@@ -2762,7 +2749,10 @@ fn handle_response_frame(
                     definitions,
                 });
             }
-            PendingKind::PreviewGet { node_id, workspace_id } => {
+            PendingKind::PreviewGet {
+                node_id,
+                workspace_id,
+            } => {
                 // Same shape as the connect-time preview.get: a typed
                 // PreviewGetRes envelope plus a length-prefixed blob the
                 // codec already pulled out. Emit the existing
@@ -2818,23 +2808,15 @@ fn handle_response_frame(
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|m| {
-                                let sig = m
-                                    .get("sig")
-                                    .and_then(|v| v.as_str())?
-                                    .to_string();
+                                let sig = m.get("sig").and_then(|v| v.as_str())?.to_string();
                                 let file = m
                                     .get("file")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                let line = m
-                                    .get("line")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0);
-                                let ast_hash = m
-                                    .get("ast_hash")
-                                    .and_then(|v| v.as_str())
-                                    .map(String::from);
+                                let line = m.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
+                                let ast_hash =
+                                    m.get("ast_hash").and_then(|v| v.as_str()).map(String::from);
                                 Some(MethodInfo {
                                     sig,
                                     file,
@@ -2873,20 +2855,18 @@ fn handle_response_frame(
                     }
                 }
             }
-            PendingKind::PtyOpen => {
-                match serde_json::from_value::<PtyOpenRes>(frame.payload) {
-                    Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::PtyOpened {
-                            cols: res.cols,
-                            rows: res.rows,
-                            pane_command: res.pane_command,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "pty.open res parse failed");
-                    }
+            PendingKind::PtyOpen => match serde_json::from_value::<PtyOpenRes>(frame.payload) {
+                Ok(res) => {
+                    let _ = evt_tx.send(IncomingEvt::PtyOpened {
+                        cols: res.cols,
+                        rows: res.rows,
+                        pane_command: res.pane_command,
+                    });
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(error = %e, "pty.open res parse failed");
+                }
+            },
             PendingKind::TmuxListSessions => {
                 match serde_json::from_value::<TmuxListSessionsRes>(frame.payload) {
                     Ok(res) => {
@@ -3108,7 +3088,11 @@ fn handle_response_frame(
                 };
                 let _ = evt_tx.send(IncomingEvt::QuartoOpened { result });
             }
-            PendingKind::ReplRunFile { eval_id, path, fresh } => {
+            PendingKind::ReplRunFile {
+                eval_id,
+                path,
+                fresh,
+            } => {
                 // Success = `frames` present; error envelopes carry
                 // `{error, code}` per the handler contract. Same shape
                 // pattern as WorkspaceCreate / PlutoOpen above.
@@ -3200,10 +3184,8 @@ fn handle_response_frame(
                                     // One request id, many chunks: keep the
                                     // transfer (with its open file handle) alive
                                     // for the next streamed frame.
-                                    pending.insert(
-                                        frame_id,
-                                        PendingKind::FileDownload { dest, file },
-                                    );
+                                    pending
+                                        .insert(frame_id, PendingKind::FileDownload { dest, file });
                                 }
                                 // On eof: pending stays removed; `file` drops here,
                                 // flushing + closing the completed download.
@@ -3347,8 +3329,16 @@ fn take_id(next_id: &mut u64) -> u64 {
 /// degrades to defaults instead of dropping the whole tree.
 fn parse_scan_module(v: &Value) -> ScanModule {
     ScanModule {
-        name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        file: v.get("file").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        name: v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        file: v
+            .get("file")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
         line: v.get("line").and_then(|x| x.as_i64()).unwrap_or(0),
         ast_hash: v
             .get("ast_hash")
@@ -3375,9 +3365,21 @@ fn parse_scan_module(v: &Value) -> ScanModule {
 
 fn parse_scan_type(v: &Value) -> ScanType {
     ScanType {
-        name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        kind: v.get("kind").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        file: v.get("file").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        name: v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        kind: v
+            .get("kind")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        file: v
+            .get("file")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
         line: v.get("line").and_then(|x| x.as_i64()).unwrap_or(0),
         ast_hash: v
             .get("ast_hash")
@@ -3394,9 +3396,21 @@ fn parse_scan_type(v: &Value) -> ScanType {
 
 fn parse_scan_entity(v: &Value) -> ScanEntity {
     ScanEntity {
-        name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        kind: v.get("kind").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        file: v.get("file").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        name: v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        kind: v
+            .get("kind")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        file: v
+            .get("file")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
         line: v.get("line").and_then(|x| x.as_i64()).unwrap_or(0),
         ast_hash: v
             .get("ast_hash")

@@ -12,8 +12,8 @@
 //
 // At least one transport must be configured. Both run concurrently and feed
 // accepted streams into the same generic connection task — the codec is
-// transport-agnostic, so the only thing that varies is auth (the optional
-// app-level token is enforced on every transport when configured).
+// transport-agnostic. TCP is token-gated; local sockets rely on filesystem /
+// named-pipe ownership and must live under private parent directories.
 
 mod clients;
 mod concept;
@@ -111,14 +111,24 @@ impl std::io::Write for TeeWriter {
 fn open_private_log_file() -> Option<Arc<Mutex<std::fs::File>>> {
     let dir = paths::state_dir();
     if let Err(e) = paths::ensure_private_dir(&dir) {
-        eprintln!("sotd: could not create state dir {}: {e} (logging to stdout only)", dir.display());
+        eprintln!(
+            "sotd: could not create state dir {}: {e} (logging to stdout only)",
+            dir.display()
+        );
         return None;
     }
     let path = dir.join("sotd.log");
-    let file = match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("sotd: could not open log file {}: {e} (logging to stdout only)", path.display());
+            eprintln!(
+                "sotd: could not open log file {}: {e} (logging to stdout only)",
+                path.display()
+            );
             return None;
         }
     };
@@ -136,19 +146,28 @@ fn open_private_log_file() -> Option<Arc<Mutex<std::fs::File>>> {
 async fn main() -> Result<()> {
     // Pure query subcommands (security review): checked against raw argv
     // BEFORE any startup side effect (umask, private log file/state dir
-    // creation, tracing init) below. Previously `tmux-socket-path` and
-    // `--version`/`-V` were handled inside `parse_args()`, which only runs
+    // creation, tracing init) below. Previously pure path/version queries were
+    // handled inside `parse_args()`, which only runs
     // AFTER those side effects — so a shell script that just wants the
     // socket path (comm-lib.sh's `sot_tmux_socket`, potentially called
-    // often) was spinning up the daemon's log file/state dir as a
+    // often, and optionally steered by `SOT_TMUX_SOCK` for tmux-server
+    // migration) was spinning up the daemon's log file/state dir as a
     // byproduct of a read-only query. Only recognised as the FIRST
     // argument (true subcommand position, matching how both are actually
-    // invoked — `sotd tmux-socket-path`, `sotd --version`); this replaces,
+    // invoked — `sotd tmux-socket-path`, `sotd session-socket-path sot`,
+    // `sotd --version`); this replaces,
     // rather than duplicates, the arms that used to live in `parse_args()`.
     if let Some(first) = std::env::args().nth(1) {
         match first.as_str() {
             "tmux-socket-path" => {
                 println!("{}", paths::tmux_socket_path().display());
+                return Ok(());
+            }
+            "session-socket-path" => {
+                let label = std::env::args()
+                    .nth(2)
+                    .unwrap_or_else(|| "default".to_string());
+                println!("{}", paths::session_socket_path(&label).display());
                 return Ok(());
             }
             "--version" | "-V" => {
@@ -166,7 +185,9 @@ async fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
-        .with_writer(move || TeeWriter { file: log_file.clone() })
+        .with_writer(move || TeeWriter {
+            file: log_file.clone(),
+        })
         .init();
 
     let opts = parse_args().context("parsing command-line arguments")?;
@@ -207,7 +228,7 @@ async fn main() -> Result<()> {
 pub struct Opts {
     pub socket: Option<PathBuf>,
     pub tcp: Option<SocketAddr>,
-    /// Required token on every transport when set. Resolution order:
+    /// Required token on TCP transport when set. Resolution order:
     /// `--token` (explicit override, kept for back-compat with existing
     /// launchers) wins when given; else `$SOT_TOKEN`; else the canonical
     /// token file (`token_file_path()` —
@@ -216,7 +237,9 @@ pub struct Opts {
     /// means a token can be configured without ever appearing in this
     /// process's argv (world-visible via `ps`) or requiring every launch
     /// site to export an env var — new launchers should prefer it or
-    /// `$SOT_TOKEN` over `--token`. An empty string from any of the three
+    /// `$SOT_TOKEN` over `--token`. Local-socket transport deliberately ignores
+    /// app tokens and relies on OS ownership of the private socket path. An
+    /// empty string from any of the three
     /// sources (`--token ""`, `SOT_TOKEN=`, a blank/whitespace-only file) is
     /// treated as unset, never as a valid-but-empty token — this field is
     /// never `Some(String::new())` (security review: that value would make

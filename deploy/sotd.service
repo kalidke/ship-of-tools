@@ -8,12 +8,12 @@
 # Token values:
 #   @SOT_BIN@          dev fleet: <repo>/rust/target/release/sotd
 #                      public install: ~/.local/share/sot/bin/sotd (ADR 0030 §4)
-#   @SOT_PORT@         backend TCP port; the fleet convention is 18743
 #   @SOT_PROJECT_ROOT@ the project the daemon serves
 #
-# Shape mirrors the proven live unit on the dev backend (enabled + active since the
-# ADR-0028 cutover). Loopback bind only — remote FEs come in over SSH
-# forwards, never an exposed bind (ADR 0010).
+# Default transport is the per-user socket derived from `--label sot`
+# (`/run/user/<uid>/sot/sessions/sot.sock` on normal Linux hosts). Remote FEs
+# should forward a local TCP port to that socket over SSH rather than targeting
+# a machine-wide remote TCP bind.
 
 [Unit]
 Description=Ship of Tools backend daemon (sotd)
@@ -22,7 +22,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=@SOT_BIN@ --tcp 127.0.0.1:@SOT_PORT@ --project-root @SOT_PROJECT_ROOT@ --label sot
+ExecStart=@SOT_BIN@ --project-root @SOT_PROJECT_ROOT@ --label sot
 Restart=always
 RestartSec=2
 

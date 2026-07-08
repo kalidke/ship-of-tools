@@ -87,14 +87,16 @@ bash installer here — four steps (issue #23):
    (`Get-FileHash -Algorithm SHA256`), extract `sot.exe` somewhere stable
    (e.g. `%LOCALAPPDATA%\sot\bin`).
 2. **Backend**: install it on the Linux machine (`--be-only`, see the table
-   above — you can drive that over SSH). It listens on `127.0.0.1:18743`
-   only.
-3. **Forward the ports** — not just the protocol port; the aux ports carry
+   above — you can drive that over SSH). It listens on that user's private
+   socket, normally `/run/user/<uid>/sot/sessions/sot.sock`.
+3. **Forward the ports** — the protocol port is local-only and terminates at
+   the remote socket; the aux ports carry
    Pluto, video, and the docs-site servers (`W` and `o` silently break
    without them):
 
    ```powershell
-   ssh -N -L 18743:127.0.0.1:18743 -L 1234:127.0.0.1:1234 -L 1235:127.0.0.1:1235 `
+   $sock = ssh <ssh-alias> '~/.local/share/sot/bin/sotd session-socket-path sot'
+   ssh -N -L "18743:$sock" -L 1234:127.0.0.1:1234 -L 1235:127.0.0.1:1235 `
        -L 1236:127.0.0.1:1236 -L 1237:127.0.0.1:1237 -L 1238:127.0.0.1:1238 `
        -L 1239:127.0.0.1:1239 -L 1240:127.0.0.1:1240 <ssh-alias>
    ```
@@ -121,9 +123,9 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
   # or: --local (everything on the Mac) / --be-only (headless Mac backend)
 ```
 
-`--backend` writes a `sot-launch` that opens the SSH forwards (18743 +
-1234-1240) and starts the frontend; `--local` starts `sotd` on demand (no
-systemd on macOS; launchd wiring is roadmap). If the human prefers manual
+`--backend` writes a `sot-launch` that opens the SSH forwards (local 18743 to
+the remote socket, plus 1234-1240) and starts the frontend; `--local` starts
+`sotd` on demand (no systemd on macOS; launchd wiring is roadmap). If the human prefers manual
 steps: download `sot-<ver>-macos-aarch64.tar.gz` + `SHA256SUMS`, verify
 (`shasum -a 256 -c`), `xattr -d com.apple.quarantine ./sot ./sotd`, forward
 the ports as in 2b, `./sot --tcp 127.0.0.1:18743`.
@@ -147,7 +149,9 @@ runbook.) It downloads the release binaries, verifies SHA256 checksums, clones
 the repo at the release tag into
 `~/.local/share/sot/repo/current` (blobless — small), installs Julia via
 juliaup if a backend role needs it and Julia is missing, instantiates the
-Julia environments, writes `~/.config/sot/hosts.toml` + `settings.toml`
+Julia environments (`julia/kernel`, `julia/repl`, and `julia/pluto`; Pluto is
+also precompiled/loaded for first-open latency), writes
+`~/.config/sot/hosts.toml` + `settings.toml`
 (never clobbering user edits on same-role re-runs), and wires a `sot-launch`
 wrapper + desktop entry (frontend roles) or a systemd user unit (backend
 roles, unless `--no-service`).
@@ -167,22 +171,19 @@ For backend roles, prove the daemon answers a hello. Two branches:
   (the installer's final output also prints a supervise hint):
 
   ```bash
-  ~/.local/share/sot/bin/sotd --tcp 127.0.0.1:<port> \
+  ~/.local/share/sot/bin/sotd \
       --project-root ~/.local/share/sot/repo/current --label sot &
   ```
 
-Then probe (**substitute your `--port` value** for 18743 if you set one;
-success = it prints `backend answers: <the release version>`):
+Then probe its socket (success = it prints `backend answers: <the release
+version>`):
 
 ```bash
-python3 - <<'EOF'
-import json, socket
-s = socket.create_connection(("127.0.0.1", 18743), timeout=5)
-s.sendall((json.dumps({"v":1,"id":1,"kind":"req","op":"hello","payload":
-  {"client_id":"install-check","last_seen_revision":0,"protocol":1,
-   "app_version":"agent-install"}})+"\n").encode())
-print("backend answers:", json.loads(s.makefile().readline())["payload"]["app_version"])
-EOF
+sock="$(~/.local/share/sot/bin/sotd session-socket-path sot)"
+printf '%s\n' \
+  '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"install-check","last_seen_revision":0,"protocol":1,"app_version":"agent-install"}}' \
+  | timeout 5 nc -U "$sock" \
+  | jq -r '"backend answers: \(.payload.app_version)"'
 ```
 
 For frontend roles: run `sot-launch`; a native window should open and
@@ -198,7 +199,8 @@ always shows the pane-switch keys.**
 | `ssh ... doesn't work` during (b) | no key auth → `ssh-copy-id` then re-run |
 | GitHub API rate-limit (60/h per IP) | authenticate `gh` or set `$GITHUB_TOKEN` (optional otherwise) |
 | dirty-checkout refusal on upgrade | the human edited `repo/current` → `git -C ... stash` (or commit), re-run |
-| port 18743 already bound | another sotd or a tunnel owns it → `--port <n>` |
+| local port 18743 already bound | another tunnel owns it → `--port <n>` |
+| backend socket missing | old TCP-based service unit or failed daemon start → reinstall/restart the socket-based `sotd.service` |
 | Julia instantiate slow on first run | normal (precompilation); minutes, once |
 
 ## 6. After the install

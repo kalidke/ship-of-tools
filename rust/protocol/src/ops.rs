@@ -235,8 +235,9 @@ pub struct HelloReq {
     /// App-level token. Backend resolution order: `--token` (compat) else
     /// `$SOT_TOKEN` else the canonical `${XDG_CONFIG_HOME:-~/.config}/sot/token`
     /// file (a single value, not a `tokens.toml` — that path is stale).
-    /// Required whenever the backend has one configured, even on Unix-socket
-    /// transport since the remote may be shared.
+    /// Required on TCP transport whenever the backend has one configured.
+    /// Local Unix-socket transport relies on SSH user identity and private
+    /// filesystem permissions instead of an app token.
     #[serde(default)]
     pub token: Option<String>,
     /// Wire-contract protocol version the client speaks (ADR 0030 §2). The

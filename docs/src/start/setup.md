@@ -53,8 +53,10 @@ The Q&A asks which of three roles the machine fills:
 | **all-local** | frontend and backend on one machine | a single Linux or macOS box for offline work |
 
 For **frontend-local**, the flow also collects the backend server's connection
-details (its SSH alias, the repo path on the remote, and the forwarded port) and
-writes them as a host entry.
+details (its SSH alias, the repo path on the remote, and the local forwarded
+port) and writes them as a host entry. The remote side of that forward is the
+backend user's per-user Unix socket, discovered from `sotd session-socket-path
+sot` unless `remote_socket` is set explicitly.
 
 ## What gets written
 
@@ -75,7 +77,8 @@ default_host = "myserver"
 [host.myserver]
 ssh_alias   = "myserver"
 remote_repo = "/home/me/projects/ship-of-tools"
-tcp_port    = 18743
+tcp_port    = 18743  # local side of the SSH forward
+# remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
 ```
 
 Discovery order: `$SOT_HOSTS` → `<repo-root>/.sot/hosts.toml` →

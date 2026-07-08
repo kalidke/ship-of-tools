@@ -78,7 +78,7 @@ if [ -z "$ROLE" ]; then
             3) ROLE=be-only ;;
             *) die "no such choice: '$choice'" ;;
         esac
-        printf "Backend port [%s]: " "$PORT" > /dev/tty
+        printf "Local tunnel port [%s]: " "$PORT" > /dev/tty
         read -r p < /dev/tty
         [ -n "$p" ] && PORT="$p"
     else
@@ -177,6 +177,7 @@ for b in sot sotd; do
     [ "$OS" = Darwin ] && xattr -d com.apple.quarantine "$PREFIX/bin/$b" 2>/dev/null || true
 done
 say "binaries: $("$PREFIX/bin/sotd" --version)"
+DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 
 # ---- 4. the repo checkout — manual, resources, julia code (ADR 0030 add.) -----
 # The checkout at $PREFIX/repo/current IS the product's resource tree and its
@@ -232,6 +233,8 @@ if [ "$ROLE" != remote ]; then
         || julia --project="$CHECKOUT/julia/kernel" -e 'using Pkg; Pkg.instantiate()'
     julia "+$chan" --project="$CHECKOUT/julia/repl" -e 'using Pkg; Pkg.instantiate()' 2>/dev/null \
         || julia --project="$CHECKOUT/julia/repl" -e 'using Pkg; Pkg.instantiate()'
+    julia "+$chan" --project="$CHECKOUT/julia/pluto" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using Pluto' 2>/dev/null \
+        || julia --project="$CHECKOUT/julia/pluto" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using Pluto'
 fi
 
 # ---- 5. config -----------------------------------------------------------------
@@ -257,9 +260,9 @@ if [ ! -f "$CONFIG/hosts.toml" ]; then
         local|be-only) cat > "$CONFIG/hosts.toml" <<EOF
 default_host = "local"
 
-# Local backend on loopback TCP — no SSH involved for the same-machine role.
+# Local backend on the per-user socket — no SSH involved for the same-machine role.
 [host.local]
-tcp_port = $PORT
+socket = "$DEFAULT_SOCKET"
 EOF
         ;;
         remote) cat > "$CONFIG/hosts.toml" <<EOF
@@ -279,25 +282,24 @@ fi
 # ---- 6. backend service --------------------------------------------------------
 if [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 1 ]; then
     say "skipping systemd unit (--no-service) — supervise sotd yourself, e.g.:"
-    say "  systemd-run --user --unit=sotd-canary -p Restart=always $PREFIX/bin/sotd --tcp 127.0.0.1:$PORT --project-root \$HOME --label sot"
+    say "  systemd-run --user --unit=sotd-canary -p Restart=always $PREFIX/bin/sotd --project-root \$HOME --label sot"
 fi
 if [ "$OS" = Darwin ] && [ "$ROLE" != remote ]; then
     # No launchd wiring yet (roadmap): the local-role launcher below starts
     # sotd on demand; be-only Macs run it by hand.
     NO_SERVICE=1
     say "macOS: no service manager wiring yet — the sot-launch wrapper starts sotd on demand"
-    [ "$ROLE" = be-only ] && say "  be-only: start it with  $PREFIX/bin/sotd --tcp 127.0.0.1:$PORT --project-root ~ --label sot"
+    [ "$ROLE" = be-only ] && say "  be-only: start it with  $PREFIX/bin/sotd --project-root ~ --label sot"
 fi
 if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
     mkdir -p "$HOME/.config/systemd/user"
     sed -e "s|@SOT_BIN@|$PREFIX/bin/sotd|" \
-        -e "s|@SOT_PORT@|$PORT|" \
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
         "$BINDIR/sotd.service" > "$HOME/.config/systemd/user/sotd.service"
     systemctl --user daemon-reload
     systemctl --user enable --now sotd.service
     loginctl enable-linger "$USER" 2>/dev/null || true
-    say "sotd running: $(systemctl --user is-active sotd.service) (port $PORT)"
+    say "sotd running: $(systemctl --user is-active sotd.service) (socket $DEFAULT_SOCKET)"
 fi
 
 # ---- 7. FE launcher -------------------------------------------------------------
@@ -305,29 +307,60 @@ if [ "$ROLE" != be-only ]; then
     if [ "$ROLE" = local ]; then
         cat > "$HOME/.local/bin/sot-launch" <<EOF
 #!/usr/bin/env bash
-# All-in-one launcher: start the backend on demand if nothing serves the
-# port (macOS has no service wiring yet; Linux normally has the systemd
+# All-in-one launcher: start the backend on demand if its per-user socket is
+# missing (macOS has no service wiring yet; Linux normally has the systemd
 # unit), then launch the frontend.
-if ! (exec 3<>/dev/tcp/127.0.0.1/$PORT) 2>/dev/null; then
-    nohup "$PREFIX/bin/sotd" --tcp 127.0.0.1:$PORT --project-root "\$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
-    i=0; while [ \$i -lt 40 ]; do (exec 3<>/dev/tcp/127.0.0.1/$PORT) 2>/dev/null && break; sleep 0.25; i=\$((i+1)); done
+SOCKET="\$("$PREFIX/bin/sotd" session-socket-path sot)"
+if [ ! -S "\$SOCKET" ]; then
+    nohup "$PREFIX/bin/sotd" --project-root "\$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
+    i=0; while [ \$i -lt 40 ]; do [ -S "\$SOCKET" ] && break; sleep 0.25; i=\$((i+1)); done
 fi
-exec "$PREFIX/bin/sot" --tcp "127.0.0.1:$PORT"
+exec "$PREFIX/bin/sot" --socket "\$SOCKET"
 EOF
     else
         cat > "$HOME/.local/bin/sot-launch" <<EOF
 #!/usr/bin/env bash
 # FE → remote BE over SSH local forwards (key auth required, ADR 0030 §5).
-# Forwards match the dev launchers: $PORT backend protocol, 1234 Pluto,
-# 1235 video, 1236 docs site — W/o/video-open all open localhost URLs the
-# browser resolves through these (missing 1236 = "Shift+W does nothing",
-# found on the first laptop install).
-pgrep -f "ssh -fN .*-L $PORT:127.0.0.1:$PORT $BE_ALIAS" >/dev/null \
-    || ssh -fN -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
-           -L "$PORT:127.0.0.1:$PORT" \
-           -L 1234:127.0.0.1:1234 -L 1235:127.0.0.1:1235 -L 1236:127.0.0.1:1236 \
-           -L 1237:127.0.0.1:1237 -L 1238:127.0.0.1:1238 -L 1239:127.0.0.1:1239 -L 1240:127.0.0.1:1240 \
-           "$BE_ALIAS"
+# The frontend connects to local TCP $PORT; ssh terminates that forward at
+# the remote user's per-user sotd socket. Aux services remain forwarded by
+# local TCP ports for browser/webview compatibility.
+REMOTE_SOCKET="\${SOT_REMOTE_SOCKET:-}"
+if [ -z "\$REMOTE_SOCKET" ]; then
+    REMOTE_SOCKET="\$(ssh "$BE_ALIAS" '\${SOT_REMOTE_SOTD:-\$HOME/.local/share/sot/bin/sotd} session-socket-path sot')" \
+        || { echo "ERROR: could not query remote sotd socket path" >&2; exit 1; }
+fi
+port_open() { (exec 3<>"/dev/tcp/127.0.0.1/\$1") 2>/dev/null && exec 3>&-; }
+ensure_aux_tunnel() {
+    missing=()
+    for p in 1234 1235 1236 1237 1238 1239 1240; do
+        port_open "\$p" || missing+=("\$p")
+    done
+    if [ "\${#missing[@]}" -eq 0 ]; then return 0; fi
+    if [ "\${#missing[@]}" -ne 7 ]; then
+        echo "ERROR: only some browser aux ports are open; missing: \${missing[*]}" >&2
+        echo "       stop stale tunnels/services or free ports 1234-1240" >&2
+        exit 1
+    fi
+    ssh -fN -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
+      -L 1234:127.0.0.1:1234 -L 1235:127.0.0.1:1235 -L 1236:127.0.0.1:1236 \
+      -L 1237:127.0.0.1:1237 -L 1238:127.0.0.1:1238 -L 1239:127.0.0.1:1239 -L 1240:127.0.0.1:1240 \
+      "$BE_ALIAS" \
+      || { echo "ERROR: could not open browser aux SSH tunnel" >&2; exit 1; }
+}
+if pgrep -af "ssh .*${PORT}:\$REMOTE_SOCKET.*$BE_ALIAS" >/dev/null 2>&1; then
+    :
+elif port_open "$PORT"; then
+    echo "ERROR: local port $PORT is open but not forwarding to \$REMOTE_SOCKET" >&2
+    exit 1
+else
+    ssh -fN -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
+      -L "$PORT:\$REMOTE_SOCKET" \
+      -L 1234:127.0.0.1:1234 -L 1235:127.0.0.1:1235 -L 1236:127.0.0.1:1236 \
+      -L 1237:127.0.0.1:1237 -L 1238:127.0.0.1:1238 -L 1239:127.0.0.1:1239 -L 1240:127.0.0.1:1240 \
+      "$BE_ALIAS" \
+      || { echo "ERROR: could not open SSH tunnel" >&2; exit 1; }
+fi
+ensure_aux_tunnel
 exec "$PREFIX/bin/sot" --tcp "127.0.0.1:$PORT"
 EOF
     fi

@@ -14,6 +14,7 @@
 //   ssh_alias   = "myserver"
 //   remote_repo = "/home/me/project"
 //   tcp_port    = 18743
+//   remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"  # optional override
 //
 //   [host.local]
 //   socket = "\\\\.\\pipe\\sot-local"
@@ -24,11 +25,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// One configured host. Either `tcp_port` (with `ssh_alias` + remote_repo
-/// for the launcher to spawn the daemon over SSH) or `socket` (local
-/// named pipe / Unix socket — no SSH). Both being set is treated as
-/// "tcp wins"; both missing means the entry is unusable and the picker
-/// renders it dimmed.
+/// One configured host. Remote hosts use `tcp_port` for the local side of the
+/// SSH forward, with `ssh_alias` + `remote_repo` telling the launcher where to
+/// find/start the daemon; `remote_socket` optionally overrides the remote side
+/// of that forward. Local hosts use `socket` directly. Both `tcp_port` and
+/// `socket` being set is treated as "tcp wins"; both missing means the entry
+/// is unusable and the picker renders it dimmed.
 #[derive(Debug, Clone)]
 pub struct HostEntry {
     /// Slug as it appears under `[host.<name>]`. Matched against
@@ -44,6 +46,9 @@ pub struct HostEntry {
     /// Loopback port the launcher SSH-forwards from local to remote.
     /// `None` for local-socket hosts.
     pub tcp_port: Option<u16>,
+    /// Remote Unix socket path for the SSH forward's remote side. If absent,
+    /// launchers query `sotd session-socket-path sot` on the remote host.
+    pub remote_socket: Option<String>,
     /// Local socket / named pipe path for local-only hosts.
     pub socket: Option<String>,
     /// User home on the remote — `/home/<user>` for Linux, `/Users/<user>`
@@ -125,25 +130,25 @@ pub fn parse(text: &str) -> HostsConfig {
     let mut current_kv: HashMap<String, String> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
 
-    let flush =
-        |cfg: &mut HostsConfig, section: &Option<String>, kv: &HashMap<String, String>| {
-            if let Some(name) = section.as_deref() {
-                // Only `[host.<name>]` sections become entries; bare
-                // sections (we don't have any today, but reserved)
-                // are ignored.
-                if let Some(host_name) = name.strip_prefix("host.") {
-                    let entry = HostEntry {
-                        name: host_name.to_string(),
-                        ssh_alias: kv.get("ssh_alias").cloned(),
-                        remote_repo: kv.get("remote_repo").cloned(),
-                        tcp_port: kv.get("tcp_port").and_then(|s| s.parse::<u16>().ok()),
-                        socket: kv.get("socket").cloned(),
-                        remote_home: kv.get("remote_home").cloned(),
-                    };
-                    cfg.hosts.push(entry);
-                }
+    let flush = |cfg: &mut HostsConfig, section: &Option<String>, kv: &HashMap<String, String>| {
+        if let Some(name) = section.as_deref() {
+            // Only `[host.<name>]` sections become entries; bare
+            // sections (we don't have any today, but reserved)
+            // are ignored.
+            if let Some(host_name) = name.strip_prefix("host.") {
+                let entry = HostEntry {
+                    name: host_name.to_string(),
+                    ssh_alias: kv.get("ssh_alias").cloned(),
+                    remote_repo: kv.get("remote_repo").cloned(),
+                    tcp_port: kv.get("tcp_port").and_then(|s| s.parse::<u16>().ok()),
+                    remote_socket: kv.get("remote_socket").cloned(),
+                    socket: kv.get("socket").cloned(),
+                    remote_home: kv.get("remote_home").cloned(),
+                };
+                cfg.hosts.push(entry);
             }
-        };
+        }
+    };
 
     for raw in text.lines() {
         let line = raw.trim();
@@ -213,6 +218,7 @@ default_host = "host-a"
 ssh_alias = "host-a"
 remote_repo = "/home/user/ship-of-tools"
 tcp_port = 18743
+remote_socket = "/run/user/4242/sot/sessions/sot.sock"
 "#,
         );
         assert_eq!(cfg.default_host.as_deref(), Some("host-a"));
@@ -222,6 +228,10 @@ tcp_port = 18743
         assert_eq!(h.ssh_alias.as_deref(), Some("host-a"));
         assert_eq!(h.remote_repo.as_deref(), Some("/home/user/ship-of-tools"));
         assert_eq!(h.tcp_port, Some(18743));
+        assert_eq!(
+            h.remote_socket.as_deref(),
+            Some("/run/user/4242/sot/sessions/sot.sock")
+        );
         assert!(h.socket.is_none());
     }
 
@@ -298,11 +308,7 @@ ssh_alias = "host-a"
         // don't strip inline comments. That's the current contract;
         // documented here as a regression guard. Worth fixing if it
         // bites later.
-        assert!(cfg
-            .default_host
-            .as_deref()
-            .unwrap()
-            .contains("host-a"));
+        assert!(cfg.default_host.as_deref().unwrap().contains("host-a"));
         assert_eq!(cfg.hosts.len(), 1);
         assert_eq!(cfg.hosts[0].ssh_alias.as_deref(), Some("host-a"));
     }
