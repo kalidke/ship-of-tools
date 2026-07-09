@@ -45,13 +45,16 @@ git-cliff is installed (optional — CI generates the release notes), runs
 
 1. `gh run watch` the `Release` workflow (or poll
    `gh run list --workflow Release --limit 1` in a background monitor).
-   macOS is experimental (`continue-on-error`) — a macOS failure alone is OK.
+   **All three platform legs are blocking, macOS included** (`release.yml`
+   sets `experimental: false` everywhere and `publish` requires
+   `smoke-macos`) — a macOS failure fails the release; fix or revert, don't
+   wave it through.
 2. On success, verify the release assets:
    `gh release view vX.Y.Z` must list `sot-<ver>-linux-x86_64.tar.gz`,
-   `sot-<ver>-windows-x86_64.zip`, `SHA256SUMS`
-   (+ macOS tarball when its job passed). No julia bundle — installs clone
-   the repo at the tag; the release-blocking `julia-check` job proves the
-   envs resolve + load at this ref.
+   `sot-<ver>-windows-x86_64.zip`, `sot-<ver>-macos-aarch64.tar.gz`,
+   `SHA256SUMS`. No julia bundle — installs clone the repo at the tag; the
+   release-blocking `julia-check` job proves the envs resolve + load at this
+   ref.
 3. Announce: `/bus-note` + a sot-comm broadcast so fleet sessions know a
    release landed (they stay on dev builds; this is for awareness).
 

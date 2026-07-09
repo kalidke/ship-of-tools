@@ -87,6 +87,11 @@ One git tag → one GitHub Release containing:
   **windows-x86_64 and linux-x86_64 (blocking), macos-aarch64 (experimental,
   non-blocking)**. Both binaries build for every platform (Windows all-in-one needs
   `sotd.exe`; same workspace, marginal cost).
+  *(Amended 2026-07-09: macOS is now **blocking** too — `release.yml` sets
+  `experimental: false` on all three legs and `publish` hard-requires
+  `smoke-macos`, so releases cannot silently omit the macOS artifact. The
+  platform remains product-experimental in user-facing docs until dogfooded,
+  but a macOS build/smoke failure fails the release.)*
 - `julia-bundle-vX.Y.Z.tar.gz` — the `julia/` tree (kernel, repl, plugins, pluto) + the
   ShipTools root package, **with `Manifest.toml`s generated and tested in CI**. Manifests
   stay gitignored for dev flexibility, but a release ships a frozen, tested dependency
