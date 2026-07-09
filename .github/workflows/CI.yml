@@ -47,6 +47,54 @@ jobs:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+  # The real Julia suites live in sub-package environments (the root package
+  # is just the ShipTools umbrella/installer). Run each with Pkg.test so CI
+  # exercises what actually ships: the plugin ABI (core), the kernel's AST
+  # hash + project scan + serve loop, the REPL streaming protocol, and the
+  # two tool-backed preview plugins.
+  julia-packages:
+    name: Julia packages ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: write # julia-actions/cache proactive cleanup
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - '1.12'
+          - 'pre'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v2
+      # pdf-file rasterizes via ghostscript + poppler (pdftoppm/pdfinfo);
+      # video-file extracts poster frames via ffmpeg. Their suites skip
+      # gracefully when the tools are absent — install them so CI runs the
+      # real code paths instead of the skips.
+      - name: Install preview tool dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript poppler-utils ffmpeg
+      - name: Test ConceptExplorerCore
+        run: julia --project=core -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
+      - name: Test ShipToolsKernel
+        run: julia --project=julia/kernel -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
+      - name: Test ShipToolsRepl
+        run: julia --project=julia/repl -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
+      - name: Test ShipToolsPDFFile
+        run: julia --project=julia/plugins/pdf-file -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
+      - name: Test ShipToolsVideoFile
+        run: julia --project=julia/plugins/video-file -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
+      - uses: julia-actions/julia-processcoverage@v1
+        with:
+          directories: core/src,julia/kernel/src,julia/repl/src,julia/plugins/pdf-file/src,julia/plugins/video-file/src
+      - uses: codecov/codecov-action@v7
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
   docs:
     name: Documentation
     runs-on: ubuntu-latest
