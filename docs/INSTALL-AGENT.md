@@ -11,16 +11,18 @@ proving the result works.
 
 ## Which install is this?
 
-At the current public `0.3.0` baseline there are no published GitHub Release
-artifacts, so the working public install path is **from source**: clone the repo
-to a working directory of the human's choice and follow
-https://kalidke.github.io/ship-of-tools/dev/start/setup/ (rustup + juliaup,
-`cargo build --release --manifest-path rust/Cargo.toml`, Julia env
+Published GitHub Releases with prebuilt artifacts exist (v0.3.1+, Linux
+x86_64 / Windows x86_64 / macOS aarch64), so the default install path is the
+**release installer** below. Verify assets for the latest tag exist
+(`gh release view --repo kalidke/ship-of-tools` or the Releases page) before
+relying on them.
+
+The **source path** is for contributors or when release assets don't match the
+target platform: clone the repo to a working directory of the human's choice
+and follow https://kalidke.github.io/ship-of-tools/dev/start/setup/ (rustup +
+juliaup, `cargo build --release --manifest-path rust/Cargo.toml`, Julia env
 instantiation; source builds stamp `-dev` and never self-update). Ask if their
 intent is ambiguous.
-
-The release-installer path below applies only after a GitHub Release exists with
-matching assets. Verify that first; if no assets exist, use the source path.
 
 ## 0. Ground rules
 

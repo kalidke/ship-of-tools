@@ -1,8 +1,8 @@
 # Installation
 
-There are three ways to install Ship of Tools. At the current public `0.3.0`
-baseline there are no published GitHub Release artifacts, so the working public
-path is [from source](@ref install-source).
+There are three ways to install Ship of Tools. Published GitHub Releases with
+prebuilt artifacts exist (Linux x86_64, Windows x86_64, macOS aarch64), so the
+default path is [from release artifacts](@ref install-release).
 
 - **Agent-driven (recommended)** — start a coding-agent session (Claude Code,
   Codex, …) on the target machine and tell it:
@@ -11,13 +11,13 @@ path is [from source](@ref install-source).
   Install Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-tools/main/docs/INSTALL-AGENT.md and follow it.
   ```
 
-  The agent preflights, verifies whether release assets exist, uses the source
-  path when they do not, and proves the result answers before declaring success.
-  The runbook it follows is `docs/INSTALL-AGENT.md` in this repo.
+  The agent preflights, verifies release assets match the platform, falls back
+  to the source path when they do not, and proves the result answers before
+  declaring success. The runbook it follows is `docs/INSTALL-AGENT.md` in this
+  repo.
 
-- **[From release artifacts](@ref install-release)** — prebuilt binaries via the
-  `install.sh` installer once a GitHub Release with matching assets exists. No
-  Rust toolchain is needed on that path.
+- **[From release artifacts](@ref install-release)** — prebuilt binaries via
+  the `install.sh` installer. No Rust toolchain is needed on this path.
 - **[From source](@ref install-source)** — clone, build the Rust workspace,
   instantiate the Julia environments. This is the path for developing it, and
   [Per-Machine Setup](setup.md) adds the current manual config and launcher
@@ -25,9 +25,8 @@ path is [from source](@ref install-source).
 
 ## [From release artifacts (Linux/macOS)](@id install-release)
 
-When a GitHub Release with matching assets exists, `scripts/install.sh`
-downloads it, verifies checksums, and sets everything up under
-`~/.local/share/sot` by default:
+`scripts/install.sh` downloads the latest GitHub Release, verifies checksums,
+and sets everything up under `~/.local/share/sot` by default:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/install.sh | bash -s -- --local

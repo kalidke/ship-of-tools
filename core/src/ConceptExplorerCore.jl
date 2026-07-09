@@ -11,12 +11,20 @@ The surface is six abstract types — [`FileType`](@ref), [`Mode`](@ref),
 [`ConceptEntity`](@ref), [`AnnotationKind`](@ref), [`Tool`](@ref) and
 [`Capture`](@ref) — plus two serialization structs, [`TreeNode`](@ref) and
 [`PreviewPayload`](@ref), that carry opaque payloads across the Rust↔Julia
-boundary. Ship of Tools's own core modes and standard file types are implemented as
-ordinary methods on these types: core is a plugin to itself, which keeps the
-ABI honest.
+boundary.
 
-See the *Extending Ship of Tools* section of the manual for the full contract and
-worked examples.
+Implementation status (v0.3.x): **`FileType` is the surface that is wired
+end-to-end today** — the seven standard file types ship as ordinary
+`matches`/`preview` methods with no privileged access, and third-party plugins
+(e.g. the HDF5 example) travel the identical path. The other five types are
+declared design seams: no concrete subtype of `Mode`, `ConceptEntity`,
+`AnnotationKind`, `Tool`, or `Capture` exists yet, and the current navigation
+modes are built into the frontend/backend rather than dispatched through
+`Mode`.
+
+See the *Extending* section of the manual — *The Dispatch ABI* and the
+*Writing a FileType Plugin* / HDF5 worked-example pages — for the full
+contract.
 """
 module ConceptExplorerCore
 

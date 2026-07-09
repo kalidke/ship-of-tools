@@ -59,7 +59,9 @@ tool_spec(::Type{<:Tool})                :: ToolSpec
 tool_call(::Type{<:Tool}, args)          :: Result
 ```
 
-**Core ships as plugins to itself.** The seven core modes and standard file types are implemented as methods on these types — no privileged access. This forces the ABI to stay honest and exercises the same path third-party plugins use.
+**Core ships as plugins to itself.** The standard file types are implemented as methods on these types — no privileged access. This forces the ABI to stay honest and exercises the same path third-party plugins use.
+
+**Implementation status (v0.3.x):** `FileType` is the seam that is wired end-to-end today (seven standard plugins + the HDF5 external example, all through the public ABI). The other five abstract types — `Mode`, `ConceptEntity`, `AnnotationKind`, `Tool`, `Capture` — are declared design targets with **no concrete subtypes yet**: the shipped navigation modes are implemented natively in the Rust frontend/backend (`files_mode.rs`, the kernel's `project.scan`), not dispatched through `Mode`. Plugin discovery is likewise not the declarative ADR 0006 mechanism yet (see that ADR's status note). When writing docs or answering questions about extensibility, scope claims to `FileType`.
 
 The Rust↔Julia boundary is a serialization seam. The IR is generic:
 
@@ -96,7 +98,7 @@ Same three-level tree shape across all of them. A hotkey switches the root tree.
 | Outputs   | Recent runs → contents → artifacts                    | PNG/plot/JSON/MP4                    |
 | Agents    | Tasks → timeline → step detail                        | Diff / live tail / message           |
 
-Agents mode is **pinned for later** — single orchestrator only in phase 1.
+This table is the **design target**. Built today: **Files**, **Modules**, plus two modes the table predates — **Sessions** and **Hosts** (the frontend `Mode` enum is `{Files, Modules, Sessions, Hosts}`). Project, Types, Math, Outputs, and Agents modes are unbuilt; Agents mode is **pinned for later** — single orchestrator only in phase 1.
 
 ## Concept layer
 

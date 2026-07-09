@@ -34,7 +34,8 @@ layout is designed, not configured.
 ## What you can do
 
 - **Run multiple Claude Code agents** — see each one's status via a color scheme, and switch fast between their repos and conversations.
-- **Agents coordinate** — sessions message each other and spawn sessions for worktrees and other repos.
+- **Claude and Codex side by side** — spawn Codex-driven agent sessions next to Claude ones (`Ctrl+Enter` in the session picker); both join the same comm network.
+- **Agents coordinate** — sessions message each other over the built-in comm relay ([`comm/PROTOCOL.md`](comm/PROTOCOL.md)) and spawn sessions for worktrees and other repos.
 - **Agents drive the UI** — skills and hooks let Claude Code open images and files in your nav pane.
 - **Ask the agent for help** — the in-app Claude Code session doubles as a help system, answering how-to questions about Ship of Tools from its in-repo docs.
 - **Copy to the LLM** — send paths, images, and image crop/zooms straight to the agent.
@@ -57,7 +58,6 @@ layout is designed, not configured.
 - Slack integration
 - Overleaf integration
 - Collaborative features
-- Codex-driven agent sessions that interact with your Claude agents (in beta)
 - More preview types
 - A repo concept / math explorer
 - Better macOS support — Cmd-based keybindings (in place of Ctrl) and macOS docs
@@ -77,12 +77,13 @@ Install Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-t
 The agent runs preflight, asks you one topology question, drives the
 installer, and proves the result answers before it says done.
 
-**Current public baseline.** Current version: `0.3.0`. There are no published
-GitHub Release artifacts at this baseline, so install from source for now. The
-release installer remains the intended user-install path once matching release
-assets exist; source builds are stamped `-dev` and never self-update.
+**Current version: `0.3.2`** — with published
+[GitHub Releases](https://github.com/kalidke/ship-of-tools/releases) carrying
+prebuilt artifacts for Linux x86_64, Windows x86_64, and macOS aarch64.
+`scripts/install.sh` is the user-install path; source builds are stamped
+`-dev` and never self-update.
 
-When release assets exist, `scripts/install.sh` lays out
+`scripts/install.sh` downloads the latest release (SHA256-verified), lays out
 `~/.local/share/sot`, installs Julia via juliaup when needed, installs the
 agent comm resources, writes config under `~/.config/sot`, and wires the
 launcher and backend service. With no role flag and an interactive TTY, it
@@ -96,15 +97,13 @@ bash scripts/install.sh --be-only             # headless backend only
 bash scripts/install.sh --be-only --no-service # shared-home deployment; skip systemd user unit
 ```
 
-Requirements for that release-installer path: Linux x86_64 or macOS aarch64
-assets; Linux frontend roles require glibc ≥ 2.35, while `--be-only` skips the
-frontend floor because the backend binary is static. Remote layouts require
+Requirements: Linux frontend roles need glibc ≥ 2.35, while `--be-only` skips
+the frontend floor because the backend binary is static. Remote layouts require
 key-based SSH to the backend host. **Re-running the installer is also the
-updater** once release artifacts exist. Changing roles backs up and rewrites
-`hosts.toml`. Details:
+updater.** Changing roles backs up and rewrites `hosts.toml`. Details:
 **[Install](https://kalidke.github.io/ship-of-tools/dev/start/install/)**.
 
-**From source (current public path / contributors).**
+**From source (contributors).**
 
 ```bash
 git clone https://github.com/kalidke/ship-of-tools
@@ -159,11 +158,21 @@ end
 See **[The Dispatch ABI](https://kalidke.github.io/ship-of-tools/dev/extend/abi/)**
 and the [HDF5 worked example](https://kalidke.github.io/ship-of-tools/dev/extend/hdf5/).
 
+**Scope note (v0.3.x):** the `FileType` preview surface shown above is the
+plugin ABI that is wired end-to-end today. The other dispatch seams declared in
+`ConceptExplorerCore` — `Mode`, `Tool`, `Capture`, `ConceptEntity`,
+`AnnotationKind` — are design targets, not yet pluggable: modes are currently
+built into the frontend/backend, and plugin loading is manual (a
+`plugins.load` request, or a dependency of the kernel environment) rather than
+the declarative `[sot].extensions` discovery described in ADR 0006.
+
 ## Contributing
 
 Design decisions live in [`docs/adr/`](docs/adr/); scope lives in
 [`requirements.md`](requirements.md); the phase plan lives in
-[`docs/plan.md`](docs/plan.md). See the
+[`docs/plan.md`](docs/plan.md). Releases are tag-driven: `scripts/release.sh`
+stamps versions and tags, and CI builds, smoke-tests, and publishes the
+artifacts (ADR 0030). See the
 [Contributing guide](https://kalidke.github.io/ship-of-tools/dev/contributing/)
 before opening a PR.
 

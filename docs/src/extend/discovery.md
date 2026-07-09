@@ -12,10 +12,20 @@ resolved to a [`FileType`](@ref) at runtime once the right packages are loaded.
 
 ## Enabling plugins: the `[sot].extensions` key
 
+!!! warning "Design, not yet shipped (v0.3.x)"
+    The `[sot].extensions` mechanism on this page is the **committed design**
+    (ADR 0006) but is **not implemented yet**. What works today: the seven
+    standard plugins load automatically with the kernel; the HDF5 example
+    lazy-loads on first `.h5` preview (via a built-in extension table); and any
+    other plugin package already in the kernel's environment can be loaded at
+    runtime with the `plugins.load` kernel op (`using`-by-name). To enable a
+    third-party plugin today, `Pkg.develop`/`Pkg.add` it into
+    `julia/kernel`'s environment and load it with `plugins.load`.
+
 A plugin's [`FileType`](@ref) subtype is discovered automatically *once the
 package is loaded* — but **whether** a package loads is an explicit choice, not an
-auto-scan. The project's `Project.toml` carries a `[sot]` table listing the
-extensions to load:
+auto-scan. The design: the project's `Project.toml` carries a `[sot]` table
+listing the extensions to load:
 
 ```toml
 [sot]

@@ -1,7 +1,16 @@
 # ADR 0006: Plugin discovery
 
-**Status:** Accepted
+**Status:** Accepted — **not yet implemented** (as of v0.3.2, 2026-07-09)
 **Date:** 2026-05-07
+
+> **Implementation status.** The `[sot].extensions` / `Base.require` mechanism
+> below is design, not shipped code. What the kernel actually does today:
+> (a) the seven standard plugins are eagerly `using`-ed at kernel startup,
+> (b) `LAZY_PLUGIN_FOR_EXT` (a hardcoded extension→package table in
+> `ShipToolsKernel.jl`) lazy-loads registered heavy plugins (HDF5Preview) on
+> first preview, and (c) the `plugins.load` kernel op loads any package already
+> on the kernel's load path by name. Implementing this ADR replaces (b)'s
+> hardcoded table and gives third-party plugins a declarative path in.
 
 ## Context
 
