@@ -69,3 +69,6 @@
 # Relocated to the private ship-of-tools-ops sibling repo (ADR 0030 §7)
 .claude-bus/
 .claude-memory/
+
+# Session output artifacts (reviews, reports — see user conventions)
+/dev/output/
