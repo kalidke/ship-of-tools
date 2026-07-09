@@ -2387,8 +2387,23 @@ where
     use tokio::io::AsyncReadExt;
     const CHUNK: usize = 1024 * 1024;
 
-    let req: FileDownloadReq =
-        serde_json::from_value(payload_json).context("file.download payload")?;
+    // Parse failure answers with an error frame (no chunks written yet, so
+    // the response shape is unambiguous) — connection containment happens
+    // before streaming starts. Mid-stream read errors below stay
+    // connection-fatal on purpose: chunks are already on the wire and a
+    // shape-switch mid-stream would leave the frontend's downloader hanging.
+    let req: FileDownloadReq = match serde_json::from_value(payload_json) {
+        Ok(r) => r,
+        Err(e) => {
+            let f = Frame::res(
+                req_id,
+                op::FILE_DOWNLOAD,
+                json!({ "error": format!("file.download payload: {e}"), "code": "bad_request" }),
+            );
+            sot_protocol::write_frame(tx, &f, None).await?;
+            return Ok(());
+        }
+    };
     tracing::info!(path = %req.path, "file.download");
 
     let path = std::path::Path::new(&req.path);

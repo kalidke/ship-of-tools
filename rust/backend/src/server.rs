@@ -1095,7 +1095,12 @@ where
             continue;
         }
 
-        let out_frames = match frame.op.as_str() {
+        // Each arm evaluates to `Result<HandlerOutput>`; the containment block
+        // after the match turns a handler `Err` into an error *frame* for this
+        // request instead of letting it bubble out of `handle_connection` and
+        // tear down the whole connection (pre-fix, one malformed payload for
+        // any op dropped the socket and forced a full FE reconnect).
+        let dispatched: Result<handlers::HandlerOutput> = match frame.op.as_str() {
             op::HELLO => {
                 // Register this connection in the client roster the first
                 // time we learn its client_id (a reconnect re-sends hello
@@ -1133,34 +1138,34 @@ where
                     label.as_deref(),
                     &clients,
                 )
-                .await?
+                .await
             }
             op::TREE_ROOT => {
-                handlers::handle_tree_root(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_tree_root(frame.id, frame.payload, &session, &workspaces).await
             }
             op::TREE_CHILDREN => {
                 handlers::handle_tree_children(frame.id, frame.payload, &session, &workspaces)
-                    .await?
+                    .await
             }
             op::NAV_TOGGLE_HIDDEN => {
                 handlers::handle_nav_toggle_hidden(frame.id, frame.payload, &session, &workspaces)
-                    .await?
+                    .await
             }
             op::PREVIEW_GET => {
-                handlers::handle_preview_get(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_preview_get(frame.id, frame.payload, &session, &workspaces).await
             }
             op::IMAGE_CROP => {
-                handlers::handle_image_crop(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_image_crop(frame.id, frame.payload, &session, &workspaces).await
             }
             op::MATH_RENDER => {
-                handlers::handle_math_render(frame.id, frame.payload, &session, &mathjax).await?
+                handlers::handle_math_render(frame.id, frame.payload, &session, &mathjax).await
             }
             op::PLUTO_OPEN => {
                 handlers::handle_pluto_open(frame.id, frame.payload, &session, &pluto, &workspaces)
-                    .await?
+                    .await
             }
             op::VIDEO_OPEN => {
-                handlers::handle_video_open(frame.id, frame.payload, &session).await?
+                handlers::handle_video_open(frame.id, frame.payload, &session).await
             }
             op::DOCS_OPEN => {
                 // Per-connection site root (ADR 0029): this connection's serial
@@ -1169,12 +1174,12 @@ where
                 // always precedes docs.open in practice.
                 let serial = client_guard.as_ref().map(|g| g.serial());
                 handlers::handle_docs_open(frame.id, frame.payload, &session, serial, &workspaces)
-                    .await?
+                    .await
             }
             op::QUARTO_OPEN => {
-                handlers::handle_quarto_open(frame.id, frame.payload, &session).await?
+                handlers::handle_quarto_open(frame.id, frame.payload, &session).await
             }
-            op::FILE_UPLOAD => handlers::handle_file_upload(frame.id, frame.payload).await?,
+            op::FILE_UPLOAD => handlers::handle_file_upload(frame.id, frame.payload).await,
             op::FILE_DOWNLOAD => {
                 // Streams chunk frames straight to the socket (bounded memory),
                 // so it writes its own frames and skips the response-write below.
@@ -1183,57 +1188,57 @@ where
             }
             op::KERNEL_REQUEST => {
                 handlers::handle_kernel_request(frame.id, frame.payload, &session, &workspaces)
-                    .await?
+                    .await
             }
             op::CONCEPT_READ => {
                 handlers::handle_concept_read(frame.id, frame.payload, &session, &workspaces)
-                    .await?
+                    .await
             }
             op::CONCEPT_WRITE => {
                 handlers::handle_concept_write(frame.id, frame.payload, &session, &workspaces)
-                    .await?
+                    .await
             }
             op::CONCEPT_LIST => {
                 handlers::handle_concept_list(frame.id, frame.payload, &session, &workspaces)
-                    .await?
+                    .await
             }
             op::FILE_READ => {
-                handlers::handle_file_read(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_file_read(frame.id, frame.payload, &session, &workspaces).await
             }
             op::FILE_WRITE => {
-                handlers::handle_file_write(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_file_write(frame.id, frame.payload, &session, &workspaces).await
             }
             op::FILE_DELETE => {
-                handlers::handle_file_delete(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_file_delete(frame.id, frame.payload, &session, &workspaces).await
             }
             op::REPL_EVAL => {
-                handlers::handle_repl_eval(frame.id, frame.payload, &session, &workspaces).await?
+                handlers::handle_repl_eval(frame.id, frame.payload, &session, &workspaces).await
             }
             op::REPL_RUN_FILE => {
                 handlers::handle_repl_run_file(frame.id, frame.payload, &session, &workspaces)
-                    .await?
+                    .await
             }
             op::REPL_INTERRUPT => {
                 handlers::handle_repl_interrupt(frame.id, frame.payload, &session, &workspaces)
-                    .await?
+                    .await
             }
             op::TMUX_LIST_SESSIONS => {
-                handlers::handle_tmux_list_sessions(frame.id, frame.payload, &session).await?
+                handlers::handle_tmux_list_sessions(frame.id, frame.payload, &session).await
             }
             op::TMUX_LIST_PANES => {
-                handlers::handle_tmux_list_panes(frame.id, frame.payload, &session).await?
+                handlers::handle_tmux_list_panes(frame.id, frame.payload, &session).await
             }
             op::TMUX_CREATE_SESSION => {
-                handlers::handle_tmux_create_session(frame.id, frame.payload, &session).await?
+                handlers::handle_tmux_create_session(frame.id, frame.payload, &session).await
             }
             op::TMUX_KILL_SESSION => {
-                handlers::handle_tmux_kill_session(frame.id, frame.payload, &session).await?
+                handlers::handle_tmux_kill_session(frame.id, frame.payload, &session).await
             }
             op::TMUX_CAPTURE_PANE => {
-                handlers::handle_tmux_capture_pane(frame.id, frame.payload, &session).await?
+                handlers::handle_tmux_capture_pane(frame.id, frame.payload, &session).await
             }
             op::DIRECTORY_LIST => {
-                handlers::handle_directory_list(frame.id, frame.payload, &session).await?
+                handlers::handle_directory_list(frame.id, frame.payload, &session).await
             }
             op::WORKSPACE_CREATE => {
                 handlers::handle_workspace_create(
@@ -1243,18 +1248,18 @@ where
                     &workspaces,
                     &ws_events_tx,
                 )
-                .await?
+                .await
             }
             op::WORKSPACE_LIST => {
-                handlers::handle_workspace_list(frame.id, frame.payload, &workspaces).await?
+                handlers::handle_workspace_list(frame.id, frame.payload, &workspaces).await
             }
             op::AGENT_SEND => {
-                handlers::handle_agent_send(frame.id, frame.payload, &agent_events_tx).await?
+                handlers::handle_agent_send(frame.id, frame.payload, &agent_events_tx).await
             }
             op::FE_COMMAND_SEND => {
-                handlers::handle_fe_command_send(frame.id, frame.payload, &fe_command_tx).await?
+                handlers::handle_fe_command_send(frame.id, frame.payload, &fe_command_tx).await
             }
-            op::UPDATE_CHECK => crate::update::handle_update_check(frame.id).await?,
+            op::UPDATE_CHECK => crate::update::handle_update_check(frame.id).await,
             op::WORKSPACE_DESTROY => {
                 handlers::handle_workspace_destroy(
                     frame.id,
@@ -1263,7 +1268,7 @@ where
                     &workspaces,
                     &ws_events_tx,
                 )
-                .await?
+                .await
             }
             op::PTY_OPEN => {
                 let req: PtyOpenReq = match serde_json::from_value(frame.payload) {
@@ -1330,10 +1335,10 @@ where
                             // never re-arms autostart, so no probe needed.
                             pane_command: None,
                         };
-                        vec![(
+                        Ok(vec![(
                             Frame::res(frame.id, op::PTY_OPEN, serde_json::to_value(res)?),
                             None,
-                        )]
+                        )])
                     } else if req.user_switch {
                         tracing::info!(
                             from = %existing.target(),
@@ -1378,10 +1383,10 @@ where
                                     pane_command: crate::tmux::TmuxClient::new()
                                         .active_pane_command(requested_target),
                                 };
-                                vec![(
+                                Ok(vec![(
                                     Frame::res(frame.id, op::PTY_OPEN, serde_json::to_value(res)?),
                                     None,
-                                )]
+                                )])
                             }
                             Err(e) => {
                                 tracing::warn!(error = %e, "pty re-target spawn failed");
@@ -1389,7 +1394,7 @@ where
                                     "error": format!("{e:#}"),
                                     "code": "pty_spawn_failed",
                                 });
-                                vec![(Frame::res(frame.id, op::PTY_OPEN, payload), None)]
+                                Ok(vec![(Frame::res(frame.id, op::PTY_OPEN, payload), None)])
                             }
                         }
                     } else {
@@ -1413,10 +1418,10 @@ where
                             rows: req.rows,
                             pane_command: None,
                         };
-                        vec![(
+                        Ok(vec![(
                             Frame::res(frame.id, op::PTY_OPEN, serde_json::to_value(res)?),
                             None,
-                        )]
+                        )])
                     }
                 } else {
                     match Pty::spawn(
@@ -1442,10 +1447,10 @@ where
                                 pane_command: crate::tmux::TmuxClient::new()
                                     .active_pane_command(requested_target),
                             };
-                            vec![(
+                            Ok(vec![(
                                 Frame::res(frame.id, op::PTY_OPEN, serde_json::to_value(res)?),
                                 None,
-                            )]
+                            )])
                         }
                         Err(e) => {
                             tracing::warn!(error = %e, "pty spawn failed");
@@ -1453,7 +1458,7 @@ where
                                 "error": format!("{e:#}"),
                                 "code": "pty_spawn_failed",
                             });
-                            vec![(Frame::res(frame.id, op::PTY_OPEN, payload), None)]
+                            Ok(vec![(Frame::res(frame.id, op::PTY_OPEN, payload), None)])
                         }
                     }
                 }
@@ -1508,35 +1513,56 @@ where
                     interval_s: 1.0,
                     hosts,
                 };
-                vec![(
+                Ok(vec![(
                     Frame::res(frame.id, op::MONITOR_SUBSCRIBE, serde_json::to_value(res)?),
                     None,
-                )]
+                )])
             }
             op::MONITOR_UNSUBSCRIBE => {
                 monitor_subscribed = false;
-                vec![(
+                Ok(vec![(
                     Frame::res(frame.id, op::MONITOR_UNSUBSCRIBE, serde_json::json!({})),
                     None,
-                )]
+                )])
             }
-            op::MONITOR_HISTORY => {
-                let req: MonitorHistoryReq =
-                    serde_json::from_value(frame.payload).context("monitor.history payload")?;
-                let hosts = workspaces
-                    .monitor_hub()
-                    .map(|h| h.history(&req))
-                    .unwrap_or_default();
-                let res = MonitorHistoryRes { hosts };
-                vec![(
-                    Frame::res(frame.id, op::MONITOR_HISTORY, serde_json::to_value(res)?),
-                    None,
-                )]
-            }
+            op::MONITOR_HISTORY => serde_json::from_value::<MonitorHistoryReq>(frame.payload)
+                .context("monitor.history payload")
+                .and_then(|req| {
+                    let hosts = workspaces
+                        .monitor_hub()
+                        .map(|h| h.history(&req))
+                        .unwrap_or_default();
+                    let res = MonitorHistoryRes { hosts };
+                    Ok(vec![(
+                        Frame::res(frame.id, op::MONITOR_HISTORY, serde_json::to_value(res)?),
+                        None,
+                    )])
+                }),
             other => {
                 tracing::warn!(op = %other, transport, "unknown op");
                 let payload = serde_json::json!({ "error": format!("unknown op: {other}") });
-                vec![(Frame::res(frame.id, other, payload), None)]
+                Ok(vec![(Frame::res(frame.id, other, payload), None)])
+            }
+        };
+
+        // Per-request error containment: answer the failed request with an
+        // error frame and keep serving. Wire-write failures below still end
+        // the connection — those mean the socket itself is broken, and
+        // `handle_connection`'s caller logs the drop.
+        let out_frames = match dispatched {
+            Ok(frames) => frames,
+            Err(e) => {
+                tracing::warn!(
+                    op = %frame.op,
+                    id = frame.id,
+                    error = format!("{e:#}"),
+                    "handler error — answering with error frame, keeping connection"
+                );
+                let payload = serde_json::json!({
+                    "error": format!("{e:#}"),
+                    "code": "handler_error",
+                });
+                vec![(Frame::res(frame.id, &frame.op, payload), None)]
             }
         };
 
