@@ -66,10 +66,12 @@ exports `SOT_MANUAL` pointing at it, and runtime resources resolve through
 `$PREFIX/julia/current` symlink is still created only so older pre-clone
 binaries that look for the retired bundle layout can find the checkout.
 
-Julia is no longer distributed as a curated bundle. For roles that run a
-backend on this machine (`--local` and `--be-only`), the installer uses
-[juliaup](https://github.com/JuliaLang/juliaup) if Julia is missing, then
-prepares the Julia sidecars inside the checkout:
+Julia is no longer distributed as a curated bundle. The installer uses
+[juliaup](https://github.com/JuliaLang/juliaup) if Julia is missing, then runs
+`ShipTools.update_comm()` from the checked-out tag so `~/.sot-comm/bin` and the
+Claude/Codex skills match the installed version. For roles that run a backend
+on this machine (`--local` and `--be-only`), it also prepares the Julia
+sidecars inside the checkout:
 
 ```bash
 $PREFIX/repo/current/julia/kernel
@@ -78,8 +80,9 @@ $PREFIX/repo/current/julia/pluto  # instantiated, precompiled, and load-tested
 ```
 
 `--backend <ssh-alias>` is a frontend-only install on the local machine, so it
-does not instantiate Julia locally; the remote backend machine should be
-installed as a backend role.
+only uses Julia locally for `ShipTools.update_comm()`; it does not instantiate
+the kernel/repl/pluto sidecars. The remote backend machine should be installed
+as a backend role.
 
 Connection behavior is role-specific:
 
@@ -129,6 +132,8 @@ use.
 - **git** for the release-tag checkout.
 - **curl** and **tar** for the installer. If using the `$GITHUB_TOKEN` path
   instead of `gh`, `jq` is also required.
+- **Julia ≥ 1.12** for agent comm resource installation. The installer uses
+  juliaup to install it when missing.
 - Frontend roles need **glibc ≥ 2.35** (Ubuntu 22.04 or newer). The backend
   binary is static musl and runs on any distro — `--be-only` has no glibc
   floor.

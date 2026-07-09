@@ -4,7 +4,8 @@
 
 !!! note "Status"
     Ship of Tools is under active development, used daily on Linux (backend) and Windows
-    (frontend). macOS frontend and backend support is untested. See the [Roadmap](design/roadmap.md).
+    (frontend). macOS support is wired through the release installer but remains
+    experimental. See the [Roadmap](design/roadmap.md).
 
 ![Ship of Tools: navigation, preview, orchestrator, and REPL panes over a demo project](assets/screenshots/hero.png)
 *The four panes over a small demo project — navigation tree, rendered preview, orchestrator session, and the Julia REPL — fullscreen on the ultrawide layout it is designed around.*

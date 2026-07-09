@@ -40,7 +40,10 @@ matching assets. Verify that first; if no assets exist, use the source path.
 
 ```bash
 uname -sm                 # Linux x86_64 or macOS arm64 for release artifacts
-ldd --version | head -1   # frontend needs glibc >= 2.35 (backend is static)
+case "$(uname -s)" in
+  Linux)  ldd --version | head -1 ;;   # frontend needs glibc >= 2.35
+  Darwin) sw_vers -productVersion ;;   # macOS aarch64 artifact only
+esac
 command -v git curl tar   # all required; jq required if gh is absent
 ```
 
@@ -49,9 +52,9 @@ command -v git curl tar   # all required; jq required if gh is absent
   the frontend must run on another machine.
 - **Windows** → no bash installer. Build from source, or use **§2b Windows
   frontend → remote backend** only after a Windows release zip exists.
-- **macOS (Apple Silicon)** → fully supported by the installer, same three
-  topologies as Linux (EXPERIMENTAL — artifacts build green but are lightly
-  dogfooded; say so, then proceed). `--backend <ssh-alias>` is the common
+- **macOS (Apple Silicon)** → supported by the installer, same three
+  topologies as Linux, but still EXPERIMENTAL until it is dogfooded on real
+  Macs; say so, then proceed. `--backend <ssh-alias>` is the common
   want: frontend on the Mac, backend on a Linux box — ONE command, the
   installer writes a tunnel-opening launcher. No systemd on macOS: the
   local-role launcher starts `sotd` on demand instead. Intel Macs:
@@ -138,7 +141,7 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
 ```
 
 You are RIGHT to be wary of piping remote scripts to a shell — inspecting
-first is encouraged: download it to a file, read it (it is ~300 commented
+first is encouraged: download it to a file, read it (it is ~400 commented
 lines, everything under `$HOME`, no sudo, checksums verified before use),
 then run the file with the same flags.
 
@@ -148,9 +151,11 @@ above — the installer is the moving part and stays compatible with this
 runbook.) It downloads the release binaries, verifies SHA256 checksums, clones
 the repo at the release tag into
 `~/.local/share/sot/repo/current` (blobless — small), installs Julia via
-juliaup if a backend role needs it and Julia is missing, instantiates the
-Julia environments (`julia/kernel`, `julia/repl`, and `julia/pluto`; Pluto is
-also precompiled/loaded for first-open latency), writes
+juliaup if missing, installs the agent comm resources with
+`ShipTools.update_comm()` (Claude/Codex skills and `~/.sot-comm/bin`), and, for
+backend roles, instantiates the Julia environments (`julia/kernel`,
+`julia/repl`, and `julia/pluto`; Pluto is also precompiled/loaded for
+first-open latency). It writes
 `~/.config/sot/hosts.toml` + `settings.toml`
 (never clobbering user edits on same-role re-runs), and wires a `sot-launch`
 wrapper + desktop entry (frontend roles) or a systemd user unit (backend
@@ -180,10 +185,20 @@ version>`):
 
 ```bash
 sock="$(~/.local/share/sot/bin/sotd session-socket-path sot)"
-printf '%s\n' \
-  '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"install-check","last_seen_revision":0,"protocol":1,"app_version":"agent-install"}}' \
-  | timeout 5 nc -U "$sock" \
-  | jq -r '"backend answers: \(.payload.app_version)"'
+tmp="$(mktemp "${TMPDIR:-/tmp}/sot-hello.XXXXXX")"
+(
+  printf '%s\n' \
+    '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"install-check","last_seen_revision":0,"protocol":1,"app_version":"agent-install"}}' \
+    | nc -U "$sock" > "$tmp"
+) &
+pid=$!
+for _ in 1 2 3 4 5; do [ -s "$tmp" ] && break; sleep 1; done
+kill "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+ans="$(sed -n 's/.*"app_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp")"
+rm -f "$tmp"
+[ -n "$ans" ] || { echo "ERROR: no hello response from $sock"; exit 1; }
+echo "backend answers: $ans"
 ```
 
 For frontend roles: run `sot-launch`; a native window should open and

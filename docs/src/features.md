@@ -121,4 +121,4 @@ need depth over breadth.
   screen. See [Configuration Files](ref/config.md).
 - **Rebuild the frontend without losing your session.**
 
-<small>\* The macOS backend is not yet tested.</small>
+<small>\* macOS support is wired through the release installer but remains experimental.</small>

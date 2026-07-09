@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — Ship of Tools installer for Linux (ADR 0030 §5).
+# install.sh — Ship of Tools installer for Linux/macOS (ADR 0030 §5).
 #
 #   curl -fsSL <raw-url>/scripts/install.sh | bash -s -- --local
 #   ./scripts/install.sh --local                     # all-in-one on this box
@@ -18,8 +18,9 @@
 #      julia bundle) + juliaup + Pkg.instantiate inside the checkout
 #   5. config in ~/.config/sot (hosts.toml, settings.toml) — never clobbers
 #      an existing file
-#   6. backend roles: install+enable the systemd --user sotd unit
-#   7. FE roles: ~/.local/bin/sot-launch wrapper + a .desktop entry
+#   6. agent comm resources: ~/.sot-comm plus Claude/Codex skills
+#   7. backend roles: install+enable the systemd --user sotd unit
+#   8. FE roles: ~/.local/bin/sot-launch wrapper + app/desktop entry
 #
 # Development machines DON'T use this release installer — they run from a checkout.
 set -euo pipefail
@@ -127,7 +128,7 @@ fi
 # The curl path parses GitHub's JSON — needs jq (the gh path doesn't).
 [ "$FETCH" = curl ] && { command -v jq >/dev/null || die "jq is required (or install+auth gh)"; }
 
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-install.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
 gh_api() {  # gh_api <endpoint> <outfile> — API GET to a file (token optional)
     curl -fsSL ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} \
          -H "Accept: application/vnd.github+json" \
@@ -221,23 +222,39 @@ have="$(git -C "$CHECKOUT" rev-parse HEAD)"
 mkdir -p "$PREFIX/julia"
 ln -sfn "$CHECKOUT" "$PREFIX/julia/current"
 
+# ---- 5. Julia + agent comm -----------------------------------------------------
+chan="1.12"
+if [ -x "$HOME/.juliaup/bin/juliaup" ]; then
+    export PATH="$HOME/.juliaup/bin:$PATH"
+fi
+if command -v julia >/dev/null && julia -e 'exit(VERSION >= v"1.12" ? 0 : 1)' >/dev/null 2>&1; then
+    :
+elif command -v juliaup >/dev/null 2>&1; then
+    say "installing Julia channel $chan with juliaup"
+    juliaup add "$chan" >/dev/null 2>&1 || true
+    export PATH="$HOME/.juliaup/bin:$PATH"
+else
+    say "installing Julia (juliaup, channel $chan)"
+    curl -fsSL https://install.julialang.org | sh -s -- --yes --default-channel "$chan"
+    export PATH="$HOME/.juliaup/bin:$PATH"
+fi
+command -v julia >/dev/null || die "Julia install failed; julia is still not on PATH"
+julia_run() {
+    julia "+$chan" "$@" 2>/dev/null || julia "$@"
+}
+
+say "installing agent comm resources (sot-comm, Claude/Codex skills)"
+julia_run --project="$CHECKOUT" -e 'using ShipTools; ShipTools.update_comm()' \
+    || die "ShipTools.update_comm() failed"
+
 if [ "$ROLE" != remote ]; then
-    chan="1.12"
-    if ! command -v julia >/dev/null; then
-        say "installing Julia (juliaup, channel $chan)"
-        curl -fsSL https://install.julialang.org | sh -s -- --yes --default-channel "$chan"
-        export PATH="$HOME/.juliaup/bin:$PATH"
-    fi
     say "instantiating julia envs (first run takes a few minutes)"
-    julia "+$chan" --project="$CHECKOUT/julia/kernel" -e 'using Pkg; Pkg.instantiate()' 2>/dev/null \
-        || julia --project="$CHECKOUT/julia/kernel" -e 'using Pkg; Pkg.instantiate()'
-    julia "+$chan" --project="$CHECKOUT/julia/repl" -e 'using Pkg; Pkg.instantiate()' 2>/dev/null \
-        || julia --project="$CHECKOUT/julia/repl" -e 'using Pkg; Pkg.instantiate()'
-    julia "+$chan" --project="$CHECKOUT/julia/pluto" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using Pluto' 2>/dev/null \
-        || julia --project="$CHECKOUT/julia/pluto" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using Pluto'
+    julia_run --project="$CHECKOUT/julia/kernel" -e 'using Pkg; Pkg.instantiate()'
+    julia_run --project="$CHECKOUT/julia/repl" -e 'using Pkg; Pkg.instantiate()'
+    julia_run --project="$CHECKOUT/julia/pluto" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using Pluto'
 fi
 
-# ---- 5. config -----------------------------------------------------------------
+# ---- 6. config -----------------------------------------------------------------
 # Non-clobbering on a same-role re-run, but a ROLE CHANGE reconfigures: the
 # existing hosts.toml is backed up and rewritten (the first laptop install
 # picked the wrong topology and a re-run couldn't heal it — never again).
@@ -251,7 +268,7 @@ if [ -f "$CONFIG/hosts.toml" ]; then
 fi
 # A remote-FE role must not leave a previously-installed LOCAL backend
 # running (the wrong-topology remnant): disable it, don't just orphan it.
-if [ "$ROLE" = remote ] && systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
+if [ "$ROLE" = remote ] && command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
     systemctl --user disable --now sotd.service || true
     say "disabled the local sotd.service from a previous all-in-one install"
 fi
@@ -279,7 +296,7 @@ EOF
 fi
 [ -f "$CONFIG/settings.toml" ] || printf '# Ship of Tools settings — see settings.toml.example in the repo\n' > "$CONFIG/settings.toml"
 
-# ---- 6. backend service --------------------------------------------------------
+# ---- 7. backend service --------------------------------------------------------
 if [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 1 ]; then
     say "skipping systemd unit (--no-service) — supervise sotd yourself, e.g.:"
     say "  systemd-run --user --unit=sotd-canary -p Restart=always $PREFIX/bin/sotd --project-root \$HOME --label sot"
@@ -302,7 +319,7 @@ if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
     say "sotd running: $(systemctl --user is-active sotd.service) (socket $DEFAULT_SOCKET)"
 fi
 
-# ---- 7. FE launcher -------------------------------------------------------------
+# ---- 8. FE launcher -------------------------------------------------------------
 if [ "$ROLE" != be-only ]; then
     if [ "$ROLE" = local ]; then
         cat > "$HOME/.local/bin/sot-launch" <<EOF
@@ -311,9 +328,29 @@ if [ "$ROLE" != be-only ]; then
 # missing (macOS has no service wiring yet; Linux normally has the systemd
 # unit), then launch the frontend.
 SOCKET="\$("$PREFIX/bin/sotd" session-socket-path sot)"
-if [ ! -S "\$SOCKET" ]; then
+socket_open() {
+    [ -S "\$SOCKET" ] || return 1
+    if command -v nc >/dev/null 2>&1; then
+        nc -U "\$SOCKET" </dev/null >/dev/null 2>&1 &
+        pid=\$!
+        sleep 1
+        if kill -0 "\$pid" 2>/dev/null; then
+            kill "\$pid" 2>/dev/null || true
+            wait "\$pid" 2>/dev/null || true
+            return 0
+        fi
+        wait "\$pid"
+        return \$?
+    fi
+    # Minimal installs may not have nc. A socket file is the best available
+    # probe; the frontend will still fail loud if the connect cannot complete.
+    return 0
+}
+if ! socket_open; then
+    rm -f "\$SOCKET" 2>/dev/null || true
     nohup "$PREFIX/bin/sotd" --project-root "\$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
-    i=0; while [ \$i -lt 40 ]; do [ -S "\$SOCKET" ] && break; sleep 0.25; i=\$((i+1)); done
+    i=0; while [ \$i -lt 40 ]; do socket_open && break; sleep 0.25; i=\$((i+1)); done
+    socket_open || { echo "ERROR: backend did not open \$SOCKET; see /tmp/sotd.log" >&2; exit 1; }
 fi
 exec "$PREFIX/bin/sot" --socket "\$SOCKET"
 EOF
@@ -329,7 +366,10 @@ if [ -z "\$REMOTE_SOCKET" ]; then
     REMOTE_SOCKET="\$(ssh "$BE_ALIAS" '\${SOT_REMOTE_SOTD:-\$HOME/.local/share/sot/bin/sotd} session-socket-path sot')" \
         || { echo "ERROR: could not query remote sotd socket path" >&2; exit 1; }
 fi
-port_open() { (exec 3<>"/dev/tcp/127.0.0.1/\$1") 2>/dev/null && exec 3>&-; }
+port_open() {
+    if (exec 3<>"/dev/tcp/127.0.0.1/\$1") 2>/dev/null; then exec 3>&-; return 0; fi
+    command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 "\$1" >/dev/null 2>&1
+}
 ensure_aux_tunnel() {
     missing=()
     for p in 1234 1235 1236 1237 1238 1239 1240; do
@@ -347,7 +387,7 @@ ensure_aux_tunnel() {
       "$BE_ALIAS" \
       || { echo "ERROR: could not open browser aux SSH tunnel" >&2; exit 1; }
 }
-if pgrep -af "ssh .*${PORT}:\$REMOTE_SOCKET.*$BE_ALIAS" >/dev/null 2>&1; then
+if pgrep -f "ssh .*${PORT}:\$REMOTE_SOCKET.*$BE_ALIAS" >/dev/null 2>&1; then
     :
 elif port_open "$PORT"; then
     echo "ERROR: local port $PORT is open but not forwarding to \$REMOTE_SOCKET" >&2

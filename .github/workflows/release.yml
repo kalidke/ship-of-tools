@@ -9,8 +9,9 @@
 #   - workflow_dispatch  → builds + checks ONLY (pipeline validation without
 #                          tagging; artifacts land as workflow artifacts)
 #
-# Matrix policy (ADR 0030): linux/windows x86_64 are blocking; macOS aarch64
-# is experimental (continue-on-error) until someone dogfoods it.
+# Matrix policy (ADR 0030): all advertised release artifacts must build and
+# smoke before a tag is published. macOS aarch64 remains product-experimental
+# in the docs until it is dogfooded, but releases must not silently omit it.
 
 name: Release
 
@@ -47,7 +48,7 @@ jobs:
             experimental: false
           - os: macos-14
             target: macos-aarch64
-            experimental: true
+            experimental: false
     steps:
       - uses: actions/checkout@v7
         with:
@@ -178,10 +179,57 @@ jobs:
           print("hello OK — backend", p["app_version"])
           EOF
 
+  smoke-macos:
+    # Headless artifact smoke: prove the macOS binary boots and answers on its
+    # Unix socket. GUI/frontend smoke still needs real desktop dogfooding.
+    name: smoke test (macOS artifact)
+    needs: [build]
+    runs-on: macos-14
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-macos-aarch64
+      - name: Boot artifact + version + hello
+        shell: bash
+        run: |
+          trap 'rc=$?; kill "$pid" 2>/dev/null || true; if [ "$rc" -ne 0 ]; then echo "=== sotd.log ==="; cat sotd.log 2>/dev/null || true; fi; exit "$rc"' EXIT
+          tar xzf sot-*-macos-aarch64.tar.gz
+          d=$(ls -d sot-*-macos-aarch64/)
+          "$d/sotd" --version
+          mkdir -p scratch
+          sock="$("$d/sotd" session-socket-path smoke-macos)"
+          rm -f "$sock"
+          "$d/sotd" --project-root ./scratch --label smoke-macos > sotd.log 2>&1 &
+          pid=$!
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+            [ -S "$sock" ] && break
+            sleep 1
+          done
+          [ -S "$sock" ] || { echo "socket not created: $sock"; exit 1; }
+          python3 - "$sock" <<'EOF'
+          import json, socket, sys
+          sock = sys.argv[1]
+          s = socket.socket(socket.AF_UNIX)
+          s.settimeout(10)
+          s.connect(sock)
+          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke-macos","last_seen_revision":0,"protocol":1,"app_version":"smoke"}}
+          s.sendall((json.dumps(f)+"\n").encode())
+          line = b""
+          while not line.endswith(b"\n"):
+              chunk = s.recv(65536)
+              if not chunk:
+                  break
+              line += chunk
+          p = json.loads(line.decode())["payload"]
+          assert "error" not in p, f"hello rejected: {p}"
+          assert p.get("app_version"), f"no app_version in HelloRes: {p}"
+          print("hello OK — backend", p["app_version"])
+          EOF
+
   publish:
     name: publish release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build, smoke, julia-check]
+    needs: [build, smoke, smoke-macos, julia-check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -191,6 +239,18 @@ jobs:
         with:
           path: assets
           merge-multiple: true
+      - name: Verify expected release assets
+        shell: bash
+        run: |
+          cd assets
+          missing=0
+          for pat in 'sot-*-linux-x86_64.tar.gz' 'sot-*-windows-x86_64.zip' 'sot-*-macos-aarch64.tar.gz'; do
+            if ! compgen -G "$pat" >/dev/null; then
+              echo "missing release asset: $pat" >&2
+              missing=1
+            fi
+          done
+          exit "$missing"
       - name: Checksums
         run: cd assets && sha256sum * > SHA256SUMS
       - name: Release notes (git-cliff, conventional commits)

@@ -29,7 +29,10 @@ VIDEO_PORT="${SOT_VIDEO_PORT:-1235}"
 DOCS_PORT="${SOT_DOCS_PORT:-1236}"
 AUX_PORTS=("$PLUTO_PORT" "$VIDEO_PORT" "$DOCS_PORT" "$((DOCS_PORT+1))" "$((DOCS_PORT+2))" "$((DOCS_PORT+3))" "$((DOCS_PORT+4))")
 
-port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && exec 3>&-; }
+port_open() {
+    if (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; then exec 3>&-; return 0; fi
+    command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 "$1" >/dev/null 2>&1
+}
 
 ensure_aux_tunnel() {
     local missing=()
@@ -63,7 +66,7 @@ if [ -z "$REMOTE_SOCKET" ]; then
 fi
 
 # 1. Tunnel — reuse only a tunnel that visibly targets the same remote socket.
-if pgrep -af "ssh .*${PORT}:${REMOTE_SOCKET}.*${HOST}" >/dev/null 2>&1; then
+if pgrep -f "ssh .*${PORT}:${REMOTE_SOCKET}.*${HOST}" >/dev/null 2>&1; then
     echo "port $PORT already forwards to $REMOTE_SOCKET — reusing existing tunnel"
 elif port_open "$PORT"; then
     echo "ERROR: local port $PORT is already open, but not by a tunnel to $REMOTE_SOCKET" >&2
@@ -89,7 +92,12 @@ if [ "${SOT_RESTART_BE:-0}" = "1" ] || ! ssh "$HOST" "[ -S '$REMOTE_SOCKET' ]"; 
     # deploy). SOT_RESTART_BE=1 remains the explicit force path below; the
     # staleness check after this block reports drift without acting on it.
     ssh "$HOST" "cd '$REMOTE_REPO' && scripts/restart-backend.sh" || true
-    for _ in $(seq 1 40); do ssh "$HOST" "[ -S '$REMOTE_SOCKET' ]" && break; sleep 0.25; done
+    i=0
+    while [ "$i" -lt 40 ]; do
+        ssh "$HOST" "[ -S '$REMOTE_SOCKET' ]" && break
+        sleep 0.25
+        i=$((i+1))
+    done
     ssh "$HOST" "[ -S '$REMOTE_SOCKET' ]" \
         || { echo "ERROR: remote backend did not create socket $REMOTE_SOCKET" >&2; exit 1; }
 else

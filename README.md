@@ -83,10 +83,10 @@ release installer remains the intended user-install path once matching release
 assets exist; source builds are stamped `-dev` and never self-update.
 
 When release assets exist, `scripts/install.sh` lays out
-`~/.local/share/sot`, installs Julia via juliaup when a backend role needs it,
-writes config under `~/.config/sot`, and wires the launcher and backend
-service. With no role flag and an interactive TTY, it opens a role Q&A; without
-a TTY, pass a role flag explicitly:
+`~/.local/share/sot`, installs Julia via juliaup when needed, installs the
+agent comm resources, writes config under `~/.config/sot`, and wires the
+launcher and backend service. With no role flag and an interactive TTY, it
+opens a role Q&A; without a TTY, pass a role flag explicitly:
 
 ```bash
 bash scripts/install.sh                       # interactive role Q&A (TTY required)
