@@ -156,6 +156,12 @@ pub enum IncomingEvt {
         parent_id: String,
         children: Vec<TreeNode>,
     },
+    /// A `tree.children` request came back as an ERROR frame (or failed to
+    /// parse). Previously this was warn-and-drop, which silently starved any
+    /// deep-path reveal awaiting that parent (2026-07-10 symlink-reveal
+    /// diagnosis); now the GPU thread gets told so it can abort the reveal
+    /// with a visible trace + status line.
+    TreeChildrenFailed { parent_id: String, error: String },
     /// The kernel reported its currently-loaded module list. The chrome
     /// turns each name into a synthetic `TreeNode` and feeds them through
     /// the same `TreeView::set_root` path Files-mode uses. `path` is
@@ -2374,7 +2380,19 @@ fn handle_response_frame(
             PendingKind::TreeChildren {
                 parent_id,
                 workspace_id,
-            } => match serde_json::from_value::<TreeChildrenRes>(frame.payload) {
+            } => {
+                // Backend error frames ({error, code}) are legitimate
+                // responses — surface them instead of tripping the struct
+                // parse below ("missing field children") and dropping.
+                if let Some(err) = frame.payload.get("error").and_then(|v| v.as_str()) {
+                    tracing::warn!(%parent_id, error = %err, "tree.children answered with error");
+                    let _ = evt_tx.send(IncomingEvt::TreeChildrenFailed {
+                        parent_id,
+                        error: err.to_string(),
+                    });
+                    return;
+                }
+                match serde_json::from_value::<TreeChildrenRes>(frame.payload) {
                 Ok(res) => {
                     let _ = evt_tx.send(IncomingEvt::TreeChildren {
                         workspace_id,
@@ -2384,8 +2402,13 @@ fn handle_response_frame(
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, %parent_id, "tree.children res parse failed");
+                    let _ = evt_tx.send(IncomingEvt::TreeChildrenFailed {
+                        parent_id,
+                        error: e.to_string(),
+                    });
                 }
-            },
+                }
+            }
             PendingKind::TreeRoot { workspace_id } => {
                 match serde_json::from_value::<TreeRootRes>(frame.payload) {
                     Ok(res) => {

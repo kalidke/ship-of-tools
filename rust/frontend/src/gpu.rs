@@ -3799,6 +3799,7 @@ impl State {
         // Cursor reveal: land now if the row is already in the tree; else expand
         // ancestors asynchronously.
         if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == node_id) {
+            tracing::info!(%node_id, "reveal: target already visible — cursor landed");
             self.tree.selected = idx;
             self.pending_reveal = None;
             self.reveal_awaiting = None;
@@ -3872,7 +3873,7 @@ impl State {
                 if self.reveal_refetched.as_ref() == Some(&key) {
                     // Already force-refreshed this dir for this target and it's
                     // STILL absent → genuinely gone. Stop; the body preview stands.
-                    tracing::debug!(%target_id, %anc_id,
+                    tracing::info!(%target_id, %anc_id,
                         "reveal: re-fetched expanded ancestor, target still absent — stopping");
                     self.pending_reveal = None;
                     self.reveal_awaiting = None;
@@ -3899,6 +3900,8 @@ impl State {
                 return;
             }
             if !row.node.has_children {
+                tracing::info!(%target_id, anc = %anc_id,
+                    "reveal: ancestor is a leaf (has_children=false) — stopping");
                 self.pending_reveal = None;
                 self.reveal_awaiting = None;
                 return;
@@ -3920,13 +3923,14 @@ impl State {
                 self.reveal_awaiting = None;
                 return;
             }
+            tracing::info!(%target_id, anc = %anc_id, "reveal: expanding ancestor");
             self.reveal_awaiting = Some(anc_id);
             return;
         }
         // No ancestor visible at all (root collapsed, or a root-level file the
         // tree hasn't loaded). Nothing to expand toward — drop the reveal; the
         // preview body already showed.
-        tracing::debug!(%target_id, "reveal: no visible ancestor to expand — stopping");
+        tracing::info!(%target_id, "reveal: no visible ancestor to expand — stopping");
         self.pending_reveal = None;
         self.reveal_awaiting = None;
     }
@@ -7388,15 +7392,44 @@ impl State {
                 } => {
                     // Same workspace guard as TreeRoot: a lazy-expand reply
                     // for a workspace we've left must not splice into the
-                    // current workspace's tree.
+                    // current workspace's tree. TRACED (2026-07-10 reveal
+                    // diagnosis): this drop used to be silent, and a reveal
+                    // awaiting this parent starved invisibly.
                     if workspace_id != self.active_workspace_id {
+                        tracing::info!(?workspace_id, active = ?self.active_workspace_id,
+                            %parent_id, "tree.children reply dropped: workspace guard");
+                        if self.reveal_awaiting.as_deref() == Some(parent_id.as_str()) {
+                            tracing::info!(%parent_id,
+                                "reveal: aborted — awaited children dropped by workspace guard");
+                            self.pending_reveal = None;
+                            self.reveal_awaiting = None;
+                            self.reveal_refetched = None;
+                        }
                         continue;
                     }
                     self.tree.apply_children(&parent_id, children);
                     // Advance an in-flight deep-path reveal: this splice may have
                     // just made the next ancestor (or the target row) visible.
                     // No-op when no reveal is armed.
+                    if self.pending_reveal.is_some() {
+                        tracing::info!(%parent_id, "reveal: re-entering after children splice");
+                    }
                     self.drive_reveal_step();
+                }
+                crate::transport::IncomingEvt::TreeChildrenFailed { parent_id, error } => {
+                    // A tree.children request errored (backend error frame or
+                    // parse failure). Surface it and abort any reveal waiting
+                    // on this parent — previously this was warn-and-drop in
+                    // the transport and the reveal starved silently.
+                    tracing::info!(%parent_id, %error, "tree.children FAILED");
+                    self.status = format!("tree expand failed · {parent_id}: {error}");
+                    if self.reveal_awaiting.as_deref() == Some(parent_id.as_str()) {
+                        tracing::info!(%parent_id, "reveal: aborted — awaited children failed");
+                        self.pending_reveal = None;
+                        self.reveal_awaiting = None;
+                        self.reveal_refetched = None;
+                    }
+                    self.window.request_redraw();
                 }
                 crate::transport::IncomingEvt::ProjectScan {
                     project_root,
