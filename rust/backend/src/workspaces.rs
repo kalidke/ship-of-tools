@@ -34,6 +34,8 @@ use crate::files_mode::FilesMode;
 use crate::kernel::Kernel;
 use crate::paths;
 use crate::repl::{Repl, ReplFrameMsg};
+use crate::session::Session;
+use crate::watcher::{PreviewChanged, Watcher};
 
 /// One deduplicated workspace lifecycle event. The daemon broadcasts one
 /// per successful create/destroy; each connection turns it into a
@@ -96,6 +98,14 @@ pub struct Workspace {
     concept: OnceLock<Arc<ConceptStore>>,
     kernel: OnceLock<Kernel>,
     repl: OnceLock<Repl>,
+    /// This workspace's file watcher (2026-07-10 multiwatch fix: previously
+    /// only the default workspace was watched, so every other workspace's
+    /// nav never live-refreshed). Spawned at registration when the watch
+    /// bus is installed; `Some(None)` records a failed spawn so we don't
+    /// retry per-op. Holding the Arc keeps the notify watcher alive for the
+    /// workspace's lifetime; a re-insert drops the old entry (and thus its
+    /// watcher) and spawns fresh.
+    watcher: OnceLock<Option<Arc<Watcher>>>,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -151,6 +161,7 @@ impl Workspace {
             concept: OnceLock::new(),
             kernel: OnceLock::new(),
             repl: OnceLock::new(),
+            watcher: OnceLock::new(),
         }
     }
 
@@ -306,6 +317,10 @@ struct Inner {
     /// `comm-status idle` only ever reports idle, so an actively-generating
     /// agent reads idle without this. Empty until the first capture tick.
     pane_activity: HashMap<String, String>,
+    /// The shared preview.changed bus + session handle for per-workspace
+    /// watcher spawns (2026-07-10 multiwatch). Installed once at startup via
+    /// `set_watch_bus`, before workspace registration; `None` in tests.
+    watch_bus: Option<(Session, broadcast::Sender<PreviewChanged>)>,
 }
 
 impl Workspaces {
@@ -350,7 +365,61 @@ impl Workspaces {
         g.by_slug
             .insert(arc.slug.clone(), arc.workspace_id.clone());
         g.by_id.insert(arc.workspace_id.clone(), arc.clone());
+        if let Some((sess, tx)) = g.watch_bus.clone() {
+            Self::spawn_workspace_watcher(&arc, sess, tx);
+        }
         arc
+    }
+
+    /// Spawn `ws`'s file watcher onto the shared bus. Cheap inline
+    /// (`Watcher::spawn` opens the inotify fd and defers the recursive
+    /// registration walk to a background thread — the NFS-stall hardening),
+    /// so calling under the registry lock is fine. Failure is a warning:
+    /// previews still work, that workspace just won't live-refresh.
+    fn spawn_workspace_watcher(
+        ws: &Arc<Workspace>,
+        session: Session,
+        tx: broadcast::Sender<PreviewChanged>,
+    ) {
+        if ws.watcher.get().is_some() {
+            return; // already spawned (or recorded as failed)
+        }
+        let spawned = match ws.files_mode() {
+            Ok(fm) => match Watcher::spawn(
+                fm.root_path(),
+                session,
+                fm.clone(),
+                tx,
+                Some(ws.slug.clone()),
+            ) {
+                Ok(w) => Some(Arc::new(w)),
+                Err(e) => {
+                    tracing::warn!(slug = %ws.slug, error = %e,
+                        "workspace watcher spawn failed; nav will not live-refresh here");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(slug = %ws.slug, error = %e,
+                    "workspace watcher: files_mode init failed");
+                None
+            }
+        };
+        let _ = ws.watcher.set(spawned);
+    }
+
+    /// Install the watch bus and spawn watchers for every ALREADY-registered
+    /// workspace (registration order at startup isn't guaranteed relative to
+    /// bus creation). Idempotent per workspace via the `watcher` OnceLock.
+    pub fn set_watch_bus(&self, session: Session, tx: broadcast::Sender<PreviewChanged>) {
+        let existing: Vec<Arc<Workspace>> = {
+            let mut g = self.inner.write().expect("workspaces lock");
+            g.watch_bus = Some((session.clone(), tx.clone()));
+            g.by_id.values().cloned().collect()
+        };
+        for ws in existing {
+            Self::spawn_workspace_watcher(&ws, session.clone(), tx.clone());
+        }
     }
 
     pub fn set_default(&self, workspace_id: &str) {

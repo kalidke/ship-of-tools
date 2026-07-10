@@ -45,7 +45,7 @@ use crate::pluto::Pluto;
 use crate::pty::Pty;
 use crate::repl::{Repl, ReplFrameMsg};
 use crate::session::Session;
-use crate::watcher::{PreviewChanged, Watcher};
+use crate::watcher::PreviewChanged;
 use crate::workspaces::AgentMessage;
 use crate::workspaces::WorkspaceChanged;
 use crate::workspaces::{self, Workspace, Workspaces};
@@ -375,19 +375,16 @@ pub async fn run(opts: Opts) -> Result<()> {
     // publishes with `None` as its workspace_id.
     let repl = Repl::new(Repl::default_repl_project(), repl_frame_tx.clone(), None);
 
-    // Notify-based file watcher: pushes preview.changed evts when files
-    // under the project root mutate on disk. Bumps the session ring so
-    // reconnecting clients catch changes that landed while away. Failure
-    // to start is a warning, not fatal — previews still work, they just
-    // won't auto-refresh.
-    let watcher = match Watcher::spawn(files_mode.root_path(), session.clone(), files_mode.clone())
-    {
-        Ok(w) => Some(Arc::new(w)),
-        Err(e) => {
-            tracing::warn!(error = %e, "file watcher unavailable; previews will not auto-refresh on disk changes");
-            None
-        }
-    };
+    // Shared preview.changed bus (2026-07-10 multiwatch): ONE broadcast
+    // channel every connection subscribes to, fed by ONE file watcher PER
+    // WORKSPACE (spawned at registration — Workspaces::set_watch_bus also
+    // catches up any workspace registered before this line). Previously a
+    // single watcher covered only the default workspace root, so no other
+    // workspace's nav ever live-refreshed (the documented KNOWN GAP).
+    // Events carry the workspace slug; the FE filters on it.
+    let (preview_changed_tx, _preview_changed_rx) =
+        broadcast::channel::<PreviewChanged>(256);
+    workspaces.set_watch_bus(session.clone(), preview_changed_tx.clone());
 
     // Workspace lifecycle bus: parallel to the file watcher's broadcast, but
     // typed `WorkspaceChanged`. Handlers publish on a successful create/
@@ -562,7 +559,7 @@ pub async fn run(opts: Opts) -> Result<()> {
         let ke = kernel.clone();
         let co = concept.clone();
         let rp = repl.clone();
-        let wa = watcher.clone();
+        let wa = preview_changed_tx.clone();
         let lb = label.clone();
         let ws = workspaces.clone();
         let wse = ws_events_tx.clone();
@@ -587,7 +584,7 @@ pub async fn run(opts: Opts) -> Result<()> {
         let ke = kernel.clone();
         let co = concept.clone();
         let rp = repl.clone();
-        let wa = watcher.clone();
+        let wa = preview_changed_tx.clone();
         let lb = label.clone();
         let ws = workspaces.clone();
         let wse = ws_events_tx.clone();
@@ -628,7 +625,7 @@ async fn run_local(
     #[allow(unused_variables, dead_code)] kernel: Kernel,
     #[allow(unused_variables, dead_code)] concept: Arc<ConceptStore>,
     #[allow(unused_variables, dead_code)] repl: Repl,
-    watcher: Option<Arc<Watcher>>,
+    preview_changed_tx: broadcast::Sender<PreviewChanged>,
     label: Arc<Option<String>>,
     workspaces: Workspaces,
     ws_events_tx: broadcast::Sender<WorkspaceChanged>,
@@ -674,7 +671,7 @@ async fn run_local(
         let ke = kernel.clone();
         let co = concept.clone();
         let rp = repl.clone();
-        let wa = watcher.clone();
+        let wa = preview_changed_tx.clone();
         let lb = label.clone();
         let ws = workspaces.clone();
         let wse = ws_events_tx.clone();
@@ -712,7 +709,7 @@ async fn run_tcp(
     #[allow(unused_variables, dead_code)] kernel: Kernel,
     #[allow(unused_variables, dead_code)] concept: Arc<ConceptStore>,
     #[allow(unused_variables, dead_code)] repl: Repl,
-    watcher: Option<Arc<Watcher>>,
+    preview_changed_tx: broadcast::Sender<PreviewChanged>,
     label: Arc<Option<String>>,
     workspaces: Workspaces,
     ws_events_tx: broadcast::Sender<WorkspaceChanged>,
@@ -774,7 +771,7 @@ async fn run_tcp(
         let ke = kernel.clone();
         let co = concept.clone();
         let rp = repl.clone();
-        let wa = watcher.clone();
+        let wa = preview_changed_tx.clone();
         let lb = label.clone();
         let ws = workspaces.clone();
         let wse = ws_events_tx.clone();
@@ -849,7 +846,7 @@ async fn handle_connection<R, W>(
     #[allow(unused_variables, dead_code)] kernel: Kernel,
     #[allow(unused_variables, dead_code)] concept: Arc<ConceptStore>,
     #[allow(unused_variables, dead_code)] repl: Repl,
-    watcher: Option<Arc<Watcher>>,
+    preview_changed_tx: broadcast::Sender<PreviewChanged>,
     label: Arc<Option<String>>,
     workspaces: Workspaces,
     ws_events_tx: broadcast::Sender<WorkspaceChanged>,
@@ -906,7 +903,7 @@ where
     // its own preview.changed evt frame; the broadcast channel's per-
     // receiver lag detection lets us notice and log if this connection is
     // falling behind editor saves.
-    let mut watcher_rx = watcher.as_ref().map(|w| w.subscribe());
+    let mut watcher_rx = Some(preview_changed_tx.subscribe());
 
     // One workspace-lifecycle subscription per connection. Always present
     // (the channel is created unconditionally in `run`), unlike the file
@@ -1625,6 +1622,7 @@ where
                 "path": c.path.to_string_lossy(),
                 "node_id": c.node_id,
                 "kind": c.kind.as_str(),
+                "workspace_id": c.workspace_id,
             });
             let frame = Frame::evt(op::PREVIEW_CHANGED, payload).with_rev(c.revision);
             write_frame_to(tx, &frame, None).await?;

@@ -8414,6 +8414,25 @@ impl State {
                         // affected directory's listing changed, so live-refresh
                         // it in the Files nav tree — otherwise the pane shows a
                         // stale listing until a manual re-nav (the reported bug).
+                        //
+                        // 2026-07-10 multiwatch: the daemon now runs a watcher
+                        // per WORKSPACE and tags each event with the owning
+                        // slug. Only act on events for the workspace this FE is
+                        // viewing — node ids are workspace-relative
+                        // (`files:README.md` exists in every repo), so acting on
+                        // a foreign workspace's event would refresh or re-fetch
+                        // the WRONG file. A missing tag (pre-multiwatch daemon)
+                        // passes through, preserving the old behavior.
+                        let evt_ws = payload.get("workspace_id").and_then(|v| v.as_str());
+                        if let Some(slug) = evt_ws {
+                            if !preview_targets_active_ws(
+                                self.active_workspace_id.as_deref(),
+                                self.default_workspace_slug.as_deref(),
+                                slug,
+                            ) {
+                                continue;
+                            }
+                        }
                         let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("");
                         let changed_node_id = payload.get("node_id").and_then(|v| v.as_str());
                         if kind == "created" || kind == "removed" {

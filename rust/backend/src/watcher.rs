@@ -1,7 +1,14 @@
 // watcher.rs — notify-backed file watcher → broadcast of preview.changed
 // events.
 //
-// One Watcher per backend. notify's recursive watcher reports raw OS events;
+// One Watcher PER WORKSPACE (since 2026-07-10; previously one per backend,
+// which watched only the default workspace root — the documented KNOWN GAP
+// where every other workspace's nav never live-refreshed). All watchers
+// publish into ONE shared broadcast channel created by `server::run` (the
+// repl_frame_tx fan-in pattern); events carry the owning workspace's slug so
+// the FE can ignore other workspaces' traffic (node ids like
+// `files:README.md` collide across repos). notify's recursive watcher
+// reports raw OS events;
 // a small async dispatcher debounces per-path bursts (editors typically save
 // 2–4 events for one logical save), bumps the session ring once per logical
 // change, and fans out to per-connection subscribers via a broadcast channel.
@@ -53,21 +60,30 @@ pub struct PreviewChanged {
     pub path: PathBuf,
     pub node_id: Option<String>,
     pub kind: ChangeKind,
+    /// Slug of the workspace whose watcher saw the change. `None` only from
+    /// a pre-multiwatch peer (compat); the FE treats that as default-ws.
+    pub workspace_id: Option<String>,
 }
 
 /// Live watcher. Holding the struct keeps the underlying notify::Watcher
 /// alive (dropping it stops watching) and keeps the dispatcher task running.
 pub struct Watcher {
-    tx: broadcast::Sender<PreviewChanged>,
     // Behind Arc<Mutex> because the (potentially slow) recursive `watch()`
     // registration runs on a background thread — see `spawn`. Keeping a clone
-    // here holds the notify::Watcher alive for the daemon's lifetime.
+    // here holds the notify::Watcher alive for the workspace's lifetime.
     _notify: Arc<Mutex<notify::RecommendedWatcher>>,
 }
 
 impl Watcher {
-    pub fn spawn(root: &Path, session: Session, files_mode: Arc<FilesMode>) -> Result<Self> {
-        let (broadcast_tx, _rx) = broadcast::channel::<PreviewChanged>(256);
+    /// Spawn a watcher for one workspace's root, publishing tagged events
+    /// onto the SHARED `broadcast_tx` bus (created once in `server::run`).
+    pub fn spawn(
+        root: &Path,
+        session: Session,
+        files_mode: Arc<FilesMode>,
+        broadcast_tx: broadcast::Sender<PreviewChanged>,
+        workspace_slug: Option<String>,
+    ) -> Result<Self> {
 
         // notify's callback is sync; bridge to async via an unbounded mpsc.
         // Unbounded is fine — bursts are short, and the dispatcher empties
@@ -134,6 +150,7 @@ impl Watcher {
         let bus = broadcast_tx.clone();
         let fm = files_mode.clone();
         let sess = session.clone();
+        let slug = workspace_slug;
         tokio::spawn(async move {
             let mut last_emit: HashMap<PathBuf, Instant> = HashMap::new();
             let window = Duration::from_millis(200);
@@ -158,6 +175,7 @@ impl Watcher {
                     "path": path.to_string_lossy(),
                     "node_id": node_id,
                     "kind": kind.as_str(),
+                    "workspace_id": slug,
                 });
                 let revision = sess.bump("preview.changed", payload).await;
 
@@ -168,18 +186,14 @@ impl Watcher {
                     path,
                     node_id,
                     kind,
+                    workspace_id: slug.clone(),
                 });
             }
         });
 
         Ok(Self {
-            tx: broadcast_tx,
             _notify: notify_watcher,
         })
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<PreviewChanged> {
-        self.tx.subscribe()
     }
 }
 
