@@ -47,8 +47,13 @@ case "$(uname -s)" in
   Darwin) sw_vers -productVersion ;;   # macOS aarch64 artifact only
 esac
 command -v git curl tar   # all required; jq required if gh is absent
+command -v node npm       # OPTIONAL — math rendering in markdown previews
 ```
 
+- **node/npm absent** → not a blocker: the installer skips the MathJax
+  sidecar deps with a warning and math in markdown previews shows raw LaTeX.
+  Tell the human; if they want math, install node and re-run (or run
+  `npm ci` in `<checkout>/rust/backend/sidecars/mathjax`).
 - **Linux x86_64, glibc ≥ 2.35** → full install works.
 - **Linux, older glibc** → only `--be-only` (the backend is static musl);
   the frontend must run on another machine.

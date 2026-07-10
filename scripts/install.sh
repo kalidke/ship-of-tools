@@ -252,6 +252,20 @@ if [ "$ROLE" != remote ]; then
     julia_run --project="$CHECKOUT/julia/kernel" -e 'using Pkg; Pkg.instantiate()'
     julia_run --project="$CHECKOUT/julia/repl" -e 'using Pkg; Pkg.instantiate()'
     julia_run --project="$CHECKOUT/julia/pluto" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using Pluto'
+
+    # MathJax sidecar (math rendering in markdown previews). Its node deps
+    # are NOT in the repo — without them every math.render dies with
+    # "mathjax sidecar terminated" (bit a live deployment 2026-07-10).
+    # Best-effort: a box without node still installs fine, math previews
+    # just show raw LaTeX until the deps land.
+    if command -v npm >/dev/null 2>&1; then
+        say "installing MathJax sidecar deps (npm ci)"
+        (cd "$CHECKOUT/rust/backend/sidecars/mathjax" && npm ci --silent) \
+            || say "WARN: npm ci failed in sidecars/mathjax — math rendering unavailable until you run it manually"
+    else
+        say "WARN: node/npm not found — math rendering in markdown previews needs it."
+        say "      Install node, then run: (cd $CHECKOUT/rust/backend/sidecars/mathjax && npm ci)"
+    fi
 fi
 
 # ---- 6. config -----------------------------------------------------------------
