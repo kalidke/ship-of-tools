@@ -156,7 +156,7 @@ send_fe_command() {
     fi
     case "$fe_cmd" in
         preview|reveal)
-            echo "note: the FE switches to the target workspace, sets the nav cursor on the file, and shows it in the preview pane — always (maintainer directive 2026-07-10; the old badge-only behavior is gone; FEs older than this build still badge)." ;;
+            echo "note: badges the target workspace row — the user is never yanked; when they visit that workspace the file is cursored in the nav AND rendered in the preview (complete show, always). --urgent --fe <handle> is the user-requested focus-capture option." ;;
     esac
 }
 

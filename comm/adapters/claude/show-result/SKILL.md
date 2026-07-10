@@ -59,14 +59,17 @@ WS=${SOT_WORKSPACE:-$(tmux display-message -p '#S' | sed -n 's/^sot-be-//p')}
 ~/.sot-comm/bin/sot-fe preview "$WS" "<path>"
 ```
 
-**What happens — deterministic, no variants (maintainer directive 2026-07-10):**
-the FE switches to your workspace, sets the nav cursor on the file, and renders it
-in the preview pane. Every time. There is no badge-only fallback, no "shows on
-their next switch", no urgency tier — showing a result MOVES the user's view to
-it, by design. (The old badge-floor/`--urgent` split let shown figures degrade to
-unnoticed badges and read as broken; it is gone. `--urgent`/`--fe` are still
-accepted for wire compat but change nothing. FEs on builds older than 2026-07-10
-still badge — if the user reports nothing appeared, have them pull + rebuild.)
+**What happens — complete show, never a stolen session (maintainer semantics,
+2026-07-10):** if the user is already viewing your workspace, the file is
+cursored in the nav and rendered in the preview immediately. Otherwise the
+workspace row is BADGED — the user's view is never yanked mid-work — and the
+moment they switch to your workspace, the file is cursored in the nav AND
+rendered in the preview, automatically and completely. "Show" means the nav
+selection and the preview are BOTH set when seen; it does not mean capturing
+the user's session. `--urgent --fe <handle>` is the explicit focus-capture
+variant for when the user ASKS to see something now (a broadcast `--urgent`
+is stripped FE-side — it cannot yank every screen). Tell the user in your
+reply where the figure is badged.
 
 **Discover your slug — never guess it.** Prefer `$SOT_WORKSPACE` (stamped when the
 backend creates the workspace). If unset (an *attached* or re-shelled pane), strip

@@ -203,14 +203,14 @@ so a session never has to guess the repo name.
 
 **It does NOT require the FE to be on that workspace** — that's the whole point of
 op::FE_COMMAND over the old gated `sot-nav.sh`. The daemon broadcasts to every
-connected FE and each one **switches to the target workspace, sets the nav cursor
-on the file, and shows it in the preview pane — always** (maintainer directive
-2026-07-10: "show image should always set the nav to that file and show in nav
-pane; those should not be separate possibilities"). The earlier badge-floor
-consent model for preview/reveal (badge-if-elsewhere, consume-on-switch, never
-force-switch) is retired: in practice shown figures degraded to unnoticed badges
-and the feature read as broken. FEs on builds older than 2026-07-10 still badge —
-if the user reports nothing appeared, have them pull + rebuild the FE.
+connected FE. A FE already viewing that workspace shows the file immediately
+(nav cursor + preview). A FE elsewhere **badges the workspace row and never
+steals the user's view** — and when the user switches to that workspace, the
+consume is COMPLETE: the file is cursored in the nav AND rendered in the
+preview, automatically (maintainer semantics 2026-07-10: "always set the nav
+and show" means selection + preview are both set when seen, "not to yank my
+session over"). `--urgent --fe <handle>` is the user-requested focus-capture
+variant; broadcast urgent is stripped FE-side. Do NOT use it proactively.
 
 **Then END your reply telling them it's there**, in those words, e.g.:
 

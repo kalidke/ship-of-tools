@@ -4302,35 +4302,41 @@ impl State {
                     self.drive_same_ws_open(&path);
                     return;
                 }
-                // Cross-workspace preview is IMPERATIVE — always switch + show
-                // (maintainer directive 2026-07-10: "show image should always
-                // set the nav to that file and show in nav pane; those should
-                // not be separate possibilities"). This supersedes the ADR 0025
-                // badge floor FOR PREVIEW/REVEAL: the badge-if-elsewhere split
-                // meant agents' shown figures silently became unnoticed badges
-                // and the feature read as broken. Workspace snapshots (D3-D6)
-                // make the forced switch lossless, and `urgent` is now
-                // accepted-but-ignored for wire compat.
+                // Cross-workspace preview: badge by default, NEVER steal the
+                // user's session (maintainer clarification 2026-07-10 PM,
+                // revising the same morning's directive after living with
+                // always-switch: "always set the nav and show means the file
+                // should be selected in the nav and shown in preview, NOT to
+                // yank my session over... I don't want to be yanked over mid
+                // sentence"). The morning's actual bug was completeness — the
+                // on-switch consume wasn't landing the nav cursor — which the
+                // pending-nav reveal (#4 fix, switch_to_workspace) now does:
+                // when the user visits the badged workspace, the file is
+                // cursored in the nav AND rendered in the preview, always.
                 //
-                // Mechanics: record the pending nav first (the on-switch
-                // pending-nav consume in `switch_to_workspace` drives the
-                // reveal + preview once the workspace lands), then switch. The
-                // slug is the workspace name; the matching BL tmux session is
-                // `sot-be-<slug>` (same pairing the workspace-cycle and
-                // Sessions-attach paths use). The daemon-default workspace
-                // ("default"/"<default>"/empty) uses a None slug + None tmux
-                // so the current BL stays put.
-                let _ = urgent; // deprecated: always show (wire-compat only)
-                tracing::info!(%workspace, %path, "fe-command: preview (switch + show)");
-                self.mark_pending_nav(workspace.clone(), path.clone());
-                let is_default =
-                    workspace.is_empty() || workspace == "default" || workspace == "<default>";
-                let (slug, tmux) = if is_default {
-                    (None, None)
+                // `urgent` is the explicit user-requested "capture session
+                // focus" option (sot-fe --urgent --fe <handle>): the route
+                // layer only honors it on a DIRECTED send (broadcast urgent is
+                // stripped — route_preview_urgent_is_directed_only), so a
+                // blanket agent broadcast can never force-switch the view.
+                if urgent {
+                    tracing::info!(%workspace, %path, "fe-command: preview (user-requested focus capture)");
+                    self.mark_pending_nav(workspace.clone(), path.clone());
+                    let is_default =
+                        workspace.is_empty() || workspace == "default" || workspace == "<default>";
+                    let (slug, tmux) = if is_default {
+                        (None, None)
+                    } else {
+                        (Some(workspace.clone()), Some(format!("sot-be-{workspace}")))
+                    };
+                    self.switch_to_workspace(slug, tmux);
                 } else {
-                    (Some(workspace.clone()), Some(format!("sot-be-{workspace}")))
-                };
-                self.switch_to_workspace(slug, tmux);
+                    // Badge floor: record + badge; the pending preview (body +
+                    // nav-cursor reveal) is driven when the user next switches
+                    // to `workspace` (see `switch_to_workspace`).
+                    tracing::info!(%workspace, %path, "fe-command: preview (badge)");
+                    self.mark_pending_nav(workspace, path);
+                }
             }
             FeCommand::Reveal {
                 workspace,

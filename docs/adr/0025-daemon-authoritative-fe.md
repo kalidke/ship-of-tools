@@ -3,22 +3,28 @@
 **Status:** Accepted (co-design converged 2026-06-22; building on `feat/op-fe-command`)
 **Date:** 2026-06-22
 
-> **Update — 2026-07-10: `preview`/`reveal` are now unconditionally imperative
-> (maintainer directive); the badge floor is retired for those verbs.**
-> The consent model this ADR shipped for `preview` — badge-if-other-workspace,
-> consume-on-switch, force-show only on directed `--urgent` + idle (and the
-> 2026-06-29 hardening to badge-floor-ONLY) — is superseded for `preview`/
-> `reveal` by the maintainer's 2026-07-10 ruling: *"show image should always set
-> the nav to that file and show in nav pane; those should not be separate
-> possibilities."* Diagnosis that forced the issue (papers-geometry, same day):
-> commands were delivered and dispatched correctly on every FE, but cross-ws
-> previews degraded to unnoticed row badges and `notify` to a transient status
-> line — to the user the feature simply read as broken. `dispatch_fe_command`
-> now always records the pending nav and switches to the target workspace
-> (snapshots D3–D6 make the switch lossless); `urgent`/`target` stay on the wire
-> for compat but no longer gate showing. Badge machinery remains for other uses;
-> `notify` keeps the status-line surface with a longer sticky (10s) until the
-> toast lands (ops TODO). Other fe-commands' semantics are unchanged.
+> **Update — 2026-07-10 (PM revision): badge floor RESTORED as the default;
+> "always show" means a COMPLETE show, not a stolen session.**
+> Two rulings landed the same day. Morning: "show image should always set the
+> nav to that file and show in nav pane; those should not be separate
+> possibilities" — implemented as unconditional switch+show. After living with
+> it, the maintainer clarified the intent: *"always set the nav and show means
+> the file should be selected in the nav and shown in preview, NOT to yank my
+> session over... I don't want to be yanked mid sentence."* The morning's real
+> defect was **completeness** — the on-switch badge consume historically did
+> not land the nav cursor (the #4 reveal gap) — not the badge model itself.
+>
+> Final semantics for `preview`/`reveal`:
+> - **Same workspace** → render in place immediately (cursor + preview).
+> - **Other workspace** → badge the row; the user is never force-switched.
+>   On the user's next switch to that workspace the consume is COMPLETE:
+>   nav cursor lands on the file AND the preview renders (the #4 reveal fix
+>   in `switch_to_workspace` covers both first-visit and snapshot-revisit).
+> - **`--urgent --fe <handle>`** = the explicit, user-requested focus-capture
+>   option (no idle gate); route-layer still strips broadcast `urgent`, so a
+>   blanket send can never yank every FE.
+> `notify` keeps the status-line surface with a 10s sticky until the toast
+> lands (ops TODO). Other fe-commands' semantics are unchanged.
 **Supersedes:** ADR-0023 §4 (active-workspace gate on `preview`/`preview_image`). Keeps 0023's `op::FE_COMMAND` op, single-sink `dispatch_fe_command`, and the `devenv-fe` BE CLI. **Does NOT supersede the daemon boot-pty — its current, working design is ADR 0023's 2026-06-26 top Update (the original §3 proposal text is itself superseded). See the correction below.**
 
 > **Correction — 2026-06-26: the boot-pty premise in this ADR (Context §2 and §6) is WRONG.**
