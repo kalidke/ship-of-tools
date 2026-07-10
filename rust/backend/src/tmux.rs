@@ -224,7 +224,10 @@ impl TmuxClient {
             return Ok(());
         }
         self.run(&["copy-mode", "-e", "-t", target])?;
-        let cmd = if up { "page-up" } else { "page-down" };
+        // Half-page, not full: a full-page jump loses the reader's place
+        // (maintainer, 2026-07-10 — "hard to follow with full page jump";
+        // same reasoning as the REPL pane's third-pane steps).
+        let cmd = if up { "halfpage-up" } else { "halfpage-down" };
         self.run(&["send-keys", "-t", target, "-X", cmd])?;
         Ok(())
     }
