@@ -1,6 +1,6 @@
 name = "ShipToolsKernel"
 uuid = "64598b89-5d1c-44fd-9e35-7c2309593cff"
-version = "0.3.3"
+version = "0.3.4"
 authors = ["kalidke"]
 
 [deps]
