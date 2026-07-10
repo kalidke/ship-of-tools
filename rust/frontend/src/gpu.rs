@@ -4301,36 +4301,35 @@ impl State {
                     self.drive_same_ws_open(&path);
                     return;
                 }
-                // ADR 0025 imperative preview (target ws != current). Force-show
-                // only on urgent + idle — otherwise badge (the non-disruptive
-                // default). Reveal funnels here too (v1); v1.1 adds the
-                // deep tree-expand-and-select on top.
-                if urgent && self.fe_is_idle() {
-                    // Force-show: record + badge first (so the on-switch
-                    // pending-nav consume in `switch_to_workspace` drives the
-                    // preview), then switch to the target workspace. The slug
-                    // here is the workspace name; the matching BL tmux session
-                    // is `sot-be-<slug>` (same pairing the workspace-cycle
-                    // and Sessions-attach paths use). Switching to the
-                    // daemon-default workspace ("default"/"<default>"/empty)
-                    // uses a None slug + None tmux so the current BL stays put.
-                    tracing::info!(%workspace, %path, "fe-command: preview (force-show)");
-                    self.mark_pending_nav(workspace.clone(), path.clone());
-                    let is_default =
-                        workspace.is_empty() || workspace == "default" || workspace == "<default>";
-                    let (slug, tmux) = if is_default {
-                        (None, None)
-                    } else {
-                        (Some(workspace.clone()), Some(format!("sot-be-{workspace}")))
-                    };
-                    self.switch_to_workspace(slug, tmux);
+                // Cross-workspace preview is IMPERATIVE — always switch + show
+                // (maintainer directive 2026-07-10: "show image should always
+                // set the nav to that file and show in nav pane; those should
+                // not be separate possibilities"). This supersedes the ADR 0025
+                // badge floor FOR PREVIEW/REVEAL: the badge-if-elsewhere split
+                // meant agents' shown figures silently became unnoticed badges
+                // and the feature read as broken. Workspace snapshots (D3-D6)
+                // make the forced switch lossless, and `urgent` is now
+                // accepted-but-ignored for wire compat.
+                //
+                // Mechanics: record the pending nav first (the on-switch
+                // pending-nav consume in `switch_to_workspace` drives the
+                // reveal + preview once the workspace lands), then switch. The
+                // slug is the workspace name; the matching BL tmux session is
+                // `sot-be-<slug>` (same pairing the workspace-cycle and
+                // Sessions-attach paths use). The daemon-default workspace
+                // ("default"/"<default>"/empty) uses a None slug + None tmux
+                // so the current BL stays put.
+                let _ = urgent; // deprecated: always show (wire-compat only)
+                tracing::info!(%workspace, %path, "fe-command: preview (switch + show)");
+                self.mark_pending_nav(workspace.clone(), path.clone());
+                let is_default =
+                    workspace.is_empty() || workspace == "default" || workspace == "<default>";
+                let (slug, tmux) = if is_default {
+                    (None, None)
                 } else {
-                    // Badge floor: record + badge, never switch the view. The
-                    // pending preview is driven when the user later switches to
-                    // `workspace` (see `switch_to_workspace`).
-                    tracing::info!(%workspace, %path, urgent, "fe-command: preview (badge)");
-                    self.mark_pending_nav(workspace, path);
-                }
+                    (Some(workspace.clone()), Some(format!("sot-be-{workspace}")))
+                };
+                self.switch_to_workspace(slug, tmux);
             }
             FeCommand::Reveal {
                 workspace,
@@ -4350,16 +4349,6 @@ impl State {
                 });
             }
         }
-    }
-
-    /// Conservative idle heuristic gating ADR-0025 force-show: force-show is
-    /// allowed only when the user is NOT actively in the LLM/drawer pane, so an
-    /// imperative `urgent` preview never yanks an active agent session out from
-    /// under the user. When unsure, this returns false (NOT idle), so the safe,
-    /// non-disruptive badge path wins. v1 is purely focus-based; later versions
-    /// may fold in keystroke recency or an explicit "busy" flag.
-    fn fe_is_idle(&self) -> bool {
-        !matches!(self.focus, PaneFocus::Llm)
     }
 
     /// Write `fe-state.json` (ADR 0019) when the observable state changed
@@ -15756,7 +15745,10 @@ const FLASH_SECS: f32 = 0.6;
 /// enough to read across a workspace switch (which rebuilds the status
 /// immediately and would otherwise clobber it). After this window
 /// `about_to_wait` restores the normal connection status on the idle tick.
-const NOTIFY_STICKY: std::time::Duration = std::time::Duration::from_secs(4);
+// 10s (was 4s): fe-command notifies render only on the one-line status bar
+// today and were reliably missed at 4s (2026-07-10 papers-geometry diagnosis).
+// A real toast surface is queued (ops TODO, rides the R6 redraw decomposition).
+const NOTIFY_STICKY: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Flash brightness factor for a name whose state changed `elapsed` ago:
 /// 1.0 right at the transition, ramping linearly to 0.0 at `FLASH_SECS`,

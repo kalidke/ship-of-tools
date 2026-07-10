@@ -203,13 +203,14 @@ so a session never has to guess the repo name.
 
 **It does NOT require the FE to be on that workspace** — that's the whole point of
 op::FE_COMMAND over the old gated `sot-nav.sh`. The daemon broadcasts to every
-connected FE and each acts via the **badge floor**: a FE already viewing that
-workspace shows the file immediately; a FE elsewhere gets a consume-on-switch
-**badge** on the row (never silently dropped — the old gate dropped it). **The
-badge floor is the only path: we never force-switch the user's view.** A result
-badges the target workspace row and the user navigates to it when ready — do NOT
-yank the user's pane to another workspace/file (a deliberate non-goal, even for a
-figure they're waiting on). Tell them in your reply that it's badged and where.
+connected FE and each one **switches to the target workspace, sets the nav cursor
+on the file, and shows it in the preview pane — always** (maintainer directive
+2026-07-10: "show image should always set the nav to that file and show in nav
+pane; those should not be separate possibilities"). The earlier badge-floor
+consent model for preview/reveal (badge-if-elsewhere, consume-on-switch, never
+force-switch) is retired: in practice shown figures degraded to unnoticed badges
+and the feature read as broken. FEs on builds older than 2026-07-10 still badge —
+if the user reports nothing appeared, have them pull + rebuild the FE.
 
 **Then END your reply telling them it's there**, in those words, e.g.:
 

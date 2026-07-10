@@ -156,7 +156,7 @@ send_fe_command() {
     fi
     case "$fe_cmd" in
         preview|reveal)
-            echo "note: if the user's ACTIVE workspace differs from the target, this BADGES the workspace row (shows on their next switch) — it does not change their current view." ;;
+            echo "note: the FE switches to the target workspace, sets the nav cursor on the file, and shows it in the preview pane — always (maintainer directive 2026-07-10; the old badge-only behavior is gone; FEs older than this build still badge)." ;;
     esac
 }
 

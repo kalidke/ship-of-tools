@@ -2,6 +2,23 @@
 
 **Status:** Accepted (co-design converged 2026-06-22; building on `feat/op-fe-command`)
 **Date:** 2026-06-22
+
+> **Update — 2026-07-10: `preview`/`reveal` are now unconditionally imperative
+> (maintainer directive); the badge floor is retired for those verbs.**
+> The consent model this ADR shipped for `preview` — badge-if-other-workspace,
+> consume-on-switch, force-show only on directed `--urgent` + idle (and the
+> 2026-06-29 hardening to badge-floor-ONLY) — is superseded for `preview`/
+> `reveal` by the maintainer's 2026-07-10 ruling: *"show image should always set
+> the nav to that file and show in nav pane; those should not be separate
+> possibilities."* Diagnosis that forced the issue (papers-geometry, same day):
+> commands were delivered and dispatched correctly on every FE, but cross-ws
+> previews degraded to unnoticed row badges and `notify` to a transient status
+> line — to the user the feature simply read as broken. `dispatch_fe_command`
+> now always records the pending nav and switches to the target workspace
+> (snapshots D3–D6 make the switch lossless); `urgent`/`target` stay on the wire
+> for compat but no longer gate showing. Badge machinery remains for other uses;
+> `notify` keeps the status-line surface with a longer sticky (10s) until the
+> toast lands (ops TODO). Other fe-commands' semantics are unchanged.
 **Supersedes:** ADR-0023 §4 (active-workspace gate on `preview`/`preview_image`). Keeps 0023's `op::FE_COMMAND` op, single-sink `dispatch_fe_command`, and the `devenv-fe` BE CLI. **Does NOT supersede the daemon boot-pty — its current, working design is ADR 0023's 2026-06-26 top Update (the original §3 proposal text is itself superseded). See the correction below.**
 
 > **Correction — 2026-06-26: the boot-pty premise in this ADR (Context §2 and §6) is WRONG.**

@@ -42,7 +42,7 @@ near-black at overview scale (nm features in a µm field); `show-result`
 prints a near-blank warning on low pixel variance — that means "view it and
 annotate", NEVER "don't show".
 
-## How — BADGE it (the default; non-intrusive)
+## How — one command; the FE ALWAYS navigates to it and shows it
 
 One short command, right after you save the artifact:
 
@@ -59,29 +59,18 @@ WS=${SOT_WORKSPACE:-$(tmux display-message -p '#S' | sed -n 's/^sot-be-//p')}
 ~/.sot-comm/bin/sot-fe preview "$WS" "<path>"
 ```
 
-This is the **badge floor**, the default for a reason: a FE already viewing your
-workspace shows the file immediately; a FE elsewhere gets a **consume-on-switch badge**
-on your session row — never silently dropped, never steals focus. The backend resolves
-the path to the preview body directly (no tree load needed).
+**What happens — deterministic, no variants (maintainer directive 2026-07-10):**
+the FE switches to your workspace, sets the nav cursor on the file, and renders it
+in the preview pane. Every time. There is no badge-only fallback, no "shows on
+their next switch", no urgency tier — showing a result MOVES the user's view to
+it, by design. (The old badge-floor/`--urgent` split let shown figures degrade to
+unnoticed badges and read as broken; it is gone. `--urgent`/`--fe` are still
+accepted for wire compat but change nothing. FEs on builds older than 2026-07-10
+still badge — if the user reports nothing appeared, have them pull + rebuild.)
 
 **Discover your slug — never guess it.** Prefer `$SOT_WORKSPACE` (stamped when the
 backend creates the workspace). If unset (an *attached* or re-shelled pane), strip
 `sot-be-` from your tmux session name — the one-liner above does both.
-
-## Force-show (`--urgent`) — RARE, only when asked or actively waited-on
-
-```bash
-~/.sot-comm/bin/sot-fe preview "$WS" "<path>" --fe <win-fe-handle> --urgent
-```
-
-Use ONLY when the user is **actively waiting for THIS exact result** or explicitly
-asked to see it now. `--urgent` *requests* a force-switch, but the FE only honors it
-for a **directed, idle** FE (`--fe <handle>` + that FE not mid-task); otherwise it
-safely downgrades to a badge, and a broadcast `--urgent` is stripped entirely — so a
-misused `--urgent` can't yank every FE. Still, when it *does* fire it re-targets the
-single foreground pty (the Sessions-mode re-target-thrash machinery), so don't reach
-for it casually. **Rule: proactive = badge; user-requested = force-show**, always
-`--fe`-directed; never broadcast `--urgent`.
 
 ## After — tell them, but only if it worked
 
