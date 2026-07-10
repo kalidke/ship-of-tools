@@ -42,7 +42,7 @@ near-black at overview scale (nm features in a µm field); `show-result`
 prints a near-blank warning on low pixel variance — that means "view it and
 annotate", NEVER "don't show".
 
-## How — one command; the FE ALWAYS navigates to it and shows it
+## How — one command; the show is complete when the user looks
 
 One short command, right after you save the artifact:
 
@@ -77,9 +77,11 @@ backend creates the workspace). If unset (an *attached* or re-shelled pane), str
 
 ## After — tell them, but only if it worked
 
-**End your reply telling the user it's there**, in those words, e.g. *"…and that figure
-is now showing in your nav pane."* Say so **only after `sot-fe` succeeded** — don't
-claim it if the command errored.
+**End your reply telling the user it's there**, in those words — e.g. *"…and that
+figure is badged on the papers-geometry row (it opens cursored + rendered when you
+switch over)"*, or *"…now showing in your nav pane"* when they were already viewing
+your workspace. Say so **only after `sot-fe` succeeded** — don't claim it if the
+command errored.
 
 ## Don't
 
