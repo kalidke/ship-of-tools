@@ -44,7 +44,8 @@ use sot_protocol::{
     FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
     HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
     MonitorHistoryReq, MonitorHistoryRes, MonitorSubscribeRes, MonitorTickEvt, PlutoOpenReq,
-    PlutoOpenRes, PreviewGetReq, PreviewGetRes, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyWriteReq,
+    PlutoOpenRes, PreviewGetReq, PreviewGetRes, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyScrollReq,
+    PtyWriteReq,
     QuartoOpenReq, QuartoOpenRes, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt,
     ReplRunFileReq, ReplRunFileRes, TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxCreateSessionReq,
     TmuxKillSessionReq, TmuxListPanesReq, TmuxListPanesRes, TmuxListSessionsRes, TmuxPane,
@@ -907,6 +908,9 @@ pub enum OutgoingReq {
     /// Keystroke bytes to forward to the pty. Fire-and-forget — no
     /// response.
     PtyWrite { bytes: Vec<u8> },
+    /// Keyboard PgUp/PgDn scrollback paging for the LLM pane — the backend
+    /// drives tmux copy-mode (`op::PTY_SCROLL`). Fire-and-forget.
+    PtyScroll { up: bool },
     /// Sessions-mode ops (ADR 0013 B1 backend; B2-B5 consumes here).
     /// All five round-trip through the host tmux server; responses surface
     /// as the matching `IncomingEvt::Tmux*` variants. Kept as
@@ -2032,6 +2036,20 @@ where
                                 id,
                                 op::PTY_WRITE,
                                 serde_json::to_value(PtyWriteReq { data_b64: b64 })?,
+                            ),
+                            None,
+                        )
+                        .await?;
+                    }
+                    OutgoingReq::PtyScroll { up } => {
+                        codec::write_frame(
+                            &mut tx,
+                            &Frame::req(
+                                id,
+                                op::PTY_SCROLL,
+                                serde_json::to_value(PtyScrollReq {
+                                    direction: if up { "up" } else { "down" }.to_string(),
+                                })?,
                             ),
                             None,
                         )

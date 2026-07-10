@@ -26,7 +26,7 @@ pub use ops::{
     GpuSample, HostLatest, HostSeries, MonitorHistoryReq, MonitorHistoryRes, MonitorSample,
     MonitorSubscribeReq, MonitorSubscribeRes, MonitorTickEvt, MonitorUnsubscribeReq, ProcSample,
     PreviewGetReq, PreviewGetRes, PtyEvt,
-    PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyWriteReq, ReplEvalReq, ReplEvalRes, ReplFrame,
+    PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyScrollReq, PtyWriteReq, ReplEvalReq, ReplEvalRes, ReplFrame,
     ReplFrameEvt,
     ReplRunFileReq, ReplRunFileRes, StackFrame, TmuxCapturePaneReq, TmuxCapturePaneRes,
     TmuxCreateSessionReq, TmuxKillSessionReq, TmuxListPanesReq, TmuxListPanesRes,

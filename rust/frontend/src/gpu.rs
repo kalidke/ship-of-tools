@@ -14852,6 +14852,35 @@ impl ApplicationHandler for App {
                             state.window.request_redraw();
                             return;
                         }
+                        // PgUp/PgDn page the REMOTE pane's scrollback from
+                        // the keyboard: tmux owns the ring (our vt100 ring
+                        // stays empty under tmux's in-place repaints), so
+                        // the backend enters `copy-mode -e` and pages —
+                        // exactly what the mouse wheel achieves via SGR
+                        // events, minus the mouse. Alternate-screen apps
+                        // (vim/less) get the raw key passed through
+                        // backend-side so their own paging still works.
+                        // Shift+PgUp/PgDn skip this and fall through as raw
+                        // bytes — the escape hatch for a remote app that
+                        // wants the key itself. Repeats allowed: holding
+                        // PgUp keeps paging.
+                        if !shift {
+                            let scroll = match &event.logical_key {
+                                Key::Named(NamedKey::PageUp) => Some(true),
+                                Key::Named(NamedKey::PageDown) => Some(false),
+                                _ => None,
+                            };
+                            if let Some(up) = scroll {
+                                if let Err(e) =
+                                    state.req_tx.send(OutgoingReq::PtyScroll { up })
+                                {
+                                    tracing::warn!(error = %e, "drop pty.scroll — channel closed");
+                                }
+                                state.last_key = Some(label);
+                                state.window.request_redraw();
+                                return;
+                            }
+                        }
                         let bytes: Option<Vec<u8>> = key_to_pty_bytes(&event.logical_key, ctrl);
                         if let Some(bytes) = bytes {
                             // Any byte we send to the pty snaps the

@@ -204,6 +204,31 @@ impl TmuxClient {
         }
     }
 
+    /// Page the session's active pane up/down through tmux scrollback —
+    /// the backend half of `op::PTY_SCROLL` (keyboard PgUp/PgDn in the
+    /// FE's LLM pane). Two regimes:
+    ///
+    /// - **Alternate-screen app** (vim, less, anything that flipped
+    ///   `#{alternate_on}`): the app owns paging — pass the raw PPage/NPage
+    ///   key through and touch nothing.
+    /// - **Normal pane** (shell, claude): enter `copy-mode -e` (a no-op if
+    ///   the pane is already in copy-mode) and issue the copy-mode
+    ///   `page-up`/`page-down` command. `-e` makes a page-down that reaches
+    ///   the live bottom exit copy-mode — the same exit the mouse-wheel SGR
+    ///   path gets, so keyboard and wheel scrolling compose.
+    pub fn scroll_page(&self, target: &str, up: bool) -> Result<()> {
+        let alt = self.run(&["display-message", "-p", "-t", target, "#{alternate_on}"])?;
+        if String::from_utf8_lossy(&alt).trim() == "1" {
+            let key = if up { "PPage" } else { "NPage" };
+            self.run(&["send-keys", "-t", target, key])?;
+            return Ok(());
+        }
+        self.run(&["copy-mode", "-e", "-t", target])?;
+        let cmd = if up { "page-up" } else { "page-down" };
+        self.run(&["send-keys", "-t", target, "-X", cmd])?;
+        Ok(())
+    }
+
     /// Last `lines` rows of the pane's scrollback as plain text. Pass a
     /// negative line count via `-S -<lines>` — that's tmux's convention for
     /// "this far back from the bottom." We cap aggressively (default 200)

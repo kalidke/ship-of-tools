@@ -70,6 +70,16 @@ pub mod op {
     pub const PTY_RESIZE: &str = "pty.resize";
     pub const PTY_WRITE: &str = "pty.write";
     pub const PTY_EVT: &str = "pty.evt";
+    /// Keyboard-driven scrollback paging for the LLM pane's tmux-backed pty
+    /// (fire-and-forget, no response — mirrors `pty.write`). The FE's vt100
+    /// ring stays empty for tmux content (cursor-positioned repaints), so
+    /// PgUp/PgDn can't scroll FE-side; instead the backend drives tmux:
+    /// `copy-mode -e` + `send-keys -X page-up|page-down` against the
+    /// connection's current pty target. Alternate-screen apps (vim, less)
+    /// get the raw PPage/NPage key passed through instead, so their own
+    /// paging keeps working. `-e` exits copy-mode when a page-down reaches
+    /// the live bottom — keyboard-symmetric with the mouse-wheel SGR path.
+    pub const PTY_SCROLL: &str = "pty.scroll";
     /// Server-pushed evt: a file under the project root changed on disk.
     /// Carries `{path, node_id?, kind}` (kind ∈ "modified" | "created" |
     /// "removed"). Frontend re-fetches preview if the path matches a
@@ -738,6 +748,14 @@ pub struct PtyWriteReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtyEvt {
     pub data_b64: String,
+}
+
+/// One keyboard page-scroll of the LLM pane's tmux scrollback (see
+/// `op::PTY_SCROLL`). `direction` is "up" | "down"; anything else is
+/// treated as "up" backend-side rather than erroring (fire-and-forget op).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtyScrollReq {
+    pub direction: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

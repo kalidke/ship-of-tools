@@ -28,7 +28,8 @@ use interprocess::local_socket::{
 };
 use sot_protocol::{
     codec, op, FeCommandEvt, Frame, HostLatest, Kind, MonitorHistoryReq, MonitorHistoryRes,
-    MonitorSubscribeRes, MonitorTickEvt, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyWriteReq,
+    MonitorSubscribeRes, MonitorTickEvt, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyScrollReq,
+    PtyWriteReq,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
@@ -1477,6 +1478,29 @@ where
                     }
                 }
                 continue; // no response for resize
+            }
+            op::PTY_SCROLL => {
+                // Keyboard scrollback paging (fire-and-forget, mirrors
+                // pty.write). The tmux calls shell out, so they ride
+                // spawn_blocking off the dispatch path — a slow tmux can't
+                // stall this connection's select! loop.
+                let req: PtyScrollReq = match serde_json::from_value(frame.payload) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "pty.scroll payload parse failed");
+                        continue;
+                    }
+                };
+                if let Some(p) = pty.as_ref() {
+                    let target = p.target();
+                    let up = req.direction != "down";
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = crate::tmux::TmuxClient::new().scroll_page(&target, up) {
+                            tracing::warn!(error = %e, target, "pty.scroll tmux failed");
+                        }
+                    });
+                }
+                continue; // no response for scroll
             }
             op::PTY_WRITE => {
                 let req: PtyWriteReq = match serde_json::from_value(frame.payload) {
