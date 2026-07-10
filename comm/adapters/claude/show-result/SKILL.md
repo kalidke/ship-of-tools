@@ -1,6 +1,6 @@
 ---
 name: show-result
-description: Surface a result you just produced (saved plot/figure, rendered image, screenshot, PDF, HTML report, built doc, output file) in the user's Ship of Tools nav/preview pane — BADGE it by default, never merely name it in text. Fire whenever your work creates something the user should SEE.
+description: Surface a result you just produced (saved plot/figure, rendered image, screenshot, PDF, HTML report, built doc, output file) in the user's Ship of Tools nav/preview pane — SHOW it (the FE switches to it, always), never merely name it in text. Fire whenever your work creates something the user should SEE.
 ---
 
 # show-result — put what you made in front of the user
