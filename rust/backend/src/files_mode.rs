@@ -10,8 +10,11 @@
 //   files:                       → the project root itself
 //   files:<relative-path>        → any descendant of the project root
 // Relative-path uses forward slashes on all OSes for stability on the wire.
-// `node_id_to_path` rejects `..` segments and absolute paths so a misbehaving
-// frontend can't walk outside the configured root.
+// Both resolvers reject `..` segments and absolute paths in the id itself.
+// READS (tree.children, preview.get, file.read) FOLLOW symlinks — including
+// out-of-root ones like `data/results/` → NAS, this deployment's convention.
+// MUTATIONS (file.write, file.delete) use `node_id_to_path_confined`, which
+// additionally canonicalizes and refuses paths escaping the root.
 //
 // Directory listings skip hidden entries (leading `.`) UNLESS the per-
 // workspace `show_hidden` flag is set — the frontend flips it with the `.`
@@ -117,9 +120,49 @@ impl FilesMode {
         Some(s)
     }
 
-    /// Returns the absolute filesystem path for a node id, or an error if the
-    /// id points outside the configured root.
+    /// Returns the absolute filesystem path for a node id — the READ
+    /// resolver: symlinks are FOLLOWED, wherever they lead.
+    ///
+    /// Rationale (2026-07-10, user bug "following symlink in nav pane is
+    /// broken"): out-of-root symlinks are this deployment's core convention
+    /// (`data/results/` → NAS, `nas_share/<project>` → CIFS mounts), and the
+    /// old unconditional canonicalize+confine guard rejected them all — a
+    /// symlinked NAS directory listed as silently empty. A symlink inside the
+    /// project root was created by the user; browsing through it is user
+    /// intent, not an escape. Read-only callers (tree.children, preview.get,
+    /// file.read, image.crop's source) use this. String-level `..`/absolute
+    /// injections in the node id itself are still rejected.
+    ///
+    /// MUTATING callers (file.write, file.delete) must use
+    /// [`node_id_to_path_confined`] instead, which keeps the full
+    /// canonicalize+confine escape guard from the security review.
     pub fn node_id_to_path(&self, node_id: &str) -> Result<PathBuf> {
+        self.compose_node_path(node_id)
+    }
+
+    /// The WRITE resolver: same string-level checks, plus the symlink escape
+    /// guard (security review) — the `..`/absolute checks are string-level
+    /// and can't catch a symlink INSIDE the root pointing outside it.
+    /// Canonicalize the longest existing ancestor of the composed path (the
+    /// target may not exist yet — e.g. a `file.write` to a brand-new path)
+    /// and confirm it's still under `self.root`, which is already canonical
+    /// (`FilesMode::new`). Mutations therefore can't escape the project root
+    /// even through a user symlink; reads deliberately can (see
+    /// [`node_id_to_path`]).
+    pub fn node_id_to_path_confined(&self, node_id: &str) -> Result<PathBuf> {
+        let p = self.compose_node_path(node_id)?;
+        if let Some(canon) = crate::paths::canonicalize_existing_ancestor(&p) {
+            if !crate::paths::path_within_root(&canon, &self.root) {
+                return Err(anyhow!(
+                    "node id resolves outside the project root (symlink?): {node_id}"
+                ));
+            }
+        }
+        Ok(p)
+    }
+
+    /// Shared string-level composition + injection checks for both resolvers.
+    fn compose_node_path(&self, node_id: &str) -> Result<PathBuf> {
         let rel = node_id
             .strip_prefix(ID_PREFIX)
             .ok_or_else(|| anyhow!("not a files-mode id: {node_id}"))?;
@@ -138,20 +181,6 @@ impl FilesMode {
         for seg in rel.split('/') {
             if !seg.is_empty() {
                 p.push(seg);
-            }
-        }
-        // Symlink escape guard (security review): the `..`/absolute-path
-        // checks above are string-level and can't catch a symlink INSIDE the
-        // root pointing outside it (a real risk on NFS-shared homes, where a
-        // symlink can legitimately cross machines/mounts). Canonicalize the
-        // longest existing ancestor of `p` (the target may not exist yet —
-        // e.g. a `file.write` to a brand-new path) and confirm it's still
-        // under `self.root`, which is already canonical (`FilesMode::new`).
-        if let Some(canon) = crate::paths::canonicalize_existing_ancestor(&p) {
-            if !crate::paths::path_within_root(&canon, &self.root) {
-                return Err(anyhow!(
-                    "node id resolves outside the project root (symlink?): {node_id}"
-                ));
             }
         }
         Ok(p)
@@ -325,23 +354,58 @@ mod tests {
         assert!(fm.path_to_node_id(&outside).is_none());
     }
 
-    /// Security regression: a symlink INSIDE the project root pointing
-    /// OUTSIDE it must not resolve — the `..`/absolute-path string checks in
-    /// `node_id_to_path` can't catch this, only the canonicalize+confine
-    /// guard can. Unix-only (`std::os::unix::fs::symlink`).
+    /// Security regression (WRITE resolver): a symlink INSIDE the project
+    /// root pointing OUTSIDE it must not resolve for mutations — the
+    /// `..`/absolute-path string checks can't catch this, only the
+    /// canonicalize+confine guard can. Unix-only (`std::os::unix::fs::symlink`).
     #[test]
     #[cfg(unix)]
-    fn node_id_to_path_rejects_symlink_escape() {
+    fn confined_resolver_rejects_symlink_escape() {
         let dir = Tmp::new();
         let outside = Tmp::new();
         std::fs::write(outside.path().join("secret.txt"), b"outside").unwrap();
         std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).unwrap();
 
         let fm = FilesMode::new(dir.path().to_path_buf()).unwrap();
-        // The symlink itself resolves outside the root — rejected.
-        assert!(fm.node_id_to_path("files:escape").is_err());
+        // The symlink itself resolves outside the root — rejected for writes.
+        assert!(fm.node_id_to_path_confined("files:escape").is_err());
         // So does a path THROUGH it to a real file on the other side.
-        assert!(fm.node_id_to_path("files:escape/secret.txt").is_err());
+        assert!(fm
+            .node_id_to_path_confined("files:escape/secret.txt")
+            .is_err());
+    }
+
+    /// The READ resolver deliberately FOLLOWS out-of-root symlinks — the
+    /// 2026-07-10 nav bug: `data/results/` → NAS is this deployment's core
+    /// convention, and the old unconditional guard listed such dirs as
+    /// silently empty. Browsing + preview through a user symlink must work;
+    /// string-level `..`/absolute injections stay rejected on both resolvers.
+    #[test]
+    #[cfg(unix)]
+    fn read_resolver_follows_symlink_and_lists_children() {
+        let dir = Tmp::new();
+        let outside = Tmp::new();
+        std::fs::write(outside.path().join("data1.txt"), b"one").unwrap();
+        std::fs::write(outside.path().join("data2.txt"), b"two").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("nas_share")).unwrap();
+
+        let fm = FilesMode::new(dir.path().to_path_buf()).unwrap();
+
+        // The symlinked dir resolves for reads…
+        let p = fm.node_id_to_path("files:nas_share").unwrap();
+        assert!(p.is_dir());
+        // …lists its (out-of-root) children with root-relative node ids…
+        let kids = fm.children_of("files:nas_share").unwrap();
+        let labels: Vec<&str> = kids.iter().map(|n| n.label.as_str()).collect();
+        assert!(labels.contains(&"data1.txt") && labels.contains(&"data2.txt"));
+        assert!(kids.iter().all(|n| n.id.starts_with("files:nas_share/")));
+        // …and a file THROUGH the symlink resolves + reads for preview.
+        let f = fm.node_id_to_path("files:nas_share/data1.txt").unwrap();
+        assert_eq!(std::fs::read(f).unwrap(), b"one");
+
+        // Injection checks hold on the read resolver too.
+        assert!(fm.node_id_to_path("files:../up").is_err());
+        assert!(fm.node_id_to_path("files:/abs").is_err());
     }
 
     /// A brand-new (not-yet-created) path under a legitimately-in-root

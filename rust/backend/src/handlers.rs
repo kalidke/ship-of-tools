@@ -1150,6 +1150,7 @@ pub async fn handle_file_read(
         &req.node_id,
         req.workspace_id.as_deref(),
         workspaces,
+        false,
     ) {
         Ok(p) => p,
         Err(out) => return Ok(out),
@@ -1216,6 +1217,7 @@ pub async fn handle_file_write(
         &req.node_id,
         req.workspace_id.as_deref(),
         workspaces,
+        true,
     ) {
         Ok(p) => p,
         Err(out) => return Ok(out),
@@ -1292,6 +1294,7 @@ pub async fn handle_file_delete(
         &req.node_id,
         req.workspace_id.as_deref(),
         workspaces,
+        true,
     ) {
         Ok(p) => p,
         Err(out) => return Ok(out),
@@ -1367,14 +1370,18 @@ pub async fn handle_file_delete(
 /// Shared workspace → FilesMode → safe path resolution for the file.read /
 /// file.write / file.delete handlers. On any failure returns the error
 /// `HandlerOutput` to send back (tagged with `op`); on success returns the
-/// resolved absolute path. `node_id_to_path` rejects `..` and absolute ids,
-/// so mutations can't escape the project root.
+/// resolved absolute path. Both resolvers reject `..`/absolute ids;
+/// `confined` selects the WRITE resolver (`node_id_to_path_confined`, the
+/// symlink escape guard — mutations can't leave the project root) vs the
+/// READ resolver (follows user symlinks, e.g. NAS mounts — see
+/// files_mode.rs).
 fn resolve_file_node(
     op_name: &'static str,
     req_id: u64,
     node_id: &str,
     workspace_id: Option<&str>,
     workspaces: &Workspaces,
+    confined: bool,
 ) -> std::result::Result<std::path::PathBuf, HandlerOutput> {
     let Some(ws) = workspaces.resolve(workspace_id) else {
         return Err(vec![(
@@ -1399,7 +1406,12 @@ fn resolve_file_node(
             )]);
         }
     };
-    match files_mode.node_id_to_path(node_id) {
+    let resolved = if confined {
+        files_mode.node_id_to_path_confined(node_id)
+    } else {
+        files_mode.node_id_to_path(node_id)
+    };
+    match resolved {
         Ok(p) => Ok(p),
         Err(e) => Err(vec![(
             Frame::res(
