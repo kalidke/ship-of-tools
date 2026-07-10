@@ -8,7 +8,7 @@
 # build we drop the relaunch sentinel; the frontend's watcher notices it and
 # exits with code 75, and launch-sot.ps1 re-stages + respawns with
 # --relaunched (reopening the Terminal drawer and running the resume command,
-# default `claude --continue`).
+# default `claude --dangerously-skip-permissions --continue /sot-fe-session-start`).
 #
 # Build failures leave the app running untouched — nothing is signalled.
 

@@ -171,8 +171,9 @@ pub struct Cli {
     /// Set by the supervisor (`launch-sot.ps1`) when it respawns the
     /// frontend after a self-relaunch (exit code 75). Opens the Terminal
     /// drawer at startup and runs the configured `[terminal] resume_command`
-    /// (default `claude --continue`) in it, so a `claude` session driving
-    /// the rebuild loop reattaches itself in the fresh process. See ADR 0017.
+    /// (default `settings::DEFAULT_RESUME_COMMAND`) in it, so a `claude`
+    /// session driving the rebuild loop reattaches itself in the fresh
+    /// process. See ADR 0017.
     pub relaunched: bool,
 }
 

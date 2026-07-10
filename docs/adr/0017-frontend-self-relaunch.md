@@ -35,7 +35,7 @@ Rationale: the dogfooding driver is a program in the terminal (`claude`), which 
 
 ### 4. Terminal resume command on `--relaunched`
 
-When started with `--relaunched`, the frontend opens straight into the Terminal drawer and runs a configured resume command on the shell's first spawn — `[terminal] resume_command`, default `claude --continue`. The command is injected as **shell launch args** (`-NoExit -Command` for PowerShell, `/K` for cmd, `-c "…; exec $SHELL"` for POSIX), not written to PTY stdin, to avoid the race where input arrives before the shell's first prompt. The shell's working directory is set to the repo root (`$SOT_REPO_DIR`, exported by the supervisor) so `claude --continue` resumes the right project's session.
+When started with `--relaunched`, the frontend opens straight into the Terminal drawer and runs a configured resume command on the shell's first spawn — `[terminal] resume_command`, default `claude --dangerously-skip-permissions --continue /sot-fe-session-start` (a bare `claude --continue` resumes into permission-prompt mode and the session stalls — 2026-07-09). The command is injected as **shell launch args** (`-NoExit -Command` for PowerShell, `/K` for cmd, `-c "…; exec $SHELL"` for POSIX), not written to PTY stdin, to avoid the race where input arrives before the shell's first prompt. The shell's working directory is set to the repo root (`$SOT_REPO_DIR`, exported by the supervisor) so `claude --continue` resumes the right project's session.
 
 ## Consequences
 

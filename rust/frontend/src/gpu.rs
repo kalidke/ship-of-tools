@@ -2346,7 +2346,8 @@ struct State {
     repo_dir: Option<std::path::PathBuf>,
     /// One-shot command run in the Terminal drawer on its first spawn after
     /// a `--relaunched` start (the configured `[terminal] resume_command`,
-    /// default `claude --continue`). `take()`n on first use so a later
+    /// default [`crate::settings::DEFAULT_RESUME_COMMAND`]). `take()`n on
+    /// first use so a later
     /// Ctrl+T reopen doesn't re-run it. ADR 0017.
     pending_resume_command: Option<String>,
     /// Set by the relaunch-watcher thread when the sentinel file
@@ -3118,7 +3119,7 @@ impl State {
                 settings
                     .terminal_resume_command
                     .clone()
-                    .unwrap_or_else(|| "claude --continue".to_string()),
+                    .unwrap_or_else(|| crate::settings::DEFAULT_RESUME_COMMAND.to_string()),
             )
         } else {
             None

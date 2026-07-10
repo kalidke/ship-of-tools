@@ -44,11 +44,12 @@
 //                                   # (Unix) or pwsh.exe → powershell.exe
 //                                   # → cmd.exe (Windows). Omit to use
 //                                   # the platform default.
-//   resume_command = "claude --continue"
+//   resume_command = "claude --dangerously-skip-permissions --continue /sot-fe-session-start"
 //                                   # Auto-run in the Terminal drawer when
 //                                   # the supervisor respawns us after a
 //                                   # self-relaunch (--relaunched, ADR 0017).
-//                                   # Omit to use the default shown.
+//                                   # Omit to use the default shown
+//                                   # (DEFAULT_RESUME_COMMAND).
 //
 //   [downloads]
 //   dir = "/home/me/sot-downloads" # Local directory that `d` (download)
@@ -148,6 +149,14 @@ pub struct LayoutPreset {
 const DRAWER_MIN: f32 = 0.10;
 const DRAWER_MAX: f32 = 0.80;
 
+/// Built-in fallback for `[terminal] resume_command` when no settings.toml
+/// configures one. Must match the documented default (docs/src/ref/config.md,
+/// `.sot/settings.toml.example`): a bare `claude --continue` resumes into
+/// permission-prompt mode, where the session can't act until a human clicks
+/// through prompts the relaunched drawer never shows — observed 2026-07-09.
+pub const DEFAULT_RESUME_COMMAND: &str =
+    "claude --dangerously-skip-permissions --continue /sot-fe-session-start";
+
 impl LayoutPreset {
     /// Built-in default for ultrawide aspects (>1.9). Matches the
     /// VS Code-style 1/6 · 1/3 · 1/2 nav | preview | llm split the
@@ -211,7 +220,7 @@ pub struct Settings {
     /// when the frontend is started with `--relaunched` (i.e. the supervisor
     /// respawned us after a self-relaunch, ADR 0017). Lets a `claude` session
     /// that triggered the rebuild reattach itself in the fresh process.
-    /// `None` → fall back to the built-in default `claude --continue`.
+    /// `None` → fall back to [`DEFAULT_RESUME_COMMAND`].
     pub terminal_resume_command: Option<String>,
     /// `[downloads] dir` — local directory where `d` (download) writes files.
     /// `None` → resolve via `dirs::download_dir()` at use time (OS-independent),
@@ -660,6 +669,25 @@ mod tests {
         let mut s = Settings::default();
         s.merge_text("[terminal]\nresume_command = \"\"\n");
         assert!(s.terminal_resume_command.is_none());
+    }
+
+    #[test]
+    fn builtin_resume_default_matches_settings_example() {
+        // The built-in fallback, the documented default (docs/src/ref/config.md),
+        // and .sot/settings.toml.example must agree — a bare `claude --continue`
+        // fallback resumed the drawer session into permission-prompt mode
+        // (2026-07-09).
+        let example = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../.sot/settings.toml.example"
+        ))
+        .expect("read .sot/settings.toml.example");
+        let mut s = Settings::default();
+        s.merge_text(&example);
+        assert_eq!(
+            s.terminal_resume_command.as_deref(),
+            Some(DEFAULT_RESUME_COMMAND)
+        );
     }
 
     #[test]
