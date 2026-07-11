@@ -6152,6 +6152,8 @@ impl State {
             .next()
             .unwrap_or(&roi.node_id)
             .to_string();
+        tracing::info!(node_id = %roi.node_id, x = roi.x, y = roi.y, w = roi.w, h = roi.h,
+            "image.crop requested (capture_roi)");
         if self
             .req_tx
             .send(crate::transport::OutgoingReq::ImageCrop {
@@ -8924,6 +8926,7 @@ impl State {
                     src_w,
                     src_h,
                 } => {
+                    tracing::info!(%node_id, %path, w, h, "image.cropped received → pasting to LLM pane");
                     // ADR 0022: paste a ready-to-send "look at this" line into
                     // the LLM pane (BL pty). No trailing Enter — the user can
                     // add context and submit, so we never fire a half-formed
