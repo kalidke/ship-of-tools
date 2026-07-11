@@ -1750,6 +1750,16 @@ struct State {
     /// command drives both panes; the BE never issues a separate cursor move).
     /// `None` when no reveal is in flight.
     pending_reveal: Option<String>,
+    /// Reconnect nav restore (2026-07-11): set on hello/reconnect resume so
+    /// the NEXT applied tree.root re-reveals the pre-reconnect cursor (via
+    /// the pending_reveal machinery — the cursor's ancestor path re-expands
+    /// for free) instead of dumping the user at the top with everything
+    /// collapsed. Windows Modern Standby makes this fire on every idle/wake
+    /// cycle, so this is the difference between "nav keeps resetting" and
+    /// continuity. Carries the workspace the flag was armed for — a
+    /// workspace switch between hello and the root reply must NOT re-reveal
+    /// the old workspace's path in the new tree.
+    restore_nav_after_resume: Option<(Option<String>, String)>,
     /// The ancestor dir id (`files:<relpath>`) whose `tree.children` we've
     /// already requested for the in-flight `pending_reveal` and are awaiting.
     /// Guards against re-requesting the same in-flight level when unrelated
@@ -3211,6 +3221,7 @@ impl State {
             preview_node_id_fired: None,
             driven_preview_hold_cursor: None,
             pending_reveal: None,
+            restore_nav_after_resume: None,
             reveal_awaiting: None,
             reveal_refetched: None,
             preview_page: None,
@@ -7205,6 +7216,22 @@ impl State {
                                     workspace_id: self.active_workspace_id.clone(),
                                 });
                             }
+                            // Arm the post-rebuild cursor restore for the
+                            // incoming root (whether fired above or by the
+                            // transport's hello-time default fetch). Captured
+                            // NOW, while the pre-reconnect tree is intact.
+                            if let Some(sel) = self
+                                .tree
+                                .rows
+                                .get(self.tree.selected)
+                                .map(|r| r.node.id.clone())
+                                .filter(|id| id.starts_with("files:") && id != "files:")
+                            {
+                                tracing::info!(selected = %sel,
+                                    "resume: arming nav cursor restore for the incoming tree.root");
+                                self.restore_nav_after_resume =
+                                    Some((self.active_workspace_id.clone(), sel));
+                            }
                         }
                         Mode::Hosts => {
                             // ADR 0015: no backend round-trip — the
@@ -7299,6 +7326,31 @@ impl State {
                         "tree.root applied — nav tree rebuilt (set_root)"
                     );
                     self.tree.set_root(root, children);
+                    // Reconnect nav restore (2026-07-11): if this root is the
+                    // hello/reconnect rebuild, re-reveal the pre-reconnect
+                    // cursor through the reveal machinery — its ancestor path
+                    // re-expands level by level and the cursor lands back on
+                    // the exact row (preview re-anchors on landing). Consumed
+                    // once; discarded when the workspace changed in between
+                    // (a switch's fresh tree must not chase the old path).
+                    if let Some((armed_ws, sel)) = self.restore_nav_after_resume.take() {
+                        if armed_ws == self.active_workspace_id {
+                            tracing::info!(target = %sel,
+                                "resume: restoring nav cursor after reconnect rebuild");
+                            self.driven_preview_hold_cursor = self
+                                .tree
+                                .rows
+                                .get(self.tree.selected)
+                                .map(|r| r.node.id.clone());
+                            self.pending_reveal = Some(sel);
+                            self.reveal_awaiting = None;
+                            self.reveal_refetched = None;
+                            self.drive_reveal_step();
+                        } else {
+                            tracing::info!(?armed_ws, active = ?self.active_workspace_id,
+                                "resume: nav restore discarded — workspace changed before the root arrived");
+                        }
+                    }
                     // Restore the nav cursor persisted across an ADR-0017
                     // relaunch, best-effort: select the saved node id if it's
                     // present in the freshly loaded tree (one-shot, gated by
