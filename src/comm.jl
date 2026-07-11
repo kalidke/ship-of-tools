@@ -183,9 +183,13 @@ function _install_adapter(cli::Symbol)
             else
                 @warn "~/.agents/plugins/marketplace.json exists and is not ours — add the sot-comm plugin manually" file = mp
             end
-            ok = success(pipeline(`codex plugin add sot-comm@sot-local`; stdout = devnull, stderr = devnull))
-            @info "Installed codex hooks plugin" plugin = pdir added = ok
-            ok || @warn "codex plugin add failed or already installed — check `codex plugin list` / trust via /hooks"
+            if isnothing(Sys.which("codex"))
+                @warn "codex CLI not on PATH — plugin files staged but not registered; run `codex plugin add sot-comm@sot-local` after installing codex" plugin = pdir
+            else
+                ok = success(pipeline(`codex plugin add sot-comm@sot-local`; stdout = devnull, stderr = devnull))
+                @info "Installed codex hooks plugin" plugin = pdir added = ok
+                ok || @warn "codex plugin add failed or already installed — check `codex plugin list` / trust via /hooks"
+            end
         end
     else
         @warn "No adapter for this CLI yet — add comm/adapters/$(cli)/ and a case here" cli

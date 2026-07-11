@@ -65,6 +65,13 @@ Codex FE sessions do not automatically get a tmux `codex-watch.sh` wake unless
 they are running inside tmux. At turn start, or when told there is FE backlog,
 read the local FE inbox and answer via `comm-relay.sh`.
 
+The daemon broadcasts every `agent.message` to ALL connected FEs; the `to`
+field is an advisory label, not enforced routing. Treat as addressed to you:
+`to:<your handle>` or the bare `to:win-fe` family label ("any FE"). Lines aimed
+at another handle (a sibling `win-fe-<otherhost>`, `backend-dev`) and true
+broadcasts (`to:""`) are FYIs — anything broadcast that matters is also on the
+durable git-bus (`/bus-sync`).
+
 PowerShell backlog check:
 
 ```powershell

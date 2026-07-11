@@ -1,129 +1,179 @@
 ---
 name: sot-fe-session-start
-description: Bootstrap a Ship of Tools frontend-side Claude session after the native frontend opens or resumes its Terminal drawer. Sets the FE handle, points relay sends at the local SSH tunnel to the backend Unix socket, arms the frontend-local fe-inbox monitor, and optionally pings a backend session. Runnable manually or as a `claude --continue` resume turn. Activates for "fe session start", "frontend session start", "rearm fe comm", "fe bootstrap session".
+description: Bootstrap a (re)started Ship of Tools FE session — set the win-fe handle, point relay sends at the local SSH tunnel to the backend Unix socket, re-arm the fast-comm wake (fe-inbox Monitor), and catch up on anything missed during the down-window. Fires automatically as the first turn after an ADR-0017 FE relaunch (via the [terminal] resume_command, i.e. claude --continue "/sot-fe-session-start"); also runnable manually. Activates for "fe session start", "frontend session start", "session start", "bootstrap session", "rearm fe comm", "rearm comm", "fe bootstrap session", "resume bootstrap".
 ---
 
 # sot-fe-session-start
 
-Run this inside the **frontend machine's Terminal drawer**. This is not the same
-as `/sot-be-session-start`: the frontend machine usually does not share the
-backend's `~/.sot-comm` registry, and it cannot open the backend's Unix socket
-directly. The native frontend receives daemon relay messages and appends them to
-its local `fe-inbox.jsonl`; this session tails that file for wakes and sends
-outbound messages through the local SSH tunnel.
+The first turn after an ADR-0017 FE relaunch, and the manual bootstrap for any
+frontend-side session. The resumed `claude --continue` is **reactive and deaf**:
+harness Monitors do NOT survive a relaunch (the session ended; `--continue`
+restores the transcript, not live background tasks), so nothing wakes the
+session on inbound fast-comm until a Monitor is re-armed *on a turn*. This skill
+is that turn — keep its steps current as the setup evolves (that's the point of
+it being a skill rather than a hardcoded resume command).
 
-## Step 1 - set the FE handle
+This is not the same as `/sot-be-session-start`: the frontend machine usually
+does not share the backend's `~/.sot-comm` registry, and it cannot open the
+backend's Unix socket directly. The native frontend receives daemon relay
+messages and appends them to its local `fe-inbox.jsonl`; this session tails that
+file for wakes and sends outbound messages through the local SSH tunnel.
 
-The handle must mirror the Rust frontend's `self_comm_handle()`:
-`win-fe-<lowercase HOSTNAME or COMPUTERNAME>`.
+> **Canonical copy:** this file (repo `.claude/skills/`). The install payload
+> `comm/adapters/claude/sot-fe-session-start/SKILL.md` is a byte-for-byte copy —
+> edit HERE, then sync the payload and re-run `/sot-install` to close skew.
 
-PowerShell:
+## Multi-frontend reality (PR #7, multi-frontend-awareness on main)
 
-```powershell
-$hostName = if ($env:HOSTNAME) { $env:HOSTNAME } elseif ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "unknown" }
-$env:SOT_COMM_NAME = "win-fe-$($hostName.ToLowerInvariant())"
-```
+A user roams across SEVERAL Windows FEs against ONE backend. Two facts shape comm:
 
-Git Bash / bash:
+- **The daemon broadcasts every `agent.message` to ALL connected FEs.** The `to`
+  field is an **advisory label, not enforced routing** — a `to:backend-dev` message
+  still lands in every FE's inbox. So any scheme is "broadcast to all, filter
+  locally."
+- **Broadcast demotion:** frames with `to:""` (true broadcast) FILE in every
+  inbox but should NOT wake an upgraded Monitor — they're FYIs, not interrupts.
+  Direct frames (`to:<myhandle>` or `to:win-fe` family) wake; broadcasts are read
+  later. Anything broadcast that actually matters is also dropped on the durable
+  git-bus, so `/bus-sync` is the catch-up.
+- **Per-host FE handles: `win-fe-<host>`** (e.g. `win-fe-devbox-2022`), derived
+  from `hostname` lowercased. A shared `win-fe` would make each machine's
+  echo-filter swallow its siblings' traffic and make targeted pings impossible.
+  The bare `win-fe` survives as a **family label** meaning "any FE" (the BE's
+  receive-path check pings it; every `win-fe-<host>` Monitor wakes on it).
 
-```bash
-export SOT_COMM_NAME="win-fe-$( (hostname -s 2>/dev/null || hostname || printf unknown) | tr '[:upper:]' '[:lower:]' )"
-```
+## Steps
 
-If `~/.sot-comm/bin` is installed on this machine, join locally so
-`comm-relay.sh` sends with the right `from:` name:
+1. **Set the FE handle** — must mirror the Rust frontend's `self_comm_handle()`:
+   `win-fe-<lowercase HOSTNAME or COMPUTERNAME>`.
 
-```bash
-~/.sot-comm/bin/comm-join.sh --name "$SOT_COMM_NAME" --expertise "Ship of Tools frontend terminal"
-```
+   PowerShell:
 
-This local join is for the FE machine's tools. Do not expect it to create a row
-in the backend host's shared-home registry.
+   ```powershell
+   $hostName = if ($env:HOSTNAME) { $env:HOSTNAME } elseif ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "unknown" }
+   $env:SOT_COMM_NAME = "win-fe-$($hostName.ToLowerInvariant())"
+   ```
 
-## Step 2 - point sends at the local tunnel
+   Git Bash / bash:
 
-Socket-only backend mode means the remote backend normally listens on a private
-Unix socket, discovered on the backend host with:
+   ```bash
+   export SOT_COMM_NAME="win-fe-$( (hostname -s 2>/dev/null || hostname || printf unknown) | tr '[:upper:]' '[:lower:]' )"
+   ```
 
-```bash
-sotd session-socket-path ${SOT_BACKEND_LABEL:-sot}
-```
+   If `~/.sot-comm/bin` is installed on this machine, join locally so
+   `comm-relay.sh` sends with the right `from:` name:
 
-The frontend launcher opens a **local** TCP port that forwards to that remote
-Unix socket. Set relay sends to the local tunnel:
+   ```bash
+   ~/.sot-comm/bin/comm-join.sh --name "$SOT_COMM_NAME" --expertise "Ship of Tools frontend terminal"
+   ```
 
-PowerShell:
+   This local join is for the FE machine's tools. Do not expect it to create a
+   row in the backend host's shared-home registry. If sot-comm isn't installed
+   at all, install first (`julia --project=. -e 'using ShipTools; ShipTools.update_comm()'`),
+   then join — the BE ping below needs the joined handle so `agent.send` stamps
+   `from:win-fe-<host>`.
 
-```powershell
-$port = if ($env:SOT_PORT) { $env:SOT_PORT } else { "18743" }
-$env:SOT_RELAY_ENDPOINT = "tcp:127.0.0.1:$port"
-```
+2. **Point sends at the local tunnel** — socket-only backend mode means the
+   remote backend normally listens on a private Unix socket, discovered on the
+   backend host with `sotd session-socket-path ${SOT_BACKEND_LABEL:-sot}`. The
+   frontend launcher opens a **local** TCP port that forwards to that remote
+   Unix socket. Set relay sends to the local tunnel:
 
-Git Bash / bash:
+   PowerShell:
 
-```bash
-export SOT_RELAY_ENDPOINT="tcp:127.0.0.1:${SOT_PORT:-18743}"
-```
+   ```powershell
+   $port = if ($env:SOT_PORT) { $env:SOT_PORT } else { "18743" }
+   $env:SOT_RELAY_ENDPOINT = "tcp:127.0.0.1:$port"
+   ```
 
-Do **not** try to connect to `127.0.0.1:18743` on the remote backend. In
-socket-only mode that port belongs only on the frontend machine, and only while
-the SSH tunnel/launcher is running. Browser helper ports `1234`-`1240` must also
-be forwarded by the launcher for Pluto, docs, and static pages.
+   Git Bash / bash:
 
-## Step 3 - arm the FE inbox monitor
+   ```bash
+   export SOT_RELAY_ENDPOINT="tcp:127.0.0.1:${SOT_PORT:-18743}"
+   ```
 
-The native frontend writes daemon `agent.message` events here:
+   Do **not** try to connect to `127.0.0.1:18743` on the remote backend. In
+   socket-only mode that port belongs only on the frontend machine, and only
+   while the SSH tunnel/launcher is running. Browser helper ports `1234`-`1240`
+   must also be forwarded by the launcher for Pluto, docs, and static pages.
 
-- Windows: `%LOCALAPPDATA%\sot\fe-inbox.jsonl`
-- Linux/macOS frontend: `${XDG_STATE_HOME:-$HOME/.local/state}/sot/fe-inbox.jsonl`
+3. **Re-arm the fast-comm wake** — arm a persistent harness **Monitor** on the
+   FE inbox:
 
-Arm a persistent Monitor on that local file. Local frontend storage is not NFS,
-so `tail -F` / `Get-Content -Wait` is appropriate here.
+   - Windows: `%LOCALAPPDATA%\sot\fe-inbox.jsonl`
+   - Linux/macOS frontend: `${XDG_STATE_HOME:-$HOME/.local/state}/sot/fe-inbox.jsonl`
 
-PowerShell Monitor command:
+   The filter must (i) drop this session's OWN echoes only, and (ii) wake on
+   lines addressed to **my handle** or the **`win-fe` family label** — NOT lines
+   aimed at another handle (a sibling FE, or `backend-dev`), and **NOT
+   broadcasts** (`to:""`). Broadcasts are *demoted*: they FILE in the inbox but
+   don't wake (noise reduction — important broadcasts go on the durable bus,
+   read on `/bus-sync`):
 
-```powershell
-$dir = Join-Path $env:LOCALAPPDATA "sot"
-New-Item -ItemType Directory -Force -Path $dir | Out-Null
-$inbox = Join-Path $dir "fe-inbox.jsonl"
-if (!(Test-Path $inbox)) { New-Item -ItemType File -Path $inbox | Out-Null }
-Get-Content -Path $inbox -Wait -Tail 0 | ForEach-Object {
-  try {
-    $m = $_ | ConvertFrom-Json
-    if ($m.from -ne $env:SOT_COMM_NAME -and (($null -eq $m.to) -or ($m.to -eq "") -or ($m.to -eq $env:SOT_COMM_NAME))) {
-      "[relay] from $($m.from): $($m.text)"
-    }
-  } catch {}
-}
-```
+   ```bash
+   HANDLE="win-fe-$(hostname | tr 'A-Z' 'a-z')"   # e.g. win-fe-devbox-2022
+   state="${XDG_STATE_HOME:-$HOME/.local/state}/sot"
+   [ -n "${LOCALAPPDATA:-}" ] && state="$LOCALAPPDATA/sot"
+   mkdir -p "$state"; touch "$state/fe-inbox.jsonl"
+   tail -n0 -F "$state/fe-inbox.jsonl" \
+     | grep --line-buffered -v "\"from\":\"$HANDLE\"" \
+     | grep --line-buffered -E "\"to\":\"($HANDLE|win-fe)\""
+   ```
 
-Git Bash / bash Monitor command:
+   (The trailing `"` in the `-E` pattern anchors each alternative, so `win-fe`
+   matches the bare family label but NOT `win-fe-<otherhost>`; no empty
+   alternative means broadcast `to:""` files without waking.) Use the **Monitor**
+   tool with `persistent: true`. A plain background `tail` does NOT wake you —
+   only a Monitor turns each new inbox line into an event. Local frontend
+   storage is not NFS, so `tail -F` is appropriate here. Without this Monitor,
+   the FE receives messages but this Claude session will not wake on them.
 
-```bash
-state="${XDG_STATE_HOME:-$HOME/.local/state}/sot"
-[ -n "${LOCALAPPDATA:-}" ] && state="$LOCALAPPDATA/sot"
-mkdir -p "$state"
-touch "$state/fe-inbox.jsonl"
-tail -n0 -F "$state/fe-inbox.jsonl" | while IFS= read -r line; do
-  printf '%s\n' "$line" | jq -r --arg me "$SOT_COMM_NAME" \
-    'select((.from // "") != $me and (((.to // "") == "") or (.to == $me))) | "[relay] from \(.from): \(.text)"'
-done
-```
+4. **Ping the BE** — prove the daemon is *dispatching* AND the FE is *writing
+   the inbox* (the exact substrate the Monitor depends on), not merely that the
+   FE process is up. There is no dedicated ping op; instead round-trip a
+   self-addressed `agent.send` and confirm the nonce lands back in
+   `fe-inbox.jsonl`. The path it exercises is the whole wake chain:
+   relay → daemon socket → broadcast → FE → inbox write.
 
-Without this Monitor, the FE receives messages but this Claude session will not
-wake on them.
+   ```bash
+   HANDLE="win-fe-$(hostname | tr 'A-Z' 'a-z')"
+   NONCE="be-ping-$$-$RANDOM"
+   # SOT_RELAY_ENDPOINT from step 2 — the FE's local tunnel endpoint
+   INBOX="$state/fe-inbox.jsonl"
+   ~/.sot-comm/bin/comm-relay.sh send "@$HANDLE" "BE liveness ping $NONCE"
+   for i in $(seq 1 10); do
+     grep -q "$NONCE" "$INBOX" && { echo "BE OK — round-trip:"; grep "$NONCE" "$INBOX"; break; }
+     sleep 0.5
+   done
+   ```
 
-## Step 4 - announce to a backend session
+   Read the result:
+   - `relayed -> win-fe-<host> via tcp:...` = the daemon socket is alive and acked the send.
+   - Nonce reappears in `fe-inbox.jsonl` (with a daemon-stamped `ts`) = daemon
+     broadcast it and the FE wrote it → **entire wake path is live**.
+   - Ack but **no** inbox line = daemon alive but the FE isn't writing the inbox
+     (wake is broken — investigate the FE↔daemon connection / relaunch the FE).
+   - **No** `relayed` line = daemon or the SSH-forwarded tunnel is down.
 
-If you know the backend session handle, send a directed ping:
+   Self-addressed (`@$HANDLE`) on purpose: it drops a `to:<myhandle>` message (no
+   cross-machine noise) and the Monitor's `from:<myhandle>` filter means the ping
+   won't spuriously self-wake you — so verify by reading the inbox file directly,
+   not by waiting for a Monitor event. On Windows the relay needs
+   `SOT_RELAY_ENDPOINT` set explicitly (git-bash has no `sotd` process to
+   `pgrep`); use the same endpoint the FE connects to.
 
-```bash
-~/.sot-comm/bin/comm-relay.sh send @<be-handle> "[$SOT_COMM_NAME] FE receive path armed; please ack."
-```
+   If you know a backend session handle, also send a directed announce
+   (`comm-relay.sh send @<be-handle> "[$HANDLE] FE receive path armed"`).
+   Broadcasts may file silently on backend sessions, so they are not a
+   round-trip proof.
 
-If you do not know the handle, ask the human or use a broadcast as a low-priority
-announcement. Broadcasts may file silently on backend sessions, so they are not a
-round-trip proof.
+5. **Catch the deaf-window gap** — read the tail of `fe-inbox.jsonl` (lines
+   where `from` != your handle) and surface anything new. The daemon replays
+   missed `agent.message`s into the inbox on FE reconnect, so messages sent
+   while you were down are usually still there — you only missed the live wake.
+
+6. **`/bus-sync`** — the durable git-bus fallback for anything the relay didn't
+   replay.
 
 ## Troubleshooting
 
@@ -131,5 +181,11 @@ round-trip proof.
   or is bound to a different local port. Restart the frontend launcher/tunnel.
 - Backend says no remote TCP listener: expected in socket-only mode. Query and
   forward the remote Unix socket instead.
-- No messages wake the FE Claude session: confirm the native frontend is running,
-  `fe-inbox.jsonl` is growing, and the Monitor above is still active.
+- No messages wake the FE Claude session: confirm the native frontend is
+  running, `fe-inbox.jsonl` is growing, and the step-3 Monitor is still active.
+
+## Why a skill (not a hardcoded resume prompt)
+
+The FE's ADR-0017 resume command calls `/sot-fe-session-start` so this runs
+automatically on every relaunch. Keeping the actions here means we iterate on
+the bootstrap in one editable place instead of in the FE/launcher config.
