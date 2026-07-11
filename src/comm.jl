@@ -184,7 +184,11 @@ function _install_adapter(cli::Symbol)
                 @warn "~/.agents/plugins/marketplace.json exists and is not ours — add the sot-comm plugin manually" file = mp
             end
             if isnothing(Sys.which("codex"))
-                @warn "codex CLI not on PATH — plugin files staged but not registered; run `codex plugin add sot-comm@sot-local` after installing codex" plugin = pdir
+                # Codex is OPTIONAL (maintainer, 2026-07-11): a machine
+                # without the codex CLI is a normal configuration, not a
+                # problem — @info, never @warn, so launchers/installers that
+                # surface warnings don't read as complaining on every sync.
+                @info "codex CLI not installed (optional) — plugin files staged; if you later install codex, run `codex plugin add sot-comm@sot-local`" plugin = pdir
             else
                 ok = success(pipeline(`codex plugin add sot-comm@sot-local`; stdout = devnull, stderr = devnull))
                 @info "Installed codex hooks plugin" plugin = pdir added = ok
