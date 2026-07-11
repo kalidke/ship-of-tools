@@ -257,7 +257,16 @@ if (-not $backendHost -or -not $remoteRepo) {
 }
 $tcpPort = if ($env:SOT_TCP_PORT) { [int]$env:SOT_TCP_PORT } else { 18743 }
 $remoteSocket = if ($env:SOT_REMOTE_SOCKET) { $env:SOT_REMOTE_SOCKET } else { $null }
-$token = $env:SOT_TOKEN  # may be empty
+# Token resolution with registry-scope fallback (ryzen5 finding, 2026-07-11):
+# an ADR-0017 exit-75 respawn reuses THIS supervisor's process env, frozen at
+# launch time — a supervisor started from a stale shell/shortcut (no
+# $env:SOT_TOKEN) reconnect-looped on token mismatch forever even though the
+# token was correctly set at User scope. Fall back to the User/Machine scoped
+# values so a fresh supervisor self-heals its token.
+$token = $env:SOT_TOKEN
+if (-not $token) { $token = [Environment]::GetEnvironmentVariable('SOT_TOKEN', 'User') }
+if (-not $token) { $token = [Environment]::GetEnvironmentVariable('SOT_TOKEN', 'Machine') }
+# may still be empty (open-config local installs)
 
 # Check/start the remote backend on every launch without restarting a live
 # daemon by default. The backend listens on its per-user socket; `$tcpPort`
