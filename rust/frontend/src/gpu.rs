@@ -4062,6 +4062,7 @@ impl State {
         if self.mode == mode {
             return;
         }
+        tracing::info!(from = ?self.mode, to = ?mode, "enter_mode (tree rebuild follows)");
         self.mode = mode;
         match mode {
             Mode::Files => {
@@ -4108,6 +4109,7 @@ impl State {
             return;
         }
         if matches!(self.mode, Mode::Files) {
+            tracing::info!("tree.root requested: toggle_hidden refresh");
             if let Err(e) = self.req_tx.send(OutgoingReq::TreeRoot {
                 mode: "files".to_string(),
                 workspace_id: self.active_workspace_id.clone(),
@@ -4797,6 +4799,7 @@ impl State {
             self.tmux_capture_fired_for = None;
             self.edit_state = None;
             self.preview_edit = None;
+            tracing::info!("tree.root requested: workspace switch (first visit)");
             if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
                 mode: "files".to_string(),
                 workspace_id: self.active_workspace_id.clone(),
@@ -7194,6 +7197,7 @@ impl State {
                         }
                         Mode::Files => {
                             if self.active_workspace_id.is_some() {
+                                tracing::info!("tree.root requested: hello/reconnect resume");
                                 let _ = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
                                     mode: "files".to_string(),
                                     workspace_id: self.active_workspace_id.clone(),
@@ -7283,6 +7287,15 @@ impl State {
                     if !matches!(self.mode, Mode::Files | Mode::Modules) {
                         continue;
                     }
+                    // TRACED (2026-07-10 nav-collapse diagnosis): set_root
+                    // rebuilds the whole tree (expansion lost) — every
+                    // request origin is traced too, so an unexpected
+                    // collapse names its trigger in the log.
+                    tracing::info!(
+                        rows_before = self.tree.rows.len(),
+                        new_children = children.len(),
+                        "tree.root applied — nav tree rebuilt (set_root)"
+                    );
                     self.tree.set_root(root, children);
                     // Restore the nav cursor persisted across an ADR-0017
                     // relaunch, best-effort: select the saved node id if it's
