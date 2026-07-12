@@ -19,6 +19,9 @@ steps yourself:
 
 1. **Install the toolchains.** Rust via [rustup](https://rustup.rs/) and Julia
    via [juliaup](https://github.com/JuliaLang/juliaup), where they are missing.
+   On a machine that runs the **backend**, also install **tmux** (the daemon
+   hosts the LLM pane in a tmux session) — **tmux ≥ 3.2** for full in-pane
+   `SOT_*` awareness; older tmux runs but degrades that awareness.
 2. **Build the Rust workspace** (`rust/`) — the frontend and backend binaries.
 3. **Ask a short Q&A** — your machine's role and, if it talks to a remote
    backend, that server's details (see below).

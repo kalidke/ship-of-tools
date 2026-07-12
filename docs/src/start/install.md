@@ -133,6 +133,14 @@ use.
   instead of `gh`, `jq` is also required.
 - **Julia ≥ 1.12** for agent comm resource installation. The installer uses
   juliaup to install it when missing.
+- **tmux** on any host that runs the backend (`--local`, `--be-only`) — the
+  daemon hosts the LLM pane in a tmux session. The installer preflights it:
+  **absent is fatal**. **tmux < 3.2 is a graceful degrade, not an error** — the
+  daemon version-gates `new-session -e` (older tmux rejected it, which once drove
+  a respawn storm), so the backend runs but the pane's in-session `SOT_*`
+  awareness is best-effort; put a **tmux ≥ 3.2** earlier on the daemon's `PATH`
+  (e.g. `~/.local/bin`) for full awareness. Frontend-only `--backend <alias>`
+  hosts don't need tmux.
 - Frontend roles need **glibc ≥ 2.35** (Ubuntu 22.04 or newer). The backend
   binary is static musl and runs on any distro — `--be-only` has no glibc
   floor.
@@ -168,6 +176,7 @@ source-checkout checklist, not a shipped `sot-setup` command.
 | Rust toolchain | current stable | frontend, backend, protocol crates |
 | Julia | ≥ 1.12 | kernel, `ConceptExplorerCore`, plugins |
 | `git` | any | clone the repo |
+| `tmux` | ≥ 3.2 (backend hosts) | the daemon hosts the LLM pane in a tmux session; < 3.2 runs but degrades in-pane `SOT_*` awareness. Frontend-only machines don't need it. |
 
 Install Rust with [rustup](https://rustup.rs/) and Julia with
 [juliaup](https://github.com/JuliaLang/juliaup). The `julia = "1.12"` compat

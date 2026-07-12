@@ -133,6 +133,23 @@ socket. For a one-time migration to existing `sot-be-*` sessions on another
 same-user tmux server, set `SOT_TMUX_SOCK` in the backend environment. `sotd
 tmux-socket-path` prints the effective path, including this override.
 
+`sotd` also needs **tmux ≥ 3.2** to stamp the pane's `SOT_*` awareness env via
+`new-session -e`. On older tmux it degrades gracefully — omitting `-e` and
+falling back to a best-effort `set-environment` — rather than failing, so the
+backend still runs; put a tmux ≥ 3.2 earlier on the daemon's `PATH` for full
+in-pane awareness.
+
+### File-watcher budget
+
+`sotd` watches each workspace's tree to refresh previews on disk changes,
+registering one (non-recursive) inotify watch per kept directory. It skips
+build/VCS directories and never crosses a filesystem boundary (so a project root
+over a mounted data share doesn't pull the share in), and it caps the watches
+per workspace at `min(8192, ¼ of fs.inotify.max_user_watches)` so it can't
+exhaust the OS watch table. Override the cap with `SOT_WATCH_BUDGET=<n>` in the
+backend environment. Past the cap, deeper subtrees stop auto-refreshing;
+navigation still refreshes previews reactively.
+
 ### `[monitor]`
 
 The hosts sampled for the `Ctrl+M` server-monitor drawer. Each line is
