@@ -176,6 +176,11 @@ struct ReplEntry {
     /// `false` = `julia>`, `true` = `pkg>`. Stored per-entry so a
     /// later mode switch doesn't relabel old scrollback rows.
     pkg_mode: bool,
+    /// `Some(label)` for a run this FE did NOT originate — a session's
+    /// `repl.execute` (ADR 0032 phase 2). Renders a distinct prompt line
+    /// (e.g. `⟨session ▸ run foo.jl⟩`) instead of the `julia>` echo, and is
+    /// kept out of the Up/Down input history. `None` for a local user eval.
+    origin: Option<String>,
 }
 
 /// One cached markdown-figure image. `natural_w_px / natural_h_px`
@@ -7203,6 +7208,7 @@ impl State {
             elapsed_ms: 0,
             in_flight: true,
             pkg_mode,
+            origin: None,
         });
         let mode = if pkg_mode {
             Some("pkg".to_string())
@@ -8183,6 +8189,50 @@ impl State {
                     // We key on the recorded eval_id->workspace map (kept until
                     // the terminal ack drops it); `workspace_id` is a hint.
                     // `Done` finalizes (in_flight=false + elapsed); others append.
+                    // Phase 2 (ADR 0032): a `Started` control frame pre-registers
+                    // a drawer entry for a run this FE did NOT originate (a
+                    // session's repl.execute), so the run's output frames + the
+                    // terminal `done` route to it like any local run.
+                    if let ReplFrame::Started { origin, display, .. } = &frame {
+                        if !self.eval_id_workspace.contains_key(&eval_id) {
+                            let key = workspace_id
+                                .clone()
+                                .unwrap_or_else(|| self.current_workspace_key());
+                            let label = format!("{origin} ▸ {display}");
+                            let new_entry = ReplEntry {
+                                eval_id,
+                                code: String::new(),
+                                frames: Vec::new(),
+                                elapsed_ms: 0,
+                                in_flight: true,
+                                pkg_mode: false,
+                                origin: Some(label),
+                            };
+                            let active_key = self.current_workspace_key();
+                            if key == active_key {
+                                if self.repl_log.len() >= 256 {
+                                    self.repl_log.remove(0);
+                                }
+                                self.repl_log.push(new_entry);
+                                self.eval_id_workspace.insert(eval_id, key);
+                            } else if let Some(snap) =
+                                self.workspace_repl_snapshots.get_mut(&key)
+                            {
+                                if snap.repl_log.len() >= 256 {
+                                    snap.repl_log.remove(0);
+                                }
+                                snap.repl_log.push(new_entry);
+                                self.eval_id_workspace.insert(eval_id, key);
+                            } else {
+                                tracing::debug!(
+                                    eval_id,
+                                    key,
+                                    "repl.frame: started for workspace with no snapshot — skipping"
+                                );
+                            }
+                        }
+                        self.window.request_redraw();
+                    } else {
                     let _ = workspace_id;
                     // ADR 0032: a `browser` frame is an action, not log content —
                     // the eval served a live interactive artifact (WGLMakie/Bonito
@@ -8264,6 +8314,7 @@ impl State {
                         }
                     }
                     self.window.request_redraw();
+                    }
                 }
                 crate::transport::IncomingEvt::ConceptWriteDone { target, result } => {
                     // Only reconcile when the reply targets the active
@@ -14080,6 +14131,7 @@ impl ApplicationHandler for App {
                                     elapsed_ms: 0,
                                     in_flight: true,
                                     pkg_mode: false,
+                                    origin: None,
                                 });
                                 if let Err(e) =
                                     state
@@ -15275,25 +15327,38 @@ fn build_repl_lines(
     let mut slots: Vec<ReplImageSlot> = Vec::new();
     let mut out: Vec<RtLine<'static>> = Vec::new();
     for entry in log {
-        let (prompt_text, prompt_color) = if entry.pkg_mode {
-            ("pkg> ", Color::LightBlue)
+        if let Some(label) = &entry.origin {
+            // A run this FE did NOT originate (a session's repl.execute, ADR
+            // 0032 phase 2): show a distinct labelled prompt (magenta) instead
+            // of the `julia>` code echo, so the user can tell it apart from
+            // their own input at a glance.
+            out.push(RtLine::from(vec![Span::styled(
+                format!("⟨{label}⟩"),
+                Style::default()
+                    .fg(Color::LightMagenta)
+                    .add_modifier(Modifier::BOLD),
+            )]));
         } else {
-            ("julia> ", Color::LightCyan)
-        };
-        // Multi-line submissions (Shift+Enter while typing) get one
-        // echo line per segment, first with the prompt and the rest
-        // with same-width filler — same convention as the live input.
-        let cont_pad: String = " ".repeat(prompt_text.len());
-        for (i, seg) in entry.code.split('\n').enumerate() {
-            let prefix_span = if i == 0 {
-                Span::styled(prompt_text.to_string(), Style::default().fg(prompt_color))
+            let (prompt_text, prompt_color) = if entry.pkg_mode {
+                ("pkg> ", Color::LightBlue)
             } else {
-                Span::raw(cont_pad.clone())
+                ("julia> ", Color::LightCyan)
             };
-            out.push(RtLine::from(vec![
-                prefix_span,
-                Span::styled(seg.to_string(), Style::default()),
-            ]));
+            // Multi-line submissions (Shift+Enter while typing) get one
+            // echo line per segment, first with the prompt and the rest
+            // with same-width filler — same convention as the live input.
+            let cont_pad: String = " ".repeat(prompt_text.len());
+            for (i, seg) in entry.code.split('\n').enumerate() {
+                let prefix_span = if i == 0 {
+                    Span::styled(prompt_text.to_string(), Style::default().fg(prompt_color))
+                } else {
+                    Span::raw(cont_pad.clone())
+                };
+                out.push(RtLine::from(vec![
+                    prefix_span,
+                    Span::styled(seg.to_string(), Style::default()),
+                ]));
+            }
         }
         // Render whatever frames have streamed in so far — even while the
         // entry is still `in_flight` — so live output (ADR 0009 phase-2
@@ -15368,6 +15433,9 @@ fn build_repl_lines(
                         Style::default().fg(Color::LightBlue),
                     )]));
                 }
+                // Control frame — rendered via the entry's `origin` label
+                // above, never as an output row (ADR 0033 phase 2).
+                ReplFrame::Started { .. } => {}
                 ReplFrame::Image { mime, bytes, .. } => {
                     let key = (entry.eval_id, frame_idx);
                     // Degenerate width (drawer not yet laid out — the fit
@@ -17767,6 +17835,7 @@ mod tests {
             elapsed_ms: 0,
             in_flight,
             pkg_mode: false,
+            origin: None,
         }
     }
 

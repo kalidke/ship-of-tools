@@ -13,8 +13,8 @@
 #   sot-fe goto    <workspace>        [--boot] [--fe <handle>]
 #   sot-fe mode    <mode>             [--fe <handle>]
 #   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <handle>]
-#   sot-fe repl run  <workspace> <path>            [--timeout <s>]
-#   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>]
+#   sot-fe repl run  <workspace> <path>            [--timeout <s>] [--origin <who>]
+#   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>] [--origin <who>]
 #
 #   preview  — switch the FE to <workspace>, Files mode, and preview <path>.
 #   reveal   — switch + reveal <path> in the file tree (cursor it, no preview).
@@ -70,6 +70,7 @@ NOTIFY_WS=""
 TIMEOUT=""     # repl: wall-clock budget in seconds
 CODE=""        # repl eval: code (else read stdin)
 READ_STDIN=false
+ORIGIN=""      # repl: label shown in the user's drawer (default "session")
 POS=()         # positional args for the subcommand
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -82,6 +83,7 @@ while [ $# -gt 0 ]; do
         --timeout)  TIMEOUT="$2"; shift 2 ;;
         --code)     CODE="$2"; shift 2 ;;
         --stdin)    READ_STDIN=true; shift ;;
+        --origin)   ORIGIN="$2"; shift 2 ;;
         -h|--help)  usage 0 ;;
         *)          POS+=("$1"); shift ;;
     esac
@@ -197,6 +199,7 @@ send_repl_execute() {
     local payload req resp
     payload="$(jq -nc --arg w "$ws" --argjson in "$input_json" --argjson t "$ms" \
         '{workspace_id:$w, input:$in, timeout_ms:$t}')"
+    [ -n "$ORIGIN" ] && payload="$(printf '%s' "$payload" | jq -c --arg o "$ORIGIN" '. + {origin:$o}')"
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.execute", payload:$p}')"
     resp="$(sot_send "$req" repl.execute || true)"
     if [ -z "$resp" ]; then

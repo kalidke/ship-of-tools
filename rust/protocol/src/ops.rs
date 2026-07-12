@@ -650,6 +650,19 @@ pub struct ReplRunFileRes {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ReplFrame {
+    /// Control frame (ADR 0032 phase 2): a run STARTED. Emitted by the BACKEND
+    /// (not the shim) before a `repl.execute` submission so a front-end can
+    /// pre-register a drawer entry in submission order — even for a silent or
+    /// long eval, and even when the run belongs to another client. The output
+    /// frames + terminal `done` for this `eval_id` follow. Front-ends that
+    /// don't recognise it ignore it (it carries no output).
+    Started {
+        run_id: String,
+        /// Who initiated the run (e.g. "session", a sot-comm handle).
+        origin: String,
+        /// Human display of what's running (file basename or a code preview).
+        display: String,
+    },
     Stdout {
         text: String,
     },
@@ -719,6 +732,10 @@ pub struct ReplExecuteReq {
     /// Wall-clock budget in ms. Default 120_000, clamped to [1_000, 1_800_000].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// Who initiated the run, surfaced in the user's drawer when the run is
+    /// shown as a shared entry (ADR 0032 phase 2). Defaults to "session".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// What to run. `run_file` resolves `path` against the workspace root, requires

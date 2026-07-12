@@ -28,6 +28,7 @@ use crate::file_io::{self, WriteResult};
 use crate::files_mode::{mime_for_path, FilesMode};
 use crate::kernel::Kernel;
 use crate::mathjax::MathJax;
+use crate::repl::ReplFrameMsg;
 use crate::pluto::Pluto;
 use crate::session::Session;
 use crate::tmux::TmuxClient;
@@ -1857,8 +1858,8 @@ pub async fn handle_repl_execute(
         )]);
     };
 
-    // Build the inner op + payload; validate a run_file path against the ws.
-    let (inner_op, inner_payload) = match &req.input {
+    // Build the inner op + payload + drawer display; validate a run_file path.
+    let (inner_op, inner_payload, display) = match &req.input {
         ReplExecuteInput::RunFile { path } => {
             let joined = {
                 let pb = std::path::PathBuf::from(path);
@@ -1899,6 +1900,10 @@ pub async fn handle_repl_execute(
                     format!("not an existing .jl file: {}", abs.display()),
                 ));
             }
+            let disp = format!(
+                "run {}",
+                abs.file_name().and_then(|s| s.to_str()).unwrap_or("?.jl")
+            );
             (
                 op::REPL_RUN_FILE,
                 json!({
@@ -1907,6 +1912,7 @@ pub async fn handle_repl_execute(
                     "fresh": false,
                     "workspace_id": ws_id,
                 }),
+                disp,
             )
         }
         ReplExecuteInput::Eval { code, mode } => {
@@ -1916,9 +1922,34 @@ pub async fn handle_repl_execute(
                     obj.insert("mode".to_string(), json!(m));
                 }
             }
-            (op::REPL_EVAL, p)
+            let first = code.lines().next().unwrap_or("").trim();
+            let disp = if first.chars().count() > 60 {
+                format!("{}…", first.chars().take(60).collect::<String>())
+            } else {
+                first.to_string()
+            };
+            (op::REPL_EVAL, p, disp)
         }
     };
+
+    // Phase 2 (ADR 0032): broadcast a `started` control frame so an attached
+    // front-end pre-registers this run in the user's drawer (submission order),
+    // then routes the streamed output frames + terminal `done` to that entry.
+    // Uses the workspace's canonical id — the SAME the supervisor stamps on the
+    // shim's frames — so both land on the one entry.
+    let origin = req.origin.clone().unwrap_or_else(|| "session".to_string());
+    let frame_ws = ws.workspace_id.clone();
+    let frame_tx = workspaces.repl_frame_tx();
+    let _ = frame_tx.send(ReplFrameMsg {
+        eval_id,
+        workspace_id: Some(frame_ws.clone()),
+        frame: json!({
+            "kind": "started",
+            "run_id": run_id.clone(),
+            "origin": origin,
+            "display": display,
+        }),
+    });
 
     let repl = ws.repl(workspaces.repl_frame_tx());
     let (reply_rx, collector) = match repl.execute(inner_op, inner_payload).await {
@@ -2043,6 +2074,17 @@ pub async fn handle_repl_execute(
         _ if res_code_error => "error",
         _ => frame_error_kind.unwrap_or("ok"),
     };
+
+    // Phase 2: finalize the drawer entry for outcomes where the shim's own
+    // `done` frame won't arrive — timeout (the run is still going) or repl_died
+    // (child gone). For ok/error/busy the shim already emitted `done`.
+    if outcome == "timeout" || outcome == "repl_died" {
+        let _ = frame_tx.send(ReplFrameMsg {
+            eval_id,
+            workspace_id: Some(frame_ws.clone()),
+            frame: json!({ "kind": "done", "eval_id": eval_id, "elapsed_ms": elapsed_ms }),
+        });
+    }
 
     // Spill figures to files so the response never inlines base64 (1 MiB cap).
     let mut figures: Vec<String> = Vec::new();
