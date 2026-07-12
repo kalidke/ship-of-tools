@@ -1220,6 +1220,9 @@ where
                 handlers::handle_repl_interrupt(frame.id, frame.payload, &session, &workspaces)
                     .await
             }
+            op::REPL_EXECUTE => {
+                handlers::handle_repl_execute(frame.id, frame.payload, &session, &workspaces).await
+            }
             op::TMUX_LIST_SESSIONS => {
                 handlers::handle_tmux_list_sessions(frame.id, frame.payload, &session).await
             }

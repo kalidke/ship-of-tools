@@ -13,6 +13,8 @@
 #   sot-fe goto    <workspace>        [--boot] [--fe <handle>]
 #   sot-fe mode    <mode>             [--fe <handle>]
 #   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <handle>]
+#   sot-fe repl run  <workspace> <path>            [--timeout <s>] [--origin <who>]
+#   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>] [--origin <who>]
 #
 #   preview  — switch the FE to <workspace>, Files mode, and preview <path>.
 #   reveal   — switch + reveal <path> in the file tree (cursor it, no preview).
@@ -22,6 +24,13 @@
 #   open-url — open an http(s) URL in the FE machine's OS BROWSER (not a
 #              forwarded port — the FE just opens it). Broadcast opens on
 #              every attached FE; use --fe to target one.
+#   repl     — run a .jl file (or eval code) in a workspace's persistent REPL
+#              and print the COLLECTED output (stdout/stderr/value/error +
+#              figure file paths). Unlike the other verbs this is a real
+#              request/response op (repl.execute, ADR 0033): it blocks until
+#              the run finishes (or --timeout, default 120s) and returns the
+#              output. Non-destructive — runs in the REPL's current project,
+#              no reset. Exit 0 on outcome:ok, 2 otherwise.
 #
 #   --fe <handle>  scope delivery to one FE by its sot-comm handle (sets the
 #                  wire `target`); absent = every FE acts (the badge floor).
@@ -45,7 +54,9 @@ fi
 HAVE_NC=0; command -v nc >/dev/null 2>&1 && HAVE_NC=1
 
 usage() {
-    sed -n '10,27p' "$0" | sed 's/^# \{0,1\}//'
+    # Print the header usage/description block: comment lines from 10 down to
+    # the first non-comment line (robust to the block growing).
+    sed -n '10,$ { /^[^#]/q; p; }' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-1}"
 }
 
@@ -56,6 +67,10 @@ URGENT=false
 BOOT=false
 LEVEL=""
 NOTIFY_WS=""
+TIMEOUT=""     # repl: wall-clock budget in seconds
+CODE=""        # repl eval: code (else read stdin)
+READ_STDIN=false
+ORIGIN=""      # repl: label shown in the user's drawer (default "session")
 POS=()         # positional args for the subcommand
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -65,6 +80,10 @@ while [ $# -gt 0 ]; do
         --boot)     BOOT=true; shift ;;
         --level)    LEVEL="$2"; shift 2 ;;
         --ws)       NOTIFY_WS="$2"; shift 2 ;;
+        --timeout)  TIMEOUT="$2"; shift 2 ;;
+        --code)     CODE="$2"; shift 2 ;;
+        --stdin)    READ_STDIN=true; shift ;;
+        --origin)   ORIGIN="$2"; shift 2 ;;
         -h|--help)  usage 0 ;;
         *)          POS+=("$1"); shift ;;
     esac
@@ -94,20 +113,20 @@ sot_send() {
         tcp:*)
             hp="${ENDPOINT#tcp:}"; host="${hp%:*}"; port="${hp##*:}"
             if [ "$HAVE_NC" = 1 ]; then
-                { _sot_hello; printf '%s\n' "$frame"; } | timeout 6 nc "$host" "$port" 2>/dev/null | grep -m1 "\"op\":\"$op\""
+                { _sot_hello; printf '%s\n' "$frame"; } | timeout "${SEND_TIMEOUT:-6}" nc "$host" "$port" 2>/dev/null | grep -m1 "\"op\":\"$op\""
             else
                 (
                     exec 9<>"/dev/tcp/$host/$port" \
                         || { echo "ERROR: /dev/tcp connect to $host:$port failed (and nc not found)" >&2; exit 1; }
                     { _sot_hello; printf '%s\n' "$frame"; } >&9
-                    timeout 6 cat <&9
+                    timeout "${SEND_TIMEOUT:-6}" cat <&9
                     exec 9<&- 9>&- 2>/dev/null || true
                 ) | grep -m1 "\"op\":\"$op\""
             fi
             ;;
         unix:*)
             if [ "$HAVE_NC" = 1 ]; then
-                { _sot_hello; printf '%s\n' "$frame"; } | timeout 6 nc -U "${ENDPOINT#unix:}" 2>/dev/null | grep -m1 "\"op\":\"$op\""
+                { _sot_hello; printf '%s\n' "$frame"; } | timeout "${SEND_TIMEOUT:-6}" nc -U "${ENDPOINT#unix:}" 2>/dev/null | grep -m1 "\"op\":\"$op\""
             else
                 echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2; return 1
             fi
@@ -158,6 +177,53 @@ send_fe_command() {
         preview|reveal)
             echo "note: badges the target workspace row — the user is never yanked; when they visit that workspace the file is cursored in the nav AND rendered in the preview (complete show, always). --urgent --fe <handle> is the user-requested focus-capture option." ;;
     esac
+}
+
+# Send a repl.execute request (ADR 0033) and print the collected result. $1 is
+# the `input` JSON object ({kind:"run_file",path} | {kind:"eval",code}); $2 is
+# the workspace. Unlike send_fe_command this is a real request/response op — it
+# blocks for the run and the daemon returns the collected output on this op's
+# res line (the interleaved repl.frame evts on the connection are skipped by
+# sot_send's op-grep). Exits 2 on a non-ok outcome.
+send_repl_execute() {
+    local input_json="$1" ws="$2"
+    if ! ENDPOINT="$(resolve_endpoint)"; then
+        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
+        exit 1
+    fi
+    local secs="${TIMEOUT:-120}"
+    local ms=$(( secs * 1000 ))
+    # Wait a little past the backend budget so the daemon's timeout result (not
+    # our socket read) is what lands.
+    export SEND_TIMEOUT=$(( secs + 10 ))
+    local payload req resp
+    payload="$(jq -nc --arg w "$ws" --argjson in "$input_json" --argjson t "$ms" \
+        '{workspace_id:$w, input:$in, timeout_ms:$t}')"
+    [ -n "$ORIGIN" ] && payload="$(printf '%s' "$payload" | jq -c --arg o "$ORIGIN" '. + {origin:$o}')"
+    req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.execute", payload:$p}')"
+    resp="$(sot_send "$req" repl.execute || true)"
+    if [ -z "$resp" ]; then
+        echo "ERROR: no response from repl.execute via $ENDPOINT (timed out after ${SEND_TIMEOUT}s, or daemon closed the connection)." >&2
+        exit 1
+    fi
+    printf '%s' "$resp" | jq -r '
+        .payload as $p |
+        if ($p.error != null) and (($p.outcome // "") == "") then
+            "ERROR: \($p.error) [\($p.code // "?")]"
+        else
+            "outcome: \($p.outcome)   run_id: \($p.run_id)   elapsed: \($p.elapsed_ms)ms"
+            + (if $p.truncated then "   [output truncated]" else "" end)
+            + (if ($p.project_dir // "") != "" then "\nproject: \($p.project_dir) (\($p.project_source // "?"))" else "" end)
+            + (if ($p.stdout // "") != "" then "\n--- stdout ---\n\($p.stdout)" else "" end)
+            + (if ($p.stderr // "") != "" then "\n--- stderr ---\n\($p.stderr)" else "" end)
+            + (if (($p.values // []) | length) > 0 then "\n--- value ---\n" + ($p.values | map(.text) | join("\n")) else "" end)
+            + (if $p.error != null then "\n--- error ---\n\($p.error.message)" + (($p.error.stacktrace // []) | map("\n  at \(.fn) (\(.file):\(.line))") | join("")) else "" end)
+            + (if (($p.figures // []) | length) > 0 then "\n--- figures ---\n" + ($p.figures | join("\n")) else "" end)
+        end
+    '
+    local outcome
+    outcome="$(printf '%s' "$resp" | jq -r '.payload.outcome // "error"')"
+    [ "$outcome" = "ok" ] || exit 2
 }
 
 case "$CMD" in
@@ -222,6 +288,32 @@ case "$CMD" in
         esac
         ARGS="$(jq -nc --arg u "$URL" '{url:$u}')"
         send_fe_command open_url "$ARGS"
+        ;;
+    repl)
+        SUB="${POS[0]:-}"
+        case "$SUB" in
+            run)
+                WS="${POS[1]:-}"; FILE="${POS[2]:-}"
+                [ -n "$WS" ] && [ -n "$FILE" ] || { echo "usage: sot-fe repl run <workspace> <path> [--timeout <s>]" >&2; exit 1; }
+                INPUT="$(jq -nc --arg p "$FILE" '{kind:"run_file", path:$p}')"
+                send_repl_execute "$INPUT" "$WS"
+                ;;
+            eval)
+                WS="${POS[1]:-}"
+                [ -n "$WS" ] || { echo "usage: sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>]" >&2; exit 1; }
+                EVAL_CODE=""
+                if [ "$READ_STDIN" = true ]; then
+                    EVAL_CODE="$(cat)"
+                elif [ -n "$CODE" ]; then
+                    EVAL_CODE="$CODE"
+                else
+                    echo "usage: sot-fe repl eval <workspace> (--code <c> | --stdin)  — code from --code or piped stdin" >&2; exit 1
+                fi
+                INPUT="$(jq -nc --arg c "$EVAL_CODE" '{kind:"eval", code:$c}')"
+                send_repl_execute "$INPUT" "$WS"
+                ;;
+            *) echo "usage: sot-fe repl run <workspace> <path> | sot-fe repl eval <workspace> (--code <c> | --stdin)" >&2; exit 1 ;;
+        esac
         ;;
     -h|--help|help) usage 0 ;;
     *) echo "ERROR: unknown subcommand '$CMD'" >&2; usage 1 ;;

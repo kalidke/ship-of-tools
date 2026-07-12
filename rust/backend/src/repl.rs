@@ -44,6 +44,47 @@ pub struct ReplFrameMsg {
     pub frame: serde_json::Value,
 }
 
+/// Inline stdout+stderr byte budget for a collected `repl.execute` run. Past
+/// this, further stdout/stderr text frames are dropped and `truncated` is set —
+/// but value/image/error/done frames are always kept. Bounds memory against a
+/// runaway `println` loop and keeps the response under the 1 MiB envelope cap.
+pub const EXEC_TEXT_CAP: usize = 256 * 1024;
+
+/// Loss-free per-run frame sink for `repl.execute`. The supervisor tees each
+/// frame for a collected eval_id in here (in addition to the best-effort
+/// broadcast bus), so a slow consumer can never `Lagged`-drop a frame the way
+/// the shared 256-slot `broadcast` would. Bounded by `EXEC_TEXT_CAP`.
+#[derive(Default)]
+pub struct ExecAccum {
+    pub frames: Vec<serde_json::Value>,
+    pub text_bytes: usize,
+    pub truncated: bool,
+}
+
+impl ExecAccum {
+    fn push(&mut self, frame: serde_json::Value) {
+        let kind = frame.get("kind").and_then(Value::as_str).unwrap_or("");
+        if kind == "stdout" || kind == "stderr" {
+            if self.text_bytes >= EXEC_TEXT_CAP {
+                self.truncated = true;
+                return;
+            }
+            let len = frame
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::len)
+                .unwrap_or(0);
+            self.text_bytes += len;
+            if self.text_bytes >= EXEC_TEXT_CAP {
+                self.truncated = true;
+            }
+        }
+        self.frames.push(frame);
+    }
+}
+
+pub type ExecCollector = Arc<std::sync::Mutex<ExecAccum>>;
+
 #[derive(Clone)]
 pub struct Repl {
     inner: Arc<ReplInner>,
@@ -66,12 +107,16 @@ struct ReplInner {
 struct Submission {
     op: String,
     payload: Value,
-    /// `Some` for request/response ops (interrupt): the supervisor completes
-    /// it with the terminal res payload. `None` for fire-and-forget evals: the
-    /// supervisor does NOT track them in `pending` — completion is keyed off
-    /// the streamed `done` frame on the broadcast bus, and the terminal res
-    /// ack is dropped.
+    /// `Some` for request/response ops (interrupt, execute): the supervisor
+    /// completes it with the terminal res payload. `None` for fire-and-forget
+    /// evals: the supervisor does NOT track them in `pending` — completion is
+    /// keyed off the streamed `done` frame on the broadcast bus, and the
+    /// terminal res ack is dropped.
     reply: Option<oneshot::Sender<Result<Value>>>,
+    /// `Some` for `repl.execute`: the supervisor tees every frame for this
+    /// submission's eval_id into the collector, loss-free, so the handler can
+    /// return the full collected output. `None` for every other op.
+    collector: Option<ExecCollector>,
 }
 
 #[derive(Serialize)]
@@ -132,12 +177,40 @@ impl Repl {
             op: op.to_string(),
             payload,
             reply: Some(reply_tx),
+            collector: None,
         })
         .await
         .map_err(|_| anyhow!("repl supervisor channel closed"))?;
         reply_rx
             .await
             .map_err(|_| anyhow!("repl supervisor dropped reply channel"))?
+    }
+
+    /// Execute op (`repl.execute`, ADR 0033): submit WITH both a reply channel
+    /// (to capture the shim's authoritative terminal `res`) AND a frame
+    /// collector (to gather the run's frames loss-free off the supervisor,
+    /// bypassing the lossy broadcast bus). Returns immediately with the reply
+    /// receiver and the shared collector; the caller awaits the res under its
+    /// own timeout, then reads the collector. Frame ordering guarantees all
+    /// frames precede the terminal res on the child's stdout, so by the time
+    /// the res arrives the collector holds the complete output.
+    pub async fn execute(
+        &self,
+        op: &str,
+        payload: Value,
+    ) -> Result<(oneshot::Receiver<Result<Value>>, ExecCollector)> {
+        let tx = self.ensure_supervisor().await?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let collector: ExecCollector = Arc::new(std::sync::Mutex::new(ExecAccum::default()));
+        tx.send(Submission {
+            op: op.to_string(),
+            payload,
+            reply: Some(reply_tx),
+            collector: Some(collector.clone()),
+        })
+        .await
+        .map_err(|_| anyhow!("repl supervisor channel closed"))?;
+        Ok((reply_rx, collector))
     }
 
     /// Fire-and-forget op: queue the submission with no reply channel and
@@ -153,6 +226,7 @@ impl Repl {
             op: op.to_string(),
             payload,
             reply: None,
+            collector: None,
         })
         .await
         .map_err(|_| anyhow!("repl supervisor channel closed"))?;
@@ -353,6 +427,11 @@ async fn supervisor_task(
     // synthetic error+done frames so the FE'S in-flight entry CLOSES — before
     // this, a dying child left evals hanging forever with no visible cause.
     let mut streaming: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // Active `repl.execute` collectors, keyed by eval_id (frames carry eval_id).
+    let mut collectors: HashMap<u64, ExecCollector> = HashMap::new();
+    // Outgoing wire id -> eval_id, so the terminal res can drop the collector
+    // even when the shim emits no `done` frame (the missing-file res path).
+    let mut collector_ids: HashMap<u64, u64> = HashMap::new();
     let mut next_id: u64 = 1;
     let mut stdout_lines = BufReader::new(stdout).lines();
 
@@ -401,21 +480,37 @@ async fn supervisor_task(
                     }
                     break;
                 }
+                let eid = sub.payload.get("eval_id").and_then(Value::as_u64);
+                // `repl.execute` submissions carry a collector: tee this
+                // eval_id's frames into it loss-free (in addition to `pending`,
+                // which captures the terminal res).
+                if let Some(collector) = sub.collector {
+                    if let Some(eid) = eid {
+                        collectors.insert(eid, collector);
+                        collector_ids.insert(id, eid);
+                    }
+                }
                 // Only request/response ops are tracked in `pending`. A
                 // fire-and-forget submission (`reply == None`) streams its
                 // frames over the broadcast bus; record its eval_id so a
                 // child death can close it out with synthetic frames.
                 if let Some(reply) = sub.reply {
                     pending.insert(id, reply);
-                } else if let Some(eid) = sub.payload.get("eval_id").and_then(Value::as_u64) {
+                } else if let Some(eid) = eid {
                     streaming.insert(eid);
                 }
             }
             line = stdout_lines.next_line() => {
                 match line {
-                    Ok(Some(line)) => {
-                        route_line(&line, &mut pending, &mut streaming, &frame_tx, &workspace_id)
-                    }
+                    Ok(Some(line)) => route_line(
+                        &line,
+                        &mut pending,
+                        &mut streaming,
+                        &mut collectors,
+                        &mut collector_ids,
+                        &frame_tx,
+                        &workspace_id,
+                    ),
                     Ok(None) => {
                         tracing::warn!("repl child stdout closed");
                         break;
@@ -471,10 +566,13 @@ async fn supervisor_task(
 /// (`pending`); for a fire-and-forget eval there's no `pending` entry, so the
 /// ack is logged and dropped — completion is keyed off the streamed `done`
 /// frame on the bus instead.
+#[allow(clippy::too_many_arguments)]
 fn route_line(
     line: &str,
     pending: &mut HashMap<u64, oneshot::Sender<Result<Value>>>,
     streaming: &mut std::collections::HashSet<u64>,
+    collectors: &mut HashMap<u64, ExecCollector>,
+    collector_ids: &mut HashMap<u64, u64>,
     frame_tx: &broadcast::Sender<ReplFrameMsg>,
     workspace_id: &Option<String>,
 ) {
@@ -503,8 +601,20 @@ fn route_line(
             .get("frame")
             .cloned()
             .unwrap_or(Value::Null);
-        if frame.get("kind").and_then(Value::as_str) == Some("done") {
+        let is_done = frame.get("kind").and_then(Value::as_str) == Some("done");
+        if is_done {
             streaming.remove(&eval_id);
+        }
+        // Tee into a `repl.execute` collector, loss-free, before the frame goes
+        // onto the best-effort broadcast bus. The `done` frame ends collection
+        // for this eval_id (the res-side cleanup covers the no-`done` path).
+        if let Some(collector) = collectors.get(&eval_id) {
+            if let Ok(mut acc) = collector.lock() {
+                acc.push(frame.clone());
+            }
+            if is_done {
+                collectors.remove(&eval_id);
+            }
         }
         let msg = ReplFrameMsg {
             eval_id,
@@ -517,7 +627,12 @@ fn route_line(
         return;
     }
 
-    // Terminal res ack.
+    // Terminal res ack. Drop any collector for this run first — this is the
+    // authoritative completion signal and is the ONLY close-out for a run that
+    // emits no `done` frame (e.g. run_file on a missing path).
+    if let Some(eval_id) = collector_ids.remove(&env.id) {
+        collectors.remove(&eval_id);
+    }
     match pending.remove(&env.id) {
         Some(reply) => {
             let _ = reply.send(Ok(env.payload));

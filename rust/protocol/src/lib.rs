@@ -27,6 +27,7 @@ pub use ops::{
     MonitorSubscribeReq, MonitorSubscribeRes, MonitorTickEvt, MonitorUnsubscribeReq, ProcSample,
     PreviewGetReq, PreviewGetRes, PtyEvt,
     PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyScrollReq, PtyWriteReq, ReplEvalReq, ReplEvalRes, ReplFrame,
+    ReplErrorOut, ReplExecuteInput, ReplExecuteReq, ReplExecuteRes, ReplValueOut,
     ReplFrameEvt,
     ReplRunFileReq, ReplRunFileRes, StackFrame, TmuxCapturePaneReq, TmuxCapturePaneRes,
     TmuxCreateSessionReq, TmuxKillSessionReq, TmuxListPanesReq, TmuxListPanesRes,
