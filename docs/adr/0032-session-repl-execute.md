@@ -1,6 +1,8 @@
 # ADR 0032: session-driven REPL execute + output collect (`repl.execute`)
 
-Status: accepted (phase 1 implemented + verified). Phase 2 (drawer visibility) pending.
+Status: accepted. Phase 1 (run + collect) implemented + verified end-to-end.
+Phase 2 (session runs visible in the user's drawer) implemented + wire-verified;
+live-window rendering pending an FE rebuild + ADR-0017 relaunch.
 
 ## Context
 
@@ -91,13 +93,17 @@ Phase 1 (this ADR) is implemented and verified end-to-end: ok / error+stacktrace
 `Main` state across executes / exit codes. Figure-spill code is in place but not
 yet exercised (the test REPL project had no plotting package).
 
+Phase 2 (implemented, this ADR): a backend-emitted `Started` control frame
+(a new `ReplFrame` variant carrying `run_id`/`origin`/`display`) rides the
+existing `repl.frame` broadcast BEFORE submit; the FE pre-registers a drawer
+entry keyed by the canonical `(workspace_id, eval_id)`, stops dropping foreign
+`eval_id`s, and renders the run with a distinct `⟨origin ▸ display⟩` prompt.
+A synthetic terminal `done` is emitted for timeout/repl_died (the shim's own
+won't arrive). `sot-fe repl … --origin <who>` labels the entry. Wire-verified;
+seeing it in the live drawer needs an FE rebuild + ADR-0017 relaunch.
+
 Deferred:
 
-- **Phase 2 — drawer visibility.** The run's frames already broadcast; making them
-  appear in the user's drawer needs the FE to stop dropping foreign `eval_id`s,
-  driven by `repl.started`/`repl.finished` control events keyed by
-  `(workspace_id, run_id)` and an `origin` label — NOT inference on the first
-  output frame. Requires an FE rebuild + ADR-0017 relaunch.
 - **Backend execution coordinator** (atomic `Idle→Running(run_id,origin)`
   pre-admission, so busy is decided before submit and user evals participate) +
   **run-id-scoped interrupt** in the shim (targeted cancel — the safe basis for a
