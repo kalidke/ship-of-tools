@@ -117,6 +117,27 @@ if [ "$OS" = Linux ] && [ "$ROLE" != be-only ]; then
         || die "the frontend binary needs glibc >= $GLIBC_FLOOR_FE (this box: $glibc). The backend (musl, --be-only) runs anywhere."
 fi
 
+# tmux is a HARD runtime dependency of the backend — the daemon hosts the LLM
+# pane in a tmux session. Only checked for roles that run sotd on THIS machine
+# (local, be-only); --backend points at a remote daemon, so a local tmux is not
+# needed. A missing tmux is fatal here (nothing surfaced it before — the first
+# real server install found tmux entirely unmentioned). tmux < 3.2 is a graceful
+# DEGRADE, not an error: the daemon version-gates `new-session -e` (older tmux
+# rejected it at arg-parse and drove a respawn storm — expectations 2026-07-11),
+# so the backend runs, but the pane's in-session SOT_* awareness is best-effort.
+if [ "$ROLE" = local ] || [ "$ROLE" = be-only ]; then
+    command -v tmux >/dev/null 2>&1 \
+        || die "tmux is required for the backend (the daemon hosts the LLM pane in a tmux session) but is not on PATH. Install it (e.g. 'sudo apt install tmux', or a user-local tmux >= 3.2 in ~/.local/bin) and re-run."
+    # Parse "tmux 3.0a" / "tmux next-3.4" -> "3.0" / "3.4". No pipefail traps
+    # here (single sed, no head/grep pipeline).
+    tmux_ver="$(tmux -V 2>/dev/null | sed -n '1s/^tmux \(next-\)\{0,1\}\([0-9][0-9]*\.[0-9][0-9]*\).*/\2/p')"
+    [ -n "$tmux_ver" ] || tmux_ver=0
+    tmux_lowest="$(printf '%s\n%s\n' "3.2" "$tmux_ver" | sort -V | sed -n 1p)"
+    if [ "$tmux_lowest" != "3.2" ]; then
+        say "NOTE: tmux $tmux_ver (< 3.2) detected. The backend runs fine, but the LLM pane's in-session Ship of Tools awareness env is best-effort only on old tmux. For full awareness put a tmux >= 3.2 earlier on the daemon's PATH (e.g. ~/.local/bin). See docs/INSTALL-AGENT.md."
+    fi
+fi
+
 # Downloader: for a public repo, unauthenticated curl works. gh (authed) is
 # preferred when present, and $GITHUB_TOKEN is honored purely to dodge the
 # unauthenticated API rate limit (60 req/h per IP).

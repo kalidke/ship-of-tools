@@ -204,6 +204,20 @@ impl TmuxClient {
         }
     }
 
+    /// Set a variable in `session`'s tmux environment (`set-environment -t`).
+    /// Best-effort and quiet: this is the tmux < 3.2 fallback for the `-e` flag
+    /// on `new-session` (which older tmux rejects). It only affects processes
+    /// spawned in the session AFTER this call — tmux copies the session env into
+    /// a process's environment at spawn time — so it can't retroactively reach a
+    /// pane's already-running shell. Failures (session not up yet, server gone)
+    /// are logged at debug and swallowed; callers treat awareness env as an aid,
+    /// never load-bearing.
+    pub fn set_session_env(&self, session: &str, key: &str, val: &str) {
+        if let Err(e) = self.run(&["set-environment", "-t", session, key, val]) {
+            tracing::debug!(session, key, error = %e, "set-environment (best-effort) — ignoring");
+        }
+    }
+
     /// Page the session's active pane up/down through tmux scrollback —
     /// the backend half of `op::PTY_SCROLL` (keyboard PgUp/PgDn in the
     /// FE's LLM pane). Two regimes:

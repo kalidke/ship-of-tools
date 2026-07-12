@@ -48,12 +48,26 @@ case "$(uname -s)" in
 esac
 command -v git curl tar   # all required; jq required if gh is absent
 command -v node npm       # OPTIONAL — math rendering in markdown previews
+command -v tmux && tmux -V # REQUIRED on any host that RUNS the backend (local / be-only)
 ```
 
 - **node/npm absent** → not a blocker: the installer skips the MathJax
   sidecar deps with a warning and math in markdown previews shows raw LaTeX.
   Tell the human; if they want math, install node and re-run (or run
   `npm ci` in `<checkout>/rust/backend/sidecars/mathjax`).
+- **tmux** → a **hard backend dependency**: the daemon hosts the LLM pane in a
+  tmux session. Any host that runs `sotd` (a `--local` or `--be-only` install)
+  needs it; a **frontend-only** `--backend <alias>` host does not (its daemon is
+  remote). **Absent → fatal** (the installer now stops with a clear message).
+  **tmux < 3.2 → graceful degrade, not an error**: `new-session -e` (used to
+  stamp the pane's `SOT_*` awareness env) is a 3.2 flag, and on older tmux (e.g.
+  3.0a on Ubuntu 20.04) it was rejected at arg-parse — which historically drove a
+  respawn storm that forked ~339k zombie tmux clients (expectations, 2026-07-11).
+  The daemon now **version-gates** the flag: on tmux < 3.2 it omits `-e` and falls
+  back to a best-effort `set-environment`, so the backend runs but the pane's
+  in-session awareness is best-effort only. For full awareness, put a
+  **tmux ≥ 3.2** earlier on the daemon's `PATH` (e.g. a user-local build in
+  `~/.local/bin`).
 - **Linux x86_64, glibc ≥ 2.35** → full install works.
 - **Linux, older glibc** → only `--be-only` (the backend is static musl);
   the frontend must run on another machine.
@@ -223,6 +237,8 @@ always shows the pane-switch keys.**
 | dirty-checkout refusal on upgrade | the human edited `repo/current` → `git -C ... stash` (or commit), re-run |
 | local port 18743 already bound | another tunnel owns it → `--port <n>` |
 | backend socket missing | old TCP-based service unit or failed daemon start → reinstall/restart the socket-based `sotd.service` |
+| `tmux is required` at install | backend host has no tmux → install it (`apt install tmux`, or a user-local tmux ≥ 3.2 in `~/.local/bin`) and re-run |
+| LLM pane never appears / `sotd.log` spams `pty EOF — respawning tmux` then `cooling down` | tmux < 3.2 on the backend (the daemon degrades gracefully now — no more storm — but check the log's `tmux capability probe` line; put tmux ≥ 3.2 earlier on the daemon's PATH for full awareness) |
 | Julia instantiate slow on first run | normal (precompilation); minutes, once |
 
 ## 6. After the install
