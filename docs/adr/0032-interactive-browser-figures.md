@@ -96,9 +96,12 @@ loopback-URL artifact rides the same rail.
 
 ### 4. Port config mirrors the siblings
 
-`SOT_WGL_PORT` (default 1241), read REPL-side. The launcher must be extended to forward it;
-an env override on both ends keeps parity with `SOT_PLUTO_PORT` / `SOT_VIDEO_PORT`
-/ `SOT_DOCS_PORT`.
+`SOT_WGL_PORT` (default 1241), read REPL-side. The launcher **forwards it** —
+added to `scripts/launch-sot.sh`, `scripts/launch-sot.ps1`, and `install.sh`'s
+generated remote launcher alongside the pluto/video/docs/pool `-L` forwards
+(both the aux-only and control-port tunnel blocks). An env override on both ends
+keeps parity with `SOT_PLUTO_PORT` / `SOT_VIDEO_PORT` / `SOT_DOCS_PORT`. A remote
+FE picks up the new forward by re-running its launcher.
 
 ## Status of the pieces
 

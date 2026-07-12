@@ -384,6 +384,7 @@ if (-not $remoteSocket) {
 $plutoPort = if ($env:SOT_PLUTO_PORT) { [int]$env:SOT_PLUTO_PORT } else { 1234 }
 $videoPort = if ($env:SOT_VIDEO_PORT) { [int]$env:SOT_VIDEO_PORT } else { 1235 }
 $docsPort  = if ($env:SOT_DOCS_PORT)  { [int]$env:SOT_DOCS_PORT }  else { 1236 }
+$wglPort   = if ($env:SOT_WGL_PORT)   { [int]$env:SOT_WGL_PORT }   else { 1241 }
 $sshCommonArgs = @(
     '-N',
     '-o', 'ExitOnForwardFailure=yes',
@@ -409,6 +410,9 @@ $sshAuxArgs += @(
     '-L', "$($docsPort+2):127.0.0.1:$($docsPort+2)",
     '-L', "$($docsPort+3):127.0.0.1:$($docsPort+3)",
     '-L', "$($docsPort+4):127.0.0.1:$($docsPort+4)",
+    # ADR 0032 — forward the WGLMakie/Bonito interactive-figure server (1241,
+    # first free port above the docs pool) so a browser-served figure opens.
+    '-L', "${wglPort}:127.0.0.1:${wglPort}",
     $backendHost
 )
 $sshArgs = @()

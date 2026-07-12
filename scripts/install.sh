@@ -390,18 +390,20 @@ port_open() {
 }
 ensure_aux_tunnel() {
     missing=()
-    for p in 1234 1235 1236 1237 1238 1239 1240; do
+    # 1234 pluto · 1235 video · 1236 docs · 1237-1240 docs pool · 1241 WGLMakie (ADR 0032)
+    for p in 1234 1235 1236 1237 1238 1239 1240 1241; do
         port_open "\$p" || missing+=("\$p")
     done
     if [ "\${#missing[@]}" -eq 0 ]; then return 0; fi
-    if [ "\${#missing[@]}" -ne 7 ]; then
+    if [ "\${#missing[@]}" -ne 8 ]; then
         echo "ERROR: only some browser aux ports are open; missing: \${missing[*]}" >&2
-        echo "       stop stale tunnels/services or free ports 1234-1240" >&2
+        echo "       stop stale tunnels/services or free ports 1234-1241" >&2
         exit 1
     fi
     ssh -fN -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
       -L 1234:127.0.0.1:1234 -L 1235:127.0.0.1:1235 -L 1236:127.0.0.1:1236 \
       -L 1237:127.0.0.1:1237 -L 1238:127.0.0.1:1238 -L 1239:127.0.0.1:1239 -L 1240:127.0.0.1:1240 \
+      -L 1241:127.0.0.1:1241 \
       "$BE_ALIAS" \
       || { echo "ERROR: could not open browser aux SSH tunnel" >&2; exit 1; }
 }
@@ -415,6 +417,7 @@ else
       -L "$PORT:\$REMOTE_SOCKET" \
       -L 1234:127.0.0.1:1234 -L 1235:127.0.0.1:1235 -L 1236:127.0.0.1:1236 \
       -L 1237:127.0.0.1:1237 -L 1238:127.0.0.1:1238 -L 1239:127.0.0.1:1239 -L 1240:127.0.0.1:1240 \
+      -L 1241:127.0.0.1:1241 \
       "$BE_ALIAS" \
       || { echo "ERROR: could not open SSH tunnel" >&2; exit 1; }
 fi
