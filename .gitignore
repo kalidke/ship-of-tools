@@ -26,6 +26,7 @@
 /examples/plugins/*/Manifest*.toml
 /julia/plugins/*/Manifest*.toml
 /docs/fixtures/DemoProject/Manifest*.toml
+/dev/wglmakie-proof/Manifest*.toml
 
 # Cross-machine bus per-machine cursors (the bus content itself is committed)
 /.claude-bus/.cursor-*

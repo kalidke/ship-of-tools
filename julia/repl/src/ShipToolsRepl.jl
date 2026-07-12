@@ -4,9 +4,91 @@ using Base64
 using JSON3
 using Pkg
 
-export serve
+export serve, browserview, BrowserView, wglshow
 
 const PROTOCOL_VERSION = 1
+
+"""
+    BrowserView(url)
+
+Marker wrapping a loopback URL for a live, browser-served artifact (an
+interactive WGLMakie/Bonito figure, a served dashboard, …). Return one as the
+last expression of an eval — or call [`browserview`](@ref) — and the REPL emits
+a `browser` frame instead of a static `value`/`image`, which the frontend hands
+to the OS browser-open (ADR 0032). `url` must be loopback-shaped
+(`http://127.0.0.1:<port>/…`) so it resolves through the launcher's `-L` tunnel
+on a remote frontend; the WGLMakie/Bonito port is `SOT_WGL_PORT` (default 1241,
+forwarded by the launcher alongside pluto/video/docs — 1237–1240 are the docs
+pool, so WGL sits at 1241).
+
+`BrowserView` deliberately carries no plotting dependency: the Bonito server
+that produces `url` lives in the *user's* project env (whichever WGLMakie they
+`using`), so `ShipToolsRepl` stays lightweight and backend-agnostic.
+"""
+struct BrowserView
+    url::String
+end
+
+"""
+    browserview(url) -> BrowserView
+
+Convenience constructor. `return browserview(server_url)` at the end of an eval
+to open `url` in the frontend's browser.
+"""
+browserview(url::AbstractString) = BrowserView(String(url))
+
+# Tracks the Bonito server started by `wglshow` so a repeat call frees the port
+# instead of hitting EADDRINUSE. `Any` — ShipToolsRepl never loads Bonito.
+const WGL_SERVER = Ref{Any}(nothing)
+
+"""
+    wglshow(fig; port = SOT_WGL_PORT or 1241) -> BrowserView
+
+Serve an interactive WGLMakie figure over Bonito on a loopback port and return a
+[`BrowserView`](@ref), so the frontend auto-opens it in the browser (ADR 0032).
+Call it as the last expression of an eval:
+
+    using WGLMakie
+    fig = surface(-10:0.4:10, -10:0.4:10, (x, y) -> sin(x) + cos(y);
+                  axis = (; type = Axis3))
+    wglshow(fig)
+
+`ShipToolsRepl` carries no plotting dependency: WGLMakie/Bonito are resolved at
+call time from the *user's* loaded env (`using WGLMakie` first — Bonito comes in
+as its dependency). The server binds `127.0.0.1:port` with a loopback-shaped
+`proxy_url`, which the launcher's `-L <port>` tunnel forwards to a remote
+frontend. It lives as long as the REPL; a repeat `wglshow` replaces it.
+
+Pinned against WGLMakie 0.13 / Bonito 5.1 (validated live, ADR 0032).
+"""
+function wglshow(fig; port::Integer = parse(Int, get(ENV, "SOT_WGL_PORT", "1241")))
+    isdefined(Main, :WGLMakie) ||
+        error("wglshow: no WGLMakie loaded — run `using WGLMakie` in this REPL first")
+    WGL = getfield(Main, :WGLMakie)
+    # Bonito arrives as WGLMakie's dependency; require it by UUID (already loaded,
+    # so this just returns the module) rather than assume the user `using`d it.
+    Bonito = Base.require(Base.PkgId(
+        Base.UUID("824d6782-a2ef-11e9-3a09-e5662e0c26f8"), "Bonito"))
+    host = "127.0.0.1"
+    external = "http://$host:$port"
+    # invokelatest throughout: these methods were defined by the user's `using`
+    # after wglshow's world age (same reason value_frames_for uses it).
+    Base.invokelatest(WGL.activate!)
+    Base.invokelatest(Bonito.configure_server!;
+        listen_url = host, listen_port = port, proxy_url = external)
+    prev = WGL_SERVER[]
+    if prev !== nothing
+        try
+            Base.invokelatest(close, prev)
+        catch
+        end
+    end
+    app = Base.invokelatest(Bonito.App, fig)
+    server = Base.invokelatest(Bonito.Server, app, host, port; proxy_url = external)
+    WGL_SERVER[] = server
+    url = Base.invokelatest(Bonito.online_url, server, "/")
+    return BrowserView(url)
+end
 
 # Serializes envelope writes to `io_out`. With streaming (ADR 0009 phase-2)
 # the eval runs on its own task and emits frames concurrently with the
@@ -397,6 +479,14 @@ frames. Falls through to `text/plain`.
 """
 function value_frames_for(result)
     out = Dict[]
+    # ADR 0032: a BrowserView is a live browser-served artifact, not a static
+    # value — emit a `browser` frame the frontend opens in the OS browser.
+    # Checked before the image/text MIME probes so it wins even though a served
+    # figure may also be `showable` as an image.
+    if result isa BrowserView
+        push!(out, Dict(:kind => "browser", :url => result.url))
+        return out
+    end
     img_mimes = (MIME"image/png"(), MIME"image/svg+xml"())
     # invokelatest because the eval may have defined the showable/show methods
     # itself (e.g. `using CairoMakie` adds Figure showables mid-eval).

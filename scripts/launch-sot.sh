@@ -27,7 +27,10 @@ REMOTE_SOCKET="${SOT_REMOTE_SOCKET:-}"
 PLUTO_PORT="${SOT_PLUTO_PORT:-1234}"
 VIDEO_PORT="${SOT_VIDEO_PORT:-1235}"
 DOCS_PORT="${SOT_DOCS_PORT:-1236}"
-AUX_PORTS=("$PLUTO_PORT" "$VIDEO_PORT" "$DOCS_PORT" "$((DOCS_PORT+1))" "$((DOCS_PORT+2))" "$((DOCS_PORT+3))" "$((DOCS_PORT+4))")
+# WGLMakie/Bonito interactive figures (ADR 0032). 1237-1240 are the docs pool
+# (site_serve), so WGL sits at 1241 — the first free port above the daemon range.
+WGL_PORT="${SOT_WGL_PORT:-1241}"
+AUX_PORTS=("$PLUTO_PORT" "$VIDEO_PORT" "$DOCS_PORT" "$((DOCS_PORT+1))" "$((DOCS_PORT+2))" "$((DOCS_PORT+3))" "$((DOCS_PORT+4))" "$WGL_PORT")
 
 port_open() {
     if (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; then exec 3>&-; return 0; fi
@@ -56,7 +59,8 @@ ensure_aux_tunnel() {
         -L "$((DOCS_PORT+1)):127.0.0.1:$((DOCS_PORT+1))" \
         -L "$((DOCS_PORT+2)):127.0.0.1:$((DOCS_PORT+2))" \
         -L "$((DOCS_PORT+3)):127.0.0.1:$((DOCS_PORT+3))" \
-        -L "$((DOCS_PORT+4)):127.0.0.1:$((DOCS_PORT+4))" "$HOST" \
+        -L "$((DOCS_PORT+4)):127.0.0.1:$((DOCS_PORT+4))" \
+        -L "$WGL_PORT:127.0.0.1:$WGL_PORT" "$HOST" \
         || { echo "ERROR: could not open browser aux SSH tunnel to $HOST" >&2; exit 1; }
 }
 
@@ -77,7 +81,8 @@ else
         -L "$PORT:$REMOTE_SOCKET" -L "$PLUTO_PORT:127.0.0.1:$PLUTO_PORT" -L "$VIDEO_PORT:127.0.0.1:$VIDEO_PORT" \
         -L "$DOCS_PORT:127.0.0.1:$DOCS_PORT" \
         -L "$((DOCS_PORT+1)):127.0.0.1:$((DOCS_PORT+1))" -L "$((DOCS_PORT+2)):127.0.0.1:$((DOCS_PORT+2))" \
-        -L "$((DOCS_PORT+3)):127.0.0.1:$((DOCS_PORT+3))" -L "$((DOCS_PORT+4)):127.0.0.1:$((DOCS_PORT+4))" "$HOST" \
+        -L "$((DOCS_PORT+3)):127.0.0.1:$((DOCS_PORT+3))" -L "$((DOCS_PORT+4)):127.0.0.1:$((DOCS_PORT+4))" \
+        -L "$WGL_PORT:127.0.0.1:$WGL_PORT" "$HOST" \
         || { echo "ERROR: could not open SSH tunnel to $HOST (stale tunnel holding ports? try: pkill -f 'ssh -fN.*$PORT')" >&2; exit 1; }
 fi
 ensure_aux_tunnel

@@ -658,6 +658,16 @@ pub enum ReplFrame {
         data_base64: String,
         bytes: u64,
     },
+    /// The eval produced a live, browser-served artifact (an interactive
+    /// WGLMakie/Bonito figure, a served dashboard, …) rather than a static
+    /// value. `url` is loopback-shaped (`http://127.0.0.1:<port>/…`) so it
+    /// resolves directly on a local FE and through the launcher's existing
+    /// `-L <port>:127.0.0.1:<port>` tunnel on a remote FE — the same
+    /// convention as `pluto.open` / `video.open` / `docs.open`. The frontend
+    /// hands it to the OS browser-open; no bytes cross the protocol. ADR 0032.
+    Browser {
+        url: String,
+    },
     Error {
         message: String,
         stacktrace: Vec<StackFrame>,

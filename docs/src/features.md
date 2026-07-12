@@ -82,6 +82,10 @@ need depth over breadth.
   per-block dispatch are planned, not yet built.
 - **Plots render inline** in the window (CairoMakie) — not dumped as text or
   squeezed through a terminal graphics hack. See [The REPL](guide/repl.md).
+- **Interactive figures pop out to your browser** — `wglshow(fig)` serves a live
+  WGLMakie figure over an auto-forwarded port and opens it in your real browser,
+  so you can pan, zoom, and rotate 3-D; the interaction WebSocket rides the same
+  forward, local or remote. CairoMakie stays the tool for static inline plots.
 - Open and interact with **Pluto notebooks**; render **Quarto** and **HTML**
   (popped out to your browser when that is the right surface).
 - **Extensible previews, no Rust required.** Teach it a new file type in a few
