@@ -122,7 +122,9 @@ println()
 println("If pan/zoom/rotate work over the tunnel, ADR 0032's transport is proven.")
 println("The server keeps running in this REPL; re-hit r to restart it.")
 
-# Return the URL as the eval's value (no blocking loop). Once wglshow lands and
-# the FE is on the branch this becomes `browserview(url)` for auto-open; today
-# the FE is on main, so we just print + return the string for a manual open.
-url
+# Return a BrowserView so the REPL emits a `browser` frame and the FE (on this
+# branch, which has the frame handling) AUTO-OPENS the URL — no manual browser +
+# typing. `ShipToolsRepl` is `using`'d by the REPL child, so browserview is in
+# scope; fall back to the plain URL string if run headlessly outside the SoT
+# REPL (e.g. `julia run.jl`), where no frame channel exists.
+isdefined(Main, :ShipToolsRepl) ? Main.ShipToolsRepl.browserview(url) : url
