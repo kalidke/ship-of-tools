@@ -28,9 +28,24 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$SHORT" ] || { echo "comm-worktree-clean.sh: missing <shortname> (see --help)" >&2; exit 2; }
 
-git rev-parse --show-toplevel >/dev/null 2>&1 || { echo "comm-worktree-clean.sh: not in a git repo" >&2; exit 1; }
+TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "comm-worktree-clean.sh: not in a git repo" >&2; exit 1; }
 BASE="${REPO%%-wt-*}"
 HANDLE="${BASE}-wt-${SHORT}"
+
+# The sessions-list workspace LABEL may deliberately differ from the comm HANDLE
+# (display-prefix decoupling — comm-worktree-new.sh). Derive it the SAME way here
+# so teardown can target the workspace by label as a fallback. Default prefix is
+# the repo basename; a committed .sot/worktree.toml `display_prefix` (e.g. ".SoT")
+# pins it durably. comm-despawn.sh now recovers the slug from the agent's registry
+# row too, so the primary despawn-by-HANDLE already works; this LABEL is the
+# belt-and-suspenders path for when the registry row is already gone.
+DISPLAY_PREFIX="$BASE"
+if [ -f "$TOP/.sot/worktree.toml" ]; then
+    _rl="$(grep -E '^[[:space:]]*display_prefix[[:space:]]*=' "$TOP/.sot/worktree.toml" \
+        | head -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//; s/[[:space:]]*$//')"
+    [ -n "$_rl" ] && DISPLAY_PREFIX="$_rl"
+fi
+LABEL="${DISPLAY_PREFIX}-wt-${SHORT}"
 
 # Locate the worktree by its dir basename (robust to where it lives) via the
 # porcelain list; capture its branch too.
@@ -74,6 +89,16 @@ if [ -n "$BRANCH" ]; then
     if [ "$FORCE" = true ]; then git branch -D "$BRANCH" 2>&1 || true; else git branch -d "$BRANCH" 2>&1 || true; fi
 fi
 if [ "$KEEP_SESSION" != true ]; then
-    "$SCRIPT_DIR/comm-despawn.sh" "$HANDLE" 2>&1 | tail -2 || echo "  (despawn @$HANDLE: not running / already gone)"
+    # Primary: despawn by HANDLE — deregisters the comm agent AND (via
+    # comm-despawn's registry-slug recovery) destroys the workspace even when the
+    # label/slug differs from the handle.
+    "$SCRIPT_DIR/comm-despawn.sh" "$HANDLE" 2>&1 | tail -3 || echo "  (despawn @$HANDLE: not running / already gone)"
+    # Belt-and-suspenders: if the LABEL differs from the HANDLE, also target it
+    # directly, covering the edge where the agent's registry row was already gone
+    # so the handle pass couldn't recover the slug. Idempotent — a no-op ("Nothing
+    # to destroy") if the handle pass already removed it.
+    if [ "$LABEL" != "$HANDLE" ]; then
+        "$SCRIPT_DIR/comm-despawn.sh" "$LABEL" 2>&1 | tail -2 || true
+    fi
 fi
 echo "cleaned: worktree removed${BRANCH:+, branch $BRANCH deleted}$([ "$KEEP_SESSION" = true ] && echo "" || echo ", session @$HANDLE despawned")."
