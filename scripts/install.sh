@@ -195,7 +195,11 @@ if [ -d "$CHECKOUT/.git" ]; then
         die "the checkout at $CHECKOUT has local changes — commit/stash/revert, then re-run (updates refuse to move a dirty tree)"
     fi
     say "updating checkout to $VERSION"
-    git -C "$CHECKOUT" fetch --tags --filter=blob:none origin || die "fetch failed"
+    # --force on the tag fetch: a release tag force-moved upstream (e.g. the
+    # public-flip history rewrite) otherwise makes the whole fetch abort with
+    # "would clobber existing tag", blocking every upgrade re-run (issue #4).
+    # The checkout is READ-ONLY BY CONVENTION, so force-updating tags is safe.
+    git -C "$CHECKOUT" fetch --tags --force --filter=blob:none origin || die "fetch failed"
     git -C "$CHECKOUT" checkout -q "$VERSION" || die "checkout $VERSION failed"
 else
     say "cloning repo at $VERSION (blobless partial clone)"
