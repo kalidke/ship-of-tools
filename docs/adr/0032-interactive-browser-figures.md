@@ -5,10 +5,12 @@
 
 Landed on the branch: the `browser` REPL frame kind + `BrowserView`/`browserview`
 in `ShipToolsRepl` + FE browser-open on that frame (Rust builds, 190 FE tests +
-36 REPL tests green). Pending: the WGLMakie/Bonito serving convenience
-(`wglshow`) and end-to-end validation of interactivity over the SSH tunnel —
-gated on a real WGLMakie env (`dev/wglmakie-proof.jl`), which no kitt depot has
-materialized yet.
+36 REPL tests green). The WGLMakie env is now materialized (`dev/wglmakie-proof/`)
+and the Bonito 5.1.0 API + HTTP serving are headless-validated (see Status).
+Pending: (1) the port-forward correction — WGLMakie needs **1241**, which the
+launcher must be extended to forward (1237–1240 turned out to be the docs pool,
+not spare — see Context correction); (2) in-browser interactivity over the SSH
+forward; (3) folding the validated calls into a `wglshow` convenience.
 
 ## Context
 
@@ -32,9 +34,19 @@ URL to the FE's OS browser — three services do exactly this:
 | Docs   | 1236 | `http://127.0.0.1:1236/<rel>`      | 0024 |
 
 The launcher forwards **1234–1240** over the SSH tunnel
-(`install.sh`/`launch-sot.sh`: `-L <p>:127.0.0.1:<p>`). **1237–1240 are already
-forwarded and unassigned** — provisioned as spare "future browser service" ports.
-WGLMakie is that future service, so the port-forward is already solved.
+(`install.sh`/`launch-sot.sh`: `-L <p>:127.0.0.1:<p>`).
+
+**Correction (2026-07-12): 1237–1240 are NOT spare.** An earlier draft of this
+ADR claimed they were free "future browser service" ports and that the
+port-forward was already solved. They are in fact the **ADR 0029 docs pool** —
+`site_serve::pool_ports() = 1237..=1240` (`POOL_SIZE=4`), pre-bound by the
+daemon for per-connection root-relative site serving (confirmed live: `sotd`
+holds 1235–1240). So **every forwarded port 1234–1240 is taken**, and WGLMakie
+needs a **new** port: **1241** (first free above the daemon range). That means
+the port-forward is *not* free — the launcher must be extended to forward 1241
+(`-L 1241:127.0.0.1:1241`, added to `AUX_PORTS`), and a remote FE must
+re-establish its tunnel to pick it up. This is the one real infra cost the
+first draft missed.
 
 ## Decision
 
@@ -45,13 +57,12 @@ Pluto runs as a **backend-supervised sidecar** (`backend/src/pluto.rs` →
 scene from the process that constructed the figure, and the user's figures are
 built in the **REPL** process. A separate sidecar can't serve them. So the Bonito
 server is embedded in the REPL, bound to `127.0.0.1:$SOT_WGL_PORT` (default
-**1237**) with a loopback-shaped `proxy_url` so every URL it emits resolves
-through the existing tunnel.
+**1241**) with a loopback-shaped `proxy_url` so every URL it emits resolves
+through the tunnel (once the launcher forwards 1241).
 
 Interactivity survives the tunnel: Bonito serves HTTP **and** the WebSocket on the
 one port (WS upgrade on the same connection), and SSH `-L` forwards the whole TCP
-stream including the upgrade. Local (kitt-native) FE reaches `127.0.0.1:1237`
-directly; remote FE via `-L 1237:127.0.0.1:1237`. Same URL, both paths.
+stream including the upgrade. Local (kitt-native) FE reaches `127.0.0.1:1241` directly; remote FE via `-L 1241:127.0.0.1:1241` (once the launcher forwards it). Same URL, both paths.
 
 ### 2. WGLMakie is never a dependency of `ShipToolsRepl`
 
@@ -85,7 +96,7 @@ loopback-URL artifact rides the same rail.
 
 ### 4. Port config mirrors the siblings
 
-`SOT_WGL_PORT` (default 1237), read REPL-side. The launcher already forwards it;
+`SOT_WGL_PORT` (default 1241), read REPL-side. The launcher must be extended to forward it;
 an env override on both ends keeps parity with `SOT_PLUTO_PORT` / `SOT_VIDEO_PORT`
 / `SOT_DOCS_PORT`.
 
@@ -96,20 +107,31 @@ an env override on both ends keeps parity with `SOT_PLUTO_PORT` / `SOT_VIDEO_POR
 + status (+ defensive render arm). Compiles; FE 190 + protocol 4 + REPL 36 tests
 green.
 
-**Pending proof (`dev/wglmakie-proof.jl`):** the exact current Bonito API for
-binding a fixed loopback port with a matching external/proxy URL and obtaining a
-figure's URL. WGLMakie/Bonito are **not materialized in kitt's default depot**;
-several projects declare them (SMLMVis, SMLMView, papers-vortex-sr) but
-instantiating one is a heavy download+precompile — a maintainer-triggered step,
-not something a session should kick off. The proof validates two unknowns before
-`wglshow` is folded into `ShipToolsRepl`: (a) that an interactive figure is fully
-usable in the FE browser through the `-L 1237` tunnel (WS included), and (b) the
-precise Bonito calls.
+**Proof env + validation (2026-07-12).** WGLMakie/Bonito are now materialized in
+a dedicated env `dev/wglmakie-proof/` (**WGLMakie 0.13.13, Bonito 5.1.0, Makie
+0.24.13, julia 1.12.5**); `dev/wglmakie-proof/run.jl` is the runnable proof (hit
+`r`). The **Bonito 5.1.0 API is pinned** (headless-validated on kitt):
+
+```julia
+Bonito.configure_server!(; listen_url="127.0.0.1", listen_port=1241,
+                           proxy_url="http://127.0.0.1:1241")   # NOT external_url
+server = Bonito.Server(Bonito.App(fig), "127.0.0.1", 1241; proxy_url="http://127.0.0.1:1241")
+url    = Bonito.online_url(server, "/")                          # http://127.0.0.1:1241/
+```
+
+Headless proof on kitt loopback: the server **binds 1241 and serves HTTP 200** — a
+3.4 KB bootstrap page containing `Bonito` + `WGLMakie` + the ES `module` import
+(the WebSocket is opened client-side by that JS from the page origin). So the API
+and the HTTP layer are proven. **The one remaining unknown** is in-browser
+interactivity (render + WS) *through the SSH forward* — which needs a real FE
+browser and a `-L 1241` tunnel that does not exist yet. Once confirmed, `wglshow`
+folds the three calls above into `ShipToolsRepl` (resolving `Main.Bonito`
+dynamically) and returns `browserview(url)`.
 
 ## Consequences / known limits
 
 - **`wglshow` deferred** until the proof pins the Bonito API. Until then, the
-  primitive is usable by hand: serve via Bonito on 1237, then
+  primitive is usable by hand: serve via Bonito on 1241, then
   `return browserview(url)`.
 - **Broadcast open**: `repl.frame` evts fan out to *all* attached FEs, so a
   `browser` frame currently opens the browser on every FE. Acceptable for the
@@ -119,4 +141,4 @@ precise Bonito calls.
   (the user returned a `BrowserView`), so it does not violate the no-yank
   show-image doctrine — it is the requested show, on the user's own machine.
 - **Lifecycle**: the Bonito server lives as long as the REPL process; an `r`
-  restart (project bounce) drops it and the next figure re-binds 1237.
+  restart (project bounce) drops it and the next figure re-binds 1241.
