@@ -23,7 +23,7 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
@@ -46,13 +46,6 @@ pub struct Pty {
     /// writer here and use it for every `write()`. Swapped in place
     /// by the reader thread on auto-respawn.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    /// Held so the child stays alive — drops when the Pty drops, or
-    /// when the reader thread swaps in a respawned tmux child (the
-    /// old box's drop reaps the dead one). The mutex isn't read
-    /// by anyone else but keeping it Arc<Mutex<>> matches the other
-    /// two slots, so the swap path is uniform.
-    #[allow(dead_code)]
-    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     /// Tmux session name this pty is attached to. Defaults to
     /// `sot-llm`; Sessions mode (ADR 0013) passes a per-backend
     /// session name to re-target. Shared with the reader thread so its
@@ -144,7 +137,10 @@ impl Pty {
             spawn_tmux_pair(cols, rows, &target_name, cwd, slug)?;
         let master = Arc::new(Mutex::new(master));
         let writer = Arc::new(Mutex::new(writer));
-        let child = Arc::new(Mutex::new(child));
+        // The child is NOT shared: the reader thread is its sole owner (spawn,
+        // exit-observation, reap, respawn all happen there). Sharing it behind
+        // Arc<Mutex> only ever produced the zombie leak — the old swap dropped
+        // the Box without wait()ing it. Moved in below.
         let target = Arc::new(Mutex::new(target_name));
         let size = Arc::new(Mutex::new((cols.max(1), rows.max(1))));
         let watch = Arc::new(Mutex::new(ResizeWatch::default()));
@@ -153,7 +149,6 @@ impl Pty {
         let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let master_for_reader = Arc::clone(&master);
         let writer_for_reader = Arc::clone(&writer);
-        let child_for_reader = Arc::clone(&child);
         let target_for_reader = Arc::clone(&target);
         let size_for_reader = Arc::clone(&size);
         let stopping_for_reader = Arc::clone(&stopping);
@@ -176,9 +171,9 @@ impl Pty {
             run_reader_loop(
                 reader,
                 tx,
+                child,
                 master_for_reader,
                 writer_for_reader,
-                child_for_reader,
                 target_for_reader,
                 size_for_reader,
                 stopping_for_reader,
@@ -190,7 +185,6 @@ impl Pty {
         Ok(Self {
             master,
             writer,
-            child,
             target,
             size,
             watch,
@@ -434,34 +428,47 @@ fn spawn_tmux_pair(
         cmd.arg("-c");
         cmd.arg(dir.as_os_str());
     }
-    // Ship of Tools awareness env, set via `-e` so it lands in the NEW session's
-    // environment. A child-process env var (cmd.env, below for TERM) does NOT
-    // propagate to a session created under an already-running tmux server —
-    // tmux derives the new session's env from the server and copies only the
-    // `update-environment` allowlist from the connecting client, so an
-    // arbitrary var is dropped. `-e` sets it on the session explicitly.
-    // Honoured on create; `-A` ignores it when attaching (same as `-c`), so it
-    // lands on freshly created workspace sessions. A session in the pane reads
-    // these to detect it is inside Ship of Tools, which workspace it is in, and to
-    // drive the FE (open nav / preview).
-    cmd.arg("-e");
-    cmd.arg("SOT_SESSION=1");
-    if let Some(slug) = slug {
-        cmd.arg("-e");
-        cmd.arg(format!("SOT_WORKSPACE={slug}"));
-    }
-    if let Some(dir) = cwd {
-        cmd.arg("-e");
-        cmd.arg(format!("SOT_WORKSPACE_ROOT={}", dir.to_string_lossy()));
-    }
+    // Ship of Tools awareness env. tmux's `-e VAR=val` on `new-session` sets the
+    // var on the NEW session — a plain child-process env var (cmd.env, below for
+    // TERM) does NOT propagate: tmux derives a new session's env from the server
+    // plus the connecting client's `update-environment` allowlist, dropping
+    // arbitrary vars. `-e` is honoured on create and ignored by `-A` on attach
+    // (same as `-c`). A session in the pane reads these to detect it is inside
+    // Ship of Tools, which workspace it is in, and to drive the FE.
+    //
+    // BUT `-e` on `new-session` is a tmux >= 3.2 flag. On 3.0a (Ubuntu 20.04
+    // userland — exactly the old lab backends this app targets) the client
+    // rejects it at arg-parse and exits in ~4ms; pre-fix that drove an
+    // unthrottled reader respawn loop (~150/s) and a 339k-zombie fork bomb
+    // (expectations 2026-07-11 report). So probe the tmux version ONCE, gate `-e`
+    // on it, and fail CLOSED — an unknown/absent/unparseable version omits `-e`
+    // rather than risk the storm.
+    let supports_e = tmux_supports_dash_e();
     // Clone-based install (ADR 0030 addendum): point the pane's agent at the
-    // product's own checkout — the repo IS the manual, and docs/USING.md is
-    // its entry point for a help+extend persona. Resolved through the same
-    // chain as every other resource, so dev checkouts get the dev tree and
-    // installs get $PREFIX/repo/current. Only exported when it exists.
-    let manual = crate::paths::resource_dir("docs");
-    if manual.exists() {
-        if let Some(root) = manual.parent() {
+    // product's own checkout — the repo IS the manual, and docs/USING.md is its
+    // entry point for a help+extend persona. Resolved through the same chain as
+    // every other resource, so dev checkouts get the dev tree and installs get
+    // $PREFIX/repo/current. Only exported when it exists.
+    let manual_root = {
+        let manual = crate::paths::resource_dir("docs");
+        if manual.exists() {
+            manual.parent().map(|p| p.to_path_buf())
+        } else {
+            None
+        }
+    };
+    if supports_e {
+        cmd.arg("-e");
+        cmd.arg("SOT_SESSION=1");
+        if let Some(slug) = slug {
+            cmd.arg("-e");
+            cmd.arg(format!("SOT_WORKSPACE={slug}"));
+        }
+        if let Some(dir) = cwd {
+            cmd.arg("-e");
+            cmd.arg(format!("SOT_WORKSPACE_ROOT={}", dir.to_string_lossy()));
+        }
+        if let Some(root) = &manual_root {
             cmd.arg("-e");
             cmd.arg(format!("SOT_MANUAL={}", root.to_string_lossy()));
         }
@@ -484,6 +491,19 @@ fn spawn_tmux_pair(
     // so the pty close notifies the child cleanly when we drop master.
     drop(pair.slave);
 
+    if !supports_e {
+        // tmux < 3.2: `-e` was omitted above to dodge the arg-parse storm.
+        // Recover the awareness vars best-effort via `set-environment` on a short
+        // detached thread (the session needs a beat to come up). NOTE this only
+        // reaches FUTURE processes in the session — tmux's session environment
+        // is copied into a process's env at spawn time, so the pane's ALREADY
+        // running initial shell won't retroactively see them. On old tmux,
+        // home-base awareness is therefore a documented best-effort degrade, not
+        // a guarantee; every SOT_* consumer has a fallback (sot-nav.sh derives
+        // the slug from the `sot-be-<slug>` session name). See docs/INSTALL-AGENT.md.
+        best_effort_session_env(target, slug, cwd, manual_root.as_deref());
+    }
+
     let master: Box<dyn MasterPty + Send> = pair.master;
     let reader = master
         .try_clone_reader()
@@ -493,6 +513,157 @@ fn spawn_tmux_pair(
         .map_err(|e| anyhow!("take pty writer: {e}"))?;
     Ok(TmuxPair { master, writer, child, reader })
 }
+
+/// Does this tmux understand `new-session -e`? The flag arrived in tmux 3.2;
+/// older tmux (e.g. 3.0a on Ubuntu 20.04) rejects it at arg-parse and the client
+/// dies instantly. Probed ONCE and cached — the answer can't change under a
+/// running daemon. Fail-closed: any trouble (absent binary, timeout, a version
+/// string we can't parse) returns `false`, so we omit `-e` rather than risk the
+/// respawn storm on a tmux we didn't positively confirm supports it.
+fn tmux_supports_dash_e() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        match tmux_version() {
+            Some((maj, min)) => {
+                let ok = (maj, min) >= (3, 2);
+                tracing::info!(
+                    tmux_major = maj,
+                    tmux_minor = min,
+                    dash_e = ok,
+                    "tmux capability probe: new-session -e {}",
+                    if ok { "supported" } else { "UNSUPPORTED (tmux < 3.2) — degrading: omitting -e, awareness env best-effort via set-environment" }
+                );
+                ok
+            }
+            None => {
+                tracing::warn!(
+                    "tmux capability probe: could not determine tmux version (absent / timed out / unparseable) — failing closed, omitting new-session -e. If tmux is missing the backend cannot host the LLM pane; see docs/INSTALL-AGENT.md"
+                );
+                false
+            }
+        }
+    })
+}
+
+/// `(major, minor)` from `tmux -V`, or `None` on any failure. Runs the probe on
+/// a throwaway thread with a 3s deadline so a wedged `tmux` binary can't stall
+/// the caller (the reader thread / a pty.open). `tmux -V` doesn't touch the
+/// server, so it's normally instant.
+fn tmux_version() -> Option<(u32, u32)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("tmux-version-probe".into())
+        .spawn(move || {
+            let out = std::process::Command::new("tmux").arg("-V").output();
+            let _ = tx.send(out);
+        })
+        .ok()?;
+    let out = rx.recv_timeout(Duration::from_secs(3)).ok()?.ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_tmux_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Parse a `tmux -V` string into `(major, minor)`. Tolerates the real-world
+/// shapes: `tmux 3.2`, `tmux 3.0a`, `tmux 3.3a`, `tmux next-3.4`, `tmux 2.9a`.
+/// Letter suffixes and a `next-` prefix are stripped; a missing minor reads 0.
+fn parse_tmux_version(s: &str) -> Option<(u32, u32)> {
+    let v = s.trim().strip_prefix("tmux ")?.trim();
+    let v = v.strip_prefix("next-").unwrap_or(v);
+    let leading_num = |seg: &str| -> Option<u32> {
+        let digits: String = seg.chars().take_while(|c| c.is_ascii_digit()).collect();
+        digits.parse().ok()
+    };
+    let mut parts = v.split('.');
+    let major = leading_num(parts.next()?)?;
+    let minor = parts.next().and_then(leading_num).unwrap_or(0);
+    Some((major, minor))
+}
+
+/// Best-effort injection of the `SOT_*` awareness vars into a tmux session via
+/// `set-environment`, used only on tmux < 3.2 where `-e` on `new-session` isn't
+/// available. Runs detached with a small delay (the session created by the
+/// `new-session` we just spawned needs a beat to exist), and is quiet on
+/// failure — it is a best-effort awareness aid for FUTURE processes in the
+/// session, never load-bearing (see the note at the call site).
+fn best_effort_session_env(
+    target: &str,
+    slug: Option<&str>,
+    cwd: Option<&Path>,
+    manual_root: Option<&Path>,
+) {
+    let target = target.to_string();
+    let slug = slug.map(|s| s.to_string());
+    let cwd = cwd.map(Path::to_path_buf);
+    let manual_root = manual_root.map(Path::to_path_buf);
+    let _ = std::thread::Builder::new()
+        .name("sot-session-env".into())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            let client = crate::tmux::TmuxClient::new();
+            client.set_session_env(&target, "SOT_SESSION", "1");
+            if let Some(s) = &slug {
+                client.set_session_env(&target, "SOT_WORKSPACE", s);
+            }
+            if let Some(d) = &cwd {
+                client.set_session_env(&target, "SOT_WORKSPACE_ROOT", &d.to_string_lossy());
+            }
+            if let Some(m) = &manual_root {
+                client.set_session_env(&target, "SOT_MANUAL", &m.to_string_lossy());
+            }
+        });
+}
+
+/// Reap a tmux child so it never lingers as a zombie. EOF on the pty almost
+/// always means the client already exited, so a non-blocking `try_wait` reaps it
+/// immediately; if it is somehow still alive we `kill` and then `wait` (bounded
+/// in practice — a killed tmux client exits promptly). Either way we never do an
+/// unbounded blocking `wait` on a live child from the reader loop.
+fn reap_child(child: &mut Box<dyn portable_pty::Child + Send + Sync>) {
+    match child.try_wait() {
+        Ok(Some(_status)) => {}
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        Err(_) => {
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Backoff delay for the Nth consecutive short-lived pty failure: 100ms, 250ms,
+/// 500ms, 1s, then 2s. Bounds the respawn rate so an instantly-dying client
+/// (the tmux < 3.2 case) can't loop ~150×/s.
+fn respawn_backoff(consecutive: u32) -> Duration {
+    match consecutive {
+        0 | 1 => Duration::from_millis(100),
+        2 => Duration::from_millis(250),
+        3 => Duration::from_millis(500),
+        4 => Duration::from_secs(1),
+        _ => Duration::from_secs(2),
+    }
+}
+
+/// A pty child that dies within this window of being spawned is treated as a
+/// "short-lived failure" and counted against the breaker; one that lived longer
+/// and then died (normal tmux-server death) resets the counter and respawns
+/// immediately.
+const PTY_HEALTHY_THRESHOLD: Duration = Duration::from_secs(2);
+
+/// After this many consecutive short-lived failures the reader stops the tight
+/// respawn loop and enters a longer cooldown before a single controlled retry,
+/// rather than either looping hot or giving up forever (a later tmux upgrade
+/// should self-heal).
+const PTY_GIVE_UP_CAP: u32 = 5;
+
+/// Cooldown after the give-up cap is reached, before one more controlled retry.
+const PTY_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// Cap on the recent-pty-output ring we keep so the give-up log can show WHY the
+/// client kept dying (on tmux < 3.2 the usage error rides the pty stream).
+const PTY_RECENT_CAP: usize = 1024;
 
 /// Does a tmux session with exactly this name exist right now? The `=`
 /// prefix forces exact-name match (a bare `-t` prefix-matches, so
@@ -687,131 +858,216 @@ fn pane_is_claude(cmd: Option<&str>) -> bool {
     matches!(cmd, Some("claude") | Some("node") | Some("codex"))
 }
 
-/// Reader-thread loop. Drains the master reader into the byte channel.
-/// On `Ok(0)` (child exit / tmux server gone) it spawns a fresh tmux
-/// pair sized to the latest cached dims, swaps it into the shared
-/// master/writer/child slots, takes the new reader, and keeps going.
-/// If the respawn itself fails we log + exit the loop — the next
-/// `pty.write` from the server task will then fail with "channel
-/// closed" and surface the breakage to the frontend.
+/// Sleep up to `dur`, but wake early (returning `true`) if `stopping` gets set —
+/// so a deliberate teardown during a backoff/cooldown doesn't wait out the full
+/// delay before the reader exits.
+fn sleep_unless_stopping(stopping: &AtomicBool, dur: Duration) -> bool {
+    let start = Instant::now();
+    let step = Duration::from_millis(50).min(dur);
+    while start.elapsed() < dur {
+        if stopping.load(Ordering::SeqCst) {
+            return true;
+        }
+        std::thread::sleep(step);
+    }
+    stopping.load(Ordering::SeqCst)
+}
+
+/// Append pty output to the bounded recent-bytes ring used for the give-up log.
+fn append_recent(recent: &mut Vec<u8>, bytes: &[u8]) {
+    recent.extend_from_slice(bytes);
+    if recent.len() > PTY_RECENT_CAP {
+        let overflow = recent.len() - PTY_RECENT_CAP;
+        recent.drain(0..overflow);
+    }
+}
+
+/// Reader-thread loop and pty SUPERVISOR. Owns the tmux child outright — spawn,
+/// exit-observation, reap, and respawn all happen here and nothing else holds a
+/// reference — drains the master reader into the byte channel, and on child exit
+/// respawns a fresh pair sized to the latest cached dims, swapping the new
+/// master/writer into the shared slots and taking the new reader.
 ///
-/// `stopping`, when set by `Pty::shutdown` / `Drop`, means the EOF we are about
-/// to observe is a deliberate teardown (re-target / connection close) — break
-/// out and let the master fd close instead of respawning. This is what lets the
-/// left-behind session be released cleanly without the reader re-attaching to it.
+/// Failure breaker (expectations 2026-07-11 report): a child that dies within
+/// `PTY_HEALTHY_THRESHOLD` of being spawned is a "short-lived failure" and is
+/// counted; consecutive short-lived failures back off (`respawn_backoff`) and,
+/// past `PTY_GIVE_UP_CAP`, drop into a `PTY_COOLDOWN` before one more controlled
+/// retry — so an instantly-dying client (the tmux < 3.2 arg-parse death, a
+/// missing/broken tmux, or any spawn failure) can't loop ~150×/s, yet a later fix
+/// (tmux upgrade) still self-heals. A child that lived past the threshold and
+/// then died (normal tmux-server death) resets the counter and respawns
+/// immediately. The dead child is ALWAYS reaped (`reap_child`) before it is
+/// dropped, which closes the zombie leak (the old code swapped a shared
+/// `Arc<Mutex<child>>` and dropped the box without `wait()`ing it → 1 zombie per
+/// respawn, ~339k of them in the field).
+///
+/// `stopping`, when set by `Pty::shutdown` / `Drop`, means the EOF/read-error we
+/// are about to observe is a deliberate teardown (re-target / connection close) —
+/// reap and exit instead of respawning, so the left-behind session is released
+/// cleanly without the reader re-attaching to it.
 #[allow(clippy::too_many_arguments)]
 fn run_reader_loop(
     mut reader: Box<dyn Read + Send>,
     tx: mpsc::UnboundedSender<Vec<u8>>,
+    mut child: Box<dyn portable_pty::Child + Send + Sync>,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     target: Arc<Mutex<String>>,
     size: Arc<Mutex<(u16, u16)>>,
     stopping: Arc<AtomicBool>,
-    // Project root to recreate the session in (`-c <cwd>`) on respawn.
-    // Cleared to `None` if we fall back to the home-base default below,
-    // since that session is deliberately not workspace-rooted.
+    // Project root to recreate the session in (`-c <cwd>`) on respawn. Cleared to
+    // `None` on the home-base fallback, since that session is not workspace-rooted.
     mut cwd: Option<PathBuf>,
-    // Owning workspace slug (`SOT_WORKSPACE`), same lifecycle as `cwd`:
-    // cleared on the home-base fallback so a respawn carries no stale id.
+    // Owning workspace slug (`SOT_WORKSPACE`), same lifecycle as `cwd`.
     mut slug: Option<String>,
 ) {
     let mut buf = [0u8; 8192];
-    loop {
+    // When the current child was spawned — for the short-lived classification.
+    let mut spawned_at = Instant::now();
+    // Consecutive short-lived failures (reset by a healthy run).
+    let mut consecutive: u32 = 0;
+    // Last bytes from a YOUNG child, so the give-up log can show why it died (on
+    // old tmux the usage error rides the pty stream). Only recorded while the
+    // child is young — a healthy long-running pane doesn't pay for this.
+    let mut recent: Vec<u8> = Vec::new();
+
+    'reader: loop {
+        // The borrow of `reader` ends when `read` returns, so the failure path
+        // below is free to reassign `reader` to the respawned one.
         match reader.read(&mut buf) {
-            Ok(0) => {
-                // Deliberate teardown (re-target / Pty drop): the client was
-                // detached on purpose, so don't respawn — just exit and let the
-                // master fd close. The session is left intact for re-attach.
-                if stopping.load(Ordering::SeqCst) {
-                    tracing::info!("pty EOF during shutdown; stopping reader (no respawn)");
-                    break;
-                }
-                // EOF — child exited or tmux server died. Try to come
-                // back up with a fresh pair at the last known size,
-                // against the current target (Sessions mode may have
-                // re-targeted us between the start of the loop and now).
-                let (cols, rows) = match size.lock() {
-                    Ok(g) => *g,
-                    Err(_) => {
-                        tracing::error!("size mutex poisoned; cannot respawn pty");
-                        break;
-                    }
-                };
-                let target_name = match target.lock() {
-                    Ok(g) => g.clone(),
-                    Err(_) => {
-                        tracing::error!("target mutex poisoned; cannot respawn pty");
-                        break;
-                    }
-                };
-                // Never resurrect a dead NAMED session: `new-session -A`
-                // against a name that no longer exists CREATES it — bare,
-                // cwd=~, no `-c`. When the EOF came from `workspace.destroy`
-                // killing the session under an attached client, that
-                // resurrection races the follow-up `workspace.create` into
-                // "duplicate session", registering a workspace without its
-                // owned session (observed live 2026-06-11 20:51Z). Re-attach
-                // only if the session still exists; otherwise fall back to
-                // the home-base default — recreating THAT is the original
-                // recovery semantics (e.g. whole tmux-server death), and the
-                // target slot is updated so re-target comparisons stay honest.
-                let target_name = if target_name != DEFAULT_TMUX_TARGET
-                    && !session_exists(&target_name)
-                {
-                    tracing::warn!(gone = %target_name,
-                        "pty EOF — target session no longer exists; falling back to home-base instead of resurrecting it");
-                    if let Ok(mut g) = target.lock() {
-                        *g = DEFAULT_TMUX_TARGET.to_string();
-                    }
-                    // Home-base is deliberately not workspace-rooted; drop
-                    // the project cwd (and workspace slug) so the fallback
-                    // create doesn't pin it to a workspace it no longer
-                    // represents.
-                    cwd = None;
-                    slug = None;
-                    DEFAULT_TMUX_TARGET.to_string()
-                } else {
-                    target_name
-                };
-                tracing::warn!(cols, rows, target = %target_name, "pty EOF — respawning tmux");
-                match spawn_tmux_pair(cols, rows, &target_name, cwd.as_deref(), slug.as_deref()) {
-                    Ok(TmuxPair {
-                        master: new_master,
-                        writer: new_writer,
-                        child: new_child,
-                        reader: new_reader,
-                    }) => {
-                        if let Ok(mut g) = master.lock() {
-                            *g = new_master;
-                        }
-                        if let Ok(mut g) = writer.lock() {
-                            *g = new_writer;
-                        }
-                        if let Ok(mut g) = child.lock() {
-                            *g = new_child;
-                        }
-                        reader = new_reader;
-                        tracing::info!(cols, rows, "pty respawn ok");
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e,
-                            "pty respawn failed; stopping reader");
-                        break;
-                    }
-                }
-            }
-            Ok(n) => {
+            Ok(n) if n > 0 => {
                 if tx.send(buf[..n].to_vec()).is_err() {
                     break; // receiver dropped, stop reading
                 }
+                if spawned_at.elapsed() < PTY_HEALTHY_THRESHOLD {
+                    append_recent(&mut recent, &buf[..n]);
+                }
+                continue;
+            }
+            Ok(_) => {
+                // EOF — child exited or tmux server died.
+                if stopping.load(Ordering::SeqCst) {
+                    tracing::info!("pty EOF during shutdown; stopping reader (no respawn)");
+                    reap_child(&mut child);
+                    break;
+                }
             }
             Err(e) => {
-                tracing::warn!(error = %e, "pty read error; stopping reader");
-                break;
+                // A read error is unusual; treat it like an EOF failure (reap +
+                // breaker + respawn) rather than silently ending the reader.
+                if stopping.load(Ordering::SeqCst) {
+                    tracing::info!(error = %e, "pty read error during shutdown; stopping reader");
+                    reap_child(&mut child);
+                    break;
+                }
+                tracing::warn!(error = %e, "pty read error; treating as child failure and respawning");
             }
         }
+
+        // Shared failure path (EOF or read error, not a deliberate stop).
+        // Classify BEFORE reaping (reaping is what confirms the death), then reap
+        // so the dead child never lingers as a zombie.
+        let short_lived = spawned_at.elapsed() < PTY_HEALTHY_THRESHOLD;
+        reap_child(&mut child);
+        consecutive = if short_lived { consecutive + 1 } else { 0 };
+
+        // Respawn with breaker pacing, retrying on spawn error. Yields the new
+        // (child, reader) or breaks the whole reader loop on a stop request.
+        let (new_child, new_reader) = 'respawn: loop {
+            if stopping.load(Ordering::SeqCst) {
+                break 'reader;
+            }
+            let (cols, rows) = match size.lock() {
+                Ok(g) => *g,
+                Err(_) => {
+                    tracing::error!("size mutex poisoned; cannot respawn pty");
+                    break 'reader;
+                }
+            };
+            let cur_target = match target.lock() {
+                Ok(g) => g.clone(),
+                Err(_) => {
+                    tracing::error!("target mutex poisoned; cannot respawn pty");
+                    break 'reader;
+                }
+            };
+            // Never resurrect a dead NAMED session: `new-session -A` against a
+            // name that no longer exists CREATES it — bare, cwd=~, no `-c`. When
+            // the EOF came from `workspace.destroy` killing the session under an
+            // attached client, that resurrection races the follow-up
+            // `workspace.create` into "duplicate session", registering a
+            // workspace without its owned session (observed live 2026-06-11
+            // 20:51Z). Re-attach only if the session still exists; otherwise fall
+            // back to the home-base default — recreating THAT is the original
+            // recovery semantics (whole tmux-server death), and the target slot is
+            // updated so re-target comparisons stay honest.
+            let cur_target = if cur_target != DEFAULT_TMUX_TARGET
+                && !session_exists(&cur_target)
+            {
+                tracing::warn!(gone = %cur_target,
+                    "pty EOF — target session no longer exists; falling back to home-base instead of resurrecting it");
+                if let Ok(mut g) = target.lock() {
+                    *g = DEFAULT_TMUX_TARGET.to_string();
+                }
+                // Home-base is deliberately not workspace-rooted; drop the project
+                // cwd (and workspace slug) so the fallback create doesn't pin it to
+                // a workspace it no longer represents.
+                cwd = None;
+                slug = None;
+                DEFAULT_TMUX_TARGET.to_string()
+            } else {
+                cur_target
+            };
+
+            // Pace before the (re)spawn: a longer cooldown past the give-up cap,
+            // else a short backoff for any repeat within this failure run.
+            if consecutive >= PTY_GIVE_UP_CAP {
+                let why = String::from_utf8_lossy(&recent);
+                tracing::error!(
+                    consecutive,
+                    cooldown_s = PTY_COOLDOWN.as_secs(),
+                    recent = %why.trim(),
+                    "pty: tmux client keeps dying almost immediately (likely tmux < 3.2, a missing/broken tmux, or a spawn failure) — cooling down before another try; the FE LLM pane is degraded until this clears"
+                );
+                if sleep_unless_stopping(&stopping, PTY_COOLDOWN) {
+                    break 'reader;
+                }
+            } else if consecutive > 0
+                && sleep_unless_stopping(&stopping, respawn_backoff(consecutive))
+            {
+                break 'reader;
+            }
+
+            tracing::warn!(cols, rows, target = %cur_target, consecutive, "pty EOF — respawning tmux");
+            match spawn_tmux_pair(cols, rows, &cur_target, cwd.as_deref(), slug.as_deref()) {
+                Ok(TmuxPair {
+                    master: new_master,
+                    writer: new_writer,
+                    child: new_child,
+                    reader: new_reader,
+                }) => {
+                    if let Ok(mut g) = master.lock() {
+                        *g = new_master;
+                    }
+                    if let Ok(mut g) = writer.lock() {
+                        *g = new_writer;
+                    }
+                    tracing::info!(cols, rows, "pty respawn ok");
+                    break 'respawn (new_child, new_reader);
+                }
+                Err(e) => {
+                    // A spawn failure is also a short-lived failure — count it and
+                    // retry after a paced delay rather than ending the reader.
+                    consecutive += 1;
+                    tracing::error!(error = %e, consecutive, "pty respawn failed; will retry after backoff");
+                }
+            }
+        };
+
+        child = new_child;
+        reader = new_reader;
+        spawned_at = Instant::now();
+        recent.clear();
     }
 }
 
@@ -825,6 +1081,33 @@ mod tests {
         // accept both (matches the FE-side `pane_command_is_claude` guard).
         assert!(pane_is_claude(Some("claude")));
         assert!(pane_is_claude(Some("node")));
+    }
+
+    #[test]
+    fn parse_tmux_version_handles_real_shapes() {
+        // The shapes tmux -V actually emits across the versions we care about.
+        assert_eq!(parse_tmux_version("tmux 3.2\n"), Some((3, 2)));
+        assert_eq!(parse_tmux_version("tmux 3.2a"), Some((3, 2)));
+        assert_eq!(parse_tmux_version("tmux 3.0a\n"), Some((3, 0))); // the expectations box
+        assert_eq!(parse_tmux_version("tmux 3.3a"), Some((3, 3)));
+        assert_eq!(parse_tmux_version("tmux next-3.4"), Some((3, 4)));
+        assert_eq!(parse_tmux_version("tmux 2.9a"), Some((2, 9)));
+        assert_eq!(parse_tmux_version("tmux 3"), Some((3, 0))); // missing minor -> 0
+        // Fail-closed inputs: unparseable -> None (caller then omits -e).
+        assert_eq!(parse_tmux_version("garbage"), None);
+        assert_eq!(parse_tmux_version("tmux "), None);
+        assert_eq!(parse_tmux_version(""), None);
+    }
+
+    #[test]
+    fn tmux_dash_e_floor_is_3_2() {
+        // The gate `tmux_supports_dash_e` applies: only >= 3.2 gets `-e`.
+        let supports = |v: (u32, u32)| v >= (3, 2);
+        assert!(supports((3, 2)));
+        assert!(supports((3, 3)));
+        assert!(supports((4, 0)));
+        assert!(!supports((3, 0))); // 3.0a -> storm without the gate
+        assert!(!supports((2, 9)));
     }
 
     #[test]
