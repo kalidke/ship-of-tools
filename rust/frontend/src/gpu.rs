@@ -1441,6 +1441,27 @@ struct UploadState {
     sent: u64,
 }
 
+/// A multi-file upload batch. The OS picker returns N files that all target the
+/// same cursored folder; they upload **sequentially** — one `UploadState` in
+/// flight at a time — because the wire protocol is per-file (offset/name) and
+/// serial transfer keeps the chunk/ack flow-control loop simple. The next file
+/// is popped from `queue` when the current file's final ack lands. `dir` /
+/// `dir_node_id` are resolved once for the whole batch (the picker is invoked
+/// once); the completion refresh uses `dir_node_id`.
+struct UploadBatch {
+    /// Absolute backend destination directory (shared by every file).
+    dir: String,
+    /// `files:`-prefixed tree node id of the destination dir, for the
+    /// end-of-batch listing refresh.
+    dir_node_id: String,
+    /// Local files not yet started (front = next). Drained as each completes.
+    queue: std::collections::VecDeque<std::path::PathBuf>,
+    /// Total files picked, for `file i/N` progress in the status line.
+    total_files: usize,
+    /// Files whose upload has fully completed (final ack seen).
+    done_files: usize,
+}
+
 /// The visible region of an image preview in source-image pixel coords
 /// (ADR 0022). Recomputed each draw; drives `capture_roi` + the `fe-state.json`
 /// `preview` block. `path` is the source image's absolute path on the backend
@@ -2323,6 +2344,11 @@ struct State {
     /// it sends chunk 0 in `start_upload`, then sends the next chunk on each
     /// non-`done` `FileUploadAck`. `None` when no upload is running.
     upload: Option<UploadState>,
+    /// The multi-file batch the in-flight `upload` belongs to, if any. Holds the
+    /// not-yet-started files and the shared destination; `Some` for the whole
+    /// duration of a multi- (or single-) file upload, cleared when the last
+    /// file's ack lands. Guards `u` against starting a second batch mid-run.
+    upload_batch: Option<UploadBatch>,
     /// Primary monitor aspect ratio captured at startup (width /
     /// height). Used to resolve `settings.preset = "auto"` to a named
     /// preset. Locked for the session — resizing the window doesn't
@@ -3352,6 +3378,7 @@ impl State {
             bindings: KeyBindings::load_layered(),
             settings,
             upload: None,
+            upload_batch: None,
             // Aspect of the primary monitor (or 1.6 = 16:10 fallback
             // when no monitor handle is available — headless capture
             // doesn't have one). Locked for the session per the user's
@@ -5958,12 +5985,13 @@ impl State {
         self.window.request_redraw();
     }
 
-    /// `u` in NavTree: pick a local file via the native OS dialog and upload it
-    /// to the cursored nav folder (the dir itself for a dir row, else the
-    /// cursored file's parent dir). Opens the file, then sends the first chunk;
-    /// subsequent chunks are pumped by `FileUploadAck` (flow control).
+    /// `u` in NavTree: pick one or more local files via the native OS dialog and
+    /// upload them to the cursored nav folder (the dir itself for a dir row, else
+    /// the cursored file's parent dir). The picker is multi-select; the files
+    /// upload sequentially (see `UploadBatch`). Opens the first file and sends
+    /// its first chunk; subsequent chunks/files are pumped by `FileUploadAck`.
     fn start_upload(&mut self) {
-        if self.upload.is_some() {
+        if self.upload.is_some() || self.upload_batch.is_some() {
             self.status = "upload · already in progress".to_string();
             self.window.request_redraw();
             return;
@@ -5979,7 +6007,7 @@ impl State {
         };
         // Destination dir + its tree node id: a dir row is the target itself,
         // a file row targets its parent dir. `dir_node_id` lets us refresh the
-        // nav listing when the upload completes so the new file appears.
+        // nav listing when the upload completes so the new files appear.
         let (dir, dir_node_id) = if is_dir {
             (abs, node_id)
         } else {
@@ -5993,15 +6021,66 @@ impl State {
             };
             (dir, parent_files_node_id(&node_id))
         };
-        // Native OS picker (rfd): Win common dialog / macOS NSOpenPanel / Linux
-        // GTK-or-XDG-portal. Blocking — the app waits on the modal dialog.
+        // Native OS picker (rfd), multi-select: Win common dialog / macOS
+        // NSOpenPanel / Linux GTK-or-XDG-portal. Blocking — the app waits on
+        // the modal dialog. `pick_files` returns every selected path.
         let picked = rfd::FileDialog::new()
-            .set_title("Upload a file to the cursored folder")
-            .pick_file();
-        let Some(local) = picked else {
-            self.status = "upload · cancelled".to_string();
-            self.window.request_redraw();
-            return;
+            .set_title("Upload file(s) to the cursored folder")
+            .pick_files();
+        let files: std::collections::VecDeque<std::path::PathBuf> = match picked {
+            Some(v) if !v.is_empty() => v.into_iter().collect(),
+            _ => {
+                self.status = "upload · cancelled".to_string();
+                self.window.request_redraw();
+                return;
+            }
+        };
+        let total_files = files.len();
+        self.upload_batch = Some(UploadBatch {
+            dir,
+            dir_node_id,
+            queue: files,
+            total_files,
+            done_files: 0,
+        });
+        self.start_next_file();
+    }
+
+    /// Pop the next file from the active `upload_batch` and begin uploading it,
+    /// or — when the queue is drained — finalize the batch (one listing refresh
+    /// + aggregate status). Called by `start_upload` to kick off the first file
+    /// and by the `done` ack handler to advance to the next. A no-op if no batch
+    /// is active.
+    fn start_next_file(&mut self) {
+        // Pull the next path + the shared destination out of the batch.
+        let next = {
+            let Some(batch) = self.upload_batch.as_mut() else {
+                return;
+            };
+            batch
+                .queue
+                .pop_front()
+                .map(|p| (p, batch.dir.clone(), batch.dir_node_id.clone()))
+        };
+        let (local, dir, dir_node_id) = match next {
+            Some(v) => v,
+            None => {
+                // Queue drained — the whole batch is complete. Refresh the
+                // destination listing once so the new files appear without a
+                // manual re-expand, then report the aggregate.
+                let (dir, dir_node_id, done, total) = match self.upload_batch.take() {
+                    Some(b) => (b.dir, b.dir_node_id, b.done_files, b.total_files),
+                    None => return,
+                };
+                self.refresh_upload_dir(&dir_node_id);
+                self.status = if total == 1 {
+                    format!("uploaded · {done} file → {dir}")
+                } else {
+                    format!("uploaded · {done}/{total} files → {dir}")
+                };
+                self.window.request_redraw();
+                return;
+            }
         };
         let name = local
             .file_name()
@@ -6016,6 +6095,11 @@ impl State {
             Err(e) => {
                 tracing::warn!(error = %e, local = %local.display(), "upload: open local file failed");
                 self.status = format!("upload failed · open {}: {e}", local.display());
+                // A local-open failure aborts the rest of the batch: already
+                // uploaded files stay (refresh so they show), the remainder is
+                // dropped. Predictable partial state over silent skipping.
+                self.upload_batch = None;
+                self.refresh_upload_dir(&dir_node_id);
                 self.window.request_redraw();
                 return;
             }
@@ -6029,6 +6113,21 @@ impl State {
             sent: 0,
         });
         self.send_next_upload_chunk();
+    }
+
+    /// Refresh a destination directory's nav listing after upload activity so
+    /// newly written files appear without a manual re-expand. No-op for an empty
+    /// node id (unresolved parent).
+    fn refresh_upload_dir(&self, dir_node_id: &str) {
+        if dir_node_id.is_empty() {
+            return;
+        }
+        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeChildren {
+            parent_id: dir_node_id.to_string(),
+            workspace_id: self.active_workspace_id.clone(),
+        }) {
+            tracing::warn!(error = %e, "drop post-upload tree.children refresh");
+        }
     }
 
     /// Read the next `UPLOAD_CHUNK` from the in-flight upload's local file and
@@ -6072,8 +6171,16 @@ impl State {
                 }) {
                     tracing::warn!(error = %e, "drop file.upload chunk — channel closed");
                     self.upload = None;
+                    self.upload_batch = None;
                 } else {
-                    self.status = format!("upload · {name} {sent}/{total}");
+                    // Multi-file batches prefix `file i/N ·`; a lone file omits it.
+                    let prefix = match self.upload_batch.as_ref() {
+                        Some(b) if b.total_files > 1 => {
+                            format!("file {}/{} · ", b.done_files + 1, b.total_files)
+                        }
+                        _ => String::new(),
+                    };
+                    self.status = format!("upload · {prefix}{name} {sent}/{total}");
                 }
             }
             Err(e) => {
@@ -6085,6 +6192,7 @@ impl State {
                 tracing::warn!(error = %e, "upload: local read failed");
                 self.status = format!("upload failed · read {name}: {e}");
                 self.upload = None;
+                self.upload_batch = None;
             }
         }
         self.window.request_redraw();
@@ -6918,7 +7026,7 @@ impl State {
 
   Files (Nav focus)
     d   download cursored file to your machine
-    u   upload a local file (OS picker) into the cursored folder
+    u   upload local file(s) (OS picker, multi-select) into the cursored folder
     o   open       (html→browser · .jl→Pluto · video→browser · .qmd→quick render)
     O   open + run code chunks  (.qmd execute)
     W   open the built docs site in browser  (deep-links a built docs page)
@@ -7172,10 +7280,12 @@ impl State {
                     self.preview_fatal = None;
                     // An in-flight file.upload can't survive a transport reset —
                     // its chunk/ack loop is broken and any daemon-side partial is
-                    // orphaned. Clear the stranded state so `u` isn't blocked by a
-                    // ghost "upload · already in progress" (an oversized-chunk
-                    // frame that reset the transport used to strand it forever).
-                    if self.upload.take().is_some() {
+                    // orphaned. Clear the stranded state (in-flight file AND any
+                    // remaining batch) so `u` isn't blocked by a ghost "upload ·
+                    // already in progress" (an oversized-chunk frame that reset
+                    // the transport used to strand it forever).
+                    let had_batch = self.upload_batch.take().is_some();
+                    if self.upload.take().is_some() || had_batch {
                         self.status =
                             "upload interrupted by reconnect — press u to retry".to_string();
                         self.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
@@ -8931,24 +9041,15 @@ impl State {
                     final_name,
                 } => {
                     if done {
-                        let (name, dir, dir_node_id) = match self.upload.take() {
-                            Some(up) => (final_name.unwrap_or(up.name), up.dir, up.dir_node_id),
-                            None => (final_name.unwrap_or_default(), String::new(), String::new()),
-                        };
-                        self.status = format!("uploaded · {name} → {dir}");
-                        // Refresh the destination dir's listing so the new file
-                        // shows up without a manual re-expand.
-                        if !dir_node_id.is_empty() {
-                            if let Err(e) =
-                                self.req_tx
-                                    .send(crate::transport::OutgoingReq::TreeChildren {
-                                        parent_id: dir_node_id,
-                                        workspace_id: self.active_workspace_id.clone(),
-                                    })
-                            {
-                                tracing::warn!(error = %e, "drop post-upload tree.children refresh");
-                            }
+                        // Current file finished. Count it against the batch and
+                        // advance: `start_next_file` starts the next file, or —
+                        // when the queue is drained — finalizes with one listing
+                        // refresh + the aggregate status.
+                        self.upload = None;
+                        if let Some(b) = self.upload_batch.as_mut() {
+                            b.done_files += 1;
                         }
+                        self.start_next_file();
                         self.window.request_redraw();
                     } else {
                         // The chunk-0 ack returns the backend's resolved name
@@ -8963,7 +9064,11 @@ impl State {
                 }
                 crate::transport::IncomingEvt::FileTransferFailed { op, message } => {
                     if op == "upload" {
+                        // A backend upload failure aborts the whole batch — the
+                        // remaining files are dropped rather than uploaded into
+                        // an ambiguous state.
                         self.upload = None;
+                        self.upload_batch = None;
                     }
                     self.status = format!("{op} failed · {message}");
                     self.window.request_redraw();
