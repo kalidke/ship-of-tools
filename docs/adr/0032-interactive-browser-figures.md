@@ -1,16 +1,21 @@
 # ADR 0032 — Interactive browser-served figures (WGLMakie/Bonito)
 
-**Status: PROPOSED — transport primitive IMPLEMENTED, WGLMakie serving PENDING PROOF**
-(2026-07-11, branch `feat/wglmakie-browser`).
+**Status: ACCEPTED — IMPLEMENTED + VALIDATED LIVE END-TO-END**
+(2026-07-12, branch `feat/wglmakie-browser`).
 
-Landed on the branch: the `browser` REPL frame kind + `BrowserView`/`browserview`
-in `ShipToolsRepl` + FE browser-open on that frame (Rust builds, 190 FE tests +
-36 REPL tests green). The WGLMakie env is now materialized (`dev/wglmakie-proof/`)
-and the Bonito 5.1.0 API + HTTP serving are headless-validated (see Status).
-Pending: (1) the port-forward correction — WGLMakie needs **1241**, which the
-launcher must be extended to forward (1237–1240 turned out to be the docs pool,
-not spare — see Context correction); (2) in-browser interactivity over the SSH
-forward; (3) folding the validated calls into a `wglshow` convenience.
+The full path works and was confirmed by the maintainer in a real FE browser:
+`wglshow(fig)` → Bonito serves the figure on `127.0.0.1:1241` → the REPL emits a
+`browser` frame → the FE auto-opens the OS browser → **interactive** figure
+(pan/zoom/rotate) renders over the `-L 1241` SSH tunnel. Every unknown closed:
+
+- `browser` REPL frame kind + `BrowserView`/`browserview` + `wglshow` in
+  `ShipToolsRepl`; FE opens the frame via `open_url_in_browser` (190 FE + 4
+  protocol + 36 REPL tests green; `wglshow` validated headlessly — returns a
+  `BrowserView`, server serves HTTP 200 — and live in the FE browser).
+- Port **1241** forwarded by all three launchers (1237–1240 are the docs pool,
+  not spare — see the Context correction).
+- Bonito **5.1.0** API pinned (`proxy_url`, `Server(app,url,port;proxy_url)`,
+  `App`, `online_url`).
 
 ## Context
 
