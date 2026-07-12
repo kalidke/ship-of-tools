@@ -55,7 +55,7 @@ pub mod op {
     /// Authoritative request/response run: execute a `.jl` file (or a code
     /// chunk) in a workspace's persistent REPL and return the COLLECTED output
     /// as one response (`ReplExecuteRes`) — the "session grabs the output"
-    /// path (ADR 0032). Unlike `repl.eval` / `repl.run_file` (immediate ack +
+    /// path (ADR 0033). Unlike `repl.eval` / `repl.run_file` (immediate ack +
     /// lossy `repl.frame` broadcast), this blocks until the shim's terminal
     /// `res`, gathering frames off a dedicated per-run collector in the
     /// supervisor (never the 256-slot broadcast bus, which drops frames under
@@ -63,7 +63,7 @@ pub mod op {
     /// `<ws>/.sot/runs/<run_id>/` so the response never exceeds the 1 MiB
     /// envelope cap. Non-destructive: runs `include`/eval in the REPL's
     /// current project without resetting it. Frames still broadcast, so a
-    /// front-end can display the run too (`origin`-tagged, ADR 0032 phase 2).
+    /// front-end can display the run too (`origin`-tagged, ADR 0033 phase 2).
     pub const REPL_EXECUTE: &str = "repl.execute";
     /// Server→client push: one REPL output frame, streamed as it is produced
     /// (ADR 0009 phase-2). Replaces the synchronous-collect model where every
@@ -650,7 +650,7 @@ pub struct ReplRunFileRes {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ReplFrame {
-    /// Control frame (ADR 0032 phase 2): a run STARTED. Emitted by the BACKEND
+    /// Control frame (ADR 0033 phase 2): a run STARTED. Emitted by the BACKEND
     /// (not the shim) before a `repl.execute` submission so a front-end can
     /// pre-register a drawer entry in submission order — even for a silent or
     /// long eval, and even when the run belongs to another client. The output
@@ -718,7 +718,7 @@ pub struct ReplFrameEvt {
     pub frame: ReplFrame,
 }
 
-/// Request for `repl.execute` (ADR 0032): run something in a workspace's
+/// Request for `repl.execute` (ADR 0033): run something in a workspace's
 /// persistent REPL and collect the output into the response. `workspace_id`
 /// is required (unlike the eval/run_file ops it is not optional — an external
 /// caller must name the target REPL explicitly). `timeout_ms` bounds the wait;
@@ -733,7 +733,7 @@ pub struct ReplExecuteReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     /// Who initiated the run, surfaced in the user's drawer when the run is
-    /// shown as a shared entry (ADR 0032 phase 2). Defaults to "session".
+    /// shown as a shared entry (ADR 0033 phase 2). Defaults to "session".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
 }

@@ -1747,7 +1747,7 @@ pub async fn handle_repl_interrupt(
     )])
 }
 
-/// Backend-issued eval_id space for `repl.execute` runs (ADR 0032). Starts at
+/// Backend-issued eval_id space for `repl.execute` runs (ADR 0033). Starts at
 /// 2^40 so it never collides with a frontend's small per-workspace
 /// `repl.eval` counter, while staying a positive integer well under 2^53 (safe
 /// for JSON/`jq` consumers) — unlike a high-bit-set id. The `run_id` string
@@ -1815,7 +1815,7 @@ fn exec_err_frame(req_id: u64, run_id: &str, ws_id: &str, outcome: &str, msg: St
     )]
 }
 
-/// `repl.execute` (ADR 0032): run a `.jl` file (or code chunk) in a workspace's
+/// `repl.execute` (ADR 0033): run a `.jl` file (or code chunk) in a workspace's
 /// persistent REPL and return the COLLECTED output as one authoritative
 /// response. See `op::REPL_EXECUTE`. The output is gathered off a dedicated
 /// per-run collector in the supervisor (loss-free, unlike the broadcast bus),
@@ -1932,7 +1932,7 @@ pub async fn handle_repl_execute(
         }
     };
 
-    // Phase 2 (ADR 0032): broadcast a `started` control frame so an attached
+    // Phase 2 (ADR 0033): broadcast a `started` control frame so an attached
     // front-end pre-registers this run in the user's drawer (submission order),
     // then routes the streamed output frames + terminal `done` to that entry.
     // Stamp the workspace SLUG, not the canonical `workspace_id`: the FE keys its

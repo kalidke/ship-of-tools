@@ -186,7 +186,7 @@ impl Repl {
             .map_err(|_| anyhow!("repl supervisor dropped reply channel"))?
     }
 
-    /// Execute op (`repl.execute`, ADR 0032): submit WITH both a reply channel
+    /// Execute op (`repl.execute`, ADR 0033): submit WITH both a reply channel
     /// (to capture the shim's authoritative terminal `res`) AND a frame
     /// collector (to gather the run's frames loss-free off the supervisor,
     /// bypassing the lossy broadcast bus). Returns immediately with the reply

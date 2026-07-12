@@ -27,7 +27,7 @@
 #   repl     — run a .jl file (or eval code) in a workspace's persistent REPL
 #              and print the COLLECTED output (stdout/stderr/value/error +
 #              figure file paths). Unlike the other verbs this is a real
-#              request/response op (repl.execute, ADR 0032): it blocks until
+#              request/response op (repl.execute, ADR 0033): it blocks until
 #              the run finishes (or --timeout, default 120s) and returns the
 #              output. Non-destructive — runs in the REPL's current project,
 #              no reset. Exit 0 on outcome:ok, 2 otherwise.
@@ -179,7 +179,7 @@ send_fe_command() {
     esac
 }
 
-# Send a repl.execute request (ADR 0032) and print the collected result. $1 is
+# Send a repl.execute request (ADR 0033) and print the collected result. $1 is
 # the `input` JSON object ({kind:"run_file",path} | {kind:"eval",code}); $2 is
 # the workspace. Unlike send_fe_command this is a real request/response op — it
 # blocks for the run and the daemon returns the collected output on this op's

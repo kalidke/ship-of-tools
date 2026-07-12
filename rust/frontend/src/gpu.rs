@@ -177,7 +177,7 @@ struct ReplEntry {
     /// later mode switch doesn't relabel old scrollback rows.
     pkg_mode: bool,
     /// `Some(label)` for a run this FE did NOT originate — a session's
-    /// `repl.execute` (ADR 0032 phase 2). Renders a distinct prompt line
+    /// `repl.execute` (ADR 0033 phase 2). Renders a distinct prompt line
     /// (e.g. `⟨session ▸ run foo.jl⟩`) instead of the `julia>` echo, and is
     /// kept out of the Up/Down input history. `None` for a local user eval.
     origin: Option<String>,
@@ -8189,7 +8189,7 @@ impl State {
                     // We key on the recorded eval_id->workspace map (kept until
                     // the terminal ack drops it); `workspace_id` is a hint.
                     // `Done` finalizes (in_flight=false + elapsed); others append.
-                    // Phase 2 (ADR 0032): a `Started` control frame pre-registers
+                    // Phase 2 (ADR 0033): a `Started` control frame pre-registers
                     // a drawer entry for a run this FE did NOT originate (a
                     // session's repl.execute), so the run's output frames + the
                     // terminal `done` route to it like any local run.
@@ -15329,7 +15329,7 @@ fn build_repl_lines(
     for entry in log {
         if let Some(label) = &entry.origin {
             // A run this FE did NOT originate (a session's repl.execute, ADR
-            // 0032 phase 2): show a distinct labelled prompt (magenta) instead
+            // 0033 phase 2): show a distinct labelled prompt (magenta) instead
             // of the `julia>` code echo, so the user can tell it apart from
             // their own input at a glance.
             out.push(RtLine::from(vec![Span::styled(
