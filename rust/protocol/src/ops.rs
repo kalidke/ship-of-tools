@@ -52,6 +52,19 @@ pub mod op {
     /// frame stream shape as `repl.eval`.
     pub const REPL_RUN_FILE: &str = "repl.run_file";
     pub const REPL_INTERRUPT: &str = "repl.interrupt";
+    /// Authoritative request/response run: execute a `.jl` file (or a code
+    /// chunk) in a workspace's persistent REPL and return the COLLECTED output
+    /// as one response (`ReplExecuteRes`) — the "session grabs the output"
+    /// path (ADR 0032). Unlike `repl.eval` / `repl.run_file` (immediate ack +
+    /// lossy `repl.frame` broadcast), this blocks until the shim's terminal
+    /// `res`, gathering frames off a dedicated per-run collector in the
+    /// supervisor (never the 256-slot broadcast bus, which drops frames under
+    /// a println flood). Text is bounded and images spill to
+    /// `<ws>/.sot/runs/<run_id>/` so the response never exceeds the 1 MiB
+    /// envelope cap. Non-destructive: runs `include`/eval in the REPL's
+    /// current project without resetting it. Frames still broadcast, so a
+    /// front-end can display the run too (`origin`-tagged, ADR 0032 phase 2).
+    pub const REPL_EXECUTE: &str = "repl.execute";
     /// Server→client push: one REPL output frame, streamed as it is produced
     /// (ADR 0009 phase-2). Replaces the synchronous-collect model where every
     /// frame rode the `repl.eval` / `repl.run_file` *response*. The kernel now
@@ -690,6 +703,84 @@ pub struct ReplFrameEvt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     pub frame: ReplFrame,
+}
+
+/// Request for `repl.execute` (ADR 0032): run something in a workspace's
+/// persistent REPL and collect the output into the response. `workspace_id`
+/// is required (unlike the eval/run_file ops it is not optional — an external
+/// caller must name the target REPL explicitly). `timeout_ms` bounds the wait;
+/// on timeout the run is NOT interrupted (it keeps running, its frames still
+/// reach the drawer), the response just returns `outcome:"timeout"` with
+/// whatever was collected so far.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplExecuteReq {
+    pub workspace_id: String,
+    pub input: ReplExecuteInput,
+    /// Wall-clock budget in ms. Default 120_000, clamped to [1_000, 1_800_000].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+/// What to run. `run_file` resolves `path` against the workspace root, requires
+/// an existing regular `.jl` file, and `include`s it in the persistent REPL
+/// (`fresh:false` semantics — no reset). `eval` runs a code chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReplExecuteInput {
+    RunFile {
+        path: String,
+    },
+    Eval {
+        code: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+    },
+}
+
+/// A `value` frame surfaced in the collected response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplValueOut {
+    pub mime: String,
+    pub text: String,
+}
+
+/// The terminal error frame surfaced in the collected response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplErrorOut {
+    pub message: String,
+    #[serde(default)]
+    pub stacktrace: Vec<StackFrame>,
+}
+
+/// Response for `repl.execute`. `outcome` is the authoritative terminal state,
+/// derived from the shim's terminal `res` plus the collected frames — one of
+/// `ok | error | busy | interrupted | timeout | repl_died`. Text is bounded
+/// (`truncated` set if a flood was clipped); figures are written to files and
+/// returned as paths (base64 is NOT inlined — it would blow the 1 MiB cap).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplExecuteRes {
+    pub run_id: String,
+    pub workspace_id: String,
+    pub outcome: String,
+    pub elapsed_ms: u64,
+    #[serde(default)]
+    pub stdout: String,
+    #[serde(default)]
+    pub stderr: String,
+    #[serde(default)]
+    pub values: Vec<ReplValueOut>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ReplErrorOut>,
+    /// Absolute paths to figure images spilled under `<ws>/.sot/runs/<run_id>/`.
+    #[serde(default)]
+    pub figures: Vec<String>,
+    pub truncated: bool,
+    /// For run_file: the project the REPL believes the file belongs to (the
+    /// shim's mismatch warning rides `stderr`). None for eval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_source: Option<String>,
 }
 
 /// Open (or attach) a tmux session on a pty. The backend spawns

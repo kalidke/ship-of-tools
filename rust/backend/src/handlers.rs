@@ -17,6 +17,7 @@ use sot_protocol::{
     FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
     HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
     PlutoOpenReq, PlutoOpenRes, PreviewGetReq, PreviewGetRes, QuartoOpenReq, QuartoOpenRes,
+    ReplErrorOut, ReplExecuteInput, ReplExecuteReq, ReplExecuteRes, ReplValueOut, StackFrame,
     TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxCreateSessionReq, TmuxKillSessionReq,
     TmuxListPanesReq, TmuxListPanesRes, TmuxListSessionsRes, TmuxPane, TmuxSession,
     ToggleHiddenReq, ToggleHiddenRes, TreeChildrenReq, TreeChildrenRes, TreeRootReq, TreeRootRes,
@@ -1741,6 +1742,351 @@ pub async fn handle_repl_interrupt(
     };
     Ok(vec![(
         Frame::res(req_id, op::REPL_INTERRUPT, payload).with_rev(rev),
+        None,
+    )])
+}
+
+/// Backend-issued eval_id space for `repl.execute` runs (ADR 0032). Starts at
+/// 2^40 so it never collides with a frontend's small per-workspace
+/// `repl.eval` counter, while staying a positive integer well under 2^53 (safe
+/// for JSON/`jq` consumers) — unlike a high-bit-set id. The `run_id` string
+/// returned to the caller is derived from it.
+static EXEC_EVAL_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 40);
+
+fn next_exec_eval_id() -> u64 {
+    EXEC_EVAL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+const EXEC_DEFAULT_TIMEOUT_MS: u64 = 120_000;
+const EXEC_MIN_TIMEOUT_MS: u64 = 1_000;
+const EXEC_MAX_TIMEOUT_MS: u64 = 1_800_000;
+/// Per-field inline cap for `value` / `error` text — stdout/stderr are already
+/// bounded by `EXEC_TEXT_CAP` in the collector; this guards against one giant
+/// `show` repr blowing the 1 MiB envelope.
+const EXEC_FIELD_CAP: usize = 64 * 1024;
+
+fn exec_truncate_field(s: &mut String) {
+    if s.len() > EXEC_FIELD_CAP {
+        let mut cut = EXEC_FIELD_CAP;
+        while cut > 0 && !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
+        s.push_str("\n…[truncated]");
+    }
+}
+
+fn exec_mime_ext(mime: &str) -> &'static str {
+    match mime {
+        "image/png" => "png",
+        "image/svg+xml" => "svg",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        _ => "bin",
+    }
+}
+
+fn exec_err_frame(req_id: u64, run_id: &str, ws_id: &str, outcome: &str, msg: String) -> HandlerOutput {
+    let res = ReplExecuteRes {
+        run_id: run_id.to_string(),
+        workspace_id: ws_id.to_string(),
+        outcome: outcome.to_string(),
+        elapsed_ms: 0,
+        stdout: String::new(),
+        stderr: String::new(),
+        values: Vec::new(),
+        error: Some(ReplErrorOut {
+            message: msg,
+            stacktrace: Vec::new(),
+        }),
+        figures: Vec::new(),
+        truncated: false,
+        project_dir: None,
+        project_source: None,
+    };
+    vec![(
+        Frame::res(
+            req_id,
+            op::REPL_EXECUTE,
+            serde_json::to_value(res).unwrap_or_else(|_| json!({})),
+        ),
+        None,
+    )]
+}
+
+/// `repl.execute` (ADR 0032): run a `.jl` file (or code chunk) in a workspace's
+/// persistent REPL and return the COLLECTED output as one authoritative
+/// response. See `op::REPL_EXECUTE`. The output is gathered off a dedicated
+/// per-run collector in the supervisor (loss-free, unlike the broadcast bus),
+/// completion keys off the shim's terminal `res` (reliable even when no `done`
+/// frame is emitted), figures spill to `<ws>/.sot/runs/<run_id>/`, and a
+/// timeout returns `outcome:"timeout"` WITHOUT interrupting the run.
+pub async fn handle_repl_execute(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    session: &Session,
+    workspaces: &Workspaces,
+) -> Result<HandlerOutput> {
+    let req: ReplExecuteReq = match serde_json::from_value(payload_json) {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(vec![(
+                Frame::res(
+                    req_id,
+                    op::REPL_EXECUTE,
+                    json!({ "error": format!("bad repl.execute payload: {e}"), "code": "bad_request" }),
+                ),
+                None,
+            )]);
+        }
+    };
+
+    let eval_id = next_exec_eval_id();
+    let run_id = format!("exec-{eval_id}");
+    let ws_id = req.workspace_id.clone();
+    tracing::info!(workspace_id = %ws_id, run_id = %run_id, "repl.execute");
+
+    let Some(ws) = workspaces.resolve(Some(ws_id.as_str())) else {
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::REPL_EXECUTE,
+                json!({ "error": format!("unknown workspace: {ws_id}"), "code": "unknown_workspace" }),
+            ),
+            None,
+        )]);
+    };
+
+    // Build the inner op + payload; validate a run_file path against the ws.
+    let (inner_op, inner_payload) = match &req.input {
+        ReplExecuteInput::RunFile { path } => {
+            let joined = {
+                let pb = std::path::PathBuf::from(path);
+                if pb.is_absolute() {
+                    pb
+                } else {
+                    ws.project_root.join(pb)
+                }
+            };
+            let abs = match joined.canonicalize() {
+                Ok(p) => p,
+                Err(e) => {
+                    return Ok(exec_err_frame(
+                        req_id,
+                        &run_id,
+                        &ws_id,
+                        "error",
+                        format!("cannot resolve path {path:?}: {e}"),
+                    ))
+                }
+            };
+            let root = ws.project_root.canonicalize().unwrap_or_else(|_| ws.project_root.clone());
+            if !abs.starts_with(&root) {
+                return Ok(exec_err_frame(
+                    req_id,
+                    &run_id,
+                    &ws_id,
+                    "error",
+                    format!("path {} is outside workspace {}", abs.display(), root.display()),
+                ));
+            }
+            if !abs.is_file() || abs.extension().and_then(|s| s.to_str()) != Some("jl") {
+                return Ok(exec_err_frame(
+                    req_id,
+                    &run_id,
+                    &ws_id,
+                    "error",
+                    format!("not an existing .jl file: {}", abs.display()),
+                ));
+            }
+            (
+                op::REPL_RUN_FILE,
+                json!({
+                    "eval_id": eval_id,
+                    "path": abs.to_string_lossy(),
+                    "fresh": false,
+                    "workspace_id": ws_id,
+                }),
+            )
+        }
+        ReplExecuteInput::Eval { code, mode } => {
+            let mut p = json!({ "eval_id": eval_id, "code": code, "workspace_id": ws_id });
+            if let Some(m) = mode {
+                if let Some(obj) = p.as_object_mut() {
+                    obj.insert("mode".to_string(), json!(m));
+                }
+            }
+            (op::REPL_EVAL, p)
+        }
+    };
+
+    let repl = ws.repl(workspaces.repl_frame_tx());
+    let (reply_rx, collector) = match repl.execute(inner_op, inner_payload).await {
+        Ok(x) => x,
+        Err(e) => {
+            return Ok(exec_err_frame(
+                req_id,
+                &run_id,
+                &ws_id,
+                "repl_died",
+                format!("repl submit failed: {e:#}"),
+            ))
+        }
+    };
+
+    let timeout_ms = req
+        .timeout_ms
+        .unwrap_or(EXEC_DEFAULT_TIMEOUT_MS)
+        .clamp(EXEC_MIN_TIMEOUT_MS, EXEC_MAX_TIMEOUT_MS);
+    let start = std::time::Instant::now();
+    let awaited = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), reply_rx).await;
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    // Base terminal state from the await. On timeout we deliberately do NOT
+    // send an interrupt (that could race and kill a subsequent user eval — the
+    // run keeps going and its frames still reach the drawer).
+    let (base_outcome, res_payload): (&str, Option<serde_json::Value>) = match awaited {
+        Ok(Ok(Ok(v))) => ("completed", Some(v)),
+        Ok(Ok(Err(_))) => ("repl_died", None),
+        Ok(Err(_)) => ("repl_died", None),
+        Err(_) => ("timeout", None),
+    };
+
+    // Snapshot the loss-free collector.
+    let (frames, truncated) = {
+        let acc = collector.lock().unwrap_or_else(|e| e.into_inner());
+        (acc.frames.clone(), acc.truncated)
+    };
+
+    // Terminal error carried by the shim's res (bad_request / io_error /
+    // repl_exception) — authoritative over frame inspection.
+    let mut res_code_error = false;
+    let mut error_out: Option<ReplErrorOut> = None;
+    let mut project_dir: Option<String> = None;
+    let mut project_source: Option<String> = None;
+    if let Some(res) = &res_payload {
+        project_dir = res.get("project_dir").and_then(|v| v.as_str()).map(String::from);
+        project_source = res.get("project_source").and_then(|v| v.as_str()).map(String::from);
+        if let Some(code) = res.get("code").and_then(|v| v.as_str()) {
+            res_code_error = true;
+            let msg = res.get("error").and_then(|v| v.as_str()).unwrap_or(code).to_string();
+            error_out = Some(ReplErrorOut { message: msg, stacktrace: Vec::new() });
+        }
+    }
+
+    // Split collected frames.
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut values: Vec<ReplValueOut> = Vec::new();
+    let mut image_frames: Vec<(String, String)> = Vec::new();
+    let mut frame_error_kind: Option<&str> = None;
+    for f in &frames {
+        match f.get("kind").and_then(|v| v.as_str()) {
+            Some("stdout") => {
+                if let Some(t) = f.get("text").and_then(|v| v.as_str()) {
+                    stdout.push_str(t);
+                }
+            }
+            Some("stderr") => {
+                if let Some(t) = f.get("text").and_then(|v| v.as_str()) {
+                    stderr.push_str(t);
+                }
+            }
+            Some("value") => {
+                let mime = f.get("mime").and_then(|v| v.as_str()).unwrap_or("text/plain").to_string();
+                let mut text = f.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                exec_truncate_field(&mut text);
+                values.push(ReplValueOut { mime, text });
+            }
+            Some("image") => {
+                let mime = f.get("mime").and_then(|v| v.as_str()).unwrap_or("image/png").to_string();
+                if let Some(b64) = f.get("data_base64").and_then(|v| v.as_str()) {
+                    image_frames.push((mime, b64.to_string()));
+                }
+            }
+            Some("error") => {
+                let message = f.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let k = if message.contains("REPL busy") {
+                    "busy"
+                } else if message.contains("InterruptException") {
+                    "interrupted"
+                } else {
+                    "error"
+                };
+                // Strongest-wins: busy > interrupted > error.
+                frame_error_kind = Some(match (frame_error_kind, k) {
+                    (Some("busy"), _) | (_, "busy") => "busy",
+                    (Some("interrupted"), _) | (_, "interrupted") => "interrupted",
+                    _ => "error",
+                });
+                if error_out.is_none() {
+                    let stack: Vec<StackFrame> = f
+                        .get("stacktrace")
+                        .cloned()
+                        .and_then(|v| serde_json::from_value(v).ok())
+                        .unwrap_or_default();
+                    let mut msg = message.clone();
+                    exec_truncate_field(&mut msg);
+                    error_out = Some(ReplErrorOut { message: msg, stacktrace: stack });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Final outcome precedence: timeout / repl_died (from the await) win, then a
+    // shim res error code, then frame classification (busy > interrupted >
+    // error), else ok.
+    let outcome: &str = match base_outcome {
+        "timeout" => "timeout",
+        "repl_died" => "repl_died",
+        _ if res_code_error => "error",
+        _ => frame_error_kind.unwrap_or("ok"),
+    };
+
+    // Spill figures to files so the response never inlines base64 (1 MiB cap).
+    let mut figures: Vec<String> = Vec::new();
+    if !image_frames.is_empty() {
+        let runs_dir = ws.project_root.join(".sot").join("runs").join(&run_id);
+        let run_id_blk = run_id.clone();
+        let spill = tokio::task::spawn_blocking(move || -> std::result::Result<Vec<String>, String> {
+            use base64::engine::general_purpose::STANDARD;
+            use base64::Engine as _;
+            std::fs::create_dir_all(&runs_dir).map_err(|e| format!("create {runs_dir:?}: {e}"))?;
+            let mut out = Vec::new();
+            for (i, (mime, b64)) in image_frames.iter().enumerate() {
+                let bytes = STANDARD.decode(b64).map_err(|e| format!("fig {i} base64: {e}"))?;
+                let p = runs_dir.join(format!("fig-{i}.{}", exec_mime_ext(mime)));
+                std::fs::write(&p, &bytes).map_err(|e| format!("write {p:?}: {e}"))?;
+                out.push(p.to_string_lossy().into_owned());
+            }
+            Ok(out)
+        })
+        .await;
+        match spill {
+            Ok(Ok(paths)) => figures = paths,
+            Ok(Err(e)) => tracing::warn!(run_id = %run_id_blk, "figure spill failed: {e}"),
+            Err(e) => tracing::warn!(run_id = %run_id_blk, "figure spill task panicked: {e}"),
+        }
+    }
+
+    let res = ReplExecuteRes {
+        run_id: run_id.clone(),
+        workspace_id: ws_id.clone(),
+        outcome: outcome.to_string(),
+        elapsed_ms,
+        stdout,
+        stderr,
+        values,
+        error: error_out,
+        figures,
+        truncated,
+        project_dir,
+        project_source,
+    };
+    let (_, rev) = session.snapshot().await;
+    Ok(vec![(
+        Frame::res(req_id, op::REPL_EXECUTE, serde_json::to_value(res)?).with_rev(rev),
         None,
     )])
 }
