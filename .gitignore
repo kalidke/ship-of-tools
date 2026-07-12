@@ -73,3 +73,7 @@
 
 # Session output artifacts (reviews, reports — see user conventions)
 /dev/output/
+
+# Selfie screenshots (selfie skill — local screen grabs; never committed,
+# they can capture sensitive on-screen content)
+/selfies/
