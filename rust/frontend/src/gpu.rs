@@ -8184,6 +8184,27 @@ impl State {
                     // the terminal ack drops it); `workspace_id` is a hint.
                     // `Done` finalizes (in_flight=false + elapsed); others append.
                     let _ = workspace_id;
+                    // ADR 0032: a `browser` frame is an action, not log content —
+                    // the eval served a live interactive artifact (WGLMakie/Bonito
+                    // figure) at a loopback URL. Hand it straight to the OS
+                    // browser-open (reusing the pluto/video/docs path) and skip the
+                    // repl-log append entirely. The URL resolves directly on a
+                    // local FE and via the launcher's `-L` tunnel on a remote one.
+                    if let ReplFrame::Browser { url } = &frame {
+                        let url = url.clone();
+                        match open_url_in_browser(&url) {
+                            Ok(()) => {
+                                self.status = format!("opened interactive figure · {url}")
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, %url, "wgl: open_url_in_browser failed");
+                                self.status =
+                                    format!("interactive figure · browser-open failed · {e}");
+                            }
+                        }
+                        self.window.request_redraw();
+                        continue;
+                    }
                     // Capture the terminal-frame flag before `frame` is moved into
                     // the match below — on Done we run the terminal cleanup the
                     // acceptance ack intentionally deferred to us.
@@ -15337,6 +15358,16 @@ fn build_repl_lines(
                     }
                 }
                 ReplFrame::Done { .. } => {}
+                ReplFrame::Browser { url } => {
+                    // Browser frames are consumed as a side-effect (OS
+                    // browser-open) in drain_events and never appended to the
+                    // log, so this arm is defensive — if one ever lands here,
+                    // render a compact caption rather than dropping it silently.
+                    out.push(RtLine::from(vec![Span::styled(
+                        format!("↗ interactive figure · {url}"),
+                        Style::default().fg(Color::LightBlue),
+                    )]));
+                }
                 ReplFrame::Image { mime, bytes, .. } => {
                     let key = (entry.eval_id, frame_idx);
                     // Degenerate width (drawer not yet laid out — the fit

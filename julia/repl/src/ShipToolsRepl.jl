@@ -4,9 +4,37 @@ using Base64
 using JSON3
 using Pkg
 
-export serve
+export serve, browserview, BrowserView
 
 const PROTOCOL_VERSION = 1
+
+"""
+    BrowserView(url)
+
+Marker wrapping a loopback URL for a live, browser-served artifact (an
+interactive WGLMakie/Bonito figure, a served dashboard, …). Return one as the
+last expression of an eval — or call [`browserview`](@ref) — and the REPL emits
+a `browser` frame instead of a static `value`/`image`, which the frontend hands
+to the OS browser-open (ADR 0032). `url` must be loopback-shaped
+(`http://127.0.0.1:<port>/…`) so it resolves through the launcher's `-L` tunnel
+on a remote frontend; the WGLMakie/Bonito port is `SOT_WGL_PORT` (default 1237,
+pre-forwarded by the launcher alongside pluto/video/docs).
+
+`BrowserView` deliberately carries no plotting dependency: the Bonito server
+that produces `url` lives in the *user's* project env (whichever WGLMakie they
+`using`), so `ShipToolsRepl` stays lightweight and backend-agnostic.
+"""
+struct BrowserView
+    url::String
+end
+
+"""
+    browserview(url) -> BrowserView
+
+Convenience constructor. `return browserview(server_url)` at the end of an eval
+to open `url` in the frontend's browser.
+"""
+browserview(url::AbstractString) = BrowserView(String(url))
 
 # Serializes envelope writes to `io_out`. With streaming (ADR 0009 phase-2)
 # the eval runs on its own task and emits frames concurrently with the
@@ -397,6 +425,14 @@ frames. Falls through to `text/plain`.
 """
 function value_frames_for(result)
     out = Dict[]
+    # ADR 0032: a BrowserView is a live browser-served artifact, not a static
+    # value — emit a `browser` frame the frontend opens in the OS browser.
+    # Checked before the image/text MIME probes so it wins even though a served
+    # figure may also be `showable` as an image.
+    if result isa BrowserView
+        push!(out, Dict(:kind => "browser", :url => result.url))
+        return out
+    end
     img_mimes = (MIME"image/png"(), MIME"image/svg+xml"())
     # invokelatest because the eval may have defined the showable/show methods
     # itself (e.g. `using CairoMakie` adds Figure showables mid-eval).

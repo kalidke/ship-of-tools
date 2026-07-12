@@ -33,6 +33,16 @@ const DR = ShipToolsRepl
         @test strip(frames[1][:text]) == "42"
     end
 
+    @testset "value_frames_for: BrowserView emits a browser frame (ADR 0032)" begin
+        url = "http://127.0.0.1:1237/browser-display/abcd"
+        frames = DR.value_frames_for(DR.BrowserView(url))
+        @test length(frames) == 1
+        @test frames[1][:kind] == "browser"
+        @test frames[1][:url] == url
+        # browserview() is the exported constructor and round-trips identically.
+        @test DR.value_frames_for(DR.browserview(url)) == frames
+    end
+
     @testset "stream_eval_frames: stdout then value, in order" begin
         frames = Dict[]
         DR.stream_eval_frames(f -> push!(frames, f)) do
