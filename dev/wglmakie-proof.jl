@@ -32,6 +32,11 @@ const EXTERNAL = "http://$(HOST):$(PORT)"
 using WGLMakie
 import Bonito
 
+# Report versions FIRST — the Bonito API (configure_server! kwargs, Server/App
+# signatures, online_url) drifts across versions, so if a call below errors,
+# these two numbers are what pin the correct API. Paste them back with any error.
+@info "versions" WGLMakie = pkgversion(WGLMakie) Bonito = pkgversion(Bonito) julia = VERSION
+
 WGLMakie.activate!()
 
 # Bind Bonito to the fixed loopback port with an external URL that matches the
