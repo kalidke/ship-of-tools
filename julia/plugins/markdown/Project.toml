@@ -1,7 +1,7 @@
 name = "ShipToolsMarkdown"
 uuid = "f621c3d9-14c6-4a51-ac71-8003b27da8ac"
 authors = ["kalidke"]
-version = "0.3.6"
+version = "0.3.7"
 
 [deps]
 ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"

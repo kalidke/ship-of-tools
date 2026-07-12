@@ -1,7 +1,7 @@
 name = "ShipToolsJuliaSource"
 uuid = "8d873b42-dda4-4ff1-aa80-a0ec50d38541"
 authors = ["kalidke"]
-version = "0.3.6"
+version = "0.3.7"
 
 [deps]
 ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"
