@@ -1935,10 +1935,16 @@ pub async fn handle_repl_execute(
     // Phase 2 (ADR 0032): broadcast a `started` control frame so an attached
     // front-end pre-registers this run in the user's drawer (submission order),
     // then routes the streamed output frames + terminal `done` to that entry.
-    // Uses the workspace's canonical id — the SAME the supervisor stamps on the
-    // shim's frames — so both land on the one entry.
+    // Stamp the workspace SLUG, not the canonical `workspace_id`: the FE keys its
+    // active workspace + repl snapshots by slug (`current_workspace_key()`), and
+    // the `started` handler is the one place that compares the frame's ws against
+    // that key to pick which drawer the entry pre-registers in. Output frames
+    // route by `eval_id` (their ws hint is ignored), so they still land on the
+    // same entry. Stamping the canonical id here made that compare never match →
+    // the entry was dropped down the "no snapshot" path and every session run
+    // orphaned as "repl.frame dropped: no in-flight entry".
     let origin = req.origin.clone().unwrap_or_else(|| "session".to_string());
-    let frame_ws = ws.workspace_id.clone();
+    let frame_ws = ws.slug.clone();
     let frame_tx = workspaces.repl_frame_tx();
     let _ = frame_tx.send(ReplFrameMsg {
         eval_id,
