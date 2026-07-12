@@ -144,7 +144,7 @@ jobs:
     runs-on: ubuntu-latest
     container: ubuntu:20.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: bin-linux-x86_64
       - name: Boot artifact + version + hello
@@ -186,7 +186,7 @@ jobs:
     needs: [build]
     runs-on: macos-14
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: bin-macos-aarch64
       - name: Boot artifact + version + hello
@@ -235,7 +235,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: assets
           merge-multiple: true
