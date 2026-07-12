@@ -84,6 +84,30 @@ Rendering visual output natively is a core premise of the project, and it applie
 to REPL figures exactly as it applies to file previews. See
 [Frontend Rendering](../design/rendering.md).
 
+## Interactive figures in the browser
+
+Static plots render inline (above); an **interactive** figure — one you pan,
+zoom, or rotate — belongs in a real browser. Call `wglshow(fig)` on a WGLMakie
+figure:
+
+```julia
+using WGLMakie
+wglshow(surface(-10:0.4:10, -10:0.4:10, (x, y) -> sin(sqrt(x^2 + y^2));
+                axis = (; type = Axis3)))
+```
+
+`wglshow` serves the figure over Bonito on a loopback port (`SOT_WGL_PORT`,
+default 1241, auto-forwarded by the launcher alongside the Pluto/video/docs
+ports) and returns a `BrowserView` — which makes the frontend open the figure in
+your OS browser, no URL to copy. The WebSocket that carries interaction events
+rides the *same* forwarded port, so pan/zoom/rotate work whether the backend is
+local or remote. The server lives as long as the REPL, and calling `wglshow`
+again replaces it.
+
+WGLMakie and Bonito are resolved from *your own* project env at call time
+(`using WGLMakie` first) — Ship of Tools ships no plotting dependency of its own,
+so the REPL stays light until you ask for an interactive figure.
+
 ## See also
 
 - [REPL Pane](panes/repl.md) — the drawer's layout, keys, and how to drive it.

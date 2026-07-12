@@ -46,6 +46,7 @@ layout is designed, not configured.
 - **Remappable keybindings** — remap the configurable action chords per-repo (`.sot/keybindings.toml`) or per-user; unlisted actions fall through to the defaults.
 - **Full-screen any pane.**
 - **Live Julia** — dispatch code to a fresh or existing REPL; plots render inline.
+- **Interactive figures** — `wglshow(fig)` serves a live WGLMakie figure and pops it into your browser to pan, zoom, and rotate 3-D over an auto-forwarded port; static CairoMakie plots still render inline.
 - **Pluto notebooks** — open notebooks running on the remote.
 - **Extensible previews** — add a file type with Julia multiple dispatch, no Rust.
 - **Rich previews** — Markdown, Quarto, PDF, PNG, LaTeX math, and video (poster frame in-pane; playback opens in your browser).
