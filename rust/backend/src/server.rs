@@ -290,13 +290,62 @@ pub async fn run(opts: Opts) -> Result<()> {
     {
         let tmux_name = default_ws.tmux_session.clone();
         let cwd = default_ws.project_root.clone();
+        let slug = default_ws.slug.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            match crate::tmux::TmuxClient::new().create_session(&tmux_name, None, Some(&cwd)) {
+            match crate::tmux::TmuxClient::new().create_session(
+                &tmux_name,
+                None,
+                Some(&cwd),
+                Some(&slug),
+            ) {
                 Ok(()) => tracing::info!(tmux = %tmux_name, "default workspace tmux session ready"),
                 Err(e) => tracing::warn!(error = %e, tmux = %tmux_name, "default workspace tmux session create failed"),
             }
         })
         .await;
+    }
+
+    // Heal the SOT_* awareness env on every registered workspace's live tmux
+    // session. Sessions created before env stamping existed carry nothing, and
+    // tmux ignores `-e` on attach — so without this sweep a long-lived session
+    // never converges (field state 2026-07-13: 13 of 16 sot-be-* sessions had
+    // no SOT_WORKSPACE). `set-environment` reaches only processes spawned
+    // after it; agents already running in those sessions rely on sot-nav.sh's
+    // session-name fallback until their next respawn. Migration aid at heart:
+    // every creation path now stamps at create, so once the fleet's pre-fix
+    // sessions have cycled this sweep finds nothing to do (and could be
+    // dropped). Detached — NOT awaited — so a wedged/slow tmux server can only
+    // delay the heal, never the listener bind; one `list-sessions` gives the
+    // live set instead of a `has-session` fork per workspace.
+    {
+        let all = workspaces.list();
+        tokio::task::spawn_blocking(move || {
+            let client = crate::tmux::TmuxClient::new();
+            let live: std::collections::HashSet<String> = match client.list_sessions() {
+                Ok(sessions) => sessions.into_iter().map(|s| s.name).collect(),
+                Err(e) => {
+                    tracing::debug!(error = %e, "awareness-env sweep: list-sessions failed (no tmux server?) — skipping");
+                    return;
+                }
+            };
+            let mut healed = 0usize;
+            for ws in &all {
+                if !live.contains(&ws.tmux_session) {
+                    continue;
+                }
+                client.set_session_env_all(
+                    &ws.tmux_session,
+                    &crate::pty::awareness_env(Some(&ws.slug), Some(&ws.project_root)),
+                );
+                healed += 1;
+            }
+            if healed > 0 {
+                tracing::info!(
+                    sessions = healed,
+                    "stamped SOT_* awareness env onto live workspace tmux sessions"
+                );
+            }
+        });
     }
 
     // When the backend is launched with `--label`, stamp our identity into
