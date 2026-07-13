@@ -2935,7 +2935,15 @@ impl State {
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: surface_caps.present_modes[0],
+            // AutoVsync, NOT `present_modes[0]`: the capability list's order
+            // is driver-specific, so [0] picked a non-vsync mode (Immediate/
+            // Mailbox) on some GPUs — visible flicker/tearing since day one on
+            // those machines, worst in fullscreen where DWM composition stops
+            // masking it (ryzen5 finding, 2026-07-12; the same build was clean
+            // on hardware whose driver lists Fifo first). AutoVsync =
+            // FifoRelaxed where supported, else Fifo — vsynced on every
+            // backend.
+            present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
