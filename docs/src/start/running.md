@@ -80,7 +80,7 @@ a real quit tears it down.
 `W` opens HTML/static sites through backend HTTP ports that must be forwarded to
 the frontend machine: `1236` for normal static pages, plus `1237`-`1240` for
 sites with root-relative assets. Video and Pluto use the same pattern on `1235`
-and `1234`.
+and `1234`, and interactive WGLMakie figures (`wglshow`) on `1241`.
 
 If you manually reconnect with only the backend control tunnel, the frontend can
 still talk to `sotd` but the local browser will show `127.0.0.1 refused to
@@ -95,6 +95,7 @@ ssh -N \
   -L 1238:127.0.0.1:1238 \
   -L 1239:127.0.0.1:1239 \
   -L 1240:127.0.0.1:1240 \
+  -L 1241:127.0.0.1:1241 \
   <backend-ssh-alias>
 ```
 
