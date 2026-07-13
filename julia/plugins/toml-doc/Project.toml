@@ -1,7 +1,7 @@
 name = "ShipToolsTomlDoc"
 uuid = "89374b2f-bbbb-4ed7-b4b7-d86c059b142c"
 authors = ["kalidke"]
-version = "0.3.8"
+version = "0.3.9"
 
 [deps]
 ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"
