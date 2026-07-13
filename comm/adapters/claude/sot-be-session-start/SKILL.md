@@ -124,6 +124,15 @@ handy.
 delivered (e.g. the Windows side posted while no listener was up). Surfaces new
 entries from `.claude-bus/from-windows.md` in the Ship of Tools repo.
 
+## You can drive the FE
+
+Reminder now that you're connected: a BE session can **drive the user's frontend** —
+`sot-fe preview|reveal|goto|mode|notify|open-url|repl` (and `sot-nav.sh` inside a
+workspace session). Surface results there instead of only naming them in text: badge
+a produced figure/file (show-result skill), open a PR/CI/dashboard URL in the user's
+browser via `sot-fe open-url`. The full verb surface + discipline is in the
+**sot-comm** skill's BE→FE section.
+
 ## Why a skill (not a hardcoded resume prompt)
 
 Keeping the receive-setup here (and the generic core in `/sot-session-start`) means
