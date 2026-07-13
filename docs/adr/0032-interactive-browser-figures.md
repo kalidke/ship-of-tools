@@ -150,3 +150,51 @@ dynamically) and returns `browserview(url)`.
   show-image doctrine — it is the requested show, on the user's own machine.
 - **Lifecycle**: the Bonito server lives as long as the REPL process; an `r`
   restart (project bounce) drops it and the next figure re-binds 1241.
+
+## Follow-up: multi-FE robustness (planned, 2026-07-13)
+
+Live multi-FE use exposed three structural limits in the fixed-port +
+launcher-static-forward design (an interactive figure served by one backend
+session was invisible to a roaming owner on a second FE machine). All three
+trace to one root: **a single hard-wired port 1241, forwarded once at
+FE-launch.**
+
+1. **Single fixed port / single server.** `wglshow` binds a fixed
+   `127.0.0.1:1241` and tracks one server in a global `WGL_SERVER` Ref *per REPL
+   process*. A second `wglshow` in the same REPL replaces the first; a second in
+   a *different* workspace's REPL hits `EADDRINUSE`. So the whole backend serves
+   at most one interactive figure at a time.
+2. **Broadcast open** (already noted above): every attached FE opens the URL.
+3. **Launcher-static forward.** The `-L 1241` tunnel is armed once, at
+   FE-launch, by `launch-sot.{sh,ps1}` / `install.sh`. An FE launched before
+   1241 was added to the forward set, or after its tunnel dropped, silently has
+   no route to 1241 — the browser opens and gets `ERR_CONNECTION_REFUSED` while
+   the backend server is healthy (the FE-local loopback just has nothing behind
+   it). Re-arming needs a full launcher relaunch or a manual
+   `ssh -L 1241:127.0.0.1:1241 <backend-host>`.
+
+### Planned fix — two composing halves
+
+**(a) Backend: per-figure WGL port pool.** Allocate a free port per figure from
+a small pool (e.g. 1241–1248) instead of the hard-wired 1241; track servers
+per-port so concurrent figures across workspaces coexist instead of colliding.
+The chosen port travels in the emitted `browser` frame's URL, so no end needs to
+agree on a fixed number.
+
+**(b) FE: on-demand forward.** The FE — not the launcher — is the right place to
+establish the tunnel: it knows it is remote (it holds the host / `ssh_alias`
+config) and it is the party opening the browser. On a `browser` frame carrying a
+loopback URL, a *remote* FE ensures an `ssh -L <port>` forward to the backend
+host exists (injected over the existing ControlMaster connection, or a
+short-lived `ssh -N -L`) *before* `open_url_in_browser`; a *local* FE opens
+`127.0.0.1:<port>` directly. This removes the launcher-static dependency
+entirely and is inherently multi-FE-safe — each FE forwards its own loopback, on
+demand, to exactly the port the frame names.
+
+Optionally gate the broadcast-open (limit #2) on the frame's `workspace_id`
+matching the FE's active workspace, so only the FE viewing that workspace opens
+the tab.
+
+**Interim workaround** (until (a)+(b) land): a remote FE that gets
+`ERR_CONNECTION_REFUSED` runs `ssh -N -L 1241:127.0.0.1:1241 <backend-host>` and
+hard-reloads, or relaunches via the launcher to re-arm the full 1234–1241 set.
