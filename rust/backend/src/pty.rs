@@ -839,14 +839,22 @@ pub fn boot_wrapper_command(session: &str, agent_name: &str, agent_kind: &str) -
     // Re-read the tmux session env before exec so the agent inherits the SOT_*
     // vars even when the stamp landed AFTER this shell spawned (the tmux < 3.2
     // `set-environment` fallback, the daemon-boot repair sweep); harmless
-    // no-op re-export where `-e` already delivered them. `show-environment -s`
-    // emits eval-able `VAR="val"; export VAR;` lines with values escaped by
-    // tmux (verified on 3.0a and next-3.7); the export alternation guards a
-    // hypothetical split-line format. Session names pass `valid_name`
-    // ([A-Za-z0-9._-]), so the single-quoted embedding is safe.
-    w.push_str("eval \"$(tmux show-environment -s -t '");
+    // no-op re-export where `-e` already delivered them. Each var is queried
+    // BY EXACT NAME — never a prefix grep over the whole env, which Codex
+    // showed is eval-injectable via a hostile var NAME (tmux validates only
+    // "no '=' in name") and corrupts multiline values (line filter drops the
+    // continuation lines of tmux's quoted serialization). `show-environment
+    // -s <name>` emits one eval-able `VAR="val"; export VAR;` command with
+    // the value escaped by tmux (verified on 3.0a and next-3.7; unset name →
+    // stderr + empty stdout → eval no-op). Keep the name list in lockstep
+    // with `awareness_env` (pinned by a test). Session names pass
+    // `valid_name` ([A-Za-z0-9._-]), so the single-quoted embedding is safe.
+    w.push_str(
+        "for _v in SOT_SESSION SOT_WORKSPACE SOT_WORKSPACE_ROOT SOT_MANUAL; do \
+         eval \"$(tmux show-environment -s -t '",
+    );
     w.push_str(session);
-    w.push_str("' 2>/dev/null | grep -E '^(SOT_|export SOT_)')\"; ");
+    w.push_str("' \"$_v\" 2>/dev/null)\"; done; ");
     w.push_str(&env);
     // ADR 0031: launcher branch by agent kind. ccx is the codex counterpart
     // of ccb (comm/adapters/codex/bin/ccx); anything unknown falls back to
@@ -1149,7 +1157,7 @@ mod tests {
 
     #[test]
     fn boot_wrapper_rereads_session_env_before_exec() {
-        // The wrapper must re-read the tmux session env (eval of
+        // The wrapper must re-read the tmux session env (per-name eval of
         // show-environment) AFTER the attach wait and BEFORE exec'ing the
         // launcher — that's what carries the SOT_* vars into the agent on
         // tmux < 3.2 (set-environment lands after the pane shell spawned).
@@ -1157,10 +1165,20 @@ mod tests {
         let eval_at = w
             .find("eval \"$(tmux show-environment -s -t 'sot-be-alpha'")
             .expect("wrapper re-reads session env");
-        assert!(w[eval_at..].contains("grep -E '^(SOT_|export SOT_)'"));
         let name_at = w.find("export SOT_COMM_NAME=alpha-agent").expect("pins comm name");
         let exec_at = w.find("exec ~/.local/bin/ccb").expect("execs ccb");
         assert!(eval_at < name_at, "env re-read must precede the comm-name pin");
         assert!(name_at < exec_at, "comm-name pin must precede exec");
+        // Lockstep pin: every var awareness_env can stamp must be in the
+        // wrapper's exact-name re-read list (per-name query, never a prefix
+        // grep — that was eval-injectable via hostile var names and broke
+        // multiline values). A new awareness var without a wrapper entry
+        // fails here.
+        for (k, _) in awareness_env(Some("alpha"), Some(Path::new("/proj/alpha"))) {
+            assert!(
+                w.contains(&k),
+                "awareness var {k} missing from the wrapper's re-read name list"
+            );
+        }
     }
 }
