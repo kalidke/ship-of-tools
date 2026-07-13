@@ -100,6 +100,68 @@ function Stop-Splash {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Self-update prelude (ADR 0032 - launcher self-update gap, 2026-07-13).
+# A running .ps1 executes its already-parsed AST, so a git pull that adds e.g.
+# a new -L forward to THIS script only takes effect on a fresh PARSE - the
+# launch that pulls the change still runs the old port set (the 1241 WGL
+# connection-refused incident). Fix: pull FIRST, and if this script itself
+# changed, re-invoke the fresh copy IN-PROCESS (a re-parse, not a new OS
+# process) before any binary/backend/tunnel/FE side effect. Guarded to one
+# re-invoke. Fail-open: a failed/absent pull, or a pulled copy that fails the
+# parse check, runs the current copy.
+#
+# One-build handoff: a successful pull sets SOT_LAUNCH_REBUILD so the final
+# invocation runs cargo exactly once (the old freshness block, now cargo-only).
+# SOT_LAUNCH_REEXEC guards the re-invoke and is cleared just below so neither
+# the tunnels nor an exit-75 relaunch inherit it. -Local (a freshness-free debug
+# path) and -NoUpdate skip the whole prelude.
+# ---------------------------------------------------------------------------
+if (-not $NoUpdate -and -not $Local -and -not $env:SOT_LAUNCH_REEXEC -and (Test-Path (Join-Path $repo '.git'))) {
+    # Relax 'Stop' -> 'Continue' around native git: its stderr under 'Stop' + 2>&1
+    # throws in PS 5.1. Gate on $LASTEXITCODE, not thrown errors (as below).
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $selfRel = 'scripts/launch-sot.ps1'
+        $before = git -C $repo rev-parse "HEAD:$selfRel" 2>$null
+        Set-LaunchStatus 'Checking for updates...'
+        Write-SupLog 'self-update: git pull --rebase --autostash'
+        $pullOut = git -C $repo pull --rebase --autostash 2>&1
+        Write-SupLog "self-update: git -> $($pullOut | Select-Object -Last 1)"
+        if ($LASTEXITCODE -eq 0) {
+            $env:SOT_LAUNCH_REBUILD = '1'   # pull ok -> final invocation builds once
+            $after = git -C $repo rev-parse "HEAD:$selfRel" 2>$null
+            if ($after -and $before -and ($after -ne $before)) {
+                # This launcher changed under us. Syntax-check the pulled copy by
+                # blob-OID diff before handing over - a broken-but-successful pull
+                # must not brick the launch (fail-open beats re-parsing garbage).
+                $tokens = $null
+                $parseErrors = $null
+                [System.Management.Automation.Language.Parser]::ParseFile(
+                    $PSCommandPath, [ref]$tokens, [ref]$parseErrors) | Out-Null
+                if ($parseErrors -and $parseErrors.Count -gt 0) {
+                    Write-SupLog "self-update: pulled launcher has parse errors - staying on current copy: $($parseErrors[0].Message)"
+                } else {
+                    Write-SupLog 'self-update: launcher changed - re-invoking fresh copy'
+                    Stop-Splash   # the fresh invocation spawns its own splash
+                    $env:SOT_LAUNCH_REEXEC = '1'
+                    & $PSCommandPath @PSBoundParameters
+                    exit $LASTEXITCODE
+                }
+            }
+        } else {
+            Set-LaunchStatus 'Offline or dirty tree - launching current build...'
+            Write-SupLog 'self-update: pull failed - launching existing binary'
+        }
+    } finally {
+        $ErrorActionPreference = $savedEAP
+    }
+}
+# The re-invoke guard has served its purpose; clear it so the FE and an exit-75
+# relaunch don't inherit it (a relaunch must self-update afresh).
+if ($env:SOT_LAUNCH_REEXEC) { Remove-Item Env:\SOT_LAUNCH_REEXEC -ErrorAction SilentlyContinue }
+
 Add-Type -AssemblyName System.Windows.Forms   # MessageBox for the fatal dialogs below
 
 $frontendExe = Join-Path $repo 'rust\target\release\sot.exe'
@@ -457,36 +519,26 @@ function Start-SotAuxTunnel {
 # launches the existing staged/dev binary — a broken update path must never
 # brick the launcher. -NoUpdate skips.
 # ---------------------------------------------------------------------------
-if (-not $NoUpdate -and (Test-Path (Join-Path $repo '.git'))) {
-    # $ErrorActionPreference is 'Stop' for the whole script, but this block runs
-    # native tools (git, cargo) and captures their stderr with 2>&1. In Windows
-    # PowerShell 5.1 that combination turns EVERY stderr line into a terminating
-    # NativeCommandError under 'Stop' — cargo always prints "Finished ..." to
-    # stderr, and git prints fetch progress there — so the launcher would throw
-    # and die mid-freshness, BEFORE the frontend ever spawns (the "taskbar
-    # launcher does nothing" regression, f8fdf81). This pass is fail-open and
-    # gates on $LASTEXITCODE, not on thrown errors, so relax to 'Continue' here
-    # and restore 'Stop' after.
+if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate) {
+    # The git pull moved to the self-update prelude at the top; here we only
+    # REBUILD, and only when that pull succeeded (the SOT_LAUNCH_REBUILD marker)
+    # so exactly one cargo build runs in the final invocation. Consume the marker.
+    Remove-Item Env:\SOT_LAUNCH_REBUILD -ErrorAction SilentlyContinue
+    # $ErrorActionPreference is 'Stop', but cargo prints "Finished ..." to stderr,
+    # which under 'Stop' + 2>&1 in PS 5.1 turns every stderr line into a
+    # terminating NativeCommandError (the "taskbar launcher does nothing"
+    # regression, f8fdf81). Gate on $LASTEXITCODE, not thrown errors; restore after.
     $savedEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        Set-LaunchStatus 'Checking for updates...'
-        Write-SupLog "freshness: git pull --rebase --autostash"
-        $pullOut = git -C $repo pull --rebase --autostash 2>&1
-        Write-SupLog "freshness: git -> $($pullOut | Select-Object -Last 1)"
-        if ($LASTEXITCODE -eq 0) {
-            Set-LaunchStatus 'Rebuilding frontend...'
-            Write-SupLog "freshness: cargo build -p sot-frontend"
-            $buildOut = cargo build --release -p sot-frontend --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                Set-LaunchStatus 'ERROR: frontend rebuild failed - launching existing build (see supervisor.log)'
-                Write-SupLog "freshness: BUILD FAILED - launching existing binary. tail: $($buildOut | Select-Object -Last 3)"
-            } else {
-                Write-SupLog "freshness: frontend rebuilt"
-            }
+        Set-LaunchStatus 'Rebuilding frontend...'
+        Write-SupLog "freshness: cargo build -p sot-frontend"
+        $buildOut = cargo build --release -p sot-frontend --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Set-LaunchStatus 'ERROR: frontend rebuild failed - launching existing build (see supervisor.log)'
+            Write-SupLog "freshness: BUILD FAILED - launching existing binary. tail: $($buildOut | Select-Object -Last 3)"
         } else {
-            Set-LaunchStatus 'Offline or dirty tree - launching current build...'
-            Write-SupLog "freshness: pull failed - launching existing binary"
+            Write-SupLog "freshness: frontend rebuilt"
         }
     } finally {
         $ErrorActionPreference = $savedEAP
