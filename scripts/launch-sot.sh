@@ -18,6 +18,39 @@
 # SOT_RESTART_BE=1 (force a backend restart even if one is running).
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+
+# --- Self-update prelude (ADR 0032 - launcher self-update gap, 2026-07-13) ---
+# A running script is read through an fd pinned to the old inode, so a git pull
+# that adds e.g. a new -L forward to THIS script does not affect the current run:
+# the launch that pulls the change still opens the old port set (the 1241 WGL
+# connection-refused incident). Fix: pull FIRST (before the socket query and any
+# tunnel/FE side effect) and, if this script itself changed, exec the fresh copy.
+# SOT_LAUNCH_REEXEC guards it to one hop; SOT_LAUNCH_REBUILD hands the one cargo
+# build to the final exec. Fail-open: a failed/absent pull, or a pulled copy that
+# fails `bash -n`, runs the current version. SOT_NO_UPDATE=1 skips it.
+if [ "${SOT_NO_UPDATE:-0}" != 1 ] && [ -z "${SOT_LAUNCH_REEXEC:-}" ] && [ -d "$REPO/.git" ]; then
+    self_rel="scripts/launch-sot.sh"
+    before="$(git -C "$REPO" rev-parse "HEAD:$self_rel" 2>/dev/null || true)"
+    if git -C "$REPO" pull --rebase --autostash >/dev/null 2>&1; then
+        export SOT_LAUNCH_REBUILD=1   # pull ok -> the final exec builds once
+        after="$(git -C "$REPO" rev-parse "HEAD:$self_rel" 2>/dev/null || true)"
+        if [ -n "$after" ] && [ -n "$before" ] && [ "$after" != "$before" ]; then
+            if bash -n "${BASH_SOURCE[0]}" 2>/dev/null; then
+                echo "self-update: launcher changed - re-exec fresh copy"
+                export SOT_LAUNCH_REEXEC=1
+                exec "$BASH" "${BASH_SOURCE[0]}" "$@"
+            else
+                echo "self-update: pulled launcher failed bash -n - staying on current copy" >&2
+            fi
+        fi
+    else
+        echo "WARNING: git pull failed (offline or dirty) - launching current version" >&2
+    fi
+fi
+# Guard has served its purpose; do not leak it to the FE or an exit-75 relaunch.
+unset SOT_LAUNCH_REEXEC || true
+# --- end self-update prelude ---
+
 : "${SOT_HOST:?set SOT_HOST or configure .sot/hosts.toml}"
 : "${SOT_REMOTE_REPO:?set SOT_REMOTE_REPO or configure .sot/hosts.toml}"
 HOST="$SOT_HOST"
@@ -47,21 +80,23 @@ ensure_aux_tunnel() {
         echo "browser aux ports already forwarded (${AUX_PORTS[*]})"
         return 0
     fi
+    # Forward ONLY the missing ports (ADR 0032 launcher self-update gap). An old
+    # `ssh -fN` aux tunnel OUTLIVES the FE window, so after a new port is added
+    # (e.g. WGL 1241) a prior launch's tunnel covers 1234-1240 but not 1241.
+    # Opening a SUPPLEMENTARY tunnel for just the missing ports repairs that
+    # without the old hard-abort and without killing the live tunnel that also
+    # carries the control forward. (The full fix - the FE forwarding on demand -
+    # is ADR 0032's port-pool follow-up, PR #10.)
     if [ "${#missing[@]}" -ne "${#AUX_PORTS[@]}" ]; then
-        echo "ERROR: only some browser aux ports are open; missing: ${missing[*]}" >&2
-        echo "       stop stale tunnels/services or free ports: ${AUX_PORTS[*]}" >&2
-        exit 1
+        echo "browser aux: forwarding missing ports only: ${missing[*]}"
     fi
+    local fwd=()
+    for p in "${missing[@]}"; do
+        fwd+=(-L "$p:127.0.0.1:$p")
+    done
     ssh -fN -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
-        -L "$PLUTO_PORT:127.0.0.1:$PLUTO_PORT" \
-        -L "$VIDEO_PORT:127.0.0.1:$VIDEO_PORT" \
-        -L "$DOCS_PORT:127.0.0.1:$DOCS_PORT" \
-        -L "$((DOCS_PORT+1)):127.0.0.1:$((DOCS_PORT+1))" \
-        -L "$((DOCS_PORT+2)):127.0.0.1:$((DOCS_PORT+2))" \
-        -L "$((DOCS_PORT+3)):127.0.0.1:$((DOCS_PORT+3))" \
-        -L "$((DOCS_PORT+4)):127.0.0.1:$((DOCS_PORT+4))" \
-        -L "$WGL_PORT:127.0.0.1:$WGL_PORT" "$HOST" \
-        || { echo "ERROR: could not open browser aux SSH tunnel to $HOST" >&2; exit 1; }
+        "${fwd[@]}" "$HOST" \
+        || { echo "ERROR: could not open browser aux SSH tunnel to $HOST (missing: ${missing[*]})" >&2; exit 1; }
 }
 
 if [ -z "$REMOTE_SOCKET" ]; then
@@ -119,15 +154,14 @@ else
     echo "remote backend already running — leaving it (SOT_RESTART_BE=1 to force restart)"
 fi
 
-# 3. Frontend freshness (ADR 0030 dev-freshness rev 2): pull + rebuild THIS
-# machine's FE before launching. FAIL-OPEN — offline/dirty/broken-main warns
-# and launches the existing binary. SOT_NO_UPDATE=1 skips.
-if [ "${SOT_NO_UPDATE:-0}" != 1 ] && [ -d "$REPO/.git" ]; then
-    if git -C "$REPO" pull --rebase --autostash >/dev/null 2>&1; then
-        cargo build --release -p sot-frontend --manifest-path "$REPO/rust/Cargo.toml"             || echo "WARNING: frontend rebuild failed — launching existing binary" >&2
-    else
-        echo "WARNING: git pull failed (offline or dirty) — launching existing binary" >&2
-    fi
+# 3. Frontend rebuild (ADR 0030 dev-freshness rev 2). The git pull moved to the
+# self-update prelude at the top; here we only REBUILD, and only when that pull
+# succeeded (SOT_LAUNCH_REBUILD) so exactly one build runs in the final exec.
+# FAIL-OPEN: a broken build warns and launches the existing binary.
+if [ "${SOT_LAUNCH_REBUILD:-0}" = 1 ] && [ "${SOT_NO_UPDATE:-0}" != 1 ]; then
+    unset SOT_LAUNCH_REBUILD || true
+    cargo build --release -p sot-frontend --manifest-path "$REPO/rust/Cargo.toml" \
+        || echo "WARNING: frontend rebuild failed - launching existing binary" >&2
 fi
 
 # 4. Frontend (blocks; GPU window).
