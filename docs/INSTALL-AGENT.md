@@ -64,10 +64,11 @@ command -v tmux && tmux -V # REQUIRED on any host that RUNS the backend (local /
   3.0a on Ubuntu 20.04) it was rejected at arg-parse — which historically drove a
   respawn storm that forked ~339k zombie tmux clients (expectations, 2026-07-11).
   The daemon now **version-gates** the flag: on tmux < 3.2 it omits `-e` and falls
-  back to a best-effort `set-environment`, so the backend runs but the pane's
-  in-session awareness is best-effort only. For full awareness, put a
-  **tmux ≥ 3.2** earlier on the daemon's `PATH` (e.g. a user-local build in
-  `~/.local/bin`).
+  back to a best-effort `set-environment`. Agent panes still get the `SOT_*`
+  vars (the boot wrapper re-reads the session env before launching the agent);
+  plain shell panes are best-effort and consumers fall back to the session
+  name. For uniform awareness, put a **tmux ≥ 3.2** earlier on the daemon's
+  `PATH` (e.g. a user-local build in `~/.local/bin`).
 - **Linux x86_64, glibc ≥ 2.35** → full install works.
 - **Linux, older glibc** → only `--be-only` (the backend is static musl);
   the frontend must run on another machine.
@@ -114,15 +115,16 @@ bash installer here — four steps (issue #23):
    above — you can drive that over SSH). It listens on that user's private
    socket, normally `/run/user/<uid>/sot/sessions/sot.sock`.
 3. **Forward the ports** — the protocol port is local-only and terminates at
-   the remote socket; the aux ports carry
-   Pluto, video, and the docs-site servers (`W` and `o` silently break
-   without them):
+   the remote socket; the aux ports carry Pluto (1234), video (1235), the
+   docs-site servers (1236, pool 1237-1240), and interactive WGLMakie
+   figures (1241) — `W`, `o`, and `wglshow` silently break without them:
 
    ```powershell
    $sock = ssh <ssh-alias> '~/.local/share/sot/bin/sotd session-socket-path sot'
    ssh -N -L "18743:$sock" -L 1234:127.0.0.1:1234 -L 1235:127.0.0.1:1235 `
        -L 1236:127.0.0.1:1236 -L 1237:127.0.0.1:1237 -L 1238:127.0.0.1:1238 `
-       -L 1239:127.0.0.1:1239 -L 1240:127.0.0.1:1240 <ssh-alias>
+       -L 1239:127.0.0.1:1239 -L 1240:127.0.0.1:1240 -L 1241:127.0.0.1:1241 `
+       <ssh-alias>
    ```
 
 4. **Launch**: `sot.exe --tcp 127.0.0.1:18743` (`sot.exe --help` prints the
@@ -148,7 +150,7 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
 ```
 
 `--backend` writes a `sot-launch` that opens the SSH forwards (local 18743 to
-the remote socket, plus 1234-1240) and starts the frontend; `--local` starts
+the remote socket, plus 1234-1241) and starts the frontend; `--local` starts
 `sotd` on demand (no systemd on macOS; launchd wiring is roadmap). If the human prefers manual
 steps: download `sot-<ver>-macos-aarch64.tar.gz` + `SHA256SUMS`, verify
 (`shasum -a 256 -c`), `xattr -d com.apple.quarantine ./sot ./sotd`, forward

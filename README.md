@@ -78,11 +78,11 @@ Install Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-t
 The agent runs preflight, asks you one topology question, drives the
 installer, and proves the result answers before it says done.
 
-**Current version: `0.3.2`** — with published
-[GitHub Releases](https://github.com/kalidke/ship-of-tools/releases) carrying
-prebuilt artifacts for Linux x86_64, Windows x86_64, and macOS aarch64.
-`scripts/install.sh` is the user-install path; source builds are stamped
-`-dev` and never self-update.
+**Prebuilt artifacts** ship with every
+[GitHub Release](https://github.com/kalidke/ship-of-tools/releases) — Linux
+x86_64, Windows x86_64, and macOS aarch64; the installer always fetches the
+latest. `scripts/install.sh` is the user-install path; source builds are
+stamped `-dev` and never self-update.
 
 `scripts/install.sh` downloads the latest release (SHA256-verified), lays out
 `~/.local/share/sot`, installs Julia via juliaup when needed, installs the
