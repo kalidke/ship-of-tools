@@ -1,4 +1,4 @@
-# Julia Concept-Explorer Development Environment — Requirements
+# Ship of Tools — an Agentic Julia Development Environment — Requirements
 
 *Draft v0.1 — problem and requirements only. Implementation choices are deliberately deferred.*
 
@@ -8,7 +8,7 @@ Working with a Julia codebase — whether you wrote it yourself, an LLM wrote it
 
 ## Goal
 
-A keyboard-driven Julia development environment that functions as a **concept explorer**, letting a developer move fluidly between levels of abstraction — project, module, type, function, outputs, math — while preserving the conventional mechanics of finding, viewing, editing, and running any `.jl` file with a persistent REPL. The LLM has a dual role: it writes and edits code, and it maintains the concept-explorer artifacts so they stay in sync with the codebase as it evolves.
+A keyboard-driven Julia development environment built to be driven by AI agents: the agents write, run, and surface code while the developer steers, watches, and reviews. It preserves the conventional mechanics of finding, viewing, editing, and running any `.jl` file with a persistent REPL, and layers a **concept explorer** on top — letting a developer move fluidly between levels of abstraction (project, module, type, function, outputs, math). The LLM has a dual role: it writes and edits code, and it maintains the concept-explorer artifacts so they stay in sync with the codebase as it evolves.
 
 ## Users and scope
 

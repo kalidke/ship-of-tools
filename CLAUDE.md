@@ -1,6 +1,6 @@
 # Ship of Tools
 
-A keyboard-driven Julia development environment that functions as a **concept explorer** — letting a developer move fluidly between levels of abstraction (project, module, type, function, output, math) while preserving conventional editor and REPL mechanics. The LLM is the primary author of code and maintainer of the concept-explorer artifacts.
+An agentic Julia development environment: AI agents drive the TUI, REPL, and navigation to read, run, and surface code — the developer steers, watches, and reviews. It preserves conventional editor and REPL mechanics and layers a **concept explorer** on top (moving fluidly between project, module, type, function, output, and math). The LLM is the primary author of code and maintainer of the concept-explorer artifacts.
 
 `requirements.md` is the source of truth for **what** this system does. This document captures the design decisions for **how** it does it.
 
