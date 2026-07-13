@@ -494,11 +494,10 @@ fn spawn_tmux_pair(
 
 /// The `SOT_*` awareness env for a tmux session the daemon owns: `SOT_SESSION=1`
 /// ("you are inside Ship of Tools"), the owning workspace's slug + project root,
-/// and the product checkout for the help persona. Shared by every
-/// session-creation path (`Pty::spawn`'s `new-session -A`,
-/// `TmuxClient::create_session`, and the boot-time repair sweep) so they can't
-/// drift apart — the SOT_WORKSPACE field gap came from `create_session`
-/// stamping nothing while this path stamped on create-only.
+/// and the product checkout for the help persona. The one builder shared by
+/// every session-creation path (`Pty::spawn`'s `new-session -A`,
+/// `TmuxClient::create_session`, and the boot-time repair sweep) so the paths
+/// can't drift on WHAT gets stamped.
 pub(crate) fn awareness_env(slug: Option<&str>, cwd: Option<&Path>) -> Vec<(String, String)> {
     let mut env = vec![("SOT_SESSION".to_string(), "1".to_string())];
     if let Some(slug) = slug {
@@ -507,18 +506,30 @@ pub(crate) fn awareness_env(slug: Option<&str>, cwd: Option<&Path>) -> Vec<(Stri
     if let Some(dir) = cwd {
         env.push(("SOT_WORKSPACE_ROOT".to_string(), dir.to_string_lossy().into_owned()));
     }
-    // Clone-based install (ADR 0030 addendum): point the pane's agent at the
-    // product's own checkout — the repo IS the manual, and docs/USING.md is its
-    // entry point for a help+extend persona. Resolved through the same chain as
-    // every other resource, so dev checkouts get the dev tree and installs get
-    // $PREFIX/repo/current. Only exported when it exists.
-    let manual = crate::paths::resource_dir("docs");
-    if manual.exists() {
-        if let Some(root) = manual.parent() {
-            env.push(("SOT_MANUAL".to_string(), root.to_string_lossy().into_owned()));
-        }
+    if let Some(root) = manual_root() {
+        env.push(("SOT_MANUAL".to_string(), root.to_string_lossy().into_owned()));
     }
     env
+}
+
+/// Clone-based install (ADR 0030 addendum): the pane's agent gets pointed at
+/// the product's own checkout — the repo IS the manual, and docs/USING.md is
+/// its entry point for a help+extend persona. Resolved through the same chain
+/// as every other resource (dev checkouts get the dev tree, installs get
+/// $PREFIX/repo/current); `None` when absent. Cached: the answer can't change
+/// under a running daemon, and `awareness_env` is called per session spawn +
+/// per workspace in the boot sweep (same reasoning as `tmux_supports_dash_e`).
+fn manual_root() -> Option<&'static Path> {
+    static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let manual = crate::paths::resource_dir("docs");
+        if manual.exists() {
+            manual.parent().map(Path::to_path_buf)
+        } else {
+            None
+        }
+    })
+    .as_deref()
 }
 
 /// Does this tmux understand `new-session -e`? The flag arrived in tmux 3.2;
@@ -600,10 +611,7 @@ fn best_effort_session_env(target: &str, env: Vec<(String, String)>) {
         .name("sot-session-env".into())
         .spawn(move || {
             std::thread::sleep(Duration::from_millis(250));
-            let client = crate::tmux::TmuxClient::new();
-            for (k, v) in &env {
-                client.set_session_env(&target, k, v);
-            }
+            crate::tmux::TmuxClient::new().set_session_env_all(&target, &env);
         });
 }
 
@@ -662,7 +670,7 @@ const PTY_RECENT_CAP: usize = 1024;
 /// `has-session -t foo` would say yes for `foo-bar`). A dead or absent
 /// tmux server reports "no", which is the right answer for the
 /// resurrection-guard either way.
-pub(crate) fn session_exists(name: &str) -> bool {
+fn session_exists(name: &str) -> bool {
     // Private per-user socket (security review) — same as `spawn_tmux_pair`.
     std::process::Command::new("tmux")
         .arg("-S")
@@ -711,9 +719,7 @@ pub async fn boot_workspace_claude(
     // Open a real pty client to the session on a blocking thread (openpty +
     // process spawn). `-A` attaches to the existing session created moments ago
     // by `create_session`; `-c`/`-e` are ignored on attach (tmux semantics), but
-    // the session was already rooted + env-stamped by `create_session` itself
-    // (it stamps the same `awareness_env` — before it did, this comment's claim
-    // was false and every workspace.create session ran with SOT_WORKSPACE unset).
+    // `create_session` already rooted the session and stamped `awareness_env`.
     let session_spawn = session.clone();
     let cwd_spawn = cwd.clone();
     let slug_spawn = slug.clone();
@@ -831,17 +837,16 @@ pub fn boot_wrapper_command(session: &str, agent_name: &str, agent_kind: &str) -
     w.push_str(session);
     w.push_str("' '#{session_attached}' 2>/dev/null || echo 0)\" = 0 ] && [ \"$i\" -lt 300 ]; do sleep 0.1; i=$((i+1)); done; ");
     // Re-read the tmux session env before exec so the agent inherits the SOT_*
-    // awareness vars regardless of how they got there: `-e` at create
-    // (tmux >= 3.2) already reached this shell, but the tmux < 3.2
-    // `set-environment` fallback and the daemon-boot repair sweep land AFTER
-    // the pane's shell spawned, and a session env var never retroactively
-    // reaches a running process. `show-environment -s` prints eval-able
-    // `VAR="val"; export VAR;` lines; unset markers print as `unset VAR;` and
-    // are dropped by the grep. Session names pass `valid_name` ([A-Za-z0-9._-]),
-    // so the single-quoted embedding is safe.
+    // vars even when the stamp landed AFTER this shell spawned (the tmux < 3.2
+    // `set-environment` fallback, the daemon-boot repair sweep); harmless
+    // no-op re-export where `-e` already delivered them. `show-environment -s`
+    // emits eval-able `VAR="val"; export VAR;` lines with values escaped by
+    // tmux (verified on 3.0a and next-3.7); the export alternation guards a
+    // hypothetical split-line format. Session names pass `valid_name`
+    // ([A-Za-z0-9._-]), so the single-quoted embedding is safe.
     w.push_str("eval \"$(tmux show-environment -s -t '");
     w.push_str(session);
-    w.push_str("' 2>/dev/null | grep '^SOT_')\"; ");
+    w.push_str("' 2>/dev/null | grep -E '^(SOT_|export SOT_)')\"; ");
     w.push_str(&env);
     // ADR 0031: launcher branch by agent kind. ccx is the codex counterpart
     // of ccb (comm/adapters/codex/bin/ccx); anything unknown falls back to
@@ -1152,7 +1157,7 @@ mod tests {
         let eval_at = w
             .find("eval \"$(tmux show-environment -s -t 'sot-be-alpha'")
             .expect("wrapper re-reads session env");
-        assert!(w[eval_at..].contains("grep '^SOT_'"));
+        assert!(w[eval_at..].contains("grep -E '^(SOT_|export SOT_)'"));
         let name_at = w.find("export SOT_COMM_NAME=alpha-agent").expect("pins comm name");
         let exec_at = w.find("exec ~/.local/bin/ccb").expect("execs ccb");
         assert!(eval_at < name_at, "env re-read must precede the comm-name pin");

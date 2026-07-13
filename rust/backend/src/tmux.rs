@@ -170,7 +170,9 @@ impl TmuxClient {
     /// `SOT_WORKSPACE`). On tmux >= 3.2 the env rides `-e` on `new-session`,
     /// which the initial pane process inherits too; older tmux gets a
     /// post-create `set-environment` (future processes only — the boot
-    /// wrapper's session-env re-read covers the pane command there).
+    /// wrapper's session-env re-read covers the pane command there, but a
+    /// generic non-wrapper `command` on tmux < 3.2 starts before the stamp
+    /// lands and runs without SOT_*; consumers keep their name fallback).
     pub fn create_session(
         &self,
         name: &str,
@@ -202,9 +204,7 @@ impl TmuxClient {
             // gotcha — see `tmux_supports_dash_e`). Recover via set-environment:
             // the session exists once `run` returns, so this is synchronous and
             // best-effort (reaches future processes only).
-            for (k, v) in &env {
-                self.set_session_env(name, k, v);
-            }
+            self.set_session_env_all(name, &env);
         }
         Ok(())
     }
@@ -242,6 +242,17 @@ impl TmuxClient {
     pub fn set_session_env(&self, session: &str, key: &str, val: &str) {
         if let Err(e) = self.run(&["set-environment", "-t", session, key, val]) {
             tracing::debug!(session, key, error = %e, "set-environment (best-effort) — ignoring");
+        }
+    }
+
+    /// Stamp a whole env set onto `session` via `set_session_env`. The single
+    /// place the "loop the awareness pairs into set-environment" pattern lives
+    /// (create_session's tmux < 3.2 fallback, `pty::best_effort_session_env`,
+    /// and the server boot repair sweep all call this), so a change to how a
+    /// var is stamped can't be applied to one copy and missed in another.
+    pub fn set_session_env_all(&self, session: &str, env: &[(String, String)]) {
+        for (k, v) in env {
+            self.set_session_env(session, k, v);
         }
     }
 
