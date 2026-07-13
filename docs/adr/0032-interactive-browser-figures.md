@@ -198,3 +198,22 @@ the tab.
 **Interim workaround** (until (a)+(b) land): a remote FE that gets
 `ERR_CONNECTION_REFUSED` runs `ssh -N -L 1241:127.0.0.1:1241 <backend-host>` and
 hard-reloads, or relaunches via the launcher to re-arm the full 1234–1241 set.
+
+### Root cause observed (2026-07-13): launcher self-update gap
+
+Tonight's concrete trigger was narrower than "an older launcher." The `-L 1241`
+forward *was* present in `launch-sot.ps1` (added 2026-07-12) and the FE launch
+*did* run a freshness `git pull` — but the pull runs **inside the
+already-started launcher process**, updating the script on disk *after* the live
+SSH tunnel args (`$sshAuxArgs`) were captured. So that launch forwarded
+`18743 + 1234–1240` but **not** the just-pulled 1241; the new forward only takes
+effect on the *next* launch. The line above ("a remote FE picks up the new
+forward by re-running its launcher") is one launch too optimistic — the launch
+that pulls a new forward does not itself gain it.
+
+Fix **(b)** subsumes this: an FE that forwards whatever port the `browser` frame
+names no longer depends on the launcher's static `-L` set at all. Interim
+launcher-level candidates (until (b) lands): the launcher **re-execs itself**
+after a freshness pull that changed `launch-sot.ps1`, or the tunnel supervisor
+**diffs its live forward args against the on-disk script** each respawn and
+bounces the tunnel when the forward set changed.
