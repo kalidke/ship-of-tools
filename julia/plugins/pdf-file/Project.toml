@@ -1,7 +1,7 @@
 name = "ShipToolsPDFFile"
 uuid = "ecef8775-a305-4cb8-98a3-a338ce2c81b5"
 authors = ["kalidke"]
-version = "0.3.7"
+version = "0.3.8"
 
 [deps]
 ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"
