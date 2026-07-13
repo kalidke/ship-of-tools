@@ -216,7 +216,32 @@ variant; broadcast urgent is stripped FE-side. Do NOT use it proactively.
 
 > "…and that figure is now showing in your nav pane."
 
-`~/.sot-comm/bin/sot-fe --help` lists the full verbs (preview / reveal / goto / mode / notify).
+### The full `sot-fe` verb surface (`sot-fe --help`)
+
+`preview`/`reveal` above are the show-a-file verbs. The rest drive the FE the same
+way — broadcast by default (the badge floor), `--fe <handle>` to target one FE:
+
+- `goto <ws>` — switch the FE to a workspace (no path). `--boot` seeds autostart so
+  the FE boots `ccb` on the switch (the scriptable spawn->goto->boot primitive —
+  send **directed** with `--fe`, never broadcast).
+- `mode <files|modules|project|...>` — switch the FE's active mode.
+- `notify <text> [--level l] [--ws w]` — surface a one-line notice.
+- **`open-url <http(s)-url>`** — open a URL in the FE machine's OS browser (a PR you
+  opened, a CI/release page, a dashboard, a `wglshow` figure). **Underused — reach
+  for it instead of pasting a link the user has to copy.** Plain https always works;
+  a loopback URL resolves only if the FE launcher forwards that port.
+- **`repl run <ws> <path>` / `repl eval <ws> --code <c>`** — run a `.jl` file (or eval
+  code) in a workspace's persistent REPL and get the COLLECTED output back
+  (stdout/stderr/value/error + figure paths). A real request/response op
+  (`repl.execute`, ADR 0033): blocks until done or `--timeout` (120s default),
+  non-destructive (runs in the REPL's current project, no reset). This is how a
+  session drives another workspace's REPL and reads the result — e.g. serving a
+  `wglshow` figure into a peer's browser.
+
+**Discipline: every new BE->FE command lands in THIS section, in lockstep with the
+`sot-fe` verb that ships it.** A capability no session can discover is dead weight —
+this list sat without `open-url` and `repl` for a while and sessions never reached
+for them.
 
 ## Bootstrapping another session (first contact)
 
