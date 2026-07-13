@@ -59,6 +59,9 @@ as its dependency). The server binds `127.0.0.1:port` with a loopback-shaped
 `proxy_url`, which the launcher's `-L <port>` tunnel forwards to a remote
 frontend. It lives as long as the REPL; a repeat `wglshow` replaces it.
 
+The figure fills the browser window and grows with it as the window is resized
+(`resize_to=:parent` mounted in a viewport-filling container).
+
 Pinned against WGLMakie 0.13 / Bonito 5.1 (validated live, ADR 0032).
 """
 function wglshow(fig; port::Integer = parse(Int, get(ENV, "SOT_WGL_PORT", "1241")))
@@ -73,7 +76,7 @@ function wglshow(fig; port::Integer = parse(Int, get(ENV, "SOT_WGL_PORT", "1241"
     external = "http://$host:$port"
     # invokelatest throughout: these methods were defined by the user's `using`
     # after wglshow's world age (same reason value_frames_for uses it).
-    Base.invokelatest(WGL.activate!)
+    Base.invokelatest(WGL.activate!; resize_to = :parent)
     Base.invokelatest(Bonito.configure_server!;
         listen_url = host, listen_port = port, proxy_url = external)
     prev = WGL_SERVER[]
@@ -83,7 +86,11 @@ function wglshow(fig; port::Integer = parse(Int, get(ENV, "SOT_WGL_PORT", "1241"
         catch
         end
     end
-    app = Base.invokelatest(Bonito.App, fig)
+    # Mount the figure in a viewport-filling container so a resize_to=:parent
+    # figure grows with the browser window instead of Bonito's content-sized
+    # default (which pinned it to ~1/3 width — ImagingSystemDesign finding, 2026-07-13).
+    app = Base.invokelatest(Bonito.App, () ->
+        Bonito.DOM.div(fig; style = "position:fixed; inset:0; margin:0"))
     server = Base.invokelatest(Bonito.Server, app, host, port; proxy_url = external)
     WGL_SERVER[] = server
     url = Base.invokelatest(Bonito.online_url, server, "/")
