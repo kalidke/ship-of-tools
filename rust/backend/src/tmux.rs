@@ -162,11 +162,21 @@ impl TmuxClient {
     /// never attaches the calling client — important because the backend
     /// is itself running inside a tmux client and we don't want recursive
     /// attach.
+    ///
+    /// `slug` is the owning workspace's slug (`None` for non-workspace
+    /// sessions), stamped — with the rest of the `SOT_*` awareness env
+    /// (`pty::awareness_env`) — into the session so processes in the pane
+    /// know which workspace they are in (`sot-nav.sh` et al. key on
+    /// `SOT_WORKSPACE`). On tmux >= 3.2 the env rides `-e` on `new-session`,
+    /// which the initial pane process inherits too; older tmux gets a
+    /// post-create `set-environment` (future processes only — the boot
+    /// wrapper's session-env re-read covers the pane command there).
     pub fn create_session(
         &self,
         name: &str,
         command: Option<&str>,
         cwd: Option<&Path>,
+        slug: Option<&str>,
     ) -> Result<()> {
         let mut args: Vec<String> = vec!["new-session".into(), "-d".into(), "-s".into(), name.into()];
         if let Some(p) = cwd {
@@ -174,11 +184,28 @@ impl TmuxClient {
             args.push("-c".into());
             args.push(s.into());
         }
+        let env = crate::pty::awareness_env(slug, cwd);
+        let supports_e = crate::pty::tmux_supports_dash_e();
+        if supports_e {
+            for (k, v) in &env {
+                args.push("-e".into());
+                args.push(format!("{k}={v}"));
+            }
+        }
         if let Some(cmd) = command {
             args.push(cmd.into());
         }
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         self.run(&arg_refs)?;
+        if !supports_e {
+            // tmux < 3.2 rejects `new-session -e` at arg-parse (the respawn-storm
+            // gotcha — see `tmux_supports_dash_e`). Recover via set-environment:
+            // the session exists once `run` returns, so this is synchronous and
+            // best-effort (reaches future processes only).
+            for (k, v) in &env {
+                self.set_session_env(name, k, v);
+            }
+        }
         Ok(())
     }
 
@@ -403,7 +430,7 @@ mod tests {
     fn integration_round_trip() {
         let c = TmuxClient::new();
         let name = format!("sot-test-{}", std::process::id());
-        c.create_session(&name, None, None).expect("create");
+        c.create_session(&name, None, None, None).expect("create");
         let sessions = c.list_sessions().expect("list-sessions");
         assert!(sessions.iter().any(|s| s.name == name));
         let panes = c.list_panes(Some(&name)).expect("list-panes");

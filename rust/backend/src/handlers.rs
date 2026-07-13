@@ -3072,7 +3072,9 @@ pub async fn handle_tmux_create_session(
     let cwd = req.cwd.clone();
     let result = tokio::task::spawn_blocking(move || {
         let cwd_path = cwd.as_ref().map(std::path::PathBuf::from);
-        TmuxClient::new().create_session(&name, command.as_deref(), cwd_path.as_deref())
+        // Generic (non-workspace) session — no slug; still stamped with
+        // SOT_SESSION/SOT_WORKSPACE_ROOT/SOT_MANUAL awareness.
+        TmuxClient::new().create_session(&name, command.as_deref(), cwd_path.as_deref(), None)
     })
     .await
     .context("spawn_blocking create-session")?;
@@ -3285,6 +3287,7 @@ pub async fn handle_workspace_create(
     // autostart-on-attach typing: one race-free boot path for both cases.
     let tmux_session = ws_handle.tmux_session.clone();
     let cwd = project_root.clone();
+    let ws_slug = ws_handle.slug.clone();
     let boot_cmd: Option<String> = if autostart || boot {
         Some(crate::pty::boot_wrapper_command(
             &tmux_session,
@@ -3299,6 +3302,7 @@ pub async fn handle_workspace_create(
             &tmux_session,
             boot_cmd.as_deref(),
             Some(&cwd),
+            Some(&ws_slug),
         )
     })
     .await
