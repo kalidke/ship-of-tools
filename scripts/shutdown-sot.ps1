@@ -49,9 +49,20 @@ function W([string]$m) { "$(Get-Date -Format o)  $m" | Tee-Object -FilePath $log
 
 # Match helpers. The supervisor is powershell running launch-{sot,devenv}.ps1
 # (devenv covers an in-memory supervisor started before the sot rename). The
-# tunnel is the specific ssh forwarding our port - NOT unrelated ssh sessions.
+# tunnel match covers BOTH sot tunnel shapes - NOT unrelated ssh sessions:
+#   control: "-L <port>:127.0.0.1:<port>" (TCP mode) OR
+#            "-L <port>:/run/.../sot.sock" (socket-only mode) - both start
+#            "-L <port>:", so match that prefix. The old TCP-shape-only regex
+#            never matched socket-mode tunnels: Get-Tun came back empty, nothing
+#            was killed, and the post-check printed a FALSE "tunnel=0 / CLEAN"
+#            (observed 2026-07-14: a control tunnel survived two "clean"
+#            shutdowns and reached age 4 days, silently owning port 18743 so
+#            every later launch went aux-only and stacks accreted).
+#   aux-only: spawned when the control port was already open; carries the
+#            browser forwards and always includes pluto "-L 1234:127.0.0.1:1234"
+#            - anchor on that. These are sot-owned and must die with the FE.
 $supRe = '-File.*launch-(sot|devenv)\.ps1'
-$tunRe = "$TcpPort:127\.0\.0\.1:$TcpPort"
+$tunRe = "-L ${TcpPort}:|-L 1234:127\.0\.0\.1:1234"
 function Get-Sup  { Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match $supRe } }
 function Get-FE   { Get-CimInstance Win32_Process -Filter "Name='sot.exe'" }
 function Get-Tun  { Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" | Where-Object { $_.CommandLine -match $tunRe } }
