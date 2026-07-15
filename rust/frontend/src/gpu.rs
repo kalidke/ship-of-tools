@@ -15235,6 +15235,25 @@ impl ApplicationHandler for App {
             }
         }
         if !state.dirty {
+            // Fullscreen VRR/OLED brightness-flicker fix (2026-07-12, ryzen5
+            // ultrawide OLED). In borderless fullscreen DWM composition
+            // disengages, so the panel's adaptive-sync refresh follows OUR
+            // present cadence directly. The on-demand idle path below presents
+            // ~1 frame/sec, which drives a VRR OLED down to a 1-10 Hz refresh —
+            // exactly the band where low-framerate compensation doubles frames
+            // unevenly and the panel's brightness pumps visibly. Keep a steady
+            // vsync-paced cadence while fullscreen so the panel stays pinned at
+            // its native refresh: request the next frame now and let
+            // PresentMode::Fifo block in present() until vsync, which self-paces
+            // the loop (no busy-spin) and never outruns the display. Costs
+            // continuous GPU while fullscreen — acceptable for a static TUI and
+            // scoped to fullscreen only; windowed keeps the efficient on-demand
+            // tick below (DWM already composites it at a steady rate).
+            if state.window.fullscreen().is_some() {
+                state.window.request_redraw();
+                event_loop.set_control_flow(ControlFlow::Wait);
+                return;
+            }
             // Idle: nothing animating, but the top-right clock still needs to
             // tick. Schedule a single wake at the next ~1s boundary so the
             // chrome repaints and re-reads `Local::now()`. One wake per second,
