@@ -1,22 +1,17 @@
 // server.rs — listener orchestration + transport-agnostic per-connection task.
 //
-// Spawns one or both transport listeners (local socket via interprocess,
-// TCP via tokio::net) per the Opts the user passed. Each accepted stream
-// gets split into AsyncRead/AsyncWrite halves and handed to a generic
-// `handle_connection` — the wire format and dispatch are identical on
-// either transport.
-//
-// Auth: TCP enforces an app-level token when configured (`--token`, SOT_TOKEN,
-// or the canonical token file), and `main.rs` refuses a tokenless TCP listener
-// unless `--insecure-no-auth` is explicit. Local sockets do not enforce app
-// tokens; their boundary is OS ownership of the private socket path.
+// Spawns the local-socket listener (interprocess) per the Opts the user
+// passed. Each accepted stream gets split into AsyncRead/AsyncWrite halves
+// and handed to a generic `handle_connection`. The daemon TCP listener (and
+// its app-token gate) was removed in 0.4.0 — see ADR 0010's update block;
+// the socket's boundary is OS ownership of its private parent path, and
+// remote access is an SSH local-forward terminating at the socket.
 //
 // Conventional socket strings:
 //   Linux/Mac: filesystem path,  e.g. `/tmp/sot-spike.sock`
 //   Windows:   named pipe,       e.g. `\\.\pipe\sot-spike`
 // interprocess accepts both verbatim via `GenericFilePath::to_fs_name`.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -32,7 +27,6 @@ use sot_protocol::{
     PtyWriteReq,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpListener;
 
 use crate::clients::Clients;
 use crate::concept::ConceptStore;
@@ -56,17 +50,10 @@ use tokio::sync::broadcast;
 // FIN — a frontend killed -9, a collapsed SSH local-forward, a yanked network
 // — leaves the daemon-side socket ESTAB forever; without these two mechanisms
 // its task leaks (fd + ClientGuard) and, if blocked mid-write, never reads the
-// socket again (the broadcast-stall we hit). See `run_tcp` (keepalive) and
-// `write_frame_to` (write-timeout).
-//
-// Keepalive reaps the IDLE half-open case (nothing to write, task parked in the
-// read arm): the OS probes after ~20s idle, 3 × 10s apart, then RSTs (~50s) →
-// the read returns Err → the connection drops. The write-timeout reaps the
-// ACTIVE-but-not-draining case (the witnessed Recv-Q stall) faster and on any
-// transport. Both are needed; the write-timeout is the critical anti-stall one.
-const KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(20);
-const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
-const KEEPALIVE_RETRIES: u32 = 3;
+// socket again (the broadcast-stall we hit). See `write_frame_to`
+// (write-timeout). The keepalive half lived in the TCP listener and retired
+// with it in 0.4.0 — on the local socket, a dead SSH forward closes the
+// stream (EOF) rather than leaving it silently half-open.
 
 /// Base deadline for a single frame write before we treat the peer as dead and
 /// drop the connection. Small control frames — even over the SSH tunnel — drain
@@ -85,9 +72,8 @@ const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Floor drain rate we credit a healthy peer for the bulk blob tail. A real
 /// transfer sustains far more than this over a tunnel; setting the floor low
 /// keeps the size-scaled deadline generous enough never to false-drop a draining
-/// blob, while a genuinely wedged peer (zero progress) is still bounded here and
-/// independently reaped by SO_KEEPALIVE (~50s of dead TCP). 1 MiB/s → a 71 MB
-/// render gets ~71s on top of the base floor.
+/// blob, while a genuinely wedged peer (zero progress) is still bounded here.
+/// 1 MiB/s → a 71 MB render gets ~71s on top of the base floor.
 const MIN_BLOB_DRAIN_RATE: u64 = 1024 * 1024; // bytes/sec
 
 /// Per-frame write deadline: the [`WRITE_TIMEOUT`] floor plus one second of grace
@@ -595,7 +581,6 @@ pub async fn run(opts: Opts) -> Result<()> {
     // connection registers on hello and deregisters on drop.
     let clients = Clients::new();
 
-    let token = Arc::new(opts.token);
     let label = Arc::new(opts.label);
     let mut tasks: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();
 
@@ -624,31 +609,6 @@ pub async fn run(opts: Opts) -> Result<()> {
         }));
     }
 
-    if let Some(addr) = opts.tcp {
-        let s = session.clone();
-        let tok = token.clone();
-        let mj = mathjax.clone();
-        let pl = pluto.clone();
-        let fm = files_mode.clone();
-        let ke = kernel.clone();
-        let co = concept.clone();
-        let rp = repl.clone();
-        let wa = preview_changed_tx.clone();
-        let lb = label.clone();
-        let ws = workspaces.clone();
-        let wse = ws_events_tx.clone();
-        let age = agent_events_tx.clone();
-        let fce = fe_command_tx.clone();
-        let rfe = repl_frame_tx.clone();
-        let cl = clients.clone();
-        tasks.push(tokio::spawn(async move {
-            run_tcp(
-                addr, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl,
-            )
-            .await
-        }));
-    }
-
     if tasks.is_empty() {
         anyhow::bail!("no listener configured");
     }
@@ -668,7 +628,7 @@ async fn run_local(
     pluto: Pluto,
     files_mode: Arc<FilesMode>,
     // Singleton handles retained on the call chain for backward compat
-    // and to keep the run_local / run_tcp signatures unchanged. All op
+    // and to keep the run_local / handle_connection signatures unchanged. All op
     // handlers now route through Workspaces per ADR 0014; these
     // bindings are dead in `handle_connection` itself.
     #[allow(unused_variables, dead_code)] kernel: Kernel,
@@ -744,124 +704,6 @@ async fn run_local(
     }
 }
 
-async fn run_tcp(
-    addr: SocketAddr,
-    session: Session,
-    token: Arc<Option<String>>,
-    mathjax: MathJax,
-    pluto: Pluto,
-    files_mode: Arc<FilesMode>,
-    // Singleton handles retained on the call chain for backward compat
-    // and to keep the run_local / run_tcp signatures unchanged. All op
-    // handlers now route through Workspaces per ADR 0014; these
-    // bindings are dead in `handle_connection` itself.
-    #[allow(unused_variables, dead_code)] kernel: Kernel,
-    #[allow(unused_variables, dead_code)] concept: Arc<ConceptStore>,
-    #[allow(unused_variables, dead_code)] repl: Repl,
-    preview_changed_tx: broadcast::Sender<PreviewChanged>,
-    label: Arc<Option<String>>,
-    workspaces: Workspaces,
-    ws_events_tx: broadcast::Sender<WorkspaceChanged>,
-    agent_events_tx: broadcast::Sender<AgentMessage>,
-    fe_command_tx: broadcast::Sender<FeCommandEvt>,
-    repl_frame_tx: broadcast::Sender<ReplFrameMsg>,
-    clients: Clients,
-) -> Result<()> {
-    let listener = TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("bind {addr}"))?;
-    tracing::info!(tcp = %addr, "listening (tcp)");
-    // Loud warning if the user bound to a non-loopback address — per ADR
-    // 0010 the right cross-machine path is SSH local-forward, not an
-    // exposed bind. We don't refuse; we just make the mistake visible.
-    if !addr.ip().is_loopback() {
-        tracing::warn!(
-            tcp = %addr,
-            "TCP bound to non-loopback address; expose via SSH local-forward instead per ADR 0010"
-        );
-    }
-
-    loop {
-        let (stream, peer) = listener.accept().await.context("accept on tcp")?;
-        // Disable Nagle's algorithm on the accepted socket — interactive
-        // keystroke traffic (LLM pane, REPL) is small and frequent, and
-        // Nagle batches it with a ~40ms tail per write, masquerading as
-        // remote latency even on a loopback / fast LAN link. NODELAY
-        // moves bytes immediately; the frontend sets the same flag on its
-        // outbound socket so both directions stay snappy.
-        if let Err(e) = stream.set_nodelay(true) {
-            tracing::warn!(peer = %peer, error = %e, "set_nodelay failed; tcp socket may batch writes");
-        }
-        // Half-open connection reaper, half 1 (ADR 0027). Enable TCP keepalive
-        // with a tight cadence so the OS detects and RSTs a vanished peer — a
-        // frontend killed -9, a collapsed SSH local-forward, a network drop —
-        // none of which send a FIN, so without this the daemon-side socket sits
-        // ESTAB forever, its task parked in the select! read arm (idle) or
-        // blocked in a write (active), leaking the fd + its ClientGuard and
-        // never reading the socket again. A killed peer that DID send FIN is
-        // already handled (read returns EOF); keepalive covers the silent case.
-        // ~20s idle then 3 probes 10s apart → reaped ~50s after the peer dies.
-        // The companion write-timeout (half 2, in handle_connection) catches the
-        // active-but-not-draining case faster and on any transport.
-        {
-            let ka = socket2::TcpKeepalive::new()
-                .with_time(KEEPALIVE_IDLE)
-                .with_interval(KEEPALIVE_INTERVAL)
-                .with_retries(KEEPALIVE_RETRIES);
-            if let Err(e) = socket2::SockRef::from(&stream).set_tcp_keepalive(&ka) {
-                tracing::warn!(peer = %peer, error = %e, "set_tcp_keepalive failed; half-open conns may leak until write-timeout");
-            }
-        }
-        let s = session.clone();
-        let tok = token.clone();
-        let mj = mathjax.clone();
-        let pl = pluto.clone();
-        let fm = files_mode.clone();
-        let ke = kernel.clone();
-        let co = concept.clone();
-        let rp = repl.clone();
-        let wa = preview_changed_tx.clone();
-        let lb = label.clone();
-        let ws = workspaces.clone();
-        let wse = ws_events_tx.clone();
-        let age = agent_events_tx.clone();
-        let fce = fe_command_tx.clone();
-        let rfe = repl_frame_tx.clone();
-        let cl = clients.clone();
-        tokio::spawn(async move {
-            let (rx, tx) = stream.into_split();
-            tracing::info!(peer = %peer, transport = "tcp", "client connected");
-            if let Err(e) = handle_connection(
-                rx,
-                tx,
-                s,
-                tok,
-                mj,
-                pl,
-                fm,
-                ke,
-                co,
-                rp,
-                wa,
-                lb,
-                ws,
-                wse,
-                age,
-                fce,
-                rfe,
-                cl,
-                "tcp",
-                Some(peer.to_string()),
-            )
-            .await
-            {
-                tracing::warn!(error = %e, transport = "tcp", peer = %peer, "connection ended with error");
-            } else {
-                tracing::info!(transport = "tcp", peer = %peer, "connection closed");
-            }
-        });
-    }
-}
 
 /// Read one frame while *owning* the buffered reader, handing it back with
 /// the result. Lets the per-connection select! loop keep a single in-flight
@@ -877,9 +719,11 @@ async fn read_owned<R: AsyncRead + Unpin>(
     (rx, res)
 }
 
-/// Generic over the AsyncRead/AsyncWrite halves so both transports share
-/// the same dispatch loop. `expected_token` is set for TCP and `None` for
-/// local sockets, whose access check happened at the socket path.
+/// Generic over the AsyncRead/AsyncWrite halves (a relic of the two-transport
+/// era that keeps this testable against in-memory duplex streams).
+/// `expected_token` is always `None` since 0.4.0 removed the TCP listener —
+/// the local socket's access check happened at the socket path; the param and
+/// the hello `token` wire field survive for cross-version compat.
 async fn handle_connection<R, W>(
     rx: R,
     mut tx: W,
@@ -889,7 +733,7 @@ async fn handle_connection<R, W>(
     pluto: Pluto,
     files_mode: Arc<FilesMode>,
     // Singleton handles retained on the call chain for backward compat
-    // and to keep the run_local / run_tcp signatures unchanged. All op
+    // and to keep the run_local / handle_connection signatures unchanged. All op
     // handlers now route through Workspaces per ADR 0014; these
     // bindings are dead in `handle_connection` itself.
     #[allow(unused_variables, dead_code)] kernel: Kernel,

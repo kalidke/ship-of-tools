@@ -3817,7 +3817,6 @@ dependencies = [
  "portable-pty",
  "serde",
  "serde_json",
- "socket2",
  "sot-protocol",
  "tokio",
  "tracing",

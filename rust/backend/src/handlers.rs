@@ -173,21 +173,16 @@ pub async fn handle_hello(
     let req: HelloReq = serde_json::from_value(payload_json).context("hello payload")?;
     let (session_id, revision) = session.snapshot().await;
 
-    // App-level token gate. TCP connections receive the resolved token
-    // (`--token`, `$SOT_TOKEN`, or the canonical
-    // `${XDG_CONFIG_HOME:-~/.config}/sot/token` file — see `main::Opts::token`).
-    // Local-socket connections pass `None` here and rely on OS permissions for
-    // the private socket path. `main.rs` refuses to start a tokenless `--tcp`
-    // listener unless `--insecure-no-auth` is passed (security review).
-    //
-    // `.filter(|s| !s.is_empty())` is defense-in-depth, not the primary fix:
-    // `main::Opts::token` documents that it's never `Some("")`, but this gate
-    // is the one place an empty expected token would actually matter (an
-    // unauthenticated client's `req.token` also defaults to `""` below, so
-    // `Some("")` would match trivially and authenticate with no real secret).
-    // Treating it the same as unset here means a future regression upstream
-    // degrades to open-config mode instead of a silent, trivially-bypassable
-    // "gate".
+    // App-level token gate — vestigial since 0.4.0 removed the daemon TCP
+    // listener (the only transport that resolved a token): `expected_token`
+    // is always `None` now, so this gate never fires. Kept (with its
+    // constant-time compare and the empty-string filter) rather than ripped
+    // out because the hello `token` wire field survives for cross-version
+    // compat and the gate is the tested, safe shape if a gated transport
+    // ever returns. `.filter(|s| !s.is_empty())` guards the one place an
+    // empty expected token would matter (an unauthenticated client's
+    // `req.token` also defaults to `""` below, so `Some("")` would match
+    // trivially and authenticate with no real secret).
     if let Some(expected) = expected_token.as_deref().filter(|s| !s.is_empty()) {
         let presented = req.token.as_deref().unwrap_or("");
         if !constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
