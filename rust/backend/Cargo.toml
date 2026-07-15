@@ -24,7 +24,6 @@ image = { workspace = true }
 # Half-open connection reaper (ADR 0027): set SO_KEEPALIVE + TCP_KEEPIDLE/
 # INTVL/CNT on accepted TCP sockets so the OS RSTs a vanished peer. Already in
 # the lock as a transitive tokio dep, so direct use compiles nothing new.
-socket2 = "0.6"
 # `umask(2)` (main.rs, security review) isn't exposed by std; already in the
 # lock as a transitive dep, so direct use compiles nothing new.
 libc = "0.2"

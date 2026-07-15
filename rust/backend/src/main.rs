@@ -2,18 +2,17 @@
 //
 // Long-lived daemon that owns the per-session Ship of Tools state. Per ADR 0010 it
 // runs on the remote inside a tmux session and accepts frontend connections
-// over one or both transports:
+// over a single transport:
 //   --socket <path>   — local socket (AF_UNIX / Windows named pipe via
-//                       interprocess::local_socket). Default for loopback.
-//   --tcp <host:port> — TCP listener for the cross-machine path (Windows
-//                       local → Linux remote, acceptance #4). Bind defaults
-//                       to 127.0.0.1; remote access goes through SSH local
-//                       forward, never by exposing the bind address.
+//                       interprocess::local_socket). Cross-machine access
+//                       goes through an SSH local forward that terminates
+//                       at this socket — never a network listener.
 //
-// At least one transport must be configured. Both run concurrently and feed
-// accepted streams into the same generic connection task — the codec is
-// transport-agnostic. TCP is token-gated; local sockets rely on filesystem /
-// named-pipe ownership and must live under private parent directories.
+// The daemon TCP listener (and the app-level auth token that existed to
+// gate it) was removed in 0.4.0: every deployment rides the private local
+// socket, whose filesystem / named-pipe ownership under a private parent
+// directory is the access control. Its one field use was the 2026-07-11
+// twin-daemon split-brain. See ADR 0010's 0.4.0 update block.
 
 mod clients;
 mod concept;
@@ -37,8 +36,7 @@ mod update;
 mod watcher;
 mod workspaces;
 
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -192,30 +190,8 @@ async fn main() -> Result<()> {
 
     let opts = parse_args().context("parsing command-line arguments")?;
 
-    // Fail-closed default (security review): a TCP listener with no resolved
-    // auth token is reachable by any local user on this shared host (or
-    // anyone who can reach the bound address) — refuse to start silently
-    // open rather than let a missing token slip through unnoticed.
-    // `--insecure-no-auth` is the explicit, named opt-out for a deliberately
-    // open dev/test box. A unix-socket-only bind (no `--tcp`) is exempt:
-    // its filesystem permissions already gate who can even connect.
-    if let Some(tcp) = opts.tcp {
-        if opts.token.is_none() && !opts.insecure_no_auth {
-            anyhow::bail!(
-                "refusing to start: --tcp {tcp} is configured with no auth token \
-                 resolved (checked --token, $SOT_TOKEN, and {}). Set one of those, \
-                 or pass --insecure-no-auth to run open anyway (not recommended on \
-                 a shared host).",
-                token_file_path().display(),
-            );
-        }
-    }
-
     tracing::info!(
         socket = ?opts.socket,
-        tcp = ?opts.tcp,
-        token_set = opts.token.is_some(),
-        insecure_no_auth = opts.insecure_no_auth,
         project_root = ?opts.project_root,
         label = ?opts.label,
         "sotd starting"
@@ -226,28 +202,12 @@ async fn main() -> Result<()> {
 
 #[derive(Debug, Clone)]
 pub struct Opts {
+    /// The one transport: a private local socket (AF_UNIX / Windows named
+    /// pipe). Clients present no app token — filesystem / named-pipe
+    /// ownership under a private parent dir is the access control (the
+    /// hello `token` wire field survives for cross-version compat and is
+    /// ignored). The TCP listener + token machinery were removed in 0.4.0.
     pub socket: Option<PathBuf>,
-    pub tcp: Option<SocketAddr>,
-    /// Required token on TCP transport when set. Resolution order:
-    /// `--token` (explicit override, kept for back-compat with existing
-    /// launchers) wins when given; else `$SOT_TOKEN`; else the canonical
-    /// token file (`token_file_path()` —
-    /// `${XDG_CONFIG_HOME:-~/.config}/sot/token`), the same convention the
-    /// comm scripts and the systemd unit already read. The file fallback
-    /// means a token can be configured without ever appearing in this
-    /// process's argv (world-visible via `ps`) or requiring every launch
-    /// site to export an env var — new launchers should prefer it or
-    /// `$SOT_TOKEN` over `--token`. Local-socket transport deliberately ignores
-    /// app tokens and relies on OS ownership of the private socket path. An
-    /// empty string from any of the three
-    /// sources (`--token ""`, `SOT_TOKEN=`, a blank/whitespace-only file) is
-    /// treated as unset, never as a valid-but-empty token — this field is
-    /// never `Some(String::new())` (security review: that value would make
-    /// the hello token check trivially pass for a client presenting no
-    /// token at all). The file is also refused outright — a hard startup
-    /// error, not a silent fallback — if it's a symlink or group/other-
-    /// readable; see `read_token_file_at`.
-    pub token: Option<String>,
     /// Filesystem root the Files-mode tree exposes. Defaults to the current
     /// working directory; `--project-root <path>` overrides.
     pub project_root: PathBuf,
@@ -256,105 +216,12 @@ pub struct Opts {
     /// into the per-backend toml the frontend writes and helps Sessions
     /// mode match the running daemon to its on-disk metadata.
     pub label: Option<String>,
-    /// Explicit opt-out of the fail-closed "no token on a TCP listener"
-    /// refusal (security review). Never implied by anything else — always a
-    /// deliberate flag on this exact invocation.
-    pub insecure_no_auth: bool,
-}
-
-/// Canonical token file (`${XDG_CONFIG_HOME:-~/.config}/sot/token`) — the
-/// same path the comm scripts (`comm-relay.sh` etc.) and the systemd unit
-/// already read. Shares `workspaces::app_config_dir` so every token/config
-/// resolver in this codebase agrees on one dir.
-fn token_file_path() -> PathBuf {
-    workspaces::app_config_dir().join("token")
-}
-
-/// Read + trim the canonical token file. Thin wrapper over
-/// `read_token_file_at` with the canonical path filled in.
-fn read_token_file() -> Result<Option<String>> {
-    read_token_file_at(&token_file_path())
-}
-
-/// Core of `read_token_file`, parameterized on `path` so it's unit-testable
-/// without touching `$XDG_CONFIG_HOME` (a process-global env var other tests
-/// in this binary mutate — see `trim_token_contents`'s doc comment for why
-/// that's a real hazard here, not hypothetical).
-///
-/// Unlike `--token`/`$SOT_TOKEN`, a file on disk can be tampered with by
-/// another local account or redirected via a symlink, so this refuses to
-/// trust it (a hard `Err`, not a silent `Ok(None)`) rather than quietly
-/// falling through to "no token configured" — that fallthrough would look
-/// identical to an intentionally-unset token and could combine with
-/// `--insecure-no-auth` reasoning the user never made. Concretely refuses:
-/// - a symlink at `path` — opened with `O_NOFOLLOW`, so this surfaces as an
-///   open error (`ELOOP`) instead of transparently following it. A same-
-///   workspace-writable attacker could otherwise repoint "the token file" at
-///   something they control, or at a target whose content never changes.
-/// - (Unix) a file that's group- or other-readable (`mode & 0o077 != 0`) —
-///   a token another local account can read isn't a secret on a shared host.
-///
-/// A file that's simply absent is `Ok(None)` — the expected, unremarkable
-/// case on a fresh install with no token configured yet.
-fn read_token_file_at(path: &Path) -> Result<Option<String>> {
-    let mut open_opts = std::fs::OpenOptions::new();
-    open_opts.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        open_opts.custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = match open_opts.open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(anyhow::anyhow!(
-                "refusing to read token file {}: {e} (is it a symlink?)",
-                path.display()
-            ))
-        }
-    };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let mode = file.metadata()?.mode();
-        if mode & 0o077 != 0 {
-            anyhow::bail!(
-                "refusing to trust token file {} — mode {:o} is group/other-readable; \
-                 chmod 0600 it (owner read/write only) before restarting sotd",
-                path.display(),
-                mode & 0o777,
-            );
-        }
-    }
-    let mut contents = String::new();
-    std::io::Read::read_to_string(&mut file, &mut contents)
-        .with_context(|| format!("read {}", path.display()))?;
-    Ok(trim_token_contents(&contents))
-}
-
-/// Trim + empty-check for token-file content, pulled out as a pure function
-/// so it's unit-testable without touching `$XDG_CONFIG_HOME` — a
-/// process-global env var that other tests in this binary also mutate
-/// (`session_state.rs`'s `write_backend_identity_round_trip`), and
-/// `set_var`/`var` aren't synchronized against concurrently-running
-/// `#[test]` fns, so an env-var-based hermetic test here raced them.
-fn trim_token_contents(contents: &str) -> Option<String> {
-    let trimmed = contents.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
 }
 
 fn parse_args() -> Result<Opts> {
     let mut socket: Option<PathBuf> = None;
-    let mut tcp: Option<SocketAddr> = None;
-    let mut token_arg: Option<String> = None;
     let mut project_root_arg: Option<PathBuf> = None;
     let mut label: Option<String> = None;
-    let mut insecure_no_auth = false;
 
     // `--version`/`-V` and `tmux-socket-path` are handled earlier, in
     // `main()`, before any startup side effect — see the comment there.
@@ -370,16 +237,6 @@ fn parse_args() -> Result<Opts> {
                 let p = args.next().context("--socket requires a path argument")?;
                 socket = Some(PathBuf::from(p));
             }
-            "--tcp" => {
-                let s = args.next().context("--tcp requires host:port")?;
-                let addr: SocketAddr = s
-                    .parse()
-                    .with_context(|| format!("parse --tcp {s:?} as host:port"))?;
-                tcp = Some(addr);
-            }
-            "--token" => {
-                token_arg = Some(args.next().context("--token requires a value")?);
-            }
             "--project-root" => {
                 let p = args
                     .next()
@@ -389,9 +246,13 @@ fn parse_args() -> Result<Opts> {
             "--label" => {
                 label = Some(args.next().context("--label requires a name")?);
             }
-            "--insecure-no-auth" => {
-                insecure_no_auth = true;
-            }
+            // Removed in 0.4.0 with the daemon TCP listener; named here so a
+            // stale launcher gets a pointed error instead of "unrecognised".
+            "--tcp" | "--token" | "--insecure-no-auth" => anyhow::bail!(
+                "{a} was removed in 0.4.0 (the daemon listens only on its \
+                 private local socket; SSH-forward to it for remote access — \
+                 see docs/adr/0010-transport-and-persistence.md)"
+            ),
             other => anyhow::bail!("unrecognised argument: {other}"),
         }
     }
@@ -401,22 +262,6 @@ fn parse_args() -> Result<Opts> {
             socket = Some(PathBuf::from(p));
         }
     }
-    // Token resolution (security review) — see `Opts::token`'s doc comment
-    // for the precedence order. An empty `--token`/`$SOT_TOKEN` is treated
-    // as unset (not a valid-but-empty token) — `--token ""` used to slip
-    // through here unfiltered (only `$SOT_TOKEN` was), which set
-    // `expected_token` to `Some("")` downstream; `handle_hello` then
-    // compared it against a client's default-empty presented token and
-    // matched trivially, authenticating with NO real secret while still
-    // reading as "a token is configured" (bypassing `--insecure-no-auth`
-    // too). All three sources are now filtered the same way.
-    let token = token_arg
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("SOT_TOKEN").ok().filter(|s| !s.is_empty()));
-    let token = match token {
-        Some(t) => Some(t),
-        None => read_token_file().context("reading token file")?,
-    };
     let project_root = project_root_arg
         .or_else(|| std::env::var_os("SOT_PROJECT_ROOT").map(PathBuf::from))
         .unwrap_or_else(|| std::env::current_dir().expect("no current dir"));
@@ -430,109 +275,17 @@ fn parse_args() -> Result<Opts> {
         }
     }
 
-    if socket.is_none() && tcp.is_none() {
+    if socket.is_none() {
         anyhow::bail!(
-            "no transport configured: pass --socket <path>, --label <name>, --tcp <host:port>, or set SOT_SOCKET"
+            "no transport configured: pass --socket <path>, --label <name>, or set SOT_SOCKET"
         );
     }
 
     Ok(Opts {
         socket,
-        tcp,
-        token,
         project_root,
         label,
-        insecure_no_auth,
     })
 }
 
-#[cfg(test)]
-mod token_file_tests {
-    use super::trim_token_contents;
 
-    #[test]
-    fn trims_content() {
-        assert_eq!(trim_token_contents("  s3cr3t\n").as_deref(), Some("s3cr3t"));
-    }
-
-    #[test]
-    fn whitespace_only_is_none() {
-        assert_eq!(trim_token_contents("   \n"), None);
-    }
-
-    #[test]
-    fn empty_is_none() {
-        assert_eq!(trim_token_contents(""), None);
-    }
-}
-
-/// Unix-only: exercises `read_token_file_at` against real temp files with
-/// controlled permissions/symlink-ness, parameterized on `path` (not the
-/// canonical `token_file_path()`) for exactly the same env-var-race reason
-/// `trim_token_contents` was pulled out pure — see its doc comment.
-#[cfg(all(test, unix))]
-mod read_token_file_tests {
-    use super::read_token_file_at;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn scratch_path(name: &str) -> PathBuf {
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!(
-            "sot-token-test-{}-{}-{name}",
-            std::process::id(),
-            n
-        ))
-    }
-
-    fn write_file(path: &PathBuf, contents: &str, mode: u32) {
-        let mut f = std::fs::File::create(path).unwrap();
-        f.write_all(contents.as_bytes()).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
-    }
-
-    #[test]
-    fn missing_file_is_ok_none() {
-        let p = scratch_path("missing");
-        assert!(read_token_file_at(&p).unwrap().is_none());
-    }
-
-    #[test]
-    fn private_file_with_content_is_ok_some() {
-        let p = scratch_path("private");
-        write_file(&p, "s3cr3t\n", 0o600);
-        assert_eq!(read_token_file_at(&p).unwrap().as_deref(), Some("s3cr3t"));
-        let _ = std::fs::remove_file(&p);
-    }
-
-    #[test]
-    fn group_readable_file_is_rejected() {
-        let p = scratch_path("group-readable");
-        write_file(&p, "s3cr3t\n", 0o640);
-        assert!(read_token_file_at(&p).is_err());
-        let _ = std::fs::remove_file(&p);
-    }
-
-    #[test]
-    fn world_readable_file_is_rejected() {
-        let p = scratch_path("world-readable");
-        write_file(&p, "s3cr3t\n", 0o644);
-        assert!(read_token_file_at(&p).is_err());
-        let _ = std::fs::remove_file(&p);
-    }
-
-    #[test]
-    fn symlink_to_token_file_is_rejected() {
-        let target = scratch_path("symlink-target");
-        write_file(&target, "s3cr3t\n", 0o600);
-        let link = scratch_path("symlink-link");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        assert!(read_token_file_at(&link).is_err());
-        let _ = std::fs::remove_file(&target);
-        let _ = std::fs::remove_file(&link);
-    }
-}

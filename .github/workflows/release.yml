@@ -166,14 +166,31 @@ jobs:
             *)          case "$got" in "sotd $expected ("*) ;; *) echo "VERSION MISMATCH"; exit 1;; esac ;;
           esac
           mkdir -p scratch
-          "$d/sotd" --token smoke-token --tcp 127.0.0.1:28753 --project-root ./scratch --label smoke > sotd.log 2>&1 &
-          for i in $(seq 1 30); do python3 -c "import socket; socket.create_connection(('127.0.0.1',28753),1)" 2>/dev/null && break; sleep 1; done
-          python3 - <<'EOF'
-          import json, socket
-          s = socket.create_connection(("127.0.0.1", 28753), timeout=10)
-          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke","last_seen_revision":0,"protocol":1,"app_version":"smoke","token":"smoke-token"}}
+          # 0.4.0 removed the daemon TCP listener: assert the pointed error
+          # (a stale launcher must fail loudly, not silently bind nothing).
+          if "$d/sotd" --tcp 127.0.0.1:28753 --project-root ./scratch 2>tcp-err.log; then
+            echo "--tcp unexpectedly accepted"; exit 1
+          fi
+          grep -q "removed in 0.4.0" tcp-err.log || { echo "missing removal error, got:"; cat tcp-err.log; exit 1; }
+          sock="$("$d/sotd" session-socket-path smoke)"
+          rm -f "$sock"
+          "$d/sotd" --project-root ./scratch --label smoke > sotd.log 2>&1 &
+          for i in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+          [ -S "$sock" ] || { echo "socket not created: $sock"; exit 1; }
+          python3 - "$sock" <<'EOF'
+          import json, socket, sys
+          s = socket.socket(socket.AF_UNIX)
+          s.settimeout(10)
+          s.connect(sys.argv[1])
+          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke","last_seen_revision":0,"protocol":1,"app_version":"smoke"}}
           s.sendall((json.dumps(f)+"\n").encode())
-          p = json.loads(s.makefile().readline())["payload"]
+          line = b""
+          while not line.endswith(b"\n"):
+              chunk = s.recv(65536)
+              if not chunk:
+                  break
+              line += chunk
+          p = json.loads(line.decode())["payload"]
           assert "error" not in p, f"hello rejected: {p}"
           assert p.get("app_version"), f"no app_version in HelloRes: {p}"
           print("hello OK — backend", p["app_version"])
