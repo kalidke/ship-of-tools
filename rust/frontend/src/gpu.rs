@@ -3864,9 +3864,72 @@ impl State {
                 .rows
                 .get(self.tree.selected)
                 .map(|r| r.node.id.clone());
-            self.pending_reveal = Some(node_id);
+            // Fresh reveal intent: drop the per-level bookkeeping a prior
+            // target may have left so `drive_reveal_step` and its once-only
+            // force-refresh memo start clean (mirrors the resume-reveal reset).
+            // Without clearing `reveal_refetched`, a stale `(old_target, anc)`
+            // key could trip the "already refreshed → genuinely gone" early-out
+            // and strand this reveal.
             self.reveal_awaiting = None;
-            self.drive_reveal_step();
+            self.reveal_refetched = None;
+            // Split on whether the Files tree is actually loaded for the active
+            // view (a `files:` row present means yes). This split is what makes
+            // the reveal robust AND keeps a late `tree.root` reply from ever
+            // rebuilding — and thereby collapsing/clobbering — an already-loaded
+            // tree (two independent adversarial reviews, 2026-07-15).
+            let files_tree_loaded =
+                self.tree.rows.iter().any(|r| r.node.id.starts_with("files:"));
+            if files_tree_loaded {
+                // Tree loaded but the target row isn't present yet:
+                // `drive_reveal_step` walks DOWN from whichever ancestor dir IS
+                // present, one `tree.children` per round-trip (and force-
+                // refreshes a stale expanded ancestor once, surfacing a brand-
+                // new file). If not even the target's top-level dir is present
+                // (a brand-new top-level dir created after this listing) the
+                // walk gracefully no-ops — preview still shows; the dir surfaces
+                // on the next natural refresh. We deliberately do NOT force a
+                // `tree.root` here: a late-arriving `set_root` rebuilds and
+                // collapses the loaded tree, stranding an intervening reveal and
+                // letting the auto-follow clobber the driven preview.
+                self.pending_reveal = Some(node_id);
+                self.drive_reveal_step();
+            } else {
+                // Files tree NOT loaded for this view (empty, or rows belong to
+                // another mode/workspace). This is the reported bug: the preview
+                // body fired (path-based, works) but the cursor-reveal had no
+                // anchor row to walk from, so it silently no-op'd and the cursor
+                // was stranded (sotd.log 2026-07-15: a same-ws preview of a deep
+                // NAS-symlinked results file issued ZERO tree.children). Load
+                // `tree.root` once and arm the one-shot `pending_switch_reveal`
+                // the first-visit workspace-switch path uses; the TreeRoot
+                // handler populates the rows then runs the reveal.
+                //
+                // Firing ONLY when the tree is unloaded is what keeps this safe:
+                // `set_root` on an unloaded tree collapses nothing, and while
+                // unloaded EVERY concurrent call is also anchor-less, so an
+                // anchored reveal can't interleave and be overwritten. Gate
+                // against a rapid batch (the 3-back-to-back repro): the daemon
+                // answers every `tree.root` independently, so fire exactly one
+                // and let later calls just update the latest-wins target.
+                self.pending_reveal = None;
+                let root_inflight = self.pending_switch_reveal.is_some();
+                self.pending_switch_reveal = Some(node_id.clone());
+                if root_inflight {
+                    tracing::info!(%node_id,
+                        "reveal: tree.root already in flight — updated switch-reveal target only");
+                } else {
+                    tracing::info!(%node_id,
+                        "reveal: files tree not loaded — loading tree.root and arming switch-reveal");
+                    if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
+                        mode: "files".to_string(),
+                        workspace_id: self.active_workspace_id.clone(),
+                    }) {
+                        tracing::warn!(error = %e,
+                            "drive_same_ws_open: drop tree.root — channel closed");
+                        self.pending_switch_reveal = None;
+                    }
+                }
+            }
         }
         self.window.request_redraw();
     }
@@ -4115,6 +4178,15 @@ impl State {
         }
         tracing::info!(from = ?self.mode, to = ?mode, "enter_mode (tree rebuild follows)");
         self.mode = mode;
+        // A mode change invalidates a one-shot Files reveal armed by
+        // drive_same_ws_open / a workspace switch (the user navigated away from
+        // the file they were being shown). Clearing here also closes a latent
+        // edge: the TreeRoot handler admits a `files` tree.root reply while in
+        // Modules mode (set_root writes the shared tree) but only CONSUMES
+        // pending_switch_reveal in Files mode — so without this a target armed
+        // in Files, then left for Modules mid-reply, could be picked up later by
+        // an unrelated tree.root. Symmetric with the switch_to_workspace clear.
+        self.pending_switch_reveal = None;
         match mode {
             Mode::Files => {
                 if let Err(e) = self.req_tx.send(OutgoingReq::TreeRoot {
@@ -4823,6 +4895,14 @@ impl State {
         self.snapshot_current_workspace_ui();
         self.snapshot_current_workspace_repl();
         self.active_workspace_id = slug.clone();
+        // A workspace change invalidates any one-shot reveal armed for the
+        // PREVIOUS workspace. Its `tree.root` reply is dropped by the TreeRoot
+        // workspace guard WITHOUT consuming `pending_switch_reveal`, so a stale
+        // target would otherwise be picked up by the NEW workspace's root reply
+        // and drive the cursor/preview to a same-relative-path file in the
+        // wrong project (Codex review 2026-07-15). The first-visit badge-consume
+        // below re-arms it for the new workspace when one is pending.
+        self.pending_switch_reveal = None;
         if let Some(target) = tmux_session.or_else(|| slug.as_ref().map(|s| format!("sot-be-{s}")))
         {
             self.attach_session_to_bl(target);
