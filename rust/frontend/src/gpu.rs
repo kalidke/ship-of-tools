@@ -3880,7 +3880,14 @@ impl State {
                 .rows
                 .get(self.tree.selected)
                 .map(|r| r.node.id.clone());
+            // Fresh reveal intent: drop the per-level bookkeeping a prior
+            // target may have left so `drive_reveal_step` and its once-only
+            // force-refresh memo start clean (mirrors the resume-reveal reset).
+            // Without clearing `reveal_refetched`, a stale `(old_target, anc)`
+            // key could trip the "already refreshed → genuinely gone" early-out
+            // and strand this reveal.
             self.reveal_awaiting = None;
+            self.reveal_refetched = None;
             // `drive_reveal_step` walks DOWN from an ancestor row that's
             // already in the tree — it needs at least one to anchor on. When
             // none is present (the Files tree root isn't loaded for this
@@ -3899,17 +3906,38 @@ impl State {
                 self.pending_reveal = Some(node_id);
                 self.drive_reveal_step();
             } else {
-                tracing::info!(%node_id,
-                    "reveal: no ancestor row present — loading tree.root and arming switch-reveal");
+                // No anchor → load tree.root + arm the switch-reveal. Guard
+                // against a rapid batch (the documented 3-back-to-back repro):
+                // fire tree.root ONLY when one isn't already in flight,
+                // otherwise just update the latest-wins target. The daemon
+                // answers every tree.root independently (no coalescing), so N
+                // unguarded fires yield N `set_root` replies — and a trailing
+                // set_root rebuilds the collapsed tree AFTER an earlier reply's
+                // reveal already landed, resetting the cursor to the root row
+                // (the deep row is gone) and letting the auto-follow clobber the
+                // driven preview: strictly worse than the bug this fixes.
+                // Trade-off: a `pending_switch_reveal` left stale by a tree.root
+                // reply the workspace/mode guard dropped would make a later
+                // no-anchor call skip its load — self-heals on the next switch
+                // (restores the tree → anchored) or reconnect tree.root, and the
+                // window (ws/mode change between request and reply) is tiny.
                 self.pending_reveal = None;
-                self.pending_switch_reveal = Some(node_id);
-                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
-                    mode: "files".to_string(),
-                    workspace_id: self.active_workspace_id.clone(),
-                }) {
-                    tracing::warn!(error = %e,
-                        "drive_same_ws_open: drop tree.root — channel closed");
-                    self.pending_switch_reveal = None;
+                let root_inflight = self.pending_switch_reveal.is_some();
+                self.pending_switch_reveal = Some(node_id.clone());
+                if root_inflight {
+                    tracing::info!(%node_id,
+                        "reveal: tree.root already in flight — updated switch-reveal target only");
+                } else {
+                    tracing::info!(%node_id,
+                        "reveal: no ancestor row present — loading tree.root and arming switch-reveal");
+                    if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
+                        mode: "files".to_string(),
+                        workspace_id: self.active_workspace_id.clone(),
+                    }) {
+                        tracing::warn!(error = %e,
+                            "drive_same_ws_open: drop tree.root — channel closed");
+                        self.pending_switch_reveal = None;
+                    }
                 }
             }
         }
