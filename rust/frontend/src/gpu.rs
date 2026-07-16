@@ -14361,7 +14361,7 @@ impl ApplicationHandler for App {
                                     _ => {}
                                 }
                             }
-                            if let Some(bytes) = key_to_pty_bytes(&event.logical_key, ctrl) {
+                            if let Some(bytes) = key_to_pty_bytes(&event.logical_key, ctrl, shift) {
                                 if let Some(t) = state.local_term.as_mut() {
                                     t.send_input(&bytes);
                                 }
@@ -15273,7 +15273,7 @@ impl ApplicationHandler for App {
                                 return;
                             }
                         }
-                        let bytes: Option<Vec<u8>> = key_to_pty_bytes(&event.logical_key, ctrl);
+                        let bytes: Option<Vec<u8>> = key_to_pty_bytes(&event.logical_key, ctrl, shift);
                         if let Some(bytes) = bytes {
                             // Any byte we send to the pty snaps the
                             // view back to live so what the user is
@@ -15895,11 +15895,21 @@ fn emit_scan_type(
 /// 0x02, …) so shell editing, signals, and tmux prefixes work; non-letters
 /// under Ctrl pass through verbatim. Returns `None` for keys with no PTY
 /// encoding (bare modifiers, etc.).
-fn key_to_pty_bytes(key: &Key, ctrl: bool) -> Option<Vec<u8>> {
+fn key_to_pty_bytes(key: &Key, ctrl: bool, shift: bool) -> Option<Vec<u8>> {
     match key {
         Key::Named(NamedKey::Enter) => Some(b"\r".to_vec()),
         Key::Named(NamedKey::Backspace) => Some(b"\x7f".to_vec()),
-        Key::Named(NamedKey::Tab) => Some(b"\t".to_vec()),
+        // Shift+Tab is BackTab (CSI Z). TUIs that live in the pty — Claude Code
+        // most of all — read it to cycle backwards / toggle modes (the plan-mode
+        // chord). Without the shift check this collapsed to a plain `\t`, so the
+        // chord was dead through the FE. Plain Tab stays `\t` for completion.
+        Key::Named(NamedKey::Tab) => {
+            if shift {
+                Some(b"\x1b[Z".to_vec())
+            } else {
+                Some(b"\t".to_vec())
+            }
+        }
         Key::Named(NamedKey::Escape) => Some(b"\x1b".to_vec()),
         Key::Named(NamedKey::Space) => Some(b" ".to_vec()),
         Key::Named(NamedKey::ArrowUp) => Some(b"\x1b[A".to_vec()),
@@ -16534,6 +16544,27 @@ mod tests {
             serde_json::Value::String(status_at.into()),
         );
         p
+    }
+
+    #[test]
+    fn shift_tab_encodes_backtab_plain_tab_unchanged() {
+        // Shift+Tab must reach the pty as BackTab (CSI Z) so a TUI in the pty —
+        // Claude Code's plan-mode cycle above all — sees the chord. Regression
+        // guard: before the `shift` arg this collapsed to a plain `\t`.
+        assert_eq!(
+            key_to_pty_bytes(&Key::Named(NamedKey::Tab), false, true),
+            Some(b"\x1b[Z".to_vec())
+        );
+        // Plain Tab stays a literal tab for shell/editor completion.
+        assert_eq!(
+            key_to_pty_bytes(&Key::Named(NamedKey::Tab), false, false),
+            Some(b"\t".to_vec())
+        );
+        // Ctrl+Tab (no shift) has no distinct pty encoding here — still `\t`.
+        assert_eq!(
+            key_to_pty_bytes(&Key::Named(NamedKey::Tab), true, false),
+            Some(b"\t".to_vec())
+        );
     }
 
     #[test]
