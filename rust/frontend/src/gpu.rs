@@ -1059,6 +1059,22 @@ fn ancestor_rels(rel: &str) -> Vec<&str> {
     out
 }
 
+/// True when the Files tree already holds an ancestor-directory row that a
+/// deep-path reveal to `rel` (a workspace-relative path) can anchor on and
+/// expand downward from. `row_present` answers "is this `files:` node id a row
+/// in the current tree?". When this returns false the tree root isn't loaded
+/// for the active view (or the rows belong to another mode/workspace), so
+/// `drive_reveal_step` would have nothing to walk — the caller must (re)load
+/// `tree.root` before the reveal can land. A root-level `rel` (no `/`) has no
+/// ancestors, so it too reports "no anchor" and forces a root load, which is
+/// correct: if the target row isn't already visible, only a fresh root brings
+/// it in. Pure so the anchor decision is unit-testable without a live tree.
+fn reveal_has_anchor(rel: &str, row_present: impl Fn(&str) -> bool) -> bool {
+    ancestor_rels(rel)
+        .into_iter()
+        .any(|anc| row_present(&format!("files:{anc}")))
+}
+
 /// The `files:` node id of a file row's parent directory. `files:foo/bar.txt`
 /// → `files:foo`; a root-level `files:bar.txt` → `files:` (the root). Non-
 /// `files:` ids pass through unchanged. Used to refresh the upload target dir.
@@ -3864,9 +3880,38 @@ impl State {
                 .rows
                 .get(self.tree.selected)
                 .map(|r| r.node.id.clone());
-            self.pending_reveal = Some(node_id);
             self.reveal_awaiting = None;
-            self.drive_reveal_step();
+            // `drive_reveal_step` walks DOWN from an ancestor row that's
+            // already in the tree — it needs at least one to anchor on. When
+            // none is present (the Files tree root isn't loaded for this
+            // workspace yet, or the rows belong to another mode/workspace) the
+            // walk has nothing to expand and silently no-ops, leaving the
+            // preview body shown but the nav cursor stranded on the old row.
+            // That is the "preview OK, nav-cursor wrong" bug hit on a fresh /
+            // other-mode view (sotd.log 2026-07-15: a same-ws preview of a
+            // deep NAS-symlinked results file fired preview.get but issued ZERO
+            // tree.children — the reveal found no anchor and stopped). Fix:
+            // (re)load `tree.root` and arm the same one-shot `pending_switch_reveal`
+            // the first-visit workspace-switch path uses; the TreeRoot handler
+            // populates the top-level rows and then runs the reveal, so the
+            // deep walk finally has an ancestor to descend from.
+            if reveal_has_anchor(path, |id| self.tree.rows.iter().any(|r| r.node.id == id)) {
+                self.pending_reveal = Some(node_id);
+                self.drive_reveal_step();
+            } else {
+                tracing::info!(%node_id,
+                    "reveal: no ancestor row present — loading tree.root and arming switch-reveal");
+                self.pending_reveal = None;
+                self.pending_switch_reveal = Some(node_id);
+                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
+                    mode: "files".to_string(),
+                    workspace_id: self.active_workspace_id.clone(),
+                }) {
+                    tracing::warn!(error = %e,
+                        "drive_same_ws_open: drop tree.root — channel closed");
+                    self.pending_switch_reveal = None;
+                }
+            }
         }
         self.window.request_redraw();
     }
@@ -17061,6 +17106,40 @@ mod tests {
         assert_eq!(ancestor_rels("src/edge.jl"), vec!["src"]);
         // Trailing slash (dir target) still yields its parents, deepest-first.
         assert_eq!(ancestor_rels("a/b/"), vec!["a/b", "a"]);
+    }
+
+    #[test]
+    fn reveal_has_anchor_requires_a_present_ancestor_row() {
+        // The bug this guards: a same-ws preview of a deep file fires the
+        // preview body but the cursor-reveal walk (`drive_reveal_step`) needs
+        // an ancestor row already in the tree to descend from. Missing that
+        // anchor it no-ops, so `drive_same_ws_open` must fall back to a
+        // tree.root load. This is the pure decision behind that fallback.
+        let rel = "data/results/line_profile_matched/survey_rulers.png";
+
+        // Empty tree (root not loaded / another mode's rows) → no anchor.
+        assert!(!reveal_has_anchor(rel, |_| false));
+
+        // Only the top-level ancestor present (collapsed root) → anchored:
+        // drive_reveal_step can expand `data` and walk down.
+        assert!(reveal_has_anchor(rel, |id| id == "files:data"));
+
+        // A mid-depth ancestor present → anchored.
+        assert!(reveal_has_anchor(rel, |id| id
+            == "files:data/results/line_profile_matched"));
+
+        // Rows from an unrelated subtree only → no anchor (the reveal can't
+        // reach the target from `src/`), so a root load is required.
+        assert!(!reveal_has_anchor(rel, |id| id == "files:src"
+            || id == "files:README.md"));
+
+        // Root-level file with the root not loaded → no ancestors at all, so
+        // "no anchor": the caller reloads tree.root to bring the row in.
+        assert!(!reveal_has_anchor("README.md", |_| false));
+
+        // A near-miss must not false-positive: `files:data2` is not an ancestor
+        // of a `data/...` target even though it shares a prefix as a string.
+        assert!(!reveal_has_anchor(rel, |id| id == "files:data2"));
     }
 
     // ─── ADR 0025: FE_COMMAND routing (target filter + cmd→FeCommand) ─────
