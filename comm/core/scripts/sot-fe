@@ -13,7 +13,7 @@
 #   sot-fe goto    <workspace>        [--boot] [--fe <handle>]
 #   sot-fe mode    <mode>             [--fe <handle>]
 #   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <handle>]
-#   sot-fe repl run  <workspace> <path>            [--timeout <s>] [--origin <who>]
+#   sot-fe repl run  <workspace> <path>            [--fresh] [--timeout <s>] [--origin <who>]
 #   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>] [--origin <who>]
 #
 #   preview  — switch the FE to <workspace>, Files mode, and preview <path>.
@@ -38,6 +38,14 @@
 #   --boot         (goto) seed autostart so the FE boots ccb on the switch — the
 #                  scriptable spawn->goto->boot primitive. Send DIRECTED (--fe
 #                  <handle>); a broadcast --boot would switch+boot on EVERY FE.
+#   --fresh        (repl run) RESTART the workspace's persistent REPL into
+#                  <path>'s project before including it (op repl.run_file,
+#                  fresh:true) — the way to clear a STALE kernel from a backend
+#                  session (e.g. after a struct/field change Revise can't
+#                  hot-reload). Fire-and-forget: acks the bounce; the include's
+#                  output streams to the FE drawer, not collected here. Without
+#                  --fresh, `repl run` uses repl.execute (no reset, collects
+#                  output) in the REPL's CURRENT project.
 #   --endpoint     daemon address; else $SOT_FE_ENDPOINT / $SOT_SPAWN_ENDPOINT /
 #                  $SOT_SOCKET / auto-detected from the running sotd daemon.
 set -euo pipefail
@@ -71,6 +79,7 @@ TIMEOUT=""     # repl: wall-clock budget in seconds
 CODE=""        # repl eval: code (else read stdin)
 READ_STDIN=false
 ORIGIN=""      # repl: label shown in the user's drawer (default "session")
+FRESH=false    # repl run: restart the persistent REPL into the file's project
 POS=()         # positional args for the subcommand
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -78,6 +87,7 @@ while [ $# -gt 0 ]; do
         --endpoint) ENDPOINT="$2"; shift 2 ;;
         --urgent)   URGENT=true; shift ;;
         --boot)     BOOT=true; shift ;;
+        --fresh)    FRESH=true; shift ;;
         --level)    LEVEL="$2"; shift 2 ;;
         --ws)       NOTIFY_WS="$2"; shift 2 ;;
         --timeout)  TIMEOUT="$2"; shift 2 ;;
@@ -85,6 +95,10 @@ while [ $# -gt 0 ]; do
         --stdin)    READ_STDIN=true; shift ;;
         --origin)   ORIGIN="$2"; shift 2 ;;
         -h|--help)  usage 0 ;;
+        # Hard-error on an UNKNOWN flag instead of silently treating it as a
+        # positional — a silent drop let `repl run --fresh` return a false "ok"
+        # while ignoring --fresh entirely. Positionals never start with '-'.
+        -?*)        echo "ERROR: unknown flag '$1'" >&2; usage 1 ;;
         *)          POS+=("$1"); shift ;;
     esac
 done
@@ -226,6 +240,50 @@ send_repl_execute() {
     [ "$outcome" = "ok" ] || exit 2
 }
 
+# Send a repl.run_file request with fresh:true — RESTART the workspace's
+# persistent REPL into <path>'s project (daemon: restart_with_project), then
+# include the file in the fresh kernel. This is the kernel-bounce path (clears a
+# stale in-memory package a struct/field change can't hot-reload; Revise is not
+# wired in). Unlike repl.execute this is FIRE-AND-FORGET: the daemon acks once
+# the restart is spawned (with project_dir/source); the include's frames stream
+# as repl.frame evts to the FE drawer and are NOT collected here. $1=path
+# $2=workspace. Exits 2 on a failed ack.
+send_repl_run_file() {
+    local file="$1" ws="$2"
+    if ! ENDPOINT="$(resolve_endpoint)"; then
+        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
+        exit 1
+    fi
+    # The restart spawns a fresh julia child before the ack; give it more room
+    # than sot_send's 6s default (honour --timeout if the caller set it).
+    export SEND_TIMEOUT="${TIMEOUT:-30}"
+    local payload req resp
+    # ReplRunFileReq: eval_id(u64)+path required, fresh:true, workspace_id routes
+    # to the target REPL. eval_id only correlates streamed frames we don't
+    # collect, so a fixed value is fine.
+    payload="$(jq -nc --arg p "$file" --arg w "$ws" \
+        '{eval_id:1, path:$p, fresh:true, workspace_id:$w}')"
+    req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.run_file", payload:$p}')"
+    resp="$(sot_send "$req" repl.run_file || true)"
+    if [ -z "$resp" ]; then
+        echo "ERROR: no response from repl.run_file via $ENDPOINT (timed out after ${SEND_TIMEOUT}s, or daemon closed the connection)." >&2
+        exit 1
+    fi
+    # Ack is either {error,code} or {project_dir,project_source,accepted:true}.
+    printf '%s' "$resp" | jq -r '
+        .payload as $p |
+        if ($p.error != null) then
+            "ERROR: \($p.error) [\($p.code // "?")]"
+        else
+            "fresh-run accepted: REPL restarted into \($p.project_dir // "?") (\($p.project_source // "?"))"
+            + "\nnote: kernel bounced; \($p.path // "the file") is being included in the fresh process. Output streams to the FE drawer, not collected here."
+        end
+    '
+    local err
+    err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
+    [ -z "$err" ] || exit 2
+}
+
 case "$CMD" in
     preview|reveal)
         WS="${POS[0]:-}"; PATH_ARG="${POS[1]:-}"
@@ -294,9 +352,14 @@ case "$CMD" in
         case "$SUB" in
             run)
                 WS="${POS[1]:-}"; FILE="${POS[2]:-}"
-                [ -n "$WS" ] && [ -n "$FILE" ] || { echo "usage: sot-fe repl run <workspace> <path> [--timeout <s>]" >&2; exit 1; }
-                INPUT="$(jq -nc --arg p "$FILE" '{kind:"run_file", path:$p}')"
-                send_repl_execute "$INPUT" "$WS"
+                [ -n "$WS" ] && [ -n "$FILE" ] || { echo "usage: sot-fe repl run <workspace> <path> [--fresh] [--timeout <s>]" >&2; exit 1; }
+                if [ "$FRESH" = true ]; then
+                    # Bounce the persistent REPL into <path>'s project, then include.
+                    send_repl_run_file "$FILE" "$WS"
+                else
+                    INPUT="$(jq -nc --arg p "$FILE" '{kind:"run_file", path:$p}')"
+                    send_repl_execute "$INPUT" "$WS"
+                fi
                 ;;
             eval)
                 WS="${POS[1]:-}"

@@ -607,12 +607,16 @@ pub struct ReplEvalRes {
     pub frames: Vec<ReplFrame>,
 }
 
-/// Run a `.jl` file. `fresh:true` spawns a one-shot `julia --project=...`
-/// subprocess (no `value` / `image` frames possible — only stdout/stderr/
-/// error/done). `fresh:false` calls `include(path)` inside the persistent
-/// REPL, delivering the same frame shapes as `repl.eval`. Project is
-/// auto-detected by the REPL (walking up from `path` for `Project.toml`);
-/// the persistent REPL's active project is the fallback.
+/// Run a `.jl` file. `fresh:true` RESTARTS the persistent REPL into `path`'s
+/// project: the daemon bounces the julia child (`Repl::restart_with_project`
+/// spawns a fresh `julia --project=<project>` supervisor) and rewrites the
+/// request to a plain `include` in that fresh process, so the Julia side never
+/// sees `fresh:true`. This is the way to clear a stale kernel after a change
+/// `include` alone can't apply (e.g. a struct/field redefinition). `fresh:false`
+/// calls `include(path)` inside the *current* persistent REPL with no reset.
+/// Either way the include streams the same frame shapes as `repl.eval`. Project
+/// is auto-detected by walking up from `path` for a `Project.toml`; the
+/// persistent REPL's active project is the fallback.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplRunFileReq {
     pub eval_id: u64,
