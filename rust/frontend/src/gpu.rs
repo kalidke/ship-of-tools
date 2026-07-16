@@ -4178,6 +4178,15 @@ impl State {
         }
         tracing::info!(from = ?self.mode, to = ?mode, "enter_mode (tree rebuild follows)");
         self.mode = mode;
+        // A mode change invalidates a one-shot Files reveal armed by
+        // drive_same_ws_open / a workspace switch (the user navigated away from
+        // the file they were being shown). Clearing here also closes a latent
+        // edge: the TreeRoot handler admits a `files` tree.root reply while in
+        // Modules mode (set_root writes the shared tree) but only CONSUMES
+        // pending_switch_reveal in Files mode — so without this a target armed
+        // in Files, then left for Modules mid-reply, could be picked up later by
+        // an unrelated tree.root. Symmetric with the switch_to_workspace clear.
+        self.pending_switch_reveal = None;
         match mode {
             Mode::Files => {
                 if let Err(e) = self.req_tx.send(OutgoingReq::TreeRoot {
