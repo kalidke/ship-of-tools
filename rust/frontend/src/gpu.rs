@@ -6665,10 +6665,10 @@ impl State {
 
     fn render_preview_source(&mut self, mime: &str, bytes: &[u8]) {
         let scale = self.scale * self.text_scale_mult;
-        if mime == "image/png" {
+        if is_raster_preview_mime(mime) {
             // Paginated document pages (preview_page set from this reply's
             // extras) filter Linear — rasterized text aliases hard under
-            // Nearest. Standalone PNGs keep Nearest per the 2026-05-22 ask.
+            // Nearest. Standalone rasters keep Nearest per the 2026-05-22 ask.
             let sampler = if self.preview_page.is_some() {
                 crate::preview::quad::SamplerKind::Linear
             } else {
@@ -15946,6 +15946,18 @@ fn key_to_pty_bytes(key: &Key, ctrl: bool, shift: bool) -> Option<Vec<u8>> {
     }
 }
 
+/// Raster image mimes the preview pane decodes through the byte-sniffing quad
+/// path (`preview/png.rs`, `with_guessed_format`). Kept in sync with the raster
+/// `image/*` outputs of the backend's `mime_for_path`: `image/svg+xml` is
+/// excluded (vector — it has its own preview path) and `image/tiff` is omitted
+/// because the backend never emits it.
+fn is_raster_preview_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp"
+    )
+}
+
 fn paint_terminal(
     buf: &mut ratatui::buffer::Buffer,
     rect: ratatui::layout::Rect,
@@ -16544,6 +16556,26 @@ mod tests {
             serde_json::Value::String(status_at.into()),
         );
         p
+    }
+
+    #[test]
+    fn raster_preview_mimes_route_jpeg_and_kin_not_svg() {
+        // jpeg is the asked-for case; gif/webp/bmp shared the same latent gap
+        // (the router used to accept only image/png). All must decode as rasters.
+        for m in [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/bmp",
+        ] {
+            assert!(is_raster_preview_mime(m), "{m} should decode as a raster");
+        }
+        // SVG is vector — it has its own preview path and must NOT be fed to the
+        // raster decoder; non-image mimes must not route here either.
+        assert!(!is_raster_preview_mime("image/svg+xml"));
+        assert!(!is_raster_preview_mime("text/plain; charset=utf-8"));
+        assert!(!is_raster_preview_mime("application/json"));
     }
 
     #[test]
