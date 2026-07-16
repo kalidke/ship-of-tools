@@ -344,7 +344,10 @@ $remoteCmd = @"
 # ONLY on the explicit -RestartBackend force path. Tradeoff accepted: the old
 # always-restart also cleared a WEDGED-but-accepting daemon; that rare case
 # is now the force path's job. Protocol skew stays loud via the ADR 0030
-# handshake gate. Echoes stay paren-free - PS 5.1 hands this to ssh unquoted.
+# handshake gate. Echoes stay paren-free AND semicolon-free - PS 5.1 hands this
+# to ssh unquoted, so bash sees echo text bare: a ';' inside it splits the
+# command and the tail runs as a bogus command whose stderr killed the whole
+# launcher under EAP=Stop (the 2026-07-16 'force: command not found' hang).
 export PATH="`$HOME/.cargo/bin:`$HOME/.local/bin:`$PATH"
 remote_socket='$remoteSocket'
 if [ -z "`$remote_socket" ]; then
@@ -360,7 +363,7 @@ elif [ -S "`$remote_socket" ] && { pgrep -x sotd >/dev/null 2>&1 || systemctl --
     if scripts/restart-backend.sh --check >/dev/null 2>&1; then
         echo "backend: running and current"
     else
-        echo "backend: running but STALE - it updates on its own cadence; force with -RestartBackend"
+        echo "backend: running but STALE - it updates on its own cadence - force with -RestartBackend"
     fi
 else
     if systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
@@ -386,7 +389,14 @@ $remoteCmd = $remoteCmd -replace "`r`n", "`n"
 # rev 2: default launches only check staleness / start-if-down (never restart a
 # running shared daemon); -RestartBackend forces the full restart-backend.sh path.
 Set-LaunchStatus $(if ($RestartBackend) { "Restarting backend on $backendHost..." } else { "Checking backend on $backendHost..." })
+# Relax 'Stop' -> 'Continue' around native ssh (same reason as the git pull
+# above): under 'Stop' + 2>&1 in PS 5.1, ANY remote stderr line throws and
+# kills the launcher silently - splash frozen on "Checking backend...". Gate
+# on $LASTEXITCODE below instead; stderr noise lands in $remoteStatusText.
+$savedEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 $remoteStatus = ssh -o ConnectTimeout=10 $backendHost $remoteCmd 2>&1
+$ErrorActionPreference = $savedEAP
 $remoteStatusText = ($remoteStatus | Out-String)
 if ($LASTEXITCODE -ne 0) {
     Set-LaunchStatus "ERROR: couldn't reach $backendHost (ssh exit $LASTEXITCODE) - try -Local"
