@@ -84,6 +84,25 @@ sticky_age_s() {
     echo $(( now - at ))
 }
 
+# Soft working (the UserPromptSubmit hook): a re-invocation — a background task
+# notification, a monitor wake, an inbox event — starts a turn but the session is
+# still waiting on the agents/job it spawned. The soft `working` write must NOT
+# clobber a live sticky-`waiting` marker to green: stay `waiting` (purple) while
+# the marker is live. This is the counterpart to the soft-idle demote below and
+# is what the header's "SOFT working does NOT clobber a live waiting marker"
+# contract requires — without it, every re-invocation flipped the row green and
+# the demote only restored purple on a CLEAN (non-nudged) turn-end, so the row
+# read idle/green while spawned agents ran. An EXPIRED marker falls through to
+# plain working (self-heal); an EXPLICIT `working` (SOFT=0, the model resuming
+# its own work) is unaffected and clears the marker below.
+if [ "$STATE" = working ] && [ "$SOFT" = 1 ]; then
+    cur="$(jq -r --arg n "$NAME" '.agents[$n].state // ""' "$REGISTRY" 2>/dev/null)"
+    if [ "$cur" = waiting ]; then
+        age="$(sticky_age_s)"
+        if [ -z "$age" ] || [ "$age" -lt "$STICKY_MAX_AGE_S" ]; then exit 0; fi
+    fi
+fi
+
 # Soft idle (the Stop hook): the turn-end idle floor must NOT overwrite a
 # deliberate `blocked` (pending question — would wipe red the instant it's set)
 # or a live `waiting`. And while a sticky-waiting marker is live, soft idle
