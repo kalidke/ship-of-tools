@@ -30,23 +30,47 @@ NAME=""
 row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.state // "") + "|" + (.status_at // "") else "" end' "$REGISTRY" 2>/dev/null || true)"
 [ -n "$row" ] || exit 0
 state="${row%%|*}"; at="${row#*|}"
-# HIERARCHY (red > green > purple, maintainer decision 2026-07-04): tool activity means the
-# session is ACTIVELY WORKING, so a `waiting` row promotes to working-green
-# for the duration (the sticky marker is untouched — the Stop hook demotes it
-# back to purple at turn end). This covers turns that start WITHOUT a
-# UserPromptSubmit (monitor/notification wakes), which previously sat purple
-# through real work. `blocked` is NEVER touched: red persists through any
+# HIERARCHY (red > green > purple, maintainer 2026-07-04, refined 2026-07-17):
+# tool activity means the session is ACTIVELY WORKING, so a `waiting` row with NO
+# live sticky marker promotes to working-green for the duration (covers turns
+# that start WITHOUT a UserPromptSubmit — monitor/notification wakes — which
+# previously sat purple through real work). BUT a `waiting` row WITH a live
+# sticky marker STAYS purple: the session explicitly declared it's waiting on a
+# spawned job, so tool activity is polling those agents, not its own work
+# (maintainer 2026-07-17: "green while only waiting for subagents"). See the
+# `hold_purple` logic below. `blocked` is NEVER touched: red persists through any
 # background activity until the user answers or the model explicitly clears.
 case "$state" in
     working) ;;      # refresh path below (throttled)
-    waiting) ;;      # promote path below (same write, state becomes working)
+    waiting) ;;      # stay-purple (live marker) or promote (expired/none) — below
     *) exit 0 ;;
 esac
 
-# Throttle: only re-stamp when the current stamp is older than 60s. A
-# waiting->working PROMOTION is a state change, not a refresh — it bypasses
-# the throttle so the row goes green at the first tool call of the turn.
-if [ "$state" = working ]; then
+# A live sticky-`waiting` marker holds the row PURPLE regardless of current state:
+#   - on a `waiting` row it PREVENTS the promote-to-green (the session declared it
+#     is waiting on a spawned job/agents, so tool activity is polling them, not
+#     its own work);
+#   - on a `working` row it DEMOTES back to purple — the row was promoted to green
+#     by a hook while the wait was still on (an EXPLICIT working/idle/done clears
+#     the marker, so a live marker means the wait genuinely continues).
+# Refines the 2026-07-04 promote-on-activity rule per the maintainer (2026-07-17:
+# "green while only waiting for subagents"). No live marker → tool activity is
+# real work → green. The marker's 2h TTL self-heals a forgotten waiting.
+STICKY_MAX_AGE_S=7200
+hold_purple=0
+sat="$(jq -r --arg n "$NAME" '.agents[$n].sticky_at // ""' "$REGISTRY" 2>/dev/null)"
+if [ -n "$sat" ]; then
+    sat_s=$(date -u -d "$sat" +%s 2>/dev/null || echo 0)
+    now_hb=$(date -u +%s)
+    [ "$sat_s" -gt 0 ] && [ $((now_hb - sat_s)) -lt "$STICKY_MAX_AGE_S" ] && hold_purple=1
+fi
+if [ "$hold_purple" = 1 ]; then newstate=waiting; else newstate=working; fi
+
+# Throttle a plain REFRESH (newstate == current state) to once per 60s so a busy
+# row's anti-wilt stamp doesn't churn the registry. A STATE CHANGE (promote
+# waiting->working, or demote working->waiting) bypasses the throttle so the
+# color flips at the first tool call of the turn.
+if [ "$newstate" = "$state" ]; then
     now_s=$(date -u +%s)
     at_s=$(date -u -d "$at" +%s 2>/dev/null || echo 0)
     [ $((now_s - at_s)) -ge 60 ] || exit 0
@@ -60,9 +84,9 @@ ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 LOCKDIR="$COMM_HOME/.registry.lock"
 if mkdir "$LOCKDIR" 2>/dev/null; then
     trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
-    jq --arg n "$NAME" --arg t "$ts" \
+    jq --arg n "$NAME" --arg t "$ts" --arg st "$newstate" \
        'if .agents[$n] and (.agents[$n].state == "working" or .agents[$n].state == "waiting")
-        then .agents[$n] += {state:"working", status_at:$t, last_seen:$t} else . end' \
+        then .agents[$n] += {state:$st, status_at:$t, last_seen:$t} else . end' \
        "$REGISTRY" > "$REGISTRY.hb.tmp" 2>/dev/null && mv "$REGISTRY.hb.tmp" "$REGISTRY"
     rmdir "$LOCKDIR" 2>/dev/null
     trap - EXIT
