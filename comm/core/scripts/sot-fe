@@ -13,6 +13,7 @@
 #   sot-fe goto    <workspace>        [--boot] [--fe <handle>]
 #   sot-fe mode    <mode>             [--fe <handle>]
 #   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <handle>]
+#   sot-fe docs    <workspace> <abs-path>          [--fe <handle>]
 #   sot-fe repl run  <workspace> <path>            [--fresh] [--timeout <s>] [--origin <who>]
 #   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>] [--origin <who>]
 #
@@ -24,6 +25,12 @@
 #   open-url — open an http(s) URL in the FE machine's OS BROWSER (not a
 #              forwarded port — the FE just opens it). Broadcast opens on
 #              every attached FE; use --fe to target one.
+#   docs     — open a LOCAL .html/site (ABSOLUTE backend path) in the FE's OS
+#              BROWSER via docs.open (the `W` key, backend-triggered): the FE
+#              serves the file from backend disk over the forwarded site_serve
+#              port and opens it — runs JS/WebGL, no preview size caps. For a
+#              built site or a self-contained figure export. NOT an http URL
+#              (use open-url for those); path is confined to a workspace root.
 #   repl     — run a .jl file (or eval code) in a workspace's persistent REPL
 #              and print the COLLECTED output (stdout/stderr/value/error +
 #              figure file paths). Unlike the other verbs this is a real
@@ -313,6 +320,23 @@ case "$CMD" in
             ARGS="$(jq -nc --arg w "$WS" --arg p "$PATH_ARG" '{workspace:$w, path:$p}')"
         fi
         send_fe_command "$CMD" "$ARGS"
+        ;;
+    docs)
+        WS="${POS[0]:-}"; PATH_ARG="${POS[1]:-}"
+        [ -n "$WS" ] && [ -n "$PATH_ARG" ] || { echo "usage: sot-fe docs <workspace> <abs-path> [--fe <handle>]" >&2; exit 1; }
+        # docs.open (the FE `W` key, backend-triggered) serves a LOCAL .html/site
+        # from backend disk over the forwarded site_serve port and opens it in the
+        # FE's real browser (runs JS/WebGL, no preview size caps). Unlike
+        # preview/reveal it needs an ABSOLUTE backend path — the daemon stats it
+        # RAW and confines it to any workspace root, so a repo-relative node_id
+        # would be resolved against sotd's CWD and fail. Refuse a relative path
+        # rather than send a broken one; do NOT relativize.
+        case "$PATH_ARG" in
+            /*) : ;;
+            *)  echo "ERROR: sot-fe docs needs an ABSOLUTE backend path (docs.open stats it raw, not a repo-relative node_id)." >&2; exit 1 ;;
+        esac
+        ARGS="$(jq -nc --arg w "$WS" --arg p "$PATH_ARG" '{workspace:$w, path:$p}')"
+        send_fe_command docs "$ARGS"
         ;;
     goto)
         WS="${POS[0]:-}"
