@@ -4484,6 +4484,16 @@ impl State {
                     urgent,
                 });
             }
+            FeCommand::Docs { workspace, path } => {
+                // No workspace switch: docs.open confines the absolute path to
+                // ANY registered workspace on the backend, so the active FE
+                // workspace is irrelevant. This is exactly what the `W` key does,
+                // minus the keypress — the FE's own long-lived connection mints
+                // the site_serve nonce, so the URL outlives the send (a backend
+                // one-shot docs.open would have its nonce reaped on disconnect).
+                tracing::info!(%workspace, %path, "fe-command: docs");
+                self.docs_open_external(path);
+            }
         }
     }
 
@@ -12575,6 +12585,15 @@ fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) ->
             }
             Some(FeCommand::OpenUrl { url })
         }
+        "docs" => {
+            // Backend-triggered docs.open for a local .html/site. `path` is the
+            // ABSOLUTE backend fs path (docs.open stats it raw + confines it to
+            // a workspace root); no scheme allowlist — it never opens a URL, it
+            // serves a confined local file over the site_serve port.
+            let workspace = str_arg("workspace")?;
+            let path = str_arg("path")?;
+            Some(FeCommand::Docs { workspace, path })
+        }
         _ => None,
     }
 }
@@ -12690,6 +12709,16 @@ enum FeCommand {
         path: String,
         #[serde(default)]
         urgent: bool,
+    },
+    /// ADR 0025 imperative `docs.open` (the `W` key) triggered from the backend:
+    /// serve a local `.html`/site from backend disk over the forwarded
+    /// site_serve port and open it in the FE's real browser. `path` is an
+    /// ABSOLUTE backend-side fs path — `docs.open` stats it raw and confines it
+    /// to ANY registered workspace, so no workspace switch is needed and
+    /// `workspace` is carried for parity/logging only (the backend ignores it).
+    Docs {
+        workspace: String,
+        path: String,
     },
 }
 
@@ -17305,6 +17334,28 @@ mod tests {
             Some(FeCommand::Preview { urgent, .. }) => assert!(!urgent),
             other => panic!("expected Preview, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn route_docs_parses_workspace_and_path() {
+        // Backend-triggered docs.open: workspace + (absolute) path → FeCommand::Docs.
+        // route_fe_command doesn't enforce absoluteness — the CLI does — so it
+        // just threads both strings through.
+        let evt = fe_evt(
+            "docs",
+            serde_json::json!({"workspace": "ws", "path": "/abs/site/index.html"}),
+            None,
+        );
+        match route_fe_command(&evt, "win-fe-host") {
+            Some(FeCommand::Docs { workspace, path }) => {
+                assert_eq!(workspace, "ws");
+                assert_eq!(path, "/abs/site/index.html");
+            }
+            other => panic!("expected Docs, got {other:?}"),
+        }
+        // Missing path → None (required arg bails the parse).
+        let evt = fe_evt("docs", serde_json::json!({"workspace": "ws"}), None);
+        assert!(route_fe_command(&evt, "win-fe-host").is_none());
     }
 
     #[test]
