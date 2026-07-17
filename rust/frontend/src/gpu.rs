@@ -1093,6 +1093,26 @@ fn parent_files_node_id(node_id: &str) -> String {
     }
 }
 
+/// Translate a backend-absolute file path into the ACTIVE workspace's
+/// `files:<rel>` node id, when the path lies inside `root`. Returns `None`
+/// for paths outside the root, the root itself, and lookalike siblings
+/// (`/a/ws` vs `/a/wsx` — the boundary `/` is required). Backend paths are
+/// always unix-style, so `/` is the only separator to handle.
+///
+/// This is the `preview.changed` addressing scheme: workspaces overlap (an
+/// umbrella workspace registered over the same tree, watch budgets capping
+/// a watcher's coverage), so the event copy tagged with the active slug may
+/// never exist — but every copy carries the absolute path, and any copy
+/// whose path is inside the active root is ours to act on.
+fn files_node_id_under_root(path: &str, root: &str) -> Option<String> {
+    let root = root.trim_end_matches('/');
+    let rel = path.strip_prefix(root)?.strip_prefix('/')?;
+    if rel.is_empty() {
+        return None;
+    }
+    Some(format!("files:{rel}"))
+}
+
 /// Build + validate the `files:` node id for a new file `name` created inside
 /// the directory `dir_node_id`. The backend's `node_id_to_path` rejects
 /// absolute ids and `..` segments, so the only safe child id is
@@ -8795,26 +8815,32 @@ impl State {
                         // it in the Files nav tree — otherwise the pane shows a
                         // stale listing until a manual re-nav (the reported bug).
                         //
-                        // 2026-07-10 multiwatch: the daemon now runs a watcher
-                        // per WORKSPACE and tags each event with the owning
-                        // slug. Only act on events for the workspace this FE is
-                        // viewing — node ids are workspace-relative
-                        // (`files:README.md` exists in every repo), so acting on
-                        // a foreign workspace's event would refresh or re-fetch
-                        // the WRONG file. A missing tag (pre-multiwatch daemon)
-                        // passes through, preserving the old behavior.
-                        let evt_ws = payload.get("workspace_id").and_then(|v| v.as_str());
-                        if let Some(slug) = evt_ws {
-                            if !preview_targets_active_ws(
-                                self.active_workspace_id.as_deref(),
-                                self.default_workspace_slug.as_deref(),
-                                slug,
-                            ) {
-                                continue;
-                            }
-                        }
+                        // Gate + address by PATH, not by the event's workspace
+                        // tag (2026-07-17 fix). Workspaces overlap — an umbrella
+                        // workspace registered over the same tree, and watch
+                        // budgets capping a watcher's coverage — so the event
+                        // copy tagged with OUR active slug may simply never
+                        // exist (files added to an open folder never refreshed
+                        // when the folder was viewed through a workspace whose
+                        // own watcher didn't cover the path). Every copy carries
+                        // the backend-absolute path; any copy whose path falls
+                        // inside the active workspace's root is ours — translate
+                        // it to OUR `files:<rel>` node id (the carried node_id
+                        // is relative to the EMITTING workspace, not ours) and
+                        // act on that. Duplicate copies from overlapping
+                        // watchers re-fire the same idempotent refresh; cheap.
+                        let node_id = payload
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .zip(self.active_project_root())
+                            .and_then(|(p, root)| files_node_id_under_root(p, root));
+                        let Some(node_id) = node_id else {
+                            // Outside the active workspace (or no root known
+                            // yet) — not ours to render.
+                            continue;
+                        };
                         let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                        let changed_node_id = payload.get("node_id").and_then(|v| v.as_str());
+                        let changed_node_id = Some(node_id.as_str());
                         if kind == "created" || kind == "removed" {
                             if let Some(node_id) = changed_node_id {
                                 let parent = parent_files_node_id(node_id);
@@ -17572,6 +17598,36 @@ mod tests {
         assert_eq!(parent_files_node_id("files:bar.txt"), "files:");
         // Non-files ids pass through.
         assert_eq!(parent_files_node_id("modules:Foo"), "modules:Foo");
+    }
+
+    #[test]
+    fn files_node_id_under_root_translates_inside_paths() {
+        assert_eq!(
+            files_node_id_under_root("/a/ws/src/x.jl", "/a/ws"),
+            Some("files:src/x.jl".to_string())
+        );
+        // Trailing slash on the root is tolerated.
+        assert_eq!(
+            files_node_id_under_root("/a/ws/x.jl", "/a/ws/"),
+            Some("files:x.jl".to_string())
+        );
+        // Root-level file.
+        assert_eq!(
+            files_node_id_under_root("/a/ws/top.md", "/a/ws"),
+            Some("files:top.md".to_string())
+        );
+    }
+
+    #[test]
+    fn files_node_id_under_root_rejects_outside_and_lookalikes() {
+        // Outside the root entirely.
+        assert_eq!(files_node_id_under_root("/other/z.jl", "/a/ws"), None);
+        // Sibling whose name extends the root's last segment — the boundary
+        // '/' requirement must reject it (`/a/ws` vs `/a/wsx`).
+        assert_eq!(files_node_id_under_root("/a/wsx/y.jl", "/a/ws"), None);
+        // The root itself is not a files node.
+        assert_eq!(files_node_id_under_root("/a/ws", "/a/ws"), None);
+        assert_eq!(files_node_id_under_root("/a/ws/", "/a/ws"), None);
     }
 
     #[test]
