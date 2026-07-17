@@ -1,7 +1,7 @@
 name = "ShipToolsVideoFile"
 uuid = "d492e98d-174d-4d50-b448-4f6643170ffd"
 authors = ["kalidke"]
-version = "0.4.1"
+version = "0.4.2"
 
 [deps]
 ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"
