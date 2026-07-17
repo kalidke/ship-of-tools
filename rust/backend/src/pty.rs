@@ -622,6 +622,12 @@ fn best_effort_session_env(target: &str, env: Vec<(String, String)>) {
 /// unbounded blocking `wait` on a live child from the reader loop.
 fn reap_child(child: &mut Box<dyn portable_pty::Child + Send + Sync>) {
     match child.try_wait() {
+        // Already exited: `try_wait` REAPS here — portable-pty 0.9 delegates to
+        // `std::process::Child::try_wait` (= `waitpid(WNOHANG)`, which collects
+        // the status). So this arm needs no `wait()`; leaving it empty is correct
+        // (verified 2026-07-17, Codex + Fable review). Do NOT rely on this to
+        // reap by itself: a `Child` that is merely DROPPED never reaches here —
+        // every reader-loop exit and teardown path must call `reap_child`.
         Ok(Some(_status)) => {}
         Ok(None) => {
             let _ = child.kill();
@@ -745,7 +751,7 @@ pub async fn boot_workspace_claude(
             return;
         }
     };
-    let TmuxPair { master, writer, child, reader } = pair;
+    let TmuxPair { master, writer, mut child, reader } = pair;
 
     // Drain the client's output so its pty buffer never stalls the session. We
     // don't render these bytes — this is a boot client, not a viewer. The thread
@@ -796,8 +802,12 @@ pub async fn boot_workspace_claude(
     crate::tmux::TmuxClient::new().detach_session_clients(&session);
     drop(writer);
     drop(master);
-    drop(child);
     let _ = drain.join();
+    // Reap the detached boot client — a bare `drop(child)` does NOT waitpid, so
+    // it leaked one `tmux: client` zombie per workspace create. By here the drain
+    // thread has read EOF, so the detached client has exited and `reap_child`'s
+    // `try_wait` collects it immediately (no SIGHUP-grace loop).
+    reap_child(&mut child);
 
     if booted {
         tracing::info!(%session,
@@ -956,7 +966,22 @@ fn run_reader_loop(
         match reader.read(&mut buf) {
             Ok(n) if n > 0 => {
                 if tx.send(buf[..n].to_vec()).is_err() {
-                    break; // receiver dropped, stop reading
+                    // Receiver dropped ⇒ the `Pty` is being dropped/re-targeted
+                    // (`rx` is a `Pty` field). Both drop paths run `shutdown()`
+                    // — set `stopping` + `detach-client` — BEFORE `rx` drops, so
+                    // this fires ~every switch (the reader loses the race to the
+                    // synchronous detach) and the detached client is already
+                    // exiting. Reap it here so it doesn't linger as a zombie; a
+                    // bare `break` would drop the `Child` un-`wait()`ed. This was
+                    // the dominant `tmux: client <defunct>` leak. `reap_child`'s
+                    // `kill()` is SIGHUP-then-grace (portable-pty), session-safe.
+                    if !stopping.load(Ordering::SeqCst) {
+                        tracing::warn!(
+                            "pty receiver dropped without shutdown(); reaping client anyway"
+                        );
+                    }
+                    reap_child(&mut child);
+                    break;
                 }
                 if spawned_at.elapsed() < PTY_HEALTHY_THRESHOLD {
                     append_recent(&mut recent, &buf[..n]);
