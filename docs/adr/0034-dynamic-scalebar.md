@@ -1,10 +1,11 @@
 # ADR 0034: dynamic scalebar for the preview pane
 
-Status: **proposed** (2026-07-18). Design converged with the frontend (render
-side) and SMLMAnalysis (scale source). Not yet implemented — this pins the
-`extras` schema, the `preview.set_scale` op, the hybrid resolution order, the
-two-bar render, and the live-entry→sidecar flow so the pieces can be built
-against a fixed contract.
+Status: **accepted** (2026-07-18), building Phase 1. Design converged with the
+frontend (render side) and SMLMAnalysis (scale source). Pins the `extras` schema,
+the `preview.set_scale` op, the hybrid resolution order, the two-bar render, and
+the live-entry→sidecar flow. One correction during build: the sidecar/`.concept`
+tiers are read **backend-side** (raster previews are served by the backend byte
+fallback, not the kernel — see §1), not "kernel-side".
 
 ## Context
 
@@ -26,11 +27,20 @@ Two facts shape the design:
 
 ## Decision
 
-### 1. Scale source: a kernel-side **hybrid resolver**
+### 1. Scale source: a **hybrid resolver**, read where the preview is served
 
-The scale nm/px is resolved **kernel-side**, so Rust never parses image metadata
-(keeps the Rust↔Julia seam honest — same as every other `FileType` payload). For
-a raster preview the kernel resolves `physical_scale` by trying, in order:
+The scale nm/px is resolved **where the preview is produced**. Raster images —
+the scalebar's whole target — are served by the **Rust backend's byte fallback**
+(`handle_preview_get` → `read_bytes_preview`), *not* the Julia kernel (no image
+`FileType` plugin claims them). So for rasters the **sidecar** and **`.concept`**
+tiers are read **backend-side**, in `handle_preview_get` right after the
+`(mime, bytes, extras)` assembly. A JSON `.scale.json` is *not* image metadata,
+so the "Rust never parses image *metadata*" principle is preserved — it governs
+the **embedded-tag** tier (§Phase 3, TIFF/OME), which is the only tier that would
+route kernel-side (or use the `image` crate's TIFF reader). Plugin-emitted
+previews (PDF/video → PNG) already flow through the kernel and would carry
+`physical_scale` in their extras kernel-side if ever relevant. The resolver tries,
+in order:
 
 1. **Sidecar** — `<image>.scale.json` next to the file.
 2. **Embedded metadata** — TIFF/OME resolution tags, or PNG `pHYs`
