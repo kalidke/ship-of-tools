@@ -46,6 +46,9 @@ pub enum Action {
     PreviewPngPanRight,
     PreviewPngPanUp,
     PreviewPngPanDown,
+    /// Raster preview pane: toggle the dynamic physical scalebar overlay
+    /// (ADR 0034). Only acts when the shown preview carries a physical scale.
+    PreviewScalebarToggle,
     /// Sessions picker: commit the cursored directory as a new workspace,
     /// auto-starting the comm-aware agent (ccb) in its pane.
     SessionCreate,
@@ -111,6 +114,7 @@ impl Action {
             "preview.png.pan_right" => Some(Action::PreviewPngPanRight),
             "preview.png.pan_up" => Some(Action::PreviewPngPanUp),
             "preview.png.pan_down" => Some(Action::PreviewPngPanDown),
+            "preview.scalebar.toggle" => Some(Action::PreviewScalebarToggle),
             "session.create" => Some(Action::SessionCreate),
             "session.create_bare" => Some(Action::SessionCreateBare),
             "session.create_codex" => Some(Action::SessionCreateCodex),
@@ -279,6 +283,7 @@ pub struct KeyBindings {
     preview_png_pan_right: Vec<Chord>,
     preview_png_pan_up: Vec<Chord>,
     preview_png_pan_down: Vec<Chord>,
+    preview_scalebar_toggle: Vec<Chord>,
     session_create: Vec<Chord>,
     session_create_bare: Vec<Chord>,
     session_create_codex: Vec<Chord>,
@@ -337,6 +342,9 @@ impl KeyBindings {
             preview_png_pan_right: vec![Chord::parse("ArrowRight").unwrap()],
             preview_png_pan_up: vec![Chord::parse("ArrowUp").unwrap()],
             preview_png_pan_down: vec![Chord::parse("ArrowDown").unwrap()],
+            // Scalebar overlay toggle. `b` for "bar"; only fires when the
+            // shown raster carries a physical scale (ADR 0034).
+            preview_scalebar_toggle: vec![Chord::parse("b").unwrap()],
             // Sessions picker commit: Enter = with agent (ccb), Shift+Enter =
             // bare (no LLM). The call site checks `session.create_bare` before
             // `session.create`, since a non-shift "Enter" chord also matches
@@ -449,6 +457,7 @@ impl KeyBindings {
                     Action::PreviewPngPanRight => self.preview_png_pan_right = chords,
                     Action::PreviewPngPanUp => self.preview_png_pan_up = chords,
                     Action::PreviewPngPanDown => self.preview_png_pan_down = chords,
+                    Action::PreviewScalebarToggle => self.preview_scalebar_toggle = chords,
                     Action::SessionCreate => self.session_create = chords,
                     Action::SessionCreateBare => self.session_create_bare = chords,
                     Action::SessionCreateCodex => self.session_create_codex = chords,
@@ -491,6 +500,7 @@ impl KeyBindings {
             Action::PreviewPngPanRight => &self.preview_png_pan_right,
             Action::PreviewPngPanUp => &self.preview_png_pan_up,
             Action::PreviewPngPanDown => &self.preview_png_pan_down,
+            Action::PreviewScalebarToggle => &self.preview_scalebar_toggle,
             Action::SessionCreate => &self.session_create,
             Action::SessionCreateBare => &self.session_create_bare,
             Action::SessionCreateCodex => &self.session_create_codex,

@@ -1113,6 +1113,93 @@ fn files_node_id_under_root(path: &str, root: &str) -> Option<String> {
     Some(format!("files:{rel}"))
 }
 
+/// One axis of a raster's physical scale (ADR 0034). `per_px` is the physical
+/// length of one *source* pixel, in the payload's `unit`. `name` is the axis
+/// label (`"x"`, `"z"`, …) so an anisotropic (XZ) view labels each bar.
+#[derive(Debug, Clone, PartialEq)]
+struct ScaleAxis {
+    name: String,
+    per_px: f64,
+}
+
+/// A raster preview's physical scale, from `extras.physical_scale` (ADR 0034).
+/// `axes[0]` is the horizontal (x) image axis. Isotropic sources ship two
+/// equal axes; Phase 1 renders one bar from `axes[0]`.
+#[derive(Debug, Clone, PartialEq)]
+struct PhysicalScale {
+    axes: Vec<ScaleAxis>,
+    unit: String,
+}
+
+/// Parse `extras.physical_scale` into a [`PhysicalScale`]. Shape (ADR 0034 §2):
+/// `{"axes":[{"name","nm_per_px"}],"unit"}`. `None` for any reply without the
+/// key (so it clears like `preview_page`) or a malformed/empty axes array.
+fn parse_physical_scale(extras: &serde_json::Value) -> Option<PhysicalScale> {
+    let ps = extras.get("physical_scale")?;
+    let unit = ps
+        .get("unit")
+        .and_then(|v| v.as_str())
+        .unwrap_or("nm")
+        .to_string();
+    let axes_v = ps.get("axes")?.as_array()?;
+    let mut axes = Vec::with_capacity(axes_v.len());
+    for a in axes_v {
+        let per_px = a.get("nm_per_px").and_then(|v| v.as_f64())?;
+        let name = a
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        axes.push(ScaleAxis { name, per_px });
+    }
+    if axes.is_empty() {
+        return None;
+    }
+    Some(PhysicalScale { axes, unit })
+}
+
+/// Snap a positive length to a "nice" `1/2/5 × 10ⁿ` value — the map-scalebar
+/// convention (ADR 0034 §3). Returns `1.0` for non-finite / non-positive input.
+fn snap_1_2_5(x: f64) -> f64 {
+    if !x.is_finite() || x <= 0.0 {
+        return 1.0;
+    }
+    let base = 10f64.powf(x.log10().floor());
+    let f = x / base; // in [1, 10)
+    let nice = if f < 1.5 {
+        1.0
+    } else if f < 3.5 {
+        2.0
+    } else if f < 7.5 {
+        5.0
+    } else {
+        10.0
+    };
+    nice * base
+}
+
+/// Format a snapped scale value for the label: integer when whole, else a
+/// trimmed decimal (`500`, `2.5`), so "500 nm" / "2.5 µm" read cleanly.
+fn fmt_scale_value(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-9 {
+        format!("{}", v.round() as i64)
+    } else {
+        let s = format!("{v:.2}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+/// Bar + label geometry for the scalebar overlay (ADR 0034), all in physical
+/// screen px. `backing` is a dark box drawn under the white `bar` and the
+/// (separately shaped) label so the overlay reads on any raster.
+#[derive(Debug, Clone, Copy)]
+struct ScalebarDraw {
+    backing: ScreenRect,
+    bar: ScreenRect,
+    label_x: f32,
+    label_y: f32,
+}
+
 /// Build + validate the `files:` node id for a new file `name` created inside
 /// the directory `dir_node_id`. The backend's `node_id_to_path` rejects
 /// absolute ids and `..` segments, so the only safe child id is
@@ -1658,6 +1745,12 @@ struct State {
     /// because `Quad::from_rgba8` allocates a GPU texture + bind group; pane
     /// borders use only 1–2 colours so the map stays tiny.
     border_quads: HashMap<(u8, u8, u8), Quad>,
+    /// Solid quads for the ADR-0034 scalebar overlay: a white `bar` over a
+    /// black `back`ing box. Dedicated fields (not `border_quads`) because each
+    /// `render_many` mutably borrows its quad for the whole render-pass
+    /// lifetime, so the two colours must live in disjoint fields.
+    scalebar_bar_quad: Quad,
+    scalebar_back_quad: Quad,
     /// Miniature dark logo (from `LOGO_DARK_PNG`) flanking each session badge
     /// in the bottom strip, plus its native `(w, h)` for aspect-ratio sizing.
     /// `None` when the embedded PNG fails to decode — purely cosmetic, the
@@ -1844,6 +1937,19 @@ struct State {
     /// rather than reset to fit. Set by the Preview handler, consumed in
     /// `render_preview_source`.
     preview_reraster_keep_view: bool,
+    /// Physical scale of the raster the pane is *showing* (ADR 0034), from
+    /// the reply's `extras.physical_scale`. `None` for previews with no
+    /// scale; cleared on every `preview.get` reply (like `preview_page`).
+    /// Presence gates the scalebar toggle key + overlay.
+    preview_scale: Option<PhysicalScale>,
+    /// Scalebar overlay toggle (ADR 0034, `b`). Default off; sticky across
+    /// navigations (renders only when `preview_scale` is present, so it can
+    /// stay armed while browsing a mix of scaled / unscaled rasters).
+    scalebar_on: bool,
+    /// The shaped scalebar label buffer (e.g. `500 nm`), rebuilt each frame
+    /// from the adaptive bar length by `build_scalebar` (shaped OUTSIDE the
+    /// render pass). `None` when the bar isn't drawn.
+    scalebar_label: Option<crate::preview::markdown::MarkdownPreview>,
     /// Definition line (1-indexed) the in-flight `preview.get` should
     /// anchor to once it lands — set from the selected modules-mode row's
     /// `line` payload so the code preview scrolls the item (its docstring
@@ -3031,6 +3137,14 @@ impl State {
         let strike_line_quad =
             Quad::from_rgba8(&device, &queue, &quad_pipeline, &[204, 204, 204, 255], 1, 1)
                 .context("failed to build strike_line_quad")?;
+        // ADR 0034 scalebar: an opaque white bar over a translucent-black
+        // backing box so the overlay reads on light OR dark rasters.
+        let scalebar_bar_quad =
+            Quad::from_rgba8(&device, &queue, &quad_pipeline, &[255, 255, 255, 255], 1, 1)
+                .context("failed to build scalebar_bar_quad")?;
+        let scalebar_back_quad =
+            Quad::from_rgba8(&device, &queue, &quad_pipeline, &[0, 0, 0, 170], 1, 1)
+                .context("failed to build scalebar_back_quad")?;
 
         // Decode the two embedded brand logos into textured quads. Both are
         // purely cosmetic chrome (strip badge flankers + nav wordmark), so a
@@ -3215,6 +3329,8 @@ impl State {
             code_bg_quad,
             code_border_quad,
             strike_line_quad,
+            scalebar_bar_quad,
+            scalebar_back_quad,
             border_quads: HashMap::new(),
             logo_quad,
             wordmark_quad,
@@ -3287,6 +3403,9 @@ impl State {
             preview_page_raster_zoom: 1.0,
             preview_page_raster_pending: None,
             preview_reraster_keep_view: false,
+            preview_scale: None,
+            scalebar_on: false,
+            scalebar_label: None,
             preview_anchor_line: None,
             preview_anchored_to: None,
             pinned_preview_node_id: None,
@@ -6619,6 +6738,121 @@ impl State {
         }
     }
 
+    /// Compute the dynamic scalebar's bar + label geometry for this frame and
+    /// shape its label buffer (ADR 0034). Called once per render, BEFORE the
+    /// render pass so the label is ready for `text.prepare`. Returns `None`
+    /// (and clears `scalebar_label`) unless the toggle is on, an image raster
+    /// is shown, and a physical scale is present.
+    ///
+    /// The bar length keys off the **source→screen** mapping (`canvas_w /
+    /// src_w`), NEVER the raster buffer size — zoom re-rasters the PNG larger
+    /// but the physical mapping is unchanged, so keying off the buffer would
+    /// break the bar after every zoom (the load-bearing detail, ADR 0034 §3;
+    /// same rationale as source-px ROI, ADR 0022). Phase 1 renders one bar
+    /// from `axes[0]` (the horizontal x axis); equal axes collapse naturally.
+    fn build_scalebar(
+        &mut self,
+        png_rect: Option<ScreenRect>,
+        preview_rect: ScreenRect,
+    ) -> Option<ScalebarDraw> {
+        // Cheap early-outs; every miss clears the stale label.
+        if !self.scalebar_on {
+            self.scalebar_label = None;
+            return None;
+        }
+        let clear_and_none = |s: &mut Self| -> Option<ScalebarDraw> {
+            s.scalebar_label = None;
+            None
+        };
+        let (Some(letterbox_rect), Some(quad_px)) =
+            (png_rect, self.preview_png.as_ref().map(|q| q.size_px))
+        else {
+            return clear_and_none(self);
+        };
+        let is_image = self
+            .preview_node_id_fired
+            .as_deref()
+            .map(Self::is_image_node_id)
+            .unwrap_or(false);
+        if !is_image {
+            return clear_and_none(self);
+        }
+        let Some(scale) = self.preview_scale.clone() else {
+            return clear_and_none(self);
+        };
+        let Some(axis) = scale.axes.first() else {
+            return clear_and_none(self);
+        };
+        if axis.per_px <= 0.0 {
+            return clear_and_none(self);
+        }
+        // Source→screen mapping (must match the draw block's `canvas_w`).
+        let zoom_max = png_zoom_max(preview_rect.w, preview_rect.h, quad_px);
+        let zoom = self.preview_png_zoom.clamp(1.0, zoom_max);
+        let canvas_w = letterbox_rect.w * zoom;
+        let (src_w, _src_h) = self.preview_png_dims.unwrap_or(quad_px);
+        if src_w == 0 || canvas_w <= 0.0 {
+            return clear_and_none(self);
+        }
+        let screen_px_per_src_px = canvas_w / src_w as f32;
+        let screen_px_per_unit = screen_px_per_src_px / axis.per_px as f32;
+        if !screen_px_per_unit.is_finite() || screen_px_per_unit <= 0.0 {
+            return clear_and_none(self);
+        }
+        // Adaptive length: aim ~15% of the pane, snap to 1/2/5×10ⁿ.
+        let target_px = preview_rect.w * 0.15;
+        let nice = snap_1_2_5((target_px / screen_px_per_unit) as f64);
+        let bar_len = nice as f32 * screen_px_per_unit;
+        // Skip a degenerate / pane-overflowing bar (e.g. absurd scale value).
+        if bar_len <= 1.0 || bar_len > preview_rect.w {
+            return clear_and_none(self);
+        }
+        // Shape the label OUTSIDE the render pass (a persistent buffer on self).
+        let scale_f = self.scale;
+        let label = format!("{} {}", fmt_scale_value(nice), scale.unit);
+        let label_buf = crate::preview::markdown::MarkdownPreview::new_plain(
+            self.text.font_system_mut(),
+            &label,
+            (400.0 * scale_f).max(1.0),
+            scale_f,
+        );
+        let label_w = label_buf
+            .buffer
+            .layout_runs()
+            .next()
+            .map(|r| r.line_w)
+            .unwrap_or(0.0);
+        let label_h = label_buf.buffer.metrics().line_height;
+        self.scalebar_label = Some(label_buf);
+        // Geometry: bottom-left corner, label above the bar, dark backing box.
+        let m = 10.0 * scale_f;
+        let bar_h = (4.0 * scale_f).max(2.0);
+        let gap = 3.0 * scale_f;
+        let pad = 4.0 * scale_f;
+        let bar_x = preview_rect.x + m;
+        let bar_y = preview_rect.y + preview_rect.h - m - bar_h;
+        let label_x = bar_x;
+        let label_y = bar_y - gap - label_h;
+        let content_right = (bar_x + bar_len).max(label_x + label_w);
+        let backing = ScreenRect {
+            x: bar_x - pad,
+            y: label_y - pad,
+            w: (content_right - bar_x) + 2.0 * pad,
+            h: (bar_y + bar_h - label_y) + 2.0 * pad,
+        };
+        Some(ScalebarDraw {
+            backing,
+            bar: ScreenRect {
+                x: bar_x,
+                y: bar_y,
+                w: bar_len,
+                h: bar_h,
+            },
+            label_x,
+            label_y,
+        })
+    }
+
     /// After a zoom change on a paginated preview, re-request the page at
     /// the new on-screen pixel size so rasterized text re-renders crisp
     /// instead of magnifying the fit-sized bitmap (ADR 0021). Only fires
@@ -8027,6 +8261,10 @@ impl State {
                         let count = e.get("page_count")?.as_u64()? as u32;
                         Some((page, count))
                     });
+                    // ADR 0034: physical scale for the scalebar overlay. Same
+                    // clear-on-every-reply as pagination — a reply with no
+                    // `physical_scale` retires the bar for the new target.
+                    self.preview_scale = extras.as_ref().and_then(parse_physical_scale);
                     // Is this the higher-res reply to a zoom re-raster of the
                     // page already on screen? Only if a re-raster is pending
                     // for the SAME page — a reply for a different page is a
@@ -11413,7 +11651,28 @@ impl State {
             }
         }
 
+        // ADR 0034: compute the scalebar geometry + shape its label BEFORE the
+        // `extras` borrows and `text.prepare` — the label is pushed as an
+        // ExtraArea below, and the bar rects are drawn inside the pass. `&mut
+        // self` here (font_system + scalebar_label); done before the shared
+        // buffer borrows the `extras` Vec takes.
+        let scalebar_draw = self.build_scalebar(png_rect, preview_rect);
+
         let mut extras: Vec<crate::text::ExtraArea> = Vec::new();
+        if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.scalebar_label.as_ref()) {
+            extras.push(crate::text::ExtraArea {
+                buffer: &lbl.buffer,
+                x: sb.label_x,
+                y: sb.label_y,
+                right: preview_rect.x + preview_rect.w,
+                bottom: preview_rect.y + preview_rect.h,
+                clip_left: Some(preview_rect.x),
+                clip_top: Some(preview_rect.y),
+                // Near-white on the dark backing box drawn under it.
+                color: (245, 245, 245),
+                scroll_y_px: 0.0,
+            });
+        }
         if show_md {
             extras.push(crate::text::ExtraArea {
                 buffer: &self.preview_md.buffer,
@@ -11693,6 +11952,38 @@ impl State {
                 )?;
                 // Reset scissor so subsequent draws (SVG, media paint,
                 // chrome text) aren't clipped to the preview pane.
+                rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+            }
+            // ADR 0034: dynamic scalebar overlay, drawn after the image quad so
+            // it sits on top, re-scissored to the pane so it can't bleed. Black
+            // backing box under a white bar (the label rides in `extras`).
+            // Dedicated quad fields, not the shared `border_quads` map: each
+            // `render_many` mutably borrows its quad for the whole render-pass
+            // lifetime (`'a`), so two colours must come from two disjoint
+            // fields — one map borrowed twice would alias. `self.preview_png`'s
+            // borrow ended when the image block closed above.
+            if let Some(sb) = scalebar_draw.as_ref() {
+                let sx = preview_rect.x.max(0.0) as u32;
+                let sy = preview_rect.y.max(0.0) as u32;
+                let sw = preview_rect.w.max(0.0) as u32;
+                let sh = preview_rect.h.max(0.0) as u32;
+                rpass.set_scissor_rect(sx, sy, sw, sh);
+                self.scalebar_back_quad.render_many(
+                    &self.device,
+                    &self.queue,
+                    &self.quad_pipeline,
+                    &mut rpass,
+                    std::slice::from_ref(&sb.backing),
+                    (self.config.width, self.config.height),
+                )?;
+                self.scalebar_bar_quad.render_many(
+                    &self.device,
+                    &self.queue,
+                    &self.quad_pipeline,
+                    &mut rpass,
+                    std::slice::from_ref(&sb.bar),
+                    (self.config.width, self.config.height),
+                )?;
                 rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
             }
             if let (Some(quad), Some(rect)) = (self.preview_svg.as_ref(), svg_rect) {
@@ -15068,6 +15359,14 @@ impl ApplicationHandler for App {
                                 state.preview_png_pan_px.1 += pane_h * PAN_FRAC;
                             } else if b.matches(Action::PreviewPngPanDown, k, ctrl, alt, shift) {
                                 state.preview_png_pan_px.1 -= pane_h * PAN_FRAC;
+                            } else if b.matches(Action::PreviewScalebarToggle, k, ctrl, alt, shift)
+                                && state.preview_scale.is_some()
+                            {
+                                // ADR 0034: flip the scalebar overlay. Gated on
+                                // a present scale (mirrors the pagination keys
+                                // only binding when page extras exist); with no
+                                // scale, `b` falls through (Phase 2 live-entry).
+                                state.scalebar_on = !state.scalebar_on;
                             } else {
                                 handled = false;
                             }
@@ -17615,6 +17914,69 @@ mod tests {
         assert_eq!(
             files_node_id_under_root("/a/ws/top.md", "/a/ws"),
             Some("files:top.md".to_string())
+        );
+    }
+
+    #[test]
+    fn snap_1_2_5_hits_nice_values() {
+        assert_eq!(snap_1_2_5(1.0), 1.0);
+        assert_eq!(snap_1_2_5(1.3), 1.0);
+        assert_eq!(snap_1_2_5(1.7), 2.0);
+        assert_eq!(snap_1_2_5(3.0), 2.0);
+        assert_eq!(snap_1_2_5(4.0), 5.0);
+        assert_eq!(snap_1_2_5(9.0), 10.0);
+        assert_eq!(snap_1_2_5(430.0), 500.0);
+        assert_eq!(snap_1_2_5(1800.0), 2000.0);
+        assert_eq!(snap_1_2_5(0.03), 0.02);
+        // Degenerate inputs never panic.
+        assert_eq!(snap_1_2_5(0.0), 1.0);
+        assert_eq!(snap_1_2_5(-5.0), 1.0);
+        assert_eq!(snap_1_2_5(f64::NAN), 1.0);
+    }
+
+    #[test]
+    fn fmt_scale_value_trims_cleanly() {
+        assert_eq!(fmt_scale_value(500.0), "500");
+        assert_eq!(fmt_scale_value(2.0), "2");
+        assert_eq!(fmt_scale_value(2.5), "2.5");
+        assert_eq!(fmt_scale_value(0.02), "0.02");
+    }
+
+    #[test]
+    fn parse_physical_scale_reads_axes_and_unit() {
+        let v = serde_json::json!({
+            "physical_scale": {
+                "axes": [
+                    {"name": "x", "nm_per_px": 2.0},
+                    {"name": "y", "nm_per_px": 2.0}
+                ],
+                "unit": "nm"
+            }
+        });
+        let ps = parse_physical_scale(&v).expect("parses");
+        assert_eq!(ps.unit, "nm");
+        assert_eq!(ps.axes.len(), 2);
+        assert_eq!(ps.axes[0].name, "x");
+        assert_eq!(ps.axes[0].per_px, 2.0);
+    }
+
+    #[test]
+    fn parse_physical_scale_rejects_missing_or_empty() {
+        // No physical_scale key → None (so it clears like preview_page).
+        assert_eq!(parse_physical_scale(&serde_json::json!({"page": 1})), None);
+        // Empty axes → None.
+        assert_eq!(
+            parse_physical_scale(&serde_json::json!({
+                "physical_scale": {"axes": [], "unit": "nm"}
+            })),
+            None
+        );
+        // Axis missing nm_per_px → None (the whole parse fails, no partial).
+        assert_eq!(
+            parse_physical_scale(&serde_json::json!({
+                "physical_scale": {"axes": [{"name": "x"}], "unit": "nm"}
+            })),
+            None
         );
     }
 
