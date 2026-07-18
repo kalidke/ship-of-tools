@@ -138,6 +138,10 @@ pub struct Cli {
     /// default history prefill). For the `--capture` harness, which can't
     /// inject a Ctrl+M keypress mid-render.
     pub start_monitor: bool,
+    /// Turn the ADR-0034 scalebar overlay on at startup. For the `--capture`
+    /// harness, which can't inject a `b` keypress mid-render — the bar still
+    /// only draws when the previewed raster carries a physical scale.
+    pub start_scalebar: bool,
     /// This instance is a harness (driver/capture) FE, never the user's
     /// primary: skip every per-host shared-state interaction — no
     /// resume-state or `fe-state.json` writes, no state restore, and no
@@ -200,6 +204,7 @@ impl Cli {
         let mut auto_pin = false;
         let mut start_help = false;
         let mut start_monitor = false;
+        let mut start_scalebar = false;
         let mut ephemeral = false;
         let mut demo_sessions: Vec<String> = Vec::new();
         let mut demo_session_states: Vec<Option<String>> = Vec::new();
@@ -238,6 +243,7 @@ Display:
 
 Automation / dev (screenshots, demos):
   --capture <png> [--capture-delay-ms <ms>] [--capture-cycle] [--capture-preview]
+  --start-scalebar      scalebar overlay on (ADR 0034; needs a scaled raster)
   --demo-sessions <a:working,b:idle,...>      --demo-repl-eval <file>
   --ephemeral           don't persist state   --relaunched        (set by the supervisor)
 
@@ -356,6 +362,9 @@ shows the pane-switch keys."#);
                 "--start-monitor" => {
                     start_monitor = true;
                 }
+                "--start-scalebar" => {
+                    start_scalebar = true;
+                }
                 "--ephemeral" => {
                     ephemeral = true;
                 }
@@ -433,6 +442,7 @@ shows the pane-switch keys."#);
             auto_pin,
             start_help,
             start_monitor,
+            start_scalebar,
             ephemeral,
             demo_sessions,
             demo_session_states,

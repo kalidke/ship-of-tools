@@ -655,6 +655,11 @@ pub async fn handle_preview_get(
         }
     };
 
+    // ADR 0034: attach a `<path>.scale.json` sidecar's contents as
+    // `extras.physical_scale` so the FE can render a dynamic scalebar on raster
+    // previews. Backend-side (rasters are served here, not via the kernel).
+    let extras = merge_scale_sidecar(&path, &mime, extras);
+
     // Ship an oversize raster as a preview-sized PNG instead of the raw file.
     // Only oversize rasters take the spawn_blocking detour (decode is CPU-heavy
     // and must stay off the async reactor); everything else passes through
@@ -977,6 +982,47 @@ fn read_bytes_preview(path: &std::path::Path, node_id: &str) -> std::io::Result<
         return Ok(("text/markdown".to_string(), msg.into_bytes()));
     }
     Ok((mime, bytes))
+}
+
+/// ADR 0034: for a raster image preview, look for a `<path>.scale.json` sidecar
+/// and surface its JSON as `extras.physical_scale` (the FE renders a dynamic
+/// scalebar from it). Read backend-side because raster previews are served here
+/// (`read_bytes_preview`), not via the kernel — and a JSON sidecar is not image
+/// metadata, so it doesn't cross the "Rust never parses image metadata" line.
+///
+/// Best-effort + opaque: a missing/unparseable sidecar leaves `extras` untouched;
+/// the sidecar's JSON (expected `{axes:[{name,nm_per_px}],unit}`) is passed
+/// through as-is — the FE validates the shape. Merges into an existing `extras`
+/// object (e.g. a plugin's) rather than clobbering it.
+fn merge_scale_sidecar(
+    path: &std::path::Path,
+    mime: &str,
+    extras: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    if !is_downsampleable_raster(mime) {
+        return extras; // not a raster we scalebar
+    }
+    // `<path>.scale.json` — append to the FULL path (so `img.png` → `img.png.scale.json`).
+    let mut sidecar = path.as_os_str().to_os_string();
+    sidecar.push(".scale.json");
+    let sidecar = std::path::PathBuf::from(sidecar);
+    let Ok(text) = std::fs::read_to_string(&sidecar) else {
+        return extras; // no sidecar
+    };
+    let scale: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(sidecar = %sidecar.display(), error = %e,
+                "scale sidecar is not valid JSON — ignoring");
+            return extras;
+        }
+    };
+    let mut obj = match extras {
+        Some(serde_json::Value::Object(m)) => m,
+        _ => serde_json::Map::new(),
+    };
+    obj.insert("physical_scale".to_string(), scale);
+    Some(serde_json::Value::Object(obj))
 }
 
 pub async fn handle_concept_read(
@@ -4144,6 +4190,81 @@ mod file_transfer_tests {
         std::fs::write(dir.join("data"), b"").unwrap();
         assert_eq!(dedup_upload_name(&dir, "data"), "data (1)");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod scalebar_sidecar_tests {
+    use super::merge_scale_sidecar;
+    use std::path::PathBuf;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sot-scale-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn sidecar_sets_physical_scale_for_raster() {
+        let dir = tmp("set");
+        let img = dir.join("render.png");
+        std::fs::write(&img, b"").unwrap();
+        std::fs::write(
+            dir.join("render.png.scale.json"),
+            br#"{"axes":[{"name":"x","nm_per_px":2.0},{"name":"y","nm_per_px":2.0}],"unit":"nm"}"#,
+        )
+        .unwrap();
+        let extras = merge_scale_sidecar(&img, "image/png", None);
+        let ps = extras
+            .as_ref()
+            .and_then(|e| e.get("physical_scale"))
+            .expect("physical_scale set from sidecar");
+        assert_eq!(ps["unit"], "nm");
+        assert_eq!(ps["axes"][0]["nm_per_px"], 2.0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn no_sidecar_leaves_extras_untouched() {
+        let dir = tmp("none");
+        let img = dir.join("bare.png");
+        std::fs::write(&img, b"").unwrap();
+        assert!(merge_scale_sidecar(&img, "image/png", None).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn non_raster_mime_is_skipped() {
+        let dir = tmp("skip");
+        let f = dir.join("notes.txt");
+        std::fs::write(&f, b"").unwrap();
+        // A sidecar present but the mime isn't a raster → skipped, not read.
+        std::fs::write(dir.join("notes.txt.scale.json"), b"{}").unwrap();
+        assert!(merge_scale_sidecar(&f, "text/plain; charset=utf-8", None).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn merges_into_existing_extras_without_clobbering() {
+        let dir = tmp("merge");
+        let img = dir.join("m.png");
+        std::fs::write(&img, b"").unwrap();
+        std::fs::write(dir.join("m.png.scale.json"), br#"{"unit":"nm"}"#).unwrap();
+        let extras = merge_scale_sidecar(&img, "image/png", Some(serde_json::json!({"page": 2})))
+            .expect("some");
+        assert_eq!(extras["page"], 2, "existing extras preserved");
+        assert_eq!(extras["physical_scale"]["unit"], "nm");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_json_sidecar_is_ignored() {
+        let dir = tmp("bad");
+        let img = dir.join("b.png");
+        std::fs::write(&img, b"").unwrap();
+        std::fs::write(dir.join("b.png.scale.json"), b"not json{").unwrap();
+        assert!(merge_scale_sidecar(&img, "image/png", None).is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 }
