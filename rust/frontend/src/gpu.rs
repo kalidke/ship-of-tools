@@ -3404,7 +3404,9 @@ impl State {
             preview_page_raster_pending: None,
             preview_reraster_keep_view: false,
             preview_scale: None,
-            scalebar_on: false,
+            // Default off; `--start-scalebar` arms it for the headless capture
+            // harness (no `b` keypress). Still gated on a present scale at draw.
+            scalebar_on: cli.start_scalebar,
             scalebar_label: None,
             preview_anchor_line: None,
             preview_anchored_to: None,
