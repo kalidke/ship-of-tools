@@ -152,6 +152,43 @@ through a local SSH tunnel whose TCP port forwards to that remote Unix socket.
 
   `comm-listen.sh` covers part 1; you arm part 2. Both sides need this for instant
   two-way. `ask`/`listen` are synchronous one-offs that skip the persistent setup.
+- **After you `send`, TRUST your Monitor — do NOT re-send, poll, or block waiting
+  for a reply.** A `send` is one-shot + instant, but the *reply is not*: the peer
+  is a Claude session that has to be woken, read your message, think, and answer —
+  normally **seconds to a few minutes**, longer if it's mid-task. **Silence is not
+  failure, and it is not "the message didn't arrive."** The reply files into your
+  inbox and the Monitor you armed (part 2) **wakes you** when it lands — that is
+  the entire point of arming it. So after sending:
+  - **Do NOT re-send the same message** because no reply has come yet — the peer
+    already has it; re-sending spams and can trigger duplicate work (a peer got the
+    same question 3× and kept re-answering). `relayed -> X` only means the *daemon*
+    accepted the frame; only a reply proves the peer received + processed it, and
+    that reply comes to you via the Monitor.
+  - **Do NOT stand up a blocking watch** — a long-timeout `comm-relay.sh ask`, a
+    `while`-loop `tail`, or a Bash "wake poll" — to sit and wait. It ties up your
+    turn and duplicates the Monitor you already have. `ask` / a short `listen` are
+    for a *deliberate, brief* synchronous check (you need the answer to pick your
+    very next action, for a few seconds) — never for "wait on a peer to think."
+  - **Instead:** set `comm-status.sh waiting "<what you're waiting on>"` (purple)
+    and either do other useful work or **end the turn**. You lose nothing — the
+    Monitor surfaces the reply and wakes you whenever it comes.
+  - **Only re-send** with *positive evidence* the message was lost — you learn the
+    peer was deaf/restarted (its listener was down) or `/bus-sync` shows it never
+    saw it — not merely because a reply is slow.
+  - **Your Monitor survives a context *summary* (compaction) — you just can't see
+    it.** It is a background harness task, NOT part of the summarized context, so
+    after compaction it is not re-stated in what you can read — but it is still
+    armed and still watching your inbox. *Not seeing it ≠ it died.* Do not arm a
+    fresh ad-hoc watch "to be safe." (Only a full `--continue` RESTART actually
+    kills it — and the fix there is `/sot-session-start`, whose
+    `comm-listen.sh --selftest` proves the wake path in one shot, never a bespoke
+    short watch.)
+  - **Calibrate for peer think-time.** A substantive peer reply routinely takes
+    **minutes** — the peer must be woken, read, reason, and compose. A short empty
+    window (a 60–90s watch) or a peer `last_seen` that looks a few minutes stale is
+    NOT evidence of a dead path or a deaf peer; it almost always means "still
+    composing." Your armed Monitor catches the reply whenever it lands, so there is
+    no window you need to "keep open."
 - **Receive on Windows**: the native frontend writes inbound messages to
   `<state-dir>/fe-inbox.jsonl` (`%LOCALAPPDATA%\sot\`); the in-terminal FE agent
   reads that. To send from Windows, use `comm-relay.sh` with
