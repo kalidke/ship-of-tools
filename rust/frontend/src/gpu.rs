@@ -332,6 +332,16 @@ struct WorkspaceUiSnapshot {
     /// of the visible structure; re-fetch only happens if no snapshot
     /// exists yet for the entering workspace.
     tree: TreeView,
+    /// Which workspace `tree` ACTUALLY belongs to. Must travel with it: a
+    /// snapshot is NOT guaranteed to hold its own key's tree, because
+    /// `snapshot_current_workspace_ui` runs BEFORE `active_workspace_id`
+    /// updates. Switching A -> B (first visit, B's `tree.root` still in
+    /// flight) and back to A stores A's still-loaded tree under key B. On
+    /// restore we must therefore stamp the tree's REAL provenance rather than
+    /// assume it matches the entering workspace — stamping it as B would
+    /// launder A's tree into a false "belongs to B", defeating the staleness
+    /// check that exists to catch exactly this (Codex R4).
+    files_tree_workspace: Option<String>,
     /// Persistent nav-pane scroll offset (vim-style scrolloff). Cursor
     /// alone doesn't pin the viewport; direction-of-motion does, so
     /// swap-in needs both the cursor (in `tree`) and the offset.
@@ -4952,6 +4962,9 @@ impl State {
             WorkspaceUiSnapshot {
                 mode: self.mode,
                 tree: self.tree.clone(),
+                // The tree's REAL provenance at snapshot time, which is not
+                // necessarily this snapshot's key (see the field docs).
+                files_tree_workspace: self.files_tree_workspace.clone(),
                 tree_scroll: self.tree_scroll,
                 bl_pane_target: self.bl_pane_target.clone(),
                 preview_node_id_fired: self.preview_node_id_fired.clone(),
@@ -4978,11 +4991,14 @@ impl State {
         };
         self.mode = snap.mode;
         self.tree = snap.tree;
-        // The snapshot indexed by `key` IS this workspace's tree (key ==
-        // current_workspace_key() == active), so the restored tree belongs to
-        // the active ws — keep the stamp in sync so the reveal's staleness
-        // check doesn't false-positive on a legitimately-restored tree.
-        self.files_tree_workspace = self.active_workspace_id.clone();
+        // Restore the tree's REAL provenance, NOT the entering workspace.
+        // Assuming "the snapshot under key K holds K's tree" is false: it can
+        // hold another workspace's tree (see WorkspaceUiSnapshot's field docs),
+        // and stamping it as the active ws would relabel a foreign tree as
+        // valid — making `tree_matches_active_ws` return true and suppressing
+        // the corrective reload the reveal depends on. Carrying provenance
+        // means such a snapshot restores as stale and reloads (Codex R4).
+        self.files_tree_workspace = snap.files_tree_workspace.clone();
         // Reconcile the Files-mode root label to the active workspace. The
         // snapshot restores the tree wholesale and (by design, for instant
         // switch-back) skips the `tree.root` re-fetch — so a root row that was
