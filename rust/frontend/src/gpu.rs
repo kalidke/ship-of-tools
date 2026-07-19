@@ -1797,6 +1797,15 @@ struct State {
     /// the same directory (e.g. successive timesteps of a plot) keeps
     /// the same zoom + pan. `None` until a PNG has loaded.
     preview_png_dims: Option<(u32, u32)>,
+    /// Dimensions of the shown raster as SERVED, before the GPU-fit downsample
+    /// that `decode_and_fit` applies to images exceeding
+    /// `max_texture_dimension_2d`. Equals `preview_png_dims` for everything
+    /// under the cap. The ADR-0034 scalebar keys off THIS: the wire's
+    /// `nm_per_px` describes served pixels, so measuring against the shrunken
+    /// texture width mis-scales the bar by `src/texture` (a 20000 px raster
+    /// capped to 16384 reads ~1.22x short). Re-derived on every decode, so it
+    /// stays correct across workspace-snapshot repaints.
+    preview_png_src_dims: Option<(u32, u32)>,
     /// The visible region of the current image preview, in *source-image
     /// pixel* coords (ADR 0022). Recomputed each draw from zoom/pan/letterbox
     /// when an image is shown; `None` when the preview isn't a croppable
@@ -3368,6 +3377,7 @@ impl State {
             preview_png_zoom: 1.0,
             preview_png_pan_px: (0.0, 0.0),
             preview_png_dims: None,
+            preview_png_src_dims: None,
             preview_roi: None,
             preview_png_cache: HashMap::new(),
             preview_svg,
@@ -6866,7 +6876,16 @@ impl State {
         let zoom_max = png_zoom_max(preview_rect.w, preview_rect.h, quad_px);
         let zoom = self.preview_png_zoom.clamp(1.0, zoom_max);
         let canvas_w = letterbox_rect.w * zoom;
-        let (src_w, _src_h) = self.preview_png_dims.unwrap_or(quad_px);
+        // Measure against the AS-SERVED width, not the texture width: an image
+        // over `max_texture_dimension_2d` is GPU-downsampled for display, but
+        // the wire's `nm_per_px` still describes the served pixels. `canvas_w`
+        // spans the whole image either way, so pairing it with the served width
+        // is what keeps the bar physically true (Codex review R2 — a 20000 px
+        // raster capped to 16384 otherwise reads ~1.22x short).
+        let (src_w, _src_h) = self
+            .preview_png_src_dims
+            .or(self.preview_png_dims)
+            .unwrap_or(quad_px);
         if src_w == 0 || canvas_w <= 0.0 {
             return clear_and_none(self);
         }
@@ -7014,17 +7033,20 @@ impl State {
             } else {
                 crate::preview::quad::SamplerKind::Nearest
             };
-            match crate::preview::png::quad_from_png_bytes(
+            match crate::preview::png::quad_and_source_dims_from_png_bytes(
                 &self.device,
                 &self.queue,
                 &self.quad_pipeline,
                 bytes,
                 sampler,
             ) {
-                Ok(q) => {
+                Ok((q, src_w, src_h)) => {
                     let dims = q.size_px;
                     self.preview_png = Some(q);
                     self.preview_png_dims = Some(dims);
+                    // Pre-downsample size for the ADR-0034 scalebar (see field
+                    // docs). Same as `dims` unless the GPU-fit shrank it.
+                    self.preview_png_src_dims = Some((src_w, src_h));
                     if std::mem::take(&mut self.preview_reraster_keep_view) {
                         // Zoom re-raster of the same page (ADR 0021): the new
                         // bitmap is the same page at higher resolution. Fit-to-
