@@ -246,13 +246,15 @@ function _install_claude_hooks(srchooks::AbstractString)
     return nothing
 end
 
-# The work-state hooks: (Claude Code event, script in ~/.sot-comm/bin, tool
-# matcher | nothing). The instant + automatic state source that replaces
-# pane-scraping — Claude fires these on its own lifecycle, with zero model help.
-# `blocked` keys off the AskUserQuestion tool (PreToolUse), NOT Notification:
-# Notification also fires on plain idle, which lit agents red while merely waiting.
-# A question asked in plain text has no automatic signal — an agent self-reports
-# `comm-status.sh blocked "<q>"` for those (the Stop idle floor won't clobber it).
+# The comm lifecycle hooks: (Claude Code event, script in ~/.sot-comm/bin, tool
+# matcher | nothing). The first four are the instant + automatic WORK-STATE
+# source that replaces pane-scraping — Claude fires these on its own lifecycle,
+# with zero model help. `blocked` keys off the AskUserQuestion tool (PreToolUse),
+# NOT Notification: Notification also fires on plain idle, which lit agents red
+# while merely waiting. A question asked in plain text has no automatic signal —
+# an agent self-reports `comm-status.sh blocked "<q>"` for those (the Stop idle
+# floor won't clobber it). The last entry is NOT a state hook: it re-surfaces the
+# receive-path-survives-compaction fact after a summary (see below).
 const _COMM_STATE_HOOKS = [
     ("UserPromptSubmit", "comm-status-working.sh", nothing),     # turn starts   → working
     ("PreToolUse", "comm-status-blocked.sh", "AskUserQuestion"), # opens question → blocked
@@ -261,6 +263,15 @@ const _COMM_STATE_HOOKS = [
     # activity (throttled to 60s) so the nav's 10-min wilt marks real stalls,
     # not long busy turns ("a peer session reverting to white", 2026-07-03).
     ("PostToolUse", "comm-status-heartbeat.sh", nothing),
+    # Post-compaction reminder (2026-07-19, Keith): SessionStart fires with
+    # source=compact after a context summary; the hook (matcher-scoped to
+    # `compact`) prints a stdout reminder that the durable listener + inbox
+    # Monitor SURVIVE compaction and are still armed — so a session that can no
+    # longer SEE them doesn't arm a redundant Monitor/watch. Reminder-only: it
+    # does NOT re-bootstrap (that would double-arm the surviving Monitor). Its
+    # command is `comm-postcompact-reminder.sh` (not `comm-status-*`), so
+    # `_remove_stale_comm_hooks!` never strips it and this add is idempotent.
+    ("SessionStart", "comm-postcompact-reminder.sh", "compact"),
 ]
 
 # A hook command string. `\$HOME` (not the resolved path) so the entry is portable
