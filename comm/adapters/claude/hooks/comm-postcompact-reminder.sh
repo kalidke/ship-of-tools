@@ -11,13 +11,14 @@
 # all of it. (Earlier this hook only printed a trust reminder; that was
 # insufficient for exactly this reason.)
 #
-# Safe to re-run on every compaction: the session-start skill is IDEMPOTENT —
-# comm-join keeps identity, comm-listen self-heals (bridge_running guard, no
-# duplicate bridge), comm-poll advances a cursor, and the Monitor step now
-# GUARDS on `pgrep comm-watch.sh <handle>` so it does NOT arm a second Monitor
-# on top of the one that survived compaction (a duplicate would double every
-# wake and compound across compactions). Re-arming happens only after a real
-# `--continue` restart, where the Monitor is genuinely gone.
+# Safe to re-run on every compaction: the session-start skill opens with a
+# "Step 0" that detects survival — it `pgrep`s (end-anchored) for the live
+# watcher that outlives a summary and, when found, STOPS before the bootstrap.
+# So a compaction re-run re-reads the doc (restoring the operating instructions)
+# but does NOT re-arm the Monitor, re-`comm-poll` (which would replay
+# already-handled messages), or re-`comm-join` (whose row-replace would wipe the
+# live work-state). The full bootstrap runs only on a real `--continue` restart,
+# where Step 0 finds no watcher.
 #
 # Output: plain stdout is captured as SessionStart context (docs: "Any text your
 # hook script prints to stdout is added as context for Claude"). Self-gates to
@@ -60,5 +61,5 @@ Re-run your session-start skill now, BEFORE other work, to restore your full com
   • /sot-be-session-start   (Ship of Tools backend)
   • /sot-fe-session-start   (Ship of Tools frontend)
 
-It is IDEMPOTENT and safe to re-run: re-join keeps your identity, the listener self-heals (no duplicate bridge), missed messages are caught up, and the Monitor is re-armed ONLY if one isn't already running — the skill checks `pgrep comm-watch.sh <handle>` first, so it will NOT double-arm the watcher that survived compaction (which would duplicate every wake). Run it once, then continue.
+Safe to re-run: the skill's Step 0 detects that you SURVIVED this compaction (your Monitor + listener are background tasks that outlive a summary) and STOPS — it does NOT re-arm, re-poll, or re-join, so it can't double-arm your Monitor, replay already-handled messages, or wipe your work-state. On a compaction it simply restores your operating context by being re-read. (Had this been a real --continue restart, Step 0 would find the dead Monitor and run the full bootstrap instead.) Run it once, then continue.
 EOF

@@ -18,11 +18,49 @@ session on the network, regardless of project. Ship of Tools backend sessions in
 checks (frontend reachability, FE count, the `.claude-bus` git fallback). The `ccb`
 launcher runs this skill; `ccbe` runs the Ship of Tools one.
 
-## Steps (3)
+## Steps
 
-Three steps: **(a)** join — which also tells you your identity; **(b)** in
-parallel, start the listener + arm the inbox Monitor + catch up on the
-down-window; **(c)** one post-arm selftest proves the whole chain wakes you.
+**Step 0 decides whether the rest runs at all.** If you SURVIVED a compaction you
+are still fully connected — skip everything below. Otherwise (a cold start or a
+`claude --continue` restart) you are deaf: do the three bootstrap steps — **(a)**
+join (also your identity); **(b)** in parallel, start the listener + arm the inbox
+Monitor + catch up on the down-window; **(c)** one post-arm selftest proves the
+chain wakes you.
+
+### (0) First: did you SURVIVE a compaction, or genuinely (re)start?
+
+This skill is the **deaf-restart** bootstrap. A cold start or a `--continue`
+restart genuinely kills your harness Monitor, so the full (re)join / listen /
+arm / catch-up below is exactly right. But a **context compaction does NOT make
+you deaf** — your Monitor and listener are background tasks that *survive* it.
+Running the full bootstrap on a merely-compacted session is actively harmful: it
+**double-arms** the Monitor (duplicate wakes, compounding per compaction),
+**replays** already-handled messages via `comm-poll`, and **wipes your live
+work-state** via `comm-join`'s row-replace. So branch first.
+
+Get your handle and check for a **live watcher**:
+
+```bash
+h="$(~/.sot-comm/bin/comm-context.sh 2>/dev/null | sed -n 's/^NAME=//p')"
+h="${h:-$(basename "$PWD")-$(hostname -s)}"
+pgrep -u "$(id -un)" -f "comm-watch\.sh ${h}\$"   # END-ANCHORED: `repo-host` must NOT match `repo-host-2`
+```
+
+- **Prints a PID → you SURVIVED a compaction.** You are still connected —
+  **STOP: do NOT run steps (a)–(c).** Re-reading this doc (and the `/sot-comm`
+  skill) has already restored your operating context — handle, the send/poll/
+  status verbs, the work-state rules — which is the whole point of re-running on
+  compaction. You keep receiving on the watcher that never died; re-arming,
+  re-polling, or re-joining would only harm. (If you *specifically* suspect the
+  listener bridge died, `comm-listen.sh` is idempotent — running it is a safe
+  no-op when the bridge is already up.)
+- **Empty → you genuinely (re)started and are DEAF** (no watcher survived) →
+  proceed with (a)–(c); the full bootstrap is correct.
+
+> The `$`-anchor matters: `pgrep -f` is a substring match, so an un-anchored
+> `comm-watch.sh repo-host` would also match a *sibling* session's
+> `comm-watch.sh repo-host-2` and make a genuinely-deaf cold session wrongly
+> skip arming — the exact deafness this skill exists to prevent.
 
 ### (a) Join — `comm-join.sh` (this IS your identity)
 
@@ -68,25 +106,9 @@ tool calls), then read the results.
    ~/.sot-comm/bin/comm-watch.sh <handle>
    ```
 
-   **First, don't double-arm (idempotency guard — matters most on a
-   post-compaction re-run).** A harness Monitor is a background task that
-   **survives a context compaction** — so if this run is a post-compaction
-   re-bootstrap (not a cold start), a watcher is ALREADY polling your inbox and a
-   second one would duplicate *every* wake, compounding across compactions
-   (`comm-watch.sh` tracks its own read position — two watchers don't share a
-   cursor). Check for a live watcher first:
-
-   ```bash
-   pgrep -u "$(id -un)" -f "comm-watch.sh <handle>"    # substitute your handle
-   ```
-
-   - **Prints a PID** → a watcher survived; **SKIP arming** — do NOT call the
-     Monitor tool. The survivor is still delivering; you're already receiving.
-   - **Empty** → none is running (a cold start, or a `--continue` restart that
-     dropped it) → arm it now.
-
-   To arm: use the **Monitor** tool with `persistent: true`, running exactly that
-   command.
+   (You only reach this step when Step 0 found **no** live watcher — a genuinely
+   deaf cold start / restart — so arming here can't double-arm.) Use the
+   **Monitor** tool with `persistent: true`, running exactly that command.
    `comm-watch.sh` is a poll loop (re-opens the inbox every 2s) that emits one line
    per new **directed** relay frame. **Poll — do NOT use `tail -F`.** The inbox is
    on **NFS** (`$HOME` is NFS on the Linux cohort) and `tail -F` relies on
@@ -124,13 +146,9 @@ tool calls), then read the results.
 
 Arming the Monitor proves nothing until a real message actually *wakes* it. Run
 **one** selftest now — *after* (b), so it proves listener + file-delivery + Monitor
-wake in a single shot (this replaces the old two-selftest dance).
-
-**Post-compaction skip:** if step (b)2 found a surviving watcher and you SKIPPED
-arming, you can skip this selftest too — the survivor is already proven by the
-messages it has been delivering, and the selftest would just spend a wake-turn
-re-confirming a path you know is live. Run the selftest whenever you actually
-armed (cold start / `--continue`).
+wake in a single shot (this replaces the old two-selftest dance). (You only reach
+this on a genuine cold start / restart — a survived-compaction session stopped at
+Step 0 and never armed, so there is nothing to selftest.)
 
 ```bash
 ~/.sot-comm/bin/comm-listen.sh --selftest   # injects a from:__selftest__ to:<you> frame:
