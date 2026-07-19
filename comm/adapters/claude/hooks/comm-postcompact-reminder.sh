@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
 # comm-postcompact-reminder.sh — Claude Code `SessionStart` hook (matcher:
-# compact): after a context COMPACTION, re-surface to the model that its
-# sot-comm receive path survives compaction and is still armed, so it does NOT
-# arm a redundant Monitor / watch loop.
+# compact): after a context COMPACTION, tell the session to RE-RUN its full
+# session-start skill so its complete sot-comm operating context is restored.
 #
-# Why (2026-07-19, Keith): a harness Monitor + the durable listener are
-# BACKGROUND tasks — they survive a context summary (only a full `--continue`
-# RESTART drops them). But after compaction they are no longer described in the
-# model's visible context, so a session can wrongly conclude "my Monitor died"
-# and arm a second one (double-arm → duplicate wakes) or set up a blocking
-# watch. hs-tirf did exactly this: it DOUBTED the Monitor survived because it
-# couldn't SEE it. SKILL.md now states the fact; this hook re-states it at the
-# exact moment the context was summarized — closing the KNOWING gap
-# deterministically instead of relying on the model recalling the skill text.
+# Why (2026-07-19, Keith): compaction summarizes the conversation and can strip
+# the operating INSTRUCTIONS themselves — your handle, the send/poll/status
+# verbs, the work-state rules — not just the "trust your Monitor" note. So a bare
+# reminder isn't enough: even a session that trusts its (surviving) Monitor may
+# no longer know HOW to operate comm. Re-running the session-start skill restores
+# all of it. (Earlier this hook only printed a trust reminder; that was
+# insufficient for exactly this reason.)
 #
-# It only REMINDS — it does NOT re-run the bootstrap (that would double-arm the
-# Monitor, which survives compaction and needs no re-arming). Re-arming is only
-# needed after a `--continue` restart, which is SessionStart source=resume (the
-# `ccb`/`ccbe` launcher runs the session-start skill there) — NOT compact.
+# Safe to re-run on every compaction: the session-start skill is IDEMPOTENT —
+# comm-join keeps identity, comm-listen self-heals (bridge_running guard, no
+# duplicate bridge), comm-poll advances a cursor, and the Monitor step now
+# GUARDS on `pgrep comm-watch.sh <handle>` so it does NOT arm a second Monitor
+# on top of the one that survived compaction (a duplicate would double every
+# wake and compound across compactions). Re-arming happens only after a real
+# `--continue` restart, where the Monitor is genuinely gone.
 #
 # Output: plain stdout is captured as SessionStart context (docs: "Any text your
 # hook script prints to stdout is added as context for Claude"). Self-gates to
 # joined comm agents so a plain human session gets nothing. Fires only on
-# source=compact — enforced by the settings.json matcher AND, defensively, by
-# an internal guard (so a no-matcher mis-wire still can't fire on startup/
-# resume, where re-arming genuinely IS needed).
+# source=compact — enforced by the settings.json matcher AND, defensively, by an
+# internal guard (so a no-matcher mis-wire can't fire on startup/resume, where
+# the launcher's own session-start run already covers it).
 #
 # Source of truth: comm/adapters/claude/hooks/comm-postcompact-reminder.sh in
 # Ship of Tools, deployed to ~/.sot-comm/bin by ShipTools.update_comm().
@@ -40,9 +40,9 @@ case "$src" in
     startup|resume|clear) exit 0 ;;
 esac
 
-# Self-gate: only a joined comm agent (a session with a registry row) should get
-# the reminder. NAME comes from comm-context (the pane-keyed self file); empty /
-# no row → this isn't a comm session → stay silent.
+# Self-gate: only a joined comm agent (a session with a registry row) should be
+# told to re-bootstrap. NAME comes from comm-context (the pane-keyed self file);
+# empty / no row → this isn't a comm session → stay silent.
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 REGISTRY="$COMM_HOME/registry.json"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,9 +53,12 @@ NAME=""
 jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || exit 0
 
 cat <<'EOF'
-[sot-comm] Your context was just COMPACTED (summarized). Your sot-comm receive path — the durable listener AND the inbox Monitor — are BACKGROUND tasks that SURVIVE compaction and are STILL ARMED, even though they are no longer described in the context you can now see. Not seeing them does NOT mean they died.
+[sot-comm] ACTION REQUIRED — your context was just COMPACTED (summarized). Compaction can strip the sot-comm operating instructions themselves (your handle, the send/poll/status verbs, the work-state rules), not only the "trust your Monitor" note — so a bare reminder is not enough.
 
-Do NOT arm a new Monitor, start a `tail -F`, or set up a blocking watch "to be safe" — that double-arms (duplicate wakes, wasted turns). A peer's silence is normal think-time (a substantive reply takes minutes), not a dead path. Only a full session RESTART (`claude --continue`) drops the receive path, and that path re-runs the session-start skill for you.
+Re-run your session-start skill now, BEFORE other work, to restore your full comm operating context:
+  • /sot-session-start      (generic — any backend/session)
+  • /sot-be-session-start   (Ship of Tools backend)
+  • /sot-fe-session-start   (Ship of Tools frontend)
 
-If you genuinely need to confirm receipt, prove it cheaply with `~/.sot-comm/bin/comm-listen.sh --selftest` — it does NOT arm anything.
+It is IDEMPOTENT and safe to re-run: re-join keeps your identity, the listener self-heals (no duplicate bridge), missed messages are caught up, and the Monitor is re-armed ONLY if one isn't already running — the skill checks `pgrep comm-watch.sh <handle>` first, so it will NOT double-arm the watcher that survived compaction (which would duplicate every wake). Run it once, then continue.
 EOF

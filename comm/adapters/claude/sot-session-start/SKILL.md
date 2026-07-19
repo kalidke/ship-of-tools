@@ -68,7 +68,25 @@ tool calls), then read the results.
    ~/.sot-comm/bin/comm-watch.sh <handle>
    ```
 
-   Use the **Monitor** tool with `persistent: true`, running exactly that command.
+   **First, don't double-arm (idempotency guard — matters most on a
+   post-compaction re-run).** A harness Monitor is a background task that
+   **survives a context compaction** — so if this run is a post-compaction
+   re-bootstrap (not a cold start), a watcher is ALREADY polling your inbox and a
+   second one would duplicate *every* wake, compounding across compactions
+   (`comm-watch.sh` tracks its own read position — two watchers don't share a
+   cursor). Check for a live watcher first:
+
+   ```bash
+   pgrep -u "$(id -un)" -f "comm-watch.sh <handle>"    # substitute your handle
+   ```
+
+   - **Prints a PID** → a watcher survived; **SKIP arming** — do NOT call the
+     Monitor tool. The survivor is still delivering; you're already receiving.
+   - **Empty** → none is running (a cold start, or a `--continue` restart that
+     dropped it) → arm it now.
+
+   To arm: use the **Monitor** tool with `persistent: true`, running exactly that
+   command.
    `comm-watch.sh` is a poll loop (re-opens the inbox every 2s) that emits one line
    per new **directed** relay frame. **Poll — do NOT use `tail -F`.** The inbox is
    on **NFS** (`$HOME` is NFS on the Linux cohort) and `tail -F` relies on
@@ -106,7 +124,13 @@ tool calls), then read the results.
 
 Arming the Monitor proves nothing until a real message actually *wakes* it. Run
 **one** selftest now — *after* (b), so it proves listener + file-delivery + Monitor
-wake in a single shot (this replaces the old two-selftest dance):
+wake in a single shot (this replaces the old two-selftest dance).
+
+**Post-compaction skip:** if step (b)2 found a surviving watcher and you SKIPPED
+arming, you can skip this selftest too — the survivor is already proven by the
+messages it has been delivering, and the selftest would just spend a wake-turn
+re-confirming a path you know is live. Run the selftest whenever you actually
+armed (cold start / `--continue`).
 
 ```bash
 ~/.sot-comm/bin/comm-listen.sh --selftest   # injects a from:__selftest__ to:<you> frame:

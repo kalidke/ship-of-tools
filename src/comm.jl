@@ -263,12 +263,14 @@ const _COMM_STATE_HOOKS = [
     # activity (throttled to 60s) so the nav's 10-min wilt marks real stalls,
     # not long busy turns ("a peer session reverting to white", 2026-07-03).
     ("PostToolUse", "comm-status-heartbeat.sh", nothing),
-    # Post-compaction reminder (2026-07-19, Keith): SessionStart fires with
+    # Post-compaction re-bootstrap (2026-07-19, Keith): SessionStart fires with
     # source=compact after a context summary; the hook (matcher-scoped to
-    # `compact`) prints a stdout reminder that the durable listener + inbox
-    # Monitor SURVIVE compaction and are still armed — so a session that can no
-    # longer SEE them doesn't arm a redundant Monitor/watch. Reminder-only: it
-    # does NOT re-bootstrap (that would double-arm the surviving Monitor). Its
+    # `compact`) prints a stdout directive telling the session to RE-RUN its
+    # session-start skill — compaction can strip the operating instructions
+    # themselves (handle, verbs, work-state), so a bare reminder isn't enough.
+    # The skill is idempotent: its Monitor step guards on
+    # `pgrep comm-watch.sh <handle>`, so a re-run does NOT double-arm the Monitor
+    # that survived compaction (a duplicate would double every wake). The hook's
     # command is `comm-postcompact-reminder.sh` (not `comm-status-*`), so
     # `_remove_stale_comm_hooks!` never strips it and this add is idempotent.
     ("SessionStart", "comm-postcompact-reminder.sh", "compact"),
