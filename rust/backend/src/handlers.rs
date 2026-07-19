@@ -509,10 +509,13 @@ fn is_downsampleable_raster(mime: &str) -> bool {
 
 /// If `bytes` is an oversize raster, decode it and — when its longest side
 /// exceeds [`PREVIEW_DOWNSAMPLE_MAX_DIM`] — scale it down and re-encode as PNG.
-/// Returns `Some(png)` ONLY when it actually shrank the image; `None` (ship raw)
-/// when the mime isn't a raster, the file is under the trigger, the dimensions
-/// already fit, or decode/encode fails. CPU-bound — call via `spawn_blocking`.
-fn downsample_oversize_raster(mime: &str, bytes: &[u8]) -> Option<Vec<u8>> {
+/// Returns `Some((png, scale))` ONLY when it actually shrank the image (`scale`
+/// is the linear downsample factor in (0,1), the same for both axes); `None`
+/// (ship raw) when the mime isn't a raster, the file is under the trigger, the
+/// dimensions already fit, or decode/encode fails. The caller uses `scale` to
+/// rescale a `physical_scale` sidecar to per-served-pixel (ADR 0034 / F1).
+/// CPU-bound — call via `spawn_blocking`.
+fn downsample_oversize_raster(mime: &str, bytes: &[u8]) -> Option<(Vec<u8>, f32)> {
     use image::ImageEncoder;
     if bytes.len() <= PREVIEW_DOWNSAMPLE_TRIGGER || !is_downsampleable_raster(mime) {
         return None;
@@ -553,17 +556,47 @@ fn downsample_oversize_raster(mime: &str, bytes: &[u8]) -> Option<Vec<u8>> {
         new_h = nh,
         "downsampled oversize raster for preview"
     );
-    Some(out)
+    Some((out, scale))
 }
 
 /// Resolve the bytes actually put on the wire: a downsized PNG for an oversize
 /// raster, else the input unchanged. Owns its args so it can run in
 /// `spawn_blocking` and always hand the (possibly original) bytes back.
-fn preview_bytes_for_wire(mime: String, bytes: Vec<u8>) -> (String, Vec<u8>) {
+fn preview_bytes_for_wire(mime: String, bytes: Vec<u8>) -> (String, Vec<u8>, Option<f32>) {
     match downsample_oversize_raster(&mime, &bytes) {
-        Some(png) => ("image/png".to_string(), png),
-        None => (mime, bytes),
+        Some((png, scale)) => ("image/png".to_string(), png, Some(scale)),
+        None => (mime, bytes, None),
     }
+}
+
+/// Multiply every axis's `nm_per_px` in `extras.physical_scale` by `factor`.
+/// Used after a preview downsample: the `<img>.scale.json` sidecar calibrates
+/// per ORIGINAL pixel, but a downsampled preview is served at a smaller width,
+/// and the FE keys the scalebar off the SERVED width — so per-served-pixel
+/// nm_per_px = per-orig-px / downsample_scale (i.e. `factor = 1/scale > 1`).
+/// The downsample is geometrically uniform, so the same `factor` applies to
+/// every axis and any anisotropy (x vs z) is preserved. No-op when there is no
+/// `physical_scale` (or it has no numeric `nm_per_px`).
+fn rescale_physical_scale(
+    extras: Option<serde_json::Value>,
+    factor: f64,
+) -> Option<serde_json::Value> {
+    let mut root = match extras {
+        Some(serde_json::Value::Object(m)) => m,
+        other => return other,
+    };
+    if let Some(serde_json::Value::Object(ps)) = root.get_mut("physical_scale") {
+        if let Some(serde_json::Value::Array(axes)) = ps.get_mut("axes") {
+            for ax in axes.iter_mut() {
+                if let Some(v) = ax.get_mut("nm_per_px") {
+                    if let Some(n) = v.as_f64() {
+                        *v = serde_json::json!(n * factor);
+                    }
+                }
+            }
+        }
+    }
+    Some(serde_json::Value::Object(root))
 }
 
 pub async fn handle_preview_get(
@@ -666,14 +699,24 @@ pub async fn handle_preview_get(
     // untouched with zero overhead. A panicking decode is near-impossible (the
     // helper is all `.ok()?`), so a JoinError propagating as a handler error is
     // acceptable and rare.
-    let (mime, bytes) =
+    let (mime, bytes, downsample_scale) =
         if bytes.len() > PREVIEW_DOWNSAMPLE_TRIGGER && is_downsampleable_raster(&mime) {
             tokio::task::spawn_blocking(move || preview_bytes_for_wire(mime, bytes))
                 .await
                 .context("preview downsample task")?
         } else {
-            (mime, bytes)
+            (mime, bytes, None)
         };
+
+    // ADR 0034 / F1: when we ship a DOWNSAMPLED raster, the served image is
+    // narrower than the source, but the sidecar `physical_scale` is calibrated
+    // per ORIGINAL pixel. The FE keys the scalebar off the served width, so
+    // rescale each axis to per-served-pixel (× 1/scale) — otherwise the bar is
+    // wrong by the downsample factor (a 12000→6000 image labels every bar 2×).
+    let extras = match downsample_scale {
+        Some(scale) if scale > 0.0 => rescale_physical_scale(extras, 1.0 / scale as f64),
+        _ => extras,
+    };
 
     let res = PreviewGetRes {
         mime: mime.clone(),
@@ -4334,7 +4377,8 @@ mod preview_downsample_tests {
             PREVIEW_DOWNSAMPLE_TRIGGER
         );
 
-        let out = downsample_oversize_raster("image/png", &png).expect("should downsample");
+        let (out, scale) =
+            downsample_oversize_raster("image/png", &png).expect("should downsample");
         assert!(out.len() < png.len(), "downsized bytes must be smaller");
         let (ow, oh) = image::ImageReader::new(std::io::Cursor::new(&out))
             .with_guessed_format()
@@ -4352,5 +4396,41 @@ mod preview_downsample_tests {
             PREVIEW_DOWNSAMPLE_MAX_DIM,
             "longest side scaled to the cap"
         );
+        // The returned scale is the linear factor that hit the cap, so it must
+        // reproduce the observed shrink (used to rescale the scalebar, F1).
+        assert!(scale > 0.0 && scale < 1.0, "downsample scale in (0,1): {scale}");
+    }
+
+    #[test]
+    fn rescale_physical_scale_multiplies_every_axis() {
+        // A 2×-downsample (scale=0.5 → factor=2.0) must double every axis's
+        // per-original-px nm_per_px to per-served-px, preserving anisotropy.
+        let extras = Some(serde_json::json!({
+            "physical_scale": {
+                "axes": [
+                    {"name": "x", "nm_per_px": 2.0},
+                    {"name": "z", "nm_per_px": 5.0}
+                ],
+                "unit": "nm"
+            }
+        }));
+        let out = super::rescale_physical_scale(extras, 2.0).unwrap();
+        let axes = out["physical_scale"]["axes"].as_array().unwrap();
+        assert_eq!(axes[0]["nm_per_px"].as_f64().unwrap(), 4.0);
+        assert_eq!(axes[1]["nm_per_px"].as_f64().unwrap(), 10.0);
+        // unit + names untouched.
+        assert_eq!(out["physical_scale"]["unit"], "nm");
+        assert_eq!(axes[0]["name"], "x");
+    }
+
+    #[test]
+    fn rescale_physical_scale_noop_without_scale() {
+        // No physical_scale → returned unchanged (no panic, no spurious key).
+        let extras = Some(serde_json::json!({"page": 3}));
+        let out = super::rescale_physical_scale(extras, 2.0).unwrap();
+        assert_eq!(out["page"], 3);
+        assert!(out.get("physical_scale").is_none());
+        // None in → None out.
+        assert!(super::rescale_physical_scale(None, 2.0).is_none());
     }
 }
