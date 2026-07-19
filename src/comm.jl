@@ -268,11 +268,13 @@ const _COMM_STATE_HOOKS = [
     # `compact`) prints a stdout directive telling the session to RE-RUN its
     # session-start skill — compaction can strip the operating instructions
     # themselves (handle, verbs, work-state), so a bare reminder isn't enough.
-    # The skill is idempotent: its Monitor step guards on
-    # `pgrep comm-watch.sh <handle>`, so a re-run does NOT double-arm the Monitor
-    # that survived compaction (a duplicate would double every wake). The hook's
-    # command is `comm-postcompact-reminder.sh` (not `comm-status-*`), so
-    # `_remove_stale_comm_hooks!` never strips it and this add is idempotent.
+    # The skill opens with a "Step 0" that detects survival (end-anchored pgrep
+    # of the live watcher) and STOPS on a compaction, so the re-run restores the
+    # instructions by being re-read but does NOT re-arm the Monitor, re-comm-poll
+    # (replaying handled messages), or re-comm-join (whose row-replace would wipe
+    # the live work-state). The hook's command is `comm-postcompact-reminder.sh`
+    # (not `comm-status-*`), so `_remove_stale_comm_hooks!` never strips it and
+    # this add is idempotent.
     ("SessionStart", "comm-postcompact-reminder.sh", "compact"),
 ]
 
