@@ -44,6 +44,29 @@ A user roams across SEVERAL Windows FEs against ONE backend. Two facts shape com
 
 ## Steps
 
+### 0. First — are you resuming from a COMPACTION, or a genuine relaunch/cold start?
+
+This skill normally runs on an ADR-0017 relaunch (`--continue`), which **kills**
+your harness Monitor — so re-arming (step 3) is right. But a **context compaction
+does NOT kill it**: your fe-inbox Monitor is a background task that *survives*.
+Re-running the full bootstrap on a merely-compacted session **double-arms** it
+(every FE message then wakes you twice, compounding per compaction). So branch on
+**why you're here** — the reliable signal, since the FE runs on Windows where
+process inspection (`pgrep`/`ps`) is unavailable or unreliable, and a *false*
+"survivor" match (an editor, a diagnostic `tail`, or another agent touching
+`fe-inbox.jsonl`) would make a genuinely-deaf session skip arming and stay **deaf**:
+
+- **You were just told your context was COMPACTED** (the post-compaction hook
+  directive that sent you here) → your Monitor SURVIVED → **STOP: skip steps 1–4.**
+  Re-reading this doc (and `/sot-comm`) has already restored your operating
+  context — the whole point of re-running on compaction. Re-arming would only
+  double every wake.
+- **A fresh relaunch (`--continue`) or a cold start** — the normal trigger, with
+  NO compaction directive → your Monitor is gone → proceed with steps 1–4.
+
+**When in ANY doubt, ARM (proceed with steps 1–4).** A duplicate watcher merely
+double-wakes you; wrongly skipping leaves you deaf — so never skip on a guess.
+
 1. **Set the FE handle** — must mirror the Rust frontend's `self_comm_handle()`:
    `win-fe-<lowercase HOSTNAME or COMPUTERNAME>`.
 
@@ -98,7 +121,8 @@ A user roams across SEVERAL Windows FEs against ONE backend. Two facts shape com
    must also be forwarded by the launcher for Pluto, docs, and static pages.
 
 3. **Re-arm the fast-comm wake** — arm a persistent harness **Monitor** on the
-   FE inbox:
+   FE inbox (you only reach this when Step 0 determined a genuine relaunch / cold
+   start — not a compaction — so arming here can't double-arm):
 
    - Windows: `%LOCALAPPDATA%\sot\fe-inbox.jsonl`
    - Linux/macOS frontend: `${XDG_STATE_HOME:-$HOME/.local/state}/sot/fe-inbox.jsonl`
