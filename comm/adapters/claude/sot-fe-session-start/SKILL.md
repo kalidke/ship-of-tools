@@ -44,31 +44,28 @@ A user roams across SEVERAL Windows FEs against ONE backend. Two facts shape com
 
 ## Steps
 
-### 0. First — did you SURVIVE a compaction, or genuinely relaunch?
+### 0. First — are you resuming from a COMPACTION, or a genuine relaunch/cold start?
 
 This skill normally runs on an ADR-0017 relaunch (`--continue`), which **kills**
 your harness Monitor — so re-arming (step 3) is right. But a **context compaction
 does NOT kill it**: your fe-inbox Monitor is a background task that *survives*.
 Re-running the full bootstrap on a merely-compacted session **double-arms** it
-(every FE message then wakes you twice, compounding per compaction) and re-joins
-(wiping local work-state). So branch first.
+(every FE message then wakes you twice, compounding per compaction). So branch on
+**why you're here** — the reliable signal, since the FE runs on Windows where
+process inspection (`pgrep`/`ps`) is unavailable or unreliable, and a *false*
+"survivor" match (an editor, a diagnostic `tail`, or another agent touching
+`fe-inbox.jsonl`) would make a genuinely-deaf session skip arming and stay **deaf**:
 
-The surviving Monitor runs a `tail -F` on your `fe-inbox.jsonl`. Check for it
-(best-effort — Git Bash has no `pgrep`, so fall through to `ps`):
+- **You were just told your context was COMPACTED** (the post-compaction hook
+  directive that sent you here) → your Monitor SURVIVED → **STOP: skip steps 1–4.**
+  Re-reading this doc (and `/sot-comm`) has already restored your operating
+  context — the whole point of re-running on compaction. Re-arming would only
+  double every wake.
+- **A fresh relaunch (`--continue`) or a cold start** — the normal trigger, with
+  NO compaction directive → your Monitor is gone → proceed with steps 1–4.
 
-```bash
-{ pgrep -f "fe-inbox\.jsonl" 2>/dev/null \
-  || ps -W 2>/dev/null | grep -i "fe-inbox" \
-  || ps 2>/dev/null | grep "fe-inbox"; } | grep -v grep
-```
-
-- **Prints something → you SURVIVED a compaction.** **STOP: skip steps 1–4.** You
-  are still connected; re-reading this doc (and `/sot-comm`) has restored your
-  operating context, which is the point of re-running on compaction. Re-arming
-  would only double every wake.
-- **Empty → you relaunched (deaf), OR this platform couldn't inspect processes** →
-  proceed with steps 1–4. Arming when unsure is deliberately safe here: the worst
-  case is one duplicate watcher, **never** deafness.
+**When in ANY doubt, ARM (proceed with steps 1–4).** A duplicate watcher merely
+double-wakes you; wrongly skipping leaves you deaf — so never skip on a guess.
 
 1. **Set the FE handle** — must mirror the Rust frontend's `self_comm_handle()`:
    `win-fe-<lowercase HOSTNAME or COMPUTERNAME>`.
@@ -124,8 +121,8 @@ The surviving Monitor runs a `tail -F` on your `fe-inbox.jsonl`. Check for it
    must also be forwarded by the launcher for Pluto, docs, and static pages.
 
 3. **Re-arm the fast-comm wake** — arm a persistent harness **Monitor** on the
-   FE inbox (you only reach this when Step 0 found **no** surviving watcher — a
-   genuine relaunch — so arming here can't double-arm):
+   FE inbox (you only reach this when Step 0 determined a genuine relaunch / cold
+   start — not a compaction — so arming here can't double-arm):
 
    - Windows: `%LOCALAPPDATA%\sot\fe-inbox.jsonl`
    - Linux/macOS frontend: `${XDG_STATE_HOME:-$HOME/.local/state}/sot/fe-inbox.jsonl`
