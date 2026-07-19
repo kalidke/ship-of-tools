@@ -1049,6 +1049,16 @@ fn pending_nav_status(ws: &str, path: &str) -> String {
 /// (`drive_reveal_step` expands the deepest *visible* one each round-trip).
 /// Pure so the ordering — which determines we expand from the bottom up — is
 /// unit-testable without a full `State`.
+/// The loaded Files tree is valid for an in-place cursor reveal only when it
+/// was loaded for the currently-active workspace. After a relaunch/switch the
+/// tree can belong to a different project (Keith's papers-vortex tree while
+/// project-hs-tirf is active, 2026-07-19); walking those rows strands the
+/// cursor. Both `None` = both on the daemon-default workspace → match. Pure so
+/// the staleness decision (incl. the default-ws edge) is unit-testable.
+fn tree_matches_active_ws(files_tree_ws: Option<&str>, active_ws: Option<&str>) -> bool {
+    files_tree_ws == active_ws
+}
+
 fn ancestor_rels(rel: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut acc = rel;
@@ -2210,6 +2220,18 @@ struct State {
     /// the preview pane updates but the nav cursor stays on the old row — the
     /// desync the maintainer hit. `None` once consumed.
     pending_switch_reveal: Option<String>,
+    /// Which workspace the currently-loaded Files `tree` belongs to. Stamped
+    /// whenever `set_root` applies a tree.root (which the TreeRoot handler's
+    /// active-ws guard already forces to the active workspace) or a workspace
+    /// snapshot is restored. The reveal path compares this to
+    /// `active_workspace_id`: after an ADR-0017 relaunch (or any switch that
+    /// left the tree behind) the loaded tree can belong to a DIFFERENT
+    /// workspace than the active one — e.g. papers-vortex's tree while
+    /// project-hs-tirf is active. A stale-ws tree must read as "not loaded"
+    /// so the reveal reloads the active ws's tree instead of walking the
+    /// wrong project's rows and stranding the cursor (Keith, 2026-07-19).
+    /// `None` before any Files tree.root has landed.
+    files_tree_workspace: Option<String>,
     /// One-shot PER WORKSPACE: on a workspace's first Files-mode `tree.root`
     /// where nothing else (ADR-0017 resume, `--start-selected`) placed the
     /// cursor, default it to the project README so a fresh session opens
@@ -3468,6 +3490,7 @@ impl State {
             },
             nav_readme_defaulted: std::collections::HashSet::new(),
             pending_switch_reveal: None,
+            files_tree_workspace: None,
             pending_auto_expand: cli.auto_expand,
             pending_auto_pin: cli.auto_pin,
             pending_demo_function_methods: cli.demo_function_methods.clone(),
@@ -3988,9 +4011,25 @@ impl State {
         }
         self.preview_node_id_fired = Some(node_id.clone());
         self.preview_anchor_line = None;
-        // Cursor reveal: land now if the row is already in the tree; else expand
-        // ancestors asynchronously.
-        if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == node_id) {
+        // Is the loaded Files tree actually the ACTIVE workspace's? After a
+        // relaunch/switch the tree can belong to a different project (Keith's
+        // papers-vortex tree while project-hs-tirf is active). When it's stale,
+        // neither the "already visible" fast-path (a coincidental same-relative
+        // row would land on the WRONG project's file) nor the walk-from-ancestor
+        // path is valid — force the reload branch below so a fresh tree.root for
+        // the active ws replaces the stale tree and the reveal lands on it.
+        let tree_is_active_ws = tree_matches_active_ws(
+            self.files_tree_workspace.as_deref(),
+            self.active_workspace_id.as_deref(),
+        );
+        // Cursor reveal: land now if the row is already in the (active-ws) tree;
+        // else expand ancestors asynchronously.
+        let visible_idx = if tree_is_active_ws {
+            self.tree.rows.iter().position(|r| r.node.id == node_id)
+        } else {
+            None
+        };
+        if let Some(idx) = visible_idx {
             tracing::info!(%node_id, "reveal: target already visible — cursor landed");
             self.tree.selected = idx;
             self.pending_reveal = None;
@@ -4013,13 +4052,16 @@ impl State {
             // and strand this reveal.
             self.reveal_awaiting = None;
             self.reveal_refetched = None;
-            // Split on whether the Files tree is actually loaded for the active
-            // view (a `files:` row present means yes). This split is what makes
-            // the reveal robust AND keeps a late `tree.root` reply from ever
-            // rebuilding — and thereby collapsing/clobbering — an already-loaded
-            // tree (two independent adversarial reviews, 2026-07-15).
-            let files_tree_loaded =
-                self.tree.rows.iter().any(|r| r.node.id.starts_with("files:"));
+            // Split on whether the ACTIVE workspace's Files tree is loaded — a
+            // `files:` row present AND the tree stamped to the active ws. This
+            // split is what makes the reveal robust AND keeps a late `tree.root`
+            // reply from ever rebuilding — and thereby collapsing/clobbering — an
+            // already-loaded tree (two independent adversarial reviews,
+            // 2026-07-15). The `tree_is_active_ws` conjunct (2026-07-19) routes a
+            // STALE-workspace tree to the else branch so it reloads instead of
+            // walking the wrong project's rows and stranding the cursor.
+            let files_tree_loaded = tree_is_active_ws
+                && self.tree.rows.iter().any(|r| r.node.id.starts_with("files:"));
             if files_tree_loaded {
                 // Tree loaded but the target row isn't present yet:
                 // `drive_reveal_step` walks DOWN from whichever ancestor dir IS
@@ -4035,23 +4077,31 @@ impl State {
                 self.pending_reveal = Some(node_id);
                 self.drive_reveal_step();
             } else {
-                // Files tree NOT loaded for this view (empty, or rows belong to
-                // another mode/workspace). This is the reported bug: the preview
-                // body fired (path-based, works) but the cursor-reveal had no
-                // anchor row to walk from, so it silently no-op'd and the cursor
-                // was stranded (sotd.log 2026-07-15: a same-ws preview of a deep
-                // NAS-symlinked results file issued ZERO tree.children). Load
-                // `tree.root` once and arm the one-shot `pending_switch_reveal`
-                // the first-visit workspace-switch path uses; the TreeRoot
-                // handler populates the rows then runs the reveal.
+                // Files tree NOT loaded FOR THE ACTIVE WS: empty, rows belong to
+                // another mode, OR the tree is stamped to a different workspace
+                // (`!tree_is_active_ws` — the papers-vortex-tree-while-hs-tirf
+                // desync). Two bugs converge here: (1) the 2026-07-15 case — the
+                // preview body fired (path-based, works) but the cursor-reveal
+                // had no anchor row to walk from, so it silently no-op'd and the
+                // cursor stranded (sotd.log: a same-ws preview of a deep
+                // NAS-symlinked results file issued ZERO tree.children); (2) the
+                // 2026-07-19 case — the reveal walked a STALE project's rows
+                // whose ancestors never match, same zero-tree.children stranding.
+                // Both fixed the same way: load `tree.root` for the ACTIVE ws
+                // once and arm the one-shot `pending_switch_reveal` the
+                // first-visit switch path uses; the TreeRoot handler rebuilds the
+                // rows (correct ws, guard-checked), re-stamps `files_tree_workspace`,
+                // then runs the reveal — auto-resyncing the visible tree too (the
+                // same end state as Keith's manual collapse-to-root workaround).
                 //
-                // Firing ONLY when the tree is unloaded is what keeps this safe:
-                // `set_root` on an unloaded tree collapses nothing, and while
-                // unloaded EVERY concurrent call is also anchor-less, so an
-                // anchored reveal can't interleave and be overwritten. Gate
-                // against a rapid batch (the 3-back-to-back repro): the daemon
-                // answers every `tree.root` independently, so fire exactly one
-                // and let later calls just update the latest-wins target.
+                // Safe to `set_root` here: an UNLOADED tree collapses nothing,
+                // and a STALE-ws tree SHOULD be collapsed (it's the wrong
+                // project, its expansion state is meaningless). While unloaded/
+                // stale, concurrent calls are all anchor-less too, so an anchored
+                // reveal can't interleave and be overwritten. Gate against a
+                // rapid batch (the 3-back-to-back repro): the daemon answers
+                // every `tree.root` independently, so fire exactly one and let
+                // later calls just update the latest-wins target.
                 self.pending_reveal = None;
                 let root_inflight = self.pending_switch_reveal.is_some();
                 self.pending_switch_reveal = Some(node_id.clone());
@@ -4909,6 +4959,11 @@ impl State {
         };
         self.mode = snap.mode;
         self.tree = snap.tree;
+        // The snapshot indexed by `key` IS this workspace's tree (key ==
+        // current_workspace_key() == active), so the restored tree belongs to
+        // the active ws — keep the stamp in sync so the reveal's staleness
+        // check doesn't false-positive on a legitimately-restored tree.
+        self.files_tree_workspace = self.active_workspace_id.clone();
         // Reconcile the Files-mode root label to the active workspace. The
         // snapshot restores the tree wholesale and (by design, for instant
         // switch-back) skips the `tree.root` re-fetch — so a root row that was
@@ -7796,6 +7851,13 @@ impl State {
                         "tree.root applied — nav tree rebuilt (set_root)"
                     );
                     self.tree.set_root(root, children);
+                    // Stamp the tree with the workspace it now belongs to. The
+                    // guard above forced `workspace_id == active_workspace_id`,
+                    // so this is always the active ws at load time; the reveal
+                    // path later compares it to `active_workspace_id` to detect
+                    // a tree left behind by a switch/relaunch (ADR 0034 follow-up
+                    // — Keith's papers-vortex-tree-while-hs-tirf-active bug).
+                    self.files_tree_workspace = workspace_id.clone();
                     // Reconnect nav restore (2026-07-11): if this root is the
                     // hello/reconnect rebuild, re-reveal the pre-reconnect
                     // cursor through the reveal machinery — its ancestor path
@@ -17545,6 +17607,21 @@ mod tests {
             pending_nav.get("other").map(String::as_str),
             Some("src/b.jl")
         );
+    }
+
+    #[test]
+    fn tree_matches_active_ws_covers_default_and_mismatch() {
+        // Same named workspace → valid tree.
+        assert!(tree_matches_active_ws(Some("hs-tirf"), Some("hs-tirf")));
+        // Both on the daemon-default workspace (None) → valid; the TreeRoot
+        // active-ws guard makes this correct-by-construction.
+        assert!(tree_matches_active_ws(None, None));
+        // The reported desync: tree loaded for papers-vortex, active is hs-tirf
+        // → stale → the reveal must reload.
+        assert!(!tree_matches_active_ws(Some("papers-vortex"), Some("hs-tirf")));
+        // Default vs named (either direction) → stale.
+        assert!(!tree_matches_active_ws(None, Some("hs-tirf")));
+        assert!(!tree_matches_active_ws(Some("hs-tirf"), None));
     }
 
     #[test]
