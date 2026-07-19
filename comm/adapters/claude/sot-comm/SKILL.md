@@ -175,6 +175,20 @@ through a local SSH tunnel whose TCP port forwards to that remote Unix socket.
   - **Only re-send** with *positive evidence* the message was lost — you learn the
     peer was deaf/restarted (its listener was down) or `/bus-sync` shows it never
     saw it — not merely because a reply is slow.
+  - **Your Monitor survives a context *summary* (compaction) — you just can't see
+    it.** It is a background harness task, NOT part of the summarized context, so
+    after compaction it is not re-stated in what you can read — but it is still
+    armed and still watching your inbox. *Not seeing it ≠ it died.* Do not arm a
+    fresh ad-hoc watch "to be safe." (Only a full `--continue` RESTART actually
+    kills it — and the fix there is `/sot-session-start`, whose
+    `comm-listen.sh --selftest` proves the wake path in one shot, never a bespoke
+    short watch.)
+  - **Calibrate for peer think-time.** A substantive peer reply routinely takes
+    **minutes** — the peer must be woken, read, reason, and compose. A short empty
+    window (a 60–90s watch) or a peer `last_seen` that looks a few minutes stale is
+    NOT evidence of a dead path or a deaf peer; it almost always means "still
+    composing." Your armed Monitor catches the reply whenever it lands, so there is
+    no window you need to "keep open."
 - **Receive on Windows**: the native frontend writes inbound messages to
   `<state-dir>/fe-inbox.jsonl` (`%LOCALAPPDATA%\sot\`); the in-terminal FE agent
   reads that. To send from Windows, use `comm-relay.sh` with
