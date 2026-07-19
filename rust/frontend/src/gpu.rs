@@ -350,6 +350,14 @@ struct WorkspaceUiSnapshot {
     /// swap-in we feed this back through `render_preview_source` to
     /// rebuild the preview pane without a fresh `preview.get`.
     preview_src: Option<(String, Vec<u8>)>,
+    /// Physical scale (ADR 0034) of the raster in `preview_src`. MUST travel
+    /// with it: `preview_scale` is otherwise only ever set by a `preview.get`
+    /// wire reply, and swap-in deliberately rebuilds the pane from the cached
+    /// bytes WITHOUT re-fetching — so without this the restored image keeps
+    /// whichever workspace's calibration was last on the wire. Showing a 2
+    /// nm/px image labelled with another workspace's 10 nm/px bar is worse
+    /// than showing no bar at all (Codex review of v0.4.3, F2).
+    preview_scale: Option<PhysicalScale>,
     /// Concept-annotation backing data, including `synced_against`
     /// for the drift badge. The *shaped* MarkdownPreview is not in the
     /// snapshot (cosmic-text Buffer isn't Clone-able); preview_concept
@@ -4939,6 +4947,7 @@ impl State {
                 preview_node_id_fired: self.preview_node_id_fired.clone(),
                 pinned_preview_node_id: self.pinned_preview_node_id.clone(),
                 preview_src: self.preview_src.clone(),
+                preview_scale: self.preview_scale.clone(),
                 concept: self.concept.clone(),
                 file_ast_hashes: self.file_ast_hashes.clone(),
                 file_parse_fired: self.file_parse_fired.clone(),
@@ -5017,6 +5026,11 @@ impl State {
         // we just leave the panes empty.
         self.preview_png = None;
         self.preview_svg = None;
+        // ADR 0034: the calibration travels with the cached bytes. Restored
+        // BEFORE render_preview_source so the repaint (and any scalebar drawn
+        // on it) uses THIS workspace's scale, never the one the departing
+        // workspace happened to leave in place.
+        self.preview_scale = snap.preview_scale.clone();
         if let Some((mime, bytes)) = snap.preview_src.clone() {
             self.preview_src = Some((mime.clone(), bytes.clone()));
             self.render_preview_source(&mime, &bytes);
@@ -5126,6 +5140,11 @@ impl State {
             self.preview_node_id_fired = None;
             self.pinned_preview_node_id = None;
             self.preview_src = None;
+            // Same invariant as the snapshot restore: the calibration belongs
+            // to the previewed raster, so clearing the preview must clear the
+            // scale. Otherwise a first visit inherits the departing
+            // workspace's nm/px until the next wire reply overwrites it.
+            self.preview_scale = None;
             self.preview_png = None;
             self.preview_svg = None;
             self.preview_concept = None;
