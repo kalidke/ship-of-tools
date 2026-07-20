@@ -860,9 +860,17 @@ pub async fn handle_preview_set_scale(
         Ok(fm) => fm,
         Err(e) => return err("files_mode_init_failed", format!("{e:#}")),
     };
-    // WRITE resolver (this is a mutation): the confined variant carries the
-    // symlink-escape guard on the IMAGE path.
-    let path = match files_mode.node_id_to_path_confined(&req.node_id) {
+    // Resolve with the READ resolver — the SAME rule `preview.get` uses to serve
+    // these bytes — so "can preview" and "can calibrate" AGREE. The confined
+    // WRITE resolver rejected the STANDARD layout where a results dir is a
+    // symlink to external storage (e.g. `data/results` -> /mnt/nas/...): the user
+    // could view the render but not calibrate it (bad_node_id). If the read path
+    // is trusted to serve an image's bytes, it's trusted to choose where the
+    // image's own sidecar lands. String-level `../`/absolute node ids are still
+    // rejected in the resolver; only user-created in-root symlinks are followed,
+    // exactly as for reads, and the daemon runs as the user so OS permissions
+    // still bound the write.
+    let path = match files_mode.node_id_to_path(&req.node_id) {
         Ok(p) => p,
         Err(e) => return err("bad_node_id", format!("{e:#}")),
     };
@@ -892,34 +900,19 @@ pub async fn handle_preview_set_scale(
         );
     }
 
-    // Confine the PARENT DIRECTORY the write actually mutates — the temp create
-    // AND the rename both happen inside it. Confining the sidecar FILE would be
-    // bypassable: if `<image>.scale.json` already exists as an in-root symlink,
-    // canonicalizing the sidecar follows it and passes, yet its parent dir could
-    // symlink outside the root, so the temp+rename land outside. The image's
-    // parent always exists (the image lives in it) and is the sidecar's dir too.
-    let Some(parent) = path.parent() else {
-        return err("bad_node_id", format!("{path:?} has no parent directory"));
-    };
-    match crate::paths::canonicalize_existing_ancestor(parent) {
-        Some(canon) if crate::paths::path_within_root(&canon, files_mode.root_path()) => {}
-        _ => {
-            return err(
-                "path_escape",
-                format!(
-                    "scale sidecar's directory resolves outside the workspace root: {parent:?}"
-                ),
-            )
-        }
-    }
-
+    // The sidecar lives BESIDE the image (the read-resolved path, symlinks and
+    // all — so on the NAS target if that's where the image lives). NO
+    // project_root confinement: it would reject the symlinked-results layout
+    // above, and the read path already trusts this resolution to serve the
+    // image's bytes. Calibration is the image's metadata and must travel WITH
+    // the data (other tools reading that dir find it). Write safety is preserved
+    // by the gates above (is_file + raster + valid scale) and the O_EXCL temp +
+    // atomic rename in `write_scale_sidecar_atomic`; the resolver already
+    // rejected string-level escapes.
     let mut sidecar = path.as_os_str().to_os_string();
     sidecar.push(".scale.json");
     let sidecar = std::path::PathBuf::from(sidecar);
 
-    // Write. TOCTOU parity with `file.write`: like it, we write to the confined
-    // *lexical* path — a parent-dir swap between the check above and the write is
-    // the same residual race the project accepts for its write mechanism.
     if let Err(e) = write_scale_sidecar_atomic(&sidecar, &req.physical_scale) {
         return err("io_error", format!("write scale sidecar {sidecar:?}: {e}"));
     }
