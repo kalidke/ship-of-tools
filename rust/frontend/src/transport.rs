@@ -55,12 +55,6 @@ use sot_protocol::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{self as tmpsc, UnboundedReceiver, UnboundedSender};
 
-/// Wire op for the ADR-0034 live-entry write (`preview.set_scale`).
-///
-/// Held locally rather than in `sot_protocol::op` only to keep this FE change
-/// independent of the backend's in-flight protocol addition; swap to the shared
-/// constant once the backend half lands so there's a single definition.
-const PREVIEW_SET_SCALE_OP: &str = "preview.set_scale";
 use winit::window::Window;
 
 /// What the transport task should dial. At least one of `pipe`/`tcp` must be
@@ -1986,7 +1980,7 @@ where
                         });
                         codec::write_frame(
                             &mut tx,
-                            &Frame::req(id, PREVIEW_SET_SCALE_OP, payload),
+                            &Frame::req(id, op::PREVIEW_SET_SCALE, payload),
                             None,
                         )
                         .await?;
