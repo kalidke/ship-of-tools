@@ -603,24 +603,34 @@ fn rescale_physical_scale(
 /// Shared preview assembly for `preview.get` AND `preview.set_scale`'s re-emit:
 /// resolve the node → (dir stub | plugin preview | bytes fallback), merge the
 /// `<image>.scale.json` scale sidecar, and apply the F1 downsample rescale.
-/// Returns `(mime, bytes, extras)` or an `(error_code, message)` pair the caller
-/// turns into a frame under its own op. Uses `node_id_to_path` (the READ
-/// resolver) — mutation confinement is the caller's concern.
+///
+/// The OUTER `anyhow::Result` carries INFRA failures (a downsample task panic)
+/// so both callers' `?` yields the server's `handler_error` — preserving
+/// `preview.get`'s prior behavior when the `spawn_blocking` join fails. The
+/// INNER `Result` carries DOMAIN errors (bad node id / read failure) that the
+/// caller turns into a frame under its own op. Uses `node_id_to_path` (the READ
+/// resolver) — write confinement is the caller's concern.
 async fn build_preview_payload(
     ws: &Workspace,
     req: &PreviewGetReq,
-) -> std::result::Result<(String, Vec<u8>, Option<serde_json::Value>), (String, String)> {
-    let files_mode = ws.files_mode().map_err(|e| {
-        (
-            "files_mode_init_failed".to_string(),
-            format!("files_mode init failed: {e:#}"),
-        )
-    })?;
+) -> anyhow::Result<
+    std::result::Result<(String, Vec<u8>, Option<serde_json::Value>), (String, String)>,
+> {
+    let files_mode = match ws.files_mode() {
+        Ok(fm) => fm,
+        Err(e) => {
+            return Ok(Err((
+                "files_mode_init_failed".to_string(),
+                format!("files_mode init failed: {e:#}"),
+            )))
+        }
+    };
     let kernel = ws.kernel();
 
-    let path = files_mode
-        .node_id_to_path(&req.node_id)
-        .map_err(|e| ("bad_node_id".to_string(), format!("{e:#}")))?;
+    let path = match files_mode.node_id_to_path(&req.node_id) {
+        Ok(p) => p,
+        Err(e) => return Ok(Err(("bad_node_id".to_string(), format!("{e:#}")))),
+    };
 
     let (mime, bytes, extras) = if path.is_dir() {
         // Directory preview: short markdown stub naming the dir. Frontend
@@ -646,7 +656,7 @@ async fn build_preview_payload(
         // mime inferred from extension.
         match read_bytes_preview(&path, &req.node_id) {
             Ok((mime, bytes)) => (mime, bytes, None),
-            Err(e) => return Err(("io_error".to_string(), format!("read {path:?}: {e}"))),
+            Err(e) => return Ok(Err(("io_error".to_string(), format!("read {path:?}: {e}")))),
         }
     };
 
@@ -658,17 +668,13 @@ async fn build_preview_payload(
     // Ship an oversize raster as a preview-sized PNG instead of the raw file.
     // Only oversize rasters take the spawn_blocking detour (decode is CPU-heavy
     // and must stay off the async reactor). A panicking decode is near-impossible
-    // (the helper is all `.ok()?`); surface a JoinError as an error payload.
+    // (the helper is all `.ok()?`); a JoinError is INFRA — propagate via `?` so
+    // the server returns `handler_error` exactly as it did before this refactor.
     let (mime, bytes, downsample_scale) =
         if bytes.len() > PREVIEW_DOWNSAMPLE_TRIGGER && is_downsampleable_raster(&mime) {
             tokio::task::spawn_blocking(move || preview_bytes_for_wire(mime, bytes))
                 .await
-                .map_err(|e| {
-                    (
-                        "preview_downsample_task".to_string(),
-                        format!("preview downsample task: {e}"),
-                    )
-                })?
+                .context("preview downsample task")?
         } else {
             (mime, bytes, None)
         };
@@ -683,7 +689,7 @@ async fn build_preview_payload(
         _ => extras,
     };
 
-    Ok((mime, bytes, extras))
+    Ok(Ok((mime, bytes, extras)))
 }
 
 pub async fn handle_preview_get(
@@ -713,7 +719,7 @@ pub async fn handle_preview_get(
         )]);
     };
 
-    match build_preview_payload(&ws, &req).await {
+    match build_preview_payload(&ws, &req).await? {
         Ok((mime, bytes, extras)) => {
             let res = PreviewGetRes {
                 mime: mime.clone(),
@@ -739,9 +745,10 @@ pub async fn handle_preview_get(
 }
 
 /// A `physical_scale` is valid iff it's an object with a non-empty `axes` array
-/// where every axis has a finite, strictly-positive numeric `nm_per_px`, plus a
-/// string `unit`. Guards `preview.set_scale` from persisting garbage that would
-/// then mislabel every bar.
+/// where every axis has BOTH a string `name` (the FE labels each bar by it) and
+/// a finite, strictly-positive numeric `nm_per_px`, plus a top-level string
+/// `unit`. Guards `preview.set_scale` from persisting garbage that would then
+/// mislabel (or fail to label) every bar.
 fn physical_scale_is_valid(v: &serde_json::Value) -> bool {
     let Some(obj) = v.as_object() else {
         return false;
@@ -751,43 +758,59 @@ fn physical_scale_is_valid(v: &serde_json::Value) -> bool {
     }
     match obj.get("axes").and_then(|a| a.as_array()) {
         Some(axes) if !axes.is_empty() => axes.iter().all(|ax| {
-            ax.get("nm_per_px")
+            let has_name = ax.get("name").map(|n| n.is_string()).unwrap_or(false);
+            let good_per_px = ax
+                .get("nm_per_px")
                 .and_then(|n| n.as_f64())
                 .map(|n| n.is_finite() && n > 0.0)
-                .unwrap_or(false)
+                .unwrap_or(false);
+            has_name && good_per_px
         }),
         _ => false,
     }
 }
 
-/// Write `<image>.scale.json` atomically (temp in the SAME dir + rename). The
-/// `physical_scale` is written VERBATIM — it is the per-original-px value the
-/// user typed; never derive it from an emitted/rescaled value or a read-served
-/// → write-back would compound the F1 ratio and corrupt the sidecar every
-/// round-trip.
+/// Monotone per-process counter so two concurrent `set_scale` writes to the same
+/// image within one microsecond get DISTINCT temp names (see below).
+static SCALE_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Write `sidecar` (already built + workspace-confined by the caller) atomically:
+/// a UNIQUE, `O_EXCL`-created temp in the same dir + rename. The `physical_scale`
+/// is written VERBATIM — it is the per-original-px value the user typed; never
+/// derive it from an emitted/rescaled value or a read-served → write-back would
+/// compound the F1 ratio and corrupt the sidecar every round-trip.
+///
+/// The temp name is `<sidecar>.tmp.<pid>.<seq>.<micros>` AND created with
+/// `create_new(true)` (`O_EXCL`), so two clients writing the same image can't
+/// share a temp file (one would get interleaved/partial bytes then rename the
+/// other's) — a name collision errors instead. Rename is atomic on one fs.
 fn write_scale_sidecar_atomic(
-    image_path: &std::path::Path,
+    sidecar: &std::path::Path,
     physical_scale: &serde_json::Value,
 ) -> std::io::Result<()> {
-    let mut sidecar = image_path.as_os_str().to_os_string();
-    sidecar.push(".scale.json");
-    let sidecar = std::path::PathBuf::from(sidecar);
+    use std::io::Write;
 
+    let seq = SCALE_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let micros = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros())
         .unwrap_or(0);
-    let mut tmp = sidecar.clone().into_os_string();
-    tmp.push(format!(".tmp.{micros}"));
+    let mut tmp = sidecar.as_os_str().to_os_string();
+    tmp.push(format!(".tmp.{}.{}.{}", std::process::id(), seq, micros));
     let tmp = std::path::PathBuf::from(tmp);
 
     let bytes = serde_json::to_vec(physical_scale)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    if let Err(e) = std::fs::write(&tmp, &bytes) {
+    let write_res = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true) // O_EXCL: a temp-name collision errors, never shares
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(&bytes));
+    if let Err(e) = write_res {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    if let Err(e) = std::fs::rename(&tmp, &sidecar) {
+    if let Err(e) = std::fs::rename(&tmp, sidecar) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
@@ -834,11 +857,21 @@ pub async fn handle_preview_set_scale(
         Err(e) => return err("files_mode_init_failed", format!("{e:#}")),
     };
     // WRITE resolver (this is a mutation): the confined variant carries the
-    // symlink-escape guard, so the sidecar can't be written outside the root.
+    // symlink-escape guard on the IMAGE path.
     let path = match files_mode.node_id_to_path_confined(&req.node_id) {
         Ok(p) => p,
         Err(e) => return err("bad_node_id", format!("{e:#}")),
     };
+    // Must be an EXISTING regular file: `mime_for_path` is extension-only, so a
+    // DIRECTORY named `results.png` would otherwise pass the raster gate (and
+    // get a markdown stub preview), and a since-deleted image would leave an
+    // orphan sidecar.
+    if !path.is_file() {
+        return err(
+            "not_a_file",
+            format!("{path:?} is not an existing regular file"),
+        );
+    }
     if !is_downsampleable_raster(mime_for_path(&path)) {
         return err(
             "not_a_raster",
@@ -854,8 +887,30 @@ pub async fn handle_preview_set_scale(
             "physical_scale must be {axes:[{name,nm_per_px>0}], unit:<string>}".to_string(),
         );
     }
-    if let Err(e) = write_scale_sidecar_atomic(&path, &req.physical_scale) {
-        return err("io_error", format!("write scale sidecar for {path:?}: {e}"));
+
+    // Confine the SIDECAR path itself. `node_id_to_path_confined` validated the
+    // IMAGE, but `<image>.scale.json` is a DIFFERENT derived path: appending
+    // `.scale.json` and resolving through a symlinked PARENT dir can land the
+    // write outside the root even when the image canonicalizes inside it. Apply
+    // the same guard (files_mode.rs `node_id_to_path_confined`) to the write
+    // target's longest existing ancestor.
+    let mut sidecar = path.as_os_str().to_os_string();
+    sidecar.push(".scale.json");
+    let sidecar = std::path::PathBuf::from(sidecar);
+    if let Some(canon) = crate::paths::canonicalize_existing_ancestor(&sidecar) {
+        if !crate::paths::path_within_root(&canon, files_mode.root_path()) {
+            return err(
+                "path_escape",
+                format!("scale sidecar resolves outside the workspace root: {sidecar:?}"),
+            );
+        }
+    }
+
+    // Write. TOCTOU parity with `file.write`: like it, we write to the confined
+    // *lexical* path — a parent-dir swap between the check above and the write is
+    // the same residual race the project accepts for its write mechanism.
+    if let Err(e) = write_scale_sidecar_atomic(&sidecar, &req.physical_scale) {
+        return err("io_error", format!("write scale sidecar {sidecar:?}: {e}"));
     }
 
     // Re-emit the preview so the FE renders from OUR authoritative rescale (it
@@ -868,7 +923,7 @@ pub async fn handle_preview_set_scale(
         fit_w: None,
         fit_h: None,
     };
-    match build_preview_payload(&ws, &get_req).await {
+    match build_preview_payload(&ws, &get_req).await? {
         Ok((mime, bytes, extras)) => {
             let res = PreviewGetRes {
                 mime: mime.clone(),
@@ -4410,7 +4465,8 @@ mod scalebar_sidecar_tests {
             "axes": [{"name":"x","nm_per_px":2.0},{"name":"y","nm_per_px":2.0}],
             "unit": "nm"
         });
-        write_scale_sidecar_atomic(&img, &scale).expect("atomic write");
+        let sidecar = dir.join("render.png.scale.json");
+        write_scale_sidecar_atomic(&sidecar, &scale).expect("atomic write");
         // Written verbatim + readable back through the same merge path.
         let extras = merge_scale_sidecar(&img, "image/png", None);
         let ps = extras
@@ -4450,6 +4506,10 @@ mod scalebar_sidecar_tests {
         // missing nm_per_px
         assert!(!physical_scale_is_valid(
             &serde_json::json!({"axes":[{"name":"x"}],"unit":"nm"})
+        ));
+        // missing axis name (would produce an unlabelable bar)
+        assert!(!physical_scale_is_valid(
+            &serde_json::json!({"axes":[{"nm_per_px":5.0}],"unit":"nm"})
         ));
         // missing unit
         assert!(!physical_scale_is_valid(
