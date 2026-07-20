@@ -5063,6 +5063,37 @@ impl State {
         } else {
             self.preview_src = None;
         }
+        // ACT on foreign provenance (Codex R5) — the third leg of the triad.
+        // #35 made provenance travel and #26 made the reveal CHECK it, but a
+        // foreign tree restored here was still left on screen indefinitely:
+        // returning `true` tells `switch_to_workspace` this workspace is
+        // already set up, so it skips its `tree.root` fetch and B keeps
+        // displaying A's tree until something else happens to reload it.
+        //
+        // Self-heal instead: reload the ACTIVE workspace's tree and arm the
+        // one-shot reveal so the cursor lands back on this workspace's own
+        // previewed file when the real rows arrive. Same shape as the
+        // first-visit path. The restored preview/edit/concept state is
+        // legitimately this workspace's and is kept — only the tree is wrong.
+        if self.files_tree_workspace != self.active_workspace_id {
+            tracing::info!(
+                provenance = ?self.files_tree_workspace,
+                active = ?self.active_workspace_id,
+                "restore: snapshot holds a FOREIGN tree — reloading the active workspace's tree"
+            );
+            // Land back on what this workspace was previewing, if anything.
+            if let Some(target) = self.preview_node_id_fired.clone() {
+                self.pending_switch_reveal = Some(target);
+            }
+            if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
+                mode: "files".to_string(),
+                workspace_id: self.active_workspace_id.clone(),
+            }) {
+                tracing::warn!(error = %e,
+                    "restore: drop tree.root for foreign-tree reload — channel closed");
+                self.pending_switch_reveal = None;
+            }
+        }
         self.window.request_redraw();
         true
     }
@@ -5228,9 +5259,19 @@ impl State {
                 } else {
                     self.preview_node_id_fired = Some(node_id.clone());
                     self.preview_anchor_line = None;
+                    // Never walk a FOREIGN tree (Codex R5): a restored snapshot
+                    // can hold another workspace's rows, and walking those would
+                    // land on the same RELATIVE path in the wrong project (or
+                    // splice this workspace's children into it). The restore
+                    // above already fired a corrective `tree.root`, so fall to
+                    // the arm-the-one-shot branch and let the real rows drive it.
+                    let tree_is_active_ws = tree_matches_active_ws(
+                        self.files_tree_workspace.as_deref(),
+                        self.active_workspace_id.as_deref(),
+                    );
                     // #4: land the nav cursor on the driven file so cursor +
                     // preview stay in sync. Two cases, keyed on `restored`:
-                    if restored {
+                    if restored && tree_is_active_ws {
                         // Revisit: restore_workspace_ui put the snapshot tree
                         // back and sent NO tree.root (the `!restored` guard
                         // above), so a tree.root-gated reveal would never fire —
@@ -5255,9 +5296,12 @@ impl State {
                         self.pending_reveal = Some(node_id.clone());
                         self.drive_reveal_step();
                     } else {
-                        // First visit: a tree.root was requested but its rows
-                        // aren't in yet, so arm a one-shot reveal consumed on
-                        // that reply (see the TreeRoot handler).
+                        // First visit (a tree.root was requested but its rows
+                        // aren't in yet), OR a restored-but-FOREIGN tree (whose
+                        // corrective tree.root the restore just fired). Either
+                        // way the rows we want don't exist yet, so arm a
+                        // one-shot reveal consumed on that reply (see the
+                        // TreeRoot handler).
                         self.pending_switch_reveal = Some(node_id.clone());
                     }
                     self.status = format!("nav ← agent (pending) · {path}");
