@@ -2025,15 +2025,22 @@ struct State {
     /// scale; cleared on every `preview.get` reply (like `preview_page`).
     /// Presence gates the scalebar toggle key + overlay.
     preview_scale: Option<PhysicalScale>,
-    /// One-shot: a `preview.set_scale` is in flight, holding the typed value
-    /// for the confirmation message. The success reply deliberately flows
-    /// through the SHARED preview handler (one install path for a preview and
-    /// its calibration), and that handler knows nothing about scale entry — so
-    /// without this the "saving…" status would sit there forever even though
-    /// the bar had already appeared. Taken by whichever resolves first: the
-    /// preview install (success) or `ScaleSetFailed` (rejection), so a stale
-    /// flag can't make some later unrelated preview claim "saved".
-    scale_save_pending: Option<String>,
+    /// One-shot: a `preview.set_scale` is in flight, as `(node_id, typed
+    /// value)`. The success reply deliberately flows through the SHARED
+    /// preview handler (one install path for a preview and its calibration),
+    /// and that handler knows nothing about scale entry — so without this the
+    /// "saving…" status would sit there forever even though the bar had
+    /// already appeared. Taken by whichever resolves first: the preview
+    /// install (success) or `ScaleSetFailed` (rejection), so a stale marker
+    /// can't make some later unrelated preview claim "saved".
+    ///
+    /// The `node_id` is carried so the take() can require the arriving preview
+    /// to BE the save's target: navigating to another file mid-save would
+    /// otherwise let that file's `preview.get` consume the marker and announce
+    /// "saved" over an unrelated image. Cosmetic — the sidecar and bar are
+    /// correct either way — but a status line attributing a save to the wrong
+    /// file is exactly the kind of quietly-wrong message worth not shipping.
+    scale_save_pending: Option<(String, String)>,
     /// Scalebar overlay toggle (ADR 0034, `b`). Default off; sticky across
     /// navigations (renders only when `preview_scale` is present, so it can
     /// stay armed while browsing a mix of scaled / unscaled rasters).
@@ -6929,7 +6936,7 @@ impl State {
         // ordinary preview install, so without a pending marker we'd either
         // leave "saving…" up forever or congratulate the user on every
         // unrelated preview.get.
-        self.scale_save_pending = Some(raw.clone());
+        self.scale_save_pending = Some((node_id.clone(), raw.clone()));
         self.status = format!("pixel size {raw} nm · saving…");
         self.window.request_redraw();
     }
@@ -8642,7 +8649,16 @@ impl State {
                     // `set_scale` reply (one install path, by design), so it's
                     // where "saving…" has to be retired. Gated on the pending
                     // marker so ordinary previews never trigger it.
-                    if let Some(raw) = self.scale_save_pending.take() {
+                    // Only THIS save's target may resolve it — otherwise
+                    // navigating away mid-save lets the new file's preview
+                    // consume the marker and label an unrelated image "saved".
+                    let scale_saved = match self.scale_save_pending.as_ref() {
+                        Some((target, _)) if node_id.as_deref() == Some(target.as_str()) => {
+                            self.scale_save_pending.take().map(|(_, raw)| raw)
+                        }
+                        _ => None,
+                    };
+                    if let Some(raw) = scale_saved {
                         self.status = if self.preview_scale.is_some() {
                             format!("pixel size {raw} nm · saved")
                         } else {
