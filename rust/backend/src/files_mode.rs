@@ -24,7 +24,7 @@
 // Kinds the frontend can specialise on:
 //   "dir", "mdfile", "jlfile", "tomlfile", "imagefile", "svgfile", "file"
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{anyhow, Context, Result};
@@ -162,6 +162,25 @@ impl FilesMode {
     }
 
     /// Shared string-level composition + injection checks for both resolvers.
+    ///
+    /// Walks the id's relative path with [`std::path::Component`] semantics —
+    /// the SAME semantics [`PathBuf::push`] uses on this platform — so the
+    /// validation can never disagree with the composition. Only `Normal`
+    /// components are appended; anything that would make `push` REPLACE the
+    /// workspace root is rejected:
+    /// - `ParentDir` (`..`) — traversal above the root,
+    /// - `RootDir` (`/x`, or `\x` on Windows) — absolute path,
+    /// - `Prefix` (Windows drive `C:` / drive-relative `C:x`, or UNC
+    ///   `\\server\share`) — root-replacing on Windows.
+    ///
+    /// This closes the whole `push`-replaces-the-root escape family at once,
+    /// rather than enumerating exotic string forms (the prior `len == 2`
+    /// drive check missed drive-relative `C:x`, backslash-absolute `\x`, and
+    /// UNC — a node id can arrive from a Windows FE, and set_scale writes
+    /// through this READ resolver since #43). Because validation and push use
+    /// one platform's `Component` parser, they agree by construction: on a
+    /// Linux daemon a stray `C:x` is a harmless in-root `Normal` filename; on
+    /// a Windows daemon the same string parses as a `Prefix` and is rejected.
     fn compose_node_path(&self, node_id: &str) -> Result<PathBuf> {
         let rel = node_id
             .strip_prefix(ID_PREFIX)
@@ -169,34 +188,17 @@ impl FilesMode {
         if rel.is_empty() {
             return Ok(self.root.clone());
         }
-        if rel.starts_with('/') || rel.starts_with('\\') {
-            return Err(anyhow!("absolute paths not allowed in node id: {node_id}"));
-        }
-        for seg in rel.split(['/', '\\']) {
-            if seg == ".." {
-                return Err(anyhow!("parent-dir segment not allowed in node id: {node_id}"));
-            }
-            // A Windows drive-letter segment (`C:`) is drive-ABSOLUTE there: the
-            // split yields it from `C:\path`, and `PathBuf::push("C:\\path")`
-            // REPLACES the workspace root on Windows. Reject it string-level
-            // regardless of the daemon's platform — a node id can arrive from a
-            // Windows FE, and set_scale (which uses this READ resolver since #43)
-            // would otherwise write a sidecar outside the root with no symlink.
-            // `len == 2` targets exactly the drive form (`C:`) so a legitimate
-            // filename containing a colon (e.g. `a:b.png`) is not false-rejected.
-            if seg.len() == 2
-                && seg.as_bytes()[1] == b':'
-                && seg.as_bytes()[0].is_ascii_alphabetic()
-            {
-                return Err(anyhow!(
-                    "drive-absolute segment not allowed in node id: {node_id}"
-                ));
-            }
-        }
         let mut p = self.root.clone();
-        for seg in rel.split('/') {
-            if !seg.is_empty() {
-                p.push(seg);
+        for comp in Path::new(rel).components() {
+            match comp {
+                Component::Normal(seg) => p.push(seg),
+                Component::CurDir => {} // `.` — no-op
+                Component::ParentDir => {
+                    return Err(anyhow!("parent-dir segment not allowed in node id: {node_id}"));
+                }
+                Component::RootDir | Component::Prefix(_) => {
+                    return Err(anyhow!("absolute/rooted path not allowed in node id: {node_id}"));
+                }
             }
         }
         Ok(p)
@@ -424,25 +426,64 @@ mod tests {
         assert!(fm.node_id_to_path("files:/abs").is_err());
     }
 
-    /// Codex aggregate review (v0.4.4): a Windows drive-letter node id is
-    /// drive-ABSOLUTE there, and `PathBuf::push` would replace the root — an
-    /// escape without any symlink. BOTH resolvers must reject it string-level,
-    /// on every platform (a node id can arrive from a Windows FE, and set_scale
-    /// uses the READ resolver). A colon merely INSIDE a filename is not a drive.
+    /// Codex aggregate review (v0.4.4): the escape family where a segment makes
+    /// `PathBuf::push` REPLACE the workspace root (`..`, absolute, Windows drive
+    /// / drive-relative / UNC). The composition now walks `std::path::Component`,
+    /// so validation and push use ONE platform's parser and agree by
+    /// construction. The cross-platform invariant — traversal + absolute paths
+    /// are rejected by BOTH resolvers — is asserted here; the Windows-only drive
+    /// / UNC forms (dangerous only on a Windows daemon) are in the `#[cfg(windows)]`
+    /// test below.
     #[test]
-    fn resolvers_reject_windows_drive_paths() {
+    fn resolvers_reject_traversal_and_absolute() {
         let dir = Tmp::new();
         let fm = FilesMode::new(dir.path().to_path_buf()).unwrap();
-        for id in ["files:C:\\outside\\x.png", "files:sub/C:\\y", "files:D:/z"] {
+        for id in ["files:../up", "files:sub/../../etc", "files:/etc/passwd"] {
             assert!(fm.node_id_to_path(id).is_err(), "read must reject {id}");
             assert!(
                 fm.node_id_to_path_confined(id).is_err(),
                 "write must reject {id}"
             );
         }
-        // A colon INSIDE a filename (legal on unix) is NOT a drive — the drive
-        // check (len == 2) must not false-reject it; it composes normally.
-        assert!(fm.node_id_to_path("files:a:b.png").is_ok());
+        // A colon inside a filename is legal on unix and is NOT a drive; it must
+        // compose to an in-root path (a Windows daemon parses it as a `Prefix`
+        // and rejects — see the cfg(windows) test).
+        #[cfg(unix)]
+        {
+            let root = crate::paths::simplify_verbatim(std::fs::canonicalize(dir.path()).unwrap());
+            let p = fm.node_id_to_path("files:a:b.png").unwrap();
+            assert_eq!(p, root.join("a:b.png"));
+            // A Windows drive STRING can't escape on unix — backslash and colon
+            // are ordinary filename bytes, so `push` never replaces the root; it
+            // composes to a harmless in-root name. (On Windows it's a `Prefix`
+            // and rejected.) This documents the platform-consistent contract.
+            let d = fm.node_id_to_path("files:D:/z").unwrap();
+            assert!(d.starts_with(&root), "drive string stayed in-root on unix");
+        }
+    }
+
+    /// On a Windows daemon, a node id from a Windows FE can carry a drive,
+    /// drive-relative, UNC, or backslash-absolute prefix — each makes
+    /// `PathBuf::push` REPLACE the root. `Component::Prefix`/`RootDir` must
+    /// reject them on BOTH resolvers (set_scale writes through the READ one).
+    #[test]
+    #[cfg(windows)]
+    fn resolvers_reject_windows_drive_and_unc() {
+        let dir = Tmp::new();
+        let fm = FilesMode::new(dir.path().to_path_buf()).unwrap();
+        for id in [
+            "files:C:\\outside\\x.png", // drive-absolute
+            "files:C:outside",          // drive-RELATIVE (the len==2 check missed this)
+            "files:\\\\server\\share\\x", // UNC
+            "files:\\outside\\x",       // backslash root-absolute
+            "files:sub\\..\\..\\out",   // backslash traversal
+        ] {
+            assert!(fm.node_id_to_path(id).is_err(), "read must reject {id}");
+            assert!(
+                fm.node_id_to_path_confined(id).is_err(),
+                "write must reject {id}"
+            );
+        }
     }
 
     /// A brand-new (not-yet-created) path under a legitimately-in-root
