@@ -801,11 +801,15 @@ fn write_scale_sidecar_atomic(
 
     let bytes = serde_json::to_vec(physical_scale)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let write_res = std::fs::OpenOptions::new()
+    // create_new (O_EXCL): a temp-name COLLISION errors HERE — return without
+    // touching `tmp`; it belongs to the other writer, not us. Only AFTER a
+    // successful create is `tmp` ours to clean up.
+    let mut f = std::fs::OpenOptions::new()
         .write(true)
-        .create_new(true) // O_EXCL: a temp-name collision errors, never shares
-        .open(&tmp)
-        .and_then(|mut f| f.write_all(&bytes));
+        .create_new(true)
+        .open(&tmp)?;
+    let write_res = f.write_all(&bytes);
+    drop(f); // close before rename (correct on every platform)
     if let Err(e) = write_res {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
@@ -888,23 +892,30 @@ pub async fn handle_preview_set_scale(
         );
     }
 
-    // Confine the SIDECAR path itself. `node_id_to_path_confined` validated the
-    // IMAGE, but `<image>.scale.json` is a DIFFERENT derived path: appending
-    // `.scale.json` and resolving through a symlinked PARENT dir can land the
-    // write outside the root even when the image canonicalizes inside it. Apply
-    // the same guard (files_mode.rs `node_id_to_path_confined`) to the write
-    // target's longest existing ancestor.
+    // Confine the PARENT DIRECTORY the write actually mutates — the temp create
+    // AND the rename both happen inside it. Confining the sidecar FILE would be
+    // bypassable: if `<image>.scale.json` already exists as an in-root symlink,
+    // canonicalizing the sidecar follows it and passes, yet its parent dir could
+    // symlink outside the root, so the temp+rename land outside. The image's
+    // parent always exists (the image lives in it) and is the sidecar's dir too.
+    let Some(parent) = path.parent() else {
+        return err("bad_node_id", format!("{path:?} has no parent directory"));
+    };
+    match crate::paths::canonicalize_existing_ancestor(parent) {
+        Some(canon) if crate::paths::path_within_root(&canon, files_mode.root_path()) => {}
+        _ => {
+            return err(
+                "path_escape",
+                format!(
+                    "scale sidecar's directory resolves outside the workspace root: {parent:?}"
+                ),
+            )
+        }
+    }
+
     let mut sidecar = path.as_os_str().to_os_string();
     sidecar.push(".scale.json");
     let sidecar = std::path::PathBuf::from(sidecar);
-    if let Some(canon) = crate::paths::canonicalize_existing_ancestor(&sidecar) {
-        if !crate::paths::path_within_root(&canon, files_mode.root_path()) {
-            return err(
-                "path_escape",
-                format!("scale sidecar resolves outside the workspace root: {sidecar:?}"),
-            );
-        }
-    }
 
     // Write. TOCTOU parity with `file.write`: like it, we write to the confined
     // *lexical* path — a parent-dir swap between the check above and the write is
