@@ -342,9 +342,12 @@ impl KeyBindings {
             preview_png_pan_right: vec![Chord::parse("ArrowRight").unwrap()],
             preview_png_pan_up: vec![Chord::parse("ArrowUp").unwrap()],
             preview_png_pan_down: vec![Chord::parse("ArrowDown").unwrap()],
-            // Scalebar overlay toggle. `b` for "bar"; only fires when the
-            // shown raster carries a physical scale (ADR 0034).
-            preview_scalebar_toggle: vec![Chord::parse("b").unwrap()],
+            // Scalebar overlay toggle (ADR 0034). Ctrl+S per the maintainer
+            // (2026-07-20) — `s` alone is the Sessions-mode switch, and
+            // Ctrl+Shift+S is the selfie, so Ctrl+S is the free slot. With no
+            // physical scale present this opens the pixel-size prompt rather
+            // than no-opping.
+            preview_scalebar_toggle: vec![Chord::parse("Ctrl+s").unwrap()],
             // Sessions picker commit: Enter = with agent (ccb), Shift+Enter =
             // bare (no LLM). The call site checks `session.create_bare` before
             // `session.create`, since a non-shift "Enter" chord also matches
