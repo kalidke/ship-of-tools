@@ -5063,37 +5063,13 @@ impl State {
         } else {
             self.preview_src = None;
         }
-        // ACT on foreign provenance (Codex R5) — the third leg of the triad.
-        // #35 made provenance travel and #26 made the reveal CHECK it, but a
-        // foreign tree restored here was still left on screen indefinitely:
-        // returning `true` tells `switch_to_workspace` this workspace is
-        // already set up, so it skips its `tree.root` fetch and B keeps
-        // displaying A's tree until something else happens to reload it.
-        //
-        // Self-heal instead: reload the ACTIVE workspace's tree and arm the
-        // one-shot reveal so the cursor lands back on this workspace's own
-        // previewed file when the real rows arrive. Same shape as the
-        // first-visit path. The restored preview/edit/concept state is
-        // legitimately this workspace's and is kept — only the tree is wrong.
-        if self.files_tree_workspace != self.active_workspace_id {
-            tracing::info!(
-                provenance = ?self.files_tree_workspace,
-                active = ?self.active_workspace_id,
-                "restore: snapshot holds a FOREIGN tree — reloading the active workspace's tree"
-            );
-            // Land back on what this workspace was previewing, if anything.
-            if let Some(target) = self.preview_node_id_fired.clone() {
-                self.pending_switch_reveal = Some(target);
-            }
-            if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
-                mode: "files".to_string(),
-                workspace_id: self.active_workspace_id.clone(),
-            }) {
-                tracing::warn!(error = %e,
-                    "restore: drop tree.root for foreign-tree reload — channel closed");
-                self.pending_switch_reveal = None;
-            }
-        }
+        // NOTE: the foreign-provenance corrective reload (Codex R5) deliberately
+        // does NOT live here — it moved to `switch_to_workspace`, this function's
+        // only caller. `files_tree_workspace` describes the FILES tree, but
+        // `self.tree` is shared with Modules mode, so the decision needs the
+        // restored mode AND must coordinate with the badge-consume path to avoid
+        // firing two roots. Deciding it in one place there is what keeps the
+        // mode dimension honest (Codex R6).
         self.window.request_redraw();
         true
     }
@@ -5191,6 +5167,10 @@ impl State {
         // snapshot yet).
         let _ = self.restore_workspace_repl(&key);
         let restored = self.restore_workspace_ui(&key);
+        // Is a FILES tree.root already on its way? Tracked so the badge-consume
+        // below never fires a second one (Codex R6 — the corrective reload and
+        // the badge path both used to be able to request a root).
+        let mut files_root_inflight = false;
         if !restored {
             // First visit — start from a clean slate.
             self.mode = Mode::Files;
@@ -5218,6 +5198,44 @@ impl State {
                 workspace_id: self.active_workspace_id.clone(),
             }) {
                 tracing::warn!(error = %e, "drop tree.root after workspace switch");
+            }
+            files_root_inflight = true;
+        } else if matches!(self.mode, Mode::Files)
+            && !tree_matches_active_ws(
+                self.files_tree_workspace.as_deref(),
+                self.active_workspace_id.as_deref(),
+            )
+        {
+            // Foreign FILES tree restored (Codex R5): the snapshot held another
+            // workspace's tree, and returning `restored` skipped the fetch above,
+            // so it would sit on screen indefinitely. Reload the active ws's tree
+            // and arm the one-shot reveal on whatever this workspace was
+            // previewing. The restored preview/edit/concept state is legitimately
+            // this workspace's and is kept — only the tree is wrong.
+            //
+            // MODE-GATED (Codex R6): `files_tree_workspace` describes the FILES
+            // tree, but `self.tree` is shared with Modules mode, whose rows come
+            // from `project.scan` and never stamp it. Firing this in Modules mode
+            // would read a meaningless "mismatch" and clobber the Modules tree
+            // with a Files root that restore never re-issues `project.scan` to
+            // undo.
+            tracing::info!(
+                provenance = ?self.files_tree_workspace,
+                active = ?self.active_workspace_id,
+                "restore: snapshot holds a FOREIGN tree — reloading the active workspace's tree"
+            );
+            if let Some(target) = self.preview_node_id_fired.clone() {
+                self.pending_switch_reveal = Some(target);
+            }
+            if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
+                mode: "files".to_string(),
+                workspace_id: self.active_workspace_id.clone(),
+            }) {
+                tracing::warn!(error = %e,
+                    "restore: drop tree.root for foreign-tree reload — channel closed");
+                self.pending_switch_reveal = None;
+            } else {
+                files_root_inflight = true;
             }
         }
         // Refresh the workspace list so kernel_running / new rows stay
@@ -5259,19 +5277,30 @@ impl State {
                 } else {
                     self.preview_node_id_fired = Some(node_id.clone());
                     self.preview_anchor_line = None;
-                    // Never walk a FOREIGN tree (Codex R5): a restored snapshot
-                    // can hold another workspace's rows, and walking those would
-                    // land on the same RELATIVE path in the wrong project (or
-                    // splice this workspace's children into it). The restore
-                    // above already fired a corrective `tree.root`, so fall to
-                    // the arm-the-one-shot branch and let the real rows drive it.
-                    let tree_is_active_ws = tree_matches_active_ws(
+                    // Only walk a tree that is genuinely THIS workspace's FILES
+                    // tree. Two ways it can fail to be:
+                    //   - FOREIGN (Codex R5): a restored snapshot can hold
+                    //     another workspace's rows; walking those lands on the
+                    //     same RELATIVE path in the wrong project, or splices
+                    //     this workspace's children into it.
+                    //   - NOT A FILES TREE (Codex R6): this block just forced
+                    //     Files mode, but a workspace restored in Modules mode
+                    //     still has `modules:` rows in the shared `self.tree`.
+                    //     Walking those finds no ancestor and silently drops,
+                    //     leaving Files mode displaying the Modules tree.
+                    // Either way, fall to the arm-the-one-shot branch and let a
+                    // real Files root drive the reveal.
+                    let files_tree_usable = tree_matches_active_ws(
                         self.files_tree_workspace.as_deref(),
                         self.active_workspace_id.as_deref(),
-                    );
+                    ) && self
+                        .tree
+                        .rows
+                        .iter()
+                        .any(|r| r.node.id.starts_with("files:"));
                     // #4: land the nav cursor on the driven file so cursor +
                     // preview stay in sync. Two cases, keyed on `restored`:
-                    if restored && tree_is_active_ws {
+                    if restored && files_tree_usable {
                         // Revisit: restore_workspace_ui put the snapshot tree
                         // back and sent NO tree.root (the `!restored` guard
                         // above), so a tree.root-gated reveal would never fire —
@@ -5297,12 +5326,36 @@ impl State {
                         self.drive_reveal_step();
                     } else {
                         // First visit (a tree.root was requested but its rows
-                        // aren't in yet), OR a restored-but-FOREIGN tree (whose
-                        // corrective tree.root the restore just fired). Either
-                        // way the rows we want don't exist yet, so arm a
-                        // one-shot reveal consumed on that reply (see the
+                        // aren't in yet), a restored-but-FOREIGN tree, or a
+                        // restored MODULES tree that this block just forced into
+                        // Files mode. The rows we want don't exist yet, so arm a
+                        // one-shot reveal consumed on the incoming reply (see the
                         // TreeRoot handler).
                         self.pending_switch_reveal = Some(node_id.clone());
+                        // ...and make sure a reply is actually coming. The
+                        // Modules-restore case fires nothing above (the
+                        // corrective reload is Files-gated, correctly), so
+                        // without this the badge would arm a one-shot that never
+                        // resolves and Files mode would keep showing the Modules
+                        // tree (Codex R6).
+                        if !files_root_inflight {
+                            tracing::info!(
+                                "tree.root requested: badge consume needs a Files tree"
+                            );
+                            if let Err(e) =
+                                self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
+                                    mode: "files".to_string(),
+                                    workspace_id: self.active_workspace_id.clone(),
+                                })
+                            {
+                                tracing::warn!(error = %e,
+                                    "badge consume: drop tree.root — channel closed");
+                                self.pending_switch_reveal = None;
+                            }
+                            // No `files_root_inflight = true` here: this is the
+                            // last point in the switch that can request a root,
+                            // so nothing reads it again.
+                        }
                     }
                     self.status = format!("nav ← agent (pending) · {path}");
                     tracing::info!(%node_id, ws = %slug,
@@ -7932,14 +7985,20 @@ impl State {
                     if workspace_id != self.active_workspace_id {
                         continue;
                     }
-                    // Drop the hello-time tree.root reply when we
-                    // resumed into a non-Files mode — the file tree
-                    // would otherwise clobber the Sessions / Hosts /
-                    // (future) other-mode root the chrome already
-                    // built locally. Files mode is the only one whose
-                    // root *is* the tree.root response; everything
-                    // else builds its tree from a different source.
-                    if !matches!(self.mode, Mode::Files | Mode::Modules) {
+                    // Drop a tree.root reply unless we're in Files mode — the
+                    // file tree would otherwise clobber the tree another mode
+                    // already built locally. Files mode is the only one whose
+                    // root *is* the tree.root response; everything else builds
+                    // its tree from a different source (Modules from
+                    // `project.scan`, Sessions/Hosts locally).
+                    //
+                    // Modules used to be admitted here, which was a live clobber
+                    // path (Codex R6): EVERY tree.root request this chrome makes
+                    // is `mode: "files"`, so a reply landing in Modules mode
+                    // always overwrites the Modules rows with file rows — and
+                    // nothing re-issues `project.scan` to put them back. Dropping
+                    // it is safe: entering Files mode issues its own tree.root.
+                    if !matches!(self.mode, Mode::Files) {
                         continue;
                     }
                     // TRACED (2026-07-10 nav-collapse diagnosis): set_root
