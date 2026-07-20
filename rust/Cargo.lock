@@ -3803,7 +3803,7 @@ dependencies = [
 
 [[package]]
 name = "sot-backend"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "base64",
@@ -3825,7 +3825,7 @@ dependencies = [
 
 [[package]]
 name = "sot-frontend"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3870,7 +3870,7 @@ dependencies = [
 
 [[package]]
 name = "sot-protocol"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "serde",
