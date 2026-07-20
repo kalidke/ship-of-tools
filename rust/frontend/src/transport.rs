@@ -142,6 +142,16 @@ pub enum IncomingEvt {
         node_id: String,
         message: String,
     },
+    /// `preview.set_scale` failed (ADR 0034 live entry). The backend rejects
+    /// with a code — `not_a_raster`, `bad_scale`, `path_escape`, `io_error`,
+    /// `unknown_workspace`, `bad_node_id`, `not_a_file`,
+    /// `files_mode_init_failed` — and the chrome surfaces it on the status
+    /// line. Without this the prompt's "saving…" would hang forever on any
+    /// rejection, which reads as a silent failure.
+    ScaleSetFailed {
+        node_id: String,
+        message: String,
+    },
     TreeRoot {
         /// ADR 0014: the workspace this root was requested for, echoed from
         /// the pending entry. Lets the chrome drop a stale reply (e.g. an
@@ -2902,6 +2912,23 @@ fn handle_response_frame(
                 // This also has to be a REPLY, not an unsolicited push: replies
                 // are correlated by frame id via `pending.remove`, so a pushed
                 // preview frame would find no entry and be dropped silently.
+                //
+                // Rejections come back as an `error` payload under the same
+                // frame id; surface them so the prompt's "saving…" resolves
+                // instead of hanging.
+                if let Some(err) = frame.payload.get("error").and_then(|v| v.as_str()) {
+                    let code = frame
+                        .payload
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("error");
+                    tracing::warn!(%node_id, %code, %err, "preview.set_scale rejected");
+                    let _ = evt_tx.send(IncomingEvt::ScaleSetFailed {
+                        node_id,
+                        message: format!("{code}: {err}"),
+                    });
+                    return;
+                }
                 match serde_json::from_value::<PreviewGetRes>(frame.payload) {
                     Ok(res) => {
                         let _ = evt_tx.send(IncomingEvt::Preview {

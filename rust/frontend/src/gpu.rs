@@ -9905,6 +9905,22 @@ impl State {
                     self.status = format!("capture failed · {name}: {message}");
                     self.window.request_redraw();
                 }
+                crate::transport::IncomingEvt::ScaleSetFailed { node_id, message } => {
+                    // ADR 0034 live entry rejected (not_a_raster / bad_scale /
+                    // path_escape / io_error / …). Surface it so the prompt's
+                    // "saving…" resolves; the calibration simply isn't applied,
+                    // and the user can re-open the prompt with Ctrl+S and retry.
+                    let name = node_id
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .unwrap_or(&node_id)
+                        .to_string();
+                    // The bar never appeared, so don't leave the overlay armed
+                    // claiming a scale we don't have.
+                    self.scalebar_on = false;
+                    self.status = format!("pixel size failed · {name}: {message}");
+                    self.window.request_redraw();
+                }
                 crate::transport::IncomingEvt::ReplRunFileDone { eval_id, result } => {
                     // J5: route frames into the pre-registered `repl_log`
                     // entry so the drawer scrollback shows the run's
