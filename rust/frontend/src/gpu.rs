@@ -2025,6 +2025,15 @@ struct State {
     /// scale; cleared on every `preview.get` reply (like `preview_page`).
     /// Presence gates the scalebar toggle key + overlay.
     preview_scale: Option<PhysicalScale>,
+    /// One-shot: a `preview.set_scale` is in flight, holding the typed value
+    /// for the confirmation message. The success reply deliberately flows
+    /// through the SHARED preview handler (one install path for a preview and
+    /// its calibration), and that handler knows nothing about scale entry — so
+    /// without this the "saving…" status would sit there forever even though
+    /// the bar had already appeared. Taken by whichever resolves first: the
+    /// preview install (success) or `ScaleSetFailed` (rejection), so a stale
+    /// flag can't make some later unrelated preview claim "saved".
+    scale_save_pending: Option<String>,
     /// Scalebar overlay toggle (ADR 0034, `b`). Default off; sticky across
     /// navigations (renders only when `preview_scale` is present, so it can
     /// stay armed while browsing a mix of scaled / unscaled rasters).
@@ -3500,6 +3509,7 @@ impl State {
             preview_page_raster_pending: None,
             preview_reraster_keep_view: false,
             preview_scale: None,
+            scale_save_pending: None,
             // Default off; `--start-scalebar` arms it for the headless capture
             // harness (no `b` keypress). Still gated on a present scale at draw.
             scalebar_on: cli.start_scalebar,
@@ -6863,6 +6873,14 @@ impl State {
             node_id,
             input: String::new(),
         });
+        // Ctrl+S fires from the PREVIEW focus arm, but every NavPrompt's
+        // keystroke handling (chars / Backspace / Enter / Esc) lives in the
+        // NavTree arm — so without this the prompt opens and then silently
+        // swallows nothing: typing goes to the preview's zoom/pan keys and
+        // Enter never reaches `confirm_scale_entry`. Ctrl+N doesn't need this
+        // because it can only fire from NavTree focus in the first place.
+        // Codex v0.4.4 gate.
+        self.focus = PaneFocus::NavTree;
         self.status = "pixel size (nm): ".to_string();
         self.window.request_redraw();
         true
@@ -6907,6 +6925,11 @@ impl State {
         // just re-open this prompt.
         self.scalebar_on = true;
         self.nav_prompt = None;
+        // Gate the success message on THIS save: the reply arrives as an
+        // ordinary preview install, so without a pending marker we'd either
+        // leave "saving…" up forever or congratulate the user on every
+        // unrelated preview.get.
+        self.scale_save_pending = Some(raw.clone());
         self.status = format!("pixel size {raw} nm · saving…");
         self.window.request_redraw();
     }
@@ -8615,6 +8638,19 @@ impl State {
                     // clear-on-every-reply as pagination — a reply with no
                     // `physical_scale` retires the bar for the new target.
                     self.preview_scale = extras.as_ref().and_then(parse_physical_scale);
+                    // Resolve a live-entry save: this same handler serves the
+                    // `set_scale` reply (one install path, by design), so it's
+                    // where "saving…" has to be retired. Gated on the pending
+                    // marker so ordinary previews never trigger it.
+                    if let Some(raw) = self.scale_save_pending.take() {
+                        self.status = if self.preview_scale.is_some() {
+                            format!("pixel size {raw} nm · saved")
+                        } else {
+                            // Reply landed but carried no scale — report that
+                            // rather than claiming a save that didn't stick.
+                            format!("pixel size {raw} nm · saved, but no scale came back")
+                        };
+                    }
                     // Is this the higher-res reply to a zoom re-raster of the
                     // page already on screen? Only if a re-raster is pending
                     // for the SAME page — a reply for a different page is a
@@ -9920,6 +9956,10 @@ impl State {
                     // The bar never appeared, so don't leave the overlay armed
                     // claiming a scale we don't have.
                     self.scalebar_on = false;
+                    // This save resolved (as a failure), so retire the pending
+                    // marker — otherwise the next unrelated preview would
+                    // consume it and report a "saved" that never happened.
+                    self.scale_save_pending = None;
                     self.status = format!("pixel size failed · {name}: {message}");
                     self.window.request_redraw();
                 }
