@@ -177,10 +177,23 @@ impl FilesMode {
     /// rather than enumerating exotic string forms (the prior `len == 2`
     /// drive check missed drive-relative `C:x`, backslash-absolute `\x`, and
     /// UNC — a node id can arrive from a Windows FE, and set_scale writes
-    /// through this READ resolver since #43). Because validation and push use
-    /// one platform's `Component` parser, they agree by construction: on a
-    /// Linux daemon a stray `C:x` is a harmless in-root `Normal` filename; on
+    /// through this READ resolver since #43). Because the in-context walk and
+    /// push use one platform's `Component` parser, they agree on structure: on
+    /// a Linux daemon a stray `C:x` is a harmless in-root `Normal` filename; on
     /// a Windows daemon the same string parses as a `Prefix` and is rejected.
+    ///
+    /// One subtlety the walk alone doesn't cover: `PathBuf::push` RE-PARSES
+    /// each segment IN ISOLATION, so a component that is `Normal` in whole-path
+    /// context can be root-replacing on its own. On Windows `sub/C:../x` walks
+    /// as `Normal("sub"), Normal("C:.."), Normal("x")` — mid-path `C:` is not a
+    /// drive prefix — yet `push("C:..")` re-parses `C:..` as a drive-RELATIVE
+    /// path (`Prefix` `C:`, no root) and REPLACES the accumulated root. The
+    /// final `starts_with` guard catches this: a replacement can never
+    /// re-establish `self.root` as a component prefix — a lone segment carries
+    /// no separator, so it can only become drive-relative (`C:x`), never
+    /// `C:\root\...` — so any push that escaped drops the root prefix and is
+    /// rejected. (`..` is handled in-loop; it survives the lexical
+    /// `starts_with`, so both checks are needed.)
     fn compose_node_path(&self, node_id: &str) -> Result<PathBuf> {
         let rel = node_id
             .strip_prefix(ID_PREFIX)
@@ -200,6 +213,11 @@ impl FilesMode {
                     return Err(anyhow!("absolute/rooted path not allowed in node id: {node_id}"));
                 }
             }
+        }
+        // `push`'s per-segment reparse (see above) can drop the root out from
+        // under us; a lexical containment check is the sound backstop.
+        if !p.starts_with(&self.root) {
+            return Err(anyhow!("node id escapes the workspace root: {node_id}"));
         }
         Ok(p)
     }
@@ -477,6 +495,10 @@ mod tests {
             "files:\\\\server\\share\\x", // UNC
             "files:\\outside\\x",       // backslash root-absolute
             "files:sub\\..\\..\\out",   // backslash traversal
+            "files:sub/C:../outside.png", // NESTED drive-relative: `C:..` walks as an
+            // in-context Normal, but push() reparses it as a drive prefix and
+            // replaces the root — caught by the final starts_with guard.
+            "files:a/C:..\\..\\x",
         ] {
             assert!(fm.node_id_to_path(id).is_err(), "read must reject {id}");
             assert!(
