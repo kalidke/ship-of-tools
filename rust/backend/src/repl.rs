@@ -92,6 +92,13 @@ pub struct Repl {
 
 struct ReplInner {
     repl_project: PathBuf,
+    /// The workspace's own project (its `Project.toml` dir), activated as the
+    /// DEFAULT env for the persistent REPL so user code runs in the session
+    /// package's environment — not the `ShipToolsRepl` shim project. `None`
+    /// when the workspace has no `Project.toml` (fall back to the shim-only
+    /// spawn) or for the legacy singleton REPL. `ShipToolsRepl` stays reachable
+    /// via `JULIA_LOAD_PATH` (see `spawn_supervisor_with_project`).
+    user_project: Option<PathBuf>,
     julia_bin: String,
     submit: Mutex<Option<mpsc::Sender<Submission>>>,
     /// Broadcast sink for streamed `repl.frame` evts. Threaded into every
@@ -148,11 +155,13 @@ impl Repl {
         repl_project: PathBuf,
         frame_tx: broadcast::Sender<ReplFrameMsg>,
         workspace_id: Option<String>,
+        user_project: Option<PathBuf>,
     ) -> Self {
         let julia_bin = std::env::var("SOT_JULIA_BIN").unwrap_or_else(|_| "julia".to_string());
         Self {
             inner: Arc::new(ReplInner {
                 repl_project,
+                user_project,
                 julia_bin,
                 submit: Mutex::new(None),
                 frame_tx,
@@ -240,12 +249,27 @@ impl Repl {
                 return Ok(tx.clone());
             }
         }
-        let tx = spawn_supervisor(
-            &self.inner.julia_bin,
-            &self.inner.repl_project,
-            self.inner.frame_tx.clone(),
-            self.inner.workspace_id.clone(),
-        )?;
+        // Default the persistent REPL into the WORKSPACE's own project so user
+        // code runs in the session package's env (not the ShipToolsRepl shim).
+        // `spawn_supervisor_with_project` sets `--project=<workspace>` and keeps
+        // the shim reachable via `JULIA_LOAD_PATH`. Only when the workspace has
+        // no `Project.toml` (user_project == None) do we fall back to the
+        // shim-only spawn.
+        let tx = match self.inner.user_project.as_deref() {
+            Some(user_project) => spawn_supervisor_with_project(
+                &self.inner.julia_bin,
+                &self.inner.repl_project,
+                user_project,
+                self.inner.frame_tx.clone(),
+                self.inner.workspace_id.clone(),
+            )?,
+            None => spawn_supervisor(
+                &self.inner.julia_bin,
+                &self.inner.repl_project,
+                self.inner.frame_tx.clone(),
+                self.inner.workspace_id.clone(),
+            )?,
+        };
         *guard = Some(tx.clone());
         Ok(tx)
     }
