@@ -485,7 +485,7 @@ enum NavPrompt {
     ScaleEntry {
         /// `files:`-prefixed id of the previewed raster being calibrated.
         node_id: String,
-        /// Live µm-per-pixel buffer, rendered after `pixel size (µm): `.
+        /// Live nm-per-pixel buffer, rendered after `pixel size (nm): `.
         input: String,
     },
 }
@@ -1248,17 +1248,19 @@ fn fmt_scale_label(value: f64, unit: &str) -> String {
     format!("{} {}", fmt_scale_value(value), unit)
 }
 
-/// Parse a user-typed pixel size in MICRONS into nm-per-pixel (ADR 0034 §4
-/// live entry). Microns are the maintainer's standard unit for entry; nm is
-/// what the schema and sidecar store, so the conversion happens here at the
-/// boundary. Rejects anything non-positive or non-finite so a typo can't
-/// install a nonsense calibration.
-fn parse_micron_pixel_size(input: &str) -> Option<f64> {
+/// Parse a user-typed pixel size in NANOMETRES (ADR 0034 §4 live entry).
+///
+/// nm is both the entry unit (maintainer, 2026-07-20 — an SMLM pixel is ~10 nm,
+/// which reads far better than `0.01` µm) and what the schema and sidecar
+/// store, so there is no conversion: the typed number IS `nm_per_px`. Rejects
+/// non-positive and non-finite input so a typo can't install a nonsense
+/// calibration.
+fn parse_nm_pixel_size(input: &str) -> Option<f64> {
     let v: f64 = input.trim().parse().ok()?;
     if !v.is_finite() || v <= 0.0 {
         return None;
     }
-    Some(v * 1000.0)
+    Some(v)
 }
 
 /// Bar + label geometry for the scalebar overlay (ADR 0034), all in physical
@@ -6823,7 +6825,7 @@ impl State {
             }
             // Scale entry is a NUMBER: filter at the source (as CreateFile does
             // for separators) so only digits and a single decimal point can be
-            // typed. `parse_micron_pixel_size` still validates on Enter — this
+            // typed. `parse_nm_pixel_size` still validates on Enter — this
             // just stops obvious junk from ever entering the buffer.
             Some(NavPrompt::ScaleEntry { input, .. }) => {
                 if c.is_ascii_digit() || (c == '.' && !input.contains('.')) {
@@ -6861,12 +6863,12 @@ impl State {
             node_id,
             input: String::new(),
         });
-        self.status = "pixel size (µm): ".to_string();
+        self.status = "pixel size (nm): ".to_string();
         self.window.request_redraw();
         true
     }
 
-    /// Confirm the pixel-size prompt: validate the typed microns, convert to
+    /// Confirm the pixel-size prompt: validate the typed nanometres (no
     /// nm, and fire `preview.set_scale`. The backend writes the sidecar and
     /// replies with the re-rendered preview (carrying the F1-rescaled
     /// `physical_scale`), which lands in the normal preview path — so the bar
@@ -6879,9 +6881,9 @@ impl State {
             }
             _ => return,
         };
-        let Some(nm_per_px) = parse_micron_pixel_size(&raw) else {
+        let Some(nm_per_px) = parse_nm_pixel_size(&raw) else {
             // Keep the prompt open so the user can correct the typo.
-            self.status = "pixel size · enter a positive number in µm".to_string();
+            self.status = "pixel size · enter a positive number in nm".to_string();
             self.window.request_redraw();
             return;
         };
@@ -6898,14 +6900,14 @@ impl State {
             self.window.request_redraw();
             return;
         }
-        tracing::info!(%node_id, um_per_px = %raw, nm_per_px,
+        tracing::info!(%node_id, nm_per_px,
             "scale entry → preview.set_scale");
         // Arm the overlay so the bar is visible the moment the re-rendered
         // preview lands; without a scale present the toggle would otherwise
         // just re-open this prompt.
         self.scalebar_on = true;
         self.nav_prompt = None;
-        self.status = format!("pixel size {raw} µm · saving…");
+        self.status = format!("pixel size {raw} nm · saving…");
         self.window.request_redraw();
     }
 
@@ -10532,7 +10534,7 @@ impl State {
                 format!("delete {label}? [y/N]")
             }
             Some(NavPrompt::ScaleEntry { input, .. }) => {
-                format!("pixel size (µm): {input}▏")
+                format!("pixel size (nm): {input}▏")
             }
             None => self.status.clone(),
         };
@@ -18354,17 +18356,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_micron_pixel_size_converts_and_rejects_junk() {
-        // Microns in, nm out (the schema/sidecar unit).
-        assert_eq!(parse_micron_pixel_size("0.1"), Some(100.0));
-        assert_eq!(parse_micron_pixel_size("2"), Some(2000.0));
-        assert_eq!(parse_micron_pixel_size("  0.065 "), Some(65.0));
+    fn parse_nm_pixel_size_passes_through_and_rejects_junk() {
+        // nm in, nm out — the entry unit IS the schema unit, so no conversion.
+        // A typical SMLM pixel is ~10 nm, which is why nm beats µm for entry.
+        assert_eq!(parse_nm_pixel_size("9.78"), Some(9.78));
+        assert_eq!(parse_nm_pixel_size("100"), Some(100.0));
+        assert_eq!(parse_nm_pixel_size("  65 "), Some(65.0));
         // A typo must not install a nonsense calibration.
-        assert_eq!(parse_micron_pixel_size(""), None);
-        assert_eq!(parse_micron_pixel_size("abc"), None);
-        assert_eq!(parse_micron_pixel_size("0"), None);
-        assert_eq!(parse_micron_pixel_size("-1"), None);
-        assert_eq!(parse_micron_pixel_size("inf"), None);
+        assert_eq!(parse_nm_pixel_size(""), None);
+        assert_eq!(parse_nm_pixel_size("abc"), None);
+        assert_eq!(parse_nm_pixel_size("0"), None);
+        assert_eq!(parse_nm_pixel_size("-1"), None);
+        assert_eq!(parse_nm_pixel_size("inf"), None);
     }
 
     #[test]
