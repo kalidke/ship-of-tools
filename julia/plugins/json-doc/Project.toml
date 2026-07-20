@@ -1,7 +1,7 @@
 name = "ShipToolsJsonDoc"
 uuid = "72e6c987-93b4-4e21-9781-81866db8c14a"
 authors = ["kalidke"]
-version = "0.4.3"
+version = "0.4.4"
 
 [deps]
 ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"

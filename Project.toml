@@ -1,6 +1,6 @@
 name = "ShipTools"
 uuid = "6593d88f-a2aa-42a2-9eee-07370402defc"
-version = "0.4.3"
+version = "0.4.4"
 authors = ["kalidke"]
 
 [deps]
