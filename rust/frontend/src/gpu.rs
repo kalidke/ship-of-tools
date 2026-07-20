@@ -2025,6 +2025,14 @@ struct State {
     /// scale; cleared on every `preview.get` reply (like `preview_page`).
     /// Presence gates the scalebar toggle key + overlay.
     preview_scale: Option<PhysicalScale>,
+    /// Focus to restore when the scale-entry prompt resolves (confirm OR
+    /// cancel). Ctrl+S fires from the Preview pane, and `begin_scale_entry`
+    /// takes NavTree focus purely because that's where NavPrompt keystrokes
+    /// are handled — an implementation detail, not something the user asked
+    /// for. Without restoring, calibrating an image you're inspecting dumps
+    /// you in the tree, so your next zoom/pan keypress goes to the wrong pane.
+    /// `None` when no scale prompt is open.
+    scale_entry_prior_focus: Option<PaneFocus>,
     /// One-shot: a `preview.set_scale` is in flight, as `(node_id, typed
     /// value)`. The success reply deliberately flows through the SHARED
     /// preview handler (one install path for a preview and its calibration),
@@ -3516,6 +3524,7 @@ impl State {
             preview_page_raster_pending: None,
             preview_reraster_keep_view: false,
             preview_scale: None,
+            scale_entry_prior_focus: None,
             scale_save_pending: None,
             // Default off; `--start-scalebar` arms it for the headless capture
             // harness (no `b` keypress). Still gated on a present scale at draw.
@@ -6886,7 +6895,10 @@ impl State {
         // swallows nothing: typing goes to the preview's zoom/pan keys and
         // Enter never reaches `confirm_scale_entry`. Ctrl+N doesn't need this
         // because it can only fire from NavTree focus in the first place.
-        // Codex v0.4.4 gate.
+        // Codex v0.4.4 gate. Remember where the user actually was so resolving
+        // the prompt puts them back (5th-gate follow-up) — the focus move is
+        // ours, not theirs, so it shouldn't outlive the prompt.
+        self.scale_entry_prior_focus = Some(self.focus);
         self.focus = PaneFocus::NavTree;
         self.status = "pixel size (nm): ".to_string();
         self.window.request_redraw();
@@ -6937,6 +6949,12 @@ impl State {
         // leave "saving…" up forever or congratulate the user on every
         // unrelated preview.get.
         self.scale_save_pending = Some((node_id.clone(), raw.clone()));
+        // Prompt resolved — hand focus back to the pane the user was actually
+        // in (the Preview they're calibrating), so their next zoom/pan key
+        // lands there rather than in the tree.
+        if let Some(prior) = self.scale_entry_prior_focus.take() {
+            self.focus = prior;
+        }
         self.status = format!("pixel size {raw} nm · saving…");
         self.window.request_redraw();
     }
@@ -6996,6 +7014,12 @@ impl State {
             _ => "new file · cancelled".to_string(),
         };
         self.nav_prompt = None;
+        // Cancelling a scale prompt returns you where you were (see
+        // `scale_entry_prior_focus`). Only fires for that prompt; the other
+        // variants are opened FROM the tree and never moved focus.
+        if let Some(prior) = self.scale_entry_prior_focus.take() {
+            self.focus = prior;
+        }
         self.window.request_redraw();
     }
 
