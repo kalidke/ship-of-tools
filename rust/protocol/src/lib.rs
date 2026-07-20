@@ -25,7 +25,7 @@ pub use ops::{
     VideoOpenReq, VideoOpenRes,
     GpuSample, HostLatest, HostSeries, MonitorHistoryReq, MonitorHistoryRes, MonitorSample,
     MonitorSubscribeReq, MonitorSubscribeRes, MonitorTickEvt, MonitorUnsubscribeReq, ProcSample,
-    PreviewGetReq, PreviewGetRes, PtyEvt,
+    PreviewGetReq, PreviewGetRes, PreviewSetScaleReq, PtyEvt,
     PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyScrollReq, PtyWriteReq, ReplEvalReq, ReplEvalRes, ReplFrame,
     ReplErrorOut, ReplExecuteInput, ReplExecuteReq, ReplExecuteRes, ReplValueOut,
     ReplFrameEvt,

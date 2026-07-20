@@ -16,7 +16,8 @@ use sot_protocol::{
     FeCommandSendRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq,
     FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
     HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
-    PlutoOpenReq, PlutoOpenRes, PreviewGetReq, PreviewGetRes, QuartoOpenReq, QuartoOpenRes,
+    PlutoOpenReq, PlutoOpenRes, PreviewGetReq, PreviewGetRes, PreviewSetScaleReq, QuartoOpenReq,
+    QuartoOpenRes,
     ReplErrorOut, ReplExecuteInput, ReplExecuteReq, ReplExecuteRes, ReplValueOut, StackFrame,
     TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxCreateSessionReq, TmuxKillSessionReq,
     TmuxListPanesReq, TmuxListPanesRes, TmuxListSessionsRes, TmuxPane, TmuxSession,
@@ -32,7 +33,7 @@ use crate::repl::ReplFrameMsg;
 use crate::pluto::Pluto;
 use crate::session::Session;
 use crate::tmux::TmuxClient;
-use crate::workspaces::{AgentMessage, WorkspaceChanged, Workspaces};
+use crate::workspaces::{AgentMessage, Workspace, WorkspaceChanged, Workspaces};
 use tokio::sync::broadcast;
 
 /// Output of an op handler. The first frame is the response to the request;
@@ -599,6 +600,92 @@ fn rescale_physical_scale(
     Some(serde_json::Value::Object(root))
 }
 
+/// Shared preview assembly for `preview.get` AND `preview.set_scale`'s re-emit:
+/// resolve the node → (dir stub | plugin preview | bytes fallback), merge the
+/// `<image>.scale.json` scale sidecar, and apply the F1 downsample rescale.
+/// Returns `(mime, bytes, extras)` or an `(error_code, message)` pair the caller
+/// turns into a frame under its own op. Uses `node_id_to_path` (the READ
+/// resolver) — mutation confinement is the caller's concern.
+async fn build_preview_payload(
+    ws: &Workspace,
+    req: &PreviewGetReq,
+) -> std::result::Result<(String, Vec<u8>, Option<serde_json::Value>), (String, String)> {
+    let files_mode = ws.files_mode().map_err(|e| {
+        (
+            "files_mode_init_failed".to_string(),
+            format!("files_mode init failed: {e:#}"),
+        )
+    })?;
+    let kernel = ws.kernel();
+
+    let path = files_mode
+        .node_id_to_path(&req.node_id)
+        .map_err(|e| ("bad_node_id".to_string(), format!("{e:#}")))?;
+
+    let (mime, bytes, extras) = if path.is_dir() {
+        // Directory preview: short markdown stub naming the dir. Frontend
+        // would otherwise render an empty pane on dir selection.
+        let label = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_else(|| path.to_str().unwrap_or("/"));
+        let md = ROOT_PREVIEW_TEMPLATE.replace("{root}", label);
+        ("text/markdown".to_string(), md.into_bytes(), None)
+    } else if let Some(out) =
+        try_plugin_preview(&kernel, &path, &req.node_id, req.page, req.fit_w, req.fit_h).await
+    {
+        // Plugin-routed preview: a loaded FileType plugin claimed this
+        // path. Use the plugin's mime + decoded blob — that's how
+        // HDF5Preview, JuliaSource, MarkdownDoc, and any future plugin
+        // surface their previews end-to-end.
+        out
+    } else {
+        // No plugin claim (or kernel unavailable / errored — logged in
+        // `try_plugin_preview`). Fall back to the bytes-level reader so
+        // files outside any plugin's coverage still get served, with
+        // mime inferred from extension.
+        match read_bytes_preview(&path, &req.node_id) {
+            Ok((mime, bytes)) => (mime, bytes, None),
+            Err(e) => return Err(("io_error".to_string(), format!("read {path:?}: {e}"))),
+        }
+    };
+
+    // ADR 0034: attach a `<path>.scale.json` sidecar's contents as
+    // `extras.physical_scale` so the FE can render a dynamic scalebar on raster
+    // previews. Backend-side (rasters are served here, not via the kernel).
+    let extras = merge_scale_sidecar(&path, &mime, extras);
+
+    // Ship an oversize raster as a preview-sized PNG instead of the raw file.
+    // Only oversize rasters take the spawn_blocking detour (decode is CPU-heavy
+    // and must stay off the async reactor). A panicking decode is near-impossible
+    // (the helper is all `.ok()?`); surface a JoinError as an error payload.
+    let (mime, bytes, downsample_scale) =
+        if bytes.len() > PREVIEW_DOWNSAMPLE_TRIGGER && is_downsampleable_raster(&mime) {
+            tokio::task::spawn_blocking(move || preview_bytes_for_wire(mime, bytes))
+                .await
+                .map_err(|e| {
+                    (
+                        "preview_downsample_task".to_string(),
+                        format!("preview downsample task: {e}"),
+                    )
+                })?
+        } else {
+            (mime, bytes, None)
+        };
+
+    // ADR 0034 / F1: when we ship a DOWNSAMPLED raster, the served image is
+    // narrower than the source, but the sidecar `physical_scale` is calibrated
+    // per ORIGINAL pixel. The FE keys the scalebar off the served width, so
+    // rescale each axis to per-served-pixel (× 1/scale) — otherwise the bar is
+    // wrong by the downsample factor (a 12000→6000 image labels every bar 2×).
+    let extras = match downsample_scale {
+        Some(scale) if scale > 0.0 => rescale_physical_scale(extras, 1.0 / scale as f64),
+        _ => extras,
+    };
+
+    Ok((mime, bytes, extras))
+}
+
 pub async fn handle_preview_get(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -625,116 +712,182 @@ pub async fn handle_preview_get(
             None,
         )]);
     };
+
+    match build_preview_payload(&ws, &req).await {
+        Ok((mime, bytes, extras)) => {
+            let res = PreviewGetRes {
+                mime: mime.clone(),
+                blob: BlobDescriptor {
+                    len: bytes.len() as u64,
+                    mime,
+                },
+                extras,
+            };
+            let rev = session
+                .bump("preview.served", json!({ "node_id": req.node_id }))
+                .await;
+            Ok(vec![(
+                Frame::res(req_id, op::PREVIEW_GET, serde_json::to_value(res)?).with_rev(rev),
+                Some(bytes),
+            )])
+        }
+        Err((code, msg)) => Ok(vec![(
+            Frame::res(req_id, op::PREVIEW_GET, json!({ "error": msg, "code": code })),
+            None,
+        )]),
+    }
+}
+
+/// A `physical_scale` is valid iff it's an object with a non-empty `axes` array
+/// where every axis has a finite, strictly-positive numeric `nm_per_px`, plus a
+/// string `unit`. Guards `preview.set_scale` from persisting garbage that would
+/// then mislabel every bar.
+fn physical_scale_is_valid(v: &serde_json::Value) -> bool {
+    let Some(obj) = v.as_object() else {
+        return false;
+    };
+    if !obj.get("unit").map(|u| u.is_string()).unwrap_or(false) {
+        return false;
+    }
+    match obj.get("axes").and_then(|a| a.as_array()) {
+        Some(axes) if !axes.is_empty() => axes.iter().all(|ax| {
+            ax.get("nm_per_px")
+                .and_then(|n| n.as_f64())
+                .map(|n| n.is_finite() && n > 0.0)
+                .unwrap_or(false)
+        }),
+        _ => false,
+    }
+}
+
+/// Write `<image>.scale.json` atomically (temp in the SAME dir + rename). The
+/// `physical_scale` is written VERBATIM — it is the per-original-px value the
+/// user typed; never derive it from an emitted/rescaled value or a read-served
+/// → write-back would compound the F1 ratio and corrupt the sidecar every
+/// round-trip.
+fn write_scale_sidecar_atomic(
+    image_path: &std::path::Path,
+    physical_scale: &serde_json::Value,
+) -> std::io::Result<()> {
+    let mut sidecar = image_path.as_os_str().to_os_string();
+    sidecar.push(".scale.json");
+    let sidecar = std::path::PathBuf::from(sidecar);
+
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros())
+        .unwrap_or(0);
+    let mut tmp = sidecar.clone().into_os_string();
+    tmp.push(format!(".tmp.{micros}"));
+    let tmp = std::path::PathBuf::from(tmp);
+
+    let bytes = serde_json::to_vec(physical_scale)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if let Err(e) = std::fs::write(&tmp, &bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, &sidecar) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// `preview.set_scale` (ADR 0034 §5): persist a user-entered physical scale as
+/// an `<image>.scale.json` sidecar, then re-emit the preview so the FE renders
+/// the scalebar. The reply is the same `PreviewGetRes` envelope as `preview.get`
+/// (frame-id correlated by the FE), returned under `op::PREVIEW_SET_SCALE`.
+pub async fn handle_preview_set_scale(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    session: &Session,
+    workspaces: &Workspaces,
+) -> Result<HandlerOutput> {
+    let req: PreviewSetScaleReq =
+        serde_json::from_value(payload_json).context("preview.set_scale payload")?;
+    tracing::info!(
+        node_id = %req.node_id,
+        workspace_id = req.workspace_id.as_deref().unwrap_or("<default>"),
+        "preview.set_scale"
+    );
+
+    let err = |code: &str, msg: String| -> Result<HandlerOutput> {
+        Ok(vec![(
+            Frame::res(
+                req_id,
+                op::PREVIEW_SET_SCALE,
+                json!({ "error": msg, "code": code }),
+            ),
+            None,
+        )])
+    };
+
+    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
+        return err(
+            "unknown_workspace",
+            format!("unknown workspace: {:?}", req.workspace_id),
+        );
+    };
     let files_mode = match ws.files_mode() {
         Ok(fm) => fm,
-        Err(e) => {
-            return Ok(vec![(
-                Frame::res(
-                    req_id,
-                    op::PREVIEW_GET,
-                    json!({
-                        "error": format!("files_mode init failed: {e:#}"),
-                        "code": "files_mode_init_failed",
-                    }),
-                ),
-                None,
-            )]);
-        }
+        Err(e) => return err("files_mode_init_failed", format!("{e:#}")),
     };
-    let kernel = ws.kernel();
-
-    let path = match files_mode.node_id_to_path(&req.node_id) {
+    // WRITE resolver (this is a mutation): the confined variant carries the
+    // symlink-escape guard, so the sidecar can't be written outside the root.
+    let path = match files_mode.node_id_to_path_confined(&req.node_id) {
         Ok(p) => p,
-        Err(e) => {
-            let payload = json!({
-                "error": format!("{e:#}"),
-                "code": "bad_node_id",
-            });
-            return Ok(vec![(Frame::res(req_id, op::PREVIEW_GET, payload), None)]);
+        Err(e) => return err("bad_node_id", format!("{e:#}")),
+    };
+    if !is_downsampleable_raster(mime_for_path(&path)) {
+        return err(
+            "not_a_raster",
+            format!(
+                "{path:?} is not a scalebar-capable raster (mime {})",
+                mime_for_path(&path)
+            ),
+        );
+    }
+    if !physical_scale_is_valid(&req.physical_scale) {
+        return err(
+            "bad_scale",
+            "physical_scale must be {axes:[{name,nm_per_px>0}], unit:<string>}".to_string(),
+        );
+    }
+    if let Err(e) = write_scale_sidecar_atomic(&path, &req.physical_scale) {
+        return err("io_error", format!("write scale sidecar for {path:?}: {e}"));
+    }
+
+    // Re-emit the preview so the FE renders from OUR authoritative rescale (it
+    // can't know the served/source ratio after a downsample). merge_scale_sidecar
+    // re-reads the sidecar we just wrote; the F1 rescale runs inside the helper.
+    let get_req = PreviewGetReq {
+        node_id: req.node_id.clone(),
+        workspace_id: req.workspace_id.clone(),
+        page: None,
+        fit_w: None,
+        fit_h: None,
+    };
+    match build_preview_payload(&ws, &get_req).await {
+        Ok((mime, bytes, extras)) => {
+            let res = PreviewGetRes {
+                mime: mime.clone(),
+                blob: BlobDescriptor {
+                    len: bytes.len() as u64,
+                    mime,
+                },
+                extras,
+            };
+            let rev = session
+                .bump("preview.scale_set", json!({ "node_id": req.node_id }))
+                .await;
+            Ok(vec![(
+                Frame::res(req_id, op::PREVIEW_SET_SCALE, serde_json::to_value(res)?).with_rev(rev),
+                Some(bytes),
+            )])
         }
-    };
-
-    let (mime, bytes, extras) = if path.is_dir() {
-        // Directory preview: short markdown stub naming the dir. Frontend
-        // would otherwise render an empty pane on dir selection.
-        let label = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or_else(|| path.to_str().unwrap_or("/"));
-        let md = ROOT_PREVIEW_TEMPLATE.replace("{root}", label);
-        ("text/markdown".to_string(), md.into_bytes(), None)
-    } else if let Some(out) =
-        try_plugin_preview(&kernel, &path, &req.node_id, req.page, req.fit_w, req.fit_h).await
-    {
-        // Plugin-routed preview: a loaded FileType plugin claimed this
-        // path. Use the plugin's mime + decoded blob — that's how
-        // HDF5Preview, JuliaSource, MarkdownDoc, and any future plugin
-        // surface their previews end-to-end.
-        out
-    } else {
-        // No plugin claim (or kernel unavailable / errored — logged in
-        // `try_plugin_preview`). Fall back to the bytes-level reader so
-        // files outside any plugin's coverage still get served, with
-        // mime inferred from extension.
-        match read_bytes_preview(&path, &req.node_id) {
-            Ok((mime, bytes)) => (mime, bytes, None),
-            Err(e) => {
-                let payload = json!({
-                    "error": format!("read {path:?}: {e}"),
-                    "code": "io_error",
-                });
-                return Ok(vec![(Frame::res(req_id, op::PREVIEW_GET, payload), None)]);
-            }
-        }
-    };
-
-    // ADR 0034: attach a `<path>.scale.json` sidecar's contents as
-    // `extras.physical_scale` so the FE can render a dynamic scalebar on raster
-    // previews. Backend-side (rasters are served here, not via the kernel).
-    let extras = merge_scale_sidecar(&path, &mime, extras);
-
-    // Ship an oversize raster as a preview-sized PNG instead of the raw file.
-    // Only oversize rasters take the spawn_blocking detour (decode is CPU-heavy
-    // and must stay off the async reactor); everything else passes through
-    // untouched with zero overhead. A panicking decode is near-impossible (the
-    // helper is all `.ok()?`), so a JoinError propagating as a handler error is
-    // acceptable and rare.
-    let (mime, bytes, downsample_scale) =
-        if bytes.len() > PREVIEW_DOWNSAMPLE_TRIGGER && is_downsampleable_raster(&mime) {
-            tokio::task::spawn_blocking(move || preview_bytes_for_wire(mime, bytes))
-                .await
-                .context("preview downsample task")?
-        } else {
-            (mime, bytes, None)
-        };
-
-    // ADR 0034 / F1: when we ship a DOWNSAMPLED raster, the served image is
-    // narrower than the source, but the sidecar `physical_scale` is calibrated
-    // per ORIGINAL pixel. The FE keys the scalebar off the served width, so
-    // rescale each axis to per-served-pixel (× 1/scale) — otherwise the bar is
-    // wrong by the downsample factor (a 12000→6000 image labels every bar 2×).
-    let extras = match downsample_scale {
-        Some(scale) if scale > 0.0 => rescale_physical_scale(extras, 1.0 / scale as f64),
-        _ => extras,
-    };
-
-    let res = PreviewGetRes {
-        mime: mime.clone(),
-        blob: BlobDescriptor {
-            len: bytes.len() as u64,
-            mime,
-        },
-        extras,
-    };
-
-    let rev = session
-        .bump("preview.served", json!({ "node_id": req.node_id }))
-        .await;
-
-    Ok(vec![(
-        Frame::res(req_id, op::PREVIEW_GET, serde_json::to_value(res)?).with_rev(rev),
-        Some(bytes),
-    )])
+        Err((code, msg)) => err(&code, msg),
+    }
 }
 
 /// Crop a region out of an image node and write it as a PNG under
@@ -4239,13 +4392,72 @@ mod file_transfer_tests {
 
 #[cfg(test)]
 mod scalebar_sidecar_tests {
-    use super::merge_scale_sidecar;
+    use super::{merge_scale_sidecar, physical_scale_is_valid, write_scale_sidecar_atomic};
     use std::path::PathBuf;
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("sot-scale-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn write_scale_sidecar_atomic_roundtrips_verbatim() {
+        let dir = tmp("write");
+        let img = dir.join("render.png");
+        std::fs::write(&img, b"\x89PNG").unwrap();
+        let scale = serde_json::json!({
+            "axes": [{"name":"x","nm_per_px":2.0},{"name":"y","nm_per_px":2.0}],
+            "unit": "nm"
+        });
+        write_scale_sidecar_atomic(&img, &scale).expect("atomic write");
+        // Written verbatim + readable back through the same merge path.
+        let extras = merge_scale_sidecar(&img, "image/png", None);
+        let ps = extras
+            .as_ref()
+            .and_then(|e| e.get("physical_scale"))
+            .expect("physical_scale from the written sidecar");
+        assert_eq!(ps["unit"], "nm");
+        assert_eq!(ps["axes"][0]["nm_per_px"], 2.0);
+        assert_eq!(ps["axes"][1]["name"], "y");
+        // No temp file left behind (atomic temp+rename cleaned up).
+        let leftover: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftover.is_empty(), "temp file not cleaned: {leftover:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn physical_scale_is_valid_accepts_good_rejects_bad() {
+        assert!(physical_scale_is_valid(&serde_json::json!({
+            "axes": [{"name":"x","nm_per_px":5.0},{"name":"z","nm_per_px":20.0}],
+            "unit": "nm"
+        })));
+        // empty axes
+        assert!(!physical_scale_is_valid(
+            &serde_json::json!({"axes":[],"unit":"nm"})
+        ));
+        // nm_per_px <= 0
+        assert!(!physical_scale_is_valid(
+            &serde_json::json!({"axes":[{"name":"x","nm_per_px":0.0}],"unit":"nm"})
+        ));
+        assert!(!physical_scale_is_valid(
+            &serde_json::json!({"axes":[{"name":"x","nm_per_px":-1.0}],"unit":"nm"})
+        ));
+        // missing nm_per_px
+        assert!(!physical_scale_is_valid(
+            &serde_json::json!({"axes":[{"name":"x"}],"unit":"nm"})
+        ));
+        // missing unit
+        assert!(!physical_scale_is_valid(
+            &serde_json::json!({"axes":[{"name":"x","nm_per_px":2.0}]})
+        ));
+        // missing axes / not an object
+        assert!(!physical_scale_is_valid(&serde_json::json!({"unit":"nm"})));
+        assert!(!physical_scale_is_valid(&serde_json::json!("nope")));
     }
 
     #[test]
