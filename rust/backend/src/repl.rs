@@ -352,11 +352,12 @@ fn spawn_supervisor(
 ///
 /// We can't pass `--project=<user_project>` *and* expect `using ShipToolsRepl`
 /// to resolve — the REPL shim isn't in the user's manifest. The standard
-/// trick is `JULIA_LOAD_PATH=<repl_project>:` so `Base.load_path()` searches
-/// the REPL project (where `ShipToolsRepl` lives) alongside the user project
-/// (selected via `--project`). The trailing colon preserves the rest of the
-/// default load path (stdlib, etc.) so `using` of standard packages still
-/// works inside the user code.
+/// trick is `JULIA_LOAD_PATH=@:<repl_project>:` — the workspace project (`@` =
+/// `--project`) FIRST so a dependency the workspace shares with the shim (e.g.
+/// JSON3) resolves from the WORKSPACE's version, then the REPL project (where
+/// `ShipToolsRepl` lives) as a fallback for the shim's own deps, then the
+/// default load path (stdlib, etc.) via the trailing colon so `using` of
+/// standard packages still works inside the user code.
 fn spawn_supervisor_with_project(
     julia_bin: &str,
     repl_project: &Path,
@@ -372,15 +373,19 @@ fn spawn_supervisor_with_project(
     }
     let julia_src = "using ShipToolsRepl; ShipToolsRepl.serve(stdin, stdout)";
 
-    // JULIA_LOAD_PATH uses ':' on Unix and ';' on Windows. Use the
-    // platform-appropriate separator so the shim project is reachable on
-    // both. Trailing separator preserves the default `["@", "@v#.#", "@stdlib"]`
-    // entries (which become `@`, etc. via the empty token).
+    // JULIA_LOAD_PATH uses ':' on Unix and ';' on Windows. ORDER MATTERS: the
+    // workspace project (`@` = --project) comes FIRST so a dependency the
+    // workspace shares with the shim (e.g. JSON3) resolves from the WORKSPACE's
+    // version, not the shim's (Codex review, 2026-07-20 — proved JSON3 was
+    // resolving from julia/repl under --project=core). The shim comes second so
+    // `using ShipToolsRepl` still resolves. Trailing separator preserves the
+    // default `["@", "@v#.#", "@stdlib"]` entries (stdlib etc.) via the empty
+    // token.
     #[cfg(windows)]
     let sep = ";";
     #[cfg(not(windows))]
     let sep = ":";
-    let load_path = format!("{}{sep}", repl_project.display());
+    let load_path = format!("@{sep}{}{sep}", repl_project.display());
 
     let mut child: Child = Command::new(julia_bin)
         .env("JULIA_LOAD_PATH", &load_path)
