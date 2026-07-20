@@ -22,6 +22,12 @@ pub mod op {
     /// `ToggleHiddenRes { show_hidden }` carrying the NEW state.
     pub const NAV_TOGGLE_HIDDEN: &str = "nav.toggle_hidden";
     pub const PREVIEW_GET: &str = "preview.get";
+    /// Persist a user-entered physical scale for a raster preview (ADR 0034 §5,
+    /// live entry): writes an `<image>.scale.json` sidecar carrying the
+    /// per-ORIGINAL-pixel `physical_scale`, then re-emits the preview (same
+    /// `PreviewGetRes` envelope, with the F1 downsample rescale applied) so the
+    /// FE renders the scalebar without guessing the served/source ratio.
+    pub const PREVIEW_SET_SCALE: &str = "preview.set_scale";
     /// Crop a rectangular region (in source-image pixel coords) out of an
     /// image node and write it as a PNG under `<workspace>/.sot/captures/`
     /// on the backend, returning the path. Used by the "send the zoomed ROI
@@ -409,6 +415,21 @@ pub struct PreviewGetRes {
     /// the rest — Rust never learns about new entity kinds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extras: Option<serde_json::Value>,
+}
+
+/// Persist a user-entered scale for a raster preview (ADR 0034 §5, live entry).
+/// `physical_scale` is `{axes:[{name,nm_per_px}], unit}` per **ORIGINAL-image
+/// pixel** (the raw pixel size the user typed; the FE has already converted
+/// µm→nm). The backend writes it VERBATIM as `<image>.scale.json` and re-emits
+/// `PreviewGetRes` with the F1 downsample rescale applied — never derive the
+/// stored value from an emitted/rescaled one, or a read→write-back would
+/// compound the ratio.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewSetScaleReq {
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    pub physical_scale: serde_json::Value,
 }
 
 /// Crop an image node's ROI (ADR 0022). `x,y,w,h` are in **source-image

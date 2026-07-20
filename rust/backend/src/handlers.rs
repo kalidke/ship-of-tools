@@ -16,7 +16,8 @@ use sot_protocol::{
     FeCommandSendRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq,
     FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
     HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
-    PlutoOpenReq, PlutoOpenRes, PreviewGetReq, PreviewGetRes, QuartoOpenReq, QuartoOpenRes,
+    PlutoOpenReq, PlutoOpenRes, PreviewGetReq, PreviewGetRes, PreviewSetScaleReq, QuartoOpenReq,
+    QuartoOpenRes,
     ReplErrorOut, ReplExecuteInput, ReplExecuteReq, ReplExecuteRes, ReplValueOut, StackFrame,
     TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxCreateSessionReq, TmuxKillSessionReq,
     TmuxListPanesReq, TmuxListPanesRes, TmuxListSessionsRes, TmuxPane, TmuxSession,
@@ -32,7 +33,7 @@ use crate::repl::ReplFrameMsg;
 use crate::pluto::Pluto;
 use crate::session::Session;
 use crate::tmux::TmuxClient;
-use crate::workspaces::{AgentMessage, WorkspaceChanged, Workspaces};
+use crate::workspaces::{AgentMessage, Workspace, WorkspaceChanged, Workspaces};
 use tokio::sync::broadcast;
 
 /// Output of an op handler. The first frame is the response to the request;
@@ -599,59 +600,36 @@ fn rescale_physical_scale(
     Some(serde_json::Value::Object(root))
 }
 
-pub async fn handle_preview_get(
-    req_id: u64,
-    payload_json: serde_json::Value,
-    session: &Session,
-    workspaces: &Workspaces,
-) -> Result<HandlerOutput> {
-    let req: PreviewGetReq = serde_json::from_value(payload_json).context("preview.get payload")?;
-    tracing::info!(
-        node_id = %req.node_id,
-        workspace_id = req.workspace_id.as_deref().unwrap_or("<default>"),
-        "preview.get"
-    );
-
-    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::PREVIEW_GET,
-                json!({
-                    "error": format!("unknown workspace: {:?}", req.workspace_id),
-                    "code": "unknown_workspace",
-                }),
-            ),
-            None,
-        )]);
-    };
+/// Shared preview assembly for `preview.get` AND `preview.set_scale`'s re-emit:
+/// resolve the node → (dir stub | plugin preview | bytes fallback), merge the
+/// `<image>.scale.json` scale sidecar, and apply the F1 downsample rescale.
+///
+/// The OUTER `anyhow::Result` carries INFRA failures (a downsample task panic)
+/// so both callers' `?` yields the server's `handler_error` — preserving
+/// `preview.get`'s prior behavior when the `spawn_blocking` join fails. The
+/// INNER `Result` carries DOMAIN errors (bad node id / read failure) that the
+/// caller turns into a frame under its own op. Uses `node_id_to_path` (the READ
+/// resolver) — write confinement is the caller's concern.
+async fn build_preview_payload(
+    ws: &Workspace,
+    req: &PreviewGetReq,
+) -> anyhow::Result<
+    std::result::Result<(String, Vec<u8>, Option<serde_json::Value>), (String, String)>,
+> {
     let files_mode = match ws.files_mode() {
         Ok(fm) => fm,
         Err(e) => {
-            return Ok(vec![(
-                Frame::res(
-                    req_id,
-                    op::PREVIEW_GET,
-                    json!({
-                        "error": format!("files_mode init failed: {e:#}"),
-                        "code": "files_mode_init_failed",
-                    }),
-                ),
-                None,
-            )]);
+            return Ok(Err((
+                "files_mode_init_failed".to_string(),
+                format!("files_mode init failed: {e:#}"),
+            )))
         }
     };
     let kernel = ws.kernel();
 
     let path = match files_mode.node_id_to_path(&req.node_id) {
         Ok(p) => p,
-        Err(e) => {
-            let payload = json!({
-                "error": format!("{e:#}"),
-                "code": "bad_node_id",
-            });
-            return Ok(vec![(Frame::res(req_id, op::PREVIEW_GET, payload), None)]);
-        }
+        Err(e) => return Ok(Err(("bad_node_id".to_string(), format!("{e:#}")))),
     };
 
     let (mime, bytes, extras) = if path.is_dir() {
@@ -678,13 +656,7 @@ pub async fn handle_preview_get(
         // mime inferred from extension.
         match read_bytes_preview(&path, &req.node_id) {
             Ok((mime, bytes)) => (mime, bytes, None),
-            Err(e) => {
-                let payload = json!({
-                    "error": format!("read {path:?}: {e}"),
-                    "code": "io_error",
-                });
-                return Ok(vec![(Frame::res(req_id, op::PREVIEW_GET, payload), None)]);
-            }
+            Err(e) => return Ok(Err(("io_error".to_string(), format!("read {path:?}: {e}")))),
         }
     };
 
@@ -695,10 +667,9 @@ pub async fn handle_preview_get(
 
     // Ship an oversize raster as a preview-sized PNG instead of the raw file.
     // Only oversize rasters take the spawn_blocking detour (decode is CPU-heavy
-    // and must stay off the async reactor); everything else passes through
-    // untouched with zero overhead. A panicking decode is near-impossible (the
-    // helper is all `.ok()?`), so a JoinError propagating as a handler error is
-    // acceptable and rare.
+    // and must stay off the async reactor). A panicking decode is near-impossible
+    // (the helper is all `.ok()?`); a JoinError is INFRA — propagate via `?` so
+    // the server returns `handler_error` exactly as it did before this refactor.
     let (mime, bytes, downsample_scale) =
         if bytes.len() > PREVIEW_DOWNSAMPLE_TRIGGER && is_downsampleable_raster(&mime) {
             tokio::task::spawn_blocking(move || preview_bytes_for_wire(mime, bytes))
@@ -718,23 +689,271 @@ pub async fn handle_preview_get(
         _ => extras,
     };
 
-    let res = PreviewGetRes {
-        mime: mime.clone(),
-        blob: BlobDescriptor {
-            len: bytes.len() as u64,
-            mime,
-        },
-        extras,
+    Ok(Ok((mime, bytes, extras)))
+}
+
+pub async fn handle_preview_get(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    session: &Session,
+    workspaces: &Workspaces,
+) -> Result<HandlerOutput> {
+    let req: PreviewGetReq = serde_json::from_value(payload_json).context("preview.get payload")?;
+    tracing::info!(
+        node_id = %req.node_id,
+        workspace_id = req.workspace_id.as_deref().unwrap_or("<default>"),
+        "preview.get"
+    );
+
+    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::PREVIEW_GET,
+                json!({
+                    "error": format!("unknown workspace: {:?}", req.workspace_id),
+                    "code": "unknown_workspace",
+                }),
+            ),
+            None,
+        )]);
     };
 
-    let rev = session
-        .bump("preview.served", json!({ "node_id": req.node_id }))
-        .await;
+    match build_preview_payload(&ws, &req).await? {
+        Ok((mime, bytes, extras)) => {
+            let res = PreviewGetRes {
+                mime: mime.clone(),
+                blob: BlobDescriptor {
+                    len: bytes.len() as u64,
+                    mime,
+                },
+                extras,
+            };
+            let rev = session
+                .bump("preview.served", json!({ "node_id": req.node_id }))
+                .await;
+            Ok(vec![(
+                Frame::res(req_id, op::PREVIEW_GET, serde_json::to_value(res)?).with_rev(rev),
+                Some(bytes),
+            )])
+        }
+        Err((code, msg)) => Ok(vec![(
+            Frame::res(req_id, op::PREVIEW_GET, json!({ "error": msg, "code": code })),
+            None,
+        )]),
+    }
+}
 
-    Ok(vec![(
-        Frame::res(req_id, op::PREVIEW_GET, serde_json::to_value(res)?).with_rev(rev),
-        Some(bytes),
-    )])
+/// A `physical_scale` is valid iff it's an object with a non-empty `axes` array
+/// where every axis has BOTH a string `name` (the FE labels each bar by it) and
+/// a finite, strictly-positive numeric `nm_per_px`, plus a top-level string
+/// `unit`. Guards `preview.set_scale` from persisting garbage that would then
+/// mislabel (or fail to label) every bar.
+fn physical_scale_is_valid(v: &serde_json::Value) -> bool {
+    let Some(obj) = v.as_object() else {
+        return false;
+    };
+    if !obj.get("unit").map(|u| u.is_string()).unwrap_or(false) {
+        return false;
+    }
+    match obj.get("axes").and_then(|a| a.as_array()) {
+        Some(axes) if !axes.is_empty() => axes.iter().all(|ax| {
+            let has_name = ax.get("name").map(|n| n.is_string()).unwrap_or(false);
+            let good_per_px = ax
+                .get("nm_per_px")
+                .and_then(|n| n.as_f64())
+                .map(|n| n.is_finite() && n > 0.0)
+                .unwrap_or(false);
+            has_name && good_per_px
+        }),
+        _ => false,
+    }
+}
+
+/// Monotone per-process counter so two concurrent `set_scale` writes to the same
+/// image within one microsecond get DISTINCT temp names (see below).
+static SCALE_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Write `sidecar` (already built + workspace-confined by the caller) atomically:
+/// a UNIQUE, `O_EXCL`-created temp in the same dir + rename. The `physical_scale`
+/// is written VERBATIM — it is the per-original-px value the user typed; never
+/// derive it from an emitted/rescaled value or a read-served → write-back would
+/// compound the F1 ratio and corrupt the sidecar every round-trip.
+///
+/// The temp name is `<sidecar>.tmp.<pid>.<seq>.<micros>` AND created with
+/// `create_new(true)` (`O_EXCL`), so two clients writing the same image can't
+/// share a temp file (one would get interleaved/partial bytes then rename the
+/// other's) — a name collision errors instead. Rename is atomic on one fs.
+fn write_scale_sidecar_atomic(
+    sidecar: &std::path::Path,
+    physical_scale: &serde_json::Value,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let seq = SCALE_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros())
+        .unwrap_or(0);
+    let mut tmp = sidecar.as_os_str().to_os_string();
+    tmp.push(format!(".tmp.{}.{}.{}", std::process::id(), seq, micros));
+    let tmp = std::path::PathBuf::from(tmp);
+
+    let bytes = serde_json::to_vec(physical_scale)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    // create_new (O_EXCL): a temp-name COLLISION errors HERE — return without
+    // touching `tmp`; it belongs to the other writer, not us. Only AFTER a
+    // successful create is `tmp` ours to clean up.
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)?;
+    let write_res = f.write_all(&bytes);
+    drop(f); // close before rename (correct on every platform)
+    if let Err(e) = write_res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, sidecar) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// `preview.set_scale` (ADR 0034 §5): persist a user-entered physical scale as
+/// an `<image>.scale.json` sidecar, then re-emit the preview so the FE renders
+/// the scalebar. The reply is the same `PreviewGetRes` envelope as `preview.get`
+/// (frame-id correlated by the FE), returned under `op::PREVIEW_SET_SCALE`.
+pub async fn handle_preview_set_scale(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    session: &Session,
+    workspaces: &Workspaces,
+) -> Result<HandlerOutput> {
+    let req: PreviewSetScaleReq =
+        serde_json::from_value(payload_json).context("preview.set_scale payload")?;
+    tracing::info!(
+        node_id = %req.node_id,
+        workspace_id = req.workspace_id.as_deref().unwrap_or("<default>"),
+        "preview.set_scale"
+    );
+
+    let err = |code: &str, msg: String| -> Result<HandlerOutput> {
+        Ok(vec![(
+            Frame::res(
+                req_id,
+                op::PREVIEW_SET_SCALE,
+                json!({ "error": msg, "code": code }),
+            ),
+            None,
+        )])
+    };
+
+    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
+        return err(
+            "unknown_workspace",
+            format!("unknown workspace: {:?}", req.workspace_id),
+        );
+    };
+    let files_mode = match ws.files_mode() {
+        Ok(fm) => fm,
+        Err(e) => return err("files_mode_init_failed", format!("{e:#}")),
+    };
+    // WRITE resolver (this is a mutation): the confined variant carries the
+    // symlink-escape guard on the IMAGE path.
+    let path = match files_mode.node_id_to_path_confined(&req.node_id) {
+        Ok(p) => p,
+        Err(e) => return err("bad_node_id", format!("{e:#}")),
+    };
+    // Must be an EXISTING regular file: `mime_for_path` is extension-only, so a
+    // DIRECTORY named `results.png` would otherwise pass the raster gate (and
+    // get a markdown stub preview), and a since-deleted image would leave an
+    // orphan sidecar.
+    if !path.is_file() {
+        return err(
+            "not_a_file",
+            format!("{path:?} is not an existing regular file"),
+        );
+    }
+    if !is_downsampleable_raster(mime_for_path(&path)) {
+        return err(
+            "not_a_raster",
+            format!(
+                "{path:?} is not a scalebar-capable raster (mime {})",
+                mime_for_path(&path)
+            ),
+        );
+    }
+    if !physical_scale_is_valid(&req.physical_scale) {
+        return err(
+            "bad_scale",
+            "physical_scale must be {axes:[{name,nm_per_px>0}], unit:<string>}".to_string(),
+        );
+    }
+
+    // Confine the PARENT DIRECTORY the write actually mutates — the temp create
+    // AND the rename both happen inside it. Confining the sidecar FILE would be
+    // bypassable: if `<image>.scale.json` already exists as an in-root symlink,
+    // canonicalizing the sidecar follows it and passes, yet its parent dir could
+    // symlink outside the root, so the temp+rename land outside. The image's
+    // parent always exists (the image lives in it) and is the sidecar's dir too.
+    let Some(parent) = path.parent() else {
+        return err("bad_node_id", format!("{path:?} has no parent directory"));
+    };
+    match crate::paths::canonicalize_existing_ancestor(parent) {
+        Some(canon) if crate::paths::path_within_root(&canon, files_mode.root_path()) => {}
+        _ => {
+            return err(
+                "path_escape",
+                format!(
+                    "scale sidecar's directory resolves outside the workspace root: {parent:?}"
+                ),
+            )
+        }
+    }
+
+    let mut sidecar = path.as_os_str().to_os_string();
+    sidecar.push(".scale.json");
+    let sidecar = std::path::PathBuf::from(sidecar);
+
+    // Write. TOCTOU parity with `file.write`: like it, we write to the confined
+    // *lexical* path — a parent-dir swap between the check above and the write is
+    // the same residual race the project accepts for its write mechanism.
+    if let Err(e) = write_scale_sidecar_atomic(&sidecar, &req.physical_scale) {
+        return err("io_error", format!("write scale sidecar {sidecar:?}: {e}"));
+    }
+
+    // Re-emit the preview so the FE renders from OUR authoritative rescale (it
+    // can't know the served/source ratio after a downsample). merge_scale_sidecar
+    // re-reads the sidecar we just wrote; the F1 rescale runs inside the helper.
+    let get_req = PreviewGetReq {
+        node_id: req.node_id.clone(),
+        workspace_id: req.workspace_id.clone(),
+        page: None,
+        fit_w: None,
+        fit_h: None,
+    };
+    match build_preview_payload(&ws, &get_req).await? {
+        Ok((mime, bytes, extras)) => {
+            let res = PreviewGetRes {
+                mime: mime.clone(),
+                blob: BlobDescriptor {
+                    len: bytes.len() as u64,
+                    mime,
+                },
+                extras,
+            };
+            let rev = session
+                .bump("preview.scale_set", json!({ "node_id": req.node_id }))
+                .await;
+            Ok(vec![(
+                Frame::res(req_id, op::PREVIEW_SET_SCALE, serde_json::to_value(res)?).with_rev(rev),
+                Some(bytes),
+            )])
+        }
+        Err((code, msg)) => err(&code, msg),
+    }
 }
 
 /// Crop a region out of an image node and write it as a PNG under
@@ -4239,13 +4458,77 @@ mod file_transfer_tests {
 
 #[cfg(test)]
 mod scalebar_sidecar_tests {
-    use super::merge_scale_sidecar;
+    use super::{merge_scale_sidecar, physical_scale_is_valid, write_scale_sidecar_atomic};
     use std::path::PathBuf;
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("sot-scale-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn write_scale_sidecar_atomic_roundtrips_verbatim() {
+        let dir = tmp("write");
+        let img = dir.join("render.png");
+        std::fs::write(&img, b"\x89PNG").unwrap();
+        let scale = serde_json::json!({
+            "axes": [{"name":"x","nm_per_px":2.0},{"name":"y","nm_per_px":2.0}],
+            "unit": "nm"
+        });
+        let sidecar = dir.join("render.png.scale.json");
+        write_scale_sidecar_atomic(&sidecar, &scale).expect("atomic write");
+        // Written verbatim + readable back through the same merge path.
+        let extras = merge_scale_sidecar(&img, "image/png", None);
+        let ps = extras
+            .as_ref()
+            .and_then(|e| e.get("physical_scale"))
+            .expect("physical_scale from the written sidecar");
+        assert_eq!(ps["unit"], "nm");
+        assert_eq!(ps["axes"][0]["nm_per_px"], 2.0);
+        assert_eq!(ps["axes"][1]["name"], "y");
+        // No temp file left behind (atomic temp+rename cleaned up).
+        let leftover: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftover.is_empty(), "temp file not cleaned: {leftover:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn physical_scale_is_valid_accepts_good_rejects_bad() {
+        assert!(physical_scale_is_valid(&serde_json::json!({
+            "axes": [{"name":"x","nm_per_px":5.0},{"name":"z","nm_per_px":20.0}],
+            "unit": "nm"
+        })));
+        // empty axes
+        assert!(!physical_scale_is_valid(
+            &serde_json::json!({"axes":[],"unit":"nm"})
+        ));
+        // nm_per_px <= 0
+        assert!(!physical_scale_is_valid(
+            &serde_json::json!({"axes":[{"name":"x","nm_per_px":0.0}],"unit":"nm"})
+        ));
+        assert!(!physical_scale_is_valid(
+            &serde_json::json!({"axes":[{"name":"x","nm_per_px":-1.0}],"unit":"nm"})
+        ));
+        // missing nm_per_px
+        assert!(!physical_scale_is_valid(
+            &serde_json::json!({"axes":[{"name":"x"}],"unit":"nm"})
+        ));
+        // missing axis name (would produce an unlabelable bar)
+        assert!(!physical_scale_is_valid(
+            &serde_json::json!({"axes":[{"nm_per_px":5.0}],"unit":"nm"})
+        ));
+        // missing unit
+        assert!(!physical_scale_is_valid(
+            &serde_json::json!({"axes":[{"name":"x","nm_per_px":2.0}]})
+        ));
+        // missing axes / not an object
+        assert!(!physical_scale_is_valid(&serde_json::json!({"unit":"nm"})));
+        assert!(!physical_scale_is_valid(&serde_json::json!("nope")));
     }
 
     #[test]

@@ -1045,6 +1045,10 @@ where
             op::PREVIEW_GET => {
                 handlers::handle_preview_get(frame.id, frame.payload, &session, &workspaces).await
             }
+            op::PREVIEW_SET_SCALE => {
+                handlers::handle_preview_set_scale(frame.id, frame.payload, &session, &workspaces)
+                    .await
+            }
             op::IMAGE_CROP => {
                 handlers::handle_image_crop(frame.id, frame.payload, &session, &workspaces).await
             }
