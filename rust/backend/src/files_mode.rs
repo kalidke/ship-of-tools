@@ -176,6 +176,22 @@ impl FilesMode {
             if seg == ".." {
                 return Err(anyhow!("parent-dir segment not allowed in node id: {node_id}"));
             }
+            // A Windows drive-letter segment (`C:`) is drive-ABSOLUTE there: the
+            // split yields it from `C:\path`, and `PathBuf::push("C:\\path")`
+            // REPLACES the workspace root on Windows. Reject it string-level
+            // regardless of the daemon's platform — a node id can arrive from a
+            // Windows FE, and set_scale (which uses this READ resolver since #43)
+            // would otherwise write a sidecar outside the root with no symlink.
+            // `len == 2` targets exactly the drive form (`C:`) so a legitimate
+            // filename containing a colon (e.g. `a:b.png`) is not false-rejected.
+            if seg.len() == 2
+                && seg.as_bytes()[1] == b':'
+                && seg.as_bytes()[0].is_ascii_alphabetic()
+            {
+                return Err(anyhow!(
+                    "drive-absolute segment not allowed in node id: {node_id}"
+                ));
+            }
         }
         let mut p = self.root.clone();
         for seg in rel.split('/') {
@@ -406,6 +422,27 @@ mod tests {
         // Injection checks hold on the read resolver too.
         assert!(fm.node_id_to_path("files:../up").is_err());
         assert!(fm.node_id_to_path("files:/abs").is_err());
+    }
+
+    /// Codex aggregate review (v0.4.4): a Windows drive-letter node id is
+    /// drive-ABSOLUTE there, and `PathBuf::push` would replace the root — an
+    /// escape without any symlink. BOTH resolvers must reject it string-level,
+    /// on every platform (a node id can arrive from a Windows FE, and set_scale
+    /// uses the READ resolver). A colon merely INSIDE a filename is not a drive.
+    #[test]
+    fn resolvers_reject_windows_drive_paths() {
+        let dir = Tmp::new();
+        let fm = FilesMode::new(dir.path().to_path_buf()).unwrap();
+        for id in ["files:C:\\outside\\x.png", "files:sub/C:\\y", "files:D:/z"] {
+            assert!(fm.node_id_to_path(id).is_err(), "read must reject {id}");
+            assert!(
+                fm.node_id_to_path_confined(id).is_err(),
+                "write must reject {id}"
+            );
+        }
+        // A colon INSIDE a filename (legal on unix) is NOT a drive — the drive
+        // check (len == 2) must not false-reject it; it composes normally.
+        assert!(fm.node_id_to_path("files:a:b.png").is_ok());
     }
 
     /// A brand-new (not-yet-created) path under a legitimately-in-root

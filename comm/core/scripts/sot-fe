@@ -224,9 +224,7 @@ send_repl_execute() {
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.execute", payload:$p}')"
     resp="$(sot_send "$req" repl.execute || true)"
     if [ -z "$resp" ]; then
-        echo "ERROR: no response from repl.execute within ${SEND_TIMEOUT}s via $ENDPOINT — two very different causes, OPPOSITE correct actions:" >&2
-        echo "  • TIMED OUT (likely if the workspace REPL was cold-starting — first use precompiles its deps, minutes): your eval was QUEUED and MAY STILL BE RUNNING. Do NOT re-run — check the drawer/output first; re-running would execute it TWICE (double side-effects)." >&2
-        echo "  • daemon CLOSED THE CONNECTION (nothing ran): re-running is safe." >&2
+        echo "ERROR: no response from repl.execute within ${SEND_TIMEOUT}s via $ENDPOINT. The eval is ENQUEUED before any reply is written, so a missing response — whether a TIMEOUT (first REPL use per workspace precompiles its deps, minutes) OR a connection dropped AFTER enqueue — does NOT mean nothing ran: your eval MAY STILL BE RUNNING. Do NOT re-run blindly — check the drawer/output first; re-running would execute it TWICE (double side-effects: files written twice, state mutated twice)." >&2
         exit 1
     fi
     printf '%s' "$resp" | jq -r '
@@ -276,7 +274,7 @@ send_repl_run_file() {
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.run_file", payload:$p}')"
     resp="$(sot_send "$req" repl.run_file || true)"
     if [ -z "$resp" ]; then
-        echo "ERROR: no ack from repl.run_file within ${SEND_TIMEOUT}s via $ENDPOINT. This ack normally returns on SPAWN (fast), so a no-ack usually means the daemon closed the connection (re-running is safe). But the fresh-restart may have ALREADY bounced the workspace REPL into <path>'s project — check the drawer for a fresh REPL before re-running, or you'll re-bounce it." >&2
+        echo "ERROR: no ack from repl.run_file within ${SEND_TIMEOUT}s via $ENDPOINT. The request is ENQUEUED before any ack is written, so a missing ack (timeout OR a connection dropped after enqueue) does NOT mean nothing happened — the fresh-restart may have ALREADY bounced the workspace REPL into <path>'s project and started the include. Check the drawer for a fresh REPL before re-running, or you'll re-bounce it (and re-run the file)." >&2
         exit 1
     fi
     # Ack is either {error,code} or {project_dir,project_source,accepted:true}.
