@@ -224,7 +224,9 @@ send_repl_execute() {
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.execute", payload:$p}')"
     resp="$(sot_send "$req" repl.execute || true)"
     if [ -z "$resp" ]; then
-        echo "ERROR: no response from repl.execute via $ENDPOINT (timed out after ${SEND_TIMEOUT}s, or daemon closed the connection)." >&2
+        echo "ERROR: no response from repl.execute within ${SEND_TIMEOUT}s via $ENDPOINT — two very different causes, OPPOSITE correct actions:" >&2
+        echo "  • TIMED OUT (likely if the workspace REPL was cold-starting — first use precompiles its deps, minutes): your eval was QUEUED and MAY STILL BE RUNNING. Do NOT re-run — check the drawer/output first; re-running would execute it TWICE (double side-effects)." >&2
+        echo "  • daemon CLOSED THE CONNECTION (nothing ran): re-running is safe." >&2
         exit 1
     fi
     printf '%s' "$resp" | jq -r '
@@ -233,6 +235,7 @@ send_repl_execute() {
             "ERROR: \($p.error) [\($p.code // "?")]"
         else
             "outcome: \($p.outcome)   run_id: \($p.run_id)   elapsed: \($p.elapsed_ms)ms"
+            + (if ($p.outcome == "timeout") then "\n⚠ TIMEOUT is NOT failed or cancelled: run_id \($p.run_id) exceeded the reply budget but is STILL RUNNING in the REPL (first REPL use per workspace precompiles its package deps — can take minutes). Do NOT re-run — check run_id \($p.run_id) / the drawer for its output; re-running would execute it a SECOND time (double side-effects: files written twice, state mutated twice)." else "" end)
             + (if $p.truncated then "   [output truncated]" else "" end)
             + (if ($p.project_dir // "") != "" then "\nproject: \($p.project_dir) (\($p.project_source // "?"))" else "" end)
             + (if ($p.stdout // "") != "" then "\n--- stdout ---\n\($p.stdout)" else "" end)
@@ -273,7 +276,7 @@ send_repl_run_file() {
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.run_file", payload:$p}')"
     resp="$(sot_send "$req" repl.run_file || true)"
     if [ -z "$resp" ]; then
-        echo "ERROR: no response from repl.run_file via $ENDPOINT (timed out after ${SEND_TIMEOUT}s, or daemon closed the connection)." >&2
+        echo "ERROR: no ack from repl.run_file within ${SEND_TIMEOUT}s via $ENDPOINT. This ack normally returns on SPAWN (fast), so a no-ack usually means the daemon closed the connection (re-running is safe). But the fresh-restart may have ALREADY bounced the workspace REPL into <path>'s project — check the drawer for a fresh REPL before re-running, or you'll re-bounce it." >&2
         exit 1
     fi
     # Ack is either {error,code} or {project_dir,project_source,accepted:true}.

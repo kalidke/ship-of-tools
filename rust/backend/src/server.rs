@@ -408,7 +408,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // retained for back-compat on the call chain; all ops now route through
     // per-workspace REPLs (which carry their own workspace_id), so this one
     // publishes with `None` as its workspace_id.
-    let repl = Repl::new(Repl::default_repl_project(), repl_frame_tx.clone(), None);
+    let repl = Repl::new(Repl::default_repl_project(), repl_frame_tx.clone(), None, None);
 
     // Shared preview.changed bus (2026-07-10 multiwatch): ONE broadcast
     // channel every connection subscribes to, fed by ONE file watcher PER

@@ -92,6 +92,13 @@ pub struct Repl {
 
 struct ReplInner {
     repl_project: PathBuf,
+    /// The workspace's own project (its `Project.toml` dir), activated as the
+    /// DEFAULT env for the persistent REPL so user code runs in the session
+    /// package's environment — not the `ShipToolsRepl` shim project. `None`
+    /// when the workspace has no `Project.toml` (fall back to the shim-only
+    /// spawn) or for the legacy singleton REPL. `ShipToolsRepl` stays reachable
+    /// via `JULIA_LOAD_PATH` (see `spawn_supervisor_with_project`).
+    user_project: Option<PathBuf>,
     julia_bin: String,
     submit: Mutex<Option<mpsc::Sender<Submission>>>,
     /// Broadcast sink for streamed `repl.frame` evts. Threaded into every
@@ -148,11 +155,13 @@ impl Repl {
         repl_project: PathBuf,
         frame_tx: broadcast::Sender<ReplFrameMsg>,
         workspace_id: Option<String>,
+        user_project: Option<PathBuf>,
     ) -> Self {
         let julia_bin = std::env::var("SOT_JULIA_BIN").unwrap_or_else(|_| "julia".to_string());
         Self {
             inner: Arc::new(ReplInner {
                 repl_project,
+                user_project,
                 julia_bin,
                 submit: Mutex::new(None),
                 frame_tx,
@@ -240,12 +249,27 @@ impl Repl {
                 return Ok(tx.clone());
             }
         }
-        let tx = spawn_supervisor(
-            &self.inner.julia_bin,
-            &self.inner.repl_project,
-            self.inner.frame_tx.clone(),
-            self.inner.workspace_id.clone(),
-        )?;
+        // Default the persistent REPL into the WORKSPACE's own project so user
+        // code runs in the session package's env (not the ShipToolsRepl shim).
+        // `spawn_supervisor_with_project` sets `--project=<workspace>` and keeps
+        // the shim reachable via `JULIA_LOAD_PATH`. Only when the workspace has
+        // no `Project.toml` (user_project == None) do we fall back to the
+        // shim-only spawn.
+        let tx = match self.inner.user_project.as_deref() {
+            Some(user_project) => spawn_supervisor_with_project(
+                &self.inner.julia_bin,
+                &self.inner.repl_project,
+                user_project,
+                self.inner.frame_tx.clone(),
+                self.inner.workspace_id.clone(),
+            )?,
+            None => spawn_supervisor(
+                &self.inner.julia_bin,
+                &self.inner.repl_project,
+                self.inner.frame_tx.clone(),
+                self.inner.workspace_id.clone(),
+            )?,
+        };
         *guard = Some(tx.clone());
         Ok(tx)
     }
@@ -328,11 +352,12 @@ fn spawn_supervisor(
 ///
 /// We can't pass `--project=<user_project>` *and* expect `using ShipToolsRepl`
 /// to resolve — the REPL shim isn't in the user's manifest. The standard
-/// trick is `JULIA_LOAD_PATH=<repl_project>:` so `Base.load_path()` searches
-/// the REPL project (where `ShipToolsRepl` lives) alongside the user project
-/// (selected via `--project`). The trailing colon preserves the rest of the
-/// default load path (stdlib, etc.) so `using` of standard packages still
-/// works inside the user code.
+/// trick is `JULIA_LOAD_PATH=@:<repl_project>:` — the workspace project (`@` =
+/// `--project`) FIRST so a dependency the workspace shares with the shim (e.g.
+/// JSON3) resolves from the WORKSPACE's version, then the REPL project (where
+/// `ShipToolsRepl` lives) as a fallback for the shim's own deps, then the
+/// default load path (stdlib, etc.) via the trailing colon so `using` of
+/// standard packages still works inside the user code.
 fn spawn_supervisor_with_project(
     julia_bin: &str,
     repl_project: &Path,
@@ -348,15 +373,19 @@ fn spawn_supervisor_with_project(
     }
     let julia_src = "using ShipToolsRepl; ShipToolsRepl.serve(stdin, stdout)";
 
-    // JULIA_LOAD_PATH uses ':' on Unix and ';' on Windows. Use the
-    // platform-appropriate separator so the shim project is reachable on
-    // both. Trailing separator preserves the default `["@", "@v#.#", "@stdlib"]`
-    // entries (which become `@`, etc. via the empty token).
+    // JULIA_LOAD_PATH uses ':' on Unix and ';' on Windows. ORDER MATTERS: the
+    // workspace project (`@` = --project) comes FIRST so a dependency the
+    // workspace shares with the shim (e.g. JSON3) resolves from the WORKSPACE's
+    // version, not the shim's (Codex review, 2026-07-20 — proved JSON3 was
+    // resolving from julia/repl under --project=core). The shim comes second so
+    // `using ShipToolsRepl` still resolves. Trailing separator preserves the
+    // default `["@", "@v#.#", "@stdlib"]` entries (stdlib etc.) via the empty
+    // token.
     #[cfg(windows)]
     let sep = ";";
     #[cfg(not(windows))]
     let sep = ":";
-    let load_path = format!("{}{sep}", repl_project.display());
+    let load_path = format!("@{sep}{}{sep}", repl_project.display());
 
     let mut child: Child = Command::new(julia_bin)
         .env("JULIA_LOAD_PATH", &load_path)

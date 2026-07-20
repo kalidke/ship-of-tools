@@ -221,10 +221,20 @@ impl Workspace {
     pub fn repl(&self, frame_tx: broadcast::Sender<ReplFrameMsg>) -> Repl {
         self.repl
             .get_or_init(|| {
+                // Default the REPL into THIS workspace's own project (its
+                // Project.toml dir) so user code runs in the session package's
+                // env, not the ShipToolsRepl shim. Only when the workspace has
+                // no Project.toml do we leave it None (shim-only fallback).
+                let user_project = self
+                    .project_root
+                    .join("Project.toml")
+                    .is_file()
+                    .then(|| self.project_root.clone());
                 Repl::new(
                     Repl::default_repl_project(),
                     frame_tx,
                     Some(self.workspace_id.clone()),
+                    user_project,
                 )
             })
             .clone()
