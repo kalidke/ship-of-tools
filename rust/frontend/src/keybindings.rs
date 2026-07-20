@@ -342,9 +342,12 @@ impl KeyBindings {
             preview_png_pan_right: vec![Chord::parse("ArrowRight").unwrap()],
             preview_png_pan_up: vec![Chord::parse("ArrowUp").unwrap()],
             preview_png_pan_down: vec![Chord::parse("ArrowDown").unwrap()],
-            // Scalebar overlay toggle. `b` for "bar"; only fires when the
-            // shown raster carries a physical scale (ADR 0034).
-            preview_scalebar_toggle: vec![Chord::parse("b").unwrap()],
+            // Scalebar overlay toggle (ADR 0034). Ctrl+S per the maintainer
+            // (2026-07-20) — `s` alone is the Sessions-mode switch, and
+            // Ctrl+Shift+S is the selfie, so Ctrl+S is the free slot. With no
+            // physical scale present this opens the pixel-size prompt rather
+            // than no-opping.
+            preview_scalebar_toggle: vec![Chord::parse("Ctrl+s").unwrap()],
             // Sessions picker commit: Enter = with agent (ccb), Shift+Enter =
             // bare (no LLM). The call site checks `session.create_bare` before
             // `session.create`, since a non-shift "Enter" chord also matches
@@ -620,6 +623,27 @@ mod tests {
         let c = Chord::parse("F11").unwrap();
         assert!(!c.ctrl && !c.alt && !c.shift);
         assert_eq!(c.key, ChordKey::Named(NamedKey::F11));
+    }
+
+    /// ADR 0034: the scalebar toggle is Ctrl+S (maintainer, 2026-07-20). Pin it
+    /// against the two neighbours that make it a live collision risk — bare `s`
+    /// is the Sessions-mode switch and Ctrl+Shift+S is the selfie — so a future
+    /// rebind can't silently make one of them fire the scalebar (or vice versa).
+    #[test]
+    fn scalebar_toggle_is_ctrl_s_and_does_not_collide() {
+        let b = KeyBindings::defaults();
+        let s = Key::Character("s".into());
+
+        // Ctrl+S fires the toggle.
+        assert!(b.matches(Action::PreviewScalebarToggle, &s, true, false, false));
+        // Bare `s` does NOT (that's Sessions mode).
+        assert!(!b.matches(Action::PreviewScalebarToggle, &s, false, false, false));
+        // ...and bare `s` still reaches Sessions mode.
+        assert!(b.matches(Action::ModeSessions, &s, false, false, false));
+        // Ctrl+S must not fire Sessions mode.
+        assert!(!b.matches(Action::ModeSessions, &s, true, false, false));
+        // Ctrl+Shift+S is the selfie, not the scalebar.
+        assert!(b.matches(Action::Selfie, &s, true, false, true));
     }
 
     #[test]

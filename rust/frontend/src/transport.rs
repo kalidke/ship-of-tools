@@ -54,6 +54,7 @@ use sot_protocol::{
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{self as tmpsc, UnboundedReceiver, UnboundedSender};
+
 use winit::window::Window;
 
 /// What the transport task should dial. At least one of `pipe`/`tcp` must be
@@ -132,6 +133,16 @@ pub enum IncomingEvt {
     },
     /// `image.crop` failed (bad node, non-image, decode/IO error).
     ImageCropFailed {
+        node_id: String,
+        message: String,
+    },
+    /// `preview.set_scale` failed (ADR 0034 live entry). The backend rejects
+    /// with a code — `not_a_raster`, `bad_scale`, `path_escape`, `io_error`,
+    /// `unknown_workspace`, `bad_node_id`, `not_a_file`,
+    /// `files_mode_init_failed` — and the chrome surfaces it on the status
+    /// line. Without this the prompt's "saving…" would hang forever on any
+    /// rejection, which reads as a silent failure.
+    ScaleSetFailed {
         node_id: String,
         message: String,
     },
@@ -862,6 +873,23 @@ pub enum OutgoingReq {
         fit_w: Option<u32>,
         fit_h: Option<u32>,
     },
+    /// Persist a user-entered physical scale for a raster and get the
+    /// re-rendered preview back (ADR 0034 §4/§5 live entry).
+    ///
+    /// `nm_per_px` is the RAW/original pixel size the user typed (converted
+    /// from µm at the prompt), sent verbatim: the backend writes exactly this
+    /// to `<image>.scale.json` and returns the served-rescaled value for
+    /// display, so a read-then-write round-trip can never compound the
+    /// downsample ratio. The reply reuses the `PreviewGetRes` envelope and is
+    /// routed through the ordinary preview path — one install path for a
+    /// preview and its calibration, so the two can't drift.
+    PreviewSetScale {
+        node_id: String,
+        /// Original-pixel nm/px, isotropic (a single typed value can't
+        /// describe an anisotropic XZ view — that's Phase 3).
+        nm_per_px: f64,
+        workspace_id: Option<String>,
+    },
     /// Fetch the bytes for a `![](url)` figure embedded in a markdown
     /// preview. Shares the `preview.get` wire op but stamps the response
     /// with `url` so the chrome routes it to the figure cache instead
@@ -1086,6 +1114,14 @@ enum PendingKind {
         name: String,
     },
     PreviewGet {
+        node_id: String,
+        workspace_id: Option<String>,
+    },
+    /// Reply to `preview.set_scale`. Carries the SAME `PreviewGetRes` envelope
+    /// as a normal preview, so it decodes with the existing type and surfaces
+    /// as `IncomingEvt::Preview` — the chrome installs it through the one
+    /// preview path it already has (ADR 0034 §5).
+    SetScale {
         node_id: String,
         workspace_id: Option<String>,
     },
@@ -1914,6 +1950,43 @@ where
                         pending.insert(
                             id,
                             PendingKind::PreviewGet {
+                                node_id,
+                                workspace_id,
+                            },
+                        );
+                    }
+                    OutgoingReq::PreviewSetScale {
+                        node_id,
+                        nm_per_px,
+                        workspace_id,
+                    } => {
+                        tracing::debug!(%node_id, nm_per_px, ?workspace_id, id,
+                            "→ preview.set_scale");
+                        // Isotropic from a single typed value. `nm_per_px` is the
+                        // RAW/original pixel size the user entered, sent verbatim:
+                        // the backend writes it to the sidecar as-is and returns
+                        // the served-rescaled value for rendering, so a round-trip
+                        // can never compound the downsample ratio (ADR 0034 §5).
+                        let payload = serde_json::json!({
+                            "node_id": node_id,
+                            "workspace_id": workspace_id,
+                            "physical_scale": {
+                                "axes": [
+                                    { "name": "x", "nm_per_px": nm_per_px },
+                                    { "name": "y", "nm_per_px": nm_per_px },
+                                ],
+                                "unit": "nm",
+                            },
+                        });
+                        codec::write_frame(
+                            &mut tx,
+                            &Frame::req(id, op::PREVIEW_SET_SCALE, payload),
+                            None,
+                        )
+                        .await?;
+                        pending.insert(
+                            id,
+                            PendingKind::SetScale {
                                 node_id,
                                 workspace_id,
                             },
@@ -2814,6 +2887,54 @@ fn handle_response_frame(
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "preview.get res parse failed");
+                    }
+                }
+                return;
+            }
+            PendingKind::SetScale {
+                node_id,
+                workspace_id,
+            } => {
+                // ADR 0034 §5: the backend persisted the sidecar and returned
+                // the RE-RENDERED preview in the same PreviewGetRes envelope,
+                // with `extras.physical_scale` already rescaled for the served
+                // image. Decode with the existing type and emit the existing
+                // `IncomingEvt::Preview` so the chrome installs it through the
+                // ONE preview path it already has — no second install path to
+                // drift out of sync (the failure mode behind F2/R4-R6).
+                //
+                // This also has to be a REPLY, not an unsolicited push: replies
+                // are correlated by frame id via `pending.remove`, so a pushed
+                // preview frame would find no entry and be dropped silently.
+                //
+                // Rejections come back as an `error` payload under the same
+                // frame id; surface them so the prompt's "saving…" resolves
+                // instead of hanging.
+                if let Some(err) = frame.payload.get("error").and_then(|v| v.as_str()) {
+                    let code = frame
+                        .payload
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("error");
+                    tracing::warn!(%node_id, %code, %err, "preview.set_scale rejected");
+                    let _ = evt_tx.send(IncomingEvt::ScaleSetFailed {
+                        node_id,
+                        message: format!("{code}: {err}"),
+                    });
+                    return;
+                }
+                match serde_json::from_value::<PreviewGetRes>(frame.payload) {
+                    Ok(res) => {
+                        let _ = evt_tx.send(IncomingEvt::Preview {
+                            node_id: Some(node_id),
+                            workspace_id,
+                            mime: res.mime,
+                            bytes: blob.unwrap_or_default(),
+                            extras: res.extras,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "preview.set_scale res parse failed");
                     }
                 }
                 return;

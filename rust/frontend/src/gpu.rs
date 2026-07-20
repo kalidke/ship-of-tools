@@ -473,6 +473,21 @@ enum NavPrompt {
         /// Display label of the row, echoed in the confirm prompt.
         label: String,
     },
+    /// Ctrl+S on a raster that carries NO physical scale (ADR 0034 §4 live
+    /// entry): type the pixel size in MICRONS. Enter validates + fires
+    /// `preview.set_scale` (which persists the sidecar and returns the
+    /// re-rendered preview), Esc cancels.
+    ///
+    /// Microns because that's the maintainer's standard unit for entry; the
+    /// value is converted to nm at the boundary so the wire and the on-disk
+    /// sidecar stay in nm (ADR 0034 §2). The typed number is the RAW/original
+    /// pixel size — never the served/downsampled one — so it is sent verbatim.
+    ScaleEntry {
+        /// `files:`-prefixed id of the previewed raster being calibrated.
+        node_id: String,
+        /// Live µm-per-pixel buffer, rendered after `pixel size (µm): `.
+        input: String,
+    },
 }
 
 /// Active concept-annotation edit. `None` when the preview pane is in
@@ -1215,6 +1230,35 @@ fn fmt_scale_value(v: f64) -> String {
         let s = format!("{v:.2}");
         s.trim_end_matches('0').trim_end_matches('.').to_string()
     }
+}
+
+/// Render a snapped bar length as a human-readable label, auto-scaling the
+/// unit so the number stays readable (maintainer, 2026-07-20).
+///
+/// Only `nm`-based scales are promoted: at/above 1000 nm the label switches to
+/// µm, so an SMLM render still reads `200 nm` while a 0.1 µm/px camera frame
+/// reads `50 µm` instead of `50000 nm`. Any other unit is passed through
+/// untouched — we don't know its ladder. Promotion is display-only; the wire
+/// and sidecar stay in nm (ADR 0034 §2), so nothing about the stored
+/// calibration changes.
+fn fmt_scale_label(value: f64, unit: &str) -> String {
+    if unit.eq_ignore_ascii_case("nm") && value >= 1000.0 {
+        return format!("{} µm", fmt_scale_value(value / 1000.0));
+    }
+    format!("{} {}", fmt_scale_value(value), unit)
+}
+
+/// Parse a user-typed pixel size in MICRONS into nm-per-pixel (ADR 0034 §4
+/// live entry). Microns are the maintainer's standard unit for entry; nm is
+/// what the schema and sidecar store, so the conversion happens here at the
+/// boundary. Rejects anything non-positive or non-finite so a typo can't
+/// install a nonsense calibration.
+fn parse_micron_pixel_size(input: &str) -> Option<f64> {
+    let v: f64 = input.trim().parse().ok()?;
+    if !v.is_finite() || v <= 0.0 {
+        return None;
+    }
+    Some(v * 1000.0)
 }
 
 /// Bar + label geometry for the scalebar overlay (ADR 0034), all in physical
@@ -6769,21 +6813,100 @@ impl State {
     /// `node_id_to_path` only accepts a bare child segment) so the user
     /// can't type one in; everything else is allowed and validated on Enter.
     fn nav_prompt_push_char(&mut self, c: char) {
-        if c == '/' || c == '\\' {
-            return;
-        }
-        if let Some(NavPrompt::CreateFile { input, .. }) = self.nav_prompt.as_mut() {
-            input.push(c);
-            self.window.request_redraw();
+        match self.nav_prompt.as_mut() {
+            Some(NavPrompt::CreateFile { input, .. }) => {
+                if c == '/' || c == '\\' {
+                    return;
+                }
+                input.push(c);
+                self.window.request_redraw();
+            }
+            // Scale entry is a NUMBER: filter at the source (as CreateFile does
+            // for separators) so only digits and a single decimal point can be
+            // typed. `parse_micron_pixel_size` still validates on Enter — this
+            // just stops obvious junk from ever entering the buffer.
+            Some(NavPrompt::ScaleEntry { input, .. }) => {
+                if c.is_ascii_digit() || (c == '.' && !input.contains('.')) {
+                    input.push(c);
+                    self.window.request_redraw();
+                }
+            }
+            _ => {}
         }
     }
 
-    /// Backspace one char off the active new-file prompt's name buffer.
+    /// Backspace one char off whichever text prompt is active.
     fn nav_prompt_backspace(&mut self) {
-        if let Some(NavPrompt::CreateFile { input, .. }) = self.nav_prompt.as_mut() {
-            input.pop();
-            self.window.request_redraw();
+        match self.nav_prompt.as_mut() {
+            Some(NavPrompt::CreateFile { input, .. })
+            | Some(NavPrompt::ScaleEntry { input, .. }) => {
+                input.pop();
+                self.window.request_redraw();
+            }
+            _ => {}
         }
+    }
+
+    /// Open the pixel-size prompt for the previewed raster (ADR 0034 §4).
+    /// Returns false when there's nothing to calibrate, so the caller can leave
+    /// the keystroke alone.
+    fn begin_scale_entry(&mut self) -> bool {
+        let Some(node_id) = self.preview_node_id_fired.clone() else {
+            return false;
+        };
+        if !Self::is_image_node_id(&node_id) {
+            return false;
+        }
+        self.nav_prompt = Some(NavPrompt::ScaleEntry {
+            node_id,
+            input: String::new(),
+        });
+        self.status = "pixel size (µm): ".to_string();
+        self.window.request_redraw();
+        true
+    }
+
+    /// Confirm the pixel-size prompt: validate the typed microns, convert to
+    /// nm, and fire `preview.set_scale`. The backend writes the sidecar and
+    /// replies with the re-rendered preview (carrying the F1-rescaled
+    /// `physical_scale`), which lands in the normal preview path — so the bar
+    /// appears from the authoritative value rather than a local guess that
+    /// could be wrong for a downsampled raster.
+    fn confirm_scale_entry(&mut self) {
+        let (node_id, raw) = match self.nav_prompt.as_ref() {
+            Some(NavPrompt::ScaleEntry { node_id, input }) => {
+                (node_id.clone(), input.trim().to_string())
+            }
+            _ => return,
+        };
+        let Some(nm_per_px) = parse_micron_pixel_size(&raw) else {
+            // Keep the prompt open so the user can correct the typo.
+            self.status = "pixel size · enter a positive number in µm".to_string();
+            self.window.request_redraw();
+            return;
+        };
+        // Isotropic from a single entry: both axes get the same value. The
+        // anisotropic (XZ) case is Phase 3 — one number can't describe it, and
+        // guessing would be worse than the Phase-1 lateral bar.
+        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::PreviewSetScale {
+            node_id: node_id.clone(),
+            nm_per_px,
+            workspace_id: self.active_workspace_id.clone(),
+        }) {
+            tracing::warn!(error = %e, %node_id, "drop preview.set_scale — channel closed");
+            self.status = "pixel size · channel closed".to_string();
+            self.window.request_redraw();
+            return;
+        }
+        tracing::info!(%node_id, um_per_px = %raw, nm_per_px,
+            "scale entry → preview.set_scale");
+        // Arm the overlay so the bar is visible the moment the re-rendered
+        // preview lands; without a scale present the toggle would otherwise
+        // just re-open this prompt.
+        self.scalebar_on = true;
+        self.nav_prompt = None;
+        self.status = format!("pixel size {raw} µm · saving…");
+        self.window.request_redraw();
     }
 
     /// Confirm the new-file prompt: validate the name + check for a sibling
@@ -6837,6 +6960,7 @@ impl State {
     fn cancel_nav_prompt(&mut self) {
         self.status = match self.nav_prompt {
             Some(NavPrompt::ConfirmDelete { .. }) => "delete · cancelled".to_string(),
+            Some(NavPrompt::ScaleEntry { .. }) => "pixel size · cancelled".to_string(),
             _ => "new file · cancelled".to_string(),
         };
         self.nav_prompt = None;
@@ -7017,7 +7141,7 @@ impl State {
         }
         // Shape the label OUTSIDE the render pass (a persistent buffer on self).
         let scale_f = self.scale;
-        let label = format!("{} {}", fmt_scale_value(nice), scale.unit);
+        let label = fmt_scale_label(nice, &scale.unit);
         let label_buf = crate::preview::markdown::MarkdownPreview::new_plain(
             self.text.font_system_mut(),
             &label,
@@ -9781,6 +9905,22 @@ impl State {
                     self.status = format!("capture failed · {name}: {message}");
                     self.window.request_redraw();
                 }
+                crate::transport::IncomingEvt::ScaleSetFailed { node_id, message } => {
+                    // ADR 0034 live entry rejected (not_a_raster / bad_scale /
+                    // path_escape / io_error / …). Surface it so the prompt's
+                    // "saving…" resolves; the calibration simply isn't applied,
+                    // and the user can re-open the prompt with Ctrl+S and retry.
+                    let name = node_id
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .unwrap_or(&node_id)
+                        .to_string();
+                    // The bar never appeared, so don't leave the overlay armed
+                    // claiming a scale we don't have.
+                    self.scalebar_on = false;
+                    self.status = format!("pixel size failed · {name}: {message}");
+                    self.window.request_redraw();
+                }
                 crate::transport::IncomingEvt::ReplRunFileDone { eval_id, result } => {
                     // J5: route frames into the pre-registered `repl_log`
                     // entry so the drawer scrollback shows the run's
@@ -10390,6 +10530,9 @@ impl State {
             Some(NavPrompt::CreateFile { input, .. }) => format!("new file: {input}▏"),
             Some(NavPrompt::ConfirmDelete { label, .. }) => {
                 format!("delete {label}? [y/N]")
+            }
+            Some(NavPrompt::ScaleEntry { input, .. }) => {
+                format!("pixel size (µm): {input}▏")
             }
             None => self.status.clone(),
         };
@@ -14336,7 +14479,13 @@ impl ApplicationHandler for App {
                             }
                             match &event.logical_key {
                                 Key::Named(NamedKey::Enter) if !event.repeat => {
-                                    state.confirm_create_file();
+                                    // Route Enter to whichever text prompt is open.
+                                    if matches!(state.nav_prompt, Some(NavPrompt::ScaleEntry { .. }))
+                                    {
+                                        state.confirm_scale_entry();
+                                    } else {
+                                        state.confirm_create_file();
+                                    }
                                     return;
                                 }
                                 Key::Named(NamedKey::Escape) if !event.repeat => {
@@ -15584,13 +15733,18 @@ impl ApplicationHandler for App {
                             } else if b.matches(Action::PreviewPngPanDown, k, ctrl, alt, shift) {
                                 state.preview_png_pan_px.1 -= pane_h * PAN_FRAC;
                             } else if b.matches(Action::PreviewScalebarToggle, k, ctrl, alt, shift)
-                                && state.preview_scale.is_some()
                             {
-                                // ADR 0034: flip the scalebar overlay. Gated on
-                                // a present scale (mirrors the pagination keys
-                                // only binding when page extras exist); with no
-                                // scale, `b` falls through (Phase 2 live-entry).
-                                state.scalebar_on = !state.scalebar_on;
+                                // ADR 0034 Ctrl+S. With a scale present this
+                                // flips the overlay; with NONE it opens the
+                                // pixel-size prompt (§4 live entry) instead of
+                                // no-opping, so an uncalibrated raster is one
+                                // keystroke from a real bar.
+                                if state.preview_scale.is_some() {
+                                    state.scalebar_on = !state.scalebar_on;
+                                } else if !state.begin_scale_entry() {
+                                    state.status =
+                                        "scalebar · no image previewed".to_string();
+                                }
                             } else {
                                 handled = false;
                             }
@@ -18179,6 +18333,38 @@ mod tests {
         assert_eq!(fmt_scale_value(2.0), "2");
         assert_eq!(fmt_scale_value(2.5), "2.5");
         assert_eq!(fmt_scale_value(0.02), "0.02");
+    }
+
+    #[test]
+    fn fmt_scale_label_promotes_nm_to_um_only_past_1000() {
+        // The two live-verified fixtures must keep reading exactly as they do.
+        assert_eq!(fmt_scale_label(200.0, "nm"), "200 nm");
+        assert_eq!(fmt_scale_label(500.0, "nm"), "500 nm");
+        // Boundary: 1000 nm promotes.
+        assert_eq!(fmt_scale_label(999.0, "nm"), "999 nm");
+        assert_eq!(fmt_scale_label(1000.0, "nm"), "1 µm");
+        assert_eq!(fmt_scale_label(2000.0, "nm"), "2 µm");
+        // A 0.1 µm/px camera frame lands here rather than "50000 nm".
+        assert_eq!(fmt_scale_label(50000.0, "nm"), "50 µm");
+        // Fractional promotion trims cleanly.
+        assert_eq!(fmt_scale_label(2500.0, "nm"), "2.5 µm");
+        // Non-nm units pass through untouched — we don't know their ladder.
+        assert_eq!(fmt_scale_label(5000.0, "px"), "5000 px");
+        assert_eq!(fmt_scale_label(2.0, "µm"), "2 µm");
+    }
+
+    #[test]
+    fn parse_micron_pixel_size_converts_and_rejects_junk() {
+        // Microns in, nm out (the schema/sidecar unit).
+        assert_eq!(parse_micron_pixel_size("0.1"), Some(100.0));
+        assert_eq!(parse_micron_pixel_size("2"), Some(2000.0));
+        assert_eq!(parse_micron_pixel_size("  0.065 "), Some(65.0));
+        // A typo must not install a nonsense calibration.
+        assert_eq!(parse_micron_pixel_size(""), None);
+        assert_eq!(parse_micron_pixel_size("abc"), None);
+        assert_eq!(parse_micron_pixel_size("0"), None);
+        assert_eq!(parse_micron_pixel_size("-1"), None);
+        assert_eq!(parse_micron_pixel_size("inf"), None);
     }
 
     #[test]
