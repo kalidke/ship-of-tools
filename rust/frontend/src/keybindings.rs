@@ -625,6 +625,27 @@ mod tests {
         assert_eq!(c.key, ChordKey::Named(NamedKey::F11));
     }
 
+    /// ADR 0034: the scalebar toggle is Ctrl+S (maintainer, 2026-07-20). Pin it
+    /// against the two neighbours that make it a live collision risk — bare `s`
+    /// is the Sessions-mode switch and Ctrl+Shift+S is the selfie — so a future
+    /// rebind can't silently make one of them fire the scalebar (or vice versa).
+    #[test]
+    fn scalebar_toggle_is_ctrl_s_and_does_not_collide() {
+        let b = KeyBindings::defaults();
+        let s = Key::Character("s".into());
+
+        // Ctrl+S fires the toggle.
+        assert!(b.matches(Action::PreviewScalebarToggle, &s, true, false, false));
+        // Bare `s` does NOT (that's Sessions mode).
+        assert!(!b.matches(Action::PreviewScalebarToggle, &s, false, false, false));
+        // ...and bare `s` still reaches Sessions mode.
+        assert!(b.matches(Action::ModeSessions, &s, false, false, false));
+        // Ctrl+S must not fire Sessions mode.
+        assert!(!b.matches(Action::ModeSessions, &s, true, false, false));
+        // Ctrl+Shift+S is the selfie, not the scalebar.
+        assert!(b.matches(Action::Selfie, &s, true, false, true));
+    }
+
     #[test]
     fn chord_parses_literal_plus_after_modifier() {
         // "Ctrl++" — the trailing literal '+' must survive the '+'-delimited
