@@ -4516,6 +4516,53 @@ impl State {
         ws_key_of(workspace_id, self.default_workspace_slug.as_deref())
     }
 
+    /// Rename state keyed under the default workspace's RAW SLUG to the
+    /// `"<default>"` literal. Called right after `workspace.list` (re)sets
+    /// `default_workspace_slug`: before that reply, `reply_ws_key` couldn't
+    /// collapse `Some(default_slug)`, so anything keyed in that window for
+    /// the default ws addressed by slug landed under the slug — orphaned
+    /// once every later lookup collapses (codex r3: a slug-keyed ReplEntry
+    /// drops the whole eval's stream). Collision rule: an existing
+    /// `"<default>"`-keyed entry wins (both describe the same physical ws;
+    /// the None-addressed one was already routed correctly).
+    fn migrate_default_slug_keys(&mut self) {
+        let Some(slug) = self.default_workspace_slug.clone() else {
+            return;
+        };
+        const DEFAULT_KEY: &str = "<default>";
+        if let Some(v) = self.workspace_ui_snapshots.remove(&slug) {
+            self.workspace_ui_snapshots
+                .entry(DEFAULT_KEY.to_string())
+                .or_insert(v);
+        }
+        if let Some(v) = self.workspace_repl_snapshots.remove(&slug) {
+            self.workspace_repl_snapshots
+                .entry(DEFAULT_KEY.to_string())
+                .or_insert(v);
+        }
+        for v in self.eval_id_workspace.values_mut() {
+            if *v == slug {
+                *v = DEFAULT_KEY.to_string();
+            }
+        }
+        for mode in [Mode::Files, Mode::Modules] {
+            let from = (mode, TreeScope::Workspace(slug.clone()));
+            if let Some(slot) = self.tree_store.take(&from) {
+                let to = (mode, TreeScope::Workspace(DEFAULT_KEY.to_string()));
+                match self.tree_store.take(&to) {
+                    None => self.tree_store.stash(to, slot),
+                    Some(existing) => {
+                        // Target existed — the default-keyed slot wins; put
+                        // it back and drop the slug-keyed one.
+                        self.tree_store.stash(to, existing);
+                        tracing::debug!(?mode, %slug,
+                            "learn-migration: dropped slug-keyed tree slot (default-keyed slot exists)");
+                    }
+                }
+            }
+        }
+    }
+
     /// The key `self.tree` currently belongs to. Computed, never stored —
     /// so it can't drift from `(self.mode, active workspace)`.
     fn active_tree_key(&self) -> TreeKey {
@@ -4639,9 +4686,15 @@ impl State {
         // Swap the active tree through the store: the departing mode's tree
         // (cursor, expansion, scroll) parks under its key and the entering
         // mode's parked tree — if any — comes back, which is what makes
-        // cursor position per-mode-persistent across switches. The refetch
-        // below still fires; its reply refreshes the restored view in place
-        // (set_root/set_flat re-anchor the cursor by node id).
+        // cursor position per-mode-persistent across switches. The loader
+        // below fires ONLY for an empty (never-loaded) view — the same
+        // empty-slot gate switch_to_workspace uses. An unconditional refetch
+        // here would defeat the persistence it restores: set_root/set_flat
+        // rebuild root+level-1, so a cursor on a NESTED file (not in the
+        // fresh level-1 rows) falls to 0 and every expansion collapses
+        // (codex r3). Staleness of a restored view is the accepted residual
+        // (parked-slot refresh policy, ops TODO) — identical to the
+        // workspace-switch restore semantics.
         let old_key = self.active_tree_key();
         self.mode = mode;
         let new_key = self.active_tree_key();
@@ -4654,21 +4707,34 @@ impl State {
         // by key now, so a Files reply can't touch a Modules view at all.)
         self.pending_switch_reveal = None;
         match mode {
+            // Files/Modules: fire the loader ONLY for an empty (never-loaded)
+            // view — a restored view keeps its nested cursor + expansion
+            // (the refetch's set_root/set_flat would collapse them; codex
+            // r3). Content staleness is the accepted parked-slot residual.
             Mode::Files => {
-                if let Err(e) = self.req_tx.send(OutgoingReq::TreeRoot {
-                    mode: "files".to_string(),
-                    workspace_id: self.active_workspace_id.clone(),
-                }) {
-                    tracing::warn!(error = %e, "drop tree.root request — channel closed");
+                if self.tree.rows.is_empty() {
+                    if let Err(e) = self.req_tx.send(OutgoingReq::TreeRoot {
+                        mode: "files".to_string(),
+                        workspace_id: self.active_workspace_id.clone(),
+                    }) {
+                        tracing::warn!(error = %e, "drop tree.root request — channel closed");
+                    }
                 }
             }
             Mode::Modules => {
-                if let Err(e) = self.req_tx.send(OutgoingReq::ProjectScan {
-                    workspace_id: self.active_workspace_id.clone(),
-                }) {
-                    tracing::warn!(error = %e, "drop project.scan request — channel closed");
+                if self.tree.rows.is_empty() {
+                    if let Err(e) = self.req_tx.send(OutgoingReq::ProjectScan {
+                        workspace_id: self.active_workspace_id.clone(),
+                    }) {
+                        tracing::warn!(error = %e, "drop project.scan request — channel closed");
+                    }
                 }
             }
+            // Sessions/Hosts: ALWAYS refresh — these are live status lists
+            // where freshness beats restore, their rows are level-1 so
+            // set_root's node-id re-anchor keeps the cursor losslessly, and
+            // Sessions' parked slot deliberately goes stale between visits
+            // (populated parks drop refreshes under the empty-only rule).
             Mode::Sessions => {
                 self.tmux_capture_fired_for = None;
                 if let Err(e) = self.req_tx.send(OutgoingReq::WorkspaceList) {
@@ -8656,18 +8722,26 @@ impl State {
                         self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
                     }
                 }
-                crate::transport::IncomingEvt::FileParseFailed { path } => {
+                crate::transport::IncomingEvt::FileParseFailed { workspace_id, path } => {
                     // Record the failure; the retry gate in
                     // maybe_fire_concept_read re-arms after a backoff. Do
                     // NOT un-latch `file_parse_fired` here — an instant
                     // un-latch let the redraw loop re-fire every frame
                     // against a fast-failing kernel (the ~4.7k req/s storm).
-                    let e = self
-                        .file_parse_retry
-                        .entry(path)
-                        .or_insert((std::time::Instant::now(), 0));
-                    e.0 = std::time::Instant::now();
-                    e.1 += 1;
+                    //
+                    // Ws-gated like the FileParsed success path (codex r3):
+                    // the counter is keyed by workspace-RELATIVE path, so a
+                    // late failure fired for another workspace would advance
+                    // THIS workspace's backoff (or hit its retry cap) for a
+                    // colliding path it never parsed.
+                    if self.reply_ws_key(workspace_id.as_deref()) == self.current_workspace_key() {
+                        let e = self
+                            .file_parse_retry
+                            .entry(path)
+                            .or_insert((std::time::Instant::now(), 0));
+                        e.0 = std::time::Instant::now();
+                        e.1 += 1;
+                    }
                 }
                 crate::transport::IncomingEvt::FileParsed {
                     workspace_id,
@@ -10526,6 +10600,17 @@ impl State {
                             self.default_workspace_slug = Some(w.slug.clone());
                         }
                     }
+                    // LEARN-TRANSITION migration (codex r3): before this reply,
+                    // `default_workspace_slug` was None, so anything keyed in
+                    // that window for the default ws ADDRESSED BY SLUG (a
+                    // repl.execute from a BE session, an early parked reply)
+                    // keyed under the raw slug — while every key computed from
+                    // now on collapses to "<default>". Rename those entries so
+                    // they aren't orphaned (a slug-keyed ReplEntry would eat a
+                    // whole eval's stream). Idempotent: no slug-keyed entries →
+                    // no-op; on collision the "<default>"-keyed entry (from
+                    // None-addressed activity — same physical ws) wins.
+                    self.migrate_default_slug_keys();
                     self.rebuild_connection_status();
                     // --capture-cycle <N>: simulate N Ctrl+PgDn presses
                     // (negative = Ctrl+PgUp) on the first workspace.list

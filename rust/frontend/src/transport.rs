@@ -275,6 +275,12 @@ pub enum IncomingEvt {
     /// one-shot fire guard so the drift check retries on a later cursor
     /// pass instead of wedging at "checking…" for the whole session.
     FileParseFailed {
+        /// Workspace the parse was fired for — the failure twin of
+        /// `FileParsed.workspace_id`: the retry counter is keyed by
+        /// workspace-RELATIVE path, so an ungated cross-workspace failure
+        /// (both projects have a `src/lib.jl`) would advance the ACTIVE
+        /// workspace's backoff for a parse it never fired (codex r3).
+        workspace_id: Option<String>,
         path: String,
     },
     /// `kernel.request function.methods` reply for `module::name`. Methods
@@ -2866,7 +2872,7 @@ fn handle_response_frame(
                         payload = %frame.payload,
                         "file.parse returned no ast_hash — drift check failed, un-latching for retry"
                     );
-                    let _ = evt_tx.send(IncomingEvt::FileParseFailed { path });
+                    let _ = evt_tx.send(IncomingEvt::FileParseFailed { workspace_id, path });
                     return;
                 };
                 let definitions: Vec<DefinitionInfo> = frame
