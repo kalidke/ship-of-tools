@@ -665,6 +665,34 @@ async fn build_preview_payload(
     // previews. Backend-side (rasters are served here, not via the kernel).
     let extras = merge_scale_sidecar(&path, &mime, extras);
 
+    // ADR 0034 scale-source order: sidecar → pHYs → none. When the sidecar
+    // produced no `physical_scale` and this is a PNG, fall back to the embedded
+    // `pHYs` chunk (what SMLMRender emits). CRITICAL: read the ORIGINAL bytes
+    // HERE, before the downsample below — the >20MiB downsample re-encodes via
+    // the `image` crate's PngEncoder, which does NOT preserve `pHYs`, so a
+    // post-downsample read finds nothing. The value is per-ORIGINAL-px (like the
+    // sidecar), so the F1 rescale below handles served-px conversion identically.
+    let extras = if mime == "image/png"
+        && extras
+            .as_ref()
+            .and_then(|e| e.get("physical_scale"))
+            .is_none()
+    {
+        match read_phys_scale(&bytes) {
+            Some(ps) => {
+                let mut obj = match extras {
+                    Some(serde_json::Value::Object(m)) => m,
+                    _ => serde_json::Map::new(),
+                };
+                obj.insert("physical_scale".to_string(), ps);
+                Some(serde_json::Value::Object(obj))
+            }
+            None => extras,
+        }
+    } else {
+        extras
+    };
+
     // Ship an oversize raster as a preview-sized PNG instead of the raw file.
     // Only oversize rasters take the spawn_blocking detour (decode is CPU-heavy
     // and must stay off the async reactor). A panicking decode is near-impossible
@@ -1285,6 +1313,65 @@ fn merge_scale_sidecar(
     };
     obj.insert("physical_scale".to_string(), scale);
     Some(serde_json::Value::Object(obj))
+}
+
+/// Read the PNG `pHYs` chunk as a `physical_scale` — the tier BELOW the
+/// `.scale.json` sidecar in the ADR 0034 resolution order (sidecar → pHYs →
+/// none). `pHYs` is the PNG-standard physical-scale field: pixels-per-unit for
+/// x and y (each u32 big-endian) + a unit byte (0 = unknown, 1 = metre). When
+/// unit == metre and both ppu > 0, `nm_per_px = 1e9 / ppu` PER AXIS, yielding
+/// `{axes:[{name,nm_per_px}],unit:"nm"}` — the same shape `merge_scale_sidecar`
+/// produces, so it flows through the F1 downsample rescale identically.
+/// Returns `None` for unit == unknown, ppu == 0, a PNG without a `pHYs` chunk,
+/// or malformed/truncated bytes (never panics). PNG-only; the caller gates on
+/// `image/png`. Hand-rolled chunk walk (no new crate); the CRC is skipped, not
+/// verified — this only extracts a scale hint, and the `image` crate already
+/// validated the bytes when it decoded/served them.
+fn read_phys_scale(png_bytes: &[u8]) -> Option<serde_json::Value> {
+    const SIG: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+    if png_bytes.len() < 8 || png_bytes[..8] != SIG {
+        return None;
+    }
+    // Walk chunks: [len: u32 BE][type: 4][data: len][crc: 4]. `pHYs`, if present,
+    // precedes the image data (PNG spec), so stop at IDAT/IEND.
+    let mut off = 8usize;
+    while off + 8 <= png_bytes.len() {
+        let len =
+            u32::from_be_bytes([png_bytes[off], png_bytes[off + 1], png_bytes[off + 2], png_bytes[off + 3]])
+                as usize;
+        let ctype = &png_bytes[off + 4..off + 8];
+        let data_start = off + 8;
+        let data_end = data_start.checked_add(len)?;
+        // The chunk's data + its 4-byte CRC must fit; a length that overruns the
+        // slice is malformed → bail rather than index out of bounds.
+        if data_end.checked_add(4)? > png_bytes.len() {
+            return None;
+        }
+        if ctype == b"pHYs" {
+            if len != 9 {
+                return None;
+            }
+            let d = &png_bytes[data_start..data_start + 9];
+            let ppu_x = u32::from_be_bytes([d[0], d[1], d[2], d[3]]);
+            let ppu_y = u32::from_be_bytes([d[4], d[5], d[6], d[7]]);
+            let unit = d[8];
+            if unit != 1 || ppu_x == 0 || ppu_y == 0 {
+                return None;
+            }
+            return Some(serde_json::json!({
+                "axes": [
+                    { "name": "x", "nm_per_px": 1e9_f64 / ppu_x as f64 },
+                    { "name": "y", "nm_per_px": 1e9_f64 / ppu_y as f64 },
+                ],
+                "unit": "nm",
+            }));
+        }
+        if ctype == b"IDAT" || ctype == b"IEND" {
+            break;
+        }
+        off = data_end + 4; // skip this chunk's data + CRC
+    }
+    None
 }
 
 pub async fn handle_concept_read(
@@ -4458,7 +4545,71 @@ mod file_transfer_tests {
 
 #[cfg(test)]
 mod scalebar_sidecar_tests {
-    use super::{merge_scale_sidecar, physical_scale_is_valid, write_scale_sidecar_atomic};
+    use super::{
+        merge_scale_sidecar, physical_scale_is_valid, read_phys_scale, write_scale_sidecar_atomic,
+    };
+
+    /// Minimal bytes read_phys_scale walks: PNG signature + one `pHYs` chunk.
+    /// The CRC is skipped by the reader, so a dummy CRC is fine; a `pHYs` chunk
+    /// is enough (the reader returns on the first `pHYs` it finds).
+    fn png_with_phys(ppu_x: u32, ppu_y: u32, unit: u8) -> Vec<u8> {
+        let mut v = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+        v.extend_from_slice(&9u32.to_be_bytes()); // chunk data length
+        v.extend_from_slice(b"pHYs");
+        v.extend_from_slice(&ppu_x.to_be_bytes());
+        v.extend_from_slice(&ppu_y.to_be_bytes());
+        v.push(unit);
+        v.extend_from_slice(&[0, 0, 0, 0]); // dummy CRC (not verified)
+        v
+    }
+
+    #[test]
+    fn read_phys_scale_roundtrips_metre_isotropic() {
+        // 9.78 nm/px → ppu = round(1e9/9.78); reading back recovers ~9.78.
+        let ppu = (1e9_f64 / 9.78).round() as u32;
+        let ps = read_phys_scale(&png_with_phys(ppu, ppu, 1)).expect("pHYs → scale");
+        let ax = ps["axes"].as_array().unwrap();
+        assert_eq!(ps["unit"], "nm");
+        assert!((ax[0]["nm_per_px"].as_f64().unwrap() - 9.78).abs() < 1e-3);
+        assert!((ax[1]["nm_per_px"].as_f64().unwrap() - 9.78).abs() < 1e-3);
+        assert_eq!(ax[0]["name"], "x");
+        assert_eq!(ax[1]["name"], "y");
+    }
+
+    #[test]
+    fn read_phys_scale_anisotropic_per_axis() {
+        // Different ppu per axis → different nm_per_px (native anisotropy).
+        let ppu_x = (1e9_f64 / 5.0).round() as u32;
+        let ppu_y = (1e9_f64 / 20.0).round() as u32;
+        let ps = read_phys_scale(&png_with_phys(ppu_x, ppu_y, 1)).expect("pHYs → scale");
+        let ax = ps["axes"].as_array().unwrap();
+        assert!((ax[0]["nm_per_px"].as_f64().unwrap() - 5.0).abs() < 1e-3);
+        assert!((ax[1]["nm_per_px"].as_f64().unwrap() - 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn read_phys_scale_rejects_unknown_unit_and_zero_ppu() {
+        let ppu = (1e9_f64 / 9.78).round() as u32;
+        assert!(read_phys_scale(&png_with_phys(ppu, ppu, 0)).is_none()); // unit=unknown
+        assert!(read_phys_scale(&png_with_phys(0, ppu, 1)).is_none()); // ppu_x=0
+        assert!(read_phys_scale(&png_with_phys(ppu, 0, 1)).is_none()); // ppu_y=0
+    }
+
+    #[test]
+    fn read_phys_scale_none_without_phys_or_on_garbage() {
+        // Valid PNG signature + only an IEND chunk (no pHYs) → None.
+        let mut no_phys = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+        no_phys.extend_from_slice(&0u32.to_be_bytes());
+        no_phys.extend_from_slice(b"IEND");
+        no_phys.extend_from_slice(&[0, 0, 0, 0]);
+        assert!(read_phys_scale(&no_phys).is_none());
+        // Not a PNG / too short / truncated mid-chunk → None (no panic).
+        assert!(read_phys_scale(b"not a png at all").is_none());
+        assert!(read_phys_scale(&[]).is_none());
+        let mut truncated = png_with_phys(1000, 1000, 1);
+        truncated.truncate(12); // sig + partial length — must not index OOB
+        assert!(read_phys_scale(&truncated).is_none());
+    }
     use std::path::PathBuf;
 
     fn tmp(name: &str) -> PathBuf {
