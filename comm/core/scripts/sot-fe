@@ -8,7 +8,7 @@
 # to one FE with --fe <handle>).
 #
 # Usage:
-#   sot-fe preview <workspace> <path> [--urgent] [--fe <handle>]
+#   sot-fe preview <workspace> <path> [--urgent] [--fe <handle>] [--roi x,y,w,h]
 #   sot-fe reveal  <workspace> <path> [--urgent] [--fe <handle>]
 #   sot-fe goto    <workspace>        [--boot] [--fe <handle>]
 #   sot-fe mode    <mode>             [--fe <handle>]
@@ -42,6 +42,10 @@
 #   --fe <handle>  scope delivery to one FE by its sot-comm handle (sets the
 #                  wire `target`); absent = every FE acts (the badge floor).
 #   --urgent       hint the FE to force-show now (preview/reveal); sets args.urgent.
+#   --roi x,y,w,h   (preview) aim the viewport at a SOURCE-IMAGE-PIXEL rect (ADR-0022
+#                  image.crop vocabulary; round-trippable). FE clamps to image bounds.
+#                  The effective (clamped) rect echoes via a follow-up event, not this
+#                  fire-and-forget ack (ADR-0025 2026-07-21 Update).
 #   --boot         (goto) seed autostart so the FE boots ccb on the switch — the
 #                  scriptable spawn->goto->boot primitive. Send DIRECTED (--fe
 #                  <handle>); a broadcast --boot would switch+boot on EVERY FE.
@@ -86,6 +90,7 @@ TIMEOUT=""     # repl: wall-clock budget in seconds
 CODE=""        # repl eval: code (else read stdin)
 READ_STDIN=false
 ORIGIN=""      # repl: label shown in the user's drawer (default "session")
+ROI=""         # preview: source-px rect "x,y,w,h" to frame the image at (ADR-0022 vocab)
 FRESH=false    # repl run: restart the persistent REPL into the file's project
 POS=()         # positional args for the subcommand
 while [ $# -gt 0 ]; do
@@ -101,6 +106,7 @@ while [ $# -gt 0 ]; do
         --code)     CODE="$2"; shift 2 ;;
         --stdin)    READ_STDIN=true; shift ;;
         --origin)   ORIGIN="$2"; shift 2 ;;
+        --roi)      ROI="$2"; shift 2 ;;
         -h|--help)  usage 0 ;;
         # Hard-error on an UNKNOWN flag instead of silently treating it as a
         # positional — a silent drop let `repl run --fresh` return a false "ok"
@@ -295,7 +301,7 @@ send_repl_run_file() {
 case "$CMD" in
     preview|reveal)
         WS="${POS[0]:-}"; PATH_ARG="${POS[1]:-}"
-        [ -n "$WS" ] && [ -n "$PATH_ARG" ] || { echo "usage: sot-fe $CMD <workspace> <path> [--urgent] [--fe <handle>]" >&2; exit 1; }
+        [ -n "$WS" ] && [ -n "$PATH_ARG" ] || { echo "usage: sot-fe $CMD <workspace> <path> [--urgent] [--fe <handle>] [--roi x,y,w,h]" >&2; exit 1; }
         # Keep the file nav INSIDE the repo: a node_id must be REPO-RELATIVE (the
         # daemon rejects absolute node_ids, and the FE tree positions its cursor by
         # relative id — an absolute path would show a "floating" file the nav can't
@@ -315,12 +321,29 @@ case "$CMD" in
                 fi
                 ;;
         esac
-        if [ "$URGENT" = true ]; then
-            ARGS="$(jq -nc --arg w "$WS" --arg p "$PATH_ARG" '{workspace:$w, path:$p, urgent:true}')"
-        else
-            ARGS="$(jq -nc --arg w "$WS" --arg p "$PATH_ARG" '{workspace:$w, path:$p}')"
+        ARGS="$(jq -nc --arg w "$WS" --arg p "$PATH_ARG" '{workspace:$w, path:$p}')"
+        [ "$URGENT" = true ] && ARGS="$(printf '%s' "$ARGS" | jq -c '. + {urgent:true}')"
+        # --roi x,y,w,h: aim the FE viewport at a SOURCE-IMAGE-PIXEL rect (ADR-0022
+        # `image.crop` vocabulary, so a crop taken now round-trips to "look here
+        # again" later — same rect = same region on any display). Validate strictly
+        # CLI-side; the FE clamps to image bounds (zoom via png_zoom_max, pan-slack)
+        # and, being fire-and-forget, does NOT echo the effective rect in this ack
+        # (see ADR-0025 addendum) — a heavily-clamped aim surfaces FE-side.
+        if [ -n "$ROI" ]; then
+            IFS=',' read -r RX RY RW RH RREST <<< "$ROI"
+            for _n in "$RX" "$RY" "$RW" "$RH"; do
+                case "$_n" in
+                    ''|*[!0-9]*) echo "ERROR: --roi expects x,y,w,h as non-negative integers (source-image px), got '$ROI'" >&2; exit 1 ;;
+                esac
+            done
+            [ -z "$RREST" ] || { echo "ERROR: --roi expects exactly 4 comma-separated values x,y,w,h, got '$ROI'" >&2; exit 1; }
+            # base-10 normalize (strips leading zeros so jq --argjson stays valid JSON)
+            RX=$((10#$RX)); RY=$((10#$RY)); RW=$((10#$RW)); RH=$((10#$RH))
+            { [ "$RW" -gt 0 ] && [ "$RH" -gt 0 ]; } || { echo "ERROR: --roi w and h must be > 0 (zero-area rect), got w=$RW h=$RH" >&2; exit 1; }
+            ARGS="$(printf '%s' "$ARGS" | jq -c --argjson x "$RX" --argjson y "$RY" --argjson w "$RW" --argjson h "$RH" '. + {roi:{x:$x,y:$y,w:$w,h:$h}}')"
         fi
         send_fe_command "$CMD" "$ARGS"
+        [ -n "$ROI" ] && echo "  roi requested (source px): x=$RX y=$RY w=$RW h=$RH — FE clamps to image bounds" >&2
         ;;
     docs)
         WS="${POS[0]:-}"; PATH_ARG="${POS[1]:-}"
