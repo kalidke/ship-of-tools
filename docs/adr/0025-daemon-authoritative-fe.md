@@ -3,6 +3,32 @@
 **Status:** Accepted (co-design converged 2026-06-22; building on `feat/op-fe-command`)
 **Date:** 2026-06-22
 
+> **Update — 2026-07-21: `preview` gains an optional `roi` (source-px viewport aim).**
+> A session can aim the FE viewport at a rectangle of the SOURCE image:
+> `preview{ws, path, roi?}` where `roi = {x, y, w, h}` in source-image pixels
+> (offset from top-left) — the SAME vocabulary as ADR-0022's `image.crop`, so a crop
+> taken now round-trips to "look here again" later (identical rect ⇒ identical region
+> on any display; source-px is DPI- and pane-size-independent, unlike raw zoom/pan).
+> **Split:** the BE owns the request side (`sot-fe preview <ws> <path> --roi x,y,w,h`,
+> validated CLI-side: four non-negative integers, `w,h > 0`); the FE owns the solve —
+> it inverts `visible_roi_px` to derive `preview_png_zoom` + `preview_png_pan_px`,
+> CLAMPED to image bounds via `png_zoom_max` + the pan-slack clamp.
+>
+> **Badge floor holds:** `roi` rides the same routing as `preview` — badge-by-default,
+> force-show only under `--urgent`/`--fe`. Aiming a viewport is *more* intrusive than a
+> plain preview, so it obeys the never-yank rule (the 2026-07-10 semantics below).
+>
+> **Clamp-and-echo is ASYNC — NOT in the ack.** `fe.command.send` is fire-and-forget
+> (§4): the daemon re-emits to all FEs and acks `{ok:true}` immediately with no FE
+> round-trip, so the *effective* (clamped) rect is not knowable at ack time — the clamp
+> is FE-side. The request-side ack therefore confirms only that the rect was forwarded.
+> A caller that needs to detect heavy clamping and re-aim reads the effective rect from
+> an **FE-emitted follow-up event** — proposed `preview_roi_applied{ws, path,
+> effective:{x,y,w,h,src_w,src_h}, clamped:bool}` — not this ack. The request side ships
+> first and DEGRADES GRACEFULLY: an FE without the solve ignores `roi` and previews
+> normally. (FE solve + the `roi_applied` event + an optional `sot-fe … --await-roi`
+> consumer are the follow-up halves.)
+
 > **Update — 2026-07-10 (PM revision): badge floor RESTORED as the default;
 > "always show" means a COMPLETE show, not a stolen session.**
 > Two rulings landed the same day. Morning: "show image should always set the
@@ -98,11 +124,14 @@ drives the FE there, so a result no longer has to live in the sender's own works
 
 ### 3. Command vocabulary (`op::FE_COMMAND {v:1, cmd, args}`)
 
-- `preview{ws, path}` — **MIME-agnostic**: markdown, source, AND images (backend
+- `preview{ws, path, roi?}` — **MIME-agnostic**: markdown, source, AND images (backend
   `preview.get` mime drives md-vs-png; `png.rs` already renders images). Shows in the
   preview pane. No separate `preview_image` (redundant). A non-file/generated image (a
   temp plot not in the tree) is a deferred inline-bytes form of `preview`; v1 results
-  are file-based per the `dev/output`|external-storage convention.
+  are file-based per the `dev/output`|external-storage convention. **Optional `roi =
+  {x,y,w,h}`** (source-image px, ADR-0022 `image.crop` vocabulary) aims the viewport at
+  that region; FE clamps to bounds; effective rect echoes via a follow-up event, not the
+  ack — see the 2026-07-21 top Update.
 - `reveal{ws, path}` — switch + Files + expand the tree to `path` + **select the row**
   (deep cursor-reveal). "Go look at this"; distinct from `preview` (render it).
 - `goto_workspace{ws}` = existing `FeCommand::Workspace{slug}`.
