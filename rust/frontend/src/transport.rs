@@ -172,7 +172,15 @@ pub enum IncomingEvt {
     /// deep-path reveal awaiting that parent (2026-07-10 symlink-reveal
     /// diagnosis); now the GPU thread gets told so it can abort the reveal
     /// with a visible trace + status line.
-    TreeChildrenFailed { parent_id: String, error: String },
+    TreeChildrenFailed {
+        /// Workspace the failed expand was fired for (from the pending
+        /// entry). The chrome key-gates its reveal-abort on this so a
+        /// failure for a PARKED workspace's expand can't abort the ACTIVE
+        /// workspace's reveal that merely shares a `parent_id` string.
+        workspace_id: Option<String>,
+        parent_id: String,
+        error: String,
+    },
     /// The kernel reported its currently-loaded module list. The chrome
     /// turns each name into a synthetic `TreeNode` and feeds them through
     /// the same `TreeView::set_root` path Files-mode uses. `path` is
@@ -254,6 +262,10 @@ pub enum IncomingEvt {
     /// `name/kind/line/parent/ast_hash` entries for top-level items in
     /// the file, used by Modules-mode col 2.
     FileParsed {
+        /// Workspace the parse was fired for (tree-provenance redesign):
+        /// keys the Modules col-2 splice so two workspaces defining the
+        /// same module name can't cross-splice definitions.
+        workspace_id: Option<String>,
         path: String,
         ast_hash: String,
         definitions: Vec<DefinitionInfo>,
@@ -268,6 +280,8 @@ pub enum IncomingEvt {
     /// `kernel.request function.methods` reply for `module::name`. Methods
     /// become Modules-mode col-3 children of the function row.
     FunctionMethodsReceived {
+        /// Same ws echo as `FileParsed` — keys the col-3 splice.
+        workspace_id: Option<String>,
         module: String,
         name: String,
         methods: Vec<MethodInfo>,
@@ -1124,10 +1138,12 @@ enum PendingKind {
     },
     FileParse {
         path: String,
+        workspace_id: Option<String>,
     },
     FunctionMethods {
         module: String,
         name: String,
+        workspace_id: Option<String>,
     },
     PreviewGet {
         node_id: String,
@@ -1939,13 +1955,13 @@ where
                                 serde_json::to_value(KernelRequestReq {
                                     kernel_op: "file.parse".to_string(),
                                     kernel_payload: serde_json::json!({ "path": path }),
-                                    workspace_id,
+                                    workspace_id: workspace_id.clone(),
                                 })?,
                             ),
                             None,
                         )
                         .await?;
-                        pending.insert(id, PendingKind::FileParse { path });
+                        pending.insert(id, PendingKind::FileParse { path, workspace_id });
                     }
                     OutgoingReq::PreviewGet { node_id, workspace_id, page, fit_w, fit_h } => {
                         tracing::debug!(%node_id, ?workspace_id, ?page, id, "→ preview.get");
@@ -2043,13 +2059,13 @@ where
                                         "module": module,
                                         "name": name,
                                     }),
-                                    workspace_id,
+                                    workspace_id: workspace_id.clone(),
                                 })?,
                             ),
                             None,
                         )
                         .await?;
-                        pending.insert(id, PendingKind::FunctionMethods { module, name });
+                        pending.insert(id, PendingKind::FunctionMethods { module, name, workspace_id });
                     }
                     OutgoingReq::ReplEval { eval_id, code, mode, workspace_id } => {
                         tracing::debug!(eval_id, code_len = code.len(), ?mode, ?workspace_id, id, "→ repl.eval");
@@ -2478,6 +2494,7 @@ fn handle_response_frame(
                 if let Some(err) = frame.payload.get("error").and_then(|v| v.as_str()) {
                     tracing::warn!(%parent_id, error = %err, "tree.children answered with error");
                     let _ = evt_tx.send(IncomingEvt::TreeChildrenFailed {
+                        workspace_id,
                         parent_id,
                         error: err.to_string(),
                     });
@@ -2494,6 +2511,7 @@ fn handle_response_frame(
                 Err(e) => {
                     tracing::warn!(error = %e, %parent_id, "tree.children res parse failed");
                     let _ = evt_tx.send(IncomingEvt::TreeChildrenFailed {
+                        workspace_id,
                         parent_id,
                         error: e.to_string(),
                     });
@@ -2826,7 +2844,7 @@ fn handle_response_frame(
                 };
                 let _ = evt_tx.send(IncomingEvt::FileDeleteDone { node_id, result });
             }
-            PendingKind::FileParse { path } => {
+            PendingKind::FileParse { path, workspace_id } => {
                 // `file.parse` returns either {ast_hash, path, definitions}
                 // or {error, code, ast_hash?} on parse failure. The hash
                 // is computed from raw bytes before the parser runs, so
@@ -2881,6 +2899,7 @@ fn handle_response_frame(
                     })
                     .unwrap_or_default();
                 let _ = evt_tx.send(IncomingEvt::FileParsed {
+                    workspace_id,
                     path,
                     ast_hash,
                     definitions,
@@ -2980,7 +2999,7 @@ fn handle_response_frame(
                 }
                 return;
             }
-            PendingKind::FunctionMethods { module, name } => {
+            PendingKind::FunctionMethods { module, name, workspace_id } => {
                 // Reply shape: `{methods: [{module, name, file, line, sig, ast_hash}, ...]}`
                 // or `{error, code}` on bad_request / module_not_found /
                 // function_not_found. We surface an empty list in the
@@ -3016,6 +3035,7 @@ fn handle_response_frame(
                     tracing::warn!(%module, %name, code, "function.methods returned error");
                 }
                 let _ = evt_tx.send(IncomingEvt::FunctionMethodsReceived {
+                    workspace_id,
                     module,
                     name,
                     methods,

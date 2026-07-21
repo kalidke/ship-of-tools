@@ -1551,10 +1551,21 @@ fn mode_scope(mode: Mode, ws_key: &str) -> TreeScope {
     }
 }
 
-/// Normalize a wire `workspace_id` (`None` = daemon default) to the same
-/// literal `current_workspace_key` uses.
-fn ws_key_of(workspace_id: Option<&str>) -> String {
-    workspace_id.unwrap_or("<default>").to_string()
+/// Normalize a wire `workspace_id` to the workspace-key literal. BOTH
+/// spellings of the daemon-default workspace — `None` AND its actual slug
+/// (`Some(default_slug)`) — map to `"<default>"`: startup keys the default
+/// as `None`, but workspace cycling and Sessions-Enter address it by slug,
+/// and without this collapse one physical workspace would split into two
+/// tree/snapshot keys (slot miss, cursor reset, duplicate root fetch).
+/// Pure so the aliasing is unit-testable; `State::reply_ws_key` /
+/// `current_workspace_key` supply `default_slug` so active-key and
+/// reply-key computation can never disagree.
+fn ws_key_of(workspace_id: Option<&str>, default_slug: Option<&str>) -> String {
+    match workspace_id {
+        None => "<default>".to_string(),
+        Some(s) if default_slug == Some(s) => "<default>".to_string(),
+        Some(s) => s.to_string(),
+    }
 }
 
 /// A stored (non-active) tree: the view plus the state that must travel
@@ -4482,9 +4493,14 @@ impl State {
     /// in `active_workspace_id`; `<default>` is the literal we use
     /// instead so it has a snapshot slot too.
     fn current_workspace_key(&self) -> String {
-        self.active_workspace_id
-            .clone()
-            .unwrap_or_else(|| "<default>".to_string())
+        self.reply_ws_key(self.active_workspace_id.as_deref())
+    }
+
+    /// Workspace-key for a wire `workspace_id` — the ONE normalization both
+    /// the active key and every reply key go through (see `ws_key_of` for
+    /// the default-slug aliasing this collapses).
+    fn reply_ws_key(&self, workspace_id: Option<&str>) -> String {
+        ws_key_of(workspace_id, self.default_workspace_slug.as_deref())
     }
 
     /// The key `self.tree` currently belongs to. Computed, never stored —
@@ -5350,6 +5366,15 @@ impl State {
         // wrong project (Codex review 2026-07-15). The first-visit badge-consume
         // below re-arms it for the new workspace when one is pending.
         self.pending_switch_reveal = None;
+        // The in-flight deep-reveal bookkeeping is likewise the DEPARTING
+        // workspace's: its awaited parent_id names a row in the departing
+        // tree, and a same-string parent in the entering tree is a different
+        // node. Clearing here is also what lets the TreeChildren park branch
+        // skip abort logic entirely — an armed reveal's awaited parent always
+        // belongs to the ACTIVE key.
+        self.pending_reveal = None;
+        self.reveal_awaiting = None;
+        self.reveal_refetched = None;
         if let Some(target) = tmux_session.or_else(|| slug.as_ref().map(|s| format!("sot-be-{s}")))
         {
             self.attach_session_to_bl(target);
@@ -8277,15 +8302,27 @@ impl State {
                     // tree.
                     let reply_key: TreeKey = (
                         Mode::Files,
-                        TreeScope::Workspace(ws_key_of(workspace_id.as_deref())),
+                        TreeScope::Workspace(self.reply_ws_key(workspace_id.as_deref())),
                     );
                     if reply_key != self.active_tree_key() {
-                        tracing::info!(?reply_key, active = ?self.active_tree_key(),
-                            "tree.root parked into its own slot (not the active view)");
-                        self.tree_store
-                            .slot_mut(reply_key)
-                            .view
-                            .set_root(root, children);
+                        // Park ONLY into an empty slot: a root-only rebuild
+                        // is STRICTLY POORER than a parked expanded tree
+                        // (repro: reconnect arms a restore for ws A, user
+                        // switches to B before A's root lands — replacing
+                        // A's expanded slot with a root-only view loses the
+                        // expansion AND suppresses the return-visit refetch,
+                        // since non-empty slots skip the loader). A richer
+                        // parked tree wins; drop the reply like the old
+                        // guard did.
+                        let slot = self.tree_store.slot_mut(reply_key.clone());
+                        if slot.view.rows.is_empty() {
+                            tracing::info!(?reply_key,
+                                "tree.root parked into its empty slot (not the active view)");
+                            slot.view.set_root(root, children);
+                        } else {
+                            tracing::info!(?reply_key,
+                                "tree.root dropped — parked slot already holds a richer tree");
+                        }
                         continue;
                     }
                     // TRACED (2026-07-10 nav-collapse diagnosis): set_root
@@ -8431,14 +8468,10 @@ impl State {
                 } => {
                     // Route by the reply's key, like TreeRoot: a lazy-expand
                     // reply for a (workspace, mode) we're no longer viewing
-                    // splices into ITS OWN slot, not the active view. An
-                    // active reveal awaiting that parent can never be
-                    // satisfied by a parked splice (the reveal walks the
-                    // ACTIVE view), so abort it — same outcome as the old
-                    // workspace-guard drop, without losing the data.
+                    // splices into ITS OWN slot, not the active view.
                     let reply_key: TreeKey = (
                         Mode::Files,
-                        TreeScope::Workspace(ws_key_of(workspace_id.as_deref())),
+                        TreeScope::Workspace(self.reply_ws_key(workspace_id.as_deref())),
                     );
                     if reply_key != self.active_tree_key() {
                         tracing::info!(?workspace_id, active = ?self.active_workspace_id,
@@ -8447,13 +8480,12 @@ impl State {
                             .slot_mut(reply_key)
                             .view
                             .apply_children(&parent_id, children);
-                        if self.reveal_awaiting.as_deref() == Some(parent_id.as_str()) {
-                            tracing::info!(%parent_id,
-                                "reveal: aborted — awaited children landed in a non-active slot");
-                            self.pending_reveal = None;
-                            self.reveal_awaiting = None;
-                            self.reveal_refetched = None;
-                        }
+                        // No reveal-abort here: switch_to_workspace clears the
+                        // reveal bookkeeping, so an armed reveal's awaited
+                        // parent always belongs to the ACTIVE key — a parked
+                        // reply can never be the awaited one (a same-string
+                        // parent_id from another workspace is a different
+                        // node; aborting on it was the cross-key bug).
                         continue;
                     }
                     self.tree.apply_children(&parent_id, children);
@@ -8465,7 +8497,25 @@ impl State {
                     }
                     self.drive_reveal_step();
                 }
-                crate::transport::IncomingEvt::TreeChildrenFailed { parent_id, error } => {
+                crate::transport::IncomingEvt::TreeChildrenFailed {
+                    workspace_id,
+                    parent_id,
+                    error,
+                } => {
+                    // Key-gate: a failed expand for a PARKED workspace's tree
+                    // is not the active view's problem — and its parent_id
+                    // could string-match an ACTIVE reveal's awaited parent
+                    // (same relative path in another project), which must not
+                    // abort that reveal. Trace and move on.
+                    let reply_key: TreeKey = (
+                        Mode::Files,
+                        TreeScope::Workspace(self.reply_ws_key(workspace_id.as_deref())),
+                    );
+                    if reply_key != self.active_tree_key() {
+                        tracing::info!(?workspace_id, %parent_id, %error,
+                            "tree.children failure for a non-active slot — ignored");
+                        continue;
+                    }
                     // A tree.children request errored (backend error frame or
                     // parse failure). Surface it and abort any reveal waiting
                     // on this parent — previously this was warn-and-drop in
@@ -8506,7 +8556,7 @@ impl State {
                     let rows = scan_to_tree_rows(&modules);
                     let reply_key: TreeKey = (
                         Mode::Modules,
-                        TreeScope::Workspace(ws_key_of(workspace_id.as_deref())),
+                        TreeScope::Workspace(self.reply_ws_key(workspace_id.as_deref())),
                     );
                     if reply_key != self.active_tree_key() {
                         tracing::info!(?reply_key, active = ?self.active_tree_key(),
@@ -8566,15 +8616,20 @@ impl State {
                     // this is the alternate/legacy Modules loader).
                     let reply_key: TreeKey = (
                         Mode::Modules,
-                        TreeScope::Workspace(ws_key_of(workspace_id.as_deref())),
+                        TreeScope::Workspace(self.reply_ws_key(workspace_id.as_deref())),
                     );
                     if reply_key != self.active_tree_key() {
-                        tracing::info!(?reply_key, active = ?self.active_tree_key(),
-                            "modules.list parked into its own slot (not the active view)");
-                        self.tree_store
-                            .slot_mut(reply_key)
-                            .view
-                            .set_root(root, children);
+                        // Same empty-slot-only rule as the TreeRoot park: a
+                        // root+modules rebuild would destroy parked col-2/3
+                        // splices.
+                        let slot = self.tree_store.slot_mut(reply_key.clone());
+                        if slot.view.rows.is_empty() {
+                            tracing::info!(?reply_key, "modules.list parked into its empty slot");
+                            slot.view.set_root(root, children);
+                        } else {
+                            tracing::info!(?reply_key,
+                                "modules.list dropped — parked slot already holds a richer tree");
+                        }
                         continue;
                     }
                     self.tree.set_root(root, children);
@@ -8596,28 +8651,55 @@ impl State {
                     e.1 += 1;
                 }
                 crate::transport::IncomingEvt::FileParsed {
+                    workspace_id,
                     path,
                     ast_hash,
                     definitions,
                 } => {
-                    self.file_parse_retry.remove(&path);
-                    self.file_ast_hashes.insert(path.clone(), ast_hash);
+                    let reply_ws = self.reply_ws_key(workspace_id.as_deref());
+                    // Drift-badge bookkeeping is ACTIVE-workspace state (both
+                    // maps are per-workspace snapshotted), and the drift
+                    // check's `path` is workspace-RELATIVE (`files:` strip) —
+                    // so a late reply fired for another workspace could
+                    // insert a COLLIDING relative path (both projects have a
+                    // `src/lib.jl`) into this workspace's map and fake its
+                    // drift verdict. Gate on the reply's workspace. The
+                    // skipped insert isn't lost: the owning workspace's
+                    // restore drops hash-less fire-latches and re-fires.
+                    if reply_ws == self.current_workspace_key() {
+                        self.file_parse_retry.remove(&path);
+                        self.file_ast_hashes.insert(path.clone(), ast_hash);
+                    }
                     // If a module row's payload.path matches, synthesize
                     // child TreeNodes from the parsed definitions and
                     // splice. Files-mode drift-detection callers ignore
                     // `definitions` (they just want ast_hash); modules-mode
                     // expansion callers consume it here. Same wire shape,
-                    // both consumers happy.
-                    let module_id = self
-                        .tree
-                        .rows
-                        .iter()
-                        .find(|r| {
-                            r.node.kind == "module"
-                                && r.node.payload.get("path").and_then(|v| v.as_str())
-                                    == Some(path.as_str())
-                        })
-                        .map(|r| r.node.id.clone());
+                    // both consumers happy. Routed by the reply's TREE key:
+                    // the splice lands in the active view only when
+                    // (Modules, reply ws) is what's on screen; otherwise in
+                    // that key's parked slot — module `path`s are absolute,
+                    // but two workspaces CAN define the same module file
+                    // (a shared package checked out twice), and the old
+                    // active-tree lookup would cross-splice them.
+                    let reply_key: TreeKey =
+                        (Mode::Modules, TreeScope::Workspace(reply_ws));
+                    let splice_active = reply_key == self.active_tree_key();
+                    let module_id = {
+                        let view = if splice_active {
+                            &self.tree
+                        } else {
+                            &self.tree_store.slot_mut(reply_key.clone()).view
+                        };
+                        view.rows
+                            .iter()
+                            .find(|r| {
+                                r.node.kind == "module"
+                                    && r.node.payload.get("path").and_then(|v| v.as_str())
+                                        == Some(path.as_str())
+                            })
+                            .map(|r| r.node.id.clone())
+                    };
                     if let Some(parent_id) = module_id {
                         // Strip the `modules:` prefix to recover the module
                         // name for col-3's `function.methods` call later.
@@ -8658,19 +8740,43 @@ impl State {
                                 }
                             })
                             .collect();
-                        self.tree.apply_children(&parent_id, kids);
+                        if splice_active {
+                            self.tree.apply_children(&parent_id, kids);
+                        } else {
+                            self.tree_store
+                                .slot_mut(reply_key)
+                                .view
+                                .apply_children(&parent_id, kids);
+                        }
                     }
                 }
                 crate::transport::IncomingEvt::FunctionMethodsReceived {
+                    workspace_id,
                     module,
                     name,
                     methods,
                 } => {
                     // Find the function row whose id matches `modules:<mod>:<name>`.
                     // The exact id is what we built when modules-col-2 splice
-                    // ran, so reconstruct it from the request echo.
+                    // ran, so reconstruct it from the request echo. Routed by
+                    // the reply's tree key (same rationale as FileParsed's
+                    // splice — a same-named module in two workspaces must not
+                    // cross-splice); the existence check runs within the
+                    // ROUTED view.
                     let parent_id = format!("modules:{module}:{name}");
-                    let exists = self.tree.rows.iter().any(|r| r.node.id == parent_id);
+                    let reply_key: TreeKey = (
+                        Mode::Modules,
+                        TreeScope::Workspace(self.reply_ws_key(workspace_id.as_deref())),
+                    );
+                    let splice_active = reply_key == self.active_tree_key();
+                    let exists = {
+                        let view = if splice_active {
+                            &self.tree
+                        } else {
+                            &self.tree_store.slot_mut(reply_key.clone()).view
+                        };
+                        view.rows.iter().any(|r| r.node.id == parent_id)
+                    };
                     if !exists {
                         tracing::debug!(
                             %parent_id,
@@ -8702,7 +8808,14 @@ impl State {
                             }
                         })
                         .collect();
-                    self.tree.apply_children(&parent_id, kids);
+                    if splice_active {
+                        self.tree.apply_children(&parent_id, kids);
+                    } else {
+                        self.tree_store
+                            .slot_mut(reply_key)
+                            .view
+                            .apply_children(&parent_id, kids);
+                    }
                 }
                 crate::transport::IncomingEvt::ConceptRead {
                     target,
@@ -9749,10 +9862,16 @@ impl State {
                     // mode is up instead of clobbering its view.
                     let reply_key: TreeKey = (Mode::Sessions, TreeScope::Global);
                     if reply_key != self.active_tree_key() {
-                        self.tree_store
-                            .slot_mut(reply_key)
-                            .view
-                            .set_root(root, children);
+                        // Empty-slot-only, like every set_root park: a
+                        // sessions-only rebuild would destroy parked pane
+                        // splices.
+                        let slot = self.tree_store.slot_mut(reply_key);
+                        if slot.view.rows.is_empty() {
+                            slot.view.set_root(root, children);
+                        } else {
+                            tracing::debug!(
+                                "tmux.sessions dropped — parked Sessions slot already populated");
+                        }
                         continue;
                     }
                     self.tree.set_root(root, children);
@@ -10495,10 +10614,14 @@ impl State {
                     }));
                     let reply_key: TreeKey = (Mode::Sessions, TreeScope::Global);
                     if reply_key != self.active_tree_key() {
-                        self.tree_store
-                            .slot_mut(reply_key)
-                            .view
-                            .set_root(root, children);
+                        // Empty-slot-only (see the TreeRoot park rationale).
+                        let slot = self.tree_store.slot_mut(reply_key);
+                        if slot.view.rows.is_empty() {
+                            slot.view.set_root(root, children);
+                        } else {
+                            tracing::debug!(
+                                "workspace.list dropped — parked Sessions slot already populated");
+                        }
                         continue;
                     }
                     self.tree.set_root(root, children);
@@ -18181,8 +18304,9 @@ mod tests {
     /// different slots.
     #[test]
     fn tree_key_normalization_covers_default_and_mismatch() {
+        // No default slug known (boot): only None means the default ws.
         let k = |ws: Option<&str>| -> TreeKey {
-            (Mode::Files, mode_scope(Mode::Files, &ws_key_of(ws)))
+            (Mode::Files, mode_scope(Mode::Files, &ws_key_of(ws, None)))
         };
         assert_eq!(k(Some("hs-tirf")), k(Some("hs-tirf")));
         assert_eq!(k(None), k(None));
@@ -18193,7 +18317,20 @@ mod tests {
         assert_ne!(k(Some("hs-tirf")), k(None));
         // The wire's None must normalize to the SAME literal
         // `current_workspace_key` uses for the default workspace.
-        assert_eq!(ws_key_of(None), "<default>");
+        assert_eq!(ws_key_of(None, None), "<default>");
+        // DEFAULT-SLUG ALIASING: the daemon default is addressable two ways
+        // — `None` (startup) and `Some(default_slug)` (cycling /
+        // Sessions-Enter). Both MUST collapse to the same key, or one
+        // physical workspace splits into two slots (cursor reset +
+        // duplicate root on every cycle to the default).
+        assert_eq!(ws_key_of(None, Some("mypkg")), "<default>");
+        assert_eq!(ws_key_of(Some("mypkg"), Some("mypkg")), "<default>");
+        assert_eq!(
+            ws_key_of(Some("mypkg"), Some("mypkg")),
+            ws_key_of(None, Some("mypkg"))
+        );
+        // A NON-default slug is untouched by the collapse.
+        assert_eq!(ws_key_of(Some("mypkg"), Some("other")), "mypkg");
         // Mode is half the key: same ws, different mode → different slot
         // (the set_flat hole — a Modules scan can never key to a Files view).
         assert_ne!(
