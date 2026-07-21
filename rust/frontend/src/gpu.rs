@@ -1617,6 +1617,19 @@ impl TreeStore {
     fn slot_mut(&mut self, key: TreeKey) -> &mut TreeSlot {
         self.slots.entry(key).or_default()
     }
+
+    /// Drop every per-workspace slot for a destroyed workspace (Files +
+    /// Modules — the two Workspace-scoped modes). Without this, destroy →
+    /// recreate under the same slug would resurrect the OLD project's
+    /// parked rows, and the non-empty slot would suppress the fresh
+    /// tree.root the empty-slot loader gate otherwise fires. Global slots
+    /// (Sessions/Hosts) are machine-level and survive by design.
+    fn purge_workspace(&mut self, ws_key: &str) {
+        for mode in [Mode::Files, Mode::Modules] {
+            self.slots
+                .remove(&(mode, TreeScope::Workspace(ws_key.to_string())));
+        }
+    }
 }
 
 /// Test SVG used as a placeholder until kernel-driven previews land. Mimics
@@ -5375,6 +5388,12 @@ impl State {
         self.pending_reveal = None;
         self.reveal_awaiting = None;
         self.reveal_refetched = None;
+        // The preview-follow hold is the departing reveal's too: it names a
+        // node id in the OLD workspace's tree, and the same id exists in
+        // most projects (files:README.md) — left armed, it would suppress
+        // the ENTERING workspace's cursor-follow preview until the user
+        // moved the cursor (blank preview on switch).
+        self.driven_preview_hold_cursor = None;
         if let Some(target) = tmux_session.or_else(|| slug.as_ref().map(|s| format!("sot-be-{s}")))
         {
             self.attach_session_to_bl(target);
@@ -9236,9 +9255,13 @@ impl State {
                     // terminal `done` route to it like any local run.
                     if let ReplFrame::Started { origin, display, .. } = &frame {
                         if !self.eval_id_workspace.contains_key(&eval_id) {
-                            let key = workspace_id
-                                .clone()
-                                .unwrap_or_else(|| self.current_workspace_key());
+                            // Normalize the wire hint through the SAME collapse
+                            // current_workspace_key uses: a run in the default
+                            // workspace can arrive addressed by its SLUG, and a
+                            // raw comparison against "<default>" would route the
+                            // entry (and every subsequent frame) to a snapshot
+                            // key that no longer exists.
+                            let key = self.reply_ws_key(workspace_id.as_deref());
                             let label = format!("{origin} ▸ {display}");
                             let new_entry = ReplEntry {
                                 eval_id,
@@ -10056,8 +10079,17 @@ impl State {
                             // Clean up per-workspace snapshot maps so a
                             // recreated workspace with the same slug
                             // doesn't inherit stale UI/REPL state.
-                            self.workspace_ui_snapshots.remove(&info.slug);
-                            self.workspace_repl_snapshots.remove(&info.slug);
+                            // Purge through the SAME key collapse the maps are
+                            // written with — a destroyed default-by-slug must
+                            // remove the "<default>" entries, not miss them.
+                            let ws_key = self.reply_ws_key(Some(info.slug.as_str()));
+                            self.workspace_ui_snapshots.remove(&ws_key);
+                            self.workspace_repl_snapshots.remove(&ws_key);
+                            // The tree slots died with the snapshot on main;
+                            // the store split orphaned them — drop the
+                            // destroyed workspace's Files/Modules slots so a
+                            // same-slug recreate starts clean (codex r2 #3).
+                            self.tree_store.purge_workspace(&ws_key);
                             self.workspace_labels.remove(&info.slug);
                             self.workspace_project_roots.remove(&info.slug);
                             let tmux_note = if info.tmux_killed {
