@@ -1583,6 +1583,14 @@ struct TreeSlot {
     /// scanned against instead of whichever workspace's scan last
     /// touched the shared field.
     scan_project_root: Option<String>,
+    /// Provenance of the CURRENT contents: `false` = user state (stashed by
+    /// `swap_active_tree` — cursor/expansion the user built; a reply
+    /// rebuild must never destroy it), `true` = filled by a PARKED reply.
+    /// A later parked reply MAY replace reply-provenance contents — replies
+    /// are server-ordered, so newest wins (codex r5: two `.` toggles then a
+    /// mode switch — reply #1 filled the empty slot, reply #2 with the
+    /// FINAL visibility was dropped by the plain empty-only rule).
+    from_reply: bool,
 }
 
 /// Parking lot for every nav tree that is NOT the active `(mode, scope)`.
@@ -4605,6 +4613,7 @@ impl State {
                 view: old_view,
                 scroll: self.tree_scroll,
                 scan_project_root: old_scan_root,
+                from_reply: false, // user state — parked replies must not destroy it
             },
         );
         self.tree_scroll = 0;
@@ -8420,13 +8429,18 @@ impl State {
                         // parked tree wins; drop the reply like the old
                         // guard did.
                         let slot = self.tree_store.slot_mut(reply_key.clone());
-                        if slot.view.rows.is_empty() {
+                        if slot.view.rows.is_empty() || slot.from_reply {
+                            // Empty, or holding an EARLIER parked reply —
+                            // replies are server-ordered, newest wins (the
+                            // double-toggle race, codex r5). Only user-
+                            // stashed state (from_reply=false) is sacred.
                             tracing::info!(?reply_key,
-                                "tree.root parked into its empty slot (not the active view)");
+                                "tree.root parked into its slot (not the active view)");
                             slot.view.set_root(root, children);
+                            slot.from_reply = true;
                         } else {
                             tracing::info!(?reply_key,
-                                "tree.root dropped — parked slot already holds a richer tree");
+                                "tree.root dropped — parked slot holds user state");
                         }
                         continue;
                     }
@@ -8669,6 +8683,7 @@ impl State {
                         let slot = self.tree_store.slot_mut(reply_key);
                         slot.view.set_flat(rows);
                         slot.scan_project_root = project_root;
+                        slot.from_reply = true;
                         continue;
                     }
                     self.scan_project_root = project_root;
@@ -8728,12 +8743,13 @@ impl State {
                         // root+modules rebuild would destroy parked col-2/3
                         // splices.
                         let slot = self.tree_store.slot_mut(reply_key.clone());
-                        if slot.view.rows.is_empty() {
-                            tracing::info!(?reply_key, "modules.list parked into its empty slot");
+                        if slot.view.rows.is_empty() || slot.from_reply {
+                            tracing::info!(?reply_key, "modules.list parked into its slot");
                             slot.view.set_root(root, children);
+                            slot.from_reply = true;
                         } else {
                             tracing::info!(?reply_key,
-                                "modules.list dropped — parked slot already holds a richer tree");
+                                "modules.list dropped — parked slot holds user state");
                         }
                         continue;
                     }
@@ -9979,15 +9995,16 @@ impl State {
                     // mode is up instead of clobbering its view.
                     let reply_key: TreeKey = (Mode::Sessions, TreeScope::Global);
                     if reply_key != self.active_tree_key() {
-                        // Empty-slot-only, like every set_root park: a
-                        // sessions-only rebuild would destroy parked pane
-                        // splices.
+                        // Reply-over-reply allowed (newest wins, server-
+                        // ordered); only a user-stashed Sessions view
+                        // (from_reply=false) blocks the rebuild.
                         let slot = self.tree_store.slot_mut(reply_key);
-                        if slot.view.rows.is_empty() {
+                        if slot.view.rows.is_empty() || slot.from_reply {
                             slot.view.set_root(root, children);
+                            slot.from_reply = true;
                         } else {
                             tracing::debug!(
-                                "tmux.sessions dropped — parked Sessions slot already populated");
+                                "tmux.sessions dropped — parked Sessions slot holds user state");
                         }
                         continue;
                     }
@@ -10751,13 +10768,15 @@ impl State {
                     }));
                     let reply_key: TreeKey = (Mode::Sessions, TreeScope::Global);
                     if reply_key != self.active_tree_key() {
-                        // Empty-slot-only (see the TreeRoot park rationale).
+                        // Reply-over-reply allowed (see the TreeRoot park
+                        // rationale); user-stashed state blocks.
                         let slot = self.tree_store.slot_mut(reply_key);
-                        if slot.view.rows.is_empty() {
+                        if slot.view.rows.is_empty() || slot.from_reply {
                             slot.view.set_root(root, children);
+                            slot.from_reply = true;
                         } else {
                             tracing::debug!(
-                                "workspace.list dropped — parked Sessions slot already populated");
+                                "workspace.list dropped — parked Sessions slot holds user state");
                         }
                         continue;
                     }
