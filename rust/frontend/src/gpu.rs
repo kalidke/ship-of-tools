@@ -4545,6 +4545,13 @@ impl State {
                 *v = DEFAULT_KEY.to_string();
             }
         }
+        // The README-defaulted one-shot marker is keyed the same way (an
+        // ADR-0017 resume can restore the active ws BY SLUG pre-learn); a
+        // slug-keyed marker left behind would let the README default fire a
+        // second time and yank the cursor (codex r4).
+        if self.nav_readme_defaulted.remove(&slug) {
+            self.nav_readme_defaulted.insert(DEFAULT_KEY.to_string());
+        }
         for mode in [Mode::Files, Mode::Modules] {
             let from = (mode, TreeScope::Workspace(slug.clone()));
             if let Some(slot) = self.tree_store.take(&from) {
@@ -4770,6 +4777,19 @@ impl State {
                 workspace_id: self.active_workspace_id.clone(),
             }) {
                 tracing::warn!(error = %e, "drop tree.root after nav.toggle_hidden — channel closed");
+            } else {
+                // The visible rows now show the WRONG visibility — the
+                // backend flag already flipped. Clear the view so every
+                // in-flight path self-corrects (codex r4): stay in Files →
+                // the reply set_roots the active view as before; switch
+                // modes before the reply → an EMPTY view parks, so the
+                // reply is accepted by the empty-only park instead of
+                // dropped, and a return-to-Files before it lands refetches
+                // via the empty-slot loader gate. Without this, a populated
+                // parked slot dropped the reply and the stale visibility
+                // stuck until a manual reload.
+                self.tree = TreeView::new();
+                self.tree_scroll = 0;
             }
         }
     }
