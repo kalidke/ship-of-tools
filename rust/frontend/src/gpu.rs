@@ -2025,15 +2025,30 @@ struct State {
     /// scale; cleared on every `preview.get` reply (like `preview_page`).
     /// Presence gates the scalebar toggle key + overlay.
     preview_scale: Option<PhysicalScale>,
-    /// One-shot: a `preview.set_scale` is in flight, holding the typed value
-    /// for the confirmation message. The success reply deliberately flows
-    /// through the SHARED preview handler (one install path for a preview and
-    /// its calibration), and that handler knows nothing about scale entry — so
-    /// without this the "saving…" status would sit there forever even though
-    /// the bar had already appeared. Taken by whichever resolves first: the
-    /// preview install (success) or `ScaleSetFailed` (rejection), so a stale
-    /// flag can't make some later unrelated preview claim "saved".
-    scale_save_pending: Option<String>,
+    /// Focus to restore when the scale-entry prompt resolves (confirm OR
+    /// cancel). Ctrl+S fires from the Preview pane, and `begin_scale_entry`
+    /// takes NavTree focus purely because that's where NavPrompt keystrokes
+    /// are handled — an implementation detail, not something the user asked
+    /// for. Without restoring, calibrating an image you're inspecting dumps
+    /// you in the tree, so your next zoom/pan keypress goes to the wrong pane.
+    /// `None` when no scale prompt is open.
+    scale_entry_prior_focus: Option<PaneFocus>,
+    /// One-shot: a `preview.set_scale` is in flight, as `(node_id, typed
+    /// value)`. The success reply deliberately flows through the SHARED
+    /// preview handler (one install path for a preview and its calibration),
+    /// and that handler knows nothing about scale entry — so without this the
+    /// "saving…" status would sit there forever even though the bar had
+    /// already appeared. Taken by whichever resolves first: the preview
+    /// install (success) or `ScaleSetFailed` (rejection), so a stale marker
+    /// can't make some later unrelated preview claim "saved".
+    ///
+    /// The `node_id` is carried so the take() can require the arriving preview
+    /// to BE the save's target: navigating to another file mid-save would
+    /// otherwise let that file's `preview.get` consume the marker and announce
+    /// "saved" over an unrelated image. Cosmetic — the sidecar and bar are
+    /// correct either way — but a status line attributing a save to the wrong
+    /// file is exactly the kind of quietly-wrong message worth not shipping.
+    scale_save_pending: Option<(String, String)>,
     /// Scalebar overlay toggle (ADR 0034, `b`). Default off; sticky across
     /// navigations (renders only when `preview_scale` is present, so it can
     /// stay armed while browsing a mix of scaled / unscaled rasters).
@@ -3509,6 +3524,7 @@ impl State {
             preview_page_raster_pending: None,
             preview_reraster_keep_view: false,
             preview_scale: None,
+            scale_entry_prior_focus: None,
             scale_save_pending: None,
             // Default off; `--start-scalebar` arms it for the headless capture
             // harness (no `b` keypress). Still gated on a present scale at draw.
@@ -6879,7 +6895,10 @@ impl State {
         // swallows nothing: typing goes to the preview's zoom/pan keys and
         // Enter never reaches `confirm_scale_entry`. Ctrl+N doesn't need this
         // because it can only fire from NavTree focus in the first place.
-        // Codex v0.4.4 gate.
+        // Codex v0.4.4 gate. Remember where the user actually was so resolving
+        // the prompt puts them back (5th-gate follow-up) — the focus move is
+        // ours, not theirs, so it shouldn't outlive the prompt.
+        self.scale_entry_prior_focus = Some(self.focus);
         self.focus = PaneFocus::NavTree;
         self.status = "pixel size (nm): ".to_string();
         self.window.request_redraw();
@@ -6929,7 +6948,13 @@ impl State {
         // ordinary preview install, so without a pending marker we'd either
         // leave "saving…" up forever or congratulate the user on every
         // unrelated preview.get.
-        self.scale_save_pending = Some(raw.clone());
+        self.scale_save_pending = Some((node_id.clone(), raw.clone()));
+        // Prompt resolved — hand focus back to the pane the user was actually
+        // in (the Preview they're calibrating), so their next zoom/pan key
+        // lands there rather than in the tree.
+        if let Some(prior) = self.scale_entry_prior_focus.take() {
+            self.focus = prior;
+        }
         self.status = format!("pixel size {raw} nm · saving…");
         self.window.request_redraw();
     }
@@ -6989,6 +7014,12 @@ impl State {
             _ => "new file · cancelled".to_string(),
         };
         self.nav_prompt = None;
+        // Cancelling a scale prompt returns you where you were (see
+        // `scale_entry_prior_focus`). Only fires for that prompt; the other
+        // variants are opened FROM the tree and never moved focus.
+        if let Some(prior) = self.scale_entry_prior_focus.take() {
+            self.focus = prior;
+        }
         self.window.request_redraw();
     }
 
@@ -8642,7 +8673,16 @@ impl State {
                     // `set_scale` reply (one install path, by design), so it's
                     // where "saving…" has to be retired. Gated on the pending
                     // marker so ordinary previews never trigger it.
-                    if let Some(raw) = self.scale_save_pending.take() {
+                    // Only THIS save's target may resolve it — otherwise
+                    // navigating away mid-save lets the new file's preview
+                    // consume the marker and label an unrelated image "saved".
+                    let scale_saved = match self.scale_save_pending.as_ref() {
+                        Some((target, _)) if node_id.as_deref() == Some(target.as_str()) => {
+                            self.scale_save_pending.take().map(|(_, raw)| raw)
+                        }
+                        _ => None,
+                    };
+                    if let Some(raw) = scale_saved {
                         self.status = if self.preview_scale.is_some() {
                             format!("pixel size {raw} nm · saved")
                         } else {
