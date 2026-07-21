@@ -8371,6 +8371,7 @@ impl State {
                     self.window.request_redraw();
                 }
                 crate::transport::IncomingEvt::ProjectScan {
+                    workspace_id: _scan_workspace_id,
                     project_root,
                     package_name,
                     entry_file,
@@ -8394,7 +8395,10 @@ impl State {
                         }
                     }
                 }
-                crate::transport::IncomingEvt::ModulesList { modules } => {
+                crate::transport::IncomingEvt::ModulesList {
+                    workspace_id: _modules_workspace_id,
+                    modules,
+                } => {
                     // Synthesize TreeNodes so Modules-mode reuses the same
                     // TreeView rendering as Files-mode. `path` from Linux's
                     // 4e1c8c0 rides along on `payload.path` so the keyboard

@@ -180,6 +180,11 @@ pub enum IncomingEvt {
     /// `4e1c8c0`) — built-ins like Base/Core have `None` and aren't
     /// expandable into col-2 definitions.
     ModulesList {
+        /// The workspace this list was requested for, echoed from the pending
+        /// entry (tree-provenance redesign — lets the chrome install into the
+        /// right (Modules, workspace) slot instead of blindly into the shared
+        /// tree). `None` = default workspace.
+        workspace_id: Option<String>,
         modules: Vec<ModuleInfo>,
     },
     /// `kernel.request project.scan` reply — full nested package tree
@@ -187,6 +192,8 @@ pub enum IncomingEvt {
     /// Modules+Types nav mode; surfaces from a single round-trip
     /// rather than module-by-module `file.parse` calls.
     ProjectScan {
+        /// Same ws echo as `ModulesList` (tree-provenance redesign).
+        workspace_id: Option<String>,
         /// Absolute path of the workspace's `project_root`. The chrome
         /// needs this to strip the prefix off the absolute file paths
         /// each entry carries before firing `preview.get` (which takes
@@ -1078,8 +1085,17 @@ enum PendingKind {
     TreeRoot {
         workspace_id: Option<String>,
     },
-    ModulesList,
-    ProjectScan,
+    /// Tree-provenance redesign: both kernel-request tree loaders now CARRY
+    /// the workspace they were fired for (previously discarded here, which
+    /// left their replies un-keyable — a late Modules reply could clobber
+    /// another workspace's tree with no way to detect it; the v0.4.3 saga's
+    /// last open hole).
+    ModulesList {
+        workspace_id: Option<String>,
+    },
+    ProjectScan {
+        workspace_id: Option<String>,
+    },
     MarkdownTokenize {
         lang: String,
         source_hash: u64,
@@ -1712,13 +1728,15 @@ where
                                 serde_json::to_value(KernelRequestReq {
                                     kernel_op: "modules.list".to_string(),
                                     kernel_payload: serde_json::json!({}),
-                                    workspace_id,
+                                    workspace_id: workspace_id.clone(),
                                 })?,
                             ),
                             None,
                         )
                         .await?;
-                        pending.insert(id, PendingKind::ModulesList);
+                        // Capture the ws into the pending entry so the reply is
+                        // keyable (tree-provenance redesign).
+                        pending.insert(id, PendingKind::ModulesList { workspace_id });
                     }
                     OutgoingReq::ProjectScan { workspace_id } => {
                         tracing::debug!(?workspace_id, id, "→ kernel.request project.scan");
@@ -1730,13 +1748,13 @@ where
                                 serde_json::to_value(KernelRequestReq {
                                     kernel_op: "project.scan".to_string(),
                                     kernel_payload: serde_json::json!({}),
-                                    workspace_id,
+                                    workspace_id: workspace_id.clone(),
                                 })?,
                             ),
                             None,
                         )
                         .await?;
-                        pending.insert(id, PendingKind::ProjectScan);
+                        pending.insert(id, PendingKind::ProjectScan { workspace_id });
                     }
                     OutgoingReq::MarkdownTokenize { lang, source_hash, source } => {
                         tracing::debug!(%lang, source_hash, id, "→ kernel.request markdown.tokenize");
@@ -2496,7 +2514,7 @@ fn handle_response_frame(
                     }
                 }
             }
-            PendingKind::ModulesList => {
+            PendingKind::ModulesList { workspace_id } => {
                 // The KERNEL_REQUEST envelope returns the kernel's response
                 // payload verbatim. modules.list shape after Linux's
                 // 4e1c8c0 is `{modules: [{name, uuid, is_main, path}, ...]}`.
@@ -2520,9 +2538,12 @@ fn handle_response_frame(
                 if modules.is_empty() {
                     tracing::warn!(payload = %frame.payload, "modules.list returned no modules");
                 }
-                let _ = evt_tx.send(IncomingEvt::ModulesList { modules });
+                let _ = evt_tx.send(IncomingEvt::ModulesList {
+                    workspace_id,
+                    modules,
+                });
             }
-            PendingKind::ProjectScan => {
+            PendingKind::ProjectScan { workspace_id } => {
                 // KERNEL_REQUEST returns the kernel's response payload
                 // verbatim. project.scan shape is described in
                 // ShipToolsKernel.handle_project_scan: `{project_root,
@@ -2543,6 +2564,7 @@ fn handle_response_frame(
                 if let Some(err) = payload.get("error").and_then(|v| v.as_str()) {
                     tracing::warn!(error = %err, "project.scan returned error");
                     let _ = evt_tx.send(IncomingEvt::ProjectScan {
+                        workspace_id,
                         project_root,
                         package_name,
                         entry_file,
@@ -2555,6 +2577,7 @@ fn handle_response_frame(
                         .map(|arr| arr.iter().map(parse_scan_module).collect())
                         .unwrap_or_default();
                     let _ = evt_tx.send(IncomingEvt::ProjectScan {
+                        workspace_id,
                         project_root,
                         package_name,
                         entry_file,
