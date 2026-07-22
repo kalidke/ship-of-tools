@@ -4,18 +4,18 @@ Ship of Tools runs across machines and operating systems, and each one needs a s
 amount of local state: the toolchains, a host registry, frontend settings, and a
 launcher.
 
-!!! warning "Status: source setup is manual today"
-    The documentation and release plan call the intended guided flow
-    `sot-setup`, but no `sot-setup` command is shipped in the checkout yet.
-    For Windows and source checkouts, follow the checklist below manually. The
-    Linux/macOS release installer (`scripts/install.sh`) automates much of this
-    for packaged installs.
+!!! note "Guided or manual"
+    The guided flow ships as the **`/sot-setup` Claude Code skill** — available
+    directly in any checkout (`.claude/skills/sot-setup/`) and installed
+    user-level by `ShipTools.update_comm()`. There is no standalone `sot-setup`
+    binary: in an agent session invoke `/sot-setup`; otherwise follow the
+    checklist below manually. The Linux/macOS release installer
+    (`scripts/install.sh`) automates much of this for packaged installs.
 
 ## Source Setup Checklist
 
-The intended `sot-setup` flow is a one-shot, cross-OS onboarding for a Ship of
-Tools machine (Windows, Linux, or macOS). Until that command exists, do these
-steps yourself:
+The `sot-setup` flow is a one-shot, cross-OS onboarding for a Ship of Tools
+machine (Windows, Linux, or macOS). Done manually, these are the steps:
 
 1. **Install the toolchains.** Rust via [rustup](https://rustup.rs/) and Julia
    via [juliaup](https://github.com/JuliaLang/juliaup), where they are missing.
@@ -34,8 +34,12 @@ steps yourself:
    build paths.
 
 On Windows frontend machines, run `scripts\install-shortcut.ps1` after
-`.sot\hosts.toml` exists. Re-run it after editing host config so an existing
-taskbar pin is repointed to the launcher.
+`.sot\hosts.toml` exists. Besides creating the desktop shortcut to
+`scripts\launch-sot.ps1`, it sets the SoT icon (`logo.ico`) and stamps the
+`ShipOfTools.Sot` AppUserModelID on the `.lnk`, so the running window merges
+into the shortcut's taskbar button with the right icon (a hand-made shortcut
+gets neither). Re-run it after editing host config or pinning to the taskbar
+so the pin is repointed to the launcher.
 
 ## The cross-OS topology
 

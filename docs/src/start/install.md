@@ -149,10 +149,11 @@ use.
   a set `$GITHUB_TOKEN` is *honored* to avoid the unauthenticated API rate
   limit (60 requests/hour per IP) — relevant only if you install repeatedly.
 
-On **Windows** there is no `install.ps1` and no shipped `sot-setup` command yet.
-`scripts/install.sh` exits with a Windows-specific message, so install from
-source via the manual checklist in [Per-Machine Setup](setup.md), or use a
-Windows release zip only after one exists. On **macOS aarch64** the bash
+On **Windows** there is no packaged `install.ps1` yet (issue #23);
+`scripts/install.sh` exits with a Windows-specific message. Install from
+source via [Per-Machine Setup](setup.md) — manually, or by invoking the
+shipped `/sot-setup` Claude Code skill, which drives that checklist
+(including the launcher shortcut + taskbar icon) end-to-end. On **macOS aarch64** the bash
 installer is wired, but support is still experimental and there is no launchd
 service wiring; local roles start `sotd` on demand.
 
@@ -166,8 +167,8 @@ the kernel and plugins are Julia. Installing it means building the Rust
 workspace once and instantiating a handful of Julia environments.
 
 This section is the manual build path. Machine-specific config and launchers are
-covered by [Per-Machine Setup](setup.md); that page is currently a manual
-source-checkout checklist, not a shipped `sot-setup` command.
+covered by [Per-Machine Setup](setup.md); run that page's checklist manually or
+let the `/sot-setup` Claude Code skill drive it.
 
 ### Prerequisites
 

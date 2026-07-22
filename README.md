@@ -121,10 +121,14 @@ Source builds are version-stamped `-dev` and never self-update. For
 authoritative, OS-specific setup (Rust via rustup, Julia via juliaup, config
 files, a launcher, and comm skills) see
 **[Per-Machine Setup](https://kalidke.github.io/ship-of-tools/dev/start/setup/)**.
-That page is currently a manual/source checklist; a `sot-setup` command is not
-shipped yet. On Windows, after the build/env steps, write `.sot/hosts.toml` and
-`.sot/settings.toml`, run `ShipTools.update_comm()`, then run
-`scripts\install-shortcut.ps1`.
+In a Claude Code session the **`/sot-setup`** skill drives that page end-to-end
+(it ships in the checkout's `.claude/skills/` and `ShipTools.update_comm()`
+installs it user-level). Doing it by hand on Windows: after the build/env
+steps, write `.sot/hosts.toml` and `.sot/settings.toml`, run
+`ShipTools.update_comm()`, then run `scripts\install-shortcut.ps1` — it wires
+the desktop shortcut (and any taskbar pin) to `scripts\launch-sot.ps1` and
+stamps the SoT icon + taskbar identity. Never point a shortcut at bare
+`sot.exe`.
 
 ## Quick start
 

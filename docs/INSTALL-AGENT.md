@@ -104,7 +104,11 @@ every host sharing it.
 ## 2b. Windows frontend → remote backend
 
 Windows is a first-class *frontend* host (the backend stays on Linux). No
-bash installer here — four steps (issue #23):
+packaged installer here yet (issue #23). Steps 1–4 are the minimal manual
+bring-up — good for proving the connection once. **Do not stop there**: the
+end state for a Windows machine is step 5 (the repo launcher + shortcut),
+which owns the tunnel, keeps the frontend fresh, and puts the proper icon on
+the taskbar.
 
 1. **Download + verify** from the selected release
    (https://github.com/kalidke/ship-of-tools/releases):
@@ -133,9 +137,35 @@ bash installer here — four steps (issue #23):
    `<repo>/.sot/hosts.toml` → `%APPDATA%\sot\hosts.toml`).
 
    `sot.exe` does NOT open the SSH forward itself — the tunnel is yours (or
-   a launcher's). The dev repo's `scripts/launch-sot.ps1` automates
-   forward + launch + respawn for source checkouts; a packaged `install.ps1`
-   is tracked in issue #23.
+   a launcher's).
+
+5. **Launcher + shortcut (the actual end state).** Never hand-roll a shortcut
+   to `sot.exe --tcp ...` — that is a "naive" FE: nothing owns the tunnel or
+   refreshes the remote `sotd`, there is no ADR-0017 exit-75 self-relaunch,
+   and the taskbar shows a generic icon. The canonical Windows launcher is
+   `scripts/launch-sot.ps1` in the repo, and the shortcut that wires it up is
+   created by `scripts\install-shortcut.ps1`. Both need a source checkout
+   (the launcher stages the frontend from `rust\target\release`), so on
+   Windows finish with the source setup:
+
+   ```powershell
+   git clone https://github.com/kalidke/ship-of-tools
+   cd ship-of-tools
+   # build + env + config: follow docs/src/start/setup.md, or in a Claude Code
+   # session just invoke the /sot-setup skill — it drives the whole checklist.
+   # Then, once .sot\hosts.toml exists:
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1
+   ```
+
+   `install-shortcut.ps1` creates `Desktop\Ship of Tools.lnk` →
+   `launch-sot.ps1` (opens all the step-3 forwards, spawns/refreshes the
+   remote `sotd`, runs the frontend under the exit-75 respawn supervisor),
+   sets the SoT icon (`logo.ico`), and stamps the AppUserModelID
+   `ShipOfTools.Sot` on the `.lnk` so the running window merges into the
+   shortcut's taskbar button with the right icon. Re-run it after pinning to
+   the taskbar — it re-syncs the pin so it never drifts back to a naive
+   `sot.exe`. A packaged `install.ps1` that removes the clone requirement is
+   tracked in issue #23.
 
 ## 2c. macOS
 
