@@ -230,15 +230,14 @@ mod tests {
         assert!(ports.contains(&1235), "video default");
         assert!(ports.contains(&1236), "docs default");
         assert!(ports.contains(&1241), "wgl default");
-        // Pool ports are allow-listed only when ASSIGNED (bound+served); with
-        // an empty pool here, the configured range is NOT blanket-allowed —
-        // the tightening that stops the proxy dialing a port the daemon lost
-        // the bind on (codex).
-        assert!(!ports.contains(&1237), "unassigned pool port not allowlisted");
-        assert!(!ports.contains(&1240), "unassigned pool port not allowlisted");
         // A random unrelated port is NOT proxyable.
         assert!(!ports.contains(&8080));
         assert!(!ports.contains(&22));
+        // NB: no assertion on pool ports (1237–1240) here — the docs pool is
+        // allow-listed by ASSIGNED port (pool_assigned_ports, the tightening),
+        // which reads the process-global POOL that site_serve's own pool_tests
+        // mutate in parallel; asserting emptiness here would race them (codex).
+        // The "assigned-only" behavior is covered by site_serve's pool_tests.
     }
 
     #[test]
@@ -380,5 +379,46 @@ mod tests {
         let (dres, _) = tokio::join!(daemon_fut, client_fut);
         dres.unwrap();
         std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
+    }
+
+    /// The teardown regression (codex): upstream closes (EOF) while the CLIENT
+    /// keeps its write half open forever. A `join!` teardown would wait for
+    /// BOTH copies and hang here (the client→upstream copy never sees EOF); the
+    /// `select!` teardown returns as soon as the upstream→client copy finishes.
+    /// Asserting handle_proxy_connect returns within a timeout is what catches
+    /// a regression back to `join!`.
+    #[tokio::test]
+    async fn upstream_close_tears_down_without_waiting_for_client() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Upstream that EOFs immediately on connect (a server that closed after
+        // responding). Drop the accepted socket → the daemon's upstream read
+        // sees EOF.
+        let l = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((s, _)) = l.accept().await {
+                drop(s);
+            }
+        });
+        std::env::set_var("SOT_PROXY_EXTRA_PORTS", port.to_string());
+
+        let (client, daemon) = tokio::io::duplex(4096);
+        let (dr, dw) = tokio::io::split(daemon);
+        // The client NEVER closes its write half (`_cw` kept alive to scope
+        // end), so the client→upstream direction never EOFs — the half-open
+        // condition. `_cr` likewise kept so the duplex stays open.
+        let (_cr, _cw) = tokio::io::split(client);
+
+        let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(port), None);
+        let res = tokio::time::timeout(std::time::Duration::from_secs(3), daemon_fut).await;
+        assert!(
+            res.is_ok(),
+            "proxy did not tear down on upstream close while client stayed open (join! leak?)"
+        );
+        res.unwrap().unwrap();
+
+        std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
+        drop(_cr);
+        drop(_cw);
     }
 }

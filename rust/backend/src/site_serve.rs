@@ -79,6 +79,14 @@ static SERIAL_NONCE: RwLock<BTreeMap<u64, String>> = RwLock::new(BTreeMap::new()
 pub const POOL_SIZE: u16 = 4;
 static POOL: RwLock<BTreeMap<u16, (u64, PathBuf, String)>> = RwLock::new(BTreeMap::new());
 
+/// The pool ports THIS daemon successfully bound at `spawn_pool` — the ports
+/// it actually serves. `assign_pool_port` picks only from here (not the full
+/// configured range), so a port whose boot bind failed (another process owns
+/// it) is never handed out in a docs URL and never authorized for the
+/// ADR-0035 proxy. Empty until `spawn_pool` runs.
+static BOUND_POOL: RwLock<std::collections::BTreeSet<u16>> =
+    RwLock::new(std::collections::BTreeSet::new());
+
 /// The pool's port range — 1237..=1240 with the default `site_port()` (1236).
 pub fn pool_ports() -> std::ops::RangeInclusive<u16> {
     (site_port() + 1)..=(site_port() + POOL_SIZE)
@@ -105,7 +113,20 @@ pub fn assign_pool_port(serial: u64, root: PathBuf) -> Option<(u16, String)> {
         g.insert(port, (serial, root, secret.clone()));
         return Some((port, secret));
     }
-    for port in pool_ports() {
+    // Assign only from ports we ACTUALLY bound at spawn_pool — never a port
+    // whose bind failed (another process owns it), which would otherwise
+    // return a docs URL pointing at that unrelated listener AND authorize the
+    // proxy to dial it (codex). Falls back to the full range only if
+    // spawn_pool never ran (BOUND_POOL empty) — e.g. a unit test exercising
+    // assignment in isolation — preserving the old behavior there.
+    let bound = BOUND_POOL.read().unwrap_or_else(|p| p.into_inner());
+    let candidates: Vec<u16> = if bound.is_empty() {
+        pool_ports().collect()
+    } else {
+        bound.iter().copied().collect()
+    };
+    drop(bound);
+    for port in candidates {
         if let std::collections::btree_map::Entry::Vacant(e) = g.entry(port) {
             e.insert((serial, root, secret.clone()));
             return Some((port, secret));
@@ -311,6 +332,10 @@ pub async fn spawn_pool() {
         match TcpListener::bind(("127.0.0.1", port)).await {
             Ok(listener) => {
                 tracing::info!(port, "root-relative site pool listening");
+                BOUND_POOL
+                    .write()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(port);
                 tokio::spawn(async move {
                     loop {
                         match listener.accept().await {

@@ -8501,6 +8501,15 @@ impl State {
                     // daemon's loopback ports directly and never proxies.
                     self.proxy_capable = proxy;
                     self.proxy_remote = remote;
+                    // Residual (accepted, codex): these gates gate NEW binds
+                    // only; listeners already bound this process persist across
+                    // a reconnect. A capability DOWNGRADE across reconnect
+                    // (proxy true→false, i.e. a daemon swap) leaves stale
+                    // listeners — but they degrade gracefully (the new daemon
+                    // rejects their proxy.connect → dead page, same as no
+                    // proxy), are bounded (one per port, deduped, no leak), and
+                    // a daemon swap triggers an FE relaunch per the standing
+                    // order. Listener teardown-on-downgrade is a follow-up.
                     // Cache host + daemon root basename so the chrome can
                     // rebuild the connection status every time the active
                     // workspace changes — not just at hello time. Strip
