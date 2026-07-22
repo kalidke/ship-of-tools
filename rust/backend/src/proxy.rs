@@ -40,16 +40,27 @@ const WGL_PORT_DEFAULT: u16 = 1241;
 /// runtime-assigned pool port is honored without a restart.
 ///
 /// - Pluto (fixed 1234), video (`SOT_VIDEO_PORT`), docs shared
-///   (`SOT_DOCS_PORT`) + its pool (`+1..=+POOL_SIZE`),
+///   (`SOT_DOCS_PORT`),
+/// - the docs pool's currently-ASSIGNED ports (`pool_assigned_ports()`, NOT
+///   the full configured range) — so a pool port whose boot bind failed
+///   (another process owns it) is never authorized, closing the "proxy dials
+///   someone else's loopback service" gap for the dynamic pool (codex),
 /// - `SOT_WGL_PORT` (default 1241) — read daemon-side only to allow-list it,
 /// - `SOT_PROXY_EXTRA_PORTS` (comma-separated) — escape hatch for a future
 ///   REPL-served dashboard so a new port needs no daemon release.
+///
+/// Residual (accepted): the FIXED ports (pluto/video/docs-shared/wgl) are
+/// listed as configured, not verified-bound — if one's boot bind failed AND
+/// another same-user process holds it, a remote FE (already the authenticated
+/// user over the ssh tunnel) could reach that same-user loopback service. It's
+/// a same-user-loopback exposure, not a privilege boundary; tracking
+/// verified-bound fixed ports is a follow-up.
 pub fn allowed_proxy_ports() -> BTreeSet<u16> {
     let mut ports = BTreeSet::new();
     ports.insert(PLUTO_PORT);
     ports.insert(crate::http_serve::video_port());
     ports.insert(crate::site_serve::site_port());
-    ports.extend(crate::site_serve::pool_ports());
+    ports.extend(crate::site_serve::pool_assigned_ports());
     ports.insert(wgl_port());
     for tok in std::env::var("SOT_PROXY_EXTRA_PORTS")
         .unwrap_or_default()
@@ -171,10 +182,17 @@ where
         let _ = tx.shutdown().await;
         r
     };
-    // Either direction finishing (EOF/close/error) tears down the pipe. A
-    // one-way error is expected at close and not worth surfacing loudly.
-    let (a, b) = tokio::join!(client_to_up, up_to_client);
-    tracing::debug!(port = req.port, ?a, ?b, "proxy pipe closed");
+    // Tear down as soon as EITHER direction closes. A `join!` would wait for
+    // BOTH, so a half-open peer (upstream EOFs after responding while the
+    // client keeps its write half open, or vice versa) would block the other
+    // copy forever and leak the task + both sockets — unbounded growth under
+    // repeated half-open connections (codex). `select!` drops the losing copy;
+    // the stream halves then drop at return, closing both sockets so the
+    // stalled peer sees a reset.
+    tokio::select! {
+        r = client_to_up => tracing::debug!(port = req.port, ?r, "proxy: client→upstream closed first"),
+        r = up_to_client => tracing::debug!(port = req.port, ?r, "proxy: upstream→client closed first"),
+    }
     Ok(())
 }
 
@@ -211,9 +229,13 @@ mod tests {
         assert!(ports.contains(&1234), "pluto");
         assert!(ports.contains(&1235), "video default");
         assert!(ports.contains(&1236), "docs default");
-        assert!(ports.contains(&1237), "docs pool start");
-        assert!(ports.contains(&1240), "docs pool end");
         assert!(ports.contains(&1241), "wgl default");
+        // Pool ports are allow-listed only when ASSIGNED (bound+served); with
+        // an empty pool here, the configured range is NOT blanket-allowed —
+        // the tightening that stops the proxy dialing a port the daemon lost
+        // the bind on (codex).
+        assert!(!ports.contains(&1237), "unassigned pool port not allowlisted");
+        assert!(!ports.contains(&1240), "unassigned pool port not allowlisted");
         // A random unrelated port is NOT proxyable.
         assert!(!ports.contains(&8080));
         assert!(!ports.contains(&22));

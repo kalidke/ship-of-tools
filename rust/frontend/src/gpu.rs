@@ -4909,10 +4909,15 @@ impl State {
                 tracing::info!(port, "proxy: bound local listener for backend page");
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                // A legacy launcher `-L <port>` forward already holds it and
-                // serves the page — the two mechanisms coexist. Leave it
-                // marked ensured so we don't retry every open.
-                tracing::debug!(port, "proxy: port already bound (legacy -L forward?); leaving it");
+                // Something already holds the port — normally a legacy
+                // launcher `-L <port>` forward serving the same page (the two
+                // mechanisms coexist). Do NOT cache this: un-mark so the next
+                // open re-probes. If the holder was a stale/unrelated forward
+                // that later exits, a subsequent open then binds and proxies
+                // instead of being wedged connection-refused forever. A
+                // re-probe is a cheap fast-failing bind.
+                self.proxy_ensured.remove(&port);
+                tracing::debug!(port, "proxy: port already bound (legacy -L forward?); will re-probe next open");
             }
             Err(e) => {
                 tracing::warn!(port, error = %e, "proxy: bind failed");
@@ -8485,12 +8490,17 @@ impl State {
                     host,
                     project_root,
                     proxy,
+                    remote,
                 } => {
-                    // ADR 0035: remember whether this daemon can proxy backend
-                    // pages over the control tunnel, so a remote FE arms its
-                    // lazy loopback listeners (older daemons → false → rely on
-                    // the launcher's per-port ssh forwards as before).
+                    // ADR 0035: arm the proxy only when the daemon can proxy
+                    // (capability) AND this FE actually connected over the tcp
+                    // control tunnel (remote). Keyed on the transport that
+                    // CONNECTED, not the CLI shape — the documented
+                    // `--socket <local> --tcp <addr>` remote config has both
+                    // set and falls back to tcp. A local (pipe) FE reaches the
+                    // daemon's loopback ports directly and never proxies.
                     self.proxy_capable = proxy;
+                    self.proxy_remote = remote;
                     // Cache host + daemon root basename so the chrome can
                     // rebuild the connection status every time the active
                     // workspace changes — not just at hello time. Strip
@@ -14323,25 +14333,23 @@ impl ApplicationHandler for App {
                         state.window.clone(),
                         state.reconnect_now.clone(),
                     );
-                    // ADR 0035: a REMOTE FE (tcp control tunnel, no local
-                    // socket) arms the proxy manager so backend pages reach it
-                    // through that one tunnel. A local (pipe) FE reaches the
-                    // daemon's loopback ports directly and never proxies. The
-                    // manager owns the async accept loop; the GPU thread hands
-                    // it synchronously-bound listeners (`ensure_proxy_listener`)
-                    // so a port is listening before the browser launches.
-                    if self.cli.tcp.is_some() && self.cli.socket.is_none() {
-                        if let Some(daemon_tcp) = self.cli.tcp.clone() {
-                            let (ltx, lrx) = tokio::sync::mpsc::unbounded_channel();
-                            crate::proxy_listen::spawn_proxy_manager(
-                                rt,
-                                daemon_tcp,
-                                self.cli.token.clone(),
-                                lrx,
-                            );
-                            state.proxy_remote = true;
-                            state.proxy_listener_tx = Some(ltx);
-                        }
+                    // ADR 0035: spawn the proxy manager whenever a tcp endpoint
+                    // is configured (the manager just waits for listeners). It
+                    // arms only when the transport actually connects over tcp —
+                    // gated at ensure-time by `proxy_remote`, set from the
+                    // Connected evt's `remote` flag (the actual transport), NOT
+                    // the CLI shape. The manager owns the async accept loop; the
+                    // GPU thread hands it synchronously-bound listeners so a
+                    // port is listening before the browser launches.
+                    if let Some(daemon_tcp) = self.cli.tcp.clone() {
+                        let (ltx, lrx) = tokio::sync::mpsc::unbounded_channel();
+                        crate::proxy_listen::spawn_proxy_manager(
+                            rt,
+                            daemon_tcp,
+                            self.cli.token.clone(),
+                            lrx,
+                        );
+                        state.proxy_listener_tx = Some(ltx);
                     }
                 }
                 // If `--start-mode modules` was set, queue a project.scan

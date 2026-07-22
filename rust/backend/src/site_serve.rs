@@ -119,6 +119,19 @@ pub fn pool_in_use() -> usize {
     POOL.read().unwrap_or_else(|p| p.into_inner()).len()
 }
 
+/// The pool ports currently ASSIGNED (and therefore actually bound + served
+/// by THIS daemon) — the set the ADR-0035 proxy allowlist trusts. Distinct
+/// from `pool_ports()` (the configured RANGE): a range port whose bind failed
+/// at boot (another process owns it) is never assigned, so it never enters
+/// this set and the proxy won't dial someone else's loopback service on it.
+pub fn pool_assigned_ports() -> Vec<u16> {
+    POOL.read()
+        .unwrap_or_else(|p| p.into_inner())
+        .keys()
+        .copied()
+        .collect()
+}
+
 /// Root AND secret for a pool port — what `handle_conn`'s `ServeMode::Pool`
 /// arm needs to authenticate a request (security review; see `assign_pool_port`).
 fn pool_entry_for(port: u16) -> Option<(PathBuf, String)> {

@@ -84,6 +84,12 @@ pub enum IncomingEvt {
         /// is true; `false` for older daemons (falls back to the launcher's
         /// per-port ssh forwards exactly as before).
         proxy: bool,
+        /// This connection is the TCP control tunnel (a REMOTE FE), not the
+        /// local pipe — the actual transport that connected. The proxy arms
+        /// on `proxy && remote`; keyed here (not on CLI flags) so the
+        /// `--socket <local> --tcp <addr>` remote config, which falls back to
+        /// tcp, is correctly detected as remote.
+        remote: bool,
     },
     Disconnected {
         reason: String,
@@ -1329,6 +1335,7 @@ async fn connect_and_run(
                     out_rx,
                     &window,
                     backoff_ms,
+                    false, // via_tcp: this is the local pipe
                 )
                 .await;
             }
@@ -1367,6 +1374,7 @@ async fn connect_and_run(
             out_rx,
             &window,
             backoff_ms,
+            true, // via_tcp: this is the remote TCP control tunnel
         )
         .await;
     }
@@ -1408,6 +1416,12 @@ async fn run_protocol<R, W>(
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
     window: &Arc<Window>,
     backoff_ms: &mut u64,
+    // ADR 0035: whether this connection is the TCP control tunnel (a REMOTE
+    // FE) vs the local pipe. The proxy arms only when actually on tcp — keyed
+    // on the transport that CONNECTED, not the CLI shape (the documented
+    // `--socket <local> --tcp <addr>` remote config has BOTH set and falls
+    // back to tcp, so a CLI-shape guess would wrongly read as local).
+    via_tcp: bool,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -1538,6 +1552,7 @@ where
         host: hello_res.host.clone(),
         project_root: hello_res.project_root.clone(),
         proxy: hello_res.proxy,
+        remote: via_tcp,
     });
     window.request_redraw();
     tracing::info!(

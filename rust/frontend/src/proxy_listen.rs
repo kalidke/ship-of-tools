@@ -132,10 +132,15 @@ async fn pipe_one(
         let _ = b_wr.shutdown().await;
         r
     };
-    // Either direction closing tears the pipe down; a one-way error at close
-    // is expected and not surfaced loudly.
-    let (a, b) = tokio::join!(browser_to_daemon, daemon_to_browser);
-    tracing::debug!(port, ?a, ?b, "proxy pipe closed");
+    // Tear down as soon as EITHER direction closes. A `join!` would wait for
+    // BOTH, leaking the task + both sockets if one side half-opens (holds its
+    // write half open after the other EOFs) — unbounded growth under repeated
+    // connections (codex). `select!` drops the losing copy; the owned split
+    // halves drop at return, closing both sockets.
+    tokio::select! {
+        r = browser_to_daemon => tracing::debug!(port, ?r, "proxy: browser→daemon closed first"),
+        r = daemon_to_browser => tracing::debug!(port, ?r, "proxy: daemon→browser closed first"),
+    }
     Ok(())
 }
 
