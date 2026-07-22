@@ -766,7 +766,40 @@ where
     // `read_owned`) and hands it back on completion. Mirrors frontend 8746b74;
     // lower-risk here (frontend→backend reqs rarely carry blob tails) but the
     // same latent footgun. Flagged from the Windows side 2026-05-26.
-    let mut read_fut = Some(Box::pin(read_owned(codec::buffered(rx))));
+    let mut buffered = codec::buffered(rx);
+
+    // ADR 0035: a proxy connection announces itself with `proxy.connect` as
+    // its VERY FIRST frame and then becomes a raw byte pipe — it must never
+    // enter the multiplexed control loop below (where it would be
+    // hello-gated and could head-of-line-block pty/repl traffic). Peek that
+    // one frame here, before the persistent read future is armed. On
+    // proxy.connect, hand the (buffered) reader + write half straight to the
+    // pipe and return. Otherwise, remember the frame and feed it to the loop
+    // as its first dispatched frame (`pending_first`), so the peek costs the
+    // control path nothing.
+    let mut pending_first: Option<(Frame, Option<Vec<u8>>)> = match codec::read_frame(&mut buffered)
+        .await
+    {
+        Ok((f, blob)) => {
+            if f.kind == Kind::Req && f.op == op::PROXY_CONNECT {
+                tracing::info!(transport, "proxy.connect — leaving control loop for a raw pipe");
+                return crate::proxy::handle_proxy_connect(
+                    buffered,
+                    tx,
+                    f,
+                    expected_token.as_deref(),
+                )
+                .await;
+            }
+            Some((f, blob))
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, transport, "first read failed before any frame; closing");
+            return Ok(());
+        }
+    };
+
+    let mut read_fut = Some(Box::pin(read_owned(buffered)));
     tracing::debug!(transport, "connection ready");
 
     // Per-connection pty for the LLM pane. Lazy: only spawned when
@@ -833,9 +866,14 @@ where
     let mut monitor_subscribed = false;
 
     loop {
+        // ADR 0035: the peeked first frame (any non-proxy first frame, e.g.
+        // hello) is dispatched here before the first socket read, so the
+        // proxy detection above costs the control path nothing.
+        let frame = if let Some((f, _blob)) = pending_first.take() {
+            f
+        } else if let Some(p) = pty.as_mut() {
         // tokio::select! can't borrow `pty` mutably and immutably at
         // once across arms, so split based on whether the pty is up.
-        let frame = if let Some(p) = pty.as_mut() {
             tokio::select! {
                 biased;
                 done = read_fut.as_mut().expect("read_fut is always Some at loop top") => {

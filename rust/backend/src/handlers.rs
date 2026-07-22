@@ -302,6 +302,10 @@ pub async fn handle_hello(
         // both sides' versions if a later skew check needs them.
         protocol: sot_protocol::PROTOCOL_VERSION,
         app_version: sot_protocol::app_version(),
+        // ADR 0035: this daemon accepts `proxy.connect` — the FE arms its
+        // lazy loopback proxy listeners so backend pages reach a remote FE
+        // through the one control tunnel, no per-port ssh forward.
+        proxy: true,
     };
 
     let mut out: HandlerOutput = Vec::with_capacity(1 + replay_entries.len());

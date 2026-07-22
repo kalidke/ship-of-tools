@@ -18,6 +18,7 @@ mod keybindings;
 mod layout;
 mod monitor_view;
 mod preview;
+mod proxy_listen;
 mod settings;
 mod state;
 mod state_persistence;

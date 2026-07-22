@@ -249,6 +249,17 @@ pub mod op {
     /// also runs this check on a daily timer and pushes an `FE_COMMAND`
     /// `notify` when a newer release appears; this op is the manual trigger.
     pub const UPDATE_CHECK: &str = "update.check";
+    /// TCP proxy handshake (ADR 0035). Sent as the FIRST frame on a
+    /// DEDICATED daemon-socket connection (never on the multiplexed control
+    /// connection): `ProxyConnectReq { port, token? }`. The daemon validates
+    /// the port against its served-port allowlist, dials
+    /// `127.0.0.1:<port>`, answers `ProxyConnectRes { ok: true }`, and from
+    /// that moment the connection is a raw byte pipe
+    /// (`copy_bidirectional`) until either side closes — which is what
+    /// carries WebSocket upgrades (Bonito/WGLMakie) unmodified. Rejections
+    /// ride the standard error payload (`bad_port`, `dial_failed`) and the
+    /// connection closes.
+    pub const PROXY_CONNECT: &str = "proxy.connect";
 }
 
 /// Connect handshake. Per ADR 0010, every connect carries
@@ -326,6 +337,13 @@ pub struct HelloRes {
     /// `#[serde(default)]` → `""` for a pre-versioning backend.
     #[serde(default)]
     pub app_version: String,
+    /// True when this backend accepts `proxy.connect` connections (ADR
+    /// 0035). The frontend arms its lazy loopback proxy listeners only when
+    /// set; `#[serde(default)]` → `false` from an older backend, in which
+    /// case the FE relies on the legacy launcher `-L` forwards exactly as
+    /// before.
+    #[serde(default)]
+    pub proxy: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1526,6 +1544,29 @@ pub struct UpdateCheckRes {
     pub status: String,
 }
 
+/// `proxy.connect` request (ADR 0035) — the FIRST frame on a dedicated
+/// proxy connection. `port` is the loopback target on the backend host; the
+/// frame carries no host on purpose (the daemon dials `127.0.0.1` only).
+/// `token` mirrors `HelloReq::token`: honored when the daemon has one
+/// configured; on the local Unix-socket transport, filesystem permissions
+/// are the trust boundary (as for every op).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyConnectReq {
+    pub port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+/// `proxy.connect` response. After `{ok: true}` the connection stops being
+/// a frame stream: every subsequent byte in BOTH directions is piped
+/// verbatim to/from the dialed backend service. Errors (`bad_port`,
+/// `dial_failed`) ride the standard error payload instead and the
+/// connection closes without entering pipe mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyConnectRes {
+    pub ok: bool,
+}
+
 #[cfg(test)]
 mod hello_version_tests {
     use super::{HelloReq, HelloRes};
@@ -1554,6 +1595,29 @@ mod hello_version_tests {
         assert_eq!(res.session_id, "s1");
         assert_eq!(res.protocol, 0, "missing protocol → 0 (legacy backend)");
         assert_eq!(res.app_version, "");
+        // ADR 0035: a backend that predates the proxy omits the field — the
+        // FE must read `false` (never arm proxy listeners), not fail.
+        assert!(!res.proxy, "missing proxy → false (no proxy capability)");
+    }
+
+    #[test]
+    fn proxy_connect_req_round_trips_and_token_is_optional() {
+        // ADR 0035 handshake shapes. `token` absent on the wire must parse
+        // (Unix-socket transport never sends one).
+        let req: super::ProxyConnectReq =
+            serde_json::from_str(r#"{"port":1241}"#).expect("tokenless req parses");
+        assert_eq!(req.port, 1241);
+        assert!(req.token.is_none());
+        let back: super::ProxyConnectReq = serde_json::from_str(
+            &serde_json::to_string(&super::ProxyConnectReq {
+                port: 1236,
+                token: Some("t".into()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(back.port, 1236);
+        assert_eq!(back.token.as_deref(), Some("t"));
     }
 
     #[test]

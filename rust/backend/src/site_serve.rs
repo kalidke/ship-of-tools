@@ -79,6 +79,19 @@ static SERIAL_NONCE: RwLock<BTreeMap<u64, String>> = RwLock::new(BTreeMap::new()
 pub const POOL_SIZE: u16 = 4;
 static POOL: RwLock<BTreeMap<u16, (u64, PathBuf, String)>> = RwLock::new(BTreeMap::new());
 
+/// The pool ports THIS daemon successfully bound at `spawn_pool` — the ports
+/// it actually serves. `assign_pool_port` picks only from here (not the full
+/// configured range), so a port whose boot bind failed (another process owns
+/// it) is never handed out in a docs URL and never authorized for the
+/// ADR-0035 proxy. Empty until `spawn_pool` runs.
+static BOUND_POOL: RwLock<std::collections::BTreeSet<u16>> =
+    RwLock::new(std::collections::BTreeSet::new());
+/// Whether `spawn_pool` has run. Distinguishes "never spawned" (an isolated
+/// unit test exercising assignment → fall back to the full range) from
+/// "spawned but bound nothing" (all binds failed → assign NOTHING, never a
+/// failed/foreign port). Set true at spawn_pool entry regardless of outcome.
+static POOL_SPAWNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The pool's port range — 1237..=1240 with the default `site_port()` (1236).
 pub fn pool_ports() -> std::ops::RangeInclusive<u16> {
     (site_port() + 1)..=(site_port() + POOL_SIZE)
@@ -105,7 +118,24 @@ pub fn assign_pool_port(serial: u64, root: PathBuf) -> Option<(u16, String)> {
         g.insert(port, (serial, root, secret.clone()));
         return Some((port, secret));
     }
-    for port in pool_ports() {
+    // Assign only from ports we ACTUALLY bound at spawn_pool — never a port
+    // whose bind failed (another process owns it), which would otherwise
+    // return a docs URL pointing at that unrelated listener AND authorize the
+    // proxy to dial it (codex). Fall back to the full range ONLY when
+    // spawn_pool never ran (an isolated unit test exercising assignment);
+    // once spawned, BOUND_POOL is authoritative even when empty (all binds
+    // failed → no candidates → None), never the full range (codex r3).
+    let candidates: Vec<u16> = if POOL_SPAWNED.load(std::sync::atomic::Ordering::SeqCst) {
+        BOUND_POOL
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .copied()
+            .collect()
+    } else {
+        pool_ports().collect()
+    };
+    for port in candidates {
         if let std::collections::btree_map::Entry::Vacant(e) = g.entry(port) {
             e.insert((serial, root, secret.clone()));
             return Some((port, secret));
@@ -117,6 +147,19 @@ pub fn assign_pool_port(serial: u64, root: PathBuf) -> Option<(u16, String)> {
 /// How many pool ports are currently owned (for the "slots busy" error).
 pub fn pool_in_use() -> usize {
     POOL.read().unwrap_or_else(|p| p.into_inner()).len()
+}
+
+/// The pool ports currently ASSIGNED (and therefore actually bound + served
+/// by THIS daemon) — the set the ADR-0035 proxy allowlist trusts. Distinct
+/// from `pool_ports()` (the configured RANGE): a range port whose bind failed
+/// at boot (another process owns it) is never assigned, so it never enters
+/// this set and the proxy won't dial someone else's loopback service on it.
+pub fn pool_assigned_ports() -> Vec<u16> {
+    POOL.read()
+        .unwrap_or_else(|p| p.into_inner())
+        .keys()
+        .copied()
+        .collect()
 }
 
 /// Root AND secret for a pool port — what `handle_conn`'s `ServeMode::Pool`
@@ -294,10 +337,18 @@ enum ServeMode {
 /// are per-port and non-fatal: a lost port just shrinks the pool — `docs.open`
 /// reports "slots busy" when none are assignable, never a silent break.
 pub async fn spawn_pool() {
+    // Mark spawned BEFORE the binds so that even if all fail (BOUND_POOL stays
+    // empty), assign_pool_port yields no candidates rather than falling back
+    // to the full range (codex r3).
+    POOL_SPAWNED.store(true, std::sync::atomic::Ordering::SeqCst);
     for port in pool_ports() {
         match TcpListener::bind(("127.0.0.1", port)).await {
             Ok(listener) => {
                 tracing::info!(port, "root-relative site pool listening");
+                BOUND_POOL
+                    .write()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(port);
                 tokio::spawn(async move {
                     loop {
                         match listener.accept().await {

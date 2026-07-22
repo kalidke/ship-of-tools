@@ -25,6 +25,7 @@ mod mathjax;
 mod monitor;
 mod paths;
 mod pluto;
+mod proxy;
 mod pty;
 mod repl;
 mod server;
