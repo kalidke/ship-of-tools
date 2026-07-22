@@ -2898,6 +2898,19 @@ struct State {
     /// backoff cycle would have noticed. Held on State (not App) so
     /// the keyboard handler reaches it via &mut state.
     reconnect_now: Arc<tokio::sync::Notify>,
+    /// ADR 0035 daemon TCP proxy — frontend half.
+    /// `proxy_capable`: the connected daemon advertised the proxy (set from
+    /// the `Connected` evt). `proxy_remote`: this FE is a REMOTE one (dialing
+    /// the daemon over the tcp control tunnel, no local socket) — a local
+    /// (pipe) FE reaches the daemon's loopback ports directly and never
+    /// proxies. `proxy_listener_tx`: hands GPU-thread-bound `std` listeners to
+    /// the runtime accept loop (`None` when not remote / no runtime).
+    /// `proxy_ensured`: ports we've already bound OR found already-forwarded
+    /// (`AddrInUse` — a legacy launcher `-L` holds it; the two coexist).
+    proxy_capable: bool,
+    proxy_remote: bool,
+    proxy_listener_tx: Option<tokio::sync::mpsc::UnboundedSender<std::net::TcpListener>>,
+    proxy_ensured: std::collections::HashSet<u16>,
     /// REPL prompt mode. `false` = `julia>` (default), `true` = `pkg>`.
     /// User toggles via `]` at start of empty input (enter) /
     /// `Backspace` at start of empty input in pkg mode (leave). When
@@ -3911,6 +3924,13 @@ impl State {
             current_md_workspace_id: None,
             needs_md_reflow: false,
             reconnect_now: Arc::new(tokio::sync::Notify::new()),
+            // ADR 0035: defaults; `resumed()` sets proxy_remote + the listener
+            // channel when a runtime + remote (tcp) transport exist, and the
+            // `Connected` evt sets proxy_capable from the daemon's advertisement.
+            proxy_capable: false,
+            proxy_remote: false,
+            proxy_listener_tx: None,
+            proxy_ensured: std::collections::HashSet::new(),
             repl_pkg_mode: false,
             history_pos: None,
             history_saved: None,
@@ -4854,6 +4874,53 @@ impl State {
         self.persist_resume_state();
     }
 
+    /// ADR 0035: before opening a backend-served loopback URL in the browser,
+    /// make sure its port is reachable. On a REMOTE, proxy-capable FE this
+    /// lazily binds a local listener (once per port) that pipes to the daemon
+    /// through the control tunnel; on a local FE, or an older daemon, it's a
+    /// no-op and the URL resolves directly / via the launcher's ssh forward.
+    /// The bind is synchronous (`std::net::TcpListener`, sub-millisecond) so
+    /// the port is listening by the time the caller launches the browser.
+    fn ensure_proxy_for_url(&mut self, url: &str) {
+        if !self.proxy_capable || !self.proxy_remote {
+            return;
+        }
+        let Some(tx) = self.proxy_listener_tx.as_ref() else {
+            return;
+        };
+        let Some(port) = crate::proxy_listen::proxy_port_from_url(url) else {
+            return;
+        };
+        if !self.proxy_ensured.insert(port) {
+            return; // already bound, or already found forwarded (AddrInUse)
+        }
+        match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => {
+                if let Err(e) = listener.set_nonblocking(true) {
+                    tracing::warn!(port, error = %e, "proxy: set_nonblocking failed; not arming");
+                    self.proxy_ensured.remove(&port);
+                    return;
+                }
+                if tx.send(listener).is_err() {
+                    tracing::warn!(port, "proxy: manager gone; not arming");
+                    self.proxy_ensured.remove(&port);
+                    return;
+                }
+                tracing::info!(port, "proxy: bound local listener for backend page");
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                // A legacy launcher `-L <port>` forward already holds it and
+                // serves the page — the two mechanisms coexist. Leave it
+                // marked ensured so we don't retry every open.
+                tracing::debug!(port, "proxy: port already bound (legacy -L forward?); leaving it");
+            }
+            Err(e) => {
+                tracing::warn!(port, error = %e, "proxy: bind failed");
+                self.proxy_ensured.remove(&port);
+            }
+        }
+    }
+
     /// Toggle the backend's Files-mode "show hidden files" flag for the active
     /// workspace (the `.` keybind → `nav.toggle_hidden`), then re-fetch the
     /// files tree root so the change is visible now. The two requests ride the
@@ -5004,6 +5071,7 @@ impl State {
             FeCommand::OpenUrl { url } => {
                 // Scheme already allowlisted (http/https) at route time.
                 tracing::info!(%url, "fe-command: open_url");
+                self.ensure_proxy_for_url(&url);
                 match open_url_in_browser(&url) {
                     Ok(()) => self.status = format!("opened in browser · {url}"),
                     Err(e) => self.status = format!("open_url failed · {e}"),
@@ -8416,7 +8484,13 @@ impl State {
                     revision,
                     host,
                     project_root,
+                    proxy,
                 } => {
+                    // ADR 0035: remember whether this daemon can proxy backend
+                    // pages over the control tunnel, so a remote FE arms its
+                    // lazy loopback listeners (older daemons → false → rely on
+                    // the launcher's per-port ssh forwards as before).
+                    self.proxy_capable = proxy;
                     // Cache host + daemon root basename so the chrome can
                     // rebuild the connection status every time the active
                     // workspace changes — not just at hello time. Strip
@@ -9611,6 +9685,7 @@ impl State {
                     // local FE and via the launcher's `-L` tunnel on a remote one.
                     if let ReplFrame::Browser { url } = &frame {
                         let url = url.clone();
+                        self.ensure_proxy_for_url(&url);
                         match open_url_in_browser(&url) {
                             Ok(()) => {
                                 self.status = format!("opened interactive figure · {url}")
@@ -10429,6 +10504,7 @@ impl State {
                 }
                 crate::transport::IncomingEvt::PlutoOpened { result } => match result {
                     Ok(url) => {
+                        self.ensure_proxy_for_url(&url);
                         if let Err(e) = open_url_in_browser(&url) {
                             tracing::warn!(error = %e, %url,
                                     "pluto: open_url_in_browser failed");
@@ -10446,6 +10522,7 @@ impl State {
                 },
                 crate::transport::IncomingEvt::DocsOpened { result } => match result {
                     Ok(url) => {
+                        self.ensure_proxy_for_url(&url);
                         if let Err(e) = open_url_in_browser(&url) {
                             tracing::warn!(error = %e, %url,
                                     "docs: open_url_in_browser failed");
@@ -10463,6 +10540,7 @@ impl State {
                 },
                 crate::transport::IncomingEvt::VideoOpened { result } => match result {
                     Ok(url) => {
+                        self.ensure_proxy_for_url(&url);
                         if let Err(e) = open_url_in_browser(&url) {
                             tracing::warn!(error = %e, %url,
                                     "video: open_url_in_browser failed");
@@ -14219,7 +14297,7 @@ impl ApplicationHandler for App {
             }
         };
         match State::new(event_loop, evt_rx, &self.cli, self.req_tx.clone()) {
-            Ok(state) => {
+            Ok(mut state) => {
                 // Spawn transport once the window exists, since the task
                 // needs an Arc<Window> to call request_redraw on incoming
                 // frames. Either or both of `socket`/`tcp` may be set; the
@@ -14245,6 +14323,26 @@ impl ApplicationHandler for App {
                         state.window.clone(),
                         state.reconnect_now.clone(),
                     );
+                    // ADR 0035: a REMOTE FE (tcp control tunnel, no local
+                    // socket) arms the proxy manager so backend pages reach it
+                    // through that one tunnel. A local (pipe) FE reaches the
+                    // daemon's loopback ports directly and never proxies. The
+                    // manager owns the async accept loop; the GPU thread hands
+                    // it synchronously-bound listeners (`ensure_proxy_listener`)
+                    // so a port is listening before the browser launches.
+                    if self.cli.tcp.is_some() && self.cli.socket.is_none() {
+                        if let Some(daemon_tcp) = self.cli.tcp.clone() {
+                            let (ltx, lrx) = tokio::sync::mpsc::unbounded_channel();
+                            crate::proxy_listen::spawn_proxy_manager(
+                                rt,
+                                daemon_tcp,
+                                self.cli.token.clone(),
+                                lrx,
+                            );
+                            state.proxy_remote = true;
+                            state.proxy_listener_tx = Some(ltx);
+                        }
+                    }
                 }
                 // If `--start-mode modules` was set, queue a project.scan
                 // request now so the chrome's initial render is the

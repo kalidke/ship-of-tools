@@ -79,6 +79,11 @@ pub enum IncomingEvt {
         /// `--project-root` the backend was started with, so the chrome
         /// can show "myhost:Ship of Tools" rather than just the host.
         project_root: Option<String>,
+        /// The daemon advertised the ADR-0035 TCP proxy (`HelloRes.proxy`).
+        /// A remote FE arms its lazy loopback proxy listeners only when this
+        /// is true; `false` for older daemons (falls back to the launcher's
+        /// per-port ssh forwards exactly as before).
+        proxy: bool,
     },
     Disconnected {
         reason: String,
@@ -1532,6 +1537,7 @@ where
         revision: hello_res.revision,
         host: hello_res.host.clone(),
         project_root: hello_res.project_root.clone(),
+        proxy: hello_res.proxy,
     });
     window.request_redraw();
     tracing::info!(
