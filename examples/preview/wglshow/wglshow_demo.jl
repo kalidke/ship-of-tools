@@ -7,30 +7,34 @@
 # carries it to a remote frontend; a local frontend hits 127.0.0.1 directly.
 # Same URL either way.
 #
-# HOW TO RUN (inside a Ship of Tools REPL):
-#   This directory is its OWN project (Project.toml here declares WGLMakie as a
-#   PER-PROJECT dependency — never global). Run the demo with THAT project
-#   active so `using WGLMakie` resolves against the example's own env (the #44
-#   per-package env-fix: a workspace REPL uses its workspace's project). Either:
-#     - point a Ship of Tools workspace at examples/preview/wglshow/, or
-#     - in the REPL drawer:  ] activate examples/preview/wglshow
-#                            ] instantiate            # first time — resolves WGLMakie
-#   then `r` (fresh) / `R` (include) this file, or paste it in.
-#   The LAST expression must be `wglshow(fig)` — its return value is what emits
-#   the `browser` frame the frontend opens.
+# HOW TO RUN (inside a Ship of Tools REPL): just run it — `r` (fresh) / `R`
+#   (include) this file in the nav, or paste it into the REPL drawer. The
+#   script SELF-BOOTSTRAPS: it activates + instantiates its OWN project (the
+#   Project.toml here, which declares WGLMakie as a PER-PROJECT dependency —
+#   never global) before `using WGLMakie`, so no manual `] activate/instantiate`
+#   is needed. The LAST expression must be `wglshow(fig)` — its return value is
+#   what emits the `browser` frame the frontend opens.
 #
-#   ("Package WGLMakie not found in current path" just means the active project
-#    isn't one that declares WGLMakie — activate this example's project, above.)
+# HOW wglshow ITSELF NEEDS NO WGLMakie DEP: `ShipToolsRepl` never loads WGLMakie
+# — `wglshow` resolves it from `Main` at call time (`isdefined(Main,:WGLMakie)`
+# → `getfield` → `invokelatest`; Bonito via `Base.require` by UUID). So the shim
+# stays plotting-dep-free; the ACTIVE PROJECT provides WGLMakie via the
+# `using WGLMakie` below — which is exactly why this example carries it as a
+# per-project dep (so that `using` succeeds; the error you'd get otherwise is on
+# the `using`, not on `wglshow`).
 #
 # WHY WGLMakie AND NOT CairoMakie: Ship of Tools' STATIC previews use CairoMakie
-# (a PNG rendered into the preview pane). `wglshow` is for the INTERACTIVE case,
-# where live exploration — rotating a 3D structure, zooming into a region — is
-# the whole point, and that needs WGLMakie's browser backend. `ShipToolsRepl`
-# itself carries no plotting dependency; WGLMakie (and Bonito, its dependency)
-# is resolved at call time from the ACTIVE PROJECT's env — here, this example's.
+# (a PNG in the preview pane). `wglshow` is the INTERACTIVE case — rotating a 3D
+# structure, zooming a region — which needs WGLMakie's browser backend.
 #
 # FIRST RUN precompiles WGLMakie, which can take a minute; the REPL shows
 # "julia starting — precompiling…" until it's ready (repl_state, ADR 0034 line).
+
+# Self-bootstrap this example's own project (per-project WGLMakie, never global)
+# so `using WGLMakie` resolves against it with no manual setup.
+import Pkg
+Pkg.activate(@__DIR__)
+Pkg.instantiate()
 
 using WGLMakie
 using Random

@@ -7,25 +7,24 @@ and rotate — not the static PNG that the preview pane shows for a saved plot.
 ## Run it
 
 This directory **is its own project** — the [`Project.toml`](./Project.toml)
-here declares `WGLMakie` as a **per-project dependency** (never global). Run the
-demo with that project active, so `using WGLMakie` resolves against the
-example's own env (the #44 per-package env-fix: a workspace REPL uses its
-workspace's project). Either:
+here declares `WGLMakie` as a **per-project dependency** (never global).
 
-- point a Ship of Tools **workspace** at `examples/preview/wglshow/`, or
-- in the REPL drawer: `] activate examples/preview/wglshow` then `] instantiate`
-  (first time — resolves + precompiles WGLMakie).
-
-Then, on [`wglshow_demo.jl`](./wglshow_demo.jl): `r` (fresh) / `R` (include) from
-the nav, or paste it in. The **last expression must be `wglshow(fig)`** — its
-return value (`BrowserView`) is what tells the frontend to open the browser.
+Just run [`wglshow_demo.jl`](./wglshow_demo.jl): `r` (fresh) / `R` (include) from
+the nav, or paste it in. **The script self-bootstraps** — it
+`Pkg.activate(@__DIR__)` + `Pkg.instantiate()`s its own project before
+`using WGLMakie`, so no manual `] activate/instantiate` is needed. The **last
+expression must be `wglshow(fig)`** — its return value (`BrowserView`) is what
+tells the frontend to open the browser.
 
 First run precompiles WGLMakie (up to a minute); the REPL shows
 *"julia starting — precompiling…"* until it's ready.
 
-> **"Package WGLMakie not found in current path"** just means the active project
-> doesn't declare WGLMakie — activate this example's project (above). The fix is
-> a per-project dependency, **not** a global install.
+> `wglshow` itself needs no WGLMakie dependency — `ShipToolsRepl` resolves
+> WGLMakie from `Main` at call time (the user's `using WGLMakie`). The **active
+> project** must provide WGLMakie so that `using` succeeds; this example carries
+> it per-project (never global). "Package WGLMakie not found in current path"
+> is an error on the `using`, not on `wglshow` — and is what the self-bootstrap
+> above prevents.
 
 ## What it shows
 
