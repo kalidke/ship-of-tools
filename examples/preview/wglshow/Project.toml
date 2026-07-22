@@ -1,0 +1,15 @@
+# Self-contained project for the wglshow example — WGLMakie is a PER-PROJECT
+# dependency here, never global. Run the demo with THIS project active
+# (see README): the workspace REPL's own env is what `using WGLMakie` resolves
+# against (the #44 per-package env-fix), so the example carries its own dep
+# instead of leaning on whatever the user's workspace happens to have.
+name = "WglshowExample"
+
+[deps]
+WGLMakie = "276b4fcb-3e11-5398-bf8b-a0c2d153d008"
+
+[compat]
+# Pinned/validated against WGLMakie 0.13 (Bonito 5.1) per ADR 0032. Bonito
+# comes in transitively as WGLMakie's dependency — wglshow requires it by UUID.
+WGLMakie = "0.13"
+julia = "1.10"

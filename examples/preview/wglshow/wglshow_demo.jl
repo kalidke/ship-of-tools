@@ -8,17 +8,26 @@
 # Same URL either way.
 #
 # HOW TO RUN (inside a Ship of Tools REPL):
-#   - Press `r` (fresh REPL) or `R` (include) on this file in the nav, or paste
-#     it into the REPL drawer.
-#   - The LAST expression must be `wglshow(fig)` — that return value is what
-#     emits the `browser` frame the frontend opens.
+#   This directory is its OWN project (Project.toml here declares WGLMakie as a
+#   PER-PROJECT dependency — never global). Run the demo with THAT project
+#   active so `using WGLMakie` resolves against the example's own env (the #44
+#   per-package env-fix: a workspace REPL uses its workspace's project). Either:
+#     - point a Ship of Tools workspace at examples/preview/wglshow/, or
+#     - in the REPL drawer:  ] activate examples/preview/wglshow
+#                            ] instantiate            # first time — resolves WGLMakie
+#   then `r` (fresh) / `R` (include) this file, or paste it in.
+#   The LAST expression must be `wglshow(fig)` — its return value is what emits
+#   the `browser` frame the frontend opens.
+#
+#   ("Package WGLMakie not found in current path" just means the active project
+#    isn't one that declares WGLMakie — activate this example's project, above.)
 #
 # WHY WGLMakie AND NOT CairoMakie: Ship of Tools' STATIC previews use CairoMakie
 # (a PNG rendered into the preview pane). `wglshow` is for the INTERACTIVE case,
 # where live exploration — rotating a 3D structure, zooming into a region — is
 # the whole point, and that needs WGLMakie's browser backend. `ShipToolsRepl`
-# itself carries no plotting dependency; `using WGLMakie` below resolves it (and
-# Bonito, its dependency) from YOUR loaded project env at call time.
+# itself carries no plotting dependency; WGLMakie (and Bonito, its dependency)
+# is resolved at call time from the ACTIVE PROJECT's env — here, this example's.
 #
 # FIRST RUN precompiles WGLMakie, which can take a minute; the REPL shows
 # "julia starting — precompiling…" until it's ready (repl_state, ADR 0034 line).

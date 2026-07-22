@@ -6,14 +6,26 @@ and rotate — not the static PNG that the preview pane shows for a saved plot.
 
 ## Run it
 
-In a Ship of Tools REPL, on [`wglshow_demo.jl`](./wglshow_demo.jl):
+This directory **is its own project** — the [`Project.toml`](./Project.toml)
+here declares `WGLMakie` as a **per-project dependency** (never global). Run the
+demo with that project active, so `using WGLMakie` resolves against the
+example's own env (the #44 per-package env-fix: a workspace REPL uses its
+workspace's project). Either:
 
-- `r` (fresh REPL) or `R` (include) from the nav, or paste it into the REPL drawer.
-- The **last expression must be `wglshow(fig)`** — its return value (`BrowserView`)
-  is what tells the frontend to open the browser.
+- point a Ship of Tools **workspace** at `examples/preview/wglshow/`, or
+- in the REPL drawer: `] activate examples/preview/wglshow` then `] instantiate`
+  (first time — resolves + precompiles WGLMakie).
+
+Then, on [`wglshow_demo.jl`](./wglshow_demo.jl): `r` (fresh) / `R` (include) from
+the nav, or paste it in. The **last expression must be `wglshow(fig)`** — its
+return value (`BrowserView`) is what tells the frontend to open the browser.
 
 First run precompiles WGLMakie (up to a minute); the REPL shows
 *"julia starting — precompiling…"* until it's ready.
+
+> **"Package WGLMakie not found in current path"** just means the active project
+> doesn't declare WGLMakie — activate this example's project (above). The fix is
+> a per-project dependency, **not** a global install.
 
 ## What it shows
 
