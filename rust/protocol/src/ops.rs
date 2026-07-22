@@ -745,6 +745,21 @@ pub enum ReplFrame {
         eval_id: u64,
         elapsed_ms: u64,
     },
+    /// Control frame: the workspace's persistent REPL child changed lifecycle
+    /// state. Emitted by the BACKEND supervisor (not the shim — like
+    /// `Started`) so a front-end can tell a *starting* REPL from a dead or
+    /// silent one: the first Julia child in a workspace precompiles its
+    /// project env (per-package REPL env, #44), which can take minutes with
+    /// zero output frames — indistinguishable from a dead kernel without
+    /// this. `state` is one of "starting" (child spawned, `using
+    /// ShipToolsRepl` still compiling) | "ready" (serve loop up — the child's
+    /// first stdout line) | "dead" (child exited; it respawns on the next
+    /// eval). Not eval routing: the evt's `eval_id` is 0 and front-ends key
+    /// this off the evt's `workspace_id`. Old front-ends fail this one evt's
+    /// parse and drop it (warn), which is the additive contract.
+    Lifecycle {
+        state: String,
+    },
 }
 
 /// Payload of a `repl.frame` evt (ADR 0009 phase-2 streaming). One frame,
@@ -1154,6 +1169,16 @@ pub struct WorkspaceListEntry {
     /// Empty string when absent.
     #[serde(default)]
     pub agent_status_at: String,
+    /// Lifecycle of the workspace's persistent REPL child (mirrors the
+    /// `lifecycle` repl.frame evt, for FEs that (re)connect mid-boot): one of
+    /// "not_started" (no child yet — the pre-first-eval norm), "starting"
+    /// (spawned, precompiling/booting — NOT dead), "ready" (serve loop up),
+    /// "dead" (child exited; respawns on next eval). Empty string from a
+    /// daemon that predates the field (`#[serde(default)]`, mid-rollout).
+    /// Unlike `kernel_running` (the *Kernel* handle), this reflects the
+    /// user-code REPL — the process whose first boot looks dead without it.
+    #[serde(default)]
+    pub repl_state: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1634,5 +1659,70 @@ mod hello_version_tests {
         let back: HelloReq = serde_json::from_str(&json).unwrap();
         assert_eq!(back.protocol, 2);
         assert_eq!(back.app_version, "0.2.0-dev+abc");
+    }
+}
+
+#[cfg(test)]
+mod repl_lifecycle_tests {
+    use super::{ReplFrame, WorkspaceListEntry};
+
+    #[test]
+    fn lifecycle_frame_wire_shape_is_kind_tagged() {
+        // The daemon supervisor fabricates these; the FE routes on
+        // kind == "lifecycle". Pin the exact wire shape.
+        let f = ReplFrame::Lifecycle {
+            state: "starting".into(),
+        };
+        let json = serde_json::to_value(&f).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "kind": "lifecycle", "state": "starting" })
+        );
+        let back: ReplFrame = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, ReplFrame::Lifecycle { state } if state == "starting"));
+    }
+
+    #[test]
+    fn unknown_frame_kind_fails_only_that_parse() {
+        // The additive contract an OLD front-end relies on: a frame kind it
+        // doesn't know fails ITS deserialization (the transport warn-drops
+        // that one evt) — it must not silently mis-parse into another
+        // variant. This is the same property `lifecycle` rode in on.
+        let json = serde_json::json!({ "kind": "from_the_future", "x": 1 });
+        assert!(serde_json::from_value::<ReplFrame>(json).is_err());
+    }
+
+    #[test]
+    fn workspace_list_entry_without_repl_state_defaults_empty() {
+        // Mid-rollout tolerance: a daemon that predates `repl_state` (and the
+        // other #[serde(default)] fields) still deserializes; the FE reads ""
+        // and keeps any frame-driven lifecycle entry instead of regressing.
+        let json = serde_json::json!({
+            "workspace_id": "ws-a-123",
+            "slug": "a",
+            "label": "A",
+            "project_root": "/p",
+            "tmux_session": "t",
+            "kernel_running": false,
+            "is_default": false,
+        });
+        let e: WorkspaceListEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(e.repl_state, "");
+    }
+
+    #[test]
+    fn workspace_list_entry_repl_state_round_trips() {
+        let json = serde_json::json!({
+            "workspace_id": "ws-a-123",
+            "slug": "a",
+            "label": "A",
+            "project_root": "/p",
+            "tmux_session": "t",
+            "kernel_running": false,
+            "is_default": false,
+            "repl_state": "starting",
+        });
+        let e: WorkspaceListEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(e.repl_state, "starting");
     }
 }

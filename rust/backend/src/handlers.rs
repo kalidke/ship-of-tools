@@ -4163,6 +4163,7 @@ pub async fn handle_workspace_list(
                 agent_state,
                 agent_summary: agent_str(&handle, "summary"),
                 agent_status_at: agent_str(&handle, "status_at"),
+                repl_state: ws.repl_state().to_string(),
             }
         })
         .collect();
