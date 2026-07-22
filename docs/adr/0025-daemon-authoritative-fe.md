@@ -28,6 +28,23 @@
 > first and DEGRADES GRACEFULLY: an FE without the solve ignores `roi` and previews
 > normally. (FE solve + the `roi_applied` event + an optional `sot-fe … --await-roi`
 > consumer are the follow-up halves.)
+>
+> **FE half SHIPPED (2026-07-21, same day).** The solve inverts `visible_roi_px` as a
+> pure fn (`solve_roi_view`): rect-fitting zoom per axis, smaller axis wins so the whole
+> rect stays visible, clamped to `[1, png_zoom_max]` *before* the pan solve (pan is in
+> canvas px); pan centres the rect and the render pass's existing pan-slack clamp
+> applies. The aim rides preview's routing untouched (badge floor holds; cross-ws aims
+> fire at badge-consume) and is consumed by the render pass only once the aimed image is
+> the *installed* quad — certified at preview-reply install, so it can never solve
+> against the previous file's texture. The echo channel is the existing `agent.send`
+> relay (the daemon re-broadcasts it to every connection as an `agent.message` evt —
+> no protocol/daemon change), `text` being the event JSON:
+> `{"evt":"preview_roi_applied", "ws", "path", "requested":{x,y,w,h},
+> "effective":{x,y,w,h,src_w,src_h}, "clamped"}`. `clamped` = the requested rect is not
+> fully inside the effective one (±2 px quantization slop): true only when the aim hit
+> the zoom ceiling or ran off the image — the re-aim signal. `roi` is honoured on
+> `reveal` too (the CLI attaches it to either verb). Still open: the `--await-roi`
+> consumer.
 
 > **Update — 2026-07-10 (PM revision): badge floor RESTORED as the default;
 > "always show" means a COMPLETE show, not a stolen session.**

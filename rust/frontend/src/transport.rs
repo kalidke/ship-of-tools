@@ -39,7 +39,7 @@ use interprocess::local_socket::{
 };
 use serde_json::Value;
 use sot_protocol::{
-    codec, op, ConceptReadReq, ConceptReadRes, ConceptWriteReq, ConceptWriteRes, DocsOpenReq,
+    codec, op, AgentSendReq, ConceptReadReq, ConceptReadRes, ConceptWriteReq, ConceptWriteRes, DocsOpenReq,
     DocsOpenRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq,
     FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
     HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
@@ -1090,6 +1090,17 @@ pub enum OutgoingReq {
         points: u32,
         until: Option<f64>,
         host: Option<String>,
+    },
+    /// Relay one FE-originated notification through the daemon's `agent.send`
+    /// broadcast (re-emitted to every connection as an `agent.message` evt).
+    /// Today's only producer is the ADR-0025 `preview_roi_applied` echo:
+    /// `fe.command.send` is fire-and-forget, so a `preview --roi`'s effective
+    /// (post-clamp) rect can't ride that ack and comes back through this relay
+    /// instead. `text` is the event JSON; `to == ""` broadcasts.
+    AgentSend {
+        from: String,
+        to: String,
+        text: String,
     },
 }
 
@@ -2453,6 +2464,22 @@ where
                         .await?;
                         // Fire-and-forget: the backend acks with a bare `{}` we
                         // don't track, so there's no pending entry.
+                    }
+                    OutgoingReq::AgentSend { from, to, text } => {
+                        tracing::debug!(%from, %to, id, "→ agent.send");
+                        codec::write_frame(
+                            &mut tx,
+                            &Frame::req(
+                                id,
+                                op::AGENT_SEND,
+                                serde_json::to_value(AgentSendReq { from, to, text })?,
+                            ),
+                            None,
+                        )
+                        .await?;
+                        // Fire-and-forget: the ack is a bare `{ok}` we don't
+                        // track, so no pending entry (an unmatched response id
+                        // is silently ignored).
                     }
                     OutgoingReq::MonitorHistory { window_s, points, until, host } => {
                         tracing::debug!(window_s, points, ?until, ?host, id, "→ monitor.history");
