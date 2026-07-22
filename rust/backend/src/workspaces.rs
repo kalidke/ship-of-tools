@@ -247,6 +247,19 @@ impl Workspace {
     pub fn kernel_built(&self) -> bool {
         self.kernel.get().is_some()
     }
+
+    /// Lifecycle of this workspace's persistent REPL child, as a wire word
+    /// (`not_started`/`starting`/`ready`/`dead`). `not_started` when the
+    /// `Repl` handle was never constructed — the pre-first-eval norm.
+    /// Consumed by `workspace.list` (`repl_state`) so a precompiling first
+    /// boot renders as *starting* rather than dead; no probe cost — the
+    /// supervisor maintains the state, this only reads the cell.
+    pub fn repl_state(&self) -> &'static str {
+        self.repl
+            .get()
+            .map(|r| r.state().as_str())
+            .unwrap_or(crate::repl::ReplLifecycle::NotStarted.as_str())
+    }
 }
 
 impl Workspace {

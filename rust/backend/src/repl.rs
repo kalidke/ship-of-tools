@@ -44,6 +44,106 @@ pub struct ReplFrameMsg {
     pub frame: serde_json::Value,
 }
 
+/// Lifecycle of the persistent REPL child, tracked by the supervisor so the
+/// front-end can tell a *starting* (precompiling) REPL from a dead or silent
+/// one. The per-package REPL env (#44) means the FIRST child in a workspace
+/// precompiles that workspace's project — minutes of wall clock with zero
+/// output frames, previously indistinguishable from a dead kernel.
+///
+/// Transitions: `NotStarted` → (`ensure_supervisor` spawn) → `Starting` →
+/// (first stdout line: `using ShipToolsRepl` finished, serve loop up) →
+/// `Ready` → (supervisor exit) → `Dead` → (next eval respawns) → `Starting` …
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReplLifecycle {
+    NotStarted,
+    Starting,
+    Ready,
+    Dead,
+}
+
+impl ReplLifecycle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReplLifecycle::NotStarted => "not_started",
+            ReplLifecycle::Starting => "starting",
+            ReplLifecycle::Ready => "ready",
+            ReplLifecycle::Dead => "dead",
+        }
+    }
+}
+
+/// Shared lifecycle cell. `gen` is a spawn generation: each (re)spawn bumps it
+/// and the supervisor task holds the gen it was spawned under, so a *stale*
+/// task's writes (e.g. the old child's death racing a `restart_with_project`
+/// respawn that is already `Starting`) are ignored instead of stomping the
+/// fresh child's state.
+struct LifecycleCell {
+    gen: u64,
+    state: ReplLifecycle,
+}
+
+type SharedLifecycle = Arc<std::sync::Mutex<LifecycleCell>>;
+
+/// Begin a new spawn generation: bump `gen`, set `Starting`, and announce it
+/// as a synthetic `lifecycle` frame on the repl.frame bus (same convention as
+/// the supervisor's synthetic error/done close-out frames — the backend, not
+/// the shim, fabricates control frames). Returns the new generation for the
+/// supervisor task to hold. `eval_id` is 0: lifecycle frames are not eval
+/// output; front-ends route them by the evt's `workspace_id`.
+fn lifecycle_begin_starting(
+    cell: &SharedLifecycle,
+    frame_tx: &broadcast::Sender<ReplFrameMsg>,
+    workspace_id: &Option<String>,
+) -> u64 {
+    let my_gen = {
+        let mut c = cell.lock().unwrap_or_else(|e| e.into_inner());
+        c.gen += 1;
+        c.state = ReplLifecycle::Starting;
+        c.gen
+    };
+    emit_lifecycle(frame_tx, workspace_id, ReplLifecycle::Starting);
+    my_gen
+}
+
+/// Apply a lifecycle transition IF `my_gen` is still the current spawn
+/// generation and the state actually changes; emit the frame only when it
+/// applied. Returns whether it applied. Keeps a stale supervisor's `Dead`
+/// from overwriting (and mis-announcing over) a respawned child's `Starting`.
+fn lifecycle_transition(
+    cell: &SharedLifecycle,
+    my_gen: u64,
+    to: ReplLifecycle,
+    frame_tx: &broadcast::Sender<ReplFrameMsg>,
+    workspace_id: &Option<String>,
+) -> bool {
+    let applied = {
+        let mut c = cell.lock().unwrap_or_else(|e| e.into_inner());
+        if c.gen == my_gen && c.state != to {
+            c.state = to;
+            true
+        } else {
+            false
+        }
+    };
+    if applied {
+        emit_lifecycle(frame_tx, workspace_id, to);
+    }
+    applied
+}
+
+fn emit_lifecycle(
+    frame_tx: &broadcast::Sender<ReplFrameMsg>,
+    workspace_id: &Option<String>,
+    state: ReplLifecycle,
+) {
+    // Ignore send errors — no subscriber is fine, same as output frames.
+    let _ = frame_tx.send(ReplFrameMsg {
+        eval_id: 0,
+        workspace_id: workspace_id.clone(),
+        frame: serde_json::json!({ "kind": "lifecycle", "state": state.as_str() }),
+    });
+}
+
 /// Inline stdout+stderr byte budget for a collected `repl.execute` run. Past
 /// this, further stdout/stderr text frames are dropped and `truncated` is set —
 /// but value/image/error/done frames are always kept. Bounds memory against a
@@ -109,6 +209,11 @@ struct ReplInner {
     /// frontend can route frames to the right REPL drawer. None for the legacy
     /// singleton REPL.
     workspace_id: Option<String>,
+    /// Child lifecycle (`not_started`/`starting`/`ready`/`dead`), written by
+    /// the supervisor under a spawn-generation guard and read by
+    /// `workspace.list` so a precompiling first boot renders as *starting*,
+    /// not dead. See `ReplLifecycle`.
+    lifecycle: SharedLifecycle,
 }
 
 struct Submission {
@@ -166,8 +271,22 @@ impl Repl {
                 submit: Mutex::new(None),
                 frame_tx,
                 workspace_id,
+                lifecycle: Arc::new(std::sync::Mutex::new(LifecycleCell {
+                    gen: 0,
+                    state: ReplLifecycle::NotStarted,
+                })),
             }),
         }
+    }
+
+    /// Current child lifecycle. `NotStarted` until the first eval forces a
+    /// spawn; consumed by `workspace.list` to populate `repl_state`.
+    pub fn state(&self) -> ReplLifecycle {
+        self.inner
+            .lifecycle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .state
     }
 
     pub fn default_repl_project() -> PathBuf {
@@ -262,12 +381,14 @@ impl Repl {
                 user_project,
                 self.inner.frame_tx.clone(),
                 self.inner.workspace_id.clone(),
+                self.inner.lifecycle.clone(),
             )?,
             None => spawn_supervisor(
                 &self.inner.julia_bin,
                 &self.inner.repl_project,
                 self.inner.frame_tx.clone(),
                 self.inner.workspace_id.clone(),
+                self.inner.lifecycle.clone(),
             )?,
         };
         *guard = Some(tx.clone());
@@ -301,6 +422,7 @@ impl Repl {
             user_project,
             self.inner.frame_tx.clone(),
             self.inner.workspace_id.clone(),
+            self.inner.lifecycle.clone(),
         )?;
         *guard = Some(tx);
         Ok(())
@@ -312,6 +434,7 @@ fn spawn_supervisor(
     repl_project: &Path,
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
+    lifecycle: SharedLifecycle,
 ) -> Result<mpsc::Sender<Submission>> {
     if !repl_project.exists() {
         return Err(anyhow!(
@@ -339,8 +462,13 @@ fn spawn_supervisor(
 
     let stderr_tail = spawn_stderr_tail(stderr);
 
+    // Child exists: open a new spawn generation (state -> Starting, announce).
+    // Deliberately after `.spawn()` succeeds — a failed spawn leaves the prior
+    // state (NotStarted/Dead) intact, which is the truthful reading.
+    let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
+
     tokio::spawn(supervisor_task(
-        child, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail,
+        child, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
     ));
     Ok(submit_tx)
 }
@@ -364,6 +492,7 @@ fn spawn_supervisor_with_project(
     user_project: &Path,
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
+    lifecycle: SharedLifecycle,
 ) -> Result<mpsc::Sender<Submission>> {
     if !repl_project.exists() {
         return Err(anyhow!(
@@ -411,8 +540,11 @@ fn spawn_supervisor_with_project(
 
     let stderr_tail = spawn_stderr_tail(stderr);
 
+    // Child exists: open a new spawn generation (state -> Starting, announce).
+    let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
+
     tokio::spawn(supervisor_task(
-        child, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail,
+        child, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
     ));
     Ok(submit_tx)
 }
@@ -441,6 +573,7 @@ fn spawn_stderr_tail(
     tail
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn supervisor_task(
     mut child: Child,
     mut stdin: ChildStdin,
@@ -449,6 +582,8 @@ async fn supervisor_task(
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
     stderr_tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    lifecycle: SharedLifecycle,
+    my_gen: u64,
 ) {
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight: eval_id recorded at submit,
@@ -471,6 +606,17 @@ async fn supervisor_task(
                 let Some(sub) = sub else {
                     drop(stdin);
                     let _ = child.wait().await;
+                    // Intentional teardown (sender dropped — restart or
+                    // shutdown). Gen-guarded: when a restart has already
+                    // opened the next generation this is a no-op, so the
+                    // fresh child's `Starting` isn't stomped to `Dead`.
+                    lifecycle_transition(
+                        &lifecycle,
+                        my_gen,
+                        ReplLifecycle::Dead,
+                        &frame_tx,
+                        &workspace_id,
+                    );
                     return;
                 };
                 let id = next_id;
@@ -531,15 +677,28 @@ async fn supervisor_task(
             }
             line = stdout_lines.next_line() => {
                 match line {
-                    Ok(Some(line)) => route_line(
-                        &line,
-                        &mut pending,
-                        &mut streaming,
-                        &mut collectors,
-                        &mut collector_ids,
-                        &frame_tx,
-                        &workspace_id,
-                    ),
+                    Ok(Some(line)) => {
+                        // First stdout line = the shim's serve loop is up
+                        // (`using ShipToolsRepl` compiled, precompile done):
+                        // Starting -> Ready. Gen-guarded + change-gated, so
+                        // this is a one-shot per spawn and free thereafter.
+                        lifecycle_transition(
+                            &lifecycle,
+                            my_gen,
+                            ReplLifecycle::Ready,
+                            &frame_tx,
+                            &workspace_id,
+                        );
+                        route_line(
+                            &line,
+                            &mut pending,
+                            &mut streaming,
+                            &mut collectors,
+                            &mut collector_ids,
+                            &frame_tx,
+                            &workspace_id,
+                        )
+                    }
                     Ok(None) => {
                         tracing::warn!("repl child stdout closed");
                         break;
@@ -553,6 +712,16 @@ async fn supervisor_task(
         }
     }
 
+    // Child death: flip to Dead FIRST (gen-guarded) so the announce precedes
+    // the synthetic per-eval close-out frames below — a front-end reading in
+    // order sees "the REPL died" before each "died mid-eval" error.
+    lifecycle_transition(
+        &lifecycle,
+        my_gen,
+        ReplLifecycle::Dead,
+        &frame_tx,
+        &workspace_id,
+    );
     for (_id, reply) in pending.drain() {
         let _ = reply.send(Err(anyhow!("repl terminated")));
     }
@@ -670,5 +839,109 @@ fn route_line(
             // Fire-and-forget eval's terminal ack — expected, not an error.
             tracing::debug!(id = env.id, op = %env.op, "repl res for untracked id (fire-and-forget ack); dropping");
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    fn cell() -> SharedLifecycle {
+        Arc::new(std::sync::Mutex::new(LifecycleCell {
+            gen: 0,
+            state: ReplLifecycle::NotStarted,
+        }))
+    }
+
+    fn state_of(c: &SharedLifecycle) -> ReplLifecycle {
+        c.lock().unwrap().state
+    }
+
+    /// Drain every lifecycle announcement currently queued on the bus.
+    fn drain_states(rx: &mut broadcast::Receiver<ReplFrameMsg>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            assert_eq!(msg.eval_id, 0, "lifecycle frames are not eval output");
+            let kind = msg.frame.get("kind").and_then(Value::as_str).unwrap();
+            assert_eq!(kind, "lifecycle");
+            out.push(
+                msg.frame
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string(),
+            );
+        }
+        out
+    }
+
+    #[test]
+    fn begin_starting_bumps_gen_sets_state_and_announces() {
+        let (tx, mut rx) = broadcast::channel(8);
+        let c = cell();
+        let g1 = lifecycle_begin_starting(&c, &tx, &None);
+        assert_eq!(g1, 1);
+        assert_eq!(state_of(&c), ReplLifecycle::Starting);
+        assert_eq!(drain_states(&mut rx), vec!["starting"]);
+        // A respawn opens the next generation.
+        let g2 = lifecycle_begin_starting(&c, &tx, &None);
+        assert_eq!(g2, 2);
+        assert_eq!(drain_states(&mut rx), vec!["starting"]);
+    }
+
+    #[test]
+    fn transition_applies_once_and_is_change_gated() {
+        let (tx, mut rx) = broadcast::channel(8);
+        let c = cell();
+        let g = lifecycle_begin_starting(&c, &tx, &None);
+        let _ = drain_states(&mut rx);
+        // First stdout line: Starting -> Ready, announced once.
+        assert!(lifecycle_transition(&c, g, ReplLifecycle::Ready, &tx, &None));
+        assert_eq!(state_of(&c), ReplLifecycle::Ready);
+        // Every subsequent line: same-state no-op, no announcement (this is
+        // what makes the per-line call in the supervisor loop free).
+        assert!(!lifecycle_transition(&c, g, ReplLifecycle::Ready, &tx, &None));
+        assert_eq!(drain_states(&mut rx), vec!["ready"]);
+    }
+
+    #[test]
+    fn stale_generation_cannot_stomp_a_respawned_child() {
+        // THE race this guard exists for: restart_with_project drops the old
+        // supervisor and immediately spawns a new child (Starting). The OLD
+        // task then notices its channel closed and reports Dead — which must
+        // NOT overwrite (or mis-announce over) the fresh child's Starting.
+        let (tx, mut rx) = broadcast::channel(8);
+        let c = cell();
+        let old_gen = lifecycle_begin_starting(&c, &tx, &None);
+        let _new_gen = lifecycle_begin_starting(&c, &tx, &None); // respawn
+        let _ = drain_states(&mut rx);
+        assert!(!lifecycle_transition(
+            &c,
+            old_gen,
+            ReplLifecycle::Dead,
+            &tx,
+            &None
+        ));
+        assert_eq!(state_of(&c), ReplLifecycle::Starting);
+        assert_eq!(drain_states(&mut rx), Vec::<String>::new());
+    }
+
+    #[test]
+    fn current_generation_death_is_reported() {
+        let (tx, mut rx) = broadcast::channel(8);
+        let c = cell();
+        let g = lifecycle_begin_starting(&c, &tx, &None);
+        assert!(lifecycle_transition(&c, g, ReplLifecycle::Ready, &tx, &None));
+        assert!(lifecycle_transition(&c, g, ReplLifecycle::Dead, &tx, &None));
+        assert_eq!(state_of(&c), ReplLifecycle::Dead);
+        assert_eq!(drain_states(&mut rx), vec!["starting", "ready", "dead"]);
+    }
+
+    #[test]
+    fn wire_words_match_protocol_vocabulary() {
+        assert_eq!(ReplLifecycle::NotStarted.as_str(), "not_started");
+        assert_eq!(ReplLifecycle::Starting.as_str(), "starting");
+        assert_eq!(ReplLifecycle::Ready.as_str(), "ready");
+        assert_eq!(ReplLifecycle::Dead.as_str(), "dead");
     }
 }

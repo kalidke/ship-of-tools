@@ -1568,6 +1568,25 @@ fn ws_key_of(workspace_id: Option<&str>, default_slug: Option<&str>) -> String {
     }
 }
 
+/// Slug storage key for a `lifecycle` repl.frame evt's workspace hint (core
+/// of `lifecycle_store_key`, free-function for unit tests — the `ws_key_of`
+/// pattern). The hint is the Repl supervisor's identity: a CANONICAL
+/// workspace_id (`ws-<slug>-<hash>`) for per-workspace REPLs (translate via
+/// `id_slugs`; a canonical-id key against slug-keyed maps silently never
+/// matches — the `started`-frame lesson) or `None` for the legacy singleton
+/// (= the default workspace's slug, "<default>" until the first list reply
+/// resolves it). An unknown hint is stored as-is: it may already be a slug.
+fn lifecycle_key_of(
+    wire_hint: Option<&str>,
+    id_slugs: &HashMap<String, String>,
+    default_slug: Option<&str>,
+) -> String {
+    match wire_hint {
+        None => default_slug.unwrap_or("<default>").to_string(),
+        Some(h) => id_slugs.get(h).cloned().unwrap_or_else(|| h.to_string()),
+    }
+}
+
 /// A stored (non-active) tree: the view plus the state that must travel
 /// with it.
 #[derive(Default)]
@@ -2312,6 +2331,23 @@ struct State {
     /// `workspace.changed` push; empty entries render with the default
     /// strip styling.
     workspace_states: HashMap<String, (String, String)>,
+    /// Slug → REPL child lifecycle ("not_started" | "starting" | "ready" |
+    /// "dead"), fed by BOTH sources: live `lifecycle` repl.frame evts (the
+    /// supervisor announces spawn/first-line/death) and `workspace.list`
+    /// replies (`repl_state`, the reconnect catch-up). The point is the
+    /// *starting* state: the first REPL per workspace precompiles its
+    /// project env (per-package env, #44) — minutes with zero output frames,
+    /// previously indistinguishable from a dead kernel. NOT cleared on
+    /// `workspace.list` — an old daemon sends empty `repl_state`, and
+    /// frame-driven entries must survive it.
+    repl_lifecycle: HashMap<String, String>,
+    /// Canonical workspace_id → slug, from each `workspace.list` reply.
+    /// Lifecycle frames stamp the CANONICAL id (`ws-<slug>-<hash>`) — the
+    /// Repl supervisor's identity — while every FE surface keys by slug
+    /// (the `started`-frame lesson, 2026-07-16: a canonical-id compare
+    /// against slug keys silently never matches). This map is the
+    /// translation at the frame boundary.
+    workspace_id_slugs: HashMap<String, String>,
     /// Badge floor (ADR 0025 §1): slug → workspace-relative path of a
     /// `nav.preview` result that arrived for a workspace the FE wasn't
     /// viewing. Instead of silently dropping the off-workspace result (the
@@ -3755,6 +3791,8 @@ impl State {
             workspace_labels: HashMap::new(),
             workspace_project_roots: HashMap::new(),
             workspace_states: HashMap::new(),
+            repl_lifecycle: HashMap::new(),
+            workspace_id_slugs: HashMap::new(),
             pending_nav: HashMap::new(),
             prev_workspace_states: HashMap::new(),
             flash_starts: HashMap::new(),
@@ -4612,6 +4650,37 @@ impl State {
     /// the default-slug aliasing this collapses).
     fn reply_ws_key(&self, workspace_id: Option<&str>) -> String {
         ws_key_of(workspace_id, self.default_workspace_slug.as_deref())
+    }
+
+    /// Storage key (a SLUG) for a `lifecycle` repl.frame evt's workspace
+    /// hint — see `lifecycle_key_of` for the translation rules.
+    fn lifecycle_store_key(&self, wire_hint: Option<&str>) -> String {
+        lifecycle_key_of(
+            wire_hint,
+            &self.workspace_id_slugs,
+            self.default_workspace_slug.as_deref(),
+        )
+    }
+
+    /// Whether the ACTIVE workspace's REPL child is in the `starting`
+    /// (precompiling/booting) state — drives the drawer's in-flight line
+    /// ("julia starting…" instead of "(running…)"). `current_workspace_key`
+    /// speaks "<default>" for the default workspace; `repl_lifecycle` keys
+    /// by raw slug, so resolve the collapse before the lookup.
+    fn active_repl_starting(&self) -> bool {
+        let key = self.current_workspace_key();
+        let slug = if key == "<default>" {
+            match &self.default_workspace_slug {
+                Some(s) => s.clone(),
+                None => key,
+            }
+        } else {
+            key
+        };
+        matches!(
+            self.repl_lifecycle.get(&slug).map(String::as_str),
+            Some("starting")
+        )
     }
 
     /// Rename state keyed under the default workspace's RAW SLUG to the
@@ -9554,6 +9623,25 @@ impl State {
                     // We key on the recorded eval_id->workspace map (kept until
                     // the terminal ack drops it); `workspace_id` is a hint.
                     // `Done` finalizes (in_flight=false + elapsed); others append.
+                    // A `lifecycle` control frame is workspace-level state,
+                    // not eval output (its eval_id is 0): the supervisor
+                    // announces spawn ("starting" — precompiling, NOT dead),
+                    // first-line ("ready"), and death ("dead"). Route it by
+                    // the workspace hint (canonical id → slug translation)
+                    // and never near the eval-entry lookup below.
+                    if let ReplFrame::Lifecycle { state } = &frame {
+                        let key = self.lifecycle_store_key(workspace_id.as_deref());
+                        tracing::info!(%key, %state, "repl.frame: lifecycle");
+                        self.repl_lifecycle.insert(key, state.clone());
+                        // The Sessions rows bake `repl_state` from the last
+                        // workspace.list reply — refresh it so the row's
+                        // badge/glance track the transition, not just the
+                        // drawer. Rare (2-3 frames per REPL boot) and the
+                        // list rebuild already routes/parks correctly by mode.
+                        let _ = self.req_tx.send(OutgoingReq::WorkspaceList);
+                        self.window.request_redraw();
+                        continue;
+                    }
                     // Phase 2 (ADR 0033): a `Started` control frame pre-registers
                     // a drawer entry for a run this FE did NOT originate (a
                     // session's repl.execute), so the run's output frames + the
@@ -10770,6 +10858,7 @@ impl State {
                     self.workspace_project_roots.clear();
                     self.workspace_autostart.clear();
                     self.workspace_states.clear();
+                    self.workspace_id_slugs.clear();
                     for w in &workspaces {
                         let label = if w.label.is_empty() {
                             w.slug.clone()
@@ -10784,6 +10873,17 @@ impl State {
                             w.slug.clone(),
                             (w.agent_state.clone(), w.agent_status_at.clone()),
                         );
+                        // Canonical-id → slug for lifecycle-frame routing.
+                        self.workspace_id_slugs
+                            .insert(w.workspace_id.clone(), w.slug.clone());
+                        // REPL lifecycle catch-up. Empty = old daemon
+                        // (pre-field): keep any frame-driven entry rather
+                        // than regressing it; a new daemon always sends at
+                        // least "not_started", so non-empty overwrites.
+                        if !w.repl_state.is_empty() {
+                            self.repl_lifecycle
+                                .insert(w.slug.clone(), w.repl_state.clone());
+                        }
                         // Status-change flash (ADR 0023): a slug that had a
                         // *known, different* prior state just transitioned —
                         // stamp a flash so its name blinks in nav + strip.
@@ -10933,6 +11033,9 @@ impl State {
                         if w.kernel_running {
                             badges.push("kernel".to_string());
                         }
+                        if w.repl_state == "starting" {
+                            badges.push("repl_starting".to_string());
+                        }
                         // The glance line. With agent state present, the
                         // agent's one-line summary is the default at-a-glance
                         // text (what it's doing now / just finished) — far more
@@ -10940,12 +11043,21 @@ impl State {
                         // to the state word if the summary is empty, and to the
                         // project root when there's no agent state at all
                         // (renders exactly as it did pre-state-nav).
-                        let glance = if !w.agent_summary.is_empty() {
+                        let glance_base = if !w.agent_summary.is_empty() {
                             w.agent_summary.clone()
                         } else if !w.agent_state.is_empty() {
                             w.agent_state.clone()
                         } else {
                             w.project_root.clone()
+                        };
+                        // A booting REPL headlines the glance: it's transient,
+                        // it explains "why is nothing happening", and without
+                        // it a precompiling first boot reads as a dead kernel
+                        // (the repl_state render this whole seam exists for).
+                        let glance = if w.repl_state == "starting" {
+                            format!("julia starting (precompiling)… · {glance_base}")
+                        } else {
+                            glance_base
                         };
                         let label = if w.label.is_empty() {
                             w.slug.clone()
@@ -11336,6 +11448,7 @@ impl State {
             self.repl_scrollback_px.h,
             self.cell_w,
             self.cell_h,
+            self.active_repl_starting(),
         );
         self.repl_image_slots = repl_slots;
         let repl_input = self.repl_input.clone();
@@ -16957,6 +17070,7 @@ fn build_repl_lines(
     avail_h_px: f32,
     cell_w: f32,
     cell_h: f32,
+    repl_starting: bool,
 ) -> (Vec<RtLine<'static>>, Vec<ReplImageSlot>) {
     let mut slots: Vec<ReplImageSlot> = Vec::new();
     let mut out: Vec<RtLine<'static>> = Vec::new();
@@ -17070,6 +17184,10 @@ fn build_repl_lines(
                 // Control frame — rendered via the entry's `origin` label
                 // above, never as an output row (ADR 0033 phase 2).
                 ReplFrame::Started { .. } => {}
+                // Control frame — workspace-level lifecycle, consumed in
+                // drain_events (the `repl_lifecycle` map) and never appended
+                // to a log entry. Defensive arm, mirroring `Browser`.
+                ReplFrame::Lifecycle { .. } => {}
                 ReplFrame::Image { mime, bytes, .. } => {
                     let key = (entry.eval_id, frame_idx);
                     // Degenerate width (drawer not yet laid out — the fit
@@ -17117,12 +17235,28 @@ fn build_repl_lines(
             }
         }
         if entry.in_flight {
-            // Still streaming — a dim indicator AFTER the live frames so the
-            // user sees output accumulating *and* that more is coming.
-            out.push(RtLine::from(vec![Span::styled(
-                "(running…)".to_string(),
-                Style::default().add_modifier(Modifier::DIM),
-            )]));
+            if repl_starting {
+                // The workspace's REPL child is still BOOTING (repl_state ==
+                // "starting"): the first child per workspace precompiles its
+                // project env, which can take minutes with zero frames. Say
+                // so — before this line, a precompiling first run rendered
+                // the same "(running…)" as a live eval and read as a dead
+                // kernel. Yellow: attention-but-not-error, distinct from the
+                // dim running indicator and the red error rows.
+                out.push(RtLine::from(vec![Span::styled(
+                    "(julia starting — precompiling this workspace's environment; \
+                     a first run can take minutes…)"
+                        .to_string(),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM),
+                )]));
+            } else {
+                // Still streaming — a dim indicator AFTER the live frames so
+                // the user sees output accumulating *and* that more is coming.
+                out.push(RtLine::from(vec![Span::styled(
+                    "(running…)".to_string(),
+                    Style::default().add_modifier(Modifier::DIM),
+                )]));
+            }
         } else if entry.elapsed_ms > 0 {
             out.push(RtLine::from(vec![Span::styled(
                 format!("  ({} ms)", entry.elapsed_ms),
@@ -19881,7 +20015,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn split_frontmatter_returns_header_and_body() {
         let s = "---\ntarget: x\nsynced_against: abc\n---\n# Body\n\nText.\n";
         let (h, b) = split_frontmatter(s);
@@ -20113,5 +20246,105 @@ mod tests {
             Some("")
         );
         assert!(pos.is_none());
+    }
+}
+
+#[cfg(test)]
+mod repl_lifecycle_render_tests {
+    use super::*;
+
+    fn entry(eval_id: u64, code: &str, in_flight: bool) -> ReplEntry {
+        ReplEntry {
+            eval_id,
+            code: code.to_string(),
+            frames: Vec::new(),
+            elapsed_ms: 0,
+            in_flight,
+            pkg_mode: false,
+            origin: None,
+        }
+    }
+
+    fn rendered_text(lines: &[RtLine<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn in_flight_entry_says_starting_while_repl_boots() {
+        // THE repl_state deliverable: with the workspace's REPL child still
+        // booting (precompiling), an in-flight entry must say so instead of
+        // the generic "(running…)" — which is indistinguishable from a dead
+        // kernel for the minutes a first-per-workspace boot takes.
+        let log = vec![entry(1, "1+1", true)];
+        let images = std::collections::HashMap::new();
+        let (lines, _) = build_repl_lines(&log, &images, 800.0, 600.0, 8.0, 16.0, true);
+        let text = rendered_text(&lines);
+        assert!(
+            text.contains("julia starting"),
+            "starting boot must be named: {text}"
+        );
+        assert!(
+            !text.contains("(running…)"),
+            "the generic running line must be replaced, not doubled: {text}"
+        );
+    }
+
+    #[test]
+    fn in_flight_entry_says_running_once_ready() {
+        let log = vec![entry(1, "1+1", true)];
+        let images = std::collections::HashMap::new();
+        let (lines, _) = build_repl_lines(&log, &images, 800.0, 600.0, 8.0, 16.0, false);
+        let text = rendered_text(&lines);
+        assert!(text.contains("(running…)"), "{text}");
+        assert!(!text.contains("julia starting"), "{text}");
+    }
+
+    #[test]
+    fn completed_entry_ignores_starting_flag() {
+        // A finished entry renders its elapsed footer regardless of a boot
+        // in progress (e.g. the user restarted the REPL after a run).
+        let mut e = entry(1, "1+1", false);
+        e.elapsed_ms = 42;
+        let images = std::collections::HashMap::new();
+        let (lines, _) = build_repl_lines(&[e], &images, 800.0, 600.0, 8.0, 16.0, true);
+        let text = rendered_text(&lines);
+        assert!(text.contains("(42 ms)"), "{text}");
+        assert!(!text.contains("julia starting"), "{text}");
+    }
+
+    #[test]
+    fn lifecycle_key_translates_canonical_id_to_slug() {
+        // Lifecycle frames stamp the CANONICAL workspace id; every FE surface
+        // keys by slug (the `started`-frame lesson: a canonical-id key
+        // silently never matches). The map from the last workspace.list is
+        // the translation.
+        let mut ids = HashMap::new();
+        ids.insert("ws-alpha-1a2b".to_string(), "alpha".to_string());
+        assert_eq!(
+            lifecycle_key_of(Some("ws-alpha-1a2b"), &ids, Some("home")),
+            "alpha"
+        );
+        // Already-a-slug (or unknown) hints store as-is rather than dropping.
+        assert_eq!(lifecycle_key_of(Some("beta"), &ids, Some("home")), "beta");
+    }
+
+    #[test]
+    fn lifecycle_key_none_hint_is_the_default_workspace() {
+        // The legacy singleton REPL stamps no workspace id: it IS the default
+        // workspace. Resolve to its slug once known, "<default>" before the
+        // first workspace.list reply (transient; the list's repl_state
+        // catch-up re-keys it).
+        let ids = HashMap::new();
+        assert_eq!(lifecycle_key_of(None, &ids, Some("home")), "home");
+        assert_eq!(lifecycle_key_of(None, &ids, None), "<default>");
     }
 }

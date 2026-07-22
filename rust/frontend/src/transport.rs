@@ -556,6 +556,11 @@ pub struct WorkspaceInfo {
     /// ISO8601 (RFC3339) timestamp of the last state write — drives the
     /// staleness aging of a "working" that's gone quiet. "" when absent.
     pub agent_status_at: String,
+    /// Lifecycle of the workspace's persistent REPL child: "not_started" |
+    /// "starting" (spawned, precompiling — NOT dead) | "ready" | "dead";
+    /// "" from a daemon that predates the field. Mirrors the `lifecycle`
+    /// repl.frame evt for FEs that (re)connect mid-boot.
+    pub repl_state: String,
 }
 
 #[derive(Debug, Clone)]
@@ -3219,6 +3224,7 @@ fn handle_response_frame(
                                 agent_state: w.agent_state,
                                 agent_summary: w.agent_summary,
                                 agent_status_at: w.agent_status_at,
+                                repl_state: w.repl_state,
                             })
                             .collect();
                         let _ = evt_tx.send(IncomingEvt::Workspaces { workspaces });
