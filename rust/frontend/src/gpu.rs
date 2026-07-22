@@ -1777,6 +1777,36 @@ struct PreviewRoi {
     zoom: f32,
 }
 
+/// A requested `preview --roi` rect in SOURCE-image pixels (ADR 0025,
+/// 2026-07-21 update) — the same vocabulary as ADR-0022's `image.crop`, so a
+/// crop taken now round-trips to "look here again" later (identical rect ⇒
+/// identical region on any display, independent of DPI or pane size).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+struct RoiRect {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+/// An armed `preview --roi` viewport aim (ADR 0025, 2026-07-21 update).
+/// Consumed by the render pass — where the live pane geometry exists — once
+/// the aimed image is the *installed* preview quad: `ready` is certified at
+/// preview-reply install, because a `preview.get` reply installs whatever
+/// arrived last (node-unchecked) and the solve must never run against the
+/// previous file's quad. Rides the same badge-floor routing as the carrying
+/// `preview`: a cross-workspace aim fires at badge-consume, when the user
+/// switches over and the preview renders. One slot, latest-wins.
+#[derive(Debug, Clone)]
+struct RoiAim {
+    workspace: String,
+    path: String,
+    /// `files:<path>` — the node id the aimed preview fires under.
+    node_id: String,
+    rect: RoiRect,
+    ready: bool,
+}
+
 /// Per-workspace auto-start info from `workspace.list` (contract b).
 /// Spawned agent workspaces carry `autostart_claude = true` plus the
 /// `agent_name`; the FE launches ccb on first attach. Interactive /
@@ -1981,6 +2011,10 @@ struct State {
     /// fe-command) and surfaced in `fe-state.json` so the LLM pane knows what
     /// the user is zoomed into.
     preview_roi: Option<PreviewRoi>,
+    /// ADR 0025 `preview --roi`: an armed viewport aim awaiting its image
+    /// (see `RoiAim`). Deliberately NOT per-workspace snapshot state — a
+    /// cross-workspace aim must survive the switch that consumes its badge.
+    pending_roi_aim: Option<RoiAim>,
     /// Per-directory + per-dimensions cache of `(zoom, pan_px)` so
     /// switching among same-sized PNG renders in one directory restores
     /// the previous view rather than snapping back to fit. Mixed-size
@@ -3061,6 +3095,61 @@ fn png_zoom_max(pane_w: f32, pane_h: f32, img_px: (u32, u32)) -> f32 {
     }
 }
 
+/// Invert `visible_roi_px` (ADR 0025 `preview --roi`): the zoom + pan that make
+/// the pane's visible window show (at least) the requested source-px rect,
+/// clamped to what interactive zoom could reach. At zoom `z` the pane spans
+/// `src_w * pane_w / (letterbox_w * z)` source px horizontally (canvas
+/// fractions == source fractions, see `visible_roi_px`), so the rect-fitting
+/// zoom per axis inverts that; the smaller axis wins so the WHOLE rect stays
+/// visible (the other axis shows extra context). Zoom is clamped to
+/// `[1, zoom_max]` BEFORE the pan solve — pan is in canvas px, so clamping
+/// after would leave it scaled for a canvas that doesn't exist. The pan
+/// centres the rect: the canvas centre sits at pane centre + pan, so a rect
+/// centre at source fraction `fc` lands mid-pane when `pan = (0.5 - fc) *
+/// canvas`. The render pass's existing pan-slack clamp still applies (and the
+/// post-clamp `visible_roi_px` is the effective rect echoed to the caller).
+/// A request at/past an image edge aims at the edge. `None` on degenerate
+/// geometry.
+fn solve_roi_view(
+    pane_w: f32,
+    pane_h: f32,
+    letterbox_w: f32,
+    letterbox_h: f32,
+    zoom_max: f32,
+    src_w: u32,
+    src_h: u32,
+    roi: RoiRect,
+) -> Option<(f32, (f32, f32))> {
+    if src_w == 0
+        || src_h == 0
+        || roi.w == 0
+        || roi.h == 0
+        || pane_w <= 0.0
+        || pane_h <= 0.0
+        || letterbox_w <= 0.0
+        || letterbox_h <= 0.0
+    {
+        return None;
+    }
+    let sw = src_w as f32;
+    let sh = src_h as f32;
+    let rx = (roi.x as f32).min(sw - 1.0);
+    let ry = (roi.y as f32).min(sh - 1.0);
+    let rw = (roi.w as f32).min(sw - rx);
+    let rh = (roi.h as f32).min(sh - ry);
+    let zx = sw * pane_w / (letterbox_w * rw);
+    let zy = sh * pane_h / (letterbox_h * rh);
+    let zoom = zx.min(zy).clamp(1.0, zoom_max.max(1.0));
+    if !zoom.is_finite() {
+        return None;
+    }
+    let fcx = (rx + rw * 0.5) / sw;
+    let fcy = (ry + rh * 0.5) / sh;
+    let canvas_w = letterbox_w * zoom;
+    let canvas_h = letterbox_h * zoom;
+    Some((zoom, ((0.5 - fcx) * canvas_w, (0.5 - fcy) * canvas_h)))
+}
+
 /// Read the OS clipboard as text. Returns `None` (logging at warn) on
 /// clipboard failure or empty contents so callers fall through without
 /// panicking. winit does not deliver paste events on Windows (see
@@ -3566,6 +3655,7 @@ impl State {
             preview_png_dims: None,
             preview_png_src_dims: None,
             preview_roi: None,
+            pending_roi_aim: None,
             preview_png_cache: HashMap::new(),
             preview_svg,
             highlight_service,
@@ -4971,7 +5061,37 @@ impl State {
                 workspace,
                 path,
                 urgent,
+                roi,
             } => {
+                // ADR 0025 `preview --roi` (2026-07-21 update): arm the viewport
+                // aim before routing — it rides preview's badge-floor routing
+                // unchanged (aiming a viewport is MORE intrusive than previewing,
+                // so no new focus-stealing) and is consumed by the render pass
+                // once the aimed image is actually on screen: same-ws now,
+                // cross-ws at badge-consume. One slot, latest-wins; a plain
+                // re-preview of the same file retires a stale aim so it can't
+                // fire on an old rect.
+                let node_id = format!("files:{path}");
+                match roi {
+                    Some(rect) => {
+                        self.pending_roi_aim = Some(RoiAim {
+                            workspace: workspace.clone(),
+                            path: path.clone(),
+                            node_id,
+                            rect,
+                            ready: false,
+                        });
+                    }
+                    None => {
+                        if self
+                            .pending_roi_aim
+                            .as_ref()
+                            .is_some_and(|a| a.node_id == node_id)
+                        {
+                            self.pending_roi_aim = None;
+                        }
+                    }
+                }
                 // Same-ws short-circuit: if the target workspace is the one we're
                 // already viewing, render in place NOW (mirrors handle_nav_envelope
                 // gpu.rs:3399+, the in-place branch the imperative path dropped).
@@ -5032,17 +5152,20 @@ impl State {
                 workspace,
                 path,
                 urgent,
+                roi,
             } => {
                 // reveal == preview: the same-ws preview path now performs the
                 // deep tree-expand-and-select (cursor follows the file, ancestor
                 // dirs expand async), so `reveal` and `preview` both drive the
                 // nav cursor onto the file — the BE need not pick the right verb
                 // or issue a separate cursor move. The cross-ws force-show/badge
-                // semantics are shared too.
+                // semantics are shared too, as is a `--roi` viewport aim (the
+                // sot-fe CLI attaches roi to either verb).
                 self.dispatch_fe_command(FeCommand::Preview {
                     workspace,
                     path,
                     urgent,
+                    roi,
                 });
             }
             FeCommand::Docs { workspace, path } => {
@@ -7052,6 +7175,49 @@ impl State {
         }
         self.status = format!("capturing ROI {}×{} of {} → LLM…", roi.w, roi.h, name);
         self.window.request_redraw();
+    }
+
+    /// ADR 0025 (2026-07-21 update): after a `preview --roi` aim is applied,
+    /// echo the *effective* (post-clamp) viewport rect back to the daemon.
+    /// `fe.command.send` is fire-and-forget — the daemon acks `{ok:true}`
+    /// before any FE acts — so the effective rect can't ride that ack; it
+    /// rides the FE→daemon notification channel that already exists instead:
+    /// the `agent.send` relay, which the daemon re-broadcasts to every
+    /// connection as an `agent.message` evt (a `sot-fe … --await-roi`
+    /// consumer watches that). `clamped` is true when the requested rect is
+    /// not fully inside the effective one (beyond a small rounding
+    /// tolerance): the aim hit the zoom ceiling or ran off the image, and the
+    /// caller may want to re-aim.
+    fn emit_preview_roi_applied(&self, aim: &RoiAim, eff: &PreviewRoi) {
+        // `visible_roi_px`'s floor/ceil quantization can nibble an edge pixel;
+        // don't call that a clamp.
+        const TOL: u32 = 2;
+        let req = aim.rect;
+        let contained = eff.x <= req.x.saturating_add(TOL)
+            && eff.y <= req.y.saturating_add(TOL)
+            && eff.x.saturating_add(eff.w).saturating_add(TOL) >= req.x.saturating_add(req.w)
+            && eff.y.saturating_add(eff.h).saturating_add(TOL) >= req.y.saturating_add(req.h);
+        let payload = serde_json::json!({
+            "evt": "preview_roi_applied",
+            "ws": aim.workspace,
+            "path": aim.path,
+            "requested": { "x": req.x, "y": req.y, "w": req.w, "h": req.h },
+            "effective": {
+                "x": eff.x, "y": eff.y, "w": eff.w, "h": eff.h,
+                "src_w": eff.src_w, "src_h": eff.src_h,
+            },
+            "clamped": !contained,
+        });
+        tracing::info!(ws = %aim.workspace, path = %aim.path, clamped = !contained,
+            x = eff.x, y = eff.y, w = eff.w, h = eff.h,
+            "preview --roi applied — echoing effective rect");
+        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::AgentSend {
+            from: self_comm_handle(),
+            to: String::new(),
+            text: payload.to_string(),
+        }) {
+            tracing::warn!(error = %e, "preview_roi_applied: transport closed — echo dropped");
+        }
     }
 
     /// Open the Ctrl+N new-file prompt (Files mode only). Computes the
@@ -9111,6 +9277,35 @@ impl State {
                         }
                     }
                     self.render_preview_source(&mime, &bytes);
+                    // ADR 0025 `preview --roi`: certify a pending aim once its
+                    // image is the INSTALLED quad. A preview reply installs
+                    // whatever arrived last (node-unchecked above), so the
+                    // render-pass solve gates on this — never on the previous
+                    // file's quad. The solve itself stays in the render pass,
+                    // where the live pane geometry exists.
+                    let drop_aim = match self.pending_roi_aim.as_mut() {
+                        Some(aim)
+                            if !aim.ready
+                                && node_id.as_deref() == Some(aim.node_id.as_str()) =>
+                        {
+                            if is_raster_preview_mime(&mime) && self.preview_png.is_some() {
+                                aim.ready = true;
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                        _ => false,
+                    };
+                    if drop_aim {
+                        // The aimed file didn't produce a raster (non-raster
+                        // preview or decode failure): a viewport aim is
+                        // meaningless — retire it rather than letting it fire
+                        // on a later unrelated raster.
+                        let aim = self.pending_roi_aim.take();
+                        tracing::warn!(node_id = ?aim.map(|a| a.node_id),
+                            "preview --roi: target has no raster preview — aim dropped");
+                    }
                     // Modules-mode line anchoring: render_preview_source just
                     // reset the scroll to the top; if the selected row gave us
                     // a definition line, scroll the item (its docstring if
@@ -12770,6 +12965,37 @@ impl State {
                 // `(preview_rect, size_px)` inputs as the `letterbox` above,
                 // so at the ceiling canvas_w == 16 × source-px exactly.
                 let zoom_max = png_zoom_max(preview_rect.w, preview_rect.h, quad.size_px);
+                // ADR 0025 `preview --roi`: consume a pending viewport aim
+                // whose image is the installed quad (ready — certified at
+                // preview install) AND still the fired preview target. The
+                // solve overrides zoom/pan here, where the live pane geometry
+                // exists; the ordinary clamps just below then produce the
+                // effective rect echoed back after `preview_roi` recomputes.
+                let mut roi_aim: Option<RoiAim> = None;
+                if self.pending_roi_aim.as_ref().is_some_and(|a| {
+                    a.ready && Some(a.node_id.as_str()) == self.preview_node_id_fired.as_deref()
+                }) {
+                    let aim = self.pending_roi_aim.take().expect("checked Some above");
+                    let (src_w, src_h) = self.preview_png_dims.unwrap_or(quad.size_px);
+                    match solve_roi_view(
+                        preview_rect.w,
+                        preview_rect.h,
+                        letterbox_rect.w,
+                        letterbox_rect.h,
+                        zoom_max,
+                        src_w,
+                        src_h,
+                        aim.rect,
+                    ) {
+                        Some((z, pan)) => {
+                            self.preview_png_zoom = z;
+                            self.preview_png_pan_px = pan;
+                            roi_aim = Some(aim);
+                        }
+                        None => tracing::warn!(node_id = %aim.node_id,
+                            "preview --roi: degenerate geometry — aim dropped"),
+                    }
+                }
                 let zoom = self.preview_png_zoom.clamp(1.0, zoom_max);
                 self.preview_png_zoom = zoom;
                 let canvas_w = letterbox_rect.w * zoom;
@@ -12834,6 +13060,18 @@ impl State {
                         })
                     });
                 self.preview_roi = new_roi;
+                // ADR 0025: echo the effective (post-clamp) rect for a just-
+                // applied `--roi` aim — `fe.command.send` is fire-and-forget,
+                // so the ack couldn't carry it (2026-07-21 ADR update).
+                if let Some(aim) = roi_aim {
+                    match self.preview_roi.as_ref() {
+                        Some(eff) => self.emit_preview_roi_applied(&aim, eff),
+                        // Raster but not a croppable image node (e.g. a PDF
+                        // page): no source-px frame to report against.
+                        None => tracing::warn!(node_id = %aim.node_id,
+                            "preview --roi: no source-px ROI for this preview — no roi_applied echo"),
+                    }
+                }
                 let sx = preview_rect.x.max(0.0) as u32;
                 let sy = preview_rect.y.max(0.0) as u32;
                 let sw = preview_rect.w.max(0.0) as u32;
@@ -13750,6 +13988,24 @@ fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) ->
     // above); a broadcast collapses to the non-disruptive badge regardless of
     // the `urgent` arg.
     let directed = evt.target.is_some();
+    // Optional `roi = {x,y,w,h}` (source-image px, ADR-0022 vocabulary; ADR
+    // 0025 2026-07-21 update). Malformed or zero-area → ignored, plain
+    // preview: the request side ships ahead of consumers and must degrade
+    // gracefully, never drop the command.
+    let roi_arg = || {
+        args.get("roi")
+            .and_then(|v| match serde_json::from_value::<RoiRect>(v.clone()) {
+                Ok(r) if r.w > 0 && r.h > 0 => Some(r),
+                Ok(_) => {
+                    tracing::warn!("fe-command preview: zero-area roi ignored");
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "fe-command preview: unparsable roi ignored");
+                    None
+                }
+            })
+    };
     match evt.cmd.as_str() {
         "preview" => {
             let workspace = str_arg("workspace")?;
@@ -13758,6 +14014,7 @@ fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) ->
                 workspace,
                 path,
                 urgent: bool_arg("urgent") && directed,
+                roi: roi_arg(),
             })
         }
         "reveal" => {
@@ -13767,6 +14024,7 @@ fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) ->
                 workspace,
                 path,
                 urgent: bool_arg("urgent") && directed,
+                roi: roi_arg(),
             })
         }
         "goto_workspace" => {
@@ -13905,23 +14163,31 @@ enum FeCommand {
     /// `workspace`'s Files-mode preview. `urgent` requests force-show (switch +
     /// show now); without it — or when the FE isn't idle — this degrades to the
     /// badge floor (`mark_pending_nav`), the non-disruptive default. Carried as
-    /// an `FE_COMMAND` evt's `{cmd:"preview", args:{workspace, path, urgent?}}`;
-    /// also constructible from the ADR-0019 file channel for parity.
+    /// an `FE_COMMAND` evt's `{cmd:"preview", args:{workspace, path, urgent?,
+    /// roi?}}`; also constructible from the ADR-0019 file channel for parity.
+    /// `roi` (ADR 0025 2026-07-21 update) is an optional source-px viewport
+    /// aim, solved into zoom/pan FE-side, clamped, and echoed back via the
+    /// `preview_roi_applied` event.
     Preview {
         workspace: String,
         path: String,
         #[serde(default)]
         urgent: bool,
+        #[serde(default)]
+        roi: Option<RoiRect>,
     },
     /// ADR 0025 imperative reveal — v1 is identical to `Preview` (badge floor /
-    /// force-show + on-switch preview). Deep tree-expand-and-select of the
-    /// target row is a documented v1.1 follow-up; until then `reveal` reuses the
-    /// preview path so a result still reaches the user.
+    /// force-show + on-switch preview, `roi` carried through). Deep
+    /// tree-expand-and-select of the target row is a documented v1.1
+    /// follow-up; until then `reveal` reuses the preview path so a result
+    /// still reaches the user.
     Reveal {
         workspace: String,
         path: String,
         #[serde(default)]
         urgent: bool,
+        #[serde(default)]
+        roi: Option<RoiRect>,
     },
     /// ADR 0025 imperative `docs.open` (the `W` key) triggered from the backend:
     /// serve a local `.html`/site from backend disk over the forwarded
@@ -17963,6 +18229,168 @@ mod tests {
         );
     }
 
+    // ADR 0025 `preview --roi`: the zoom/pan solve (inverse of visible_roi_px).
+    #[test]
+    fn solve_roi_full_image_is_fit() {
+        // Square image in a square pane (letterbox == pane), whole image
+        // requested → zoom 1, centred.
+        let (z, pan) = solve_roi_view(
+            800.0,
+            800.0,
+            800.0,
+            800.0,
+            16.0,
+            800,
+            800,
+            RoiRect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 800,
+            },
+        )
+        .unwrap();
+        assert!((z - 1.0).abs() < 1e-4);
+        assert!(pan.0.abs() < 1e-2 && pan.1.abs() < 1e-2);
+    }
+
+    #[test]
+    fn solve_roi_centred_quarter_zooms_2x_no_pan() {
+        let (z, pan) = solve_roi_view(
+            800.0,
+            800.0,
+            800.0,
+            800.0,
+            16.0,
+            800,
+            800,
+            RoiRect {
+                x: 200,
+                y: 200,
+                w: 400,
+                h: 400,
+            },
+        )
+        .unwrap();
+        assert!((z - 2.0).abs() < 1e-4);
+        assert!(pan.0.abs() < 1e-2 && pan.1.abs() < 1e-2);
+    }
+
+    #[test]
+    fn solve_roi_top_left_quarter_pans_positive() {
+        // Rect centre at source fraction 0.25 → pan = (0.5 - 0.25) × the
+        // 1600 px canvas = +400 px each axis (canvas slides right/down so the
+        // top-left content lands mid-pane).
+        let (z, pan) = solve_roi_view(
+            800.0,
+            800.0,
+            800.0,
+            800.0,
+            16.0,
+            800,
+            800,
+            RoiRect {
+                x: 0,
+                y: 0,
+                w: 400,
+                h: 400,
+            },
+        )
+        .unwrap();
+        assert!((z - 2.0).abs() < 1e-4);
+        assert!((pan.0 - 400.0).abs() < 1e-1);
+        assert!((pan.1 - 400.0).abs() < 1e-1);
+    }
+
+    #[test]
+    fn solve_roi_round_trips_through_visible_roi_px() {
+        // Applying the solved zoom/pan through the render pass's canvas
+        // placement + slack clamp and mapping back with visible_roi_px must
+        // recover a superset of the requested rect (non-pane-aspect image, so
+        // letterbox ≠ pane and one axis shows extra context).
+        let (pane_w, pane_h) = (1000.0_f32, 500.0_f32);
+        let (src_w, src_h) = (800_u32, 600_u32);
+        let fit = (pane_w / src_w as f32).min(pane_h / src_h as f32);
+        let (lw, lh) = (src_w as f32 * fit, src_h as f32 * fit);
+        let req = RoiRect {
+            x: 100,
+            y: 150,
+            w: 200,
+            h: 120,
+        };
+        let zoom_max = png_zoom_max(pane_w, pane_h, (src_w, src_h));
+        let (z, (px, py)) =
+            solve_roi_view(pane_w, pane_h, lw, lh, zoom_max, src_w, src_h, req).unwrap();
+        let (cw, ch) = (lw * z, lh * z);
+        let slack_x = (cw - pane_w).max(0.0);
+        let slack_y = (ch - pane_h).max(0.0);
+        let px = px.clamp(-slack_x * 0.5, slack_x * 0.5);
+        let py = py.clamp(-slack_y * 0.5, slack_y * 0.5);
+        let canvas_x = pane_w * 0.5 - cw * 0.5 + px; // pane at origin
+        let canvas_y = pane_h * 0.5 - ch * 0.5 + py;
+        let (ex, ey, ew, eh) = visible_roi_px(
+            canvas_x, canvas_y, cw, ch, 0.0, 0.0, pane_w, pane_h, src_w, src_h,
+        )
+        .unwrap();
+        assert!(ex <= req.x + 2 && ey <= req.y + 2, "({ex},{ey})");
+        assert!(
+            ex + ew + 2 >= req.x + req.w && ey + eh + 2 >= req.y + req.h,
+            "({ex},{ey},{ew},{eh})"
+        );
+    }
+
+    #[test]
+    fn solve_roi_zoom_ceiling_clamps() {
+        // A 4×4 px aim in an 800 px image wants zoom 200; the ceiling (16
+        // px/src-px at fit 1) caps it — same ceiling interactive zoom obeys.
+        let zoom_max = png_zoom_max(800.0, 800.0, (800, 800));
+        let (z, _) = solve_roi_view(
+            800.0,
+            800.0,
+            800.0,
+            800.0,
+            zoom_max,
+            800,
+            800,
+            RoiRect {
+                x: 0,
+                y: 0,
+                w: 4,
+                h: 4,
+            },
+        )
+        .unwrap();
+        assert_eq!(z, zoom_max);
+    }
+
+    #[test]
+    fn solve_roi_degenerate_is_none() {
+        let r = RoiRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        };
+        assert!(solve_roi_view(0.0, 800.0, 800.0, 800.0, 16.0, 800, 800, r).is_none());
+        assert!(solve_roi_view(800.0, 800.0, 800.0, 800.0, 16.0, 0, 800, r).is_none());
+        assert!(solve_roi_view(
+            800.0,
+            800.0,
+            800.0,
+            800.0,
+            16.0,
+            800,
+            800,
+            RoiRect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 10
+            }
+        )
+        .is_none());
+    }
+
     #[test]
     fn is_image_node_id_matches_rasters_not_pdf() {
         assert!(State::is_image_node_id("files:plots/a.png"));
@@ -18633,6 +19061,7 @@ mod tests {
                 workspace,
                 path,
                 urgent,
+                roi,
             }) => {
                 assert_eq!(workspace, "ws");
                 assert_eq!(path, "src/a.jl");
@@ -18640,6 +19069,7 @@ mod tests {
                     urgent,
                     "directed urgent is carried through (force-show eligible)"
                 );
+                assert_eq!(roi, None, "no roi arg → no viewport aim");
             }
             other => panic!("expected Preview, got {other:?}"),
         }
@@ -18705,11 +19135,79 @@ mod tests {
                 workspace,
                 path,
                 urgent,
+                roi,
             }) => {
                 assert_eq!(workspace, "ws");
                 assert_eq!(path, "src/a.jl");
                 assert!(urgent);
+                assert_eq!(roi, None);
             }
+            other => panic!("expected Reveal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn route_preview_parses_roi() {
+        // Well-formed roi → carried through as a viewport aim.
+        let evt = fe_evt(
+            "preview",
+            serde_json::json!({
+                "workspace": "ws", "path": "out/plot.png",
+                "roi": {"x": 10, "y": 20, "w": 300, "h": 200},
+            }),
+            None,
+        );
+        match route_fe_command(&evt, "win-fe-host") {
+            Some(FeCommand::Preview { roi, .. }) => assert_eq!(
+                roi,
+                Some(RoiRect {
+                    x: 10,
+                    y: 20,
+                    w: 300,
+                    h: 200
+                })
+            ),
+            other => panic!("expected Preview, got {other:?}"),
+        }
+        // Malformed / zero-area / negative roi degrades to a PLAIN preview —
+        // the command must never be dropped over its optional arg.
+        for bad in [
+            serde_json::json!("10,20,30,40"),
+            serde_json::json!({"x": 1, "y": 2, "w": 0, "h": 5}),
+            serde_json::json!({"x": -1, "y": 2, "w": 3, "h": 5}),
+            serde_json::json!({"x": 1, "y": 2, "w": 3}),
+        ] {
+            let evt = fe_evt(
+                "preview",
+                serde_json::json!({"workspace": "ws", "path": "p.png", "roi": bad}),
+                None,
+            );
+            match route_fe_command(&evt, "win-fe-host") {
+                Some(FeCommand::Preview { roi, .. }) => {
+                    assert_eq!(roi, None, "bad roi is ignored, not fatal")
+                }
+                other => panic!("expected Preview, got {other:?}"),
+            }
+        }
+        // reveal carries roi too (the sot-fe CLI attaches it to either verb).
+        let evt = fe_evt(
+            "reveal",
+            serde_json::json!({
+                "workspace": "ws", "path": "out/plot.png",
+                "roi": {"x": 0, "y": 0, "w": 1, "h": 1},
+            }),
+            None,
+        );
+        match route_fe_command(&evt, "win-fe-host") {
+            Some(FeCommand::Reveal { roi, .. }) => assert_eq!(
+                roi,
+                Some(RoiRect {
+                    x: 0,
+                    y: 0,
+                    w: 1,
+                    h: 1
+                })
+            ),
             other => panic!("expected Reveal, got {other:?}"),
         }
     }
