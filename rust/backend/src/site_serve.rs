@@ -86,6 +86,11 @@ static POOL: RwLock<BTreeMap<u16, (u64, PathBuf, String)>> = RwLock::new(BTreeMa
 /// ADR-0035 proxy. Empty until `spawn_pool` runs.
 static BOUND_POOL: RwLock<std::collections::BTreeSet<u16>> =
     RwLock::new(std::collections::BTreeSet::new());
+/// Whether `spawn_pool` has run. Distinguishes "never spawned" (an isolated
+/// unit test exercising assignment → fall back to the full range) from
+/// "spawned but bound nothing" (all binds failed → assign NOTHING, never a
+/// failed/foreign port). Set true at spawn_pool entry regardless of outcome.
+static POOL_SPAWNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The pool's port range — 1237..=1240 with the default `site_port()` (1236).
 pub fn pool_ports() -> std::ops::RangeInclusive<u16> {
@@ -116,16 +121,20 @@ pub fn assign_pool_port(serial: u64, root: PathBuf) -> Option<(u16, String)> {
     // Assign only from ports we ACTUALLY bound at spawn_pool — never a port
     // whose bind failed (another process owns it), which would otherwise
     // return a docs URL pointing at that unrelated listener AND authorize the
-    // proxy to dial it (codex). Falls back to the full range only if
-    // spawn_pool never ran (BOUND_POOL empty) — e.g. a unit test exercising
-    // assignment in isolation — preserving the old behavior there.
-    let bound = BOUND_POOL.read().unwrap_or_else(|p| p.into_inner());
-    let candidates: Vec<u16> = if bound.is_empty() {
-        pool_ports().collect()
+    // proxy to dial it (codex). Fall back to the full range ONLY when
+    // spawn_pool never ran (an isolated unit test exercising assignment);
+    // once spawned, BOUND_POOL is authoritative even when empty (all binds
+    // failed → no candidates → None), never the full range (codex r3).
+    let candidates: Vec<u16> = if POOL_SPAWNED.load(std::sync::atomic::Ordering::SeqCst) {
+        BOUND_POOL
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .copied()
+            .collect()
     } else {
-        bound.iter().copied().collect()
+        pool_ports().collect()
     };
-    drop(bound);
     for port in candidates {
         if let std::collections::btree_map::Entry::Vacant(e) = g.entry(port) {
             e.insert((serial, root, secret.clone()));
@@ -328,6 +337,10 @@ enum ServeMode {
 /// are per-port and non-fatal: a lost port just shrinks the pool — `docs.open`
 /// reports "slots busy" when none are assignable, never a silent break.
 pub async fn spawn_pool() {
+    // Mark spawned BEFORE the binds so that even if all fail (BOUND_POOL stays
+    // empty), assign_pool_port yields no candidates rather than falling back
+    // to the full range (codex r3).
+    POOL_SPAWNED.store(true, std::sync::atomic::Ordering::SeqCst);
     for port in pool_ports() {
         match TcpListener::bind(("127.0.0.1", port)).await {
             Ok(listener) => {
