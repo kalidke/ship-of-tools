@@ -42,7 +42,7 @@ browserview(url::AbstractString) = BrowserView(String(url))
 const WGL_SERVER = Ref{Any}(nothing)
 
 """
-    wglshow(fig; port = SOT_WGL_PORT or 1241, use_html_widgets = true) -> BrowserView
+    wglshow(fig; port = SOT_WGL_PORT or 1241) -> BrowserView
 
 Serve an interactive WGLMakie figure over Bonito on a loopback port and return a
 [`BrowserView`](@ref), so the frontend auto-opens it in the browser (ADR 0032).
@@ -62,16 +62,9 @@ frontend. It lives as long as the REPL; a repeat `wglshow` replaces it.
 The figure fills the browser window and grows with it as the window is resized
 (`resize_to=:parent` mounted in a viewport-filling container).
 
-Interactive Makie controls (`Button`/`Menu`/`Slider`) work by default:
-`use_html_widgets=true` renders them as Bonito HTML-native controls that
-round-trip their events back to the Makie Observables. Set `false` to get
-WGLMakie's canvas-drawn widgets (which render but do not respond over Bonito —
-only useful for a non-interactive figure).
-
 Pinned against WGLMakie 0.13 / Bonito 5.1 (validated live, ADR 0032).
 """
-function wglshow(fig; port::Integer = parse(Int, get(ENV, "SOT_WGL_PORT", "1241")),
-                 use_html_widgets::Bool = true)
+function wglshow(fig; port::Integer = parse(Int, get(ENV, "SOT_WGL_PORT", "1241")))
     isdefined(Main, :WGLMakie) ||
         error("wglshow: no WGLMakie loaded — run `using WGLMakie` in this REPL first")
     WGL = getfield(Main, :WGLMakie)
@@ -84,17 +77,14 @@ function wglshow(fig; port::Integer = parse(Int, get(ENV, "SOT_WGL_PORT", "1241"
     # invokelatest throughout: these methods were defined by the user's `using`
     # after wglshow's world age (same reason value_frames_for uses it).
     #
-    # `use_html_widgets=true` makes Makie Button/Menu/Slider render as Bonito's
-    # HTML-native controls that sync back to the Makie Observables, instead of
-    # WGLMakie's default canvas-drawn widgets — which render but do NOT
-    # round-trip their events over Bonito, so an interactive picker looks alive
-    # but every control is dead (ImagingSystemDesign finding, 2026-07-22).
-    # It MUST be set in THIS activate! call: activate! resets the screen config
-    # each call, so a caller's prior activate!/set_theme! would be clobbered —
-    # setting it here is the fix's correct home (the serving layer), not a
-    # consumer-side workaround.
-    Base.invokelatest(WGL.activate!; resize_to = :parent,
-        use_html_widgets = use_html_widgets)
+    # wglshow NEVER uses Makie's interactive HTML widgets: force
+    # use_html_widgets=false here so no user theme/config can turn them on
+    # through wglshow. They do not round-trip reliably over Bonito and their
+    # layout pass crashes under-constrained scenes (pixel-only Axes / dummy-mesh
+    # LScenes) with a NaN bounding box. Interactive controls belong to the
+    # figure author (hand-rolled pixel hit-testing), not this serving layer.
+    # activate!'s set_screen_config! resets per call, so setting it here wins.
+    Base.invokelatest(WGL.activate!; resize_to = :parent, use_html_widgets = false)
     Base.invokelatest(Bonito.configure_server!;
         listen_url = host, listen_port = port, proxy_url = external)
     prev = WGL_SERVER[]
