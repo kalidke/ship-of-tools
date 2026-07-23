@@ -3,6 +3,7 @@ module ShipToolsRepl
 using Base64
 using JSON3
 using Pkg
+using Sockets
 
 export serve, browserview, BrowserView, wglshow
 
@@ -146,8 +147,32 @@ function wgl_warn_if_widgets(fig)
     flush(stderr)
 end
 
+# Preferred-then-ephemeral port pick for the wglshow Bonito server (mirrors
+# the daemon content servers' 2026-07-23 shared-host collision fix): try the
+# preferred port; when it's taken (another user's server on a shared host, or
+# ANOTHER WORKSPACE's REPL child of this same user — every child prefers the
+# same SOT_WGL_PORT), fall back to an OS-assigned ephemeral port. The daemon
+# learns the actual port from the BrowserView frame this serve emits (it
+# allowlists it for the ADR-0035 proxy), and the FE arms its proxy listener
+# per-URL — so an ephemeral port reaches the browser with no other change.
+# The probe-close-rebind window is a benign TOCTOU: losing it just fails
+# Bonito's own bind loudly.
+function wgl_pick_port(preferred::Int)
+    try
+        srv = Sockets.listen(Sockets.InetAddr(ip"127.0.0.1", preferred))
+        close(srv)
+        return preferred
+    catch
+        srv = Sockets.listen(Sockets.InetAddr(ip"127.0.0.1", 0))
+        _, p = Sockets.getsockname(srv)
+        close(srv)
+        @warn "wglshow: preferred WGL port taken — using an ephemeral port (multi-user host, or a second workspace serving?)" preferred port = Int(p)
+        return Int(p)
+    end
+end
+
 """
-    wglshow(fig; port = SOT_WGL_PORT or 1241) -> BrowserView
+    wglshow(fig; port = nothing) -> BrowserView
 
 Serve an interactive WGLMakie figure over Bonito on a loopback port and return a
 [`BrowserView`](@ref), so the frontend auto-opens it in the browser (ADR 0032).
@@ -160,16 +185,19 @@ Call it as the last expression of an eval:
 
 `ShipToolsRepl` carries no plotting dependency: WGLMakie/Bonito are resolved at
 call time from the *user's* loaded env (`using WGLMakie` first — Bonito comes in
-as its dependency). The server binds `127.0.0.1:port` with a loopback-shaped
-`proxy_url`, which the launcher's `-L <port>` tunnel forwards to a remote
-frontend. It lives as long as the REPL; a repeat `wglshow` replaces it.
+as its dependency). The server binds `127.0.0.1` on the preferred port
+(`SOT_WGL_PORT`, default 1241) and falls back to an OS-assigned ephemeral port
+when it's taken — the browser reaches either through the frontend's per-URL
+ADR-0035 proxy (or a launcher `-L` forward for the preferred port). It lives as
+long as the REPL; a repeat `wglshow` replaces it. Pass `port` explicitly to pin
+a port verbatim (no fallback — a taken pinned port errors loudly).
 
 The figure fills the browser window and grows with it as the window is resized
 (`resize_to=:parent` mounted in a viewport-filling container).
 
 Pinned against WGLMakie 0.13 / Bonito 5.1 (validated live, ADR 0032).
 """
-function wglshow(fig; port::Integer = parse(Int, get(ENV, "SOT_WGL_PORT", "1241")))
+function wglshow(fig; port::Union{Integer,Nothing} = nothing)
     isdefined(Main, :WGLMakie) ||
         error("wglshow: no WGLMakie loaded — run `using WGLMakie` in this REPL first")
     WGL = getfield(Main, :WGLMakie)
@@ -178,6 +206,22 @@ function wglshow(fig; port::Integer = parse(Int, get(ENV, "SOT_WGL_PORT", "1241"
     Bonito = Base.require(Base.PkgId(
         Base.UUID("824d6782-a2ef-11e9-3a09-e5662e0c26f8"), "Bonito"))
     host = "127.0.0.1"
+    # Close the previous server BEFORE picking the port, so a repeat wglshow in
+    # this child finds its own old port free and reuses it (stable URL across
+    # re-serves) instead of needlessly falling back to a fresh ephemeral port.
+    prev = WGL_SERVER[]
+    if prev !== nothing
+        WGL_SERVER[] = nothing
+        try
+            Base.invokelatest(close, prev)
+        catch
+        end
+    end
+    # Explicit `port` is honored verbatim (a taken port errors loudly — the
+    # caller asked for exactly that one); the default probes SOT_WGL_PORT
+    # (1241) and falls back to an ephemeral port when it's taken.
+    port = port === nothing ?
+        wgl_pick_port(parse(Int, get(ENV, "SOT_WGL_PORT", "1241"))) : Int(port)
     external = "http://$host:$port"
     # Warn (never silently) if the figure carries interactive Makie widgets —
     # wglshow can't make them respond over the browser (see wgl_warn_if_widgets).
@@ -195,13 +239,6 @@ function wglshow(fig; port::Integer = parse(Int, get(ENV, "SOT_WGL_PORT", "1241"
     Base.invokelatest(WGL.activate!; resize_to = :parent, use_html_widgets = false)
     Base.invokelatest(Bonito.configure_server!;
         listen_url = host, listen_port = port, proxy_url = external)
-    prev = WGL_SERVER[]
-    if prev !== nothing
-        try
-            Base.invokelatest(close, prev)
-        catch
-        end
-    end
     # Mount the figure in a viewport-filling container so a resize_to=:parent
     # figure grows with the browser window instead of Bonito's content-sized
     # default (which pinned it to ~1/3 width — ImagingSystemDesign finding, 2026-07-13).
