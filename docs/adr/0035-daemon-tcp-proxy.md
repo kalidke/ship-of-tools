@@ -132,3 +132,51 @@ otherwise it relies on the legacy forwards exactly as today.
    Win32-OpenSSH can't add forwards live).
 4. **Teaching every launcher every port forever** — the status quo this ADR
    exists to end.
+
+## Addendum (2026-07-23): ephemeral content-server ports — the multi-user collision
+
+**Incident.** On a shared host (multiple users, shared `$HOME`), two users' daemons
+both defaulted to the same content-server ports. The second daemon to start
+lost every bind: its video server (1235) and the whole docs surface
+(1236-1240) silently belonged to the *other user's* daemon. The losing
+user's `o` opened a browser against the winner's video server — "no such
+grant" — and `W` was dead. Worse than broken: the loser's grant token was
+sent to another user's process. `127.0.0.1:<port>` is a single global
+namespace per host; fixed defaults cannot be safe with two daemons on one
+box.
+
+**Decision.** Preferred-then-ephemeral binding for every daemon-owned
+content server, with the *actual* bound port flowing everywhere the port
+matters:
+
+- `http_serve` (video), `site_serve` (docs shared), and the docs pool each
+  try their preferred port (`SOT_VIDEO_PORT` 1235 / `SOT_DOCS_PORT` 1236 /
+  pool 1237-1240) and fall back to an OS-assigned ephemeral port
+  (`127.0.0.1:0`) when it is taken. The actual port is recorded
+  (`bound_video_port()` / `bound_site_port()` / `BOUND_POOL`).
+- The Pluto sidecar (`start.jl`) does the same probe-and-fallback in Julia;
+  the daemon parses the actual port from the sidecar's `READY <url>` line
+  (`bound_pluto_port()`), which it already consumed.
+- `video.open` / `docs.open` URLs are built from the actual ports — never
+  the preferred ones. If a server is genuinely down (even the ephemeral
+  bind failed), the op returns a typed error (`video_server_down` /
+  `site_server_down`) instead of a dead URL.
+- The proxy allowlist is now **verified-bound**: it authorizes only ports
+  this daemon (or its Pluto sidecar) actually bound, closing the previous
+  "Residual (accepted)" note for video/docs/pluto — the proxy can no longer
+  be pointed at a stranger's process squatting a preferred port. The one
+  remaining configured-not-verified entry is `SOT_WGL_PORT` (1241): that
+  server binds lazily inside the user's REPL child where the daemon cannot
+  observe it. Per-child WGL port assignment is the tracked follow-up.
+
+**Why the FE needs no change.** The FE arms proxy listeners *per URL*
+(`ensure_proxy_for_url` parses the port out of the URL the backend hands
+it), so an ephemeral port is proxied exactly like a fixed one. Launcher `-L`
+forwards keep working on single-user hosts (the preferred port still wins
+there); on a contended host the ephemeral port is reachable only through
+the proxy — which is precisely the transport this ADR built.
+
+**Consequence for static forwards.** A launcher-forwarded fixed port and an
+ephemeral fallback port cannot both be "the video port" — the ephemeral
+case *requires* the proxy path. This strengthens the case for retiring the
+aux `-L` sprawl (this ADR's stated goal) rather than weakening it.

@@ -172,10 +172,38 @@ async fn spawn_supervisor(
         }
     };
     tracing::info!(base_url = %base_url, "pluto sidecar ready");
+    // Record the port the sidecar ACTUALLY bound (start.jl falls back to an
+    // ephemeral port when 1234 is taken — another user's Pluto on a shared
+    // host). The ADR-0035 proxy allowlist reads this so it authorizes the
+    // real server, never a stranger's process squatting the preferred port.
+    if let Some(port) = port_from_base_url(&base_url) {
+        BOUND_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
+    } else {
+        tracing::warn!(base_url = %base_url, "could not parse port from pluto READY url — proxy allowlist won't include pluto");
+    }
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(64);
     tokio::spawn(supervisor_task(child, stdin, stdout_lines, submit_rx));
     Ok(submit_tx)
+}
+
+/// The port the Pluto sidecar ACTUALLY bound, parsed from its READY line
+/// (0 = not started / parse failed). The proxy allowlist reads this instead
+/// of assuming the preferred 1234.
+static BOUND_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+pub fn bound_pluto_port() -> Option<u16> {
+    match BOUND_PORT.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => None,
+        p => Some(p),
+    }
+}
+
+/// Parse the port out of a `http://127.0.0.1:<port>` base URL.
+fn port_from_base_url(url: &str) -> Option<u16> {
+    let rest = url.strip_prefix("http://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    authority.rsplit_once(':')?.1.parse().ok()
 }
 
 async fn supervisor_task(
@@ -245,4 +273,17 @@ async fn supervisor_task(
     }
     let _ = child.kill().await;
     let _ = child.wait().await;
+}
+
+#[cfg(test)]
+mod port_parse_tests {
+    use super::port_from_base_url;
+
+    #[test]
+    fn parses_ready_url_port() {
+        assert_eq!(port_from_base_url("http://127.0.0.1:1234"), Some(1234));
+        assert_eq!(port_from_base_url("http://127.0.0.1:43127/"), Some(43127));
+        assert_eq!(port_from_base_url("http://127.0.0.1"), None);
+        assert_eq!(port_from_base_url("garbage"), None);
+    }
 }
