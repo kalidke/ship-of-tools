@@ -1921,8 +1921,20 @@ pub async fn handle_repl_run_file(
                 std::env::current_dir().unwrap_or_default().join(pb)
             }
         };
-        let (project_dir, project_source) =
-            closest_project_dir(&abs_path).unwrap_or_else(|| (ws.project_root.clone(), "fallback"));
+        // The workspace REPL defaults to the WORKSPACE PACKAGE's env — the #44
+        // per-package env-fix, and the owner directive (2026-07-22): "the repl
+        // should have this repo as its default env … defaults to each package's
+        // env." A --fresh restart therefore activates SOT_WORKSPACE_ROOT's
+        // Project.toml, SAME as the default (non-fresh) REPL — NOT a project
+        // walked up/discovered from the file's path, which mis-picked a parent
+        // (e.g. ~/dev when a relative path resolved there) and broke
+        // `using <workspace package>`. Walk-up discovery is only the fallback
+        // when the workspace root itself is not a package (no Project.toml).
+        let (project_dir, project_source) = if ws.project_root.join("Project.toml").is_file() {
+            (ws.project_root.clone(), "workspace")
+        } else {
+            closest_project_dir(&abs_path).unwrap_or_else(|| (ws.project_root.clone(), "fallback"))
+        };
         project_dir_str = Some(project_dir.display().to_string());
         project_source_str = Some(project_source.to_string());
         if let Err(e) = repl.restart_with_project(&project_dir).await {
