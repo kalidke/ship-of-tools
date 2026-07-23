@@ -24,13 +24,19 @@ SELF_FILE="$SELF_DIR/${HOST}__${PANE_SAFE:-nopane}.txt"
 NAME=""
 [ -f "$SELF_FILE" ] && NAME="$(cat "$SELF_FILE")"
 
-printf 'HOST=%q\n'        "$HOST"
-printf 'PANE_ID=%q\n'     "$PANE_ID"
-printf 'TMUX_TARGET=%q\n' "$TMUX_TARGET"
-printf 'REPO=%q\n'        "$REPO"
-printf 'NAME=%q\n'        "$NAME"
-printf 'SELF_FILE=%q\n'   "$SELF_FILE"
-printf 'COMM_HOME=%q\n'   "$COMM_HOME"
-printf 'REGISTRY=%q\n'    "$REGISTRY"
-printf 'INBOX_DIR=%q\n'   "$INBOX_DIR"
-printf 'READ_DIR=%q\n'    "$READ_DIR"
+# %q on an EMPTY value emits a literal '' — fine for the eval contract (both
+# eval to empty), but a textual scraper (`sed -n 's/^NAME=//p'`, as session-start
+# skills have used) captures the two quote chars as a NON-empty value, defeating
+# ${NAME:-fallback}. Emit a bare KEY= when empty so both consumers are safe.
+emit() { if [ -n "$2" ]; then printf '%s=%q\n' "$1" "$2"; else printf '%s=\n' "$1"; fi; }
+
+emit HOST        "$HOST"
+emit PANE_ID     "$PANE_ID"
+emit TMUX_TARGET "$TMUX_TARGET"
+emit REPO        "$REPO"
+emit NAME        "$NAME"
+emit SELF_FILE   "$SELF_FILE"
+emit COMM_HOME   "$COMM_HOME"
+emit REGISTRY    "$REGISTRY"
+emit INBOX_DIR   "$INBOX_DIR"
+emit READ_DIR    "$READ_DIR"

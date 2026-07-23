@@ -98,7 +98,14 @@ if printf '%s' "$tools" | grep -E "$SHOWN_RE" | grep -qiE "$ARTIFACT_RE"; then
         || candidates+=("blind-badge")
 fi
 
-if printf '%s' "$tools" | grep -qE 'RUN_IN_BACKGROUND|^Monitor |^Agent |^Task '; then
+# The persistent comm inbox Monitor (comm-watch.sh) is the session's RECEIVE
+# PATH, not a background job — every joined session arms one at bootstrap and it
+# runs for the session's lifetime. Exclude it here, or every bootstrap turn gets
+# a false "you armed a watcher — set waiting" nudge (ISD report, 2026-07-23).
+# It still counts as "re-armed something" for the stale-waiting check above —
+# suppressing a nudge is the conservative direction.
+bg_tools="$(printf '%s' "$tools" | grep -vE 'comm-watch\.sh')"
+if printf '%s' "$bg_tools" | grep -qE 'RUN_IN_BACKGROUND|^Monitor |^Agent |^Task '; then
     case "$row_state" in waiting*|blocked*|*sticky=[!-]*) ;; *) candidates+=("background") ;; esac
 fi
 
