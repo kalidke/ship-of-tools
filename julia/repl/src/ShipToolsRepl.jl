@@ -41,6 +41,66 @@ browserview(url::AbstractString) = BrowserView(String(url))
 # instead of hitting EADDRINUSE. `Any` — ShipToolsRepl never loads Bonito.
 const WGL_SERVER = Ref{Any}(nothing)
 
+# Client-side error overlay injected into every wglshow page. Bonito already
+# turns Julia-side render errors into inline error HTML, but a WebGL/JS error
+# (e.g. WGLMakie/THREE "computeBoundingBox NaN" from an under-constrained scene)
+# only hits the browser console and leaves a blank canvas. This runs at parse
+# time and surfaces window errors, unhandled rejections, and console.error into
+# a dismissible panel, so a broken render shows WHAT went wrong in the page.
+# No `\$` (Julia interpolation) and no JS template literals by design.
+const WGL_ERROR_OVERLAY_JS = """
+(function () {
+  if (window.__wglshowErrHooked) return;
+  window.__wglshowErrHooked = true;
+  function box() {
+    var id = "wglshow-error-overlay";
+    var el = document.getElementById(id);
+    if (el) return el;
+    el = document.createElement("div");
+    el.id = id;
+    el.style.cssText = "position:fixed;left:0;right:0;bottom:0;max-height:55%;overflow:auto;z-index:2147483647;margin:0;padding:14px 40px 14px 16px;white-space:pre-wrap;word-break:break-word;font:13px/1.45 ui-monospace,Menlo,Consolas,monospace;color:#ffdada;background:rgba(43,20,22,0.97);border-top:2px solid #ff6b6b;box-shadow:0 -2px 12px rgba(0,0,0,0.5)";
+    var x = document.createElement("div");
+    x.textContent = "×";
+    x.title = "dismiss";
+    x.style.cssText = "position:absolute;top:6px;right:12px;cursor:pointer;color:#ff9b9b;font-weight:bold;font-size:18px";
+    x.onclick = function () { el.remove(); };
+    el.appendChild(x);
+    var h = document.createElement("div");
+    h.textContent = "wglshow — render error (browser side):";
+    h.style.cssText = "font-weight:bold;margin-bottom:6px;color:#ff9b9b";
+    el.appendChild(h);
+    var b = document.createElement("div");
+    b.id = id + "-body";
+    el.appendChild(b);
+    (document.body || document.documentElement).appendChild(el);
+    return el;
+  }
+  function push(msg) {
+    try {
+      box();
+      var b = document.getElementById("wglshow-error-overlay-body");
+      var line = document.createElement("div");
+      line.textContent = String(msg);
+      line.style.cssText = "margin:2px 0;padding-top:4px;border-top:1px solid rgba(255,255,255,0.08)";
+      b.appendChild(line);
+    } catch (e) {}
+  }
+  window.addEventListener("error", function (e) {
+    push((e && e.message ? e.message : String(e)) +
+         (e && e.filename ? "  [" + e.filename + ":" + e.lineno + "]" : ""));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var r = e && e.reason;
+    push("unhandled promise rejection: " + (r && r.message ? r.message : String(r)));
+  });
+  var orig = console.error;
+  console.error = function () {
+    try { push(Array.prototype.map.call(arguments, String).join(" ")); } catch (e) {}
+    return orig.apply(console, arguments);
+  };
+})();
+"""
+
 # Interactive Makie widget Blocks that need a JS→Julia event round-trip wglshow
 # can't provide (they render but never respond over Bonito). Matched by type
 # NAME — the shim carries no Makie dependency, so it never references the types.
@@ -145,8 +205,18 @@ function wglshow(fig; port::Integer = parse(Int, get(ENV, "SOT_WGL_PORT", "1241"
     # Mount the figure in a viewport-filling container so a resize_to=:parent
     # figure grows with the browser window instead of Bonito's content-sized
     # default (which pinned it to ~1/3 width — ImagingSystemDesign finding, 2026-07-13).
+    #
+    # Bonito already renders Julia-side render errors (a throw in the App handler
+    # or in the figure's jsrender) as inline error HTML — see its
+    # `handle_render_error`. What it CANNOT catch is a client-side WebGL/JS error
+    # (e.g. WGLMakie/THREE "computeBoundingBox NaN" from an under-constrained
+    # scene), which only hits the browser console and leaves a blank canvas. So
+    # we inject a tiny client-side error overlay that surfaces those into the
+    # page too (maintainer request: show render errors in the html render).
     app = Base.invokelatest(Bonito.App, () ->
-        Bonito.DOM.div(fig; style = "position:fixed; inset:0; margin:0"))
+        Bonito.DOM.div(
+            Bonito.DOM.script(WGL_ERROR_OVERLAY_JS),
+            Bonito.DOM.div(fig; style = "position:fixed; inset:0; margin:0")))
     server = Base.invokelatest(Bonito.Server, app, host, port; proxy_url = external)
     WGL_SERVER[] = server
     url = Base.invokelatest(Bonito.online_url, server, "/")
