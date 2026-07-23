@@ -172,6 +172,31 @@ const DR = ShipToolsRepl
         @test saw_eval_done         # eval terminated with a done frame
     end
 
+    @testset "announce_browserview: swallowed serves still emit; returned ones don't double" begin
+        # Swallowed: user code announces mid-eval but RETURNS something else
+        # (the wrapper-API case) — exactly one browser frame must stream.
+        frames = Dict[]
+        DR.CURRENT_EMIT[] = f -> push!(frames, f)
+        empty!(DR.ANNOUNCED_BROWSER_URLS)
+        bv = DR.announce_browserview(DR.BrowserView("http://127.0.0.1:59991/"))
+        @test bv isa DR.BrowserView
+        @test length(frames) == 1 && frames[1][:kind] == "browser"
+        # Idempotent within the eval: announcing the same URL again is a no-op.
+        DR.announce_browserview(DR.BrowserView("http://127.0.0.1:59991/"))
+        @test length(frames) == 1
+        # Returned AND announced: value_frames_for must skip (no second tab).
+        @test isempty(DR.value_frames_for(bv))
+        # Un-announced BrowserView (plain browserview(url)) still emits via
+        # the value path.
+        other = DR.BrowserView("http://127.0.0.1:59992/")
+        vf = DR.value_frames_for(other)
+        @test length(vf) == 1 && vf[1][:kind] == "browser"
+        # Outside a streamed eval the announce is a harmless no-op.
+        DR.CURRENT_EMIT[] = nothing
+        @test DR.announce_browserview(other) === other
+        empty!(DR.ANNOUNCED_BROWSER_URLS)
+    end
+
     @testset "wgl_pick_port: preferred when free, ephemeral fallback when taken" begin
         # Grab an ephemeral port to use as a known-free preferred: close it,
         # then wgl_pick_port should return it verbatim.
