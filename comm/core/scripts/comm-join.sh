@@ -69,7 +69,11 @@ obj="$(jq -n \
       status:"idle", joined:$ts, last_seen:$ts}')"
 
 with_lock registry_put "$NAME" "$obj"
-printf '%s' "$NAME" > "$SELF_FILE"
+# v2 self-file: identity + the repo it was claimed for. comm-context uses the
+# repo line to detect a stale identity in a RECYCLED tmux pane (pane ids are
+# reused after a server restart) and discard it instead of letting a fresh
+# session inherit another session's handle.
+printf '%s\nrepo=%s\n' "$NAME" "$REPO" > "$SELF_FILE"
 # A joined handle always has an inbox: durable comm-send targets it, and a
 # first-ever selftest otherwise probes a nonexistent file (noisy redirect
 # errors that derail diagnosis — 2026-06-11 fresh-join report). Append-touch

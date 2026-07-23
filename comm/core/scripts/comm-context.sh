@@ -21,8 +21,28 @@ REPO="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
 
 PANE_SAFE="${PANE_ID//%/}"
 SELF_FILE="$SELF_DIR/${HOST}__${PANE_SAFE:-nopane}.txt"
+# The self-file is keyed by PANE ID, and tmux REUSES pane ids (%1, %2, …)
+# after a server restart — so a fresh session in a recycled pane can inherit
+# a DIFFERENT session's identity. That poisons everything downstream: the
+# session-start Step-0 watcher check pgreps the wrong handle (finds the other
+# session's live watcher → false "survived compaction" → stays deaf), and a
+# no-args rejoin keeps the stolen name (two sessions executing as one handle).
+# Guard: v2 self-files carry a `repo=` line (written by comm-join); when it
+# mismatches the CURRENT repo, the identity is stale — discard it (read-side
+# only; the file is left for the join that will rewrite it). A legacy
+# one-line file has no repo to check and is trusted as before; it upgrades on
+# its session's next join. NB a session merely cd'd into another repo also
+# mismatches — that costs a transient no-op status update, which is the safe
+# side of the trade (a stolen identity is worse).
 NAME=""
-[ -f "$SELF_FILE" ] && NAME="$(cat "$SELF_FILE")"
+if [ -f "$SELF_FILE" ]; then
+    NAME="$(sed -n '1p' "$SELF_FILE")"
+    SELF_REPO="$(sed -n '2p' "$SELF_FILE" | sed -n 's/^repo=//p')"
+    if [ -n "$SELF_REPO" ] && [ "$SELF_REPO" != "$REPO" ]; then
+        echo "comm-context: self-file identity '$NAME' was claimed for repo '$SELF_REPO' but this is '$REPO' — stale (pane id reused); discarding" >&2
+        NAME=""
+    fi
+fi
 
 # %q on an EMPTY value emits a literal '' — fine for the eval contract (both
 # eval to empty), but a textual scraper (`sed -n 's/^NAME=//p'`, as session-start
