@@ -80,6 +80,48 @@ printf '%s\nrepo=%s\n' "$NAME" "$REPO" > "$SELF_FILE"
 # so an existing inbox is never truncated.
 : >> "$INBOX_DIR/$NAME.jsonl"
 
+# Sweep LEGACY (one-line, pre-provenance) self-files. The v2 repo-line guard
+# can't validate a legacy file, and a stale legacy file's owner is gone — it
+# never upgrades itself, so each one is a mine: any fresh session whose pane
+# id happens to match inherits that identity (three sessions hit this in one
+# day once pane ids recycled after a tmux server restart — wrong Step-0
+# verdicts, one session SENDING as another's handle). Ground truth is the
+# REGISTRY row, which its owner's every join refreshes with the real
+# host/pane: a legacy file whose name's row points at this exact file is the
+# rightful owner's — upgrade it to v2 in place (with the row's repo); any
+# other legacy file (no row, or the row lives at another pane) is stale —
+# delete it. v2 files are never touched; the whole sweep runs under the
+# registry lock and is idempotent, so concurrent joins are safe. Runs on
+# every join — after the first sweep per install it's a no-op scan.
+sweep_legacy_selffiles() {
+    local rows f key name row_key row_repo migrated=0 removed=0
+    rows="$(jq -r '.agents | to_entries[]
+        | [.key, (.value.host // ""), ((.value.pane_id // "") | ltrimstr("%")), (.value.repo // "")]
+        | @tsv' "$REGISTRY" 2>/dev/null)" || return 0
+    for f in "$SELF_DIR"/*.txt; do
+        [ -f "$f" ] || continue
+        [ "$(wc -l < "$f")" -ge 2 ] && continue   # v2 — has provenance, not ours to touch
+        key="$(basename "$f" .txt)"
+        name="$(sed -n '1p' "$f")"
+        row_key=""; row_repo=""
+        while IFS=$'\t' read -r rname rhost rpane rrepo; do
+            [ "$rname" = "$name" ] || continue
+            row_key="${rhost}__${rpane:-nopane}"; row_repo="$rrepo"; break
+        done <<< "$rows"
+        if [ -n "$row_key" ] && [ "$row_key" = "$key" ]; then
+            printf '%s\nrepo=%s\n' "$name" "$row_repo" > "$f"
+            migrated=$((migrated + 1))
+        else
+            rm -f "$f"
+            removed=$((removed + 1))
+        fi
+    done
+    [ $((migrated + removed)) -gt 0 ] &&
+        echo "comm-join: legacy self-file sweep — upgraded $migrated rightful identities, removed $removed stale ones" >&2
+    return 0
+}
+with_lock sweep_legacy_selffiles
+
 have="$(jq -r '.protocol_version // 0' "$REGISTRY")"
 if [ "$have" != "$PROTOCOL_VERSION" ]; then
     echo "WARNING: registry protocol v$have != client v$PROTOCOL_VERSION — run ShipTools.update_comm() on all machines" >&2
