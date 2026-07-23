@@ -17,18 +17,78 @@
 //! can't head-of-line-block pty/repl traffic and needs no flow control of
 //! its own (native TCP backpressure).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::RwLock;
 
 use anyhow::Result;
 use sot_protocol::{codec, op, Frame, ProxyConnectReq};
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-/// WGLMakie/Bonito default port (ADR 0032). This server lives in the user's
-/// REPL child (`julia/repl/src/ShipToolsRepl.jl`, `SOT_WGL_PORT`), NOT in the
-/// daemon — so the daemon reads the same env here purely to allow-list it
-/// (the "daemon doesn't know 1241" gap called out in ADR 0035 §Context).
-const WGL_PORT_DEFAULT: u16 = 1241;
+/// Loopback ports announced by REPL children via their `browser` frames
+/// (ADR 0032 `BrowserView` — `wglshow` and user-served dashboards), keyed by
+/// workspace so a dead child's grants die with it. This closes the last
+/// configured-not-verified allowlist entry: the WGL/Bonito server binds
+/// lazily inside the user's REPL child where the daemon can't observe the
+/// bind, but the `BrowserView` URL it produces flows THROUGH the daemon as a
+/// repl frame on its way to the FE — the supervisor records the port off
+/// that frame (`repl.rs`), so the allowlist learns the ACTUAL bound port
+/// (ephemeral-fallback aware) with no protocol change and no trust in a
+/// static port number.
+///
+/// Trust: the REPL child is the user's own arbitrary code, and the proxy
+/// client is the same authenticated user — user code authorizing a loopback
+/// port for the user's own browser adds no privilege over what either side
+/// can already do (same standing as `SOT_PROXY_EXTRA_PORTS`).
+static BROWSER_PORTS: RwLock<BTreeMap<String, BTreeSet<u16>>> = RwLock::new(BTreeMap::new());
+
+/// Per-workspace cap on announced ports — a backstop against a runaway loop
+/// serving in a hot loop, not a real limit (a workspace realistically holds
+/// one or two live served pages).
+const BROWSER_PORTS_PER_WS: usize = 16;
+
+/// Record a `browser`-frame loopback port for `workspace`. Called by the
+/// REPL supervisor when a BrowserView frame passes through it.
+pub fn record_browser_port(workspace: &str, port: u16) {
+    let mut m = BROWSER_PORTS.write().unwrap_or_else(|p| p.into_inner());
+    let set = m.entry(workspace.to_string()).or_default();
+    if set.insert(port) {
+        while set.len() > BROWSER_PORTS_PER_WS {
+            // BTreeSet has no insertion order; evicting the smallest is an
+            // arbitrary-but-deterministic backstop.
+            let evict = *set.iter().next().expect("non-empty set");
+            set.remove(&evict);
+        }
+        tracing::info!(workspace, port, "proxy: browser-served port recorded (allowlisted)");
+    }
+}
+
+/// Drop every announced port for `workspace`. Called when its REPL child
+/// dies (gen-guarded) and when a respawn begins — a freed port could be
+/// re-bound by any other process, so a dead child's grant must not outlive it.
+pub fn revoke_browser_ports(workspace: &str) {
+    let mut m = BROWSER_PORTS.write().unwrap_or_else(|p| p.into_inner());
+    if let Some(set) = m.remove(workspace) {
+        if !set.is_empty() {
+            tracing::info!(workspace, ports = ?set, "proxy: browser-served ports revoked (REPL child gone)");
+        }
+    }
+}
+
+/// Parse the port out of a loopback `http(s)://` URL — `None` for any
+/// non-loopback host (never allowlist an external address). Mirrors the FE's
+/// `proxy_port_from_url`.
+pub fn loopback_port_from_url(url: &str) -> Option<u16> {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let (host, port) = authority.rsplit_once(':')?;
+    if host != "127.0.0.1" && host != "localhost" {
+        return None;
+    }
+    port.parse().ok()
+}
 
 /// The set of loopback ports `proxy.connect` will dial — the daemon's own
 /// served HTTP surface. Computed per request so a runtime-assigned port is
@@ -47,12 +107,14 @@ const WGL_PORT_DEFAULT: u16 = 1241;
 /// - Pluto: `bound_pluto_port()` — the port parsed from the sidecar's READY
 ///   line; absent until the sidecar's first spawn (nothing to reach before
 ///   then, so nothing is authorized),
-/// - `SOT_WGL_PORT` (default 1241) — the ONE remaining configured-not-verified
-///   entry: the WGL server binds lazily inside the user's REPL child, so the
-///   daemon can't verify it. Same-user-loopback exposure, not a privilege
-///   boundary; per-child WGL port assignment is the tracked follow-up.
-/// - `SOT_PROXY_EXTRA_PORTS` (comma-separated) — escape hatch for a future
-///   REPL-served dashboard so a new port needs no daemon release.
+/// - WGL/Bonito + user-served dashboards: the per-workspace ports REPL
+///   children announced via `browser` frames (`BROWSER_PORTS`, above) —
+///   recorded when the BrowserView URL passes through the supervisor,
+///   revoked when the child dies. This replaced the static `SOT_WGL_PORT`
+///   entry, which was the last configured-not-verified port (the wglshow
+///   flow records the port strictly before any browser can dial it),
+/// - `SOT_PROXY_EXTRA_PORTS` (comma-separated) — escape hatch so an exotic
+///   serving flow needs no daemon release.
 pub fn allowed_proxy_ports() -> BTreeSet<u16> {
     let mut ports = BTreeSet::new();
     if let Some(p) = crate::pluto::bound_pluto_port() {
@@ -65,7 +127,12 @@ pub fn allowed_proxy_ports() -> BTreeSet<u16> {
         ports.insert(p);
     }
     ports.extend(crate::site_serve::pool_assigned_ports());
-    ports.insert(wgl_port());
+    {
+        let m = BROWSER_PORTS.read().unwrap_or_else(|p| p.into_inner());
+        for set in m.values() {
+            ports.extend(set.iter().copied());
+        }
+    }
     for tok in std::env::var("SOT_PROXY_EXTRA_PORTS")
         .unwrap_or_default()
         .split(',')
@@ -77,16 +144,6 @@ pub fn allowed_proxy_ports() -> BTreeSet<u16> {
         // a fat-fingered env var must never widen the allowlist to 0/all.
     }
     ports
-}
-
-/// `SOT_WGL_PORT` daemon-side, default 1241. Mirrors the REPL-side default
-/// (config duplication accepted per ADR 0035 §3 — both sides default the
-/// same; an override must be set in both environments).
-fn wgl_port() -> u16 {
-    std::env::var("SOT_WGL_PORT")
-        .ok()
-        .and_then(|s| s.trim().parse::<u16>().ok())
-        .unwrap_or(WGL_PORT_DEFAULT)
 }
 
 /// Handle a connection whose first frame was `proxy.connect` (ADR 0035).
@@ -236,9 +293,10 @@ mod tests {
         assert!(!ports.contains(&1234), "pluto only once READY-parsed");
         assert!(!ports.contains(&1235), "video only when verified-bound");
         assert!(!ports.contains(&1236), "docs only when verified-bound");
-        // WGL stays configured-not-verified (binds lazily inside the user's
-        // REPL child, where the daemon can't observe it — documented residual).
-        assert!(ports.contains(&1241), "wgl default");
+        // WGL is no longer statically allowed either: a REPL child's served
+        // port is allowlisted only once its BrowserView frame announces it
+        // (and revoked when the child dies). Fully verified-bound now.
+        assert!(!ports.contains(&1241), "wgl only when announced by a live child");
         // A random unrelated port is NOT proxyable.
         assert!(!ports.contains(&8080));
         assert!(!ports.contains(&22));
@@ -266,14 +324,40 @@ mod tests {
     }
 
     #[test]
-    fn wgl_port_env_override_is_honored() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("SOT_WGL_PORT", "1250");
+    fn browser_ports_record_revoke_and_allowlist() {
+        // Unique workspaces + high ports so parallel tests can't collide.
+        record_browser_port("wsA-test", 45911);
+        record_browser_port("wsA-test", 45912);
+        record_browser_port("wsB-test", 45913);
         let ports = allowed_proxy_ports();
-        assert!(ports.contains(&1250), "overridden wgl port allowed");
-        std::env::remove_var("SOT_WGL_PORT");
-        // Back to default when unset.
-        assert!(allowed_proxy_ports().contains(&1241));
+        assert!(ports.contains(&45911) && ports.contains(&45912), "wsA announced");
+        assert!(ports.contains(&45913), "wsB announced");
+        // Revoking one workspace drops exactly its grants.
+        revoke_browser_ports("wsA-test");
+        let ports = allowed_proxy_ports();
+        assert!(!ports.contains(&45911) && !ports.contains(&45912), "wsA revoked");
+        assert!(ports.contains(&45913), "wsB survives wsA's revoke");
+        revoke_browser_ports("wsB-test");
+        assert!(!allowed_proxy_ports().contains(&45913));
+        // Per-workspace cap: 20 inserts keep at most BROWSER_PORTS_PER_WS.
+        for p in 0..20u16 {
+            record_browser_port("wsCap-test", 46000 + p);
+        }
+        let n = allowed_proxy_ports().iter().filter(|p| (46000..46020).contains(*p)).count();
+        assert!(n <= BROWSER_PORTS_PER_WS, "cap enforced, kept {n}");
+        revoke_browser_ports("wsCap-test");
+    }
+
+    #[test]
+    fn loopback_port_from_url_is_loopback_only() {
+        assert_eq!(loopback_port_from_url("http://127.0.0.1:1241/"), Some(1241));
+        assert_eq!(loopback_port_from_url("http://localhost:45817/app?x=1"), Some(45817));
+        assert_eq!(loopback_port_from_url("https://127.0.0.1:9000"), Some(9000));
+        // Never allowlist an external host, a portless URL, or garbage.
+        assert_eq!(loopback_port_from_url("http://10.0.0.5:1241/"), None);
+        assert_eq!(loopback_port_from_url("http://example.com:80/"), None);
+        assert_eq!(loopback_port_from_url("http://127.0.0.1/"), None);
+        assert_eq!(loopback_port_from_url("file:///tmp/x"), None);
     }
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

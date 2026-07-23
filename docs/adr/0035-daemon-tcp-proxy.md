@@ -180,3 +180,29 @@ the proxy — which is precisely the transport this ADR built.
 ephemeral fallback port cannot both be "the video port" — the ephemeral
 case *requires* the proxy path. This strengthens the case for retiring the
 aux `-L` sprawl (this ADR's stated goal) rather than weakening it.
+
+### Follow-up closed (same day): WGL / BrowserView ports are announced, not configured
+
+The addendum above left one configured-not-verified allowlist entry:
+`SOT_WGL_PORT` (1241), because the Bonito/WGLMakie server binds lazily inside
+the user's REPL child where the daemon can't observe the bind. Closed by
+using a fact already in the pipeline: the `BrowserView` URL a serve produces
+(ADR 0032 — `wglshow` and user-served dashboards alike) flows THROUGH the
+daemon as a `browser` repl frame on its way to the FE. The REPL supervisor
+now records that frame's loopback port per workspace and the allowlist reads
+the recorded set — so the port is authorized strictly before any browser can
+dial it, with **no wire-protocol change** (old shims' frames announce just
+the same). Grants are revoked when the child dies (gen-guarded, mirroring
+the repl_state machinery) and when a respawn takes ownership.
+
+`wglshow` itself gained the same preferred-then-ephemeral bind as the
+content servers: it probes `SOT_WGL_PORT` (1241) and falls back to an
+OS-assigned port — which also ends the *same-user* collision where a second
+workspace's REPL child couldn't serve because the first held 1241. An
+explicitly passed `wglshow(fig; port=N)` is honored verbatim (loud failure).
+
+Trust note: a REPL child is the user's own arbitrary code and the proxy
+client is the same authenticated user, so user code authorizing a loopback
+port for the user's own browser adds no privilege over what either side can
+already do (same standing as `SOT_PROXY_EXTRA_PORTS`). Announced URLs are
+loopback-only by construction; per-workspace grants are capped.

@@ -101,8 +101,20 @@ fn lifecycle_begin_starting(
         c.state = ReplLifecycle::Starting;
         c.gen
     };
+    // A respawn takes ownership of the workspace's proxy grants: the OLD
+    // child's browser-served ports are revoked here, not only on its Dead
+    // transition — a restart-raced stale supervisor's Dead is gen-rejected
+    // (below), so this is the path that reliably clears them.
+    crate::proxy::revoke_browser_ports(browser_ports_key(workspace_id));
     emit_lifecycle(frame_tx, workspace_id, ReplLifecycle::Starting);
     my_gen
+}
+
+/// Key for the per-workspace browser-served-port grants (`crate::proxy`).
+/// The legacy singleton REPL has no workspace id; give it a fixed key so its
+/// grants are still tracked and revoked.
+fn browser_ports_key(workspace_id: &Option<String>) -> &str {
+    workspace_id.as_deref().unwrap_or("<legacy>")
 }
 
 /// Apply a lifecycle transition IF `my_gen` is still the current spawn
@@ -609,14 +621,19 @@ async fn supervisor_task(
                     // Intentional teardown (sender dropped — restart or
                     // shutdown). Gen-guarded: when a restart has already
                     // opened the next generation this is a no-op, so the
-                    // fresh child's `Starting` isn't stomped to `Dead`.
-                    lifecycle_transition(
+                    // fresh child's `Starting` isn't stomped to `Dead` — and
+                    // its proxy grants aren't revoked out from under it
+                    // (an applied Dead means WE were the current child, so
+                    // our browser-served ports die with us).
+                    if lifecycle_transition(
                         &lifecycle,
                         my_gen,
                         ReplLifecycle::Dead,
                         &frame_tx,
                         &workspace_id,
-                    );
+                    ) {
+                        crate::proxy::revoke_browser_ports(browser_ports_key(&workspace_id));
+                    }
                     return;
                 };
                 let id = next_id;
@@ -714,14 +731,20 @@ async fn supervisor_task(
 
     // Child death: flip to Dead FIRST (gen-guarded) so the announce precedes
     // the synthetic per-eval close-out frames below — a front-end reading in
-    // order sees "the REPL died" before each "died mid-eval" error.
-    lifecycle_transition(
+    // order sees "the REPL died" before each "died mid-eval" error. An
+    // applied transition also revokes this child's browser-served proxy
+    // grants (a freed port must not stay dialable — it could be re-bound by
+    // any other process); a stale (gen-rejected) death leaves the fresh
+    // child's grants alone.
+    if lifecycle_transition(
         &lifecycle,
         my_gen,
         ReplLifecycle::Dead,
         &frame_tx,
         &workspace_id,
-    );
+    ) {
+        crate::proxy::revoke_browser_ports(browser_ports_key(&workspace_id));
+    }
     for (_id, reply) in pending.drain() {
         let _ = reply.send(Err(anyhow!("repl terminated")));
     }
@@ -802,6 +825,22 @@ fn route_line(
         let is_done = frame.get("kind").and_then(Value::as_str) == Some("done");
         if is_done {
             streaming.remove(&eval_id);
+        }
+        // A `browser` frame (ADR 0032 BrowserView — wglshow / user-served
+        // dashboard) announces a live loopback server in this child. Record
+        // its port for the ADR-0035 proxy allowlist HERE, as the frame passes
+        // through on its way to the FE — so the port is authorized strictly
+        // before any browser can dial it, even when the child fell back to an
+        // ephemeral port (or an old shim serves a fixed one). Loopback-only
+        // by construction; revoked when this child dies or is respawned.
+        if frame.get("kind").and_then(Value::as_str) == Some("browser") {
+            if let Some(port) = frame
+                .get("url")
+                .and_then(Value::as_str)
+                .and_then(crate::proxy::loopback_port_from_url)
+            {
+                crate::proxy::record_browser_port(browser_ports_key(&workspace_id), port);
+            }
         }
         // Tee into a `repl.execute` collector, loss-free, before the frame goes
         // onto the best-effort broadcast bus. The `done` frame ends collection

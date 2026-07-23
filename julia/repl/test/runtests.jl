@@ -1,5 +1,6 @@
 using Test
 using JSON3
+using Sockets
 using ShipToolsRepl
 
 # Reach the non-exported streaming internals under test.
@@ -169,5 +170,22 @@ const DR = ShipToolsRepl
         @test saw_interrupt_res
         @test saw_eval_error        # InterruptException surfaced as an error frame
         @test saw_eval_done         # eval terminated with a done frame
+    end
+
+    @testset "wgl_pick_port: preferred when free, ephemeral fallback when taken" begin
+        # Grab an ephemeral port to use as a known-free preferred: close it,
+        # then wgl_pick_port should return it verbatim.
+        srv = Sockets.listen(Sockets.InetAddr(Sockets.ip"127.0.0.1", 0))
+        _, free_port = Sockets.getsockname(srv)
+        close(srv)
+        @test ShipToolsRepl.wgl_pick_port(Int(free_port)) == Int(free_port)
+        # Squat a port (standing in for another user's / another workspace's
+        # server) — wgl_pick_port must fall back to a DIFFERENT, valid port.
+        squatter = Sockets.listen(Sockets.InetAddr(Sockets.ip"127.0.0.1", 0))
+        _, taken = Sockets.getsockname(squatter)
+        picked = ShipToolsRepl.wgl_pick_port(Int(taken))
+        @test picked != Int(taken)
+        @test 1024 < picked <= 65535
+        close(squatter)
     end
 end
