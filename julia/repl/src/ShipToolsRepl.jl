@@ -41,6 +41,51 @@ browserview(url::AbstractString) = BrowserView(String(url))
 # instead of hitting EADDRINUSE. `Any` — ShipToolsRepl never loads Bonito.
 const WGL_SERVER = Ref{Any}(nothing)
 
+# Interactive Makie widget Blocks that need a JS→Julia event round-trip wglshow
+# can't provide (they render but never respond over Bonito). Matched by type
+# NAME — the shim carries no Makie dependency, so it never references the types.
+const WGL_WIDGET_TYPES = (:Button, :Menu, :Slider, :IntervalSlider, :Toggle, :Textbox)
+
+# The figure's block/plot content vector, or `nothing` if `fig` isn't a
+# Figure-like object we can introspect. invokelatest: Makie's `getproperty` was
+# defined by the user's `using` after wglshow's world age.
+function wgl_figure_content(fig)
+    getters = (f -> Base.invokelatest(getproperty, f, :content),
+               f -> Base.invokelatest(getproperty,
+                        Base.invokelatest(getproperty, f, :figure), :content))
+    for get in getters
+        try
+            c = get(fig)
+            c isa AbstractVector && return c
+        catch
+        end
+    end
+    return nothing
+end
+
+# Per maintainer directive: wglshow NEVER uses Makie's interactive HTML widgets,
+# but it must not disable them *silently*. If the figure actually carries
+# interactive widgets, warn the author (on the captured stderr, so it surfaces
+# in the REPL) that they will render but not respond over the browser.
+function wgl_warn_if_widgets(fig)
+    content = wgl_figure_content(fig)
+    content === nothing && return
+    found = String[]
+    for x in content
+        n = nameof(typeof(x))
+        n in WGL_WIDGET_TYPES && push!(found, String(n))
+    end
+    isempty(found) && return
+    kinds = join(sort(unique(found)), ", ")
+    println(stderr,
+        "wglshow: WARNING — this figure has interactive Makie widgets ($kinds) that " *
+        "will render but NOT respond over the browser. wglshow does not use Makie's " *
+        "HTML widgets (they don't round-trip reliably over Bonito and crash " *
+        "under-constrained scenes), and this is not silently overridable. Drive " *
+        "controls from the figure itself (e.g. pixel hit-testing on scene mouse events).")
+    flush(stderr)
+end
+
 """
     wglshow(fig; port = SOT_WGL_PORT or 1241) -> BrowserView
 
@@ -74,6 +119,9 @@ function wglshow(fig; port::Integer = parse(Int, get(ENV, "SOT_WGL_PORT", "1241"
         Base.UUID("824d6782-a2ef-11e9-3a09-e5662e0c26f8"), "Bonito"))
     host = "127.0.0.1"
     external = "http://$host:$port"
+    # Warn (never silently) if the figure carries interactive Makie widgets —
+    # wglshow can't make them respond over the browser (see wgl_warn_if_widgets).
+    wgl_warn_if_widgets(fig)
     # invokelatest throughout: these methods were defined by the user's `using`
     # after wglshow's world age (same reason value_frames_for uses it).
     #
