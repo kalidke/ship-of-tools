@@ -31,3 +31,8 @@ libc = "0.2"
 [[bin]]
 name = "sotd"
 path = "src/main.rs"
+
+[dev-dependencies]
+# `start_paused` test runtime (site_serve's bind-fallback test collapses the
+# 10x300ms preferred-port retry loop instead of really sleeping through it).
+tokio = { workspace = true, features = ["test-util"] }

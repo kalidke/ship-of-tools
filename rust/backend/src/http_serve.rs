@@ -95,9 +95,14 @@ const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v"];
 
 const READ_CHUNK: usize = 64 * 1024;
 
-/// Loopback port the video server listens on. Fixed (env-overridable) so the
-/// launcher can SSH-forward it without negotiation. Resolved identically at
-/// spawn time and when building `video.open` URLs.
+/// PREFERRED loopback port for the video server (env-overridable, default
+/// 1235). This is a preference, not a promise: on a shared host another
+/// user's daemon may already hold it (the 2026-07-23 shared-host collision — two
+/// users' daemons both defaulting to 1235, loser's `o` broken with the
+/// browser hitting the *winner's* server → "no such grant"). `spawn` falls
+/// back to an OS-assigned ephemeral port; everything that needs the real
+/// port (`video.open` URLs, the ADR-0035 proxy allowlist) must read
+/// `bound_video_port()`, never this.
 pub fn video_port() -> u16 {
     std::env::var("SOT_VIDEO_PORT")
         .ok()
@@ -105,13 +110,40 @@ pub fn video_port() -> u16 {
         .unwrap_or(1235)
 }
 
-/// Spawn the video file server on `127.0.0.1:port`. Returns once the listener
-/// is bound; the accept loop runs for the life of the process. Idempotent
-/// callers should spawn this once at startup.
-pub async fn spawn(port: u16) -> Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .await
-        .with_context(|| format!("bind video http server on 127.0.0.1:{port}"))?;
+/// The port the video server ACTUALLY bound (0 = not bound / never spawned).
+/// URL builders and the proxy allowlist read this — advertising or dialing
+/// the merely-preferred port when the bind lost the race would point the
+/// browser (and the user's grant token) at another user's server.
+static BOUND_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+pub fn bound_video_port() -> Option<u16> {
+    match BOUND_PORT.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => None,
+        p => Some(p),
+    }
+}
+
+/// Spawn the video file server on `127.0.0.1:preferred`, falling back to an
+/// OS-assigned ephemeral port when the preferred one is taken (another
+/// user's daemon on a shared host, typically). Returns once a listener is
+/// bound; the accept loop runs for the life of the process. Idempotent
+/// callers should spawn this once at startup. The actual port is recorded
+/// for `bound_video_port()`.
+pub async fn spawn(preferred: u16) -> Result<()> {
+    let listener = match TcpListener::bind(("127.0.0.1", preferred)).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(preferred, error = %e, "video preferred port taken — falling back to an ephemeral port (multi-user host?)");
+            TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .context("bind video http server on an ephemeral 127.0.0.1 port")?
+        }
+    };
+    let port = listener
+        .local_addr()
+        .context("video http server local_addr")?
+        .port();
+    BOUND_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
     tracing::info!(port, "video http server listening");
     tokio::spawn(async move {
         loop {
@@ -304,4 +336,30 @@ async fn handle_conn(mut stream: TcpStream) -> Result<()> {
     }
     stream.flush().await.ok();
     Ok(())
+}
+
+#[cfg(test)]
+mod bind_fallback_tests {
+    use super::*;
+
+    /// Preferred port taken (an ephemeral squatter standing in for another
+    /// user's daemon on a shared host) → `spawn` falls back to an
+    /// OS-assigned port, records it for `bound_video_port()`, and actually
+    /// serves on it (unknown grant → 404, proving it's OUR server).
+    #[tokio::test]
+    async fn spawn_falls_back_to_ephemeral_when_preferred_taken() {
+        let squatter = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let taken = squatter.local_addr().unwrap().port();
+        spawn(taken).await.expect("fallback bind should succeed");
+        let bound = bound_video_port().expect("actual port recorded");
+        assert_ne!(bound, taken, "must not claim the squatted port");
+        let mut s = TcpStream::connect(("127.0.0.1", bound)).await.unwrap();
+        s.write_all(b"GET /nosuchtoken HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = [0u8; 128];
+        let n = s.read(&mut buf).await.unwrap();
+        let head = String::from_utf8_lossy(&buf[..n]);
+        assert!(head.contains("404"), "unknown grant must 404, got: {head}");
+    }
 }

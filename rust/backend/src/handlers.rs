@@ -2723,11 +2723,19 @@ pub async fn handle_video_open(
         });
         return Ok(vec![(Frame::res(req_id, op::VIDEO_OPEN, payload), None)]);
     };
-    let url = format!(
-        "http://127.0.0.1:{}/{}",
-        crate::http_serve::video_port(),
-        token
-    );
+    // ACTUAL bound port, never the preferred `video_port()`: when the
+    // preferred bind lost to another user's daemon (shared host), a URL
+    // built on the preferred port would send this user's grant token to the
+    // OTHER user's video server — "no such grant" for the user, token leak
+    // to a stranger's process (2026-07-23 shared-host incident).
+    let Some(port) = crate::http_serve::bound_video_port() else {
+        let payload = json!({
+            "error": "video server is not running (both preferred and ephemeral binds failed at startup) — check the daemon log",
+            "code": "video_server_down",
+        });
+        return Ok(vec![(Frame::res(req_id, op::VIDEO_OPEN, payload), None)]);
+    };
+    let url = format!("http://127.0.0.1:{port}/{token}");
     let res = VideoOpenRes { url };
     let (_, rev) = session.snapshot().await;
     Ok(vec![(
@@ -2929,9 +2937,18 @@ pub async fn handle_docs_open(
                 "rng_unavailable",
             ));
         };
+        // ACTUAL bound port, never the preferred `site_port()` — same
+        // reasoning as `video.open` above: on a shared host the preferred
+        // port may belong to another user's daemon.
+        let Some(port) = crate::site_serve::bound_site_port() else {
+            return Ok(err(
+                "static-site server is not running (both preferred and ephemeral binds failed at startup) — check the daemon log".into(),
+                "site_server_down",
+            ));
+        };
         format!(
             "http://127.0.0.1:{}/{}/{}",
-            crate::site_serve::site_port(),
+            port,
             nonce,
             crate::site_serve::encode_url_path(&rel),
         )

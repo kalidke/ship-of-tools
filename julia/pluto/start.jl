@@ -2,7 +2,27 @@ using Pluto
 using Sockets
 
 const HOST = "127.0.0.1"
-const PORT = 1234
+
+# Preferred port 1234; fall back to an OS-assigned ephemeral port when it's
+# taken (another user's Pluto/daemon on a shared host — the 2026-07-23 shared-host
+# collision class). The daemon never assumes 1234: it parses the actual port
+# from the READY line below (rust/backend/src/pluto.rs), and the ADR-0035
+# proxy allowlist authorizes only that parsed port. The probe-close-rebind
+# window is a benign TOCTOU: losing it just fails Pluto's own bind loudly.
+function pick_port(preferred::Int)
+    try
+        srv = Sockets.listen(Sockets.InetAddr(ip"127.0.0.1", preferred))
+        close(srv)
+        return preferred
+    catch
+        srv = Sockets.listen(Sockets.InetAddr(ip"127.0.0.1", 0))
+        _, port = Sockets.getsockname(srv)
+        close(srv)
+        @warn "preferred Pluto port taken — using ephemeral port (multi-user host?)" preferred port
+        return Int(port)
+    end
+end
+const PORT = pick_port(1234)
 
 session = Pluto.ServerSession()
 session.options.server.host = HOST

@@ -182,6 +182,20 @@ pub fn site_port() -> u16 {
         .unwrap_or(1236)
 }
 
+/// The port the shared prefix server ACTUALLY bound (0 = not bound). Mirrors
+/// `http_serve::BOUND_PORT`: `site_port()` is only a preference — on a shared
+/// host another user's daemon may hold it, and `spawn` falls back to an
+/// ephemeral port. `docs.open` URLs and the ADR-0035 proxy allowlist must
+/// read this, never `site_port()`.
+static BOUND_SITE_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+pub fn bound_site_port() -> Option<u16> {
+    match BOUND_SITE_PORT.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => None,
+        p => Some(p),
+    }
+}
+
 /// Set the site root for connection `serial`, minting a fresh nonce and
 /// returning it — the caller (`docs.open`) embeds it as the URL's first path
 /// segment (`/<nonce>/…`). A repoint (this connection already has a live
@@ -273,34 +287,44 @@ pub fn encode_url_path(path: &str) -> String {
 /// Spawn the static-site server on `127.0.0.1:port`. Returns once the listener is
 /// bound; the accept loop runs for the life of the process. Spawn once at
 /// startup. No root is needed at spawn — `docs.open` sets it per open.
-pub async fn spawn(port: u16) -> Result<()> {
+pub async fn spawn(preferred: u16) -> Result<()> {
     // Bind with a brief retry (ADR 0029). A `sotd` restart can race the previous
     // process's hold on this port; the launcher now waits for the old process to
     // exit first, but a transient TIME_WAIT / handover can still lose a single
     // bind. A few attempts over ~3s let a retry win instead of disabling `W` for
-    // the whole session — the silent bind-failure outage class. Once bound, the
-    // accept loop runs for the life of the process.
+    // the whole session — the silent bind-failure outage class. If the preferred
+    // port never frees (another USER's daemon owns it — the 2026-07-23 shared-host
+    // multi-user collision, where all of 1236-1240 belonged to a second user and
+    // `W` was dead for this one), fall back to an OS-assigned ephemeral port
+    // instead of failing: `docs.open` URLs and the ADR-0035 proxy allowlist
+    // read the ACTUAL port via `bound_site_port()`. Once bound, the accept
+    // loop runs for the life of the process.
     const BIND_ATTEMPTS: u32 = 10;
     const BIND_RETRY_DELAY: Duration = Duration::from_millis(300);
     let mut bound = None;
     for attempt in 1..=BIND_ATTEMPTS {
-        match TcpListener::bind(("127.0.0.1", port)).await {
+        match TcpListener::bind(("127.0.0.1", preferred)).await {
             Ok(l) => {
                 bound = Some(l);
                 break;
             }
             Err(e) if attempt == BIND_ATTEMPTS => {
-                return Err(e).with_context(|| {
-                    format!("bind static-site server on 127.0.0.1:{port} after {BIND_ATTEMPTS} attempts")
-                });
+                tracing::warn!(preferred, error = %e, "static-site preferred port taken after {BIND_ATTEMPTS} attempts — falling back to an ephemeral port (multi-user host?)");
+                bound = Some(
+                    TcpListener::bind(("127.0.0.1", 0)).await.context(
+                        "bind static-site server on an ephemeral 127.0.0.1 port",
+                    )?,
+                );
             }
             Err(e) => {
-                tracing::warn!(port, attempt, error = %e, "static-site bind failed; retrying in 300ms");
+                tracing::warn!(preferred, attempt, error = %e, "static-site bind failed; retrying in 300ms");
                 tokio::time::sleep(BIND_RETRY_DELAY).await;
             }
         }
     }
     let listener = bound.expect("bind loop breaks with Some or returns Err on the last attempt");
+    let port = listener.local_addr().context("static-site server local_addr")?.port();
+    BOUND_SITE_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
     tracing::info!(port, "static-site server listening");
     tokio::spawn(async move {
         loop {
@@ -332,46 +356,62 @@ enum ServeMode {
     Pool(u16),
 }
 
-/// Spawn the Option-B pool listeners (`pool_ports()`), each serving whichever
-/// root `assign_pool_port` has bound to it (404 until one is). Bind failures
-/// are per-port and non-fatal: a lost port just shrinks the pool — `docs.open`
-/// reports "slots busy" when none are assignable, never a silent break.
+/// Spawn the Option-B pool listeners: `POOL_SIZE` of them, each serving
+/// whichever root `assign_pool_port` has bound to it (404 until one is). The
+/// `pool_ports()` range is only a PREFERENCE (stable, launcher-forwardable);
+/// a range port that's taken (another user's daemon on a shared host — the
+/// 2026-07-23 shared-host collision took the entire 1237-1240 range) falls back to
+/// an OS-assigned ephemeral port instead of shrinking the pool. Everything
+/// downstream already keys on the ACTUAL bound ports: `BOUND_POOL` is what
+/// `assign_pool_port` picks from, what `docs.open` URLs advertise, and what
+/// `pool_assigned_ports()` feeds the ADR-0035 proxy allowlist.
 pub async fn spawn_pool() {
     // Mark spawned BEFORE the binds so that even if all fail (BOUND_POOL stays
     // empty), assign_pool_port yields no candidates rather than falling back
     // to the full range (codex r3).
     POOL_SPAWNED.store(true, std::sync::atomic::Ordering::SeqCst);
-    for port in pool_ports() {
-        match TcpListener::bind(("127.0.0.1", port)).await {
-            Ok(listener) => {
-                tracing::info!(port, "root-relative site pool listening");
-                BOUND_POOL
-                    .write()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .insert(port);
-                tokio::spawn(async move {
-                    loop {
-                        match listener.accept().await {
-                            Ok((stream, _peer)) => {
-                                tokio::spawn(async move {
-                                    if let Err(e) =
-                                        handle_conn(stream, ServeMode::Pool(port)).await
-                                    {
-                                        tracing::debug!(error = %e, port, "pool-site conn ended");
-                                    }
-                                });
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, port, "pool-site accept failed");
-                            }
-                        }
-                    }
-                });
-            }
+    for preferred in pool_ports() {
+        let listener = match TcpListener::bind(("127.0.0.1", preferred)).await {
+            Ok(l) => l,
             Err(e) => {
-                tracing::warn!(port, error = %e, "pool port bind failed — pool shrinks by one");
+                tracing::warn!(preferred, error = %e, "pool preferred port taken — falling back to an ephemeral port (multi-user host?)");
+                match TcpListener::bind(("127.0.0.1", 0)).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "pool ephemeral bind failed — pool shrinks by one");
+                        continue;
+                    }
+                }
             }
-        }
+        };
+        let port = match listener.local_addr() {
+            Ok(a) => a.port(),
+            Err(e) => {
+                tracing::warn!(error = %e, "pool listener local_addr failed — pool shrinks by one");
+                continue;
+            }
+        };
+        tracing::info!(port, "root-relative site pool listening");
+        BOUND_POOL
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(port);
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _peer)) => {
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_conn(stream, ServeMode::Pool(port)).await {
+                                tracing::debug!(error = %e, port, "pool-site conn ended");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, port, "pool-site accept failed");
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -674,5 +714,22 @@ mod pool_tests {
         let (p5, _s5) = assign_pool_port(S + 5, PathBuf::from("/e")).unwrap();
         assert_eq!(p5, p3);
         reset();
+    }
+}
+
+#[cfg(test)]
+mod bind_fallback_tests {
+    use super::*;
+
+    /// Preferred port taken → `spawn` retries, then falls back to an
+    /// OS-assigned port and records it for `bound_site_port()`.
+    /// `start_paused` collapses the 10×300ms retry loop's sleeps.
+    #[tokio::test(start_paused = true)]
+    async fn spawn_falls_back_to_ephemeral_when_preferred_taken() {
+        let squatter = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let taken = squatter.local_addr().unwrap().port();
+        spawn(taken).await.expect("fallback bind should succeed");
+        let bound = bound_site_port().expect("actual port recorded");
+        assert_ne!(bound, taken, "must not claim the squatted port");
     }
 }

@@ -24,11 +24,6 @@ use sot_protocol::{codec, op, Frame, ProxyConnectReq};
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-/// Pluto's server port. Hardcoded in the Julia sidecar (`julia/pluto/start.jl`
-/// `const PORT = 1234`); the Rust side never held it as a variable, so the
-/// allowlist names it explicitly.
-const PLUTO_PORT: u16 = 1234;
-
 /// WGLMakie/Bonito default port (ADR 0032). This server lives in the user's
 /// REPL child (`julia/repl/src/ShipToolsRepl.jl`, `SOT_WGL_PORT`), NOT in the
 /// daemon — so the daemon reads the same env here purely to allow-list it
@@ -36,30 +31,39 @@ const PLUTO_PORT: u16 = 1234;
 const WGL_PORT_DEFAULT: u16 = 1241;
 
 /// The set of loopback ports `proxy.connect` will dial — the daemon's own
-/// served HTTP surface. Computed per request so an env override or a
-/// runtime-assigned pool port is honored without a restart.
+/// served HTTP surface. Computed per request so a runtime-assigned port is
+/// honored without a restart.
 ///
-/// - Pluto (fixed 1234), video (`SOT_VIDEO_PORT`), docs shared
-///   (`SOT_DOCS_PORT`),
-/// - the docs pool's currently-ASSIGNED ports (`pool_assigned_ports()`, NOT
-///   the full configured range) — so a pool port whose boot bind failed
-///   (another process owns it) is never authorized, closing the "proxy dials
-///   someone else's loopback service" gap for the dynamic pool (codex),
-/// - `SOT_WGL_PORT` (default 1241) — read daemon-side only to allow-list it,
+/// VERIFIED-BOUND, not merely configured (closes the former "residual"
+/// note): a preferred port whose bind lost the race belongs to some OTHER
+/// process — on a shared host, typically another USER's daemon (the
+/// 2026-07-23 shared-host collision) — and authorizing it would make this proxy
+/// pipe the user's browser (URL tokens included) to a stranger's server.
+///
+/// - video: `bound_video_port()` (actual, ephemeral-fallback aware),
+/// - docs shared: `bound_site_port()` (same),
+/// - the docs pool's currently-ASSIGNED ports (`pool_assigned_ports()` —
+///   actual bound ports, ephemeral-fallback aware) (codex),
+/// - Pluto: `bound_pluto_port()` — the port parsed from the sidecar's READY
+///   line; absent until the sidecar's first spawn (nothing to reach before
+///   then, so nothing is authorized),
+/// - `SOT_WGL_PORT` (default 1241) — the ONE remaining configured-not-verified
+///   entry: the WGL server binds lazily inside the user's REPL child, so the
+///   daemon can't verify it. Same-user-loopback exposure, not a privilege
+///   boundary; per-child WGL port assignment is the tracked follow-up.
 /// - `SOT_PROXY_EXTRA_PORTS` (comma-separated) — escape hatch for a future
 ///   REPL-served dashboard so a new port needs no daemon release.
-///
-/// Residual (accepted): the FIXED ports (pluto/video/docs-shared/wgl) are
-/// listed as configured, not verified-bound — if one's boot bind failed AND
-/// another same-user process holds it, a remote FE (already the authenticated
-/// user over the ssh tunnel) could reach that same-user loopback service. It's
-/// a same-user-loopback exposure, not a privilege boundary; tracking
-/// verified-bound fixed ports is a follow-up.
 pub fn allowed_proxy_ports() -> BTreeSet<u16> {
     let mut ports = BTreeSet::new();
-    ports.insert(PLUTO_PORT);
-    ports.insert(crate::http_serve::video_port());
-    ports.insert(crate::site_serve::site_port());
+    if let Some(p) = crate::pluto::bound_pluto_port() {
+        ports.insert(p);
+    }
+    if let Some(p) = crate::http_serve::bound_video_port() {
+        ports.insert(p);
+    }
+    if let Some(p) = crate::site_serve::bound_site_port() {
+        ports.insert(p);
+    }
     ports.extend(crate::site_serve::pool_assigned_ports());
     ports.insert(wgl_port());
     for tok in std::env::var("SOT_PROXY_EXTRA_PORTS")
@@ -219,16 +223,21 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn allowlist_has_the_known_served_ports_by_default() {
+    fn allowlist_is_verified_bound_not_configured() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
         std::env::remove_var("SOT_WGL_PORT");
-        std::env::remove_var("SOT_VIDEO_PORT");
-        std::env::remove_var("SOT_DOCS_PORT");
         let ports = allowed_proxy_ports();
-        assert!(ports.contains(&1234), "pluto");
-        assert!(ports.contains(&1235), "video default");
-        assert!(ports.contains(&1236), "docs default");
+        // In a process where no server has spawned, the formerly-hardcoded
+        // preferred ports are NOT authorized: an unbound preferred port may
+        // belong to another USER's process on a shared host, and authorizing
+        // it would pipe this user's browser (URL tokens included) to a
+        // stranger's server (2026-07-23 shared-host incident).
+        assert!(!ports.contains(&1234), "pluto only once READY-parsed");
+        assert!(!ports.contains(&1235), "video only when verified-bound");
+        assert!(!ports.contains(&1236), "docs only when verified-bound");
+        // WGL stays configured-not-verified (binds lazily inside the user's
+        // REPL child, where the daemon can't observe it — documented residual).
         assert!(ports.contains(&1241), "wgl default");
         // A random unrelated port is NOT proxyable.
         assert!(!ports.contains(&8080));
@@ -238,6 +247,9 @@ mod tests {
         // which reads the process-global POOL that site_serve's own pool_tests
         // mutate in parallel; asserting emptiness here would race them (codex).
         // The "assigned-only" behavior is covered by site_serve's pool_tests.
+        // Similarly no assertion on the video/docs BOUND statics — the bind
+        // fallback tests in http_serve/site_serve set them in parallel; the
+        // fixed-port absences above are stable (ephemeral binds land ≥32768).
     }
 
     #[test]
