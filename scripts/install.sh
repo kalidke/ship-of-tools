@@ -352,6 +352,23 @@ if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
     sed -e "s|@SOT_BIN@|$PREFIX/bin/sotd|" \
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
         "$BINDIR/sotd.service" > "$HOME/.config/systemd/user/sotd.service"
+    # Pin the daemon's Julia to the SAME install this installer just used
+    # (juliaup) via a drop-in, so the workspace REPL/kernel share ONE
+    # precompile-cache domain with the toolchain (tests, prewarms). The
+    # systemd --user manager PATH usually lacks ~/.juliaup/bin (only /snap/bin),
+    # so a bare `julia` in the daemon would otherwise resolve to a DIFFERENT
+    # install/depot than the one used here — splitting precompile caches (a
+    # hard-dep like GLMakie built by tests would be invisible to the
+    # display-less kernel, and it cannot rebuild it -> serve dies).
+    # SOT_JULIA_BIN is the documented override for exactly this (repl.rs/kernel.rs).
+    julia_bin="$HOME/.juliaup/bin/julia"; [ -x "$julia_bin" ] || julia_bin="$(command -v julia)"
+    mkdir -p "$HOME/.config/systemd/user/sotd.service.d"
+    cat > "$HOME/.config/systemd/user/sotd.service.d/julia.conf" <<EOF
+# Auto-written by install.sh: pin sotd's Julia to the toolchain's install so
+# the kernel/REPL share ONE precompile-cache domain (see install.sh + ADR 0030).
+[Service]
+Environment=SOT_JULIA_BIN=$julia_bin
+EOF
     systemctl --user daemon-reload
     systemctl --user enable --now sotd.service
     loginctl enable-linger "$USER" 2>/dev/null || true
