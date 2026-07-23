@@ -8,8 +8,9 @@ description: Bootstrap a (re)started Ship of Tools BE (backend / tmux) session s
 The first turn after a Ship of Tools **backend** (tmux) Claude session is (re)started or
 resumed with `claude --continue`. This is the **Ship of Tools layer** on top of the generic
 `/sot-session-start` receive-bootstrap: it establishes the receive path exactly the
-same way, then verifies against the Ship of Tools **frontend(s)** and pulls the Ship of Tools-repo
-git bus. It's the **BE counterpart** of the FE's `/sot-fe-session-start`.
+same way, then verifies against the Ship of Tools **frontend(s)** and (for Ship of
+Tools sessions) pulls the ops-sidecar git bus. It's the **BE counterpart** of the
+FE's `/sot-fe-session-start`.
 
 (If you just want a project-agnostic backend session to receive fast-comm, run
 `/sot-session-start` directly — or launch with `ccb`. This skill, and the `ccbe`
@@ -122,11 +123,23 @@ session knows the multi-FE picture on start. Grep the backend log for the latest
 and note "N FE(s) attached." Best-effort — don't fail the bootstrap if the log isn't
 handy.
 
-## Step 3 — git-bus fallback
+## Step 3 — git-bus fallback (Ship of Tools sessions only)
 
 **`/bus-sync`** — the durable git-bus fallback for cross-OS messages the relay never
-delivered (e.g. the Windows side posted while no listener was up). Surfaces new
-entries from `.claude-bus/from-windows.md` in the Ship of Tools repo.
+delivered (e.g. the Windows side posted while no listener was up). The bus lives
+in the **PRIVATE ops sidecar** (`$SOT_OPS_DIR`, default the sibling
+`../ship-of-tools-ops` checkout), NOT in the product repo — it was relocated at
+the public flip (ADR 0030 §7); a `.claude-bus/` you don't find in the
+ship-of-tools checkout is not missing, it moved. `/bus-sync` resolves the ops
+checkout itself. If the `/bus-sync` skill isn't installed in this session, read
+`<ops>/claude-bus/from-windows.md` directly (entries are `## <timestamp>`
+sections).
+
+**Non-sot repos: skip this step.** `ccbe` may launch any workspace session, and
+Steps 1–2 apply to all of them — but the git bus is a Ship of Tools project
+artifact. If the session's repo isn't ship-of-tools (or its ops sidecar is
+absent), note "bus n/a for this repo" and move on; don't hunt for a
+`.claude-bus/` that was never there.
 
 ## You can drive the FE
 

@@ -47,6 +47,15 @@ h_re="$(printf '%s' "$h" | sed 's/\./\\./g')"   # escape dots — repo names con
 pgrep -u "$(id -un)" -f "comm-watch\.sh ${h_re}\$"   # dot-escaped + END-ANCHORED: neither a '.' nor a `-2` sibling can false-match (a false match would make a genuinely-deaf cold session skip arming → deaf)
 ```
 
+> `comm-context.sh` validates the identity it returns: the self-file is keyed
+> by tmux PANE ID, which tmux **reuses** after a server restart, so a fresh
+> session in a recycled pane could otherwise inherit a *different* session's
+> handle — making this very check pgrep the wrong watcher and conclude
+> "survived" on a genuinely deaf cold start (observed 2026-07-23). A v2
+> self-file records the repo the identity was claimed for; on mismatch the
+> stale name is discarded and `NAME` comes back empty → the canonical
+> fallback + full bootstrap run, which is correct for that case.
+
 - **Prints a PID → you SURVIVED a compaction.** You are still connected —
   **STOP: do NOT run steps (a)–(c).** Re-reading this doc (and the `/sot-comm`
   skill) has already restored your operating context — handle, the send/poll/
