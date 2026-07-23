@@ -343,7 +343,15 @@ case "$CMD" in
             ARGS="$(printf '%s' "$ARGS" | jq -c --argjson x "$RX" --argjson y "$RY" --argjson w "$RW" --argjson h "$RH" '. + {roi:{x:$x,y:$y,w:$w,h:$h}}')"
         fi
         send_fe_command "$CMD" "$ARGS"
-        [ -n "$ROI" ] && echo "  roi requested (source px): x=$RX y=$RY w=$RW h=$RH — FE clamps to image bounds" >&2
+        # Use `if`, NOT `[ -n "$ROI" ] && echo` — with `set -e` and this being the
+        # script's last statement, a false `[ -n "" ]` test (the no-ROI common case)
+        # is exit status 1 and becomes the WHOLE script's exit code, so a perfectly
+        # successful badge reported failure to careful callers (HS-TIRF, 2026-07-23:
+        # open-url exits 0, preview exited 1 on identical success). `if` returns 0
+        # when the condition is false.
+        if [ -n "$ROI" ]; then
+            echo "  roi requested (source px): x=$RX y=$RY w=$RW h=$RH — FE clamps to image bounds" >&2
+        fi
         ;;
     docs)
         WS="${POS[0]:-}"; PATH_ARG="${POS[1]:-}"
