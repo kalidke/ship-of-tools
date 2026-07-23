@@ -1,0 +1,25 @@
+#!/bin/bash
+# sot-fe — bare-command launcher that puts `sot-fe` on PATH.
+#
+# The real CLI lives at ~/.sot-comm/bin/sot-fe (deployed there by
+# ShipTools.update_comm from comm/core/scripts/sot-fe). That copy sources its
+# sibling comm-lib.sh via SCRIPT_DIR=$(dirname BASH_SOURCE), so it can only run
+# from ~/.sot-comm/bin — a naive copy OR symlink into ~/.local/bin would make it
+# source a nonexistent ~/.local/bin/comm-lib.sh and die. This thin wrapper execs
+# the real script BY ABSOLUTE PATH, so its SCRIPT_DIR stays correct.
+#
+# Why it exists: only ~/.local/bin is on PATH, and _install_launchers (comm.jl)
+# copies this dir there — but sot-fe used to live only under ~/.sot-comm/bin, so
+# bare `sot-fe ...` was "command not found" and every skill that calls bare
+# sot-fe (show-result's long-form fallback, isd-show-part's `sot-fe repl eval`)
+# broke on such a box (HS-TIRF, 2026-07-23). This wrapper closes that gap the
+# same way show-result (also in this dir) already references the real sot-fe.
+#
+# Source of truth: comm/adapters/claude/bin/sot-fe in Ship of Tools, deployed to
+# ~/.local/bin by ShipTools.update_comm(). Edit it there, not in ~/.local/bin.
+REAL="$HOME/.sot-comm/bin/sot-fe"
+if [ ! -x "$REAL" ]; then
+    echo "sot-fe: real CLI not found at $REAL — run ShipTools.update_comm() (or /sot-install) to deploy it." >&2
+    exit 127
+fi
+exec "$REAL" "$@"
