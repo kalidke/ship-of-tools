@@ -257,7 +257,10 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing)
     server = Base.invokelatest(Bonito.Server, app, host, port; proxy_url = external)
     WGL_SERVER[] = server
     url = Base.invokelatest(Bonito.online_url, server, "/")
-    return BrowserView(url)
+    # Announce AT SERVE TIME (browser frame now), not only via the last-value
+    # path — a wrapper that swallows this return value would otherwise make
+    # the serve invisible (port never allowlisted, FE never opens the page).
+    return announce_browserview(BrowserView(url))
 end
 
 # Serializes envelope writes to `io_out`. With streaming (ADR 0009 phase-2)
@@ -546,7 +549,43 @@ Julia 1.12's `redirect_stdout` doesn't accept `IOBuffer`, hence the `Pipe`
 plumbing. The redirect is process-global, so overlapping evals are rejected by
 the single-eval guard in `handle_eval` / `handle_run_file`.
 """
+# The current eval's frame emitter, exposed so serving helpers (wglshow) can
+# emit a `browser` frame AT SERVE TIME instead of relying on the BrowserView
+# reaching the eval's last-value position. A wrapper API that swallows the
+# return value (`serve(...)` returning its own state object) otherwise makes
+# the serve INVISIBLE: no browser frame → the daemon never allowlists the
+# port for the ADR-0035 proxy and the FE never opens the page (field report,
+# 2026-07-23 — a served picker on an ephemeral fallback port was unreachable
+# for exactly this reason). Safe as a single Ref: the shim enforces one eval
+# at a time (`eval_in_progress`). `ANNOUNCED_BROWSER_URLS` dedups so a
+# BrowserView that IS also returned doesn't open the browser twice.
+const CURRENT_EMIT = Ref{Union{Function,Nothing}}(nothing)
+const ANNOUNCED_BROWSER_URLS = Set{String}()
+
+"""
+    announce_browserview(bv::BrowserView) -> bv
+
+Emit `bv` as a `browser` frame NOW (mid-eval), so the FE opens it and the
+daemon allowlists its port even if the surrounding call swallows the return
+value. No-op outside a streamed eval. Idempotent per eval per URL.
+"""
+function announce_browserview(bv::BrowserView)
+    em = CURRENT_EMIT[]
+    em === nothing && return bv
+    bv.url in ANNOUNCED_BROWSER_URLS && return bv
+    try
+        em(Dict(:kind => "browser", :url => bv.url))
+        push!(ANNOUNCED_BROWSER_URLS, bv.url)
+    catch
+        # Emission is best-effort: a failed announce must not break the serve
+        # itself — the value-position path still covers a returned BrowserView.
+    end
+    return bv
+end
+
 function stream_eval_frames(f, emit)
+    CURRENT_EMIT[] = emit
+    empty!(ANNOUNCED_BROWSER_URLS)
     pipe_out = Pipe()
     pipe_err = Pipe()
     Base.link_pipe!(pipe_out; reader_supports_async = true, writer_supports_async = true)
@@ -574,6 +613,9 @@ function stream_eval_frames(f, emit)
         redirect_stderr(old_stderr)
         close(pipe_out.in)
         close(pipe_err.in)
+        # After user code returns, later frames (value/error/done) go through
+        # the local `emit` — mid-eval announcing is over.
+        CURRENT_EMIT[] = nothing
     end
     # Drain whatever the readers haven't emitted yet (the close above lets them
     # hit eof). Ordering: all stdout/stderr frames precede value/error.
@@ -654,6 +696,11 @@ function value_frames_for(result)
     # Checked before the image/text MIME probes so it wins even though a served
     # figure may also be `showable` as an image.
     if result isa BrowserView
+        # Skip if this URL was already announced mid-eval (wglshow's
+        # serve-time announce) — a second browser frame would open a second
+        # tab. A hand-built BrowserView (plain `browserview(url)` as the last
+        # expression) was never announced and still emits here.
+        result.url in ANNOUNCED_BROWSER_URLS && return out
         push!(out, Dict(:kind => "browser", :url => result.url))
         return out
     end
