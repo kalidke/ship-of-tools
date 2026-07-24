@@ -447,8 +447,30 @@ function handle_run_file(io::IO, id, payload)
             Dict(:error => "missing path", :code => "bad_request"))
         return
     end
-    abs_path = isabspath(path) ? String(path) : abspath(String(path))
+    # Relative paths resolve against SOT_WORKSPACE_ROOT when set (the
+    # `sot-fe repl run` contract: paths are workspace-relative), falling back
+    # to cwd. The daemon now forwards absolute paths AND sets the child's cwd
+    # to the project root, so this is defense-in-depth for old daemons and
+    # direct callers — the 2026-07-24 field failure was a relative path
+    # resolving against the daemon's inherited, launch-dependent cwd.
+    abs_path = if isabspath(path)
+        String(path)
+    else
+        root = get(ENV, "SOT_WORKSPACE_ROOT", "")
+        base = (!isempty(root) && isdir(root)) ? root : pwd()
+        joinpath(base, String(path))
+    end
     if !isfile(abs_path)
+        # Emit the failure as STREAMED error+done frames, not only the res:
+        # for a fire-and-forget run the terminal res is dropped by the
+        # supervisor (by design), so a res-only error made this failure
+        # perfectly invisible — no drawer entry, no FE close-out, "accepted"
+        # then silence (the 2026-07-24 "--fresh include never runs" report).
+        emit = make_emit(io, id, eval_id)
+        emit(Dict(:kind => "error",
+                  :message => "no such file: $abs_path",
+                  :stacktrace => Dict[]))
+        emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => 0))
         write_envelope(io, "res", id, "repl.run_file",
             Dict(:error => "no such file: $abs_path", :code => "io_error"))
         return

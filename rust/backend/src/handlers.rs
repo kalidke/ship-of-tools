@@ -1894,6 +1894,27 @@ pub async fn handle_repl_run_file(
     // Rust-side response post-processing (project_dir override, banner
     // prepend) is gone — there's no response payload to fold it into.
     let mut forwarded_payload = payload_json.clone();
+    // Resolve a RELATIVE path against the WORKSPACE ROOT and forward it
+    // ABSOLUTE. The Julia child resolves relative paths against its own cwd
+    // — inherited from the daemon, whose cwd is launch-context-dependent
+    // (observed `$HOME` after a script restart) — so a workspace-relative
+    // path like `dev/output/x.jl` resolved to a nonexistent `$HOME/dev/…`
+    // and the run died as a missing-file res that the fire-and-forget path
+    // DROPS silently (2026-07-24 field report: "--fresh include never
+    // runs"). `sot-fe repl run` documents its path as workspace-relative;
+    // make the daemon honor that contract deterministically.
+    let path_str = path_str.map(|p| {
+        let pb = std::path::PathBuf::from(&p);
+        if pb.is_absolute() {
+            p
+        } else {
+            let abs = ws.project_root.join(pb).display().to_string();
+            if let Some(obj) = forwarded_payload.as_object_mut() {
+                obj.insert("path".to_string(), serde_json::Value::String(abs.clone()));
+            }
+            abs
+        }
+    });
     // Captured for the ack so the FE's fresh-`r` status line can show the
     // project the file was bounced into. Only resolved for fresh runs; a
     // fresh=false include leaves them None → FE degrades to "(no project)".
