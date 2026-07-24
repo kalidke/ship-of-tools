@@ -132,6 +132,31 @@ const DR = ShipToolsRepl
         @test res.payload.eval_id == 99
     end
 
+    @testset "serve: run_file missing-file failure is VISIBLE (error+done frames)" begin
+        # The res-only error was silently dropped for fire-and-forget runs
+        # (the supervisor drops untracked res acks by design), making a
+        # missing file indistinguishable from a run that never happened —
+        # the 2026-07-24 "--fresh include never runs" field failure. The
+        # failure must stream as error+done frames like any other eval error.
+        bs_in, bs_out, _ = drive(String[])
+        req = JSON3.write(Dict(
+            :v => 1, :id => 9, :op => "repl.run_file",
+            :payload => Dict(:eval_id => 77, :path => "/nonexistent/nope.jl"),
+        ))
+        write(bs_in, req * "\n")
+        flush(bs_in)
+        envs = read_until_res(bs_out)
+        close(bs_in)
+        evts = [e for e in envs if get(e, :kind, "") == "evt" && e.op == "repl.frame"]
+        framekinds = [e.payload.frame.kind for e in evts]
+        @test "error" in framekinds
+        @test last(framekinds) == "done"
+        @test all(e -> e.payload.eval_id == 77, evts)
+        res = envs[end]
+        @test res.kind == "res" && res.op == "repl.run_file"
+        @test occursin("no such file", String(res.payload.error))
+    end
+
     @testset "serve: repl.interrupt cancels a running eval" begin
         bs_in, bs_out, _ = drive(String[])
         # A long, yielding eval so the dispatch loop stays responsive to interrupt.

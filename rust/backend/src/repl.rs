@@ -530,6 +530,14 @@ fn spawn_supervisor_with_project(
 
     let mut child: Child = Command::new(julia_bin)
         .env("JULIA_LOAD_PATH", &load_path)
+        // The workspace root, for the shim's relative-path fallback and for
+        // user scripts (pty sessions already get it; REPL children didn't).
+        .env("SOT_WORKSPACE_ROOT", user_project)
+        // Child cwd = the activated project, NOT the daemon's cwd (which is
+        // launch-context-dependent — observed `$HOME` after a script
+        // restart). User code's own relative I/O (`include`, `open`) then
+        // resolves where the user expects: the workspace/project root.
+        .current_dir(user_project)
         .arg(format!("--project={}", user_project.display()))
         .arg("-e")
         .arg(julia_src)
