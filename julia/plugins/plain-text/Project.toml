@@ -1,7 +1,7 @@
 name = "ShipToolsPlainText"
 uuid = "570c5370-7903-4b49-8614-fedc5536a8d9"
 authors = ["kalidke"]
-version = "0.4.5"
+version = "0.5.0"
 
 [deps]
 ConceptExplorerCore = "5a28ea34-b669-4214-86b0-825ecd8fbc7c"
