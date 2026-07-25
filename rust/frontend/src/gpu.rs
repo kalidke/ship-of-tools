@@ -1325,6 +1325,11 @@ struct ScalebarDraw {
 /// Most lines a figure caption may occupy. Past this the band stops growing and
 /// the remainder is clipped: a caption reserves space from the figure it
 /// describes, so an unbounded one would shrink the image toward nothing.
+///
+/// DEFENCE-IN-DEPTH, not a routinely-exercised path (measured on a 4096px-wide
+/// frontend, PR #72 review): at a normal pane width ~300 chars wraps to under 3
+/// lines, so [`CAPTION_MAX_CHARS`] binds first and this clip only engages in a
+/// narrow preview pane. Don't treat it as covered by the length cap's tests.
 const CAPTION_MAX_LINES: usize = 3;
 
 /// Geometry for the figure-caption band (all physical screen px). `backing` is
@@ -2339,6 +2344,15 @@ struct State {
     /// `build_caption` (shaped OUTSIDE the render pass, like `scalebar_label`).
     /// `None` when no caption is drawn.
     caption_label: Option<crate::preview::markdown::MarkdownPreview>,
+    /// Height in px of the caption band the LAST frame reserved (0.0 for none).
+    /// Published by the render pass purely so the KEYBOARD zoom/pan handler can
+    /// reach it: that handler runs outside the render pass, rebuilds the pane
+    /// rect from cells, and would otherwise compute its zoom ceiling against the
+    /// unreduced pane — making the reachable max zoom depend on whether a
+    /// caption happens to be set (verified 2.9%–6.4% short on a
+    /// height-constrained image). Band height is only knowable after the caption
+    /// is shaped, so it has to be stashed rather than recomputed.
+    caption_band_px: f32,
     /// Definition line (1-indexed) the in-flight `preview.get` should
     /// anchor to once it lands — set from the selected modules-mode row's
     /// `line` payload so the code preview scrolls the item (its docstring
@@ -3902,6 +3916,7 @@ impl State {
             scalebar_label: None,
             preview_captions: CaptionStore::default(),
             caption_label: None,
+            caption_band_px: 0.0,
             preview_anchor_line: None,
             preview_anchored_to: None,
             pinned_preview_node_id: None,
@@ -12979,10 +12994,11 @@ impl State {
             self.caption_label = None;
             None
         };
-        let image_rect = image_rect_for_caption(
-            preview_rect,
-            caption_draw.as_ref().map_or(0.0, |c| c.backing.h),
-        );
+        // Publish the band height BEFORE deriving image_rect, so the keyboard
+        // zoom/pan handler (which runs outside the render pass) derives its pane
+        // from the same number this frame drew with.
+        self.caption_band_px = caption_draw.as_ref().map_or(0.0, |c| c.backing.h);
+        let image_rect = image_rect_for_caption(preview_rect, self.caption_band_px);
 
         let png_rect = if show_png {
             self.preview_png
@@ -17008,8 +17024,27 @@ impl ApplicationHandler for App {
                         if let Some(img_px) = state.preview_png.as_ref().map(|q| q.size_px) {
                             const ZOOM_STEP: f32 = 1.25;
                             const PAN_FRAC: f32 = 0.1;
-                            let pane_w = state.pane_rects.preview.width as f32 * state.cell_w;
-                            let pane_h = state.pane_rects.preview.height as f32 * state.cell_h;
+                            // Subtract the reserved figure-caption band before
+                            // ANY of this: the image lives in `image_rect`, not
+                            // the whole pane, and png_zoom_max keys off pane
+                            // height (fit = min(w/iw, h/ih)). Computing the
+                            // ceiling against the unreduced pane made the
+                            // reachable max zoom depend on whether a caption
+                            // happened to be set — silently 2.9%–6.4% short on a
+                            // height-constrained image, since the render path
+                            // re-clamps with the correct (larger) ceiling, so it
+                            // degraded to under-zoom rather than a misdraw.
+                            // Same helper as the render path — one formula.
+                            let pane_rect = image_rect_for_caption(
+                                ScreenRect {
+                                    x: 0.0,
+                                    y: 0.0,
+                                    w: state.pane_rects.preview.width as f32 * state.cell_w,
+                                    h: state.pane_rects.preview.height as f32 * state.cell_h,
+                                },
+                                state.caption_band_px,
+                            );
+                            let (pane_w, pane_h) = (pane_rect.w, pane_rect.h);
                             // Zoom ceiling is per-image: how big a single
                             // source pixel may get on screen (16×16 px), not
                             // a fixed multiple of fit-to-pane. A dense raster
@@ -18941,6 +18976,51 @@ mod tests {
         assert_eq!(band_top + band_h, pane.y + pane.h);
         // Degenerate guard: a band taller than the pane can't invert the rect.
         assert!(image_rect_for_caption(pane, 10_000.0).h >= 1.0);
+    }
+
+    #[test]
+    fn keyboard_zoom_ceiling_matches_the_render_ceiling_under_a_caption() {
+        // Regression (found on a real frontend, PR #72 review): the keyboard
+        // zoom/pan handler rebuilds its pane rect from cells OUTSIDE the render
+        // pass, and was computing png_zoom_max against the UNREDUCED pane while
+        // every render-path consumer used image_rect. png_zoom_max keys off pane
+        // height (fit = min(w/iw, h/ih)), so with a caption on a
+        // HEIGHT-CONSTRAINED image the keyboard ceiling came out too low and
+        // interactive zoom-in topped out short of the true 16 px/src-px limit —
+        // silently, and dependent on whether a caption happened to be set.
+        let pane = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 1200.0,
+            h: 1400.0,
+        };
+        // Tall image: height-constrained in this pane, so pane_h drives `fit`
+        // and the band therefore moves the ceiling.
+        let img_px = (700_u32, 1900_u32);
+        // Both call sites now derive their pane through `image_rect_for_caption`;
+        // what this pins is WHY that matters — the band genuinely moves the
+        // ceiling, so a future change that drops the subtraction on either side
+        // reintroduces a real divergence rather than a cosmetic one.
+        let full_pane_ceiling = png_zoom_max(pane.w, pane.h, img_px);
+        let mut prev = full_pane_ceiling;
+        for band in [38.0_f32, 85.0] {
+            let reduced = image_rect_for_caption(pane, band);
+            let ceiling = png_zoom_max(reduced.w, reduced.h, img_px);
+            assert!(
+                ceiling > prev,
+                "band {band}: reduced ceiling {ceiling} should exceed {prev} \
+                 (a taller band means a shorter image, hence MORE zoom headroom)"
+            );
+            prev = ceiling;
+        }
+        // A WIDTH-constrained image is unaffected: `fit` is driven by pane_w,
+        // which the band doesn't touch. Pins the scope of the fix.
+        let wide = (1600_u32, 400_u32);
+        let reduced = image_rect_for_caption(pane, 85.0);
+        assert_eq!(
+            png_zoom_max(reduced.w, reduced.h, wide),
+            png_zoom_max(pane.w, pane.h, wide),
+        );
     }
 
     #[test]
