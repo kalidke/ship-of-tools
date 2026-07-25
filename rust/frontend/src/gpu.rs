@@ -1361,6 +1361,34 @@ fn image_rect_for_caption(preview_rect: ScreenRect, caption_h: f32) -> ScreenRec
     }
 }
 
+/// The image area of a preview pane given its size in CELLS — the form the
+/// keyboard zoom/pan handler has, since it runs outside the render pass and has
+/// no `preview_rect`. Origin-free (`x`/`y` are 0): callers that need placement
+/// add it; the keyboard path only needs the extent.
+///
+/// This exists so the handler's pane derivation is *reachable from a test*.
+/// Testing `image_rect_for_caption` alone pinned only the premise of the
+/// caption-band bug (that the band moves the zoom ceiling) — a revert of the
+/// handler back to the raw pane would still have passed green, because nothing
+/// exercised the handler's own arithmetic. With the derivation extracted here,
+/// removing the band subtraction fails `keyboard_pane_derivation_subtracts_the_caption_band`.
+fn preview_image_pane_px(
+    pane_cells: (u16, u16),
+    cell_w: f32,
+    cell_h: f32,
+    caption_band_px: f32,
+) -> ScreenRect {
+    image_rect_for_caption(
+        ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: pane_cells.0 as f32 * cell_w,
+            h: pane_cells.1 as f32 * cell_h,
+        },
+        caption_band_px,
+    )
+}
+
 /// Build + validate the `files:` node id for a new file `name` created inside
 /// the directory `dir_node_id`. The backend's `node_id_to_path` rejects
 /// absolute ids and `..` segments, so the only safe child id is
@@ -17034,14 +17062,19 @@ impl ApplicationHandler for App {
                             // height-constrained image, since the render path
                             // re-clamps with the correct (larger) ceiling, so it
                             // degraded to under-zoom rather than a misdraw.
-                            // Same helper as the render path — one formula.
-                            let pane_rect = image_rect_for_caption(
-                                ScreenRect {
-                                    x: 0.0,
-                                    y: 0.0,
-                                    w: state.pane_rects.preview.width as f32 * state.cell_w,
-                                    h: state.pane_rects.preview.height as f32 * state.cell_h,
-                                },
+                            // Extracted so it's testable — see
+                            // `preview_image_pane_px`. Reads the band height the
+                            // last frame published; the one-frame lag is
+                            // inherent (the band isn't known until the caption
+                            // is shaped) and harmless, since the render pass
+                            // re-clamps zoom against its own current ceiling.
+                            let pane_rect = preview_image_pane_px(
+                                (
+                                    state.pane_rects.preview.width,
+                                    state.pane_rects.preview.height,
+                                ),
+                                state.cell_w,
+                                state.cell_h,
                                 state.caption_band_px,
                             );
                             let (pane_w, pane_h) = (pane_rect.w, pane_rect.h);
@@ -18979,47 +19012,48 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_zoom_ceiling_matches_the_render_ceiling_under_a_caption() {
-        // Regression (found on a real frontend, PR #72 review): the keyboard
-        // zoom/pan handler rebuilds its pane rect from cells OUTSIDE the render
-        // pass, and was computing png_zoom_max against the UNREDUCED pane while
-        // every render-path consumer used image_rect. png_zoom_max keys off pane
-        // height (fit = min(w/iw, h/ih)), so with a caption on a
-        // HEIGHT-CONSTRAINED image the keyboard ceiling came out too low and
-        // interactive zoom-in topped out short of the true 16 px/src-px limit —
-        // silently, and dependent on whether a caption happened to be set.
-        let pane = ScreenRect {
-            x: 0.0,
-            y: 0.0,
-            w: 1200.0,
-            h: 1400.0,
-        };
-        // Tall image: height-constrained in this pane, so pane_h drives `fit`
-        // and the band therefore moves the ceiling.
-        let img_px = (700_u32, 1900_u32);
-        // Both call sites now derive their pane through `image_rect_for_caption`;
-        // what this pins is WHY that matters — the band genuinely moves the
-        // ceiling, so a future change that drops the subtraction on either side
-        // reintroduces a real divergence rather than a cosmetic one.
-        let full_pane_ceiling = png_zoom_max(pane.w, pane.h, img_px);
-        let mut prev = full_pane_ceiling;
-        for band in [38.0_f32, 85.0] {
-            let reduced = image_rect_for_caption(pane, band);
-            let ceiling = png_zoom_max(reduced.w, reduced.h, img_px);
-            assert!(
-                ceiling > prev,
-                "band {band}: reduced ceiling {ceiling} should exceed {prev} \
-                 (a taller band means a shorter image, hence MORE zoom headroom)"
-            );
-            prev = ceiling;
-        }
-        // A WIDTH-constrained image is unaffected: `fit` is driven by pane_w,
-        // which the band doesn't touch. Pins the scope of the fix.
+    fn keyboard_pane_derivation_subtracts_the_caption_band() {
+        // THE regression guard for the PR #72 review finding. It must exercise
+        // the function the keyboard handler actually calls — an earlier version
+        // of this test called `png_zoom_max`/`image_rect_for_caption` directly
+        // and would have passed green with the handler reverted to the raw pane,
+        // pinning the bug's premise instead of its fix.
+        let cells = (150_u16, 42_u16);
+        let (cw, ch) = (8.0_f32, 17.0_f32);
+        let band = 38.0_f32;
+        let full = preview_image_pane_px(cells, cw, ch, 0.0);
+        let reduced = preview_image_pane_px(cells, cw, ch, band);
+        // Delete the band subtraction and THIS fails.
+        assert_eq!(reduced.h, full.h - band);
+        assert_eq!(reduced.w, full.w, "the band never touches width");
+        // The consequence the user feels: on a height-constrained image the
+        // reachable zoom ceiling must rise, not stay pinned to the full pane.
+        let tall = (700_u32, 1900_u32);
+        assert!(
+            png_zoom_max(reduced.w, reduced.h, tall) > png_zoom_max(full.w, full.h, tall),
+            "reduced pane must yield MORE zoom headroom on a tall image"
+        );
+        // A width-constrained image is unaffected — pins the scope of the fix.
         let wide = (1600_u32, 400_u32);
-        let reduced = image_rect_for_caption(pane, 85.0);
         assert_eq!(
             png_zoom_max(reduced.w, reduced.h, wide),
-            png_zoom_max(pane.w, pane.h, wide),
+            png_zoom_max(full.w, full.h, wide),
+        );
+        // And the keyboard derivation must agree with the render path's, which
+        // starts from an ORIGIN-BEARING pane rect: same extent, same ceiling.
+        let render = image_rect_for_caption(
+            ScreenRect {
+                x: 31.0,
+                y: 17.0,
+                w: cells.0 as f32 * cw,
+                h: cells.1 as f32 * ch,
+            },
+            band,
+        );
+        assert_eq!((reduced.w, reduced.h), (render.w, render.h));
+        assert_eq!(
+            png_zoom_max(reduced.w, reduced.h, tall),
+            png_zoom_max(render.w, render.h, tall),
         );
     }
 
