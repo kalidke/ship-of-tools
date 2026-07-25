@@ -3,6 +3,39 @@
 **Status:** Accepted (co-design converged 2026-06-22; building on `feat/op-fe-command`)
 **Date:** 2026-06-22
 
+> **Update — 2026-07-25: `preview` gains an optional `caption` (agent-authored figure caption).**
+> `preview{ws, path, caption?}` — prose the producing agent attaches to a figure, so a
+> badge says what it IS instead of making the user infer it from the filename.
+> `sot-fe preview <ws> <path> --caption "<text>"`; `show-result <path> --caption "…"`
+> reaches it through the existing pass-through. Honoured on `reveal` too.
+>
+> **Reserved space, not an overlay.** The caption is drawn in a band at the BOTTOM of
+> the preview pane and the image letterboxes into what's left — it never covers the
+> figure it describes. Mechanically that means the whole image-geometry chain keys off
+> a reduced `image_rect` (letterbox fit, `png_zoom_max`, pan slack, canvas centring,
+> `solve_roi_view` and its `visible_roi_px` inverse, the scissor); they must agree on
+> the SAME rect or the ROI round-trip skews. The ADR-0034 scalebar keys off it too, so
+> the bar rides above the band with no inset arithmetic of its own.
+>
+> **Sticky, and keyed by (workspace, file)** — unlike `roi`, which is a one-shot aim
+> consumed by the next matching render. A caption outlives the badge, the workspace
+> switch, and re-previews, because the whole point is that it's still there when the
+> user arrives minutes later. Keying by workspace (rather than "the current caption")
+> makes the ADR-0034 F2 hazard — workspace A's annotation over workspace B's image —
+> *unrepresentable* rather than merely avoided; it also means the store needs no
+> `WorkspaceUiSnapshot` entry. Bounded FIFO (256 entries) so a long-lived FE doesn't
+> leak. A caption-less re-preview of the same file RETIRES the old caption (same
+> staleness rule as `roi`, same reason: a caption describing a since-replaced figure
+> is worse than none).
+>
+> **Degrades, never drops.** An empty/non-string/over-long caption is dropped and the
+> preview still happens — losing the badge over its garnish would be strictly worse.
+> Control characters collapse to spaces (a heredoc-built caption arrives with
+> newlines) and the length caps at 300 CHARACTERS, cut on a character boundary in the
+> FE — the CLI only warns, because `cut -c` is byte-oriented on the field platforms
+> and split a UTF-8 codepoint in testing. Images only: for a code/markdown/PDF preview
+> the store keeps the caption and the renderer declines to draw it.
+>
 > **Update — 2026-07-21: `preview` gains an optional `roi` (source-px viewport aim).**
 > A session can aim the FE viewport at a rectangle of the SOURCE image:
 > `preview{ws, path, roi?}` where `roi = {x, y, w, h}` in source-image pixels
@@ -141,14 +174,16 @@ drives the FE there, so a result no longer has to live in the sender's own works
 
 ### 3. Command vocabulary (`op::FE_COMMAND {v:1, cmd, args}`)
 
-- `preview{ws, path, roi?}` — **MIME-agnostic**: markdown, source, AND images (backend
-  `preview.get` mime drives md-vs-png; `png.rs` already renders images). Shows in the
-  preview pane. No separate `preview_image` (redundant). A non-file/generated image (a
-  temp plot not in the tree) is a deferred inline-bytes form of `preview`; v1 results
-  are file-based per the `dev/output`|external-storage convention. **Optional `roi =
-  {x,y,w,h}`** (source-image px, ADR-0022 `image.crop` vocabulary) aims the viewport at
-  that region; FE clamps to bounds; effective rect echoes via a follow-up event, not the
-  ack — see the 2026-07-21 top Update.
+- `preview{ws, path, roi?, caption?}` — **MIME-agnostic**: markdown, source, AND images
+  (backend `preview.get` mime drives md-vs-png; `png.rs` already renders images). Shows
+  in the preview pane. No separate `preview_image` (redundant). A non-file/generated
+  image (a temp plot not in the tree) is a deferred inline-bytes form of `preview`; v1
+  results are file-based per the `dev/output`|external-storage convention. **Optional
+  `roi = {x,y,w,h}`** (source-image px, ADR-0022 `image.crop` vocabulary) aims the
+  viewport at that region; FE clamps to bounds; effective rect echoes via a follow-up
+  event, not the ack — see the 2026-07-21 top Update. **Optional `caption`** (string)
+  is a sticky per-(workspace, file) figure caption drawn in a reserved band under the
+  image — see the 2026-07-25 top Update.
 - `reveal{ws, path}` — switch + Files + expand the tree to `path` + **select the row**
   (deep cursor-reveal). "Go look at this"; distinct from `preview` (render it).
 - `goto_workspace{ws}` = existing `FeCommand::Workspace{slug}`.

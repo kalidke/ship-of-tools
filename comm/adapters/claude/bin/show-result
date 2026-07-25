@@ -7,6 +7,10 @@
 #
 # Usage:
 #   show-result <path>                        # BADGE it (default; non-intrusive — PREFERRED)
+#   show-result <path> --caption "<text>"     # images: a caption band UNDER the figure
+#                                             # (reserved space, never covers the plot);
+#                                             # sticky per (workspace, file) — re-badging
+#                                             # without --caption clears it
 #   show-result <path> --urgent --fe <handle> # force-show (RARE: only when the user is
 #                                             # actively waiting; re-targets the single
 #                                             # foreground pty — never broadcast --urgent)
@@ -17,7 +21,10 @@ set -euo pipefail
 
 case "${1:-}" in
   ""|-h|--help)
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    # Comment lines from 2 down to the first non-comment — robust to the usage
+    # block growing (a hardcoded end line silently truncated --help when
+    # --caption was added). Same idiom as sot-fe's usage().
+    sed -n '2,$ { /^[^#]/q; p; }' "$0" | sed 's/^# \{0,1\}//'
     exit 0 ;;
 esac
 

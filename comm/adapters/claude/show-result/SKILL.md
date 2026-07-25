@@ -48,6 +48,7 @@ One short command, right after you save the artifact:
 
 ```bash
 show-result <path>            # workspace-relative (an absolute path under the ws auto-relativizes)
+show-result <path> --caption "Recovery vs. SNR, 3 densities — 20 nm/px, N=500"
 ```
 
 `show-result` (`~/.local/bin/show-result`, on PATH in a booted session) auto-discovers
@@ -75,6 +76,28 @@ reply where the figure is badged.
 backend creates the workspace). If unset (an *attached* or re-shelled pane), strip
 `sot-be-` from your tmux session name — the one-liner above does both.
 
+## `--caption` — say what the figure IS
+
+**Images only.** A caption is drawn in a band UNDER the figure (the image shrinks to
+make room — it never covers the plot). Use it whenever the filename alone doesn't
+say what the user is looking at, which is most of the time:
+
+```bash
+show-result out/recovery.png --caption "Recovery vs. SNR, 3 densities — 20 nm/px, N=500 emitters"
+```
+
+- **Write the caption you'd put under this figure in a paper** — what it shows and
+  the parameters needed to read it. Not the filename restated, not "here is the plot".
+- **It's sticky to that (workspace, file)**: it survives workspace switches and
+  re-previews, so a badge the user reaches ten minutes later still carries it. That
+  is the point — the caption is what makes a badge self-explanatory on arrival.
+- **Re-badging the same file WITHOUT `--caption` clears it.** So when you regenerate
+  a figure with different parameters, pass the new caption — a stale caption
+  describing the previous run is worse than none.
+- Max 300 chars (the CLI warns and truncates); it's a caption, not a report.
+- Ignored for non-image previews (code, markdown, PDF) — the store keeps it, the
+  renderer declines to draw it, so nothing breaks if you pass one.
+
 ## After — tell them, but only if it worked
 
 **End your reply telling the user it's there**, in those words — e.g. *"…and that
@@ -101,6 +124,7 @@ save.** Run `show-result` on the same line you write the file, so producing the 
 
 ```julia
 save(p, fig); run(`show-result $p`)          # Julia / CairoMakie
+save(p, fig); run(`show-result $p --caption "$(describe(params))"`)   # with a caption
 ```
 ```bash
 mything --out out.png && show-result out.png  # shell pipeline

@@ -1108,6 +1108,72 @@ fn preview_targets_active_ws(
     target.is_some() && target == current
 }
 
+/// Hard cap on a stored figure caption, in CHARACTERS (not bytes — truncating
+/// UTF-8 by byte offset panics mid-codepoint). A caption names what a figure is;
+/// past a couple of lines it stops being a caption and starts covering the image
+/// it describes. The CLI warns and truncates at the same limit; this is the
+/// backstop for every other route onto the wire.
+const CAPTION_MAX_CHARS: usize = 300;
+
+/// Cap a caption at [`CAPTION_MAX_CHARS`], marking a truncation with an ellipsis
+/// so a cut-off caption reads as cut off rather than as a complete sentence that
+/// happens to end oddly.
+fn truncate_caption(s: &str) -> String {
+    if s.chars().count() <= CAPTION_MAX_CHARS {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(CAPTION_MAX_CHARS - 1).collect();
+    out.push('…');
+    out
+}
+
+/// How many (workspace, file) captions to retain. Captions are small and
+/// arrive one per agent badge, but the FE runs for days across many workspaces
+/// — an unbounded map is a slow leak. FIFO eviction: the oldest badge is the
+/// one whose figure the user is least likely to still be looking at.
+const CAPTION_STORE_CAP: usize = 256;
+
+/// Sticky per-(workspace, file) figure captions, with bounded FIFO eviction.
+/// Keyed by the SAME normalized workspace key the render path looks up with
+/// (`ws_key_of`), so a caption addressed to the default workspace by slug and
+/// one addressed to it as "default" land in one slot instead of two.
+///
+/// Keying by workspace (rather than storing "the current caption" on `State`)
+/// is what makes the cross-workspace badge work AND makes the ADR-0034 F2
+/// hazard — workspace A's annotation rendered over workspace B's image —
+/// unrepresentable: a lookup can only ever return the active workspace's
+/// caption for the file actually on screen.
+#[derive(Default)]
+struct CaptionStore {
+    map: HashMap<(String, String), String>,
+    order: std::collections::VecDeque<(String, String)>,
+}
+
+impl CaptionStore {
+    fn set(&mut self, ws_key: String, node_id: String, text: String) {
+        let key = (ws_key, node_id);
+        if self.map.insert(key.clone(), text).is_none() {
+            self.order.push_back(key);
+        }
+        while self.order.len() > CAPTION_STORE_CAP {
+            if let Some(old) = self.order.pop_front() {
+                self.map.remove(&old);
+            }
+        }
+    }
+
+    fn clear_one(&mut self, ws_key: &str, node_id: &str) {
+        let key = (ws_key.to_string(), node_id.to_string());
+        if self.map.remove(&key).is_some() {
+            self.order.retain(|k| k != &key);
+        }
+    }
+
+    fn get(&self, ws_key: &str, node_id: &str) -> Option<&String> {
+        self.map.get(&(ws_key.to_string(), node_id.to_string()))
+    }
+}
+
 fn parent_files_node_id(node_id: &str) -> String {
     match node_id.strip_prefix("files:") {
         Some(rel) => match rel.rsplit_once('/') {
@@ -1254,6 +1320,40 @@ struct ScalebarDraw {
     bar: ScreenRect,
     label_x: f32,
     label_y: f32,
+}
+
+/// Most lines a figure caption may occupy. Past this the band stops growing and
+/// the remainder is clipped: a caption reserves space from the figure it
+/// describes, so an unbounded one would shrink the image toward nothing.
+const CAPTION_MAX_LINES: usize = 3;
+
+/// Geometry for the figure-caption band (all physical screen px). `backing` is
+/// the full-pane-width box at the BOTTOM of the preview pane; the image is
+/// letterboxed into the rect above it, so unlike the scalebar this is reserved
+/// space, not an overlay — the caption never covers the figure.
+#[derive(Debug, Clone, Copy)]
+struct CaptionDraw {
+    backing: ScreenRect,
+    text_x: f32,
+    text_y: f32,
+    clip_bottom: f32,
+}
+
+/// The rect an image is letterboxed into: the preview pane minus a reserved
+/// caption band of `caption_h` at its bottom (0.0 when there's no caption).
+///
+/// Every consumer of image geometry — `letterbox`, `png_zoom_max`, the pan-slack
+/// clamp, canvas centring, `solve_roi_view` and its `visible_roi_px` inverse,
+/// and the scissor — must be handed THIS rect, not the pane rect. A consumer
+/// left on the pane rect doesn't merely misdraw: because the ROI vocabulary is
+/// source-image px solved against the on-screen mapping, a disagreement here
+/// skews the `--roi` round-trip (ADR 0022/0025), which is silent and only shows
+/// up as an aim that lands slightly wrong.
+fn image_rect_for_caption(preview_rect: ScreenRect, caption_h: f32) -> ScreenRect {
+    ScreenRect {
+        h: (preview_rect.h - caption_h.max(0.0)).max(1.0),
+        ..preview_rect
+    }
 }
 
 /// Build + validate the `files:` node id for a new file `name` created inside
@@ -1986,6 +2086,12 @@ struct State {
     /// lifetime, so the two colours must live in disjoint fields.
     scalebar_bar_quad: Quad,
     scalebar_back_quad: Quad,
+    /// Backing box for the figure-caption overlay. A dedicated field, not a
+    /// reuse of `scalebar_back_quad`: `render_many` mutably borrows its quad for
+    /// the whole render-pass lifetime, so two draws in one pass need two
+    /// disjoint fields (the same aliasing rule the scalebar's own two quads
+    /// document below).
+    caption_back_quad: Quad,
     /// Miniature dark logo (from `LOGO_DARK_PNG`) flanking each session badge
     /// in the bottom strip, plus its native `(w, h)` for aspect-ratio sizing.
     /// `None` when the embedded PNG fails to decode — purely cosmetic, the
@@ -2222,6 +2328,17 @@ struct State {
     /// from the adaptive bar length by `build_scalebar` (shaped OUTSIDE the
     /// render pass). `None` when the bar isn't drawn.
     scalebar_label: Option<crate::preview::markdown::MarkdownPreview>,
+    /// Agent-supplied figure captions, sticky per (workspace, file). Written by
+    /// the `preview`/`reveal` fe-commands, read at render time for whichever
+    /// image the pane is actually showing. Deliberately NOT part of
+    /// `WorkspaceUiSnapshot`: the key already carries the workspace, so unlike
+    /// `preview_scale` there is no swap-in path that could hand one workspace's
+    /// caption to another's image.
+    preview_captions: CaptionStore,
+    /// The shaped caption buffer for the image on screen, rebuilt each frame by
+    /// `build_caption` (shaped OUTSIDE the render pass, like `scalebar_label`).
+    /// `None` when no caption is drawn.
+    caption_label: Option<crate::preview::markdown::MarkdownPreview>,
     /// Definition line (1-indexed) the in-flight `preview.get` should
     /// anchor to once it lands — set from the selected modules-mode row's
     /// `line` payload so the code preview scrolls the item (its docstring
@@ -3509,6 +3626,12 @@ impl State {
         let scalebar_back_quad =
             Quad::from_rgba8(&device, &queue, &quad_pipeline, &[0, 0, 0, 170], 1, 1)
                 .context("failed to build scalebar_back_quad")?;
+        // Caption backing: the same translucent black, a touch more opaque —
+        // it sits under prose (which needs more contrast to stay readable than
+        // a solid white bar does) and spans the pane width.
+        let caption_back_quad =
+            Quad::from_rgba8(&device, &queue, &quad_pipeline, &[0, 0, 0, 200], 1, 1)
+                .context("failed to build caption_back_quad")?;
 
         // Decode the two embedded brand logos into textured quads. Both are
         // purely cosmetic chrome (strip badge flankers + nav wordmark), so a
@@ -3695,6 +3818,7 @@ impl State {
             strike_line_quad,
             scalebar_bar_quad,
             scalebar_back_quad,
+            caption_back_quad,
             border_quads: HashMap::new(),
             logo_quad,
             wordmark_quad,
@@ -3776,6 +3900,8 @@ impl State {
             // harness (no `b` keypress). Still gated on a present scale at draw.
             scalebar_on: cli.start_scalebar,
             scalebar_label: None,
+            preview_captions: CaptionStore::default(),
+            caption_label: None,
             preview_anchor_line: None,
             preview_anchored_to: None,
             pinned_preview_node_id: None,
@@ -4665,6 +4791,22 @@ impl State {
         self.reply_ws_key(self.active_workspace_id.as_deref())
     }
 
+    /// Caption-store key for an fe-command's `workspace` argument. The wire
+    /// spells the default workspace three ways (`""`, `"default"`,
+    /// `"<default>"`, per `preview_targets_active_ws`) plus its real slug;
+    /// all four must land on the one key `current_workspace_key` will later
+    /// look up, or a caption addressed to the default workspace is stored
+    /// under a key nothing reads.
+    fn caption_ws_key(&self, workspace: &str) -> String {
+        let is_default =
+            workspace.is_empty() || workspace == "default" || workspace == "<default>";
+        if is_default {
+            "<default>".to_string()
+        } else {
+            ws_key_of(Some(workspace), self.default_workspace_slug.as_deref())
+        }
+    }
+
     /// Workspace-key for a wire `workspace_id` — the ONE normalization both
     /// the active key and every reply key go through (see `ws_key_of` for
     /// the default-slug aliasing this collapses).
@@ -5204,6 +5346,7 @@ impl State {
                 path,
                 urgent,
                 roi,
+                caption,
             } => {
                 // ADR 0025 `preview --roi` (2026-07-21 update): arm the viewport
                 // aim before routing — it rides preview's badge-floor routing
@@ -5219,7 +5362,7 @@ impl State {
                         self.pending_roi_aim = Some(RoiAim {
                             workspace: workspace.clone(),
                             path: path.clone(),
-                            node_id,
+                            node_id: node_id.clone(),
                             rect,
                             ready: false,
                         });
@@ -5233,6 +5376,21 @@ impl State {
                             self.pending_roi_aim = None;
                         }
                     }
+                }
+                // Figure caption: stored against the TARGET workspace (not the
+                // active one) so a cross-ws badge carries its caption across the
+                // switch that happens minutes later. Latest-wins per file, and
+                // a caption-less re-preview of the same file retires the old one
+                // — same staleness rule as the roi aim above, for the same
+                // reason: a caption left over from a previous badge would
+                // describe an image the agent has since replaced.
+                let cap_ws_key = self.caption_ws_key(&workspace);
+                match &caption {
+                    Some(text) => {
+                        self.preview_captions
+                            .set(cap_ws_key, node_id.clone(), text.clone());
+                    }
+                    None => self.preview_captions.clear_one(&cap_ws_key, &node_id),
                 }
                 // Same-ws short-circuit: if the target workspace is the one we're
                 // already viewing, render in place NOW (mirrors handle_nav_envelope
@@ -5295,6 +5453,7 @@ impl State {
                 path,
                 urgent,
                 roi,
+                caption,
             } => {
                 // reveal == preview: the same-ws preview path now performs the
                 // deep tree-expand-and-select (cursor follows the file, ancestor
@@ -5308,6 +5467,7 @@ impl State {
                     path,
                     urgent,
                     roi,
+                    caption,
                 });
             }
             FeCommand::Docs { workspace, path } => {
@@ -7685,10 +7845,15 @@ impl State {
     /// break the bar after every zoom (the load-bearing detail, ADR 0034 §3;
     /// same rationale as source-px ROI, ADR 0022). Phase 1 renders one bar
     /// from `axes[0]` (the horizontal x axis); equal axes collapse naturally.
+    ///
+    /// `image_rect` is the pane rect MINUS any reserved figure-caption band
+    /// (ADR 0025, 2026-07-25) — the rect the image is actually letterboxed
+    /// into. Taking it rather than the full pane rect is what puts the bar
+    /// above a caption instead of behind it, with no inset arithmetic here.
     fn build_scalebar(
         &mut self,
         png_rect: Option<ScreenRect>,
-        preview_rect: ScreenRect,
+        image_rect: ScreenRect,
     ) -> Option<ScalebarDraw> {
         // Cheap early-outs; every miss clears the stale label.
         if !self.scalebar_on {
@@ -7722,7 +7887,7 @@ impl State {
             return clear_and_none(self);
         }
         // Source→screen mapping (must match the draw block's `canvas_w`).
-        let zoom_max = png_zoom_max(preview_rect.w, preview_rect.h, quad_px);
+        let zoom_max = png_zoom_max(image_rect.w, image_rect.h, quad_px);
         let zoom = self.preview_png_zoom.clamp(1.0, zoom_max);
         let canvas_w = letterbox_rect.w * zoom;
         // Measure against the AS-SERVED width, not the texture width: an image
@@ -7744,11 +7909,11 @@ impl State {
             return clear_and_none(self);
         }
         // Adaptive length: aim ~15% of the pane, snap to 1/2/5×10ⁿ.
-        let target_px = preview_rect.w * 0.15;
+        let target_px = image_rect.w * 0.15;
         let nice = snap_1_2_5((target_px / screen_px_per_unit) as f64);
         let bar_len = nice as f32 * screen_px_per_unit;
         // Skip a degenerate / pane-overflowing bar (e.g. absurd scale value).
-        if bar_len <= 1.0 || bar_len > preview_rect.w {
+        if bar_len <= 1.0 || bar_len > image_rect.w {
             return clear_and_none(self);
         }
         // Shape the label OUTSIDE the render pass (a persistent buffer on self).
@@ -7773,8 +7938,8 @@ impl State {
         let bar_h = (4.0 * scale_f).max(2.0);
         let gap = 3.0 * scale_f;
         let pad = 4.0 * scale_f;
-        let bar_x = preview_rect.x + m;
-        let bar_y = preview_rect.y + preview_rect.h - m - bar_h;
+        let bar_x = image_rect.x + m;
+        let bar_y = image_rect.y + image_rect.h - m - bar_h;
         let label_x = bar_x;
         let label_y = bar_y - gap - label_h;
         let content_right = (bar_x + bar_len).max(label_x + label_w);
@@ -7794,6 +7959,74 @@ impl State {
             },
             label_x,
             label_y,
+        })
+    }
+
+    /// Compute the figure-caption band geometry for this frame and shape its
+    /// text buffer. Called once per render BEFORE `png_rect` — the band is
+    /// RESERVED space, so the image rect is derived by subtracting what this
+    /// returns, and every downstream piece of image geometry keys off that
+    /// reduced rect. Returns `None` — clearing any stale buffer — unless an
+    /// image raster is on screen AND the active workspace has a caption stored
+    /// for exactly that file.
+    ///
+    /// Gated on `is_image_node_id` for the same reason the scalebar is: a
+    /// caption is a statement about a FIGURE. Carrying one over a code or
+    /// markdown preview would be a claim about the wrong thing, so the store
+    /// keeps it and the renderer simply declines to draw it.
+    fn build_caption(&mut self, preview_rect: ScreenRect) -> Option<CaptionDraw> {
+        let clear_and_none = |s: &mut Self| -> Option<CaptionDraw> {
+            s.caption_label = None;
+            None
+        };
+        let Some(node_id) = self.preview_node_id_fired.clone() else {
+            return clear_and_none(self);
+        };
+        if !Self::is_image_node_id(&node_id) {
+            return clear_and_none(self);
+        }
+        let ws_key = self.current_workspace_key();
+        let Some(text) = self.preview_captions.get(&ws_key, &node_id).cloned() else {
+            return clear_and_none(self);
+        };
+        let scale_f = self.scale;
+        let pad = 6.0 * scale_f;
+        let text_w = preview_rect.w - 2.0 * pad;
+        if text_w <= 1.0 || preview_rect.h <= 1.0 {
+            return clear_and_none(self);
+        }
+        let buf = crate::preview::markdown::MarkdownPreview::new_plain(
+            self.text.font_system_mut(),
+            &text,
+            text_w,
+            scale_f,
+        );
+        let line_h = buf.buffer.metrics().line_height;
+        let lines = buf.buffer.layout_runs().count().max(1);
+        self.caption_label = Some(buf);
+        // Cap the drawn height so a long caption can never swallow the figure it
+        // describes: past CAPTION_MAX_LINES the overlay stops growing and the
+        // remainder is clipped by the ExtraArea's `bottom`. The length cap makes
+        // this rare; the clamp is what keeps a pathological caption survivable.
+        let drawn_lines = lines.min(CAPTION_MAX_LINES);
+        let text_h = line_h * drawn_lines as f32;
+        let backing_h = text_h + 2.0 * pad;
+        // Never let the overlay take more than half the pane — on a very short
+        // preview pane even CAPTION_MAX_LINES is too much.
+        if backing_h > preview_rect.h * 0.5 {
+            return clear_and_none(self);
+        }
+        let backing = ScreenRect {
+            x: preview_rect.x,
+            y: preview_rect.y + preview_rect.h - backing_h,
+            w: preview_rect.w,
+            h: backing_h,
+        };
+        Some(CaptionDraw {
+            backing,
+            text_x: preview_rect.x + pad,
+            text_y: backing.y + pad,
+            clip_bottom: backing.y + backing_h - pad,
         })
     }
 
@@ -12731,10 +12964,30 @@ impl State {
             !show_fatal && !show_help && self.edit_state.is_some() && self.preview_edit.is_some();
         let show_md = !show_fatal && !show_help && !show_png && !show_edit;
 
+        // Figure caption (agent-supplied, ADR 0025): a band RESERVED at the
+        // bottom of the preview pane. Computed here, before `png_rect`, because
+        // every piece of image geometry downstream — letterbox fit, the zoom
+        // ceiling, pan slack, the ROI solve and its inverse, the scissor — keys
+        // off the pane rect, and reserving space only works if they all agree on
+        // the SAME reduced rect. `image_rect` is that rect; `preview_rect`
+        // continues to mean the whole pane for text/media/overlay draws.
+        let caption_draw = if show_png {
+            self.build_caption(preview_rect)
+        } else {
+            // No raster on screen (help, edit modal, markdown, fatal overlay):
+            // nothing to caption, and the text pane keeps the full rect.
+            self.caption_label = None;
+            None
+        };
+        let image_rect = image_rect_for_caption(
+            preview_rect,
+            caption_draw.as_ref().map_or(0.0, |c| c.backing.h),
+        );
+
         let png_rect = if show_png {
             self.preview_png
                 .as_ref()
-                .map(|q| letterbox(preview_rect, q.size_px))
+                .map(|q| letterbox(image_rect, q.size_px))
         } else {
             None
         };
@@ -12957,7 +13210,10 @@ impl State {
         // ExtraArea below, and the bar rects are drawn inside the pass. `&mut
         // self` here (font_system + scalebar_label); done before the shared
         // buffer borrows the `extras` Vec takes.
-        let scalebar_draw = self.build_scalebar(png_rect, preview_rect);
+        // `image_rect`, not `preview_rect`: the bar belongs to the figure, so
+        // when a caption reserves the bottom band the bar rides above it with
+        // no inset arithmetic of its own.
+        let scalebar_draw = self.build_scalebar(png_rect, image_rect);
 
         let mut extras: Vec<crate::text::ExtraArea> = Vec::new();
         if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.scalebar_label.as_ref()) {
@@ -12965,12 +13221,28 @@ impl State {
                 buffer: &lbl.buffer,
                 x: sb.label_x,
                 y: sb.label_y,
-                right: preview_rect.x + preview_rect.w,
-                bottom: preview_rect.y + preview_rect.h,
-                clip_left: Some(preview_rect.x),
-                clip_top: Some(preview_rect.y),
+                right: image_rect.x + image_rect.w,
+                bottom: image_rect.y + image_rect.h,
+                clip_left: Some(image_rect.x),
+                clip_top: Some(image_rect.y),
                 // Near-white on the dark backing box drawn under it.
                 color: (245, 245, 245),
+                scroll_y_px: 0.0,
+            });
+        }
+        if let (Some(cap), Some(lbl)) = (caption_draw.as_ref(), self.caption_label.as_ref()) {
+            extras.push(crate::text::ExtraArea {
+                buffer: &lbl.buffer,
+                x: cap.text_x,
+                y: cap.text_y,
+                right: cap.backing.x + cap.backing.w,
+                // `clip_bottom` (not the backing's edge) so a caption longer
+                // than CAPTION_MAX_LINES is cut at the band's text area instead
+                // of bleeding into the padding.
+                bottom: cap.clip_bottom,
+                clip_left: Some(cap.backing.x),
+                clip_top: Some(cap.backing.y),
+                color: (232, 232, 232),
                 scroll_y_px: 0.0,
             });
         }
@@ -13172,9 +13444,10 @@ impl State {
                 // canvas: a pane resize or a zoom restored from the
                 // view-state cache can sit above the per-pixel ceiling for
                 // the current geometry, and the canvas must honour it. Same
-                // `(preview_rect, size_px)` inputs as the `letterbox` above,
-                // so at the ceiling canvas_w == 16 × source-px exactly.
-                let zoom_max = png_zoom_max(preview_rect.w, preview_rect.h, quad.size_px);
+                // `(image_rect, size_px)` inputs as the `letterbox` above —
+                // they must stay in lockstep, caption band included, or at the
+                // ceiling canvas_w no longer equals 16 × source-px exactly.
+                let zoom_max = png_zoom_max(image_rect.w, image_rect.h, quad.size_px);
                 // ADR 0025 `preview --roi`: consume a pending viewport aim
                 // whose image is the installed quad (ready — certified at
                 // preview install) AND still the fired preview target. The
@@ -13188,8 +13461,8 @@ impl State {
                     let aim = self.pending_roi_aim.take().expect("checked Some above");
                     let (src_w, src_h) = self.preview_png_dims.unwrap_or(quad.size_px);
                     match solve_roi_view(
-                        preview_rect.w,
-                        preview_rect.h,
+                        image_rect.w,
+                        image_rect.h,
                         letterbox_rect.w,
                         letterbox_rect.h,
                         zoom_max,
@@ -13210,14 +13483,14 @@ impl State {
                 self.preview_png_zoom = zoom;
                 let canvas_w = letterbox_rect.w * zoom;
                 let canvas_h = letterbox_rect.h * zoom;
-                let pane_cx = preview_rect.x + preview_rect.w * 0.5;
-                let pane_cy = preview_rect.y + preview_rect.h * 0.5;
+                let pane_cx = image_rect.x + image_rect.w * 0.5;
+                let pane_cy = image_rect.y + image_rect.h * 0.5;
                 // Clamp pan so canvas always covers the pane in any axis
                 // where canvas > pane. When canvas < pane (e.g. at zoom
                 // 1 with a non-pane-aspect image), pan in that axis is
                 // forced to 0 so the letterbox stays centred.
-                let slack_x = (canvas_w - preview_rect.w).max(0.0);
-                let slack_y = (canvas_h - preview_rect.h).max(0.0);
+                let slack_x = (canvas_w - image_rect.w).max(0.0);
+                let slack_y = (canvas_h - image_rect.h).max(0.0);
                 let pan_x = self
                     .preview_png_pan_px
                     .0
@@ -13250,10 +13523,10 @@ impl State {
                             canvas_rect.y,
                             canvas_w,
                             canvas_h,
-                            preview_rect.x,
-                            preview_rect.y,
-                            preview_rect.w,
-                            preview_rect.h,
+                            image_rect.x,
+                            image_rect.y,
+                            image_rect.w,
+                            image_rect.h,
                             src_w,
                             src_h,
                         )?;
@@ -13282,10 +13555,13 @@ impl State {
                             "preview --roi: no source-px ROI for this preview — no roi_applied echo"),
                     }
                 }
-                let sx = preview_rect.x.max(0.0) as u32;
-                let sy = preview_rect.y.max(0.0) as u32;
-                let sw = preview_rect.w.max(0.0) as u32;
-                let sh = preview_rect.h.max(0.0) as u32;
+                // Scissor to the IMAGE rect, not the pane: this is what stops a
+                // zoomed/panned canvas from painting over the reserved caption
+                // band at the bottom.
+                let sx = image_rect.x.max(0.0) as u32;
+                let sy = image_rect.y.max(0.0) as u32;
+                let sw = image_rect.w.max(0.0) as u32;
+                let sh = image_rect.h.max(0.0) as u32;
                 rpass.set_scissor_rect(sx, sy, sw, sh);
                 quad.render(
                     &self.queue,
@@ -13307,10 +13583,10 @@ impl State {
             // fields — one map borrowed twice would alias. `self.preview_png`'s
             // borrow ended when the image block closed above.
             if let Some(sb) = scalebar_draw.as_ref() {
-                let sx = preview_rect.x.max(0.0) as u32;
-                let sy = preview_rect.y.max(0.0) as u32;
-                let sw = preview_rect.w.max(0.0) as u32;
-                let sh = preview_rect.h.max(0.0) as u32;
+                let sx = image_rect.x.max(0.0) as u32;
+                let sy = image_rect.y.max(0.0) as u32;
+                let sw = image_rect.w.max(0.0) as u32;
+                let sh = image_rect.h.max(0.0) as u32;
                 rpass.set_scissor_rect(sx, sy, sw, sh);
                 self.scalebar_back_quad.render_many(
                     &self.device,
@@ -13326,6 +13602,26 @@ impl State {
                     &self.quad_pipeline,
                     &mut rpass,
                     std::slice::from_ref(&sb.bar),
+                    (self.config.width, self.config.height),
+                )?;
+                rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+            }
+            // Figure-caption band. Its own quad field for the aliasing reason
+            // documented on the scalebar above. Scissored to the FULL pane
+            // (`preview_rect`) — the band lives in the strip `image_rect`
+            // deliberately gave up, which is outside the image scissor.
+            if let Some(cap) = caption_draw.as_ref() {
+                let sx = preview_rect.x.max(0.0) as u32;
+                let sy = preview_rect.y.max(0.0) as u32;
+                let sw = preview_rect.w.max(0.0) as u32;
+                let sh = preview_rect.h.max(0.0) as u32;
+                rpass.set_scissor_rect(sx, sy, sw, sh);
+                self.caption_back_quad.render_many(
+                    &self.device,
+                    &self.queue,
+                    &self.quad_pipeline,
+                    &mut rpass,
+                    std::slice::from_ref(&cap.backing),
                     (self.config.width, self.config.height),
                 )?;
                 rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
@@ -14216,6 +14512,26 @@ fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) ->
                 }
             })
     };
+    // Optional `caption` — agent-authored prose drawn under the image. Same
+    // degrade-never-drop contract as `roi`: an unusable caption is dropped, the
+    // preview still happens. Sanitized here rather than at render time so the
+    // stored value is already safe for every consumer: control chars (including
+    // the newlines a heredoc-built caption picks up) collapse to spaces so a
+    // caption can't smuggle in blank lines or break the shaped layout, and the
+    // length is capped independently of the CLI (the wire is reachable without
+    // it — the ADR-0019 file channel and any other daemon client).
+    let caption_arg = || {
+        let raw = args.get("caption")?.as_str()?;
+        let cleaned = raw
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect::<String>();
+        let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+        if collapsed.is_empty() {
+            return None;
+        }
+        Some(truncate_caption(&collapsed))
+    };
     match evt.cmd.as_str() {
         "preview" => {
             let workspace = str_arg("workspace")?;
@@ -14225,6 +14541,7 @@ fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) ->
                 path,
                 urgent: bool_arg("urgent") && directed,
                 roi: roi_arg(),
+                caption: caption_arg(),
             })
         }
         "reveal" => {
@@ -14235,6 +14552,7 @@ fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) ->
                 path,
                 urgent: bool_arg("urgent") && directed,
                 roi: roi_arg(),
+                caption: caption_arg(),
             })
         }
         "goto_workspace" => {
@@ -14378,6 +14696,12 @@ enum FeCommand {
     /// `roi` (ADR 0025 2026-07-21 update) is an optional source-px viewport
     /// aim, solved into zoom/pan FE-side, clamped, and echoed back via the
     /// `preview_roi_applied` event.
+    /// `caption` is an optional agent-authored figure caption drawn under the
+    /// image (images only). Unlike `roi` — a one-shot aim consumed by the next
+    /// matching render — a caption is STICKY per (workspace, file): it outlives
+    /// the badge, the workspace switch, and re-previews, because the whole point
+    /// is that it's still there when the user arrives. `None` retires the
+    /// caption for that file (see `dispatch_fe_command`).
     Preview {
         workspace: String,
         path: String,
@@ -14385,6 +14709,8 @@ enum FeCommand {
         urgent: bool,
         #[serde(default)]
         roi: Option<RoiRect>,
+        #[serde(default)]
+        caption: Option<String>,
     },
     /// ADR 0025 imperative reveal — v1 is identical to `Preview` (badge floor /
     /// force-show + on-switch preview, `roi` carried through). Deep
@@ -14398,6 +14724,8 @@ enum FeCommand {
         urgent: bool,
         #[serde(default)]
         roi: Option<RoiRect>,
+        #[serde(default)]
+        caption: Option<String>,
     },
     /// ADR 0025 imperative `docs.open` (the `W` key) triggered from the backend:
     /// serve a local `.html`/site from backend disk over the forwarded
@@ -18589,6 +18917,77 @@ mod tests {
     }
 
     #[test]
+    fn caption_band_and_image_rect_tile_the_pane_exactly() {
+        let pane = ScreenRect {
+            x: 40.0,
+            y: 10.0,
+            w: 1000.0,
+            h: 500.0,
+        };
+        // No caption → the image gets the whole pane (the pre-caption behaviour
+        // must be bit-identical, since most previews have no caption).
+        let full = image_rect_for_caption(pane, 0.0);
+        assert_eq!((full.x, full.y, full.w, full.h), (pane.x, pane.y, pane.w, pane.h));
+        // With a caption the image shrinks by EXACTLY the band, and only in h —
+        // a drifting x/w would shift the letterbox and skew the ROI mapping.
+        let band_h = 64.0;
+        let img = image_rect_for_caption(pane, band_h);
+        assert_eq!((img.x, img.y, img.w), (pane.x, pane.y, pane.w));
+        assert_eq!(img.h, pane.h - band_h);
+        // The band starts exactly where the image ends: no overlap (the caption
+        // would cover the figure) and no gap (a dead strip).
+        let band_top = pane.y + pane.h - band_h;
+        assert_eq!(img.y + img.h, band_top);
+        assert_eq!(band_top + band_h, pane.y + pane.h);
+        // Degenerate guard: a band taller than the pane can't invert the rect.
+        assert!(image_rect_for_caption(pane, 10_000.0).h >= 1.0);
+    }
+
+    #[test]
+    fn solve_roi_round_trips_through_a_caption_reduced_rect() {
+        // The reserve-space chain's real hazard: if any consumer kept the FULL
+        // pane rect while the image was letterboxed into the reduced one, the
+        // --roi round-trip would skew silently. Same round-trip as
+        // `solve_roi_round_trips_through_visible_roi_px`, but every step is fed
+        // the caption-reduced rect — it must still recover the requested rect.
+        let pane = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 1000.0,
+            h: 500.0,
+        };
+        let img = image_rect_for_caption(pane, 80.0);
+        let (src_w, src_h) = (800_u32, 600_u32);
+        let fit = (img.w / src_w as f32).min(img.h / src_h as f32);
+        let (lw, lh) = (src_w as f32 * fit, src_h as f32 * fit);
+        let req = RoiRect {
+            x: 100,
+            y: 150,
+            w: 200,
+            h: 120,
+        };
+        let zoom_max = png_zoom_max(img.w, img.h, (src_w, src_h));
+        let (z, (px, py)) =
+            solve_roi_view(img.w, img.h, lw, lh, zoom_max, src_w, src_h, req).unwrap();
+        let (cw, ch) = (lw * z, lh * z);
+        let slack_x = (cw - img.w).max(0.0);
+        let slack_y = (ch - img.h).max(0.0);
+        let px = px.clamp(-slack_x * 0.5, slack_x * 0.5);
+        let py = py.clamp(-slack_y * 0.5, slack_y * 0.5);
+        let canvas_x = img.x + img.w * 0.5 - cw * 0.5 + px;
+        let canvas_y = img.y + img.h * 0.5 - ch * 0.5 + py;
+        let (ex, ey, ew, eh) = visible_roi_px(
+            canvas_x, canvas_y, cw, ch, img.x, img.y, img.w, img.h, src_w, src_h,
+        )
+        .unwrap();
+        assert!(ex <= req.x + 2 && ey <= req.y + 2, "({ex},{ey})");
+        assert!(
+            ex + ew + 2 >= req.x + req.w && ey + eh + 2 >= req.y + req.h,
+            "({ex},{ey},{ew},{eh})"
+        );
+    }
+
+    #[test]
     fn solve_roi_zoom_ceiling_clamps() {
         // A 4×4 px aim in an 800 px image wants zoom 200; the ceiling (16
         // px/src-px at fit 1) caps it — same ceiling interactive zoom obeys.
@@ -19311,9 +19710,11 @@ mod tests {
                 path,
                 urgent,
                 roi,
+                caption,
             }) => {
                 assert_eq!(workspace, "ws");
                 assert_eq!(path, "src/a.jl");
+                assert_eq!(caption, None, "no caption arg → no caption");
                 assert!(
                     urgent,
                     "directed urgent is carried through (force-show eligible)"
@@ -19385,11 +19786,13 @@ mod tests {
                 path,
                 urgent,
                 roi,
+                caption,
             }) => {
                 assert_eq!(workspace, "ws");
                 assert_eq!(path, "src/a.jl");
                 assert!(urgent);
                 assert_eq!(roi, None);
+                assert_eq!(caption, None);
             }
             other => panic!("expected Reveal, got {other:?}"),
         }
@@ -19459,6 +19862,143 @@ mod tests {
             ),
             other => panic!("expected Reveal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn route_preview_parses_caption() {
+        let evt = fe_evt(
+            "preview",
+            serde_json::json!({
+                "workspace": "ws", "path": "out/plot.png",
+                "caption": "Recovery vs. SNR, 3 densities",
+            }),
+            None,
+        );
+        match route_fe_command(&evt, "win-fe-host") {
+            Some(FeCommand::Preview { caption, .. }) => {
+                assert_eq!(caption.as_deref(), Some("Recovery vs. SNR, 3 densities"))
+            }
+            other => panic!("expected Preview, got {other:?}"),
+        }
+        // reveal carries it too (the CLI attaches --caption to either verb).
+        let evt = fe_evt(
+            "reveal",
+            serde_json::json!({"workspace": "ws", "path": "p.png", "caption": "hi"}),
+            None,
+        );
+        match route_fe_command(&evt, "win-fe-host") {
+            Some(FeCommand::Reveal { caption, .. }) => {
+                assert_eq!(caption.as_deref(), Some("hi"))
+            }
+            other => panic!("expected Reveal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn route_preview_caption_sanitizes_and_never_drops_the_command() {
+        // Control chars (a heredoc-built caption arrives with newlines) collapse
+        // to single spaces, and surrounding whitespace goes — a caption must not
+        // be able to inject blank lines into the shaped band.
+        let evt = fe_evt(
+            "preview",
+            serde_json::json!({
+                "workspace": "ws", "path": "p.png",
+                "caption": "  line one\n\nline two\ttabbed  ",
+            }),
+            None,
+        );
+        match route_fe_command(&evt, "win-fe-host") {
+            Some(FeCommand::Preview { caption, .. }) => {
+                assert_eq!(caption.as_deref(), Some("line one line two tabbed"))
+            }
+            other => panic!("expected Preview, got {other:?}"),
+        }
+        // An unusable caption degrades to a plain preview — losing the BADGE
+        // over a bad caption would be strictly worse than losing the caption.
+        for bad in [
+            serde_json::json!(""),
+            serde_json::json!("   \n\t  "),
+            serde_json::json!(42),
+            serde_json::json!({"text": "nope"}),
+            serde_json::json!(null),
+        ] {
+            let evt = fe_evt(
+                "preview",
+                serde_json::json!({"workspace": "ws", "path": "p.png", "caption": bad}),
+                None,
+            );
+            match route_fe_command(&evt, "win-fe-host") {
+                Some(FeCommand::Preview { caption, path, .. }) => {
+                    assert_eq!(caption, None, "bad caption is ignored, not fatal");
+                    assert_eq!(path, "p.png", "the preview itself still happens");
+                }
+                other => panic!("expected Preview, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn caption_truncates_by_chars_not_bytes() {
+        // Under the cap: untouched.
+        let short = "a".repeat(CAPTION_MAX_CHARS);
+        assert_eq!(truncate_caption(&short), short);
+        // Over the cap: cut to exactly the cap, last char an ellipsis.
+        let long = "a".repeat(CAPTION_MAX_CHARS + 50);
+        let cut = truncate_caption(&long);
+        assert_eq!(cut.chars().count(), CAPTION_MAX_CHARS);
+        assert!(cut.ends_with('…'));
+        // Multi-byte input must cut on a CHARACTER boundary — a byte-offset
+        // truncate would panic mid-codepoint here.
+        let wide = "é".repeat(CAPTION_MAX_CHARS + 10);
+        let cut = truncate_caption(&wide);
+        assert_eq!(cut.chars().count(), CAPTION_MAX_CHARS);
+        // The wire cap is enforced independently of the CLI's own cap, so a
+        // non-CLI client can't seed an unbounded caption.
+        let evt = fe_evt(
+            "preview",
+            serde_json::json!({"workspace": "ws", "path": "p.png", "caption": "b".repeat(5000)}),
+            None,
+        );
+        match route_fe_command(&evt, "win-fe-host") {
+            Some(FeCommand::Preview { caption, .. }) => {
+                assert_eq!(caption.unwrap().chars().count(), CAPTION_MAX_CHARS)
+            }
+            other => panic!("expected Preview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn caption_store_is_keyed_by_workspace_and_evicts_fifo() {
+        let mut s = CaptionStore::default();
+        s.set("wsA".into(), "files:p.png".into(), "A's caption".into());
+        s.set("wsB".into(), "files:p.png".into(), "B's caption".into());
+        // Same FILE, different workspace → distinct entries. This is the ADR-0034
+        // F2 hazard (one workspace's annotation over another's image) made
+        // unrepresentable rather than merely avoided.
+        assert_eq!(s.get("wsA", "files:p.png").unwrap(), "A's caption");
+        assert_eq!(s.get("wsB", "files:p.png").unwrap(), "B's caption");
+        assert_eq!(s.get("wsC", "files:p.png"), None);
+        // Latest-wins on re-set, and no duplicate order entry.
+        s.set("wsA".into(), "files:p.png".into(), "A's second".into());
+        assert_eq!(s.get("wsA", "files:p.png").unwrap(), "A's second");
+        assert_eq!(s.order.len(), 2);
+        // Retiring one leaves the other alone.
+        s.clear_one("wsA", "files:p.png");
+        assert_eq!(s.get("wsA", "files:p.png"), None);
+        assert_eq!(s.get("wsB", "files:p.png").unwrap(), "B's caption");
+        assert_eq!(s.order.len(), 1);
+        // Bounded: past the cap the oldest badge is evicted, newest retained.
+        let mut s = CaptionStore::default();
+        for i in 0..(CAPTION_STORE_CAP + 10) {
+            s.set("ws".into(), format!("files:{i}.png"), format!("cap {i}"));
+        }
+        assert_eq!(s.map.len(), CAPTION_STORE_CAP);
+        assert_eq!(s.get("ws", "files:0.png"), None, "oldest evicted");
+        let newest = CAPTION_STORE_CAP + 9;
+        assert_eq!(
+            s.get("ws", &format!("files:{newest}.png")).unwrap(),
+            &format!("cap {newest}")
+        );
     }
 
     #[test]

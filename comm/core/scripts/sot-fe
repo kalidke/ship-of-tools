@@ -9,7 +9,8 @@
 #
 # Usage:
 #   sot-fe preview <workspace> <path> [--urgent] [--fe <handle>] [--roi x,y,w,h]
-#   sot-fe reveal  <workspace> <path> [--urgent] [--fe <handle>]
+#                                     [--caption <text>]
+#   sot-fe reveal  <workspace> <path> [--urgent] [--fe <handle>] [--caption <text>]
 #   sot-fe goto    <workspace>        [--boot] [--fe <handle>]
 #   sot-fe mode    <mode>             [--fe <handle>]
 #   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <handle>]
@@ -46,6 +47,15 @@
 #                  image.crop vocabulary; round-trippable). FE clamps to image bounds.
 #                  The effective (clamped) rect echoes via a follow-up event, not this
 #                  fire-and-forget ack (ADR-0025 2026-07-21 Update).
+#   --caption <text>  (preview/reveal) figure caption shown UNDER the image in the
+#                  preview pane — say what the figure IS, so the user reading the
+#                  badge doesn't have to infer it from the filename. Images only
+#                  (.png/.jpg/...); ignored for code/markdown/PDF previews. Sticky
+#                  to that (workspace, file): it survives workspace switches and
+#                  re-previews, so a cross-workspace badge still carries its caption
+#                  when the user arrives minutes later. Re-previewing the same file
+#                  WITHOUT --caption clears it. Capped at 300 chars by the FE
+#                  (warned here); newlines/control chars collapse to spaces.
 #   --boot         (goto) seed autostart so the FE boots ccb on the switch — the
 #                  scriptable spawn->goto->boot primitive. Send DIRECTED (--fe
 #                  <handle>); a broadcast --boot would switch+boot on EVERY FE.
@@ -91,6 +101,8 @@ CODE=""        # repl eval: code (else read stdin)
 READ_STDIN=false
 ORIGIN=""      # repl: label shown in the user's drawer (default "session")
 ROI=""         # preview: source-px rect "x,y,w,h" to frame the image at (ADR-0022 vocab)
+CAPTION=""     # preview/reveal: figure caption rendered under the image
+CAPTION_SET=false  # distinguishes "--caption ''" (explicit clear) from "no --caption"
 FRESH=false    # repl run: restart the persistent REPL into the file's project
 POS=()         # positional args for the subcommand
 while [ $# -gt 0 ]; do
@@ -107,6 +119,7 @@ while [ $# -gt 0 ]; do
         --stdin)    READ_STDIN=true; shift ;;
         --origin)   ORIGIN="$2"; shift 2 ;;
         --roi)      ROI="$2"; shift 2 ;;
+        --caption)  CAPTION="$2"; CAPTION_SET=true; shift 2 ;;
         -h|--help)  usage 0 ;;
         # Hard-error on an UNKNOWN flag instead of silently treating it as a
         # positional — a silent drop let `repl run --fresh` return a false "ok"
@@ -301,7 +314,7 @@ send_repl_run_file() {
 case "$CMD" in
     preview|reveal)
         WS="${POS[0]:-}"; PATH_ARG="${POS[1]:-}"
-        [ -n "$WS" ] && [ -n "$PATH_ARG" ] || { echo "usage: sot-fe $CMD <workspace> <path> [--urgent] [--fe <handle>] [--roi x,y,w,h]" >&2; exit 1; }
+        [ -n "$WS" ] && [ -n "$PATH_ARG" ] || { echo "usage: sot-fe $CMD <workspace> <path> [--urgent] [--fe <handle>] [--roi x,y,w,h] [--caption <text>]" >&2; exit 1; }
         # Keep the file nav INSIDE the repo: a node_id must be REPO-RELATIVE (the
         # daemon rejects absolute node_ids, and the FE tree positions its cursor by
         # relative id — an absolute path would show a "floating" file the nav can't
@@ -341,6 +354,28 @@ case "$CMD" in
             RX=$((10#$RX)); RY=$((10#$RY)); RW=$((10#$RW)); RH=$((10#$RH))
             { [ "$RW" -gt 0 ] && [ "$RH" -gt 0 ]; } || { echo "ERROR: --roi w and h must be > 0 (zero-area rect), got w=$RW h=$RH" >&2; exit 1; }
             ARGS="$(printf '%s' "$ARGS" | jq -c --argjson x "$RX" --argjson y "$RY" --argjson w "$RW" --argjson h "$RH" '. + {roi:{x:$x,y:$y,w:$w,h:$h}}')"
+        fi
+        # --caption <text>: a figure caption drawn UNDER the image, so a badged
+        # figure says what it IS instead of making the user infer from the
+        # filename. Neither an empty nor an over-long caption may cost the user
+        # the BADGE — the badge is the point, the caption is the garnish — so
+        # both degrade (warn + drop / warn + truncate) rather than exiting.
+        if [ "$CAPTION_SET" = true ]; then
+            _cap_trimmed="$(printf '%s' "$CAPTION" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+            if [ -z "$_cap_trimmed" ]; then
+                echo "warn: --caption is empty — badging without a caption (omitting --caption on a re-preview is how you clear one)" >&2
+            else
+                # Warn here, but let the FE do the actual cutting: `${#var}` is
+                # character-aware, so the LENGTH is right, but `cut -c` on this
+                # platform counts BYTES — truncating a UTF-8 caption here split a
+                # codepoint and produced invalid UTF-8 (and the wrong length: 400
+                # chars became 149). The FE's truncate_caption cuts on character
+                # boundaries, so it owns the cap; this is just early feedback.
+                if [ "${#_cap_trimmed}" -gt 300 ]; then
+                    echo "warn: --caption is ${#_cap_trimmed} chars — the frontend will truncate it to 300" >&2
+                fi
+                ARGS="$(printf '%s' "$ARGS" | jq -c --arg c "$_cap_trimmed" '. + {caption:$c}')"
+            fi
         fi
         send_fe_command "$CMD" "$ARGS"
         # Use `if`, NOT `[ -n "$ROI" ] && echo` — with `set -e` and this being the
