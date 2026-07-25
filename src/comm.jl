@@ -253,8 +253,9 @@ end
 # NOT Notification: Notification also fires on plain idle, which lit agents red
 # while merely waiting. A question asked in plain text has no automatic signal —
 # an agent self-reports `comm-status.sh blocked "<q>"` for those (the Stop idle
-# floor won't clobber it). The last entry is NOT a state hook: it re-surfaces the
-# receive-path-survives-compaction fact after a summary (see below).
+# floor won't clobber it). The last TWO entries are NOT state hooks: they tell a
+# context-wiped session (compaction / `/clear`) to re-run its session-start skill
+# — the receive path survives both, so the re-run restores context only (below).
 const _COMM_STATE_HOOKS = [
     ("UserPromptSubmit", "comm-status-working.sh", nothing),     # turn starts   → working
     ("PreToolUse", "comm-status-blocked.sh", "AskUserQuestion"), # opens question → blocked
@@ -276,6 +277,19 @@ const _COMM_STATE_HOOKS = [
     # (not `comm-status-*`), so `_remove_stale_comm_hooks!` never strips it and
     # this add is idempotent.
     ("SessionStart", "comm-postcompact-reminder.sh", "compact"),
+    # Post-`/clear` re-bootstrap (2026-07-25, Keith): SessionStart also fires
+    # with source=clear, which the compact hook explicitly skipped — so a
+    # `/clear`ed session got NOTHING, despite `/clear` being the harsher case
+    # (compaction leaves a summary; `/clear` leaves nothing, so the session no
+    # longer knows its handle or verbs while its listener + Monitor keep
+    # delivering). The receive path survives a `/clear` exactly as it survives a
+    # compaction — the session process isn't killed, so the watcher child lives
+    # (measured 2026-07-25) — hence the same Step 0 pgrep guard makes the re-run
+    # safe. Both directives now name ONE skill, resolved by
+    # `comm-session-skill.sh`, instead of listing three for the model to pick
+    # from: the wrong pick runs the frontend bootstrap on a backend box, which
+    # fails quietly.
+    ("SessionStart", "comm-postclear-reminder.sh", "clear"),
 ]
 
 # A hook command string. `\$HOME` (not the resolved path) so the entry is portable

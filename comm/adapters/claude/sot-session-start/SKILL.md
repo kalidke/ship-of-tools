@@ -20,23 +20,32 @@ launcher runs this skill; `ccbe` runs the Ship of Tools one.
 
 ## Steps
 
-**Step 0 decides whether the rest runs at all.** If you SURVIVED a compaction you
-are still fully connected — skip everything below. Otherwise (a cold start or a
-`claude --continue` restart) you are deaf: do the three bootstrap steps — **(a)**
-join (also your identity); **(b)** in parallel, start the listener + arm the inbox
-Monitor + catch up on the down-window; **(c)** one post-arm selftest proves the
-chain wakes you.
+**Step 0 decides whether the rest runs at all.** If you SURVIVED a **context
+wipe** (a compaction *or* a `/clear`) you are still fully connected — skip
+everything below. Otherwise (a cold start or a `claude --continue` restart) you
+are deaf: do the three bootstrap steps — **(a)** join (also your identity);
+**(b)** in parallel, start the listener + arm the inbox Monitor + catch up on the
+down-window; **(c)** one post-arm selftest proves the chain wakes you.
 
-### (0) First: did you SURVIVE a compaction, or genuinely (re)start?
+### (0) First: did you SURVIVE a context wipe (compaction / `/clear`), or genuinely (re)start?
 
 This skill is the **deaf-restart** bootstrap. A cold start or a `--continue`
 restart genuinely kills your harness Monitor, so the full (re)join / listen /
-arm / catch-up below is exactly right. But a **context compaction does NOT make
-you deaf** — your Monitor and listener are background tasks that *survive* it.
-Running the full bootstrap on a merely-compacted session is actively harmful: it
-**double-arms** the Monitor (duplicate wakes, compounding per compaction),
-**replays** already-handled messages via `comm-poll`, and **wipes your live
-work-state** via `comm-join`'s row-replace. So branch first.
+arm / catch-up below is exactly right. But **losing context does not make you
+deaf** — your Monitor and listener are background tasks that survive both a
+compaction *and* a `/clear`. Neither kills the session process, so the watcher
+child keeps running and keeps delivering (measured 2026-07-25 on a `/clear`ed
+backend session: the watcher was still parented to the live claude pid, and a
+post-clear `comm-listen.sh --selftest` woke the cleared context). Running the
+full bootstrap on a merely context-wiped session is actively harmful: it
+**double-arms** the Monitor (duplicate wakes, compounding per wipe), **replays**
+already-handled messages via `comm-poll`, and **wipes your live work-state** via
+`comm-join`'s row-replace. So branch first.
+
+You normally arrive here from a `SessionStart` hook directive that names the
+wipe (`comm-postcompact-reminder.sh` for a summary, `comm-postclear-reminder.sh`
+for a `/clear`), but the pgrep below is the arbiter either way — trust it over
+your own guess about why you're here.
 
 Get your handle and check for a **live watcher**:
 
@@ -56,11 +65,12 @@ pgrep -u "$(id -un)" -f "comm-watch\.sh ${h_re}\$"   # dot-escaped + END-ANCHORE
 > stale name is discarded and `NAME` comes back empty → the canonical
 > fallback + full bootstrap run, which is correct for that case.
 
-- **Prints a PID → you SURVIVED a compaction.** You are still connected —
+- **Prints a PID → you SURVIVED the context wipe** (compaction or `/clear`).
+  You are still connected —
   **STOP: do NOT run steps (a)–(c).** Re-reading this doc (and the `/sot-comm`
   skill) has already restored your operating context — handle, the send/poll/
   status verbs, the work-state rules — which is the whole point of re-running on
-  compaction. You keep receiving on the watcher that never died; re-arming,
+  a wipe. You keep receiving on the watcher that never died; re-arming,
   re-polling, or re-joining would only harm. (If you *specifically* suspect the
   listener bridge died, `comm-listen.sh` is idempotent — running it is a safe
   no-op when the bridge is already up.)
@@ -157,7 +167,7 @@ tool calls), then read the results.
 Arming the Monitor proves nothing until a real message actually *wakes* it. Run
 **one** selftest now — *after* (b), so it proves listener + file-delivery + Monitor
 wake in a single shot (this replaces the old two-selftest dance). (You only reach
-this on a genuine cold start / restart — a survived-compaction session stopped at
+this on a genuine cold start / restart — a session that survived a wipe stopped at
 Step 0 and never armed, so there is nothing to selftest.)
 
 ```bash
