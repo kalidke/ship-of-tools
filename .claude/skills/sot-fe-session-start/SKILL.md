@@ -44,25 +44,28 @@ A user roams across SEVERAL Windows FEs against ONE backend. Two facts shape com
 
 ## Steps
 
-### 0. First — are you resuming from a COMPACTION, or a genuine relaunch/cold start?
+### 0. First — are you resuming from a CONTEXT WIPE (compaction / `/clear`), or a genuine relaunch/cold start?
 
 This skill normally runs on an ADR-0017 relaunch (`--continue`), which **kills**
-your harness Monitor — so re-arming (step 3) is right. But a **context compaction
-does NOT kill it**: your fe-inbox Monitor is a background task that *survives*.
-Re-running the full bootstrap on a merely-compacted session **double-arms** it
-(every FE message then wakes you twice, compounding per compaction). So branch on
-**why you're here** — the reliable signal, since the FE runs on Windows where
-process inspection (`pgrep`/`ps`) is unavailable or unreliable, and a *false*
-"survivor" match (an editor, a diagnostic `tail`, or another agent touching
+your harness Monitor — so re-arming (step 3) is right. But **losing context does
+NOT kill it**: your fe-inbox Monitor is a background task that survives both a
+compaction and a `/clear` (neither kills the session process). Re-running the
+full bootstrap on a merely context-wiped session **double-arms** it (every FE
+message then wakes you twice, compounding per wipe). So branch on **why you're
+here** — the reliable signal, since the FE runs on Windows where process
+inspection (`pgrep`/`ps`) is unavailable or unreliable, and a *false* "survivor"
+match (an editor, a diagnostic `tail`, or another agent touching
 `fe-inbox.jsonl`) would make a genuinely-deaf session skip arming and stay **deaf**:
 
-- **You were just told your context was COMPACTED** (the post-compaction hook
-  directive that sent you here) → your Monitor SURVIVED → **STOP: skip steps 1–4.**
+- **You were just told your context was COMPACTED or CLEARED** (the
+  `comm-postcompact-reminder.sh` / `comm-postclear-reminder.sh` hook directive
+  that sent you here) → your Monitor SURVIVED → **STOP: skip steps 1–4.**
   Re-reading this doc (and `/sot-comm`) has already restored your operating
-  context — the whole point of re-running on compaction. Re-arming would only
-  double every wake.
+  context — the whole point of re-running on a wipe. Re-arming would only
+  double every wake. (`/clear` is the harsher wipe — no summary survives it —
+  but its effect on the *receive path* is the same: nothing died.)
 - **A fresh relaunch (`--continue`) or a cold start** — the normal trigger, with
-  NO compaction directive → your Monitor is gone → proceed with steps 1–4.
+  NO wipe directive → your Monitor is gone → proceed with steps 1–4.
 
 **When in ANY doubt, ARM (proceed with steps 1–4).** A duplicate watcher merely
 double-wakes you; wrongly skipping leaves you deaf — so never skip on a guess.

@@ -27,6 +27,10 @@
 # internal guard (so a no-matcher mis-wire can't fire on startup/resume, where
 # the launcher's own session-start run already covers it).
 #
+# Sibling: `comm-postclear-reminder.sh` covers `source=clear` (a /clear, which
+# leaves no summary at all). This hook stays scoped to `compact` and keeps
+# skipping `clear` below, so the two never both fire on one event.
+#
 # Source of truth: comm/adapters/claude/hooks/comm-postcompact-reminder.sh in
 # Ship of Tools, deployed to ~/.sot-comm/bin by ShipTools.update_comm().
 set -uo pipefail
@@ -53,13 +57,22 @@ NAME=""
 [ -f "$REGISTRY" ] || exit 0
 jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || exit 0
 
-cat <<'EOF'
-[sot-comm] ACTION REQUIRED — your context was just COMPACTED (summarized). Compaction can strip the sot-comm operating instructions themselves (your handle, the send/poll/status verbs, the work-state rules), not only the "trust your Monitor" note — so a bare reminder is not enough.
+# Name exactly ONE skill instead of listing all three for the model to choose
+# from (2026-07-25): a wrong pick sends a backend session through the FRONTEND
+# bootstrap — win-fe handle, tcp tunnel to a local forward port, fe-inbox
+# Monitor — none of which exist on a backend box, and none of which fail loudly
+# enough to catch the mistake. `comm-session-skill.sh` decides in shell, where
+# the handle, platform, tmux context, and repo identity are all knowable.
+skill="$("$SELF_DIR/comm-session-skill.sh" 2>/dev/null || true)"
+[ -n "$skill" ] || skill="/sot-session-start"
+
+cat <<EOF
+[sot-comm] ACTION REQUIRED — your context was just COMPACTED (summarized). Compaction can strip the sot-comm operating instructions themselves (your handle, the send/poll/status verbs, the work-state rules), not only the "trust your Monitor" note — so a bare reminder is not enough. You are @${NAME}.
 
 Re-run your session-start skill now, BEFORE other work, to restore your full comm operating context:
-  • /sot-session-start      (generic — any backend/session)
-  • /sot-be-session-start   (Ship of Tools backend)
-  • /sot-fe-session-start   (Ship of Tools frontend)
+  ${skill}
+
+That is the correct skill for THIS machine (resolved by comm-session-skill.sh from your handle, platform, tmux context, and repo identity — do not substitute another one; the frontend and backend bootstraps are not interchangeable).
 
 Safe to re-run: the skill's Step 0 detects that you SURVIVED this compaction (your Monitor + listener are background tasks that outlive a summary) and STOPS — it does NOT re-arm, re-poll, or re-join, so it can't double-arm your Monitor, replay already-handled messages, or wipe your work-state. On a compaction it simply restores your operating context by being re-read. (Had this been a real --continue restart, Step 0 would find the dead Monitor and run the full bootstrap instead.) Run it once, then continue.
 EOF

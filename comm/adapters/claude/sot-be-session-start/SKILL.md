@@ -19,7 +19,8 @@ launcher, are the sot-flavored superset.)
 ## Step 1 — generic receive-bootstrap (run `/sot-session-start`)
 
 **Run `/sot-session-start` now.** It first runs **Step 0** — if you SURVIVED a
-compaction (a live watcher is still polling your inbox) it STOPS there, since your
+context wipe, i.e. a compaction *or* a `/clear` (a live watcher is still polling
+your inbox) it STOPS there, since your
 receive path never died and re-bootstrapping would double-arm / replay / wipe
 work-state; you just re-read to restore context. Only on a genuine cold start or
 `--continue` restart does it run the three bootstrap steps, which apply here
