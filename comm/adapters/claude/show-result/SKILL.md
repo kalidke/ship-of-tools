@@ -42,6 +42,41 @@ near-black at overview scale (nm features in a µm field); `show-result`
 prints a near-blank warning on low pixel variance — that means "view it and
 annotate", NEVER "don't show".
 
+### But a badge is not a measurement — what looking CANNOT settle
+
+The rule above is about **showing**. This one is about what you may **conclude**
+from having looked. They pull in opposite directions on purpose: the whole loop
+(render → badge → user looks → user comments → you look) is optimised for visual
+review, which is exactly right for communication and exactly wrong as evidence.
+
+**A badge is for communication and for spotting what is worth CHECKING — it is
+not verification.** Looking at a render cannot tell you that a geometric or
+quantitative claim is TRUE. A 2D projection collapses an axis: top-down hides z,
+a perspective camera hides the axis it points along, and an ROI crop makes a
+wrong reading MORE confident, not less.
+
+**A lossy display does not make you unsure — it makes you sure of the wrong
+thing.** Treat a reading that feels OBVIOUS as the strongest signal to verify it,
+not the weakest.
+
+**Agreement reached through the same picture is not corroboration.** Two people
+seeing the same thing in the same view is one measurement taken twice, not
+independent confirmation. Independent means a DIFFERENT method, not a second pair
+of eyes.
+
+So: if the finding is geometric or numeric, settle it numerically FIRST — measure
+the distance, print the coordinates, assert the tolerance — then badge the figure
+to ILLUSTRATE the number. Never escalate a suspected defect that only a
+projection supports.
+
+Why this rule exists (2026-07-25 incident): a session investigating a bench
+layout reported four suspected defects by looking at renders; every one was
+refuted by a later numeric check (a "mis-seated" mirror was off by 0.0000mm), and
+two had been escalated to another session as real. On one of them three parties
+concurred — all three reading the same projection. Not 3D-specific: a log axis
+flattening a 2x discrepancy, a colormap clipping saturated pixels, and a
+downsampled preview eating a one-pixel artifact are the same failure.
+
 ## How — one command; the show is complete when the user looks
 
 One short command, right after you save the artifact:
