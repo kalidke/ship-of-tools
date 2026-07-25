@@ -94,7 +94,9 @@ show-result out/recovery.png --caption "Recovery vs. SNR, 3 densities — 20 nm/
 - **Re-badging the same file WITHOUT `--caption` clears it.** So when you regenerate
   a figure with different parameters, pass the new caption — a stale caption
   describing the previous run is worse than none.
-- Max 300 chars (the CLI warns and truncates); it's a caption, not a report.
+- Max 300 chars — the CLI warns, the frontend does the cutting (on a character
+  boundary, so multi-byte text survives). At a typical pane width that's about
+  three lines, which is the band's limit too: write a caption, not a report.
 - Ignored for non-image previews (code, markdown, PDF) — the store keeps it, the
   renderer declines to draw it, so nothing breaks if you pass one.
 

@@ -1326,10 +1326,17 @@ struct ScalebarDraw {
 /// the remainder is clipped: a caption reserves space from the figure it
 /// describes, so an unbounded one would shrink the image toward nothing.
 ///
-/// DEFENCE-IN-DEPTH, not a routinely-exercised path (measured on a 4096px-wide
-/// frontend, PR #72 review): at a normal pane width ~300 chars wraps to under 3
-/// lines, so [`CAPTION_MAX_CHARS`] binds first and this clip only engages in a
-/// narrow preview pane. Don't treat it as covered by the length cap's tests.
+/// LOAD-BEARING, and sits right AT the boundary — not a backstop. Measured on a
+/// 4096px-wide frontend (PR #72 review, revised): a 1680px preview pane holds
+/// ~145 chars per line, so a caption at the full [`CAPTION_MAX_CHARS`] wraps to
+/// EXACTLY 3 lines. The two caps therefore bind together at a typical pane
+/// width rather than one shadowing the other; lower this and full-length
+/// captions start losing their tail.
+///
+/// (An earlier revision of this comment claimed ~103 chars/line and concluded
+/// the clip was unexercised. That measurement was wrong and so was the
+/// conclusion — recorded here because "this limit never fires" is exactly the
+/// kind of belief that gets a limit quietly removed.)
 const CAPTION_MAX_LINES: usize = 3;
 
 /// Geometry for the figure-caption band (all physical screen px). `backing` is
