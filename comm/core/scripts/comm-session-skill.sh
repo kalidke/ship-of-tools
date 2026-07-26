@@ -3,7 +3,7 @@
 # run, as a `/slash-command` on stdout. Always exits 0 with a usable answer.
 # `--selftest` runs the detection matrix instead (exit 1 on any miss).
 #
-# Why (2026-07-25, Keith): the lifecycle hooks that tell a context-wiped session
+# Why (2026-07-25, maintainer): the lifecycle hooks that tell a context-wiped session
 # to re-bootstrap used to list all three skills and let the model pick. It picks
 # WRONG — observed this session: a `/clear`ed BACKEND session on the Linux box
 # was pointed at `/sot-fe-session-start`, whose steps (win-fe handle, tcp tunnel

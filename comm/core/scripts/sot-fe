@@ -381,7 +381,7 @@ case "$CMD" in
         # Use `if`, NOT `[ -n "$ROI" ] && echo` — with `set -e` and this being the
         # script's last statement, a false `[ -n "" ]` test (the no-ROI common case)
         # is exit status 1 and becomes the WHOLE script's exit code, so a perfectly
-        # successful badge reported failure to careful callers (HS-TIRF, 2026-07-23:
+        # successful badge reported failure to careful callers (peer-session report, 2026-07-23:
         # open-url exits 0, preview exited 1 on identical success). `if` returns 0
         # when the condition is false.
         if [ -n "$ROI" ]; then

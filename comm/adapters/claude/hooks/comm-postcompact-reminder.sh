@@ -3,7 +3,7 @@
 # compact): after a context COMPACTION, tell the session to RE-RUN its full
 # session-start skill so its complete sot-comm operating context is restored.
 #
-# Why (2026-07-19, Keith): compaction summarizes the conversation and can strip
+# Why (2026-07-19, maintainer): compaction summarizes the conversation and can strip
 # the operating INSTRUCTIONS themselves — your handle, the send/poll/status
 # verbs, the work-state rules — not just the "trust your Monitor" note. So a bare
 # reminder isn't enough: even a session that trusts its (surviving) Monitor may

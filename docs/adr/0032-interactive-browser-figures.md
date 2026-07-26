@@ -67,7 +67,7 @@ through the tunnel (once the launcher forwards 1241).
 
 Interactivity survives the tunnel: Bonito serves HTTP **and** the WebSocket on the
 one port (WS upgrade on the same connection), and SSH `-L` forwards the whole TCP
-stream including the upgrade. Local (kitt-native) FE reaches `127.0.0.1:1241` directly; remote FE via `-L 1241:127.0.0.1:1241` (once the launcher forwards it). Same URL, both paths.
+stream including the upgrade. A backend-native FE reaches `127.0.0.1:1241` directly; remote FE via `-L 1241:127.0.0.1:1241` (once the launcher forwards it). Same URL, both paths.
 
 ### 2. WGLMakie is never a dependency of `ShipToolsRepl`
 
@@ -118,7 +118,7 @@ green.
 **Proof env + validation (2026-07-12).** WGLMakie/Bonito are now materialized in
 a dedicated env `dev/wglmakie-proof/` (**WGLMakie 0.13.13, Bonito 5.1.0, Makie
 0.24.13, julia 1.12.5**); `dev/wglmakie-proof/run.jl` is the runnable proof (hit
-`r`). The **Bonito 5.1.0 API is pinned** (headless-validated on kitt):
+`r`). The **Bonito 5.1.0 API is pinned** (headless-validated on the backend host):
 
 ```julia
 Bonito.configure_server!(; listen_url="127.0.0.1", listen_port=1241,
@@ -127,7 +127,7 @@ server = Bonito.Server(Bonito.App(fig), "127.0.0.1", 1241; proxy_url="http://127
 url    = Bonito.online_url(server, "/")                          # http://127.0.0.1:1241/
 ```
 
-Headless proof on kitt loopback: the server **binds 1241 and serves HTTP 200** — a
+Headless proof on the backend host's loopback: the server **binds 1241 and serves HTTP 200** — a
 3.4 KB bootstrap page containing `Bonito` + `WGLMakie` + the ES `module` import
 (the WebSocket is opened client-side by that JS from the page origin). So the API
 and the HTTP layer are proven. **The one remaining unknown** is in-browser

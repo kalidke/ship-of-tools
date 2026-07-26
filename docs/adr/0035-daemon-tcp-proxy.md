@@ -117,7 +117,7 @@ otherwise it relies on the legacy forwards exactly as today.
 - Each browser connection costs one extra Unix-socket connection + one
   `copy_bidirectional` task on the daemon — the same order as the ssh
   forward it replaces.
-- kitt-native FEs are untouched (they never proxy).
+- Backend-native FEs are untouched (they never proxy).
 
 ## Rejected alternatives
 

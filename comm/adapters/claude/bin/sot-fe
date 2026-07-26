@@ -12,7 +12,7 @@
 # copies this dir there — but sot-fe used to live only under ~/.sot-comm/bin, so
 # bare `sot-fe ...` was "command not found" and every skill that calls bare
 # sot-fe (show-result's long-form fallback, isd-show-part's `sot-fe repl eval`)
-# broke on such a box (HS-TIRF, 2026-07-23). This wrapper closes that gap the
+# broke on such a box (peer-session report, 2026-07-23). This wrapper closes that gap the
 # same way show-result (also in this dir) already references the real sot-fe.
 #
 # Source of truth: comm/adapters/claude/bin/sot-fe in Ship of Tools, deployed to

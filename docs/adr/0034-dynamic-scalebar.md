@@ -22,7 +22,7 @@ Two facts shape the design:
   **not persisted with the saved PNG** today (no OME/`pHYs` in the SMLM stack).
 - Scale can be **anisotropic**: XZ/axial views have `x_nm_per_px != z_nm_per_px`.
   (SMLMAnalysis's own renders are XY-isotropic only — `z` is color, not a spatial
-  axis — so Keith's anisotropic case comes from other sources, but the contract
+  axis — so the maintainer's anisotropic case comes from other sources, but the contract
   must handle it.)
 
 ## Decision

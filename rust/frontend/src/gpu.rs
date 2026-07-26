@@ -3595,7 +3595,7 @@ impl State {
             // is driver-specific, so [0] picked a non-vsync mode (Immediate/
             // Mailbox) on some GPUs — visible flicker/tearing since day one on
             // those machines, worst in fullscreen where DWM composition stops
-            // masking it (ryzen5 finding, 2026-07-12; the same build was clean
+            // masking it (peer-session finding, 2026-07-12; the same build was clean
             // on hardware whose driver lists Fifo first). AutoVsync =
             // FifoRelaxed where supported, else Fifo — vsynced on every
             // backend.
@@ -4599,7 +4599,7 @@ impl State {
             } else {
                 // Files tree NOT loaded FOR THE ACTIVE WS: empty, rows belong to
                 // another mode, OR the tree is stamped to a different workspace
-                // (`!tree_is_active_ws` — the papers-vortex-tree-while-hs-tirf
+                // (`!tree_is_active_ws` — the other-ws-tree-while-active-ws
                 // desync). Two bugs converge here: (1) the 2026-07-15 case — the
                 // preview body fired (path-based, works) but the cursor-reveal
                 // had no anchor row to walk from, so it silently no-op'd and the
@@ -4612,7 +4612,7 @@ impl State {
                 // first-visit switch path uses; the TreeRoot handler rebuilds the
                 // rows (routed by key to this view), then runs the reveal —
                 // auto-resyncing the visible tree too (the same end state as
-                // Keith's manual collapse-to-root workaround).
+                // the maintainer's manual collapse-to-root workaround).
                 //
                 // Safe to `set_root` here: an UNLOADED tree collapses nothing,
                 // and a STALE-ws tree SHOULD be collapsed (it's the wrong
@@ -17473,7 +17473,7 @@ impl ApplicationHandler for App {
             }
         }
         if !state.dirty {
-            // Fullscreen VRR/OLED brightness-flicker fix (2026-07-12, ryzen5
+            // Fullscreen VRR/OLED brightness-flicker fix (2026-07-12, a VRR
             // ultrawide OLED). In borderless fullscreen DWM composition
             // disengages, so the panel's adaptive-sync refresh follows OUR
             // present cadence directly. The on-demand idle path below presents
@@ -19661,13 +19661,13 @@ mod tests {
         let k = |ws: Option<&str>| -> TreeKey {
             (Mode::Files, mode_scope(Mode::Files, &ws_key_of(ws, None)))
         };
-        assert_eq!(k(Some("hs-tirf")), k(Some("hs-tirf")));
+        assert_eq!(k(Some("ws-a")), k(Some("ws-a")));
         assert_eq!(k(None), k(None));
-        // The original desync: papers-vortex reply while hs-tirf is active
+        // The original desync: a ws-b reply while ws-a is active
         // → different key → parks in its own slot, can't clobber.
-        assert_ne!(k(Some("papers-vortex")), k(Some("hs-tirf")));
-        assert_ne!(k(None), k(Some("hs-tirf")));
-        assert_ne!(k(Some("hs-tirf")), k(None));
+        assert_ne!(k(Some("ws-b")), k(Some("ws-a")));
+        assert_ne!(k(None), k(Some("ws-a")));
+        assert_ne!(k(Some("ws-a")), k(None));
         // The wire's None must normalize to the SAME literal
         // `current_workspace_key` uses for the default workspace.
         assert_eq!(ws_key_of(None, None), "<default>");

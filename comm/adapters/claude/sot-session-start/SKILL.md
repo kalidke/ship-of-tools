@@ -52,7 +52,7 @@ Get your handle and check for a **live watcher**:
 ```bash
 eval "$(~/.sot-comm/bin/comm-context.sh 2>/dev/null)" 2>/dev/null || true   # sets NAME (empty when not joined) — eval, do NOT sed-scrape: values are %q-quoted, so a scrape can capture literal quotes as a bogus non-empty handle
 h="${NAME:-$(basename "$PWD")-$(hostname -s)}"
-h_re="$(printf '%s' "$h" | sed 's/\./\\./g')"   # escape dots — repo names contain them (e.g. LidkeLab.github.io-kitt); an unescaped '.' matches ANY char and could false-match a sibling
+h_re="$(printf '%s' "$h" | sed 's/\./\\./g')"   # escape dots — repo names contain them (e.g. example.github.io-hostname); an unescaped '.' matches ANY char and could false-match a sibling
 pgrep -u "$(id -un)" -f "comm-watch\.sh ${h_re}\$"   # dot-escaped + END-ANCHORED: neither a '.' nor a `-2` sibling can false-match (a false match would make a genuinely-deaf cold session skip arming → deaf)
 ```
 

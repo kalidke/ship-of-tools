@@ -264,7 +264,7 @@ const _COMM_STATE_HOOKS = [
     # activity (throttled to 60s) so the nav's 10-min wilt marks real stalls,
     # not long busy turns ("a peer session reverting to white", 2026-07-03).
     ("PostToolUse", "comm-status-heartbeat.sh", nothing),
-    # Post-compaction re-bootstrap (2026-07-19, Keith): SessionStart fires with
+    # Post-compaction re-bootstrap (2026-07-19, maintainer): SessionStart fires with
     # source=compact after a context summary; the hook (matcher-scoped to
     # `compact`) prints a stdout directive telling the session to RE-RUN its
     # session-start skill — compaction can strip the operating instructions
@@ -277,7 +277,7 @@ const _COMM_STATE_HOOKS = [
     # (not `comm-status-*`), so `_remove_stale_comm_hooks!` never strips it and
     # this add is idempotent.
     ("SessionStart", "comm-postcompact-reminder.sh", "compact"),
-    # Post-`/clear` re-bootstrap (2026-07-25, Keith): SessionStart also fires
+    # Post-`/clear` re-bootstrap (2026-07-25, maintainer): SessionStart also fires
     # with source=clear, which the compact hook explicitly skipped — so a
     # `/clear`ed session got NOTHING, despite `/clear` being the harsher case
     # (compaction leaves a summary; `/clear` leaves nothing, so the session no

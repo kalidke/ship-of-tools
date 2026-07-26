@@ -3,7 +3,7 @@
 # after a `/clear`, tell the session to re-run THE session-start skill that fits
 # this machine, so its sot-comm operating context is restored.
 #
-# Why (2026-07-25, Keith): `/clear` is strictly more destructive to context than
+# Why (2026-07-25, maintainer): `/clear` is strictly more destructive to context than
 # a compaction — a compaction leaves a summary, `/clear` leaves NOTHING. The
 # session wakes up not knowing its handle, the send/poll/status verbs, or the
 # work-state rules, while its listener and inbox Monitor are still running and
