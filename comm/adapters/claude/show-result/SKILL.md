@@ -1,22 +1,58 @@
 ---
 name: show-result
-description: Surface a result you just produced (saved plot/figure, rendered image, screenshot, PDF, HTML report, built doc, output file) in the user's Ship of Tools nav/preview pane — badge it (shown completely, nav + preview, when the user looks; their session is never stolen), never merely name it in text. Fire whenever your work creates something the user should SEE.
+description: Surface a result you just produced (saved plot/figure, rendered image, screenshot, PDF, HTML report, built doc, output file, published page) where the user can actually see it — badge it into their Ship of Tools nav/preview pane, or open it in their real OS browser (`open-url` for an http(s) URL, `docs` for a local built site/HTML). Never merely name a path or a URL in text. Fire whenever your work creates something the user should SEE, including when they say "open it in the browser", "open the page", "launch it", or "let me see it live" — the backend is headless, so xdg-open on the backend reaches nobody.
 ---
 
 # show-result — put what you made in front of the user
 
 Ship of Tools exists to render results at native fidelity in the FE. A figure left on
-disk and merely *named* in text defeats the whole premise. **When your work produces
-something the user should SEE, show it in their nav pane before you tell them it's
-done.** This is not optional polish — it is how a session delivers a visual result.
+disk and merely *named* in text defeats the whole premise — so does a URL merely
+pasted. **When your work produces something the user should SEE, put it in front of
+them — nav pane or real browser, whichever fits (see "Three targets") — before you
+tell them it's done.** This is not optional polish — it is how a session delivers a
+visual result.
 
 ## When — fire this whenever you produce a user-visible artifact
 
 A saved plot/figure · a rendered image or screenshot · a PDF · an HTML report · a
 built doc/site · a notebook export · a coverage/benchmark report · any output file the
-user should look at. **Concrete trigger: if your final reply is about to *name a result
-path*, surface that path first.** Be aggressive — any saved plot, generated image,
-rendered doc, or notable output is a candidate.
+user should look at · a published page or any URL you'd otherwise paste. **Concrete
+trigger: if your final reply is about to *name a result path* or *paste a URL*, surface
+it first.** Be aggressive — any saved plot, generated image, rendered doc, published
+page, or notable output is a candidate.
+
+**Fire on the words users actually say**, not just on your own artifact-production:
+*"open it in the browser"* · *"open the page"* · *"launch it"* · *"let me see it live"*
+· *"pull it up"*. Those are requests to SHOW, and they have a verb (see the next
+section) — they are never a reason to hand the user a URL and ask them to open it
+themselves.
+
+## Three targets — pick by WHAT you made, not by what you have handy
+
+These are easy to confuse, and confusing them is why a result goes unshown. **The
+backend is headless** — `DISPLAY` is unset, and `xdg-open`/`chromium`/`firefox` run on
+the backend reach *nobody*. "I can't open a browser from here" is never the answer;
+it means you picked the wrong target.
+
+| You produced | Verb | Lands in |
+|---|---|---|
+| An image, figure, PDF, markdown, source file | `show-result <path>` (→ `sot-fe preview`) | FE **nav + preview pane** (badge) |
+| A **local** built site / self-contained `.html` on backend disk | `sot-fe docs <ws> <abs-path>` | FE machine's **OS browser** |
+| An **http(s) URL** — published page, PR, CI run, dashboard, server you started | `sot-fe open-url <url>` | FE machine's **OS browser** |
+
+```bash
+~/.sot-comm/bin/sot-fe open-url https://example.org/some/page
+~/.sot-comm/bin/sot-fe docs "$WS" /abs/path/to/site/index.html
+```
+
+- **`open-url` is http(s) only** and takes no workspace — the FE just opens it. Reach
+  for it the moment your reply would otherwise *paste a link*: a PR you opened, a CI
+  or release page, a published site, a dashboard.
+- **`docs` needs an ABSOLUTE backend path** (it is stat'd raw, not resolved as a
+  repo-relative node id) and is confined to a workspace root. Use it over `preview`
+  for anything that must actually *run* — JS/WebGL, a multi-file site — since it
+  serves the file to a real browser with no preview size caps. Not for http URLs.
+- Both **broadcast** to every attached FE; `--fe <handle>` targets one.
 
 ## SHOW WHAT IS ASKED — immediately, unqualified. Then view it and annotate.
 
@@ -117,6 +153,10 @@ command errored.
   `notify`, or just name the path.
 - **Don't race the file.** Surface only after the artifact is fully written.
 - **Don't guess the workspace.** Derive it (above); a wrong slug shows nothing.
+- **Don't hand the user a link and ask them to open it**, and don't report a headless
+  backend as a dead end — `open-url`/`docs` exist precisely so the backend can reach
+  the user's real browser. Checking `DISPLAY` on the backend answers the wrong
+  question.
 
 ## Even better — bind it to production
 

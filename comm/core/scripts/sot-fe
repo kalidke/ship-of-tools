@@ -14,6 +14,7 @@
 #   sot-fe goto    <workspace>        [--boot] [--fe <handle>]
 #   sot-fe mode    <mode>             [--fe <handle>]
 #   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <handle>]
+#   sot-fe open-url <http(s)-url>                  [--fe <handle>]
 #   sot-fe docs    <workspace> <abs-path>          [--fe <handle>]
 #   sot-fe repl run  <workspace> <path>            [--fresh] [--timeout <s>] [--origin <who>]
 #   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>] [--origin <who>]
