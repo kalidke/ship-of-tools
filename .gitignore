@@ -58,6 +58,12 @@
 # Claude Code agent worktrees (transient linked git checkouts; never committed)
 /.claude/worktrees/
 
+# publish-guard denylist — the PRIVATE half of .claude/hooks/publish-guard.sh.
+# It names the identifiers that must not reach this public repo, so committing
+# it here would leak exactly what it exists to protect. Share it via the private
+# ops sidecar (<ops>/scrub-patterns.txt), which the guard prefers when present.
+/.claude/scrub-patterns.local.txt
+
 # SlackClaw runtime state (thread->session cursors) — written here when a
 # SlackClaw instance runs with this repo as its cwd; runtime bookkeeping, never content
 /.slackclaw_state.json
