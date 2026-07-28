@@ -8483,19 +8483,30 @@ impl State {
     /// (OBJECT REPLACEMENT CHARACTER) placeholders that
     /// `preview/markdown.rs` emitted for `$$…$$` / `$…$` / `![](…)`
     /// regions. Returns one entry per FFFC glyph, in source order,
-    /// paired with the screen rect to paint into (preview_rect-relative
+    /// paired with the screen rect to paint into (md_rect-relative
     /// + scroll-adjusted). The order matches `preview_md.media_blocks`
     /// so callers can zip the two by index without re-parsing the
     /// buffer text.
     ///
     /// `preview_scroll_px` is applied so a placeholder that's scrolled
-    /// off-screen produces a rect with `y` < `preview_rect.y` — caller
-    /// culls.
+    /// off-screen produces a rect with `y` < `md_rect.y` — caller culls.
+    ///
+    /// **Takes `md_rect`, NOT `preview_rect`** — and adds
+    /// `EXTRA_TOP_PAD_PX` exactly as the text pass does (text.rs:327).
+    /// The two passes must share one origin: buffer coordinates are laid
+    /// out inside `md_rect` (= preview_rect + pad), so anchoring media at
+    /// `preview_rect` painted every SVG `pad_y + EXTRA_TOP_PAD_PX` too
+    /// high and `pad_x` too far left. At a typical cell that vertical
+    /// error is ~a full body em, which read as inline math being
+    /// superscripted. Display math had the identical bug but hid it —
+    /// it is centred in a tall reserved row, so the shift was invisible.
     fn collect_media_paint_targets(
         &self,
-        preview_rect: ScreenRect,
+        md_rect: ScreenRect,
         preview_scroll_px: f32,
     ) -> Vec<(usize, ScreenRect)> {
+        // The text pass shifts glyph origins down by this; media must match.
+        let top = md_rect.y + crate::text::EXTRA_TOP_PAD_PX;
         use crate::preview::markdown::MediaBlock;
         let mut out = Vec::new();
         if self.preview_md.media_blocks.is_empty() {
@@ -8532,9 +8543,9 @@ impl State {
                         // and lets TextBounds clip the overflow to the
                         // preview pane (Path 1 of (e)).
                         ScreenRect {
-                            x: preview_rect.x,
-                            y: preview_rect.y + run.line_top - preview_scroll_px,
-                            w: preview_rect.w,
+                            x: md_rect.x,
+                            y: top + run.line_top - preview_scroll_px,
+                            w: md_rect.w,
                             h: run.line_height,
                         }
                     }
@@ -8570,11 +8581,11 @@ impl State {
                             }
                             None => (body_em_px * 2.0, run.line_height, 0.0),
                         };
-                        let baseline_y = preview_rect.y + run.line_y - preview_scroll_px;
+                        let baseline_y = top + run.line_y - preview_scroll_px;
                         let svg_bottom_y = baseline_y + drop_px;
                         let svg_top_y = svg_bottom_y - svg_h_px;
                         ScreenRect {
-                            x: preview_rect.x + g.x,
+                            x: md_rect.x + g.x,
                             y: svg_top_y,
                             w: svg_w_px,
                             h: svg_h_px,
@@ -13180,7 +13191,7 @@ impl State {
         // inside the rpass below; do the side-effecty rasterise here
         // while we have &mut self.
         let media_paint_targets: Vec<(usize, ScreenRect)> = if show_md {
-            self.collect_media_paint_targets(preview_rect, preview_scroll_px)
+            self.collect_media_paint_targets(md_rect, preview_scroll_px)
         } else {
             Vec::new()
         };
