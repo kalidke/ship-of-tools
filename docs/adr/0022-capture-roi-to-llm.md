@@ -71,3 +71,26 @@ trigger to image node ids. Cropping a rasterized page is a v2.
 - The backend half ships first and deploys on the backend host; the FE half is
   verified locally (`visible_roi_px` unit tests) and end-to-end once the backend is
   live.
+
+## Update (2026-07-28, v0.5.2): focus follows the capture
+
+The v1 delivery pasted into the LLM pane but left focus in Preview, so the status
+line had to end with *"Enter **there** to send"* — every capture cost the user a
+Ctrl+Arrow hop before they could type the context the no-trailing-Enter design
+exists to invite. Focus now moves to the LLM pane as part of delivery.
+
+- **Moved on the `ImageCropped` reply, not on the keypress.** The crop is async
+  and can fail (`ImageCropFailed`, transport closed, non-croppable preview). The
+  failure paths deliberately leave focus in Preview — you stay on the image you
+  were looking at, rather than being stranded in a pane with nothing pasted.
+- **Both `c` and Ctrl+C.** The Preview key arm matches `Key::Character("c")`
+  with no modifier guard, so Ctrl+C already reached `capture_roi` (it is not a
+  PNG zoom/pan binding, so the binding block above it falls through). That was
+  incidental; it is now intentional and documented. Users reach for the universal
+  copy chord out of habit, and one action with two spellings should not have two
+  behaviours. Supersedes the "**`C`** key in Preview focus" wording in §Push.
+- Status text drops the now-wrong "there": `ROI <w>×<h> of <name> → LLM pane ·
+  Enter to send`.
+
+Unchanged: still no trailing Enter on the pasted line, so a shared pane's partial
+input is never clobbered and no half-formed prompt fires.
