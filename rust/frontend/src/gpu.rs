@@ -7493,8 +7493,10 @@ impl State {
 
     /// ADR 0022: capture the current image-preview ROI. Fires `image.crop`
     /// against the active workspace; the `ImageCropped` reply pastes a
-    /// "look at this" line into the LLM pane. No-op (with a status hint) when
-    /// the preview isn't a croppable image.
+    /// "look at this" line into the LLM pane AND moves focus there, so the
+    /// user can type context and hit Enter without a pane hop. No-op (with a
+    /// status hint) when the preview isn't a croppable image — and no focus
+    /// move on any failure path, so a no-op leaves you on the image.
     fn capture_roi(&mut self) {
         let Some(roi) = self.preview_roi.clone() else {
             self.status = "capture: no image ROI in preview (zoom an image first)".to_string();
@@ -11056,8 +11058,18 @@ impl State {
                         .send(crate::transport::OutgoingReq::PtyWrite { bytes })
                         .is_ok()
                     {
-                        self.status =
-                            format!("ROI {w}×{h} of {name} → LLM pane · Enter there to send");
+                        // Focus follows the paste: the capture key's whole
+                        // point is to ask the agent about what you're looking
+                        // at, and the pasted line is deliberately unsent (no
+                        // trailing Enter) so you can add context first. Landing
+                        // focus here removes the Ctrl+Arrow hop that every
+                        // capture used to require. Moved on the REPLY, not on
+                        // the keypress, so a crop that fails leaves focus in
+                        // the Preview pane where the image still is — see the
+                        // ImageCropFailed arm, which deliberately does not move
+                        // focus.
+                        self.focus = PaneFocus::Llm;
+                        self.status = format!("ROI {w}×{h} of {name} → LLM pane · Enter to send");
                     } else {
                         self.status = "capture: paste to LLM failed (transport closed)".to_string();
                     }
@@ -17192,6 +17204,15 @@ impl ApplicationHandler for App {
                             // sends it to the LLM pane. `capture_roi` no-ops
                             // with a status hint when the preview isn't a
                             // croppable image.
+                            //
+                            // Deliberately unguarded on modifiers: Ctrl+C lands
+                            // here too (it is not a PNG zoom/pan binding, so
+                            // the block above falls through), and users reach
+                            // for the universal copy chord out of habit. Both
+                            // spellings are the same action and both move focus
+                            // to the LLM pane once the crop paste lands — the
+                            // focus move itself lives in the ImageCropped arm,
+                            // not here, because the crop is async and may fail.
                             Key::Character(s) if !event.repeat && s.as_str() == "c" => {
                                 state.capture_roi();
                             }
