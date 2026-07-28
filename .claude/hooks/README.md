@@ -39,8 +39,42 @@ specific first:
 3. `<repo-parent>/ship-of-tools-ops/scrub-patterns.txt`
 4. `.claude/scrub-patterns.local.txt` — gitignored, per-machine fallback
 
-**No readable pattern file means the hook is a silent no-op.** A public cloner
-gets a working repo, never a broken or noisy hook.
+Paths are separator-normalised before resolution, because `${proj%/*}` cannot
+strip a **backslash** — an un-normalised native Windows `CLAUDE_PROJECT_DIR`
+resolved candidate 3 *inside* the project dir instead of beside it and silently
+never matched, on a machine whose layout was correct.
+
+**Resolution happens per invocation, not at session start.** Hook *registration*
+is snapshotted when a session begins, but the denylist is read on every call — so
+a machine that acquires the pattern file mid-session is protected immediately,
+with no restart.
+
+### Unconfigured is silent; misconfigured is loud
+
+Two different states used to look identical, and that was the bug:
+
+| State | Signal | Behaviour |
+|---|---|---|
+| **Unconfigured** — no pattern file *and* no marker | a public clone | silent allow |
+| **Misconfigured** — a marker says protection belongs here, but nothing resolves | stale sidecar, layout mismatch | **block, exit 2** |
+
+A *marker* is anything asserting this machine should be guarded: `$SOT_SCRUB_PATTERNS`
+or `$SOT_OPS_DIR` set, the sibling ops sidecar directory merely *existing*, or a
+`.claude/scrub-patterns.local.txt` present-but-unreadable.
+
+Why this shape: the silence for public cloners is deliberate and worth keeping — a
+clone must not get a broken or noisy hook. But on a maintainer machine the same
+silence meant an unguarded box was indistinguishable from a protected one. Two
+machines ran unguarded for hours on one day (a stale branch; a stale ops checkout),
+and **both were found by human inspection — neither by the control firing.**
+
+Rejected alternatives: warn-and-allow (publishing still proceeds, and stderr on a
+successful hook is not reliable UI); warning on every invocation (a notice on every
+`git commit` is trained out within a day, which is worse than useless); a strict-mode
+env var as the primary signal (forgetting to set it recreates the defect).
+
+`--check` reports this as a SessionStart `systemMessage`, and says nothing when the
+guard is healthy or genuinely unconfigured — visibility without per-call noise.
 
 ### Pattern file format
 
