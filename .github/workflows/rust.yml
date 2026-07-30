@@ -42,3 +42,31 @@ jobs:
         run: cargo build --workspace --locked
       - name: Test workspace
         run: cargo test --workspace --locked
+      # The PowerShell scripts are executed by nothing in CI, and no dev box in
+      # the Linux fleet has pwsh — so before this step, a ps1 syntax error
+      # shipped to main was first discovered by the next FE LAUNCH (launchers
+      # self-update from main on every start, unpinned). Parse them where a
+      # PowerShell host already exists: this Windows leg.
+      - name: Parse PowerShell scripts
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        working-directory: scripts
+        run: |
+          $failed = $false
+          Get-ChildItem -Filter '*.ps1' | ForEach-Object {
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs)
+            if ($errs.Count -gt 0) {
+              $failed = $true
+              Write-Host "PARSE ERRORS: $($_.Name)"
+              $errs | ForEach-Object { Write-Host "  $($_.Extent.StartLineNumber): $($_.Message)" }
+            } else {
+              Write-Host "ok: $($_.Name)"
+            }
+          }
+          if ($failed) { exit 1 }
+      - name: Parse shell launchers
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: scripts
+        run: |
+          for f in *.sh; do bash -n "$f" && echo "ok: $f"; done
