@@ -515,9 +515,19 @@ $sshArgs += @('-L', "${tcpPort}:$remoteSocket")
 # garbage into the control tunnel's args.
 if ($sshAuxArgs.Count -gt 0) {
     $auxForwardStart = $sshCommonArgs.Count
-    $auxForwardEnd = $sshAuxArgs.Count - 1
+    # Count - 2, NOT Count - 1: the last element of $sshAuxArgs is $backendHost,
+    # and the destination is appended separately below. Slicing to Count - 1 here
+    # would put the host in twice.
+    $auxForwardEnd = $sshAuxArgs.Count - 2
     $sshArgs += $sshAuxArgs[$auxForwardStart..$auxForwardEnd]
 }
+# The ssh DESTINATION, always last and never conditional. Before the aux
+# forwards were retired this rode in as the final element of the $sshAuxArgs
+# splice above; once that splice became conditional the control tunnel lost its
+# host entirely and ssh exited instantly ("ssh -N -o ... -L 18743:<sock>" with
+# no destination), leaving the supervisor respawning a doomed tunnel on
+# exponential backoff and 18743 never listening. Observed on a real FE, 2026-07-30.
+$sshArgs += $backendHost
 function Test-LocalPortOpen {
     param([int]$Port)
     $client = New-Object Net.Sockets.TcpClient
