@@ -29,18 +29,10 @@ Client/server even on local because it makes remote operation almost free later 
 
 ## The plugin model: multiple dispatch as the extension substrate
 
-A small set of abstract types defines what's pluggable. Methods on these are the ABI; users and packages extend the system by writing methods. No registration, no manifest — `using MyExtension` and the dispatch tables grow.
+A small set of abstract types defines what's pluggable — declared in `core/src/ConceptExplorerCore.jl`, read them there. Methods on these are the ABI; users and packages extend the system by writing methods. No registration, no manifest — `using MyExtension` and the dispatch tables grow.
 
-```julia
-abstract type FileType end          # PNG, JuliaSource, MarkdownDoc, ...
-abstract type Mode end              # Files, Modules, Types, Math, ...
-abstract type ConceptEntity end     # function, type, module, math derivation
-abstract type AnnotationKind end    # type-meaning, math-derivation, ...
-abstract type Tool end              # things the orchestrator can call
-abstract type Capture end           # REPL outputs: Figure, DataFrame, ...
-```
-
-Dispatched methods (the contract):
+Dispatched methods (the contract — most of these are design targets with no
+implementation yet, so they are NOT derivable from source):
 
 ```julia
 preview(::Type{<:FileType}, path)        :: PreviewPayload
@@ -63,24 +55,9 @@ tool_call(::Type{<:Tool}, args)          :: Result
 
 **Implementation status (v0.3.x):** `FileType` is the seam that is wired end-to-end today (seven standard plugins + the HDF5 external example, all through the public ABI). The other five abstract types — `Mode`, `ConceptEntity`, `AnnotationKind`, `Tool`, `Capture` — are declared design targets with **no concrete subtypes yet**: the shipped navigation modes are implemented natively in the Rust frontend/backend (`files_mode.rs`, the kernel's `project.scan`), not dispatched through `Mode`. Plugin discovery is likewise not the declarative ADR 0006 mechanism yet (see that ADR's status note). When writing docs or answering questions about extensibility, scope claims to `FileType`.
 
-The Rust↔Julia boundary is a serialization seam. The IR is generic:
-
-```julia
-struct TreeNode
-    id::String                # opaque to Rust
-    label::String
-    kind::Symbol              # :module, :function, :pngfile, ...
-    has_children::Bool
-    badges::Vector{Symbol}    # :stale, :user_edited, :immutable, ...
-    payload::Dict{String,Any} # opaque, kernel-defined per kind
-end
-
-struct PreviewPayload
-    mime::String
-    data::Vector{UInt8}
-    extras::Dict{String,Any}
-end
-```
+The Rust↔Julia boundary is a serialization seam. The IR is generic — `TreeNode`
+and `PreviewPayload` are defined in `core/src/ConceptExplorerCore.jl`; both carry
+opaque, kernel-defined payloads so Rust never learns about new entity kinds.
 
 Adding a new `FileType` requires zero Rust changes.
 
