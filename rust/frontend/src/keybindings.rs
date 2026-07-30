@@ -34,7 +34,8 @@ pub enum Action {
     /// Restore the 2×2 quadrant layout.
     RestoreLayout,
     /// Toggle wide-preview: hide the LLM column and hand its width to
-    /// the preview pane (nav keeps its width). Default Alt+z.
+    /// the preview pane (nav keeps its width). Default Alt++
+    /// (Alt+Shift+= on US layouts).
     ToggleWidePreview,
     /// PNG preview pane: zoom the canvas in.
     PreviewPngZoomIn,
@@ -327,10 +328,12 @@ impl KeyBindings {
             // maximized (the dispatch guards on `state.maximized`), so Esc
             // still passes through to the pty / edit mode / etc. otherwise.
             restore_layout: vec![Chord::parse("Escape").unwrap()],
-            // Wide-preview toggle ("zen"): Alt+z sits next to Alt+= (maximize)
-            // in the pane-management family and is free everywhere — Ctrl+z
-            // would collide with shell/undo in the pty panes.
-            toggle_wide_preview: vec![Chord::parse("Alt+z").unwrap()],
+            // Wide-preview toggle: Alt++ is the shifted neighbour of Alt+=
+            // (maximize) — same physical key, one more modifier, so the
+            // pane-management family stays on one keycap. Alt+z was the
+            // first pick but the NVIDIA overlay grabs it system-wide and
+            // the app never sees it (maintainer, 2026-07-30).
+            toggle_wide_preview: vec![Chord::parse("Alt++").unwrap()],
             // PNG preview zoom keeps the user's fingers on the arrow
             // cluster (Shift+ArrowUp/Down) and also supports the
             // muscle-memory `+`/`=`/`-` chords.
@@ -709,13 +712,21 @@ mod tests {
     }
 
     #[test]
-    fn wide_preview_default_is_alt_z() {
+    fn wide_preview_default_is_alt_plus_and_stays_off_maximize() {
         let b = KeyBindings::defaults();
-        let z = Key::Character("z".into());
-        assert!(b.matches(Action::ToggleWidePreview, &z, false, true, false));
-        // Bare `z` and Ctrl+z must NOT trigger it (pty text / shell undo).
-        assert!(!b.matches(Action::ToggleWidePreview, &z, false, false, false));
-        assert!(!b.matches(Action::ToggleWidePreview, &z, true, false, false));
+        let plus = Key::Character("+".into());
+        let eq = Key::Character("=".into());
+        // Alt+Shift+= reports character "+" with shift held on US layouts;
+        // the chord doesn't declare shift so both report states match.
+        assert!(b.matches(Action::ToggleWidePreview, &plus, false, true, true));
+        assert!(b.matches(Action::ToggleWidePreview, &plus, false, true, false));
+        // Same keycap, unshifted: that's maximize, not wide-preview…
+        assert!(!b.matches(Action::ToggleWidePreview, &eq, false, true, false));
+        assert!(b.matches(Action::MaximizePane, &eq, false, true, false));
+        // …and the shifted "+" must not fire maximize.
+        assert!(!b.matches(Action::MaximizePane, &plus, false, true, true));
+        // Ctrl++ is font zoom, not wide-preview.
+        assert!(!b.matches(Action::ToggleWidePreview, &plus, true, false, false));
     }
 
     #[test]

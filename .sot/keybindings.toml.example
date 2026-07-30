@@ -27,7 +27,9 @@ pane.maximize = "Alt+="
 pane.restore = "Escape"
 # Wide-preview toggle (global): hide the LLM column and hand its width to the
 # preview pane — nav keeps its width. Toggle again to bring the LLM back.
-layout.wide_preview = "Alt+z"
+# Default Alt++ = the shifted neighbour of Alt+= (maximize). Avoid Alt+z:
+# the NVIDIA overlay grabs it system-wide before the app sees it.
+layout.wide_preview = "Alt++"
 # Sessions picker — commit the cursored directory as a new workspace.
 #   session.create      → start the comm-aware agent (ccb) in the pane
 #   session.create_bare → bare session, NO LLM agent (plain shell/REPL)

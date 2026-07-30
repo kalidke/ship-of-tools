@@ -2927,7 +2927,7 @@ struct State {
     /// When `true`, the LLM column is hidden and its width handed to
     /// the preview pane (nav keeps its width) — the "wide preview"
     /// layout. Toggled with `Action::ToggleWidePreview` (default
-    /// `Alt+z`). Focus can't land on the hidden LLM pane while active;
+    /// `Alt++`). Focus can't land on the hidden LLM pane while active;
     /// a capture-ROI paste that targets the LLM pane reveals it again.
     wide_preview: bool,
     /// Resolved keybindings (defaults overlaid with the user's
@@ -8641,7 +8641,7 @@ impl State {
     Ctrl+← → ↑ ↓    move focus between panes
     Shift+← →       switch session (cycle workspace)
     Alt+=  maximize pane            Esc  restore (un-maximize)
-    Alt+Z  wide preview — hide / show the LLM pane (nav + full-width preview)
+    Alt++  wide preview — hide / show the LLM pane (nav + full-width preview)
     Ctrl+Shift+S   selfie — save a PNG of the whole window
 
   Drawers   (works in any focus)
@@ -15595,12 +15595,13 @@ impl ApplicationHandler for App {
                         return;
                     }
                     // Wide-preview toggle (layout.wide_preview, default
-                    // Alt+z): hide the LLM column and hand its width to the
+                    // Alt++ — the shifted neighbour of Alt+= maximize):
+                    // hide the LLM column and hand its width to the
                     // preview. Global like maximize — fires from any focus,
                     // including LLM (pane management wins over forwarding
-                    // Alt+z to the shell). Focus on the pane being hidden
-                    // bounces to Preview, same rule as the drawer-close
-                    // bounce.
+                    // the chord to the shell). Focus on the pane being
+                    // hidden bounces to Preview, same rule as the
+                    // drawer-close bounce.
                     if state.bindings.matches(
                         Action::ToggleWidePreview,
                         &event.logical_key,
