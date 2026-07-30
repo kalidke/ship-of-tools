@@ -43,7 +43,10 @@ if [ -n "$prompt" ]; then
             eval "$("$SELF_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
             if [ -n "${NAME:-}" ]; then
                 cur="$(jq -r --arg n "$NAME" '.agents[$n].state // ""' "$COMM_HOME/registry.json" 2>/dev/null || true)"
-                [ "$cur" = blocked ] && exit 0
+                # blocked: the question is still pending — don't flip red to green.
+                # done: a Monitor wake / relay message is not new work — don't
+                # flip a finished row to green; a genuine human prompt still does.
+                { [ "$cur" = blocked ] || [ "$cur" = done ]; } && exit 0
             fi
             ;;
     esac
