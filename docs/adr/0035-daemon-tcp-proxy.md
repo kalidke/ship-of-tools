@@ -206,3 +206,40 @@ client is the same authenticated user, so user code authorizing a loopback
 port for the user's own browser adds no privilege over what either side can
 already do (same standing as `SOT_PROXY_EXTRA_PORTS`). Announced URLs are
 loopback-only by construction; per-workspace grants are capped.
+
+## Update (2026-07-30, v0.5.2): aux `-L` forwards retired; `AddrInUse` no longer assumed friendly
+
+Consequences scheduled this: *"the launchers' aux `-L` list becomes redundant but
+stays for one release cycle as a fallback … removal is a follow-up once the proxy
+has field time."* v0.5.0 → v0.5.1 has passed and the proxy has field time (268
+`proxy.connect` sessions observed on one backend, piping ephemeral ports), so the
+forwards are now **off by default in both launchers**.
+
+**Why this is a safety fix, not tidy-up.** On a shared multi-user host the fixed
+pool is routinely owned by a *different UNIX user's* daemon — observed: another
+user's 6-day-old `sotd` holding 1235-1240 while ours fell back to ephemeral ports.
+Forwarding a fixed port we cannot prove is ours means an HTTP GET **succeeds**
+against a stranger's server and renders their content looking entirely normal.
+Silent wrong-content, no error anywhere. Not forwarding fails closed instead.
+
+- **Opt-in, not deleted**: `SOT_LEGACY_FORWARDS=1` restores the forwards in both
+  `launch-sot.ps1` and `launch-sot.sh`. The one case that needs it is a NEW
+  launcher against a **pre-v0.5.0 backend**, which advertises no proxy and has no
+  other path to these pages. Deliberately explicit rather than an automatic
+  fallback: on a shared host the safe default is to forward nothing unverified.
+- **`AddrInUse` is no longer treated as a friendly legacy forward.** The FE's
+  proxy-listener arm previously logged `port already bound (legacy -L forward?)`
+  and let the browser open anyway. With the forwards retired that inference is
+  wrong — an occupied port is now an UNKNOWN local listener on the FE machine,
+  which recreates the identical silent-wrong-content failure one hop closer to
+  the user. When the daemon advertises the proxy (`proxy_capable`), the FE now
+  warns and declines to open; without it, a legacy forward IS the expected holder
+  and the old behaviour is kept. **Occupancy is not proof of ownership.**
+
+Unchanged: the allowlist stays verified-bound (`allowlist_is_verified_bound_not_configured`),
+which is what makes retiring the forwards safe rather than merely quieter.
+
+Not addressed here: helper servers still speak TCP because browsers cannot consume
+UNIX sockets directly. Moving them behind private sockets with an FE-local bridge,
+and replacing raw port identity with generation-bound service capabilities, remains
+the stronger long-term model.

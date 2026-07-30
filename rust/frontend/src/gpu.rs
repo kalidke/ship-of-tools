@@ -5170,15 +5170,37 @@ impl State {
                 tracing::info!(port, "proxy: bound local listener for backend page");
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                // Something already holds the port — normally a legacy
-                // launcher `-L <port>` forward serving the same page (the two
-                // mechanisms coexist). Do NOT cache this: un-mark so the next
-                // open re-probes. If the holder was a stale/unrelated forward
-                // that later exits, a subsequent open then binds and proxies
-                // instead of being wedged connection-refused forever. A
-                // re-probe is a cheap fast-failing bind.
+                // Something already holds the port. Do NOT cache this: un-mark
+                // so the next open re-probes. If the holder later exits, a
+                // subsequent open binds and proxies instead of being wedged
+                // connection-refused forever. A re-probe is a cheap bind.
                 self.proxy_ensured.remove(&port);
-                tracing::debug!(port, "proxy: port already bound (legacy -L forward?); will re-probe next open");
+                // Who the holder is decides whether this is benign.
+                //
+                // When the daemon advertises the proxy, the launchers no longer
+                // forward these ports (ADR 0035's aux `-L` retirement), so
+                // "already bound" is NOT the old legacy-forward case — it is an
+                // UNKNOWN local listener, and opening the browser at it would
+                // render someone else's page looking entirely normal. Occupancy
+                // is not proof of ownership, so say so instead of proceeding
+                // quietly. Without the proxy, a legacy forward IS the expected
+                // holder and the old behaviour is right.
+                if self.proxy_capable {
+                    tracing::warn!(
+                        port,
+                        "proxy: port already bound by an UNKNOWN local listener — not ours. \
+                         Refusing to treat occupancy as ownership; the page may be someone else's."
+                    );
+                    self.status = format!(
+                        "port {port} is held by another local process — not opening (could be the wrong page)"
+                    );
+                    self.window.request_redraw();
+                } else {
+                    tracing::debug!(
+                        port,
+                        "proxy: port already bound; daemon advertises no proxy, so a legacy -L forward is expected"
+                    );
+                }
             }
             Err(e) => {
                 tracing::warn!(port, error = %e, "proxy: bind failed");

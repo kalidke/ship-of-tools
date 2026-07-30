@@ -463,36 +463,61 @@ $sshCommonArgs = @(
     '-o', 'ServerAliveInterval=30',
     '-o', 'ServerAliveCountMax=6'
 )
+# RETIRED by default (ADR 0035 scheduled this once the proxy had field time).
+#
+# These fixed-port forwards are how the FE used to reach backend-served pages.
+# The daemon proxy replaced them: every backend page now rides the ONE control
+# tunnel via `proxy.connect`, and the proxy's allowlist is VERIFIED-BOUND — it
+# authorizes only ports this daemon actually bound, never a preferred port some
+# OTHER user's daemon happens to hold (rust/backend/src/proxy.rs).
+#
+# Why retiring matters rather than being mere tidy-up: on a SHARED host these
+# fixed ports are frequently owned by a different UNIX user's daemon. Forwarding
+# them means an HTTP GET succeeds against a stranger's server and renders their
+# content looking entirely normal — silent wrong-content, with no error anywhere.
+# Not forwarding them fails closed instead.
+#
+# Set SOT_LEGACY_FORWARDS=1 to restore them. The one case that needs it is a
+# NEW launcher against a PRE-v0.5.0 backend, which advertises no proxy and has
+# no other path to these pages. It is opt-in and not a silent fallback, because
+# on a shared host the safe default is to forward nothing you cannot prove is
+# yours.
+$useLegacyForwards = [bool]$env:SOT_LEGACY_FORWARDS
 $sshAuxArgs = @()
-$sshAuxArgs += $sshCommonArgs
-$sshAuxArgs += @(
-    # H1.2 — forward the remote Pluto.jl server so `o` on a
-    # Pluto-flavored .jl opens in the local browser.
-    '-L', "${plutoPort}:127.0.0.1:${plutoPort}",
-    # ADR 0018 — forward the backend's video file server so `o` on a
-    # video opens it in the local browser (HTML5 <video>, native decode).
-    '-L', "${videoPort}:127.0.0.1:${videoPort}",
-    # ADR 0024 — forward the backend's docs site server so `W` opens the
-    # built Documenter site in the local browser (full CSS/JS/sub-pages).
-    '-L', "${docsPort}:127.0.0.1:${docsPort}",
-    # ADR 0029 Option B — the dedicated-port pool for ROOT-relative sites
-    # (an example project's __site etc.): docsPort+1..+4. Keep in sync with
-    # site_serve::POOL_SIZE.
-    '-L', "$($docsPort+1):127.0.0.1:$($docsPort+1)",
-    '-L', "$($docsPort+2):127.0.0.1:$($docsPort+2)",
-    '-L', "$($docsPort+3):127.0.0.1:$($docsPort+3)",
-    '-L', "$($docsPort+4):127.0.0.1:$($docsPort+4)",
-    # ADR 0032 — forward the WGLMakie/Bonito interactive-figure server (1241,
-    # first free port above the docs pool) so a browser-served figure opens.
-    '-L', "${wglPort}:127.0.0.1:${wglPort}",
-    $backendHost
-)
+if ($useLegacyForwards) {
+    Write-Host "SOT_LEGACY_FORWARDS=1 - forwarding fixed helper ports $plutoPort/$videoPort/$docsPort(+1..4)/$wglPort." -ForegroundColor Yellow
+    Write-Host "  On a shared host these may belong to ANOTHER USER's daemon; pages served over them are not verified as yours." -ForegroundColor Yellow
+    $sshAuxArgs += $sshCommonArgs
+    $sshAuxArgs += @(
+        # H1.2 — the remote Pluto.jl server.
+        '-L', "${plutoPort}:127.0.0.1:${plutoPort}",
+        # ADR 0018 — the backend's video file server.
+        '-L', "${videoPort}:127.0.0.1:${videoPort}",
+        # ADR 0024 — the backend's docs site server.
+        '-L', "${docsPort}:127.0.0.1:${docsPort}",
+        # ADR 0029 Option B — the ROOT-relative site pool, docsPort+1..+4.
+        # Keep in sync with site_serve::POOL_SIZE.
+        '-L', "$($docsPort+1):127.0.0.1:$($docsPort+1)",
+        '-L', "$($docsPort+2):127.0.0.1:$($docsPort+2)",
+        '-L', "$($docsPort+3):127.0.0.1:$($docsPort+3)",
+        '-L', "$($docsPort+4):127.0.0.1:$($docsPort+4)",
+        # ADR 0032 — the WGLMakie/Bonito interactive-figure server.
+        '-L', "${wglPort}:127.0.0.1:${wglPort}",
+        $backendHost
+    )
+}
 $sshArgs = @()
 $sshArgs += $sshCommonArgs
 $sshArgs += @('-L', "${tcpPort}:$remoteSocket")
-$auxForwardStart = $sshCommonArgs.Count
-$auxForwardEnd = $sshAuxArgs.Count - 1
-$sshArgs += $sshAuxArgs[$auxForwardStart..$auxForwardEnd]
+# Fold the aux forwards into the MAIN tunnel too — but only when they exist.
+# With the forwards retired, $sshAuxArgs is empty and `$sshAuxArgs.Count - 1`
+# would be -1, which PowerShell reads as "last element" and would splice
+# garbage into the control tunnel's args.
+if ($sshAuxArgs.Count -gt 0) {
+    $auxForwardStart = $sshCommonArgs.Count
+    $auxForwardEnd = $sshAuxArgs.Count - 1
+    $sshArgs += $sshAuxArgs[$auxForwardStart..$auxForwardEnd]
+}
 function Test-LocalPortOpen {
     param([int]$Port)
     $client = New-Object Net.Sockets.TcpClient
@@ -512,6 +537,10 @@ function Start-SotTunnel {
         -PassThru
 }
 function Start-SotAuxTunnel {
+    # No-op once the fixed-port forwards are retired (the default). Returns
+    # $null so callers that track the process handle see "nothing started"
+    # rather than launching a bare `ssh` with no forwards.
+    if ($sshAuxArgs.Count -eq 0) { return $null }
     Start-Process -FilePath ssh `
         -ArgumentList $sshAuxArgs `
         -WindowStyle Hidden `

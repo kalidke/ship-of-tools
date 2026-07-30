@@ -71,6 +71,14 @@ port_open() {
 }
 
 ensure_aux_tunnel() {
+    # Retired by default (ADR 0035) — see the SOT_LEGACY_FORWARDS note at the
+    # main tunnel. Without the opt-in there is nothing to top up: backend pages
+    # ride the control tunnel through the verified-bound daemon proxy, and
+    # forwarding a fixed port we cannot prove is ours is the failure this
+    # retirement exists to prevent.
+    if [ -z "${SOT_LEGACY_FORWARDS:-}" ]; then
+        return 0
+    fi
     local missing=()
     local p
     for p in "${AUX_PORTS[@]}"; do
@@ -112,12 +120,26 @@ elif port_open "$PORT"; then
     echo "       stop the stale tunnel or set SOT_TCP_PORT to a free local port" >&2
     exit 1
 else
+    # Fixed helper-port forwards are RETIRED by default (ADR 0035). Backend
+    # pages ride the control tunnel through the daemon proxy, whose allowlist is
+    # verified-bound — it authorizes only ports this daemon actually bound, never
+    # a preferred port another user's daemon happens to hold. Forwarding the
+    # fixed ports on a shared host means an HTTP GET succeeds against a
+    # stranger's server and renders their content looking normal.
+    # SOT_LEGACY_FORWARDS=1 restores them for a pre-v0.5.0 backend.
+    legacy_fwd=()
+    if [ -n "${SOT_LEGACY_FORWARDS:-}" ]; then
+        echo "SOT_LEGACY_FORWARDS=1 — forwarding fixed helper ports; on a shared host these may not be ours" >&2
+        legacy_fwd=(
+            -L "$PLUTO_PORT:127.0.0.1:$PLUTO_PORT" -L "$VIDEO_PORT:127.0.0.1:$VIDEO_PORT"
+            -L "$DOCS_PORT:127.0.0.1:$DOCS_PORT"
+            -L "$((DOCS_PORT+1)):127.0.0.1:$((DOCS_PORT+1))" -L "$((DOCS_PORT+2)):127.0.0.1:$((DOCS_PORT+2))"
+            -L "$((DOCS_PORT+3)):127.0.0.1:$((DOCS_PORT+3))" -L "$((DOCS_PORT+4)):127.0.0.1:$((DOCS_PORT+4))"
+            -L "$WGL_PORT:127.0.0.1:$WGL_PORT"
+        )
+    fi
     ssh -fN -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
-        -L "$PORT:$REMOTE_SOCKET" -L "$PLUTO_PORT:127.0.0.1:$PLUTO_PORT" -L "$VIDEO_PORT:127.0.0.1:$VIDEO_PORT" \
-        -L "$DOCS_PORT:127.0.0.1:$DOCS_PORT" \
-        -L "$((DOCS_PORT+1)):127.0.0.1:$((DOCS_PORT+1))" -L "$((DOCS_PORT+2)):127.0.0.1:$((DOCS_PORT+2))" \
-        -L "$((DOCS_PORT+3)):127.0.0.1:$((DOCS_PORT+3))" -L "$((DOCS_PORT+4)):127.0.0.1:$((DOCS_PORT+4))" \
-        -L "$WGL_PORT:127.0.0.1:$WGL_PORT" "$HOST" \
+        -L "$PORT:$REMOTE_SOCKET" ${legacy_fwd+"${legacy_fwd[@]}"} "$HOST" \
         || { echo "ERROR: could not open SSH tunnel to $HOST (stale tunnel holding ports? try: pkill -f 'ssh -fN.*$PORT')" >&2; exit 1; }
 fi
 ensure_aux_tunnel
