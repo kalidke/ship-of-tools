@@ -626,7 +626,8 @@ $relaunchNext = [bool]$Relaunched
 # and skip freshness, and happen while the user is already in the app, so they
 # get no splash — dismiss it exactly once, when the first FE window is up.
 $splashDismissed = $false
-Write-SupLog "supervisor start (relaunched=$Relaunched, tcpPort=$tcpPort, tunnelPid=$($sshTunnel.Id))"
+$tunnelPidLabel = if ($sshTunnel) { $sshTunnel.Id } else { 'none (external control tunnel, aux retired)' }
+Write-SupLog "supervisor start (relaunched=$Relaunched, tcpPort=$tcpPort, tunnelPid=$tunnelPidLabel)"
 try {
     do {
         # Stage the binary for this launch, priority order (ADR 0030 §4):
@@ -695,7 +696,11 @@ try {
         $tunnelBackoffSec = 0
         while (-not $frontend.HasExited) {
             Start-Sleep -Milliseconds 500
-            if ($sshTunnel.HasExited) {
+            # $sshTunnel is $null when the control port is externally held AND
+            # the aux forwards are retired (nothing to supervise). Guard it
+            # explicitly rather than relying on $null.HasExited being falsy —
+            # that only holds while no one adds Set-StrictMode.
+            if ($sshTunnel -and $sshTunnel.HasExited) {
                 $uptime = ((Get-Date) - $sshStartedAt).TotalSeconds
                 if ($uptime -lt 2) {
                     $tunnelBackoffSec = [Math]::Min(($tunnelBackoffSec * 2 + 1), 30)
