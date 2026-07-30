@@ -2924,6 +2924,12 @@ struct State {
     /// wants when they're staring at one pane and want to peek at
     /// another.
     maximized: bool,
+    /// When `true`, the LLM column is hidden and its width handed to
+    /// the preview pane (nav keeps its width) — the "wide preview"
+    /// layout. Toggled with `Action::ToggleWidePreview` (default
+    /// `Alt+z`). Focus can't land on the hidden LLM pane while active;
+    /// a capture-ROI paste that targets the LLM pane reveals it again.
+    wide_preview: bool,
     /// Resolved keybindings (defaults overlaid with the user's
     /// `keybindings.toml` if present). See `keybindings.rs` for the
     /// file format and discovery order. Read-only once loaded — the
@@ -4076,6 +4082,7 @@ impl State {
             wheel_residue_y: 0.0,
             last_pty_wheel_at: None,
             maximized: cli.start_maximized,
+            wide_preview: false,
             bindings: KeyBindings::load_layered(),
             settings,
             upload: None,
@@ -8634,6 +8641,7 @@ impl State {
     Ctrl+← → ↑ ↓    move focus between panes
     Shift+← →       switch session (cycle workspace)
     Alt+=  maximize pane            Esc  restore (un-maximize)
+    Alt+Z  wide preview — hide / show the LLM pane (nav + full-width preview)
     Ctrl+Shift+S   selfie — save a PNG of the whole window
 
   Drawers   (works in any focus)
@@ -11101,6 +11109,10 @@ impl State {
                         // the Preview pane where the image still is — see the
                         // ImageCropFailed arm, which deliberately does not move
                         // focus.
+                        // A hidden LLM pane can't show the paste it was just
+                        // handed — drop wide-preview so the pane (and the
+                        // focus move) are actually visible.
+                        self.wide_preview = false;
                         self.focus = PaneFocus::Llm;
                         self.status = format!("ROI {w}×{h} of {name} → LLM pane · Enter to send");
                     } else {
@@ -12187,8 +12199,18 @@ impl State {
         // Layout proportions from the user's settings file (or
         // defaults). Snapshotted here so the ratatui closure doesn't
         // borrow `self`. Maximisation overrides the geom inside the
-        // closure by passing a `maximize_slot`.
-        let layout_preset = self.settings.resolve_preset(self.monitor_aspect).clone();
+        // closure by passing a `maximize_slot`. Wide-preview rewrites
+        // the preset itself (Llm column dropped, width to Preview) so
+        // layout::compute needs no new inputs — the Llm-less path is
+        // the same one the portrait preset already exercises.
+        let layout_preset = {
+            let p = self.settings.resolve_preset(self.monitor_aspect);
+            if self.wide_preview {
+                p.wide_preview()
+            } else {
+                p.clone()
+            }
+        };
         // `drawer` was bound above (after the terminal lazy-spawn/close).
         let drawer_open = drawer.is_open();
         // T1: full path of the file the preview is showing, snapshotted here
@@ -15475,8 +15497,12 @@ impl ApplicationHandler for App {
                         // spatial Down land focus on the invisible Repl
                         // slot. User must explicitly
                         // summon the drawer (Ctrl+J) before it can take
-                        // focus.
-                        if !(next == PaneFocus::Repl && !state.drawer.is_open()) {
+                        // focus. Same rule for the LLM pane while
+                        // wide-preview hides it — keystrokes must never
+                        // route to an invisible pty.
+                        if !(next == PaneFocus::Repl && !state.drawer.is_open())
+                            && !(next == PaneFocus::Llm && state.wide_preview)
+                        {
                             state.focus = next;
                         }
                         state.last_key = Some(format!("Ctrl+{label}"));
@@ -15564,6 +15590,28 @@ impl ApplicationHandler for App {
                         )
                     {
                         state.maximized = false;
+                        state.last_key = Some(label);
+                        state.window.request_redraw();
+                        return;
+                    }
+                    // Wide-preview toggle (layout.wide_preview, default
+                    // Alt+z): hide the LLM column and hand its width to the
+                    // preview. Global like maximize — fires from any focus,
+                    // including LLM (pane management wins over forwarding
+                    // Alt+z to the shell). Focus on the pane being hidden
+                    // bounces to Preview, same rule as the drawer-close
+                    // bounce.
+                    if state.bindings.matches(
+                        Action::ToggleWidePreview,
+                        &event.logical_key,
+                        ctrl,
+                        alt,
+                        shift,
+                    ) {
+                        state.wide_preview = !state.wide_preview;
+                        if state.wide_preview && state.focus == PaneFocus::Llm {
+                            state.focus = PaneFocus::Preview;
+                        }
                         state.last_key = Some(label);
                         state.window.request_redraw();
                         return;

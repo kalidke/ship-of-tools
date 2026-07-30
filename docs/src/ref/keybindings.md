@@ -64,6 +64,7 @@ Grouped logically. Chords below are the defaults set in
 |--------|---------------|---------------|
 | `pane.maximize` | `Alt+=` | Maximise the focused pane to fill the window. |
 | `pane.restore` | `Escape` | Restore the full layout. `Esc` triggers this **only while a pane is maximized**; otherwise `Esc` passes through to the pty / edit mode / etc. |
+| `layout.wide_preview` | `Alt+z` | Toggle wide-preview (global): hide the LLM column and hand its width to the preview pane — nav keeps its width. Focus can't land on the hidden LLM pane; a capture-ROI paste reveals it again. |
 
 ### Sessions
 

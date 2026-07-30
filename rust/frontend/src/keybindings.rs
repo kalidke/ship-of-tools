@@ -33,6 +33,9 @@ pub enum Action {
     MaximizePane,
     /// Restore the 2×2 quadrant layout.
     RestoreLayout,
+    /// Toggle wide-preview: hide the LLM column and hand its width to
+    /// the preview pane (nav keeps its width). Default Alt+z.
+    ToggleWidePreview,
     /// PNG preview pane: zoom the canvas in.
     PreviewPngZoomIn,
     /// PNG preview pane: zoom the canvas out (clamped at fit-to-pane).
@@ -107,6 +110,7 @@ impl Action {
         match name.trim() {
             "pane.maximize" | "maximize_pane" => Some(Action::MaximizePane),
             "pane.restore" | "restore_layout" => Some(Action::RestoreLayout),
+            "layout.wide_preview" => Some(Action::ToggleWidePreview),
             "preview.png.zoom_in" => Some(Action::PreviewPngZoomIn),
             "preview.png.zoom_out" => Some(Action::PreviewPngZoomOut),
             "preview.png.reset" => Some(Action::PreviewPngReset),
@@ -276,6 +280,7 @@ fn named_key_from_str(s: &str) -> Option<NamedKey> {
 pub struct KeyBindings {
     maximize_pane: Vec<Chord>,
     restore_layout: Vec<Chord>,
+    toggle_wide_preview: Vec<Chord>,
     preview_png_zoom_in: Vec<Chord>,
     preview_png_zoom_out: Vec<Chord>,
     preview_png_reset: Vec<Chord>,
@@ -322,6 +327,10 @@ impl KeyBindings {
             // maximized (the dispatch guards on `state.maximized`), so Esc
             // still passes through to the pty / edit mode / etc. otherwise.
             restore_layout: vec![Chord::parse("Escape").unwrap()],
+            // Wide-preview toggle ("zen"): Alt+z sits next to Alt+= (maximize)
+            // in the pane-management family and is free everywhere — Ctrl+z
+            // would collide with shell/undo in the pty panes.
+            toggle_wide_preview: vec![Chord::parse("Alt+z").unwrap()],
             // PNG preview zoom keeps the user's fingers on the arrow
             // cluster (Shift+ArrowUp/Down) and also supports the
             // muscle-memory `+`/`=`/`-` chords.
@@ -453,6 +462,7 @@ impl KeyBindings {
                 match action {
                     Action::MaximizePane => self.maximize_pane = chords,
                     Action::RestoreLayout => self.restore_layout = chords,
+                    Action::ToggleWidePreview => self.toggle_wide_preview = chords,
                     Action::PreviewPngZoomIn => self.preview_png_zoom_in = chords,
                     Action::PreviewPngZoomOut => self.preview_png_zoom_out = chords,
                     Action::PreviewPngReset => self.preview_png_reset = chords,
@@ -496,6 +506,7 @@ impl KeyBindings {
         let list = match action {
             Action::MaximizePane => &self.maximize_pane,
             Action::RestoreLayout => &self.restore_layout,
+            Action::ToggleWidePreview => &self.toggle_wide_preview,
             Action::PreviewPngZoomIn => &self.preview_png_zoom_in,
             Action::PreviewPngZoomOut => &self.preview_png_zoom_out,
             Action::PreviewPngReset => &self.preview_png_reset,
@@ -695,6 +706,16 @@ mod tests {
         // Defaults still intact.
         let eq = Key::Character("=".into());
         assert!(b.matches(Action::MaximizePane, &eq, false, true, false));
+    }
+
+    #[test]
+    fn wide_preview_default_is_alt_z() {
+        let b = KeyBindings::defaults();
+        let z = Key::Character("z".into());
+        assert!(b.matches(Action::ToggleWidePreview, &z, false, true, false));
+        // Bare `z` and Ctrl+z must NOT trigger it (pty text / shell undo).
+        assert!(!b.matches(Action::ToggleWidePreview, &z, false, false, false));
+        assert!(!b.matches(Action::ToggleWidePreview, &z, true, false, false));
     }
 
     #[test]

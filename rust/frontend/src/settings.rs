@@ -194,6 +194,26 @@ impl LayoutPreset {
             drawer_height: 0.40,
         }
     }
+
+    /// Wide-preview variant (`layout.wide_preview` toggle): the Llm
+    /// column is removed and its width handed to Preview, so nav keeps
+    /// its width and the preview absorbs the rest of the screen. A
+    /// preset with no Llm column (e.g. portrait) comes back unchanged;
+    /// with no Preview column the freed width goes to the last column
+    /// so the widths still sum to ~1.0.
+    pub fn wide_preview(&self) -> Self {
+        let mut p = self.clone();
+        if let Some(idx) = p.columns.iter().position(|s| *s == Slot::Llm) {
+            let w = p.widths.remove(idx);
+            p.columns.remove(idx);
+            if let Some(pi) = p.columns.iter().position(|s| *s == Slot::Preview) {
+                p.widths[pi] += w;
+            } else if let Some(last) = p.widths.last_mut() {
+                *last += w;
+            }
+        }
+        p
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -521,6 +541,26 @@ fn find_settings_file() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wide_preview_hands_llm_width_to_preview() {
+        let p = LayoutPreset::default_ultrawide().wide_preview();
+        assert_eq!(p.columns, vec![Slot::Nav, Slot::Preview]);
+        // Nav keeps its width; Preview absorbs the Llm share.
+        assert!((p.widths[0] - 0.167).abs() < 1e-3);
+        assert!((p.widths[1] - 0.833).abs() < 1e-3);
+        let sum: f32 = p.widths.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-3, "widths must still sum to ~1.0");
+        // Drawer config rides along untouched.
+        assert_eq!(p.drawer, Some(Slot::Repl));
+    }
+
+    #[test]
+    fn wide_preview_is_identity_without_llm_column() {
+        let p = LayoutPreset::default_portrait().wide_preview();
+        assert_eq!(p.columns, vec![Slot::Nav, Slot::Preview]);
+        assert_eq!(p.widths, LayoutPreset::default_portrait().widths);
+    }
 
     #[test]
     fn defaults_are_auto_with_three_columns_each_preset() {
