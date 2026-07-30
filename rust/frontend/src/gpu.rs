@@ -2927,8 +2927,10 @@ struct State {
     /// When `true`, the LLM column is hidden and its width handed to
     /// the preview pane (nav keeps its width) — the "wide preview"
     /// layout. Toggled with `Action::ToggleWidePreview` (default
-    /// `Alt++`). Focus can't land on the hidden LLM pane while active;
-    /// a capture-ROI paste that targets the LLM pane reveals it again.
+    /// `Alt++`); Esc also exits it from the reading panes (after
+    /// un-maximizing, and never over a pty or modal). Focus can't land
+    /// on the hidden LLM pane while active; a capture-ROI paste that
+    /// targets the LLM pane reveals it again.
     wide_preview: bool,
     /// Resolved keybindings (defaults overlaid with the user's
     /// `keybindings.toml` if present). See `keybindings.rs` for the
@@ -8640,7 +8642,7 @@ impl State {
   Move between panes & sessions   (works in any focus)
     Ctrl+← → ↑ ↓    move focus between panes
     Shift+← →       switch session (cycle workspace)
-    Alt+=  maximize pane            Esc  restore (un-maximize)
+    Alt+=  maximize pane            Esc  restore (un-maximize / exit wide preview)
     Alt++  wide preview — hide / show the LLM pane (nav + full-width preview)
     Ctrl+Shift+S   selfie — save a PNG of the whole window
 
@@ -15590,6 +15592,35 @@ impl ApplicationHandler for App {
                         )
                     {
                         state.maximized = false;
+                        state.last_key = Some(label);
+                        state.window.request_redraw();
+                        return;
+                    }
+                    // Esc also exits wide-preview — the same "get me back"
+                    // gesture as un-maximize. Ordered after the maximize
+                    // restore so layered states peel one at a time
+                    // (un-maximize first, un-widen second). Unlike maximize,
+                    // wide-preview is sticky — the user lives in it — so this
+                    // is gated to the reading panes with no modal up: a
+                    // vim/readline Esc in the drawer pty must keep reaching
+                    // the pty, and picker / prompt / annotation-edit Esc must
+                    // keep cancelling those first.
+                    if state.wide_preview
+                        && !state.maximized
+                        && !state.help_open
+                        && state.edit_state.is_none()
+                        && state.nav_prompt.is_none()
+                        && state.workspace_picker.is_none()
+                        && matches!(state.focus, PaneFocus::NavTree | PaneFocus::Preview)
+                        && state.bindings.matches(
+                            Action::RestoreLayout,
+                            &event.logical_key,
+                            ctrl,
+                            alt,
+                            shift,
+                        )
+                    {
+                        state.wide_preview = false;
                         state.last_key = Some(label);
                         state.window.request_redraw();
                         return;

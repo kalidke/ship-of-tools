@@ -22,8 +22,9 @@
 [keys]
 # Maximise the focused pane to fill the window.
 pane.maximize = "Alt+="
-# Restore the full layout (un-maximize). Esc only triggers this while a pane
-# is maximized; otherwise Esc passes through to the pty / edit mode / etc.
+# Restore the full layout, one layer per press: un-maximize first, then exit
+# wide-preview (the latter only from nav/preview focus with no modal up).
+# Otherwise Esc passes through to the pty / edit mode / etc.
 pane.restore = "Escape"
 # Wide-preview toggle (global): hide the LLM column and hand its width to the
 # preview pane — nav keeps its width. Toggle again to bring the LLM back.

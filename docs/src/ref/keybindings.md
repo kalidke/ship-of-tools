@@ -63,8 +63,8 @@ Grouped logically. Chords below are the defaults set in
 | Action | Default chord | Scope / notes |
 |--------|---------------|---------------|
 | `pane.maximize` | `Alt+=` | Maximise the focused pane to fill the window. |
-| `pane.restore` | `Escape` | Restore the full layout. `Esc` triggers this **only while a pane is maximized**; otherwise `Esc` passes through to the pty / edit mode / etc. |
-| `layout.wide_preview` | `Alt++` | Toggle wide-preview (global): hide the LLM column and hand its width to the preview pane — nav keeps its width. Focus can't land on the hidden LLM pane; a capture-ROI paste reveals it again. (`Alt+z` was avoided: the NVIDIA overlay grabs it system-wide.) |
+| `pane.restore` | `Escape` | Restore the full layout, one layer per press: un-maximize first, then exit wide-preview. Fires **only while maximized or in wide-preview** (wide-preview exit additionally requires nav/preview focus with no modal up, so pty and edit/picker `Esc` still pass through); otherwise `Esc` reaches the pty / edit mode / etc. |
+| `layout.wide_preview` | `Alt++` | Toggle wide-preview (global): hide the LLM column and hand its width to the preview pane — nav keeps its width. `Esc` from nav/preview focus also exits it. Focus can't land on the hidden LLM pane; a capture-ROI paste reveals it again. (`Alt+z` was avoided: the NVIDIA overlay grabs it system-wide.) |
 
 ### Sessions
 

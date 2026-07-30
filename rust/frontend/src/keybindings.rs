@@ -31,7 +31,8 @@ use winit::keyboard::{Key, NamedKey};
 pub enum Action {
     /// Maximise the focused pane to fill the window.
     MaximizePane,
-    /// Restore the 2×2 quadrant layout.
+    /// Restore the full layout: un-maximize, and (from the reading
+    /// panes) exit wide-preview — one layer per press.
     RestoreLayout,
     /// Toggle wide-preview: hide the LLM column and hand its width to
     /// the preview pane (nav keeps its width). Default Alt++
