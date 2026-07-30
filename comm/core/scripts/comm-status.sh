@@ -9,7 +9,9 @@
 #                (distinct from the comm-lifecycle `status` field). blocked = red
 #                (needs the USER to act); waiting = purple (a long job / subagent
 #                is still running — the session is idle-of-its-own-work but NOT
-#                free, so don't read it as available); idle = free / done.
+#                free, so don't read it as available); done = blue (finished —
+#                survives turn ends and machine turns, cleared by the next
+#                genuine prompt or any explicit report); idle = free.
 #     summary    one sentence of current (working) / just-finished (done) work.
 #                OMITTED keeps the prior summary (so `comm-status.sh idle` from a
 #                Stop hook reads "idle · last: <prior>"); pass "" to clear it.
@@ -39,10 +41,13 @@
 #     and goes green, so a forgotten purple can't lie forever.
 #
 # CANONICAL HIERARCHY (maintainer decision, 2026-07-04): blocked/red > working/green >
-# waiting/purple > idle. Red = a question pending ON THE USER: it survives
+# waiting/purple > done/blue > idle. Red = a question pending ON THE USER: it survives
 # machine-initiated turns (the working hook's machine-turn guard) and turn
 # ends (soft idle's blocked guard), clearing only on a genuine user prompt or
-# an explicit report. Green = actively working: any tool activity promotes a
+# an explicit report. Blue = a deliberate "finished" report: it gets the same
+# two protections as red (soft idle preserves it; machine turns don't flip it
+# to green) — a Monitor wake is not new work, and a turn end is not a reason
+# to erase the one state the FE's Done tone exists to display. Green = actively working: any tool activity promotes a
 # waiting row (heartbeat hook) for the turn's duration. Purple = idle with a
 # live wait (sticky demote at Stop). The hooks enforce this; the model's
 # explicit reports override everything.
@@ -104,14 +109,18 @@ if [ "$STATE" = working ] && [ "$SOFT" = 1 ]; then
 fi
 
 # Soft idle (the Stop hook): the turn-end idle floor must NOT overwrite a
-# deliberate `blocked` (pending question — would wipe red the instant it's set)
-# or a live `waiting`. And while a sticky-waiting marker is live, soft idle
-# DEMOTES to waiting (purple, sticky summary restored) instead of going green —
-# this is what makes `waiting` survive turn cycles (see header). An expired
-# marker is cleared and falls through to plain idle.
+# deliberate `blocked` (pending question — would wipe red the instant it's set),
+# a deliberate `done` (finished — the report the FE's blue tone exists to show;
+# without this guard `done` survived only from the tool call to the SAME turn's
+# Stop hook, so every done-row read idle wearing a done-shaped summary), or a
+# live `waiting`. While a sticky-waiting marker is live, soft idle DEMOTES to
+# waiting (purple, sticky summary restored) instead of going green — this is
+# what makes `waiting` survive turn cycles (see header). An expired marker is
+# cleared and falls through to plain idle.
 if [ "$STATE" = idle ] && [ "$SOFT" = 1 ]; then
     cur="$(jq -r --arg n "$NAME" '.agents[$n].state // ""' "$REGISTRY" 2>/dev/null)"
     [ "$cur" = blocked ] && exit 0
+    [ "$cur" = done ] && exit 0
     age="$(sticky_age_s)"
     if [ "$cur" = waiting ]; then
         # Already purple: stay purple while the marker is live — or when there
