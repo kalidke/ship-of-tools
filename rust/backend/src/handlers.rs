@@ -3015,9 +3015,6 @@ pub async fn handle_quarto_open(
     payload_json: serde_json::Value,
     session: &Session,
 ) -> Result<HandlerOutput> {
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine as _;
-
     let req: QuartoOpenReq = serde_json::from_value(payload_json).context("quarto.open payload")?;
     tracing::info!(path = %req.path, execute = req.execute, "quarto.open");
 
@@ -3115,13 +3112,25 @@ pub async fn handle_quarto_open(
     };
     let _ = tokio::fs::remove_file(&html_path).await;
 
+    // The HTML rides as the trailing blob, NOT base64 in the envelope: an
+    // `--embed-resources` render routinely blows past the codec's 1 MiB
+    // envelope cap (a 1.2 MiB doc base64'd to 1.6 MiB), which used to fail the
+    // write and take the whole connection down mid-session. `len` MUST equal
+    // the bytes handed to `write_frame` or the next frame desyncs onto raw
+    // HTML — see codec's `file_chunk_blob_is_consumed_no_desync`. Mirrors
+    // math.render. Dropping base64 also sheds its +33% inflation.
     let res = QuartoOpenRes {
-        html_base64: STANDARD.encode(&bytes),
+        blob: BlobDescriptor {
+            len: bytes.len() as u64,
+            mime: "text/html".to_string(),
+        },
+        // Deprecated compile-compat field; stays empty so it never serializes.
+        html_base64: String::new(),
     };
     let (_, rev) = session.snapshot().await;
     Ok(vec![(
         Frame::res(req_id, op::QUARTO_OPEN, serde_json::to_value(res)?).with_rev(rev),
-        None,
+        Some(bytes),
     )])
 }
 

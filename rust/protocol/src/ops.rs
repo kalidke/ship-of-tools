@@ -1334,13 +1334,32 @@ pub struct QuartoOpenReq {
     pub execute: bool,
 }
 
-/// `quarto.open` response — the rendered self-contained HTML, base64-encoded
-/// (Quarto's `--embed-resources` inlines all CSS/JS/images so a single blob
-/// is enough). The frontend writes it to a temp `.html` and hands it to the
-/// OS browser, reusing the `text/html` preview's open path — no HTTP server
-/// or port-forward needed.
+/// `quarto.open` response — the rendered self-contained HTML (Quarto's
+/// `--embed-resources` inlines all CSS/JS/images, so one document is enough).
+/// The frontend writes it to a temp `.html` and hands it to the OS browser,
+/// reusing the `text/html` preview's open path — no HTTP server or
+/// port-forward needed.
+///
+/// The HTML rides as the frame's **trailing blob**, not in this JSON.
+/// `--embed-resources` output routinely exceeds `codec::MAX_ENVELOPE_BYTES`
+/// (a 1.2 MiB render base64'd to 1.6 MiB), and an over-cap envelope used to
+/// kill the whole connection mid-session. `blob` is the codec's trailing-blob
+/// descriptor (`len` = the HTML byte count) — REQUIRED, or `read_frame` won't
+/// consume the appended bytes and the next frame desyncs onto raw HTML. Same
+/// shape as `MathRenderRes` / `FileChunk`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuartoOpenRes {
+    pub blob: BlobDescriptor,
+    /// DEPRECATED — always empty, and `skip_serializing_if` keeps it off the
+    /// wire entirely, so a receiver testing `payload.get("html_base64")` sees
+    /// nothing and falls through to the blob path.
+    ///
+    /// It exists only so the frontend arm still in this checkout
+    /// (`transport.rs` `PendingKind::QuartoOpen`, which reads the field off
+    /// this struct) keeps compiling. **Delete this field together with that
+    /// arm's field access** — the frontend half of this fix reads the framing
+    /// blob and does not need the struct at all.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub html_base64: String,
 }
 
