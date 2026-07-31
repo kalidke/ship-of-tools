@@ -46,7 +46,7 @@ use sot_protocol::{
     MonitorHistoryReq, MonitorHistoryRes, MonitorSubscribeRes, MonitorTickEvt, PlutoOpenReq,
     PlutoOpenRes, PreviewGetReq, PreviewGetRes, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyScrollReq,
     PtyWriteReq,
-    QuartoOpenReq, QuartoOpenRes, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt,
+    QuartoOpenReq, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt,
     ReplRunFileReq, ReplRunFileRes, TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxCreateSessionReq,
     TmuxKillSessionReq, TmuxListPanesReq, TmuxListPanesRes, TmuxListSessionsRes, TmuxPane,
     TmuxSession, ToggleHiddenReq, TreeChildrenReq, TreeChildrenRes, TreeNode, TreeRootReq,
@@ -3336,13 +3336,26 @@ fn handle_response_frame(
             }
             PendingKind::QuartoOpen => {
                 let payload = frame.payload;
-                let result = if payload.get("html_base64").is_some() {
-                    match serde_json::from_value::<QuartoOpenRes>(payload) {
-                        Ok(r) => base64::engine::general_purpose::STANDARD
-                            .decode(r.html_base64.as_bytes())
-                            .map_err(|e| format!("quarto.open base64 decode: {e}")),
-                        Err(e) => Err(format!("quarto.open res parse: {e}")),
-                    }
+                // The rendered HTML rides the framing blob, like math.render's
+                // SVG: a `--embed-resources` Quarto doc routinely exceeds the
+                // codec's 1 MiB *envelope* cap (a 1.2 MB HTML base64s to
+                // 1.61 MiB), and an oversize envelope killed the whole
+                // connection — the FE saw eof and rebuilt the nav tree.
+                //
+                // The legacy `html_base64` arm stays because the FE and the
+                // daemon are separate binaries on separate hosts and roll out
+                // independently; accepting both shapes makes the deploy order
+                // irrelevant instead of leaving a window where `o` is broken.
+                let result = if let Some(bytes) = blob {
+                    Ok(bytes)
+                } else if let Some(b64) = payload.get("html_base64").and_then(|v| v.as_str()) {
+                    // Read the field off the JSON rather than through
+                    // `QuartoOpenRes` on purpose: the struct is the daemon's to
+                    // reshape for the blob move, and this arm must keep
+                    // compiling either way.
+                    base64::engine::general_purpose::STANDARD
+                        .decode(b64.as_bytes())
+                        .map_err(|e| format!("quarto.open base64 decode: {e}"))
                 } else {
                     let msg = payload
                         .get("error")

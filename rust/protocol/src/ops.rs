@@ -1334,14 +1334,22 @@ pub struct QuartoOpenReq {
     pub execute: bool,
 }
 
-/// `quarto.open` response — the rendered self-contained HTML, base64-encoded
-/// (Quarto's `--embed-resources` inlines all CSS/JS/images so a single blob
-/// is enough). The frontend writes it to a temp `.html` and hands it to the
-/// OS browser, reusing the `text/html` preview's open path — no HTTP server
-/// or port-forward needed.
+/// `quarto.open` response — the rendered self-contained HTML (Quarto's
+/// `--embed-resources` inlines all CSS/JS/images, so one document is enough).
+/// The frontend writes it to a temp `.html` and hands it to the OS browser,
+/// reusing the `text/html` preview's open path — no HTTP server or
+/// port-forward needed.
+///
+/// The HTML rides as the frame's **trailing blob**, not in this JSON.
+/// `--embed-resources` output routinely exceeds `codec::MAX_ENVELOPE_BYTES`
+/// (a 1.2 MiB render base64'd to 1.6 MiB), and an over-cap envelope used to
+/// kill the whole connection mid-session. `blob` is the codec's trailing-blob
+/// descriptor (`len` = the HTML byte count) — REQUIRED, or `read_frame` won't
+/// consume the appended bytes and the next frame desyncs onto raw HTML. Same
+/// shape as `MathRenderRes` / `FileChunk`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuartoOpenRes {
-    pub html_base64: String,
+    pub blob: BlobDescriptor,
 }
 
 /// `file.download` request — absolute backend-host path to stream down.

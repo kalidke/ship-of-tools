@@ -1534,7 +1534,38 @@ where
         };
 
         for (out_frame, out_blob) in out_frames {
-            write_frame_to(&mut tx, &out_frame, out_blob.as_deref()).await?;
+            if let Err(e) = write_frame_to(&mut tx, &out_frame, out_blob.as_deref()).await {
+                // An over-cap envelope is NOT a broken socket, so it must not
+                // end the connection. `codec::write_frame` validates the size
+                // before writing a single byte, so nothing reached the wire and
+                // the stream is still consistent — we can answer this request
+                // with a small error frame and keep serving. (A `quarto.open`
+                // response used to exceed the cap and tear the session down;
+                // its HTML now rides the blob path, but any future oversize
+                // payload should degrade to one failed request, not a drop.)
+                //
+                // Every other write failure — including the write-timeout
+                // "peer not draining" bail, which is a different error type —
+                // still propagates and drops the connection: mid-write there is
+                // no guarantee about what reached the wire.
+                if let Some(too_large) = e.downcast_ref::<codec::EnvelopeTooLarge>() {
+                    tracing::warn!(
+                        op = %out_frame.op,
+                        id = out_frame.id,
+                        len = too_large.len,
+                        cap = too_large.cap,
+                        "response envelope over cap — answering with error frame, keeping connection"
+                    );
+                    let payload = serde_json::json!({
+                        "error": format!("{too_large}"),
+                        "code": "envelope_too_large",
+                    });
+                    let err_frame = Frame::res(out_frame.id, &out_frame.op, payload);
+                    write_frame_to(&mut tx, &err_frame, None).await?;
+                    continue;
+                }
+                return Err(e);
+            }
         }
     }
 }
@@ -1865,6 +1896,104 @@ mod tests {
             "a non-draining peer must trip the write timeout"
         );
         assert!(res.unwrap_err().to_string().contains("not draining"));
+    }
+
+    // Guards the containment path END TO END, not just at the codec. The write
+    // loop in `handle_connection` keeps the connection alive for an over-cap
+    // envelope only because it can `downcast_ref::<EnvelopeTooLarge>()` on what
+    // `write_frame_within` hands back. The codec-level test proves the codec
+    // produces the type; this one proves the type still SURVIVES the server's
+    // own wrapper. Without it, a rewrite of that wrapper could silently send
+    // every oversize response back to dropping the connection while the whole
+    // suite stayed green.
+    //
+    // Note which rewrites are actually dangerous: adding `.context(...)` is
+    // SAFE — anyhow searches the whole chain, and this test pins that so nobody
+    // "fixes" a non-problem. What breaks the downcast is reformatting the error
+    // into a fresh string (`anyhow!("write failed: {e}")`, `bail!`, or a
+    // `map_err` that stringifies), which discards the concrete type.
+    #[tokio::test]
+    async fn oversize_envelope_stays_downcastable_through_write_frame_within() {
+        use super::write_frame_within;
+        use anyhow::Context as _;
+        use sot_protocol::codec::{EnvelopeTooLarge, MAX_ENVELOPE_BYTES};
+        use sot_protocol::Frame;
+
+        let mut sink: Vec<u8> = Vec::new();
+        let huge = "x".repeat(MAX_ENVELOPE_BYTES + 1);
+        let frame = Frame::res(1, "quarto.open", serde_json::json!({ "html": huge }));
+        let err = write_frame_within(
+            &mut sink,
+            &frame,
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .expect_err("an over-cap envelope must error");
+
+        assert!(
+            err.downcast_ref::<EnvelopeTooLarge>().is_some(),
+            "handle_connection's containment matches on this type — if the wrapper \
+             stops preserving it, oversize responses silently drop connections again"
+        );
+        assert!(
+            sink.is_empty(),
+            "nothing may reach the wire, or containment is unsafe"
+        );
+
+        // A `.context()` layer must NOT defeat the match (anyhow walks the chain).
+        let wrapped = Err::<(), _>(err).context("write envelope").unwrap_err();
+        assert!(
+            wrapped.downcast_ref::<EnvelopeTooLarge>().is_some(),
+            "context-wrapping is safe; only stringifying the error breaks the downcast"
+        );
+    }
+
+    // The timeout bail must NOT be mistaken for an over-cap envelope: a peer
+    // that stopped draining is a genuinely broken socket and has to stay fatal,
+    // so containment must not swallow it.
+    #[tokio::test]
+    async fn write_timeout_is_not_confused_with_an_oversize_envelope() {
+        use super::write_frame_within;
+        use sot_protocol::codec::EnvelopeTooLarge;
+        use sot_protocol::Frame;
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+        use tokio::io::AsyncWrite;
+
+        struct StuckWriter;
+        impl AsyncWrite for StuckWriter {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                _: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                Poll::Pending
+            }
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+                Poll::Pending
+            }
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Pending
+            }
+        }
+
+        let frame = Frame::evt("test.stall", serde_json::json!({"k": "v"}));
+        let err = write_frame_within(
+            &mut StuckWriter,
+            &frame,
+            None,
+            std::time::Duration::from_millis(50),
+        )
+        .await
+        .expect_err("a non-draining peer must trip the write timeout");
+        assert!(
+            err.downcast_ref::<EnvelopeTooLarge>().is_none(),
+            "a stuck peer must stay fatal — containment must not catch it"
+        );
     }
 
     #[tokio::test]
