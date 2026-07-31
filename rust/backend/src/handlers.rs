@@ -2556,6 +2556,31 @@ pub async fn handle_math_render(
     }
 }
 
+/// Duplicate-root gate lookup (ADR 0036 Phase 1): the first registered
+/// workspace whose `project_root` canonicalizes to `candidate_canon` while
+/// carrying a slug OTHER than `incoming_slug`. Same-slug matches are
+/// deliberately invisible here — a same-slug create is the id-preserving
+/// metadata refresh `Workspaces::insert` has always performed, and boot/spawn
+/// flows rely on that idempotence. A registered root that no longer
+/// canonicalizes (deleted dir, dangling symlink) is skipped, not fatal:
+/// judging that workspace is the Phase 2 reap's job, not the create path's.
+fn find_other_workspace_with_root(
+    candidate_canon: &std::path::Path,
+    incoming_slug: &str,
+    workspaces: &[std::sync::Arc<crate::workspaces::Workspace>],
+) -> Option<std::sync::Arc<crate::workspaces::Workspace>> {
+    workspaces
+        .iter()
+        .find(|w| {
+            w.slug != incoming_slug
+                && w.project_root
+                    .canonicalize()
+                    .map(|c| c == candidate_canon)
+                    .unwrap_or(false)
+        })
+        .cloned()
+}
+
 /// Canonicalizes `path` and returns it if it resolves under `root`'s
 /// canonical form — `None` on any canonicalization failure (missing path,
 /// dangling symlink, ...) or if it escapes `root`.
@@ -3568,6 +3593,47 @@ pub async fn handle_workspace_create(
         )]);
     }
 
+    // Duplicate-root gate (ADR 0036 Phase 1): one project root, one workspace
+    // identity. A second registration for an already-registered root would
+    // persist a TOML the daemon then faithfully respawns on every boot, and
+    // hands two agent sessions one shared working tree (the collision class
+    // worktrees exist to prevent). Compared by canonical path on BOTH sides so
+    // symlinked spellings of one directory still collide; refused only for a
+    // DIFFERENT slug (same-slug create = the long-standing id-preserving
+    // refresh, still allowed). The `existing` block lets the caller offer
+    // "switch to that workspace" instead of dead-ending. Canonicalization
+    // failure on the candidate skips the gate rather than failing the create —
+    // prevention must not make creation less reliable than it is today.
+    let incoming_slug = crate::paths::slug(&req.label);
+    match project_root.canonicalize() {
+        Ok(canon) => {
+            if let Some(existing) =
+                find_other_workspace_with_root(&canon, &incoming_slug, &workspaces.list())
+            {
+                let payload = json!({
+                    "error": format!(
+                        "project_root is already registered as workspace '{}' (slug '{}')",
+                        existing.label, existing.slug
+                    ),
+                    "code": "duplicate_root",
+                    "existing": {
+                        "workspace_id": existing.workspace_id,
+                        "slug": existing.slug,
+                        "label": existing.label,
+                    },
+                });
+                return Ok(vec![(
+                    Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                    None,
+                )]);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, project_root = %req.project_root,
+                "duplicate-root gate skipped — candidate did not canonicalize");
+        }
+    }
+
     // Name validation (security review): `agent_name` is persisted and later
     // spliced RAW (no quoting) into a shell command string by
     // `pty::boot_wrapper_command` (`export SOT_COMM_NAME={agent_name}; …`).
@@ -4363,6 +4429,98 @@ fn into_proto_pane(p: crate::tmux::PaneInfo) -> TmuxPane {
         width: p.width,
         height: p.height,
         active: p.active,
+    }
+}
+
+#[cfg(test)]
+mod duplicate_root_tests {
+    use super::find_other_workspace_with_root;
+    use crate::workspaces::Workspace;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    /// Unique on-disk dir per test (no tempfile dev-dep; pid + a counter keep
+    /// parallel tests from colliding). Never cleaned up — OS temp is fine.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "sot-duproot-{}-{}-{}",
+            std::process::id(),
+            tag,
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&d).expect("create scratch dir");
+        d
+    }
+
+    fn ws(label: &str, root: &Path) -> Arc<Workspace> {
+        Arc::new(Workspace::from_label(
+            label,
+            root.to_path_buf(),
+            false,
+            "none".into(),
+            String::new(),
+            String::new(),
+        ))
+    }
+
+    #[test]
+    fn same_root_different_slug_is_found() {
+        let root = scratch_dir("hit");
+        let existing = vec![ws("sot", &root)];
+        let canon = root.canonicalize().unwrap();
+        let hit = find_other_workspace_with_root(&canon, "ship-of-tools", &existing)
+            .expect("a second identity for one root must be caught");
+        assert_eq!(hit.slug, "sot");
+    }
+
+    #[test]
+    fn same_slug_is_invisible_so_refresh_stays_allowed() {
+        // A same-slug create is Workspaces::insert's id-preserving metadata
+        // refresh; the gate must not turn that idempotent path into an error.
+        let root = scratch_dir("refresh");
+        let existing = vec![ws("sot", &root)];
+        let canon = root.canonicalize().unwrap();
+        assert!(find_other_workspace_with_root(&canon, "sot", &existing).is_none());
+    }
+
+    #[test]
+    fn different_roots_pass() {
+        let a = scratch_dir("a");
+        let b = scratch_dir("b");
+        let existing = vec![ws("sot", &a)];
+        let canon = b.canonicalize().unwrap();
+        assert!(find_other_workspace_with_root(&canon, "other", &existing).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_spelling_of_a_registered_root_still_collides() {
+        // The incident shape with a twist: the duplicate is registered via a
+        // symlink to the same directory. Canonical comparison must see through
+        // it — path-string comparison would not.
+        let root = scratch_dir("real");
+        let link = std::env::temp_dir().join(format!("sot-duproot-link-{}", std::process::id()));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&root, &link).expect("create symlink");
+        let existing = vec![ws("sot", &link)];
+        let canon = root.canonicalize().unwrap();
+        let hit = find_other_workspace_with_root(&canon, "ship-of-tools", &existing)
+            .expect("symlinked duplicate must be caught");
+        assert_eq!(hit.slug, "sot");
+    }
+
+    #[test]
+    fn registered_root_that_no_longer_resolves_is_skipped_not_fatal() {
+        // A workspace whose root was deleted is Phase 2's (reap) problem; the
+        // gate must neither match it nor error on it.
+        let gone = std::env::temp_dir().join(format!("sot-duproot-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&gone);
+        let live = scratch_dir("live");
+        let existing = vec![ws("dead", &gone)];
+        let canon = live.canonicalize().unwrap();
+        assert!(find_other_workspace_with_root(&canon, "other", &existing).is_none());
     }
 }
 
