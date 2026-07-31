@@ -72,6 +72,16 @@ at another handle (a sibling `win-fe-<otherhost>`, `backend-dev`) and true
 broadcasts (`to:""`) are FYIs — anything broadcast that matters is also on the
 durable git-bus (`/bus-sync`).
 
+Read your OWN outbound too (`from:<your handle>`) — a relaunch keeps the handle
+and discards the context, so this session is accountable for messages it never
+wrote and has no memory of. Before contradicting a peer's account of what "you"
+said, grep the record: `grep '"from":"<handle>"' fe-inbox.jsonl`. Scope every
+denial to the session — *"no record in this session, I was relaunched at HH:MMZ"*,
+never *"that never happened"*. A 2026-07-31 incident: a post-relaunch FE session
+denied a pre-relaunch approval relay that was authentic and sitting in its own
+inbox, and the backend went looking for a message-forging bug. Never re-assert a
+prior session's commitment as your own — send the peer to the owner.
+
 PowerShell backlog check:
 
 ```powershell

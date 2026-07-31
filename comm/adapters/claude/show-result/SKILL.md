@@ -112,6 +112,49 @@ reply where the figure is badged.
 backend creates the workspace). If unset (an *attached* or re-shelled pane), strip
 `sot-be-` from your tmux session name — the one-liner above does both.
 
+### From a FRONTEND session (the FE's Terminal drawer) — two things differ
+
+Everything above assumes a booted **backend** session. A Claude running in the
+Windows FE Terminal drawer (`win-fe-<host>`, bootstrapped by
+`/sot-fe-session-start`) has neither of the things the auto-discovery relies on,
+and fails in a way that reads like a dead daemon:
+
+```
+ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or $SOT_FE_ENDPOINT).
+```
+
+That message appears **even with the tunnel plainly working**. Two similarly-named
+variables carry the same value to different tools, and only one of them is set for
+you:
+
+| Variable | Read by | Set by `/sot-fe-session-start`? |
+|---|---|---|
+| `SOT_RELAY_ENDPOINT` | `comm-relay.sh` (messaging) | **yes** |
+| `SOT_FE_ENDPOINT` | `sot-fe` (`preview` / `docs` / `open-url`) | **no** — export it yourself |
+
+The two fixes:
+
+1. **`sot-fe` reads `$SOT_FE_ENDPOINT`, *not* `$SOT_RELAY_ENDPOINT`.**
+   `/sot-fe-session-start` exports only the latter, so a bootstrapped FE session
+   has a working tunnel that `sot-fe` cannot see. Export both — same value, the
+   FE's local forwarded port:
+
+   ```bash
+   export SOT_FE_ENDPOINT="tcp:127.0.0.1:${SOT_PORT:-18743}"
+   ```
+
+2. **Pass the workspace slug explicitly — it cannot be derived here.** There is no
+   tmux on the FE box and `$SOT_WORKSPACE` is unset, so the `WS=` one-liner above
+   yields an empty slug and shows nothing. Name the target workspace:
+
+   ```bash
+   ~/.sot-comm/bin/sot-fe preview sot examples/preview/quarto_julia.qmd
+   ```
+
+The path stays **workspace-relative and backend-side** — it is resolved against the
+target workspace on the daemon's disk, not against the FE machine's checkout, even
+though you are typing it on the FE. Same two rules apply to `docs` and `open-url`.
+
 ## `--caption` — say what the figure IS
 
 **Images only.** A caption is drawn in a band UNDER the figure (the image shrinks to
