@@ -1350,17 +1350,6 @@ pub struct QuartoOpenReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuartoOpenRes {
     pub blob: BlobDescriptor,
-    /// DEPRECATED — always empty, and `skip_serializing_if` keeps it off the
-    /// wire entirely, so a receiver testing `payload.get("html_base64")` sees
-    /// nothing and falls through to the blob path.
-    ///
-    /// It exists only so the frontend arm still in this checkout
-    /// (`transport.rs` `PendingKind::QuartoOpen`, which reads the field off
-    /// this struct) keeps compiling. **Delete this field together with that
-    /// arm's field access** — the frontend half of this fix reads the framing
-    /// blob and does not need the struct at all.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub html_base64: String,
 }
 
 /// `file.download` request — absolute backend-host path to stream down.

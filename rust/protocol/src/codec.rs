@@ -194,14 +194,13 @@ mod tests {
                 len: html.len() as u64,
                 mime: "text/html".into(),
             },
-            html_base64: String::new(),
         };
         let payload = serde_json::to_value(&res).unwrap();
-        // The deprecated field must not reach the wire at all: a receiver that
-        // gates on `html_base64` being present must fall through to the blob.
+        // No `html_base64` on the wire: receivers still carrying the legacy
+        // raw-JSON arm gate on its presence and must fall through to the blob.
         assert!(
             payload.get("html_base64").is_none(),
-            "deprecated html_base64 must be skipped when empty"
+            "legacy html_base64 must not appear in the blob-path payload"
         );
         let f1 = Frame::res(3, "quarto.open", payload);
         write_frame(&mut wire, &f1, Some(&html))

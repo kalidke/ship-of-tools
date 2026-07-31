@@ -3124,8 +3124,6 @@ pub async fn handle_quarto_open(
             len: bytes.len() as u64,
             mime: "text/html".to_string(),
         },
-        // Deprecated compile-compat field; stays empty so it never serializes.
-        html_base64: String::new(),
     };
     let (_, rev) = session.snapshot().await;
     Ok(vec![(
