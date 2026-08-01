@@ -58,6 +58,13 @@
 //                                   # Linux XDG_DOWNLOAD_DIR/~/Downloads, mac
 //                                   # ~/Downloads), falling back to cwd.
 //
+//   [gpu]
+//   power_preference = "low"        # low (default, integrated) | high
+//                                   # (discrete). "low" keeps the dGPU
+//                                   # asleep on hybrid-graphics laptops.
+//                                   # Binds at surface creation — needs a
+//                                   # frontend restart to take effect.
+//
 // `columns` lists named slots in left-to-right order; `widths` is the
 // matching fractional split (must sum to ~1.0; values renormalised on
 // parse). Valid slot names: nav, preview, llm. The drawer is a
@@ -90,6 +97,41 @@ impl PresetMode {
             "ultrawide" => Some(PresetMode::Ultrawide),
             "laptop" => Some(PresetMode::Laptop),
             "portrait" => Some(PresetMode::Portrait),
+            _ => None,
+        }
+    }
+}
+
+/// Which GPU the frontend asks wgpu for at adapter selection.
+///
+/// We render glyph quads and image blits — a 2D workload an integrated
+/// GPU handles comfortably — so `Low` is the default. On hybrid-graphics
+/// laptops (Optimus and friends) asking for the discrete GPU keeps it
+/// awake for the whole session: measured ~11 W / 54 C on an idle RTX 4070
+/// drawing a text UI (2026-07-31). The cost is the dGPU's inability to
+/// power-gate while it owns an active surface, not the Optimus frame copy
+/// (which is cheap at our sizes), so the fix is "don't wake it".
+///
+/// On single-adapter machines this is a no-op: with only an iGPU present,
+/// `High` already resolves to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuPowerPreference {
+    /// Prefer the integrated / low-power adapter. Default.
+    Low,
+    /// Prefer the discrete / high-performance adapter. For desktops with a
+    /// real GPU, or if a low-power adapter renders incorrectly.
+    High,
+}
+
+impl GpuPowerPreference {
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            // The wgpu spellings are accepted too — the user reading
+            // gpu.rs shouldn't have to translate.
+            "low" | "low_power" | "lowpower" | "integrated" => Some(GpuPowerPreference::Low),
+            "high" | "high_performance" | "highperformance" | "discrete" => {
+                Some(GpuPowerPreference::High)
+            }
             _ => None,
         }
     }
@@ -260,6 +302,15 @@ pub struct Settings {
     /// `default_font_scale_for_width`) > 1.0. Maintainer note, 2026-07-03: default was
     /// "a bit small" on big monitors.
     pub font_scale: Option<f32>,
+    /// `[gpu] power_preference` — which adapter to request from wgpu.
+    /// Default [`GpuPowerPreference::Low`] (integrated), which keeps the
+    /// discrete GPU asleep on hybrid-graphics laptops.
+    ///
+    /// **Takes effect on the next frontend start.** The preference binds
+    /// once, at adapter/surface creation in `State::new`, so editing this
+    /// key mid-session does nothing until the frontend restarts
+    /// (`scripts/relaunch-sot.ps1`, ADR 0017).
+    pub gpu_power_preference: GpuPowerPreference,
 }
 
 impl Default for Settings {
@@ -275,6 +326,7 @@ impl Default for Settings {
             downloads_dir: None,
             new_session_root: None,
             font_scale: None,
+            gpu_power_preference: GpuPowerPreference::Low,
         }
     }
 }
@@ -374,6 +426,11 @@ impl Settings {
                     Ok(v) if (0.5..=3.0).contains(&v) => self.font_scale = Some(v),
                     _ => tracing::warn!(line = lineno + 1, value = %value,
                         "font.scale: expected a number in [0.5, 3.0]"),
+                },
+                ("gpu", "power_preference") => match GpuPowerPreference::parse(&value) {
+                    Some(p) => self.gpu_power_preference = p,
+                    None => tracing::warn!(line = lineno + 1, value = %value,
+                        "gpu.power_preference: expected low|high"),
                 },
                 ("terminal", "shell") => {
                     self.terminal_shell = parse_terminal_shell(&value);
@@ -650,6 +707,29 @@ mod tests {
         // Garbage value leaves the prior setting untouched.
         s.merge_text("[repl]\nauto_open_drawer_on_run = banana\n");
         assert!(s.repl_auto_open_drawer_on_run);
+    }
+
+    #[test]
+    fn gpu_power_preference_defaults_low_and_parses() {
+        // The default is what keeps the dGPU asleep on hybrid laptops —
+        // regressing it silently costs battery, so pin it.
+        assert_eq!(
+            Settings::default().gpu_power_preference,
+            GpuPowerPreference::Low
+        );
+        let mut s = Settings::default();
+        s.merge_text("[gpu]\npower_preference = \"high\"\n");
+        assert_eq!(s.gpu_power_preference, GpuPowerPreference::High);
+        s.merge_text("[gpu]\npower_preference = \"low\"\n");
+        assert_eq!(s.gpu_power_preference, GpuPowerPreference::Low);
+        // wgpu's own spellings work, and case is ignored.
+        s.merge_text("[gpu]\npower_preference = \"HighPerformance\"\n");
+        assert_eq!(s.gpu_power_preference, GpuPowerPreference::High);
+        s.merge_text("[gpu]\npower_preference = \"low_power\"\n");
+        assert_eq!(s.gpu_power_preference, GpuPowerPreference::Low);
+        // Garbage leaves the prior value untouched.
+        s.merge_text("[gpu]\npower_preference = banana\n");
+        assert_eq!(s.gpu_power_preference, GpuPowerPreference::Low);
     }
 
     #[test]
