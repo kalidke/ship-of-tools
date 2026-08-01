@@ -16611,13 +16611,21 @@ impl ApplicationHandler for App {
                         // arm, so they still exit/switch the pane; Tab falls
                         // through to the PTY for shell completion.
                         if state.drawer == DrawerContent::Terminal {
-                            // Shift+PageUp/PageDown drive our scrollback ring
-                            // (the conventional emulator-scrollback chord that
-                            // apps ignore), so claude/the shell keep plain
-                            // PageUp. One-third-pane step like the REPL pane.
+                            // Plain PageUp/PageDown page our scrollback ring —
+                            // same convention as the LLM pane, so claude in
+                            // the drawer scrolls like claude in the LLM pane.
+                            // Alternate-screen apps (vim/less) page themselves,
+                            // so they get the raw key; Shift+PgUp/PgDn is the
+                            // escape hatch that hands a primary-screen app the
+                            // plain key. One-third-pane step like the REPL pane.
                             let h = state.pane_rects.repl.height as i32;
                             let page_step = (h / 3).max(1);
-                            if shift {
+                            let alt_screen = state
+                                .local_term
+                                .as_ref()
+                                .map(|t| t.screen().alternate_screen())
+                                .unwrap_or(false);
+                            if !shift && !alt_screen {
                                 match &event.logical_key {
                                     Key::Named(NamedKey::PageUp) => {
                                         let new = (state.term_scroll as i32 + page_step).max(0);
