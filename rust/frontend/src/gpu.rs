@@ -3484,6 +3484,13 @@ impl State {
         let persisted_geom = crate::state_persistence::load();
         let init_w = persisted_geom.window_w.unwrap_or(1536.0);
         let init_h = persisted_geom.window_h.unwrap_or(1050.0);
+        // Loaded here rather than at first use (the Terminal-drawer resume,
+        // far below) because adapter selection needs `[gpu] power_preference`
+        // and that happens a few dozen lines down. Pure env+fs, no dependency
+        // on the window or event loop. ONE load — a second call would log
+        // "settings loaded" twice and could disagree if the file changed
+        // mid-startup.
+        let settings = Settings::load_layered();
         // Cross-platform window icon, decoded at runtime from the logo PNG that is
         // embedded into the binary at compile time — no Windows .rc/winres
         // resource compiler, so the build needs no extra tooling and is identical
@@ -3563,12 +3570,31 @@ impl State {
             .create_surface(window.clone())
             .context("failed to create wgpu surface")?;
 
+        // We draw glyph quads and image blits — a 2D workload an integrated
+        // GPU handles fine — so the default is LowPower. Asking for the
+        // discrete adapter on a hybrid-graphics laptop keeps it awake for the
+        // whole session (~11 W measured on an idle RTX 4070, 2026-07-31); an
+        // awake dGPU cannot power-gate. `[gpu] power_preference = "high"`
+        // opts back in for desktops with a real GPU. No-op on single-adapter
+        // machines, where HighPerformance already resolved to the iGPU.
+        // Binds once, here — changing the key needs an FE restart.
+        let power_preference = match settings.gpu_power_preference {
+            crate::settings::GpuPowerPreference::Low => wgpu::PowerPreference::LowPower,
+            crate::settings::GpuPowerPreference::High => wgpu::PowerPreference::HighPerformance,
+        };
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
+            power_preference,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))
         .context("no compatible wgpu adapter found")?;
+        tracing::info!(
+            requested = ?settings.gpu_power_preference,
+            adapter = %adapter.get_info().name,
+            device_type = ?adapter.get_info().device_type,
+            backend = ?adapter.get_info().backend,
+            "wgpu adapter selected"
+        );
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -3827,7 +3853,8 @@ impl State {
         // start/restart also bootstraps the dogfood session (e.g. re-arming
         // fast comm via `/sot-fe-session-start`), not just the exit-75 loop.
         // With neither, the FE opens clean (drawer closed).
-        let settings = Settings::load_layered();
+        // (`settings` is loaded once at the top of this fn — the adapter
+        // request needs it well before this point.)
         // The ADR-0017 supervisor exports SOT_REPO_DIR so the resume shell lands
         // in the repo dir rather than $HOME (the wrong-folder relaunch, observed
         // 2026-06-25).

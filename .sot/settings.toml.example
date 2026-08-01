@@ -47,3 +47,14 @@ new_session_root = "/home/me/dev"
 # win). Unset: a built-in monitor tier applies — displays >= 3440 px wide
 # default to 1.1, others 1.0.
 # scale = 1.1
+
+[gpu]
+# Which adapter to request from wgpu: "low" (integrated, DEFAULT) or "high"
+# (discrete). The frontend draws glyph quads and image blits, which an
+# integrated GPU handles fine, so it defaults to low power. On a
+# hybrid-graphics laptop, asking for the discrete GPU keeps it awake for the
+# whole session (~11 W measured on an idle RTX 4070) because an active
+# surface stops it power-gating. Set "high" on a desktop with a real GPU, or
+# if the integrated adapter renders incorrectly. No-op on single-adapter
+# machines. BINDS AT STARTUP — restart the frontend for a change to apply.
+# power_preference = "high"

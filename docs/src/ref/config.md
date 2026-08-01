@@ -65,6 +65,26 @@ relaunch deaf-window gap — a resumed `--continue` is reactive and cannot self-
 a monitor, so the frontend bootstraps it via this prompt. Iterate on the
 bootstrap steps in that skill, not in this command.
 
+### `[gpu]`
+
+| Key | Type | Values | Default | Meaning |
+|-----|------|--------|---------|---------|
+| `power_preference` | string | `low` · `high` | `low` | Which adapter to request from wgpu. `low` prefers the integrated GPU; `high` prefers the discrete one. wgpu's own spellings (`low_power`, `high_performance`) and `integrated`/`discrete` are accepted; case is ignored. |
+
+The frontend renders glyph quads and image blits — a 2D workload an integrated
+GPU handles comfortably — so it asks for the **low-power adapter by default**. On
+a hybrid-graphics laptop, requesting the discrete GPU keeps it awake for the
+entire session (measured ~11 W on an otherwise idle RTX 4070): an active surface
+prevents the dGPU from power-gating. Set `high` if you are on a desktop with a
+real GPU, or if the integrated adapter renders incorrectly.
+
+On single-adapter machines the key is a **no-op** — with only an integrated GPU
+present, `high` already resolves to it.
+
+> **Takes effect on the next frontend start.** The preference binds once, when
+> the adapter and surface are created at startup, so editing this key mid-session
+> changes nothing until the frontend restarts.
+
 ### Example
 
 ```toml
@@ -79,6 +99,9 @@ drawer_height = "0.35"
 
 [terminal]
 resume_command = "claude --dangerously-skip-permissions --continue /sot-fe-session-start"
+
+[gpu]
+power_preference = "low"        # low (integrated, default) | high (discrete)
 ```
 
 ## `hosts.toml`
