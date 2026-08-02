@@ -217,6 +217,10 @@ output file, a built doc — push it to their FE preview and tell them it's up.*
 figure left on disk and merely *named* in text defeats the whole premise. This is
 not optional polish; it is how a session delivers a visual result. Be aggressive:
 any saved plot, generated image, rendered doc, or notable output is a candidate.
+**But one at a time** — the preview (and the pending badge) is a SINGLE slot; each
+`preview` replaces the last, so a burst of shows delivers only the final one.
+One artifact per result: composite multiple images into one figure, or pace the
+rest on the user's ask.
 
 Use the `sot-fe` command (the **op::FE_COMMAND** channel — built + shipped,
 ADR-0025):
