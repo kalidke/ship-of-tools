@@ -51,6 +51,11 @@ a built site — put it in the user's nav pane BEFORE telling them it's done:
 Show what is asked, unconditionally; your critical read rides along in text.
 Never end a turn that merely *names* a result path without having shown it.
 
+One at a time: the preview (and the pending badge) is a single slot — each
+show REPLACES the last, so a burst of shows delivers only the final image.
+Composite multi-image results into one figure, or pace shows on the user's
+ask.
+
 ## House rules (the short list)
 
 - **This repo is the manual.** `$SOT_MANUAL` points at the product checkout:

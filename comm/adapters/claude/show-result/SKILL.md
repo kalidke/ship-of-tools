@@ -65,10 +65,12 @@ the ask and the show.** Your judgment happens AFTER the badge, as words:
 - **Then `Read`-view what you showed** and give the user your read of it —
   for an analysis result, a one-line critical eval belongs WITH the figure
   ("full-field render, reads near-black at this scale; `panel_mapn.png` is
-  the legible crop — badged as well").
-- Additional context is ADDITIVE: badge companion artifacts too if they help;
-  never un-show, never silently swap, never offer to regenerate something
-  that already exists.
+  the legible crop — say the word and I'll show it next").
+- Additional context is ADDITIVE — **in words, not extra badges**: the preview
+  is ONE slot and a later show replaces the earlier one (see "One slot"
+  below), so badge the file that was asked for and NAME companions in your
+  reply; show one when the user asks. Never un-show, never silently swap,
+  never offer to regenerate something that already exists.
 
 Why this rule exists (2026-07-03 incident): a session spent ~10 min and four
 user corrections NOT showing a figure that existed — filename-guessing,
@@ -107,6 +109,16 @@ the user's session. `--urgent --fe <handle>` is the explicit focus-capture
 variant for when the user ASKS to see something now (a broadcast `--urgent`
 is stripped FE-side — it cannot yank every screen). Tell the user in your
 reply where the figure is badged.
+
+**One slot — the LAST show wins.** The preview pane holds ONE file, and so
+does the pending badge: every `show-result` REPLACES the previous one,
+including a badge the user hasn't consumed yet. Fire four shows in a burst
+and the user sees only the fourth — the first three silently vanish. So
+show ONE artifact per result. When several images genuinely belong
+together, composite them into a single figure first (a CairoMakie grid /
+montage is a few lines) and show THAT; otherwise show sequentially, paced
+by the user — badge the first, name the rest in your reply, show the next
+when they ask.
 
 **Discover your slug — never guess it.** Prefer `$SOT_WORKSPACE` (stamped when the
 backend creates the workspace). If unset (an *attached* or re-shelled pane), strip
@@ -191,6 +203,8 @@ command errored.
 
 - **Don't spam.** Preview the ONE best artifact per result/milestone — for many outputs,
   the entry point (`index.html`, the final PDF, the main figure) — not every file/frame.
+  It's futile anyway: one slot, last show wins — a burst of badges delivers only the
+  final one.
 - **Don't preview huge or unrenderable things.** Massive logs/CSVs, build dirs, raw
   video (video shows a *poster only* — ADR 0018). Use `reveal` (cursor, no body) or
   `notify`, or just name the path.
