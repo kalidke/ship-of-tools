@@ -136,7 +136,9 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
 4. **Launch**: `sot.exe --tcp 127.0.0.1:18743` (`sot.exe --help` prints the
    full flag set). Optionally persist the connection in
    `%APPDATA%\sot\hosts.toml` (config discovery: `$SOT_HOSTS` →
-   `<repo>/.sot/hosts.toml` → `%APPDATA%\sot\hosts.toml`).
+   `.sot\hosts.toml` relative to the **current directory** — so the repo file
+   is only picked up when launching from the repo root — →
+   `%APPDATA%\sot\hosts.toml`, the reliable location for manual launches).
 
    `sot.exe` does NOT open the SSH forward itself — the tunnel is yours (or
    a launcher's).
