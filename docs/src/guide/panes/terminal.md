@@ -12,6 +12,21 @@ pressing another swaps it in place.
 | `Ctrl+T` | → Terminal | → closed | → Terminal |
 | `Ctrl+J` | → REPL | → closed | → REPL |
 
+## Scrollback
+
+Plain `PgUp`/`PgDn` page the drawer's scrollback ring (a one-third-pane step,
+the same convention as the LLM pane) — so a `claude` session running here
+scrolls exactly like one in the LLM pane. Typing snaps back to the live tail.
+Two escape hatches keep full-screen apps working:
+
+- Apps on the **alternate screen** (`vim`, `less`) page themselves — they
+  receive the raw key automatically.
+- `Shift+PgUp`/`Shift+PgDn` forwards a plain `PgUp`/`PgDn` to a
+  primary-screen app that wants the key itself.
+
+The mouse wheel scrolls the same ring, or is forwarded as SGR mouse events
+when the running app has enabled mouse tracking (`vim`, `htop`).
+
 ## The dev session lives here
 
 When Ship of Tools is developed on itself, the dev `claude` session runs **inside

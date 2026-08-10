@@ -94,7 +94,7 @@ need depth over breadth.
 
 ## See your work, at full fidelity
 
-- **Native previews** of images (PNG), **PDF** (paged, rasterized in-pane),
+- **Native previews** of images (PNG, JPEG, GIF, WebP, BMP), **PDF** (paged, rasterized in-pane),
   markdown, JSON, syntax-highlighted source, and typeset **math** — drawn by
   Ship of Tools itself, never truncated to text. See [Previews](guide/previews.md).
 - **Pan and zoom figures.** Zoom into any image preview; same-size figures in a
@@ -123,6 +123,10 @@ need depth over breadth.
   screen, with aspect-ratio presets (ultrawide / laptop / portrait). It is at
   its best on an **ultrawide** display, and fully usable on a **laptop or 4K**
   screen. See [Configuration Files](ref/config.md).
+- **Easy on hybrid-graphics laptops** — the frontend requests the integrated
+  GPU by default, so the discrete GPU stays power-gated instead of burning
+  ~11 W to draw a text UI; `[gpu] power_preference = "high"` opts a real
+  desktop GPU back in ([Configuration Files](ref/config.md)).
 - **Rebuild the frontend without losing your session.**
 
 <small>\* macOS support is wired through the release installer but remains experimental.</small>

@@ -24,8 +24,8 @@ jobs:
       matrix:
         version:
           # 1.12 is the product-wide compat floor (ADR 0030, 2026-07-02:
-          # "we can require 1.12") — the fleet dogfoods 1.12, the julia bundle
-          # pins channel 1.12.
+          # "we can require 1.12") — the fleet dogfoods 1.12, and the
+          # installer pins juliaup channel 1.12 (the julia bundle is retired).
           - '1.12'
           - 'pre'
         os:

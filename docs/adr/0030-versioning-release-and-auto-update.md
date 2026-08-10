@@ -6,6 +6,15 @@ next launch; remote-BE-over-SSH is the design — all-in-one uses the same SSH p
 localhost, SSH key auth to the BE host is a hard requirement)
 **Date:** 2026-07-01
 
+> **Superseded in part (2026-08-10 note):** two claims above and in the body
+> drifted from the shipped implementation — read the **Amendment 2026-07-04**
+> below first. (1) The **julia bundle is retired**: every `julia-bundle-*`
+> asset / unpack-and-symlink passage below describes the pre-amendment
+> design; installs now clone the repo at the release tag. (2) The implemented
+> `--local` role connects over the **local Unix socket directly** — SSH key
+> auth is a hard requirement only for remote-backend layouts, not
+> all-in-one.
+
 ## Context
 
 Ship of Tools is going public: other users should be able to install prebuilt binaries and
@@ -92,7 +101,7 @@ One git tag → one GitHub Release containing:
   `smoke-macos`, so releases cannot silently omit the macOS artifact. The
   platform remains product-experimental in user-facing docs until dogfooded,
   but a macOS build/smoke failure fails the release.)*
-- `julia-bundle-vX.Y.Z.tar.gz` — the `julia/` tree (kernel, repl, plugins, pluto) + the
+- *(retired — see Amendment 2026-07-04)* `julia-bundle-vX.Y.Z.tar.gz` — the `julia/` tree (kernel, repl, plugins, pluto) + the
   ShipTools root package, **with `Manifest.toml`s generated and tested in CI**. Manifests
   stay gitignored for dev flexibility, but a release ships a frozen, tested dependency
   set — "instantiate whatever resolves today" is not a release. **Julia requirement:
@@ -137,7 +146,7 @@ regenerate CHANGELOG, commit `release: vX.Y.Z`, tag, push. CI does the rest.
   (dev), else keep the current staged copy. That last branch is what makes the launcher
   work on machines **with no source tree** — the public install is just the staged dir
   plus config.
-- **Apply, BE**: download `sotd` + the julia bundle; unpack the bundle to a versioned dir
+- **Apply, BE** *(bundle mechanics retired — see Amendment 2026-07-04; the binary swap and restart survive)*: download `sotd` + the julia bundle; unpack the bundle to a versioned dir
   (`<data>/sot/julia/vX.Y.Z/`), `Pkg.instantiate` against the shipped Manifest, flip the
   `current` symlink, replace the binary, `systemctl --user restart sotd` (Linux) / restart
   via the launcher's supervision (Windows all-in-one). The kernel-launch path becomes

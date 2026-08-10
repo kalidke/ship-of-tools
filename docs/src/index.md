@@ -32,9 +32,9 @@ layout is designed, not configured.
 - **Live Julia** — dispatch code to a fresh or existing REPL; plots render inline.
 - **Pluto notebooks** — open notebooks running on the remote.
 - **Extensible previews** — add a file type with Julia multiple dispatch, no Rust.
-- **Rich previews** — Markdown, Quarto, PDF, PNG, LaTeX math, and video (poster frame in-pane; playback opens in your browser).
+- **Rich previews** — Markdown, Quarto, PDF, images (PNG/JPEG/GIF/WebP/BMP), LaTeX math, and video (poster frame in-pane; playback opens in your browser).
 - **Pan and zoom figures** — same-size figures in a directory share pan/zoom.
-- **Web pages locally** — serve a static page to your browser over an auto-forwarded port with one key chord.
+- **Web pages locally** — serve a static page to your browser with one key chord (pages ride the control tunnel via the daemon proxy; no extra forwards).
 - **Host monitoring** — CPU, RAM, and GPU across servers, plus a built-in terminal.
 
 → The full tour: **[What Ship of Tools Can Do](features.md)**.

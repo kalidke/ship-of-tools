@@ -105,7 +105,9 @@ Config is written under `~/.config/sot`:
 
 ## [Updating](@id updating)
 
-After release artifacts exist, two mechanisms complement rather than compete:
+Two mechanisms complement rather than compete (release installs only —
+**source builds are stamped `-dev` and never self-update**; they update by
+`git pull` + rebuild):
 
 | Mechanism | What it does | What you do |
 |-----------|--------------|-------------|
@@ -135,6 +137,11 @@ use.
   instead of `gh`, `jq` is also required.
 - **Julia ≥ 1.12** for agent comm resource installation. The installer uses
   juliaup to install it when missing.
+- **node/npm** — *optional*: used once to fetch the MathJax sidecar deps for
+  typeset math in markdown previews. Absent, the installer warns and skips;
+  everything works except math renders as raw LaTeX. To add math later,
+  install node and re-run the installer (or `npm ci` in
+  `<checkout>/rust/backend/sidecars/mathjax`).
 - **tmux** on any host that runs the backend (`--local`, `--be-only`) — the
   daemon hosts the LLM pane in a tmux session. The installer preflights it:
   **absent is fatal**. **tmux < 3.2 is a graceful degrade, not an error** — the
