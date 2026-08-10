@@ -8,7 +8,8 @@
 # release workflow generates the release notes regardless), runs the test
 # suite, then commits `release: vX.Y.Z`, tags `vX.Y.Z`, and pushes. The
 # tag push triggers .github/workflows/release.yml, which builds the
-# platform artifacts + julia bundle and publishes the GitHub Release.
+# platform artifacts and publishes the GitHub Release (the julia bundle is
+# retired — installs clone the repo at the tag; ADR 0030 amendment).
 #
 # --dry-run stamps, shows the diff, and restores — nothing committed.
 # Run it from anywhere inside the repo; it re-roots itself.

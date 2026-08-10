@@ -51,7 +51,8 @@ Drawer toggles are **global** — they fire even when another pane holds focus.
 | Move focus between panes (4-way, spatial) | `Ctrl+Arrow` |
 | Navigate within the focused pane | plain `Arrow` |
 | Maximize the focused pane | `Alt+=` |
-| Restore the layout | `Esc` (only while a pane is maximized) |
+| Wide-preview: hide the LLM column, hand its width to the preview | `Alt++` |
+| Restore the layout, one layer per press (un-maximize, then exit wide-preview) | `Esc` (only while maximized or in wide-preview) |
 | Cycle the active workspace | `Shift+Arrow` |
 | Help overlay (build-current keymap) | `?` |
 

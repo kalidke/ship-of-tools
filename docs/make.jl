@@ -60,6 +60,10 @@ makedocs(;
             "First Session Tour" => "start/tour.md",
         ],
         "The Interface" => "guide/panes/index.md",
+        "Reference" => [
+            "Configuration Files" => "ref/config.md",
+            "Keybindings" => "ref/keybindings.md",
+        ],
     ],
 )
 

@@ -282,9 +282,11 @@ rm -f "$tmp"
 echo "backend answers: $ans"
 ```
 
-For frontend roles: run `sot-launch`; a native window should open and
-connect. Tell the human: **press `?` for help; the top line of the nav pane
-always shows the pane-switch keys.**
+For frontend roles: run `sot-launch` (it lives in `~/.local/bin` — if the
+command isn't found, that directory isn't on the human's `PATH`; add it or
+use the desktop entry / app bundle the installer also created). A native
+window should open and connect. Tell the human: **press `?` for help; the
+top line of the nav pane always shows the pane-switch keys.**
 
 ## 5. Troubleshooting (the known failure modes)
 

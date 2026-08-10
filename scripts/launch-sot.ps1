@@ -380,9 +380,21 @@ else
         echo "backend: was down - started via systemd"
     else
         cd '$remoteRepo'
-        nohup ./rust/target/release/sotd --project-root '$remoteRepo' --label sot >/tmp/sotd.log 2>&1 </dev/null &
-        disown
-        echo "backend: was down - started nohup, pid=`$!"
+        # Same two-arm resolution as the socket query above: a release BE with
+        # the systemd opt-out has no dev build - fall back to the installed
+        # sotd with its matching project root (release-BE + --no-service +
+        # daemon-down previously died here on a dev-only path).
+        if [ -x ./rust/target/release/sotd ]; then
+            nohup ./rust/target/release/sotd --project-root '$remoteRepo' --label sot >/tmp/sotd.log 2>&1 </dev/null &
+            disown
+            echo "backend: was down - started nohup dev build, pid=`$!"
+        elif [ -x "`$HOME/.local/share/sot/bin/sotd" ]; then
+            nohup "`$HOME/.local/share/sot/bin/sotd" --project-root "`$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
+            disown
+            echo "backend: was down - started nohup release install, pid=`$!"
+        else
+            echo "backend: DOWN and no sotd found - dev build absent and no release install" >&2
+        fi
     fi
 fi
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do

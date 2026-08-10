@@ -107,7 +107,8 @@ A few global keys manage the window itself:
 | Move pane focus | `Ctrl+Arrow` | shift focus spatially between the four panes |
 | Cycle workspace | `Shift+Arrow` | switch the active workspace (left / right) |
 | Maximize pane | `Alt+=` | blow the focused pane up to fill the window |
-| Restore layout | `Esc` | un-maximize (only while a pane is maximized) |
+| Wide-preview | `Alt++` | hide the LLM column and widen the preview pane |
+| Restore layout | `Esc` | one layer per press: un-maximize first, then exit wide-preview (only while maximized or in wide-preview) |
 | Font scale | `Ctrl+=` / `Ctrl+-` | zoom the UI font up / down (`Ctrl+0` resets) |
 | Reconnect | `F5` | reconnect the transport after a drop |
 | Quit | `Ctrl+Q` | real quit (nav focus only) |
