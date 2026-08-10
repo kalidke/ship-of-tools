@@ -6,10 +6,13 @@ frontend rebuild and restart itself.
 
 ## Launching
 
-Start the app through the launcher created by [Per-Machine Setup](setup.md) (a
-desktop shortcut on Windows, or `scripts/launch-sot.ps1` directly). The
-launcher is the **supervisor**: it owns the SSH tunnel to the backend host,
-starts the frontend, and watches for relaunch requests.
+Start the app through your launcher. A **release install** ([Install](install.md))
+created `sot-launch` (on `PATH` in `~/.local/bin`) plus a desktop entry on
+Linux or an app bundle on macOS — run either. A **source setup**
+([Per-Machine Setup](setup.md)) uses the repo launcher: a desktop shortcut on
+Windows, or `scripts/launch-sot.ps1` directly. Either way the launcher is the
+**supervisor**: it owns the SSH tunnel to the backend host, starts the
+frontend, and watches for relaunch requests.
 
 The default launch connects to the remote backend over an SSH local-forwarded
 socket — the canonical "Windows local · Linux remote-in-tmux" workflow. The
@@ -77,27 +80,23 @@ a real quit tears it down.
 
 ## Browser-Backed Previews
 
-`W` opens HTML/static sites through backend HTTP ports that must be forwarded to
-the frontend machine: `1236` for normal static pages, plus `1237`-`1240` for
-sites with root-relative assets. Video and Pluto use the same pattern on `1235`
-and `1234`, and interactive WGLMakie figures (`wglshow`) on `1241`.
+`W` opens HTML/static sites, video and Pluto pages, and interactive WGLMakie
+figures (`wglshow`) in your OS browser. Against a v0.5.0+ backend these pages
+ride the **control tunnel itself**: the frontend binds local loopback
+listeners on demand and relays them through the daemon's TCP proxy (ADR
+0035), whose allowlist covers only ports *your* daemon actually bound. **No
+extra SSH forwards are needed** — one control forward is the whole tunnel.
 
-If you manually reconnect with only the backend control tunnel, the frontend can
-still talk to `sotd` but the local browser will show `127.0.0.1 refused to
-connect` for `W`/video/Pluto. Open an aux tunnel as well:
+If the browser shows `127.0.0.1 refused to connect` for `W`/video/Pluto,
+suspect the frontend↔daemon connection (see the reconnect notes above), not a
+missing port forward.
 
-```bash
-ssh -N \
-  -L 1234:127.0.0.1:1234 \
-  -L 1235:127.0.0.1:1235 \
-  -L 1236:127.0.0.1:1236 \
-  -L 1237:127.0.0.1:1237 \
-  -L 1238:127.0.0.1:1238 \
-  -L 1239:127.0.0.1:1239 \
-  -L 1240:127.0.0.1:1240 \
-  -L 1241:127.0.0.1:1241 \
-  <backend-ssh-alias>
-```
+Only when talking to a **pre-v0.5.0 backend** do the fixed helper ports
+(`1234` Pluto, `1235` video, `1236`-`1240` docs, `1241` WGLMakie) still need
+old-style forwarding — set `SOT_LEGACY_FORWARDS=1` before launching and the
+launcher opens them. Avoid this on shared hosts: a fixed port you didn't bind
+may belong to another user's server, and the browser will render their
+content without any error.
 
 ## Existing tmux sessions are missing
 

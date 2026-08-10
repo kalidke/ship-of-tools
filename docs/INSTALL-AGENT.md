@@ -72,8 +72,9 @@ command -v tmux && tmux -V # REQUIRED on any host that RUNS the backend (local /
 - **Linux x86_64, glibc ≥ 2.35** → full install works.
 - **Linux, older glibc** → only `--be-only` (the backend is static musl);
   the frontend must run on another machine.
-- **Windows** → no bash installer. Build from source, or use **§2b Windows
-  frontend → remote backend** only after a Windows release zip exists.
+- **Windows** → no bash installer. Use **§2b Windows frontend → remote
+  backend** (release zip + repo scripts — no Rust toolchain needed), or build
+  from source.
 - **macOS (Apple Silicon)** → supported by the installer, same three
   topologies as Linux, but still EXPERIMENTAL until it is dogfooded on real
   Macs; say so, then proceed. `--backend <ssh-alias>` is the common
@@ -104,11 +105,11 @@ every host sharing it.
 ## 2b. Windows frontend → remote backend
 
 Windows is a first-class *frontend* host (the backend stays on Linux). No
-packaged installer here yet (issue #23). Steps 1–4 are the minimal manual
-bring-up — good for proving the connection once. **Do not stop there**: the
-end state for a Windows machine is step 5 (the repo launcher + shortcut),
-which owns the tunnel, keeps the frontend fresh, and puts the proper icon on
-the taskbar.
+packaged installer here yet (a packaged `install.ps1` is roadmap; no tracking
+issue exists). Steps 1–4 are the minimal manual bring-up — good for proving
+the connection once. **Do not stop there**: the end state for a Windows
+machine is step 5 (the repo launcher + shortcut), which owns the tunnel,
+keeps the frontend fresh, and puts the proper icon on the taskbar.
 
 1. **Download + verify** from the selected release
    (https://github.com/kalidke/ship-of-tools/releases):
@@ -118,18 +119,19 @@ the taskbar.
 2. **Backend**: install it on the Linux machine (`--be-only`, see the table
    above — you can drive that over SSH). It listens on that user's private
    socket, normally `/run/user/<uid>/sot/sessions/sot.sock`.
-3. **Forward the ports** — the protocol port is local-only and terminates at
-   the remote socket; the aux ports carry Pluto (1234), video (1235), the
-   docs-site servers (1236, pool 1237-1240), and interactive WGLMakie
-   figures (1241) — `W`, `o`, and `wglshow` silently break without them:
+3. **Forward the protocol port** — local-only, terminating at the remote
+   socket. This ONE forward is the whole tunnel: browser pages (Pluto, docs,
+   video, WGLMakie) ride it through the daemon proxy (ADR 0035, v0.5.0+):
 
    ```powershell
    $sock = ssh <ssh-alias> '~/.local/share/sot/bin/sotd session-socket-path sot'
-   ssh -N -L "18743:$sock" -L 1234:127.0.0.1:1234 -L 1235:127.0.0.1:1235 `
-       -L 1236:127.0.0.1:1236 -L 1237:127.0.0.1:1237 -L 1238:127.0.0.1:1238 `
-       -L 1239:127.0.0.1:1239 -L 1240:127.0.0.1:1240 -L 1241:127.0.0.1:1241 `
-       <ssh-alias>
+   ssh -N -L "18743:$sock" <ssh-alias>
    ```
+
+   Do NOT add the old fixed helper-port forwards (1234-1241) — they are
+   retired, and on a shared host they can silently serve another user's
+   content. `SOT_LEGACY_FORWARDS=1` in the launcher (step 5) is the escape
+   hatch for a pre-v0.5.0 backend only.
 
 4. **Launch**: `sot.exe --tcp 127.0.0.1:18743` (`sot.exe --help` prints the
    full flag set). Optionally persist the connection in
@@ -144,32 +146,43 @@ the taskbar.
    refreshes the remote `sotd`, there is no ADR-0017 exit-75 self-relaunch,
    and the taskbar shows a generic icon. The canonical Windows launcher is
    `scripts/launch-sot.ps1` in the repo, and the shortcut that wires it up is
-   created by `scripts\install-shortcut.ps1`. Both need a source checkout
-   (the launcher stages the frontend from `rust\target\release`), so on
-   Windows finish with the source setup:
+   created by `scripts\install-shortcut.ps1`. They need a **clone for the
+   scripts and config — NOT a Rust build**: when `rust\target\release` has no
+   built frontend, the launcher runs the already-staged copy in
+   `%LOCALAPPDATA%\sot\bin\sot.exe` — exactly where step 1 put the release
+   zip's exe. (A source build is still supported and takes precedence when
+   present.)
 
    ```powershell
    git clone https://github.com/kalidke/ship-of-tools
    cd ship-of-tools
-   # build + env + config: follow docs/src/start/setup.md, or in a Claude Code
-   # session just invoke the /sot-setup skill — it drives the whole checklist.
-   # Then, once .sot\hosts.toml exists:
+   # Write .sot\hosts.toml — the table is [host.<name>], SINGULAR:
+   #   default_host = "myserver"
+   #   [host.myserver]
+   #   ssh_alias   = "myserver"
+   #   remote_repo = "/home/<user>/.local/share/sot/repo/current"
+   #   tcp_port    = 18743
+   # remote_socket is OPTIONAL: the launcher resolves it by running sotd
+   # session-socket-path on the remote (dev checkout or the release-installed
+   # ~/.local/share/sot/bin/sotd). Set it explicitly (or $env:SOT_REMOTE_SOCKET)
+   # only to skip that probe: remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
+   # For the rest of the config follow docs/src/start/setup.md, or in a Claude
+   # Code session invoke the /sot-setup skill — it drives the whole checklist.
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1
    ```
 
    `install-shortcut.ps1` creates `Desktop\Ship of Tools.lnk` →
-   `launch-sot.ps1` (opens all the step-3 forwards, spawns/refreshes the
+   `launch-sot.ps1` (opens the step-3 control forward, spawns/refreshes the
    remote `sotd`, runs the frontend under the exit-75 respawn supervisor),
    sets the SoT icon (`logo.ico`), and stamps the AppUserModelID
    `ShipOfTools.Sot` on the `.lnk` so the running window merges into the
    shortcut's taskbar button with the right icon. Re-run it after pinning to
    the taskbar — it re-syncs the pin so it never drifts back to a naive
-   `sot.exe`. A packaged `install.ps1` that removes the clone requirement is
-   tracked in issue #23.
+   `sot.exe`.
 
 ## 2c. macOS
 
-When macOS release artifacts exist, use the installer — it handles macOS
+macOS artifacts ship with every release; use the installer — it handles macOS
 natively (artifact selection, checksum via `shasum`, Gatekeeper de-quarantine,
 launcher):
 
@@ -179,8 +192,10 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
   # or: --local (everything on the Mac) / --be-only (headless Mac backend)
 ```
 
-`--backend` writes a `sot-launch` that opens the SSH forwards (local 18743 to
-the remote socket, plus 1234-1241) and starts the frontend; `--local` starts
+`--backend` writes a `sot-launch` that opens the SSH control forward (local
+18743 to the remote socket — browser pages ride it via the daemon proxy, ADR
+0035; the legacy 1234-1241 forwards are opt-in via `SOT_LEGACY_FORWARDS=1`
+for pre-v0.5.0 backends) and starts the frontend; `--local` starts
 `sotd` on demand (no systemd on macOS; launchd wiring is roadmap). If the human prefers manual
 steps: download `sot-<ver>-macos-aarch64.tar.gz` + `SHA256SUMS`, verify
 (`shasum -a 256 -c`), `xattr -d com.apple.quarantine ./sot ./sotd`, forward
@@ -194,11 +209,16 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
 ```
 
 You are RIGHT to be wary of piping remote scripts to a shell — inspecting
-first is encouraged: download it to a file, read it (it is ~400 commented
+first is encouraged: download it to a file, read it (it is ~500 commented
 lines, everything under `$HOME`, no sudo, checksums verified before use),
 then run the file with the same flags.
 
-Idempotent; re-running is also the upgrade path after release artifacts exist.
+Two flags beyond the role: `--version vX.Y.Z` pins a specific release (the
+leading `v` is required — the flag is used verbatim as the tag), and
+`--prefix <dir>` relocates the install from `~/.local/share/sot` (substitute
+your prefix in every path below if you use it).
+
+Idempotent; re-running is also the upgrade path.
 (If you fetched this runbook at a pinned commit, still use `main`'s installer as
 above — the installer is the moving part and stays compatible with this
 runbook.) It downloads the release binaries, verifies SHA256 checksums, clones
@@ -229,12 +249,18 @@ For backend roles, prove the daemon answers a hello. Two branches:
   (the installer's final output also prints a supervise hint):
 
   ```bash
-  ~/.local/share/sot/bin/sotd \
-      --project-root ~/.local/share/sot/repo/current --label sot &
+  ~/.local/share/sot/bin/sotd --project-root ~ --label sot &
   ```
 
+  (`--project-root ~`, matching the systemd unit and the installer's own
+  supervise hint — NOT the checkout, which the installer treats as read-only
+  and refuses to update when dirty.)
+
 Then probe its socket (success = it prints `backend answers: <the release
-version>`):
+version>`). The probe needs `nc` — minimal server images may lack it; if
+`command -v nc` fails, install it (or skip the probe and rely on the
+systemd-active check), and do NOT report a healthy backend as dead on a
+missing-`nc` box:
 
 ```bash
 sock="$(~/.local/share/sot/bin/sotd session-socket-path sot)"
@@ -278,7 +304,14 @@ always shows the pane-switch keys.**
 - The checkout **is the manual**: point yourself (and the human) at
   `~/.local/share/sot/repo/current/docs/USING.md` — inside the app, the
   terminal-drawer agent gets the same path via `$SOT_MANUAL`.
-- Updating later after release artifacts exist: re-run step 3 (the app also
-  notifies about new releases and stages fresh binaries itself).
-- Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`
-  and `systemctl --user disable --now sotd` if a unit was installed.
+- Updating later: re-run step 3 (the app also notifies about new releases and
+  stages fresh binaries itself; source builds are stamped `-dev` and never
+  self-update).
+- Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`;
+  if a unit was installed, `systemctl --user disable --now sotd` and remove
+  `~/.config/systemd/user/sotd.service`; also remove the desktop entry
+  (`~/.local/share/applications/ship-of-tools.desktop`) or the macOS app
+  (`~/Applications/Ship of Tools.app`). Agent comm resources written by
+  `ShipTools.update_comm()` (`~/.sot-comm`, skills under `~/.claude` /
+  `~/.codex`, launchers in `~/.local/bin`) are shared with other checkouts —
+  remove them only if this was the machine's only Ship of Tools install.

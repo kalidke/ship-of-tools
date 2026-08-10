@@ -31,8 +31,10 @@ sotd session-socket-path ${SOT_BACKEND_LABEL:-sot}
 
 The remote backend does not need to bind `127.0.0.1:18743`. That port exists only
 on a frontend machine when its launcher opens an SSH tunnel to the remote Unix
-socket. Browser helper ports `1234`-`1240` must also be forwarded for docs,
-Pluto, and static page previews.
+socket. The fixed browser-helper forwards (`1234`-`1241`) are RETIRED by default
+(ADR 0035): backend pages ride the control tunnel through the daemon proxy, so a
+tunnel with only the socket forward is correct. `SOT_LEGACY_FORWARDS=1` is the
+opt-in escape hatch for pre-v0.5.0 backends only.
 
 ## Report State
 

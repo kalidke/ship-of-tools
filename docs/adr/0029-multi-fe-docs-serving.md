@@ -3,6 +3,13 @@
 **Status:** Accepted (drafted, reviewed + signed off 2026-06-29 as faithful to all Q1-4 calls — bus `from-windows.md`/`from-linux.md`. FE launcher restart-race fix landed both OSes: `.ps1` `8980a55`, `.sh` mirror this commit)
 **Date:** 2026-06-29
 
+> **Transport note (2026-08-10):** this ADR's fixed helper ports
+> (1236 + 1237-1240 pool) and their launcher `-L` forwards describe the
+> pre-ADR-0035 transport. Since v0.5.0 these pages ride the control tunnel
+> through the daemon TCP proxy and the fixed forwards are retired (opt-in via
+> `SOT_LEGACY_FORWARDS=1`). The per-connection site-root model this ADR
+> decides is unchanged.
+
 ## Context
 
 ADR 0024 gave us `docs.open` / the `W` keybind: a hand-rolled static HTTP

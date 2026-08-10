@@ -3,6 +3,12 @@
 **Status: ACCEPTED — IMPLEMENTED + VALIDATED LIVE END-TO-END**
 (2026-07-12, branch `feat/wglmakie-browser`).
 
+> **Transport note (2026-08-10):** the launcher `-L 1241` forward described
+> here is the pre-ADR-0035 transport. Since v0.5.0 the WGL page and its
+> WebSocket ride the control tunnel through the daemon TCP proxy; the fixed
+> forward is retired (opt-in via `SOT_LEGACY_FORWARDS=1` for pre-v0.5.0
+> backends). Port 1241 remains the loopback port Bonito binds on the backend.
+
 The full path works and was confirmed by the maintainer in a real FE browser:
 `wglshow(fig)` → Bonito serves the figure on `127.0.0.1:1241` → the REPL emits a
 `browser` frame → the FE auto-opens the OS browser → **interactive** figure
