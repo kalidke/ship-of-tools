@@ -6,8 +6,10 @@ keyboard-only by design — no mouse needed. The keys below are the defaults fro
 `.sot/keybindings.toml`; every one is rebindable (see
 [Keybindings](../ref/keybindings.md)).
 
-If you have not started Ship of Tools yet, do [Per-Machine Setup](setup.md) and read
-[Running & Relaunch](running.md) first.
+If you have not started Ship of Tools yet, install it first — the release
+installer via [Quickstart](quickstart.md) / [Install](install.md), or
+[Per-Machine Setup](setup.md) if you're building from source — then see
+[Running & Relaunch](running.md) for launcher details.
 
 ## The window
 
@@ -75,7 +77,8 @@ pressing the other key swaps the content. See
 Press `Ctrl+M` for the **Monitor** drawer — a server monitor sampling the
 configured hosts (GPU and process stats from `nvidia-smi` and `/proc`, which are
 world-readable, so no privileges are needed). Which hosts appear comes from the
-`[monitor]` section of `.sot/hosts.toml`.
+`[monitor]` section of your `hosts.toml` (`.sot/hosts.toml` in a checkout;
+`~/.config/sot/hosts.toml` for a release install).
 
 ## Navigation modes: Sessions — `s` — and Hosts — `h`
 
@@ -84,7 +87,7 @@ Two more nav-tree roots switch the *target*, not the content:
 - **`s` — Sessions.** Pick a directory and commit it as a workspace. `Enter`
   starts the comm-aware agent session in the pane; `Shift+Enter` starts a bare
   session with no LLM agent (a plain shell / REPL).
-- **`h` — Hosts.** List every backend host from `.sot/hosts.toml`, with the
+- **`h` — Hosts.** List every backend host from `hosts.toml`, with the
   current and default hosts badged. `Enter` picks a host; the choice persists,
   and the next launch and any reconnect target it. Switching hosts is "pick →
   `Ctrl+Q` → relaunch".

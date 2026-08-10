@@ -352,7 +352,15 @@ export PATH="`$HOME/.cargo/bin:`$HOME/.local/bin:`$PATH"
 remote_socket='$remoteSocket'
 if [ -z "`$remote_socket" ]; then
     cd '$remoteRepo'
-    remote_socket="`$(./rust/target/release/sotd session-socket-path sot)"
+    # Dev checkout first, then a release install's staged sotd — a release BE
+    # (install.sh --be-only) has no rust/target build, and without this branch
+    # the omitted-remote_socket path dies on exactly the topology
+    # INSTALL-AGENT.md 2b prescribes. remote_socket in hosts.toml overrides both.
+    if [ -x ./rust/target/release/sotd ]; then
+        remote_socket="`$(./rust/target/release/sotd session-socket-path sot)"
+    elif [ -x "`$HOME/.local/share/sot/bin/sotd" ]; then
+        remote_socket="`$(`$HOME/.local/share/sot/bin/sotd session-socket-path sot)"
+    fi
 fi
 echo "backend-socket: `$remote_socket"
 if [ "$restartBackendFlag" = 1 ]; then

@@ -2,10 +2,11 @@
 # launch-sot.sh — Linux/macOS frontend client → remote backend over SSH.
 #
 # Opens an SSH tunnel to the backend host (forwarding a local TCP port to the
-# remote user's per-user `sotd` socket, plus Pluto 1234 / video 1235 / docs
-# 1236), ensures the remote `sotd` is running, then runs the local frontend
-# pointed at the forwarded local port. The remote BE must already be BUILT on
-# the host.
+# remote user's per-user `sotd` socket — browser pages ride this control
+# forward via the daemon proxy, ADR 0035; the legacy fixed helper forwards
+# are opt-in via SOT_LEGACY_FORWARDS=1), ensures the remote `sotd` is
+# running, then runs the local frontend pointed at the forwarded local port.
+# The remote BE must already be BUILT on the host.
 #
 # Idempotent: an `ssh -fN` tunnel is backgrounded and OUTLIVES the FE window, so
 # a naive re-run would collide on the forwarded ports (Address already in use)

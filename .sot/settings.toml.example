@@ -13,15 +13,19 @@
 # pattern, kept in a separate file for single-responsibility.
 
 [layout]
-# Width of the left column (TL navigation + BL llm/pty) as a percentage
-# of total window width. The right column (TR preview + BR repl) gets
-# the remainder. Range [10, 90]; default 50.
-left_col_pct = 50
+# Layout is preset-based (ADR 0014): "auto" (DEFAULT) resolves by the primary
+# monitor's aspect ratio at startup (> 1.9 → ultrawide, 1.5–1.9 → laptop,
+# < 1.5 → portrait); naming a preset locks it regardless of aspect.
+# preset = "auto"   # auto | ultrawide | laptop | portrait
 
-# Height of the top row (TL navigation + TR preview) as a percentage of
-# total window height. The bottom row (BL llm/pty + BR repl) gets the
-# remainder. Range [10, 90]; default 50.
-top_row_pct = 50
+# Each preset is tunable via its sub-table — columns (named slots, left to
+# right), fractional widths (renormalised to sum to 1.0), and the shared
+# bottom drawer. Full schema: docs/src/ref/config.md.
+# [layout.laptop]
+# columns = "nav,preview,llm"
+# widths = "0.18,0.32,0.50"
+# drawer = "repl"
+# drawer_height = 0.40
 
 [terminal]
 # Command auto-run in the Terminal drawer when the supervisor respawns the

@@ -444,10 +444,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$REPO\scripts\install-short
 ```
 Creates `Desktop\Ship of Tools.lnk` → `scripts\launch-sot.ps1`, which: reads
 `last_host` from `%APPDATA%\sot\state-<COMPUTERNAME>.toml` (resolved against
-hosts.toml), opens the SSH tunnel (`-L 18743`, `-L 1234` Pluto, `-L 1235` video),
-spawns/refreshes the remote `sotd --tcp 127.0.0.1:18743`, then runs the
-staged frontend with the ADR-0017 supervisor loop (exit-75 relaunch). Launch it
-and confirm Files mode renders.
+hosts.toml), opens the SSH control forward (`-L 18743` → the remote user's
+`sotd` socket; browser pages ride it via the daemon proxy, ADR 0035),
+spawns/refreshes the remote `sotd`, then runs the staged frontend with the
+ADR-0017 supervisor loop (exit-75 relaunch). Launch it and confirm Files mode
+renders.
 
 > **Display required for the FE.** The frontend opens a real GPU window
 > (wgpu + winit). On a **headless** Linux box (`$DISPLAY`/`$WAYLAND_DISPLAY`
@@ -479,33 +480,25 @@ env not built? → §6).
 
 ### Linux / macOS — frontend client → remote backend (SSH)
 For connecting to a remote BE (e.g. a remote host) instead of a local one. Requires working
-SSH to the host (see §1 preflight). Write `$REPO/scripts/launch-sot.sh`:
+SSH to the host (see §1 preflight). The launcher **ships in the repo** —
+`scripts/launch-sot.sh`. Do NOT hand-write one (older revisions of this skill
+dictated a hand-rolled script; it predates the daemon's socket-only listener —
+its `sotd --tcp` boot is rejected by current builds):
+
 ```sh
-#!/usr/bin/env bash
-set -uo pipefail   # NOT -e: a re-run must not abort just because the tunnel exists
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
-HOST="${SOT_HOST:-myhost}"; PORT="${SOT_TCP_PORT:-18743}"
-REMOTE_REPO="${SOT_REMOTE_REPO:-/home/$USER/ship-of-tools}"
-port_open(){ (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && exec 3>&-; }
-# Tunnel: `ssh -fN` is backgrounded and OUTLIVES the FE window, so a second run
-# would collide on the bound ports and (under set -e) abort before the FE. Reuse.
-if port_open "$PORT"; then echo "reusing existing tunnel on $PORT"; else
-  ssh -fN -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
-      -L "$PORT:127.0.0.1:$PORT" -L 1234:127.0.0.1:1234 -L 1235:127.0.0.1:1235 "$HOST" \
-    || { echo "tunnel failed (stale tunnel? pkill -f 'ssh -fN.*$PORT')" >&2; exit 1; }
-fi
-# Backend: spawn only if not already up (don't disrupt a live session).
-if [ "${SOT_RESTART_BE:-0}" = 1 ] || ! ssh "$HOST" 'pgrep -x sotd >/dev/null 2>&1'; then
-  ssh "$HOST" "pkill -x sotd 2>/dev/null; sleep 0.3; cd '$REMOTE_REPO' && nohup ./rust/target/release/sotd --tcp 127.0.0.1:$PORT --project-root '$REMOTE_REPO' >/tmp/sotd.log 2>&1 </dev/null & disown" || true
-  for _ in $(seq 1 40); do port_open "$PORT" && break; sleep 0.25; done
-fi
-exec "$REPO/rust/target/release/sot" --tcp "127.0.0.1:$PORT"
+SOT_HOST=myhost scripts/launch-sot.sh
 ```
-`chmod +x`. (The remote BE must already be **built** on the host — if it's a fresh
-host, provision it over this same SSH first (§6b), or run §1–6 on the box
-directly.) **Idempotency matters:** the backgrounded `ssh -fN`
-tunnel persists after the FE window closes, so the launcher must reuse it (and not
-`set -e`-abort on the bind collision) or it only ever works once.
+
+It self-updates on launch (pull → re-exec, `SOT_NO_UPDATE=1` skips), opens the
+SSH control forward (local TCP → the remote user's per-user `sotd` socket;
+browser pages ride it via the daemon proxy, ADR 0035 — the legacy `1234`-`1241`
+forwards are opt-in via `SOT_LEGACY_FORWARDS=1` for pre-v0.5.0 backends),
+ensures the remote `sotd` is running, and starts the FE under the ADR-0017
+supervisor. Overridable env: `SOT_HOST`, `SOT_TCP_PORT`, `SOT_REMOTE_REPO`,
+`SOT_REMOTE_SOCKET` (default: queried remotely via `sotd session-socket-path
+sot`), `SOT_RESTART_BE=1`. Idempotent across re-runs (reuses a live tunnel).
+The remote BE must already be **built** on the host — if it's a fresh host,
+provision it over this same SSH first (§6b), or run §1–6 on the box directly.
 
 ### Linux desktop launcher (GNOME/freedesktop) — pin to the dash/sidebar
 To get a clickable icon in the activities grid + dash (the Windows

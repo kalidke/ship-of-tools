@@ -5,7 +5,8 @@
 #   ./scripts/install.sh --local                     # all-in-one on this box
 #   ./scripts/install.sh --backend <ssh-alias>       # FE here → remote BE
 #   ./scripts/install.sh --be-only                   # headless backend/canary
-#   [--version vX.Y.Z] [--prefix <dir>]              # default: latest release when assets exist
+#   [--version vX.Y.Z] [--prefix <dir>] [--port <n>] [--no-service]
+#                                                    # default: latest release
 #
 # What it does (idempotent; re-run to upgrade):
 #   1. preflight — arch/glibc floor for the FE, tar/curl present (gh or
@@ -333,7 +334,7 @@ EOF
     esac
     say "wrote $CONFIG/hosts.toml"
 fi
-[ -f "$CONFIG/settings.toml" ] || printf '# Ship of Tools settings — see settings.toml.example in the repo\n' > "$CONFIG/settings.toml"
+[ -f "$CONFIG/settings.toml" ] || printf '# Ship of Tools settings — see .sot/settings.toml.example in the repo\n' > "$CONFIG/settings.toml"
 
 # ---- 7. backend service --------------------------------------------------------
 if [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 1 ]; then
@@ -398,8 +399,9 @@ EOF
 #!/usr/bin/env bash
 # FE → remote BE over SSH local forwards (key auth required, ADR 0030 §5).
 # The frontend connects to local TCP $PORT; ssh terminates that forward at
-# the remote user's per-user sotd socket. Aux services remain forwarded by
-# local TCP ports for browser/webview compatibility.
+# the remote user's per-user sotd socket. Browser/webview pages ride the same
+# control tunnel via the daemon proxy (ADR 0035); the legacy fixed helper-port
+# forwards are opt-in via SOT_LEGACY_FORWARDS=1 (pre-v0.5.0 backends only).
 REMOTE_SOCKET="\${SOT_REMOTE_SOCKET:-}"
 if [ -z "\$REMOTE_SOCKET" ]; then
     REMOTE_SOCKET="\$(ssh "$BE_ALIAS" '\${SOT_REMOTE_SOTD:-\$HOME/.local/share/sot/bin/sotd} session-socket-path sot')" \
@@ -410,23 +412,26 @@ port_open() {
     command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 "\$1" >/dev/null 2>&1
 }
 ensure_aux_tunnel() {
+    # Fixed helper-port forwards (1234-1241) are RETIRED by default (ADR 0035):
+    # backend pages ride the control tunnel through the daemon proxy, whose
+    # allowlist authorizes only ports THIS daemon actually bound. On a shared
+    # host a fixed forward can silently serve another user's content.
+    # SOT_LEGACY_FORWARDS=1 restores them for a pre-v0.5.0 backend.
+    if [ -z "\${SOT_LEGACY_FORWARDS:-}" ]; then return 0; fi
     missing=()
     # 1234 pluto · 1235 video · 1236 docs · 1237-1240 docs pool · 1241 WGLMakie (ADR 0032)
     for p in 1234 1235 1236 1237 1238 1239 1240 1241; do
         port_open "\$p" || missing+=("\$p")
     done
     if [ "\${#missing[@]}" -eq 0 ]; then return 0; fi
-    if [ "\${#missing[@]}" -ne 8 ]; then
-        echo "ERROR: only some browser aux ports are open; missing: \${missing[*]}" >&2
-        echo "       stop stale tunnels/services or free ports 1234-1241" >&2
-        exit 1
-    fi
+    # Forward only the missing ports: an old aux tunnel outlives the FE, so a
+    # partial set means "opened by a previous launch", not an error.
+    fwd=()
+    for p in "\${missing[@]}"; do fwd+=(-L "\$p:127.0.0.1:\$p"); done
+    echo "SOT_LEGACY_FORWARDS=1 — forwarding fixed helper ports: \${missing[*]}" >&2
     ssh -fN -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
-      -L 1234:127.0.0.1:1234 -L 1235:127.0.0.1:1235 -L 1236:127.0.0.1:1236 \
-      -L 1237:127.0.0.1:1237 -L 1238:127.0.0.1:1238 -L 1239:127.0.0.1:1239 -L 1240:127.0.0.1:1240 \
-      -L 1241:127.0.0.1:1241 \
-      "$BE_ALIAS" \
-      || { echo "ERROR: could not open browser aux SSH tunnel" >&2; exit 1; }
+      "\${fwd[@]}" "$BE_ALIAS" \
+      || { echo "ERROR: could not open browser aux SSH tunnel (missing: \${missing[*]})" >&2; exit 1; }
 }
 if pgrep -f "ssh .*${PORT}:\$REMOTE_SOCKET.*$BE_ALIAS" >/dev/null 2>&1; then
     :
@@ -436,9 +441,6 @@ elif port_open "$PORT"; then
 else
     ssh -fN -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
       -L "$PORT:\$REMOTE_SOCKET" \
-      -L 1234:127.0.0.1:1234 -L 1235:127.0.0.1:1235 -L 1236:127.0.0.1:1236 \
-      -L 1237:127.0.0.1:1237 -L 1238:127.0.0.1:1238 -L 1239:127.0.0.1:1239 -L 1240:127.0.0.1:1240 \
-      -L 1241:127.0.0.1:1241 \
       "$BE_ALIAS" \
       || { echo "ERROR: could not open SSH tunnel" >&2; exit 1; }
 fi

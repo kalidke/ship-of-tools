@@ -3,6 +3,12 @@
 **Status:** Accepted (2026-06-20; built + merged same day)
 **Date:** 2026-06-20
 
+> **Transport note (2026-08-10):** the static `-L` helper forwards described
+> here are the pre-ADR-0035 transport. Since v0.5.0 these pages ride the
+> control tunnel through the daemon TCP proxy; the fixed forwards are retired
+> (opt-in via `SOT_LEGACY_FORWARDS=1`). The open-in-browser flow this ADR
+> decides is unchanged.
+
 ## Context
 
 The frontend can already hand a URL to the OS default browser

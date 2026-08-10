@@ -80,9 +80,9 @@ installer, and proves the result answers before it says done.
 
 **Prebuilt artifacts** ship with every
 [GitHub Release](https://github.com/kalidke/ship-of-tools/releases) — Linux
-x86_64, Windows x86_64, and macOS aarch64; the installer always fetches the
-latest. `scripts/install.sh` is the user-install path; source builds are
-stamped `-dev` and never self-update.
+x86_64, Windows x86_64, and macOS aarch64; the installer fetches the latest
+by default (`--version` pins). `scripts/install.sh` is the user-install path;
+source builds are stamped `-dev` and never self-update.
 
 `scripts/install.sh` downloads the latest release (SHA256-verified), lays out
 `~/.local/share/sot`, installs Julia via juliaup when needed, installs the
@@ -91,17 +91,23 @@ launcher and backend service. With no role flag and an interactive TTY, it
 opens a role Q&A; without a TTY, pass a role flag explicitly:
 
 ```bash
-bash scripts/install.sh                       # interactive role Q&A (TTY required)
+# one-liner (no clone needed); append a role flag after `--`:
+curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/install.sh | bash -s -- --local
+
+bash scripts/install.sh                       # from a checkout: interactive role Q&A (TTY required)
 bash scripts/install.sh --local               # frontend + backend on this machine
 bash scripts/install.sh --backend <host>      # frontend here, backend on <host> over SSH
 bash scripts/install.sh --be-only             # headless backend only
 bash scripts/install.sh --be-only --no-service # shared-home deployment; skip systemd user unit
 ```
 
-Requirements: Linux frontend roles need glibc ≥ 2.35, while `--be-only` skips
-the frontend floor because the backend binary is static. Remote layouts require
-key-based SSH to the backend host. **Re-running the installer is also the
-updater.** Changing roles backs up and rewrites `hosts.toml`. Details:
+Requirements: **git**, **curl**, **tar**; **tmux** on any host that runs the
+backend (fatal if absent); Linux frontend roles need glibc ≥ 2.35, while
+`--be-only` skips the frontend floor because the backend binary is static.
+Remote layouts require key-based SSH to the backend host. **Re-running the
+installer is also the updater**; `--version vX.Y.Z` pins a specific release
+and `--prefix <dir>` relocates the install. Changing roles backs up and
+rewrites `hosts.toml`. Details:
 **[Install](https://kalidke.github.io/ship-of-tools/dev/start/install/)**.
 
 **From source (contributors).**

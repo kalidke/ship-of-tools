@@ -43,9 +43,10 @@ role explicitly:
 | `--be-only` | headless backend only (servers, canary boxes) |
 
 Plus `--version vX.Y.Z` to pin a release (default: latest), `--prefix <dir>` to
-relocate the install, `--port <n>` for the daemon port, and `--no-service` on
-backend roles when a shared-home deployment should not get a persistent user
-systemd unit.
+relocate the install, `--port <n>` for the frontend's *local* TCP port of the
+SSH forward (remote role only — ignored for `--local`/`--be-only`; the daemon
+itself listens on a Unix socket), and `--no-service` on backend roles when a
+shared-home deployment should not get a persistent user systemd unit.
 
 What the installer lays out under the prefix:
 
@@ -127,7 +128,8 @@ use.
 
 
 
-- **linux-x86_64** or **macos-aarch64** release artifacts.
+- **linux-x86_64** or **macos-aarch64** release artifacts (a
+  **windows-x86_64** zip also ships for the Windows frontend path below).
 - **git** for the release-tag checkout.
 - **curl** and **tar** for the installer. If using the `$GITHUB_TOKEN` path
   instead of `gh`, `jq` is also required.
@@ -149,13 +151,18 @@ use.
   a set `$GITHUB_TOKEN` is *honored* to avoid the unauthenticated API rate
   limit (60 requests/hour per IP) — relevant only if you install repeatedly.
 
-On **Windows** there is no packaged `install.ps1` yet (issue #23);
-`scripts/install.sh` exits with a Windows-specific message. Install from
-source via [Per-Machine Setup](setup.md) — manually, or by invoking the
-shipped `/sot-setup` Claude Code skill, which drives that checklist
-(including the launcher shortcut + taskbar icon) end-to-end. On **macOS aarch64** the bash
-installer is wired, but support is still experimental and there is no launchd
-service wiring; local roles start `sotd` on demand.
+On **Windows** there is no packaged `install.ps1` yet (`scripts/install.sh`
+exits with a Windows-specific message), but **no Rust toolchain is needed**:
+the release ships `sot-<ver>-windows-x86_64.zip` — extract `sot.exe` into
+`%LOCALAPPDATA%\sot\bin`, clone the repo for the launcher scripts and config,
+and wire the shortcut with `scripts\install-shortcut.ps1`. The step-by-step
+walkthrough is
+[INSTALL-AGENT.md §2b](https://github.com/kalidke/ship-of-tools/blob/main/docs/INSTALL-AGENT.md)
+(written for a coding agent to drive, equally followable by hand). Building
+from source via [Per-Machine Setup](setup.md) — manually or with the shipped
+`/sot-setup` Claude Code skill — remains the contributor path. On **macOS
+aarch64** the bash installer is wired, but support is still experimental and
+there is no launchd service wiring; local roles start `sotd` on demand.
 
 Development machines don't use the release installer at all — they run from a
 checkout via [Per-Machine Setup](setup.md).

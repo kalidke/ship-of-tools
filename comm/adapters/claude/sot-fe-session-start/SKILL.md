@@ -120,8 +120,12 @@ double-wakes you; wrongly skipping leaves you deaf — so never skip on a guess.
 
    Do **not** try to connect to `127.0.0.1:18743` on the remote backend. In
    socket-only mode that port belongs only on the frontend machine, and only
-   while the SSH tunnel/launcher is running. Browser helper ports `1234`-`1240`
-   must also be forwarded by the launcher for Pluto, docs, and static pages.
+   while the SSH tunnel/launcher is running. The fixed browser-helper forwards
+   (`1234`-`1241`) are RETIRED by default (ADR 0035, #81/#82): backend pages ride
+   the control tunnel through the daemon proxy, so a tunnel showing ONLY the
+   socket forward is CORRECT — do not "repair" it. `SOT_LEGACY_FORWARDS=1` is
+   the opt-in escape hatch for a pre-v0.5.0 backend only; on a shared host it
+   reintroduces the risk of forwarding a port another user's server holds.
 
 3. **Re-arm the fast-comm wake** — arm a persistent harness **Monitor** on the
    FE inbox (you only reach this when Step 0 determined a genuine relaunch / cold
