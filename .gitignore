@@ -23,6 +23,7 @@
 /core/Manifest*.toml
 /julia/kernel/Manifest*.toml
 /julia/repl/Manifest*.toml
+/julia/pluto/Manifest*.toml
 /examples/plugins/*/Manifest*.toml
 /julia/plugins/*/Manifest*.toml
 /docs/fixtures/DemoProject/Manifest*.toml
