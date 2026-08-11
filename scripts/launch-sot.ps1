@@ -319,7 +319,7 @@ if (-not $backendHost -or -not $remoteRepo) {
 }
 $tcpPort = if ($env:SOT_TCP_PORT) { [int]$env:SOT_TCP_PORT } else { 18743 }
 $remoteSocket = if ($env:SOT_REMOTE_SOCKET) { $env:SOT_REMOTE_SOCKET } else { $null }
-# Token resolution with registry-scope fallback (ryzen5 finding, 2026-07-11):
+# Token resolution with registry-scope fallback (a Windows FE box finding, 2026-07-11):
 # an ADR-0017 exit-75 respawn reuses THIS supervisor's process env, frozen at
 # launch time — a supervisor started from a stale shell/shortcut (no
 # $env:SOT_TOKEN) reconnect-looped on token mismatch forever even though the

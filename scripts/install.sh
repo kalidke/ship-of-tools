@@ -124,7 +124,7 @@ fi
 # needed. A missing tmux is fatal here (nothing surfaced it before — the first
 # real server install found tmux entirely unmentioned). tmux < 3.2 is a graceful
 # DEGRADE, not an error: the daemon version-gates `new-session -e` (older tmux
-# rejected it at arg-parse and drove a respawn storm — expectations 2026-07-11),
+# rejected it at arg-parse and drove a respawn storm — a shared Ubuntu 20.04 host, 2026-07-11),
 # so the backend runs, but the pane's in-session SOT_* awareness is best-effort.
 if [ "$ROLE" = local ] || [ "$ROLE" = be-only ]; then
     command -v tmux >/dev/null 2>&1 \

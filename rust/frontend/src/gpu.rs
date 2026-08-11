@@ -3629,7 +3629,7 @@ impl State {
             // is driver-specific, so [0] picked a non-vsync mode (Immediate/
             // Mailbox) on some GPUs — visible flicker/tearing since day one on
             // those machines, worst in fullscreen where DWM composition stops
-            // masking it (ryzen5 finding, 2026-07-12; the same build was clean
+            // masking it (a Windows FE box finding, 2026-07-12; the same build was clean
             // on hardware whose driver lists Fifo first). AutoVsync =
             // FifoRelaxed where supported, else Fifo — vsynced on every
             // backend.
@@ -17642,7 +17642,7 @@ impl ApplicationHandler for App {
             }
         }
         if !state.dirty {
-            // Fullscreen VRR/OLED brightness-flicker fix (2026-07-12, ryzen5
+            // Fullscreen VRR/OLED brightness-flicker fix (2026-07-12, a VRR/OLED
             // ultrawide OLED). In borderless fullscreen DWM composition
             // disengages, so the panel's adaptive-sync refresh follows OUR
             // present cadence directly. The on-demand idle path below presents
