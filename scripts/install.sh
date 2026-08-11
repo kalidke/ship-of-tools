@@ -274,6 +274,21 @@ julia_run --project="$CHECKOUT" -e 'using ShipTools; ShipTools.update_comm()' \
     || die "ShipTools.update_comm() failed"
 
 if [ "$ROLE" != remote ]; then
+    # A previous install's instantiate wrote Manifest.toml into these env dirs
+    # (untracked — envs fresh-resolve at the tag by design), and a tag move
+    # keeps the file. A stale manifest predating a newly added dep fails
+    # instantiate with "project and manifest out of sync" (field report
+    # 2026-08-11: Sockets, added to julia/repl in #67). Drop UNTRACKED
+    # leftovers only — deleting a file the current tag tracks (old tags
+    # shipped julia/pluto/Manifest.toml) would dirty the read-only checkout
+    # and break the next upgrade's dirty-tree refusal.
+    for env in julia/kernel julia/repl julia/pluto; do
+        if [ -f "$CHECKOUT/$env/Manifest.toml" ] \
+           && ! git -C "$CHECKOUT" ls-files --error-unmatch "$env/Manifest.toml" >/dev/null 2>&1; then
+            say "dropping stale $env/Manifest.toml (fresh resolve at this tag)"
+            rm -f "$CHECKOUT/$env/Manifest.toml"
+        fi
+    done
     say "instantiating julia envs (first run takes a few minutes)"
     julia_run --project="$CHECKOUT/julia/kernel" -e 'using Pkg; Pkg.instantiate()'
     julia_run --project="$CHECKOUT/julia/repl" -e 'using Pkg; Pkg.instantiate()'

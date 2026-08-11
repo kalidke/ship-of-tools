@@ -301,6 +301,7 @@ top line of the nav pane always shows the pane-switch keys.**
 | backend socket missing | old TCP-based service unit or failed daemon start → reinstall/restart the socket-based `sotd.service` |
 | `tmux is required` at install | backend host has no tmux → install it (`apt install tmux`, or a user-local tmux ≥ 3.2 in `~/.local/bin`) and re-run |
 | LLM pane never appears / `sotd.log` spams `pty EOF — respawning tmux` then `cooling down` | tmux < 3.2 on the backend (the daemon degrades gracefully now — no more storm — but check the log's `tmux capability probe` line; put tmux ≥ 3.2 earlier on the daemon's PATH for full awareness) |
+| Julia instantiate fails "project and manifest are out of sync" (often naming a stdlib, e.g. `Sockets`) | stale `Manifest.toml` from a previous install left in the checkout's env dirs → re-run the installer (it drops stale manifests since 2026-08-11); manual fix: `rm ~/.local/share/sot/repo/current/julia/{kernel,repl,pluto}/Manifest.toml` and re-run |
 | Julia instantiate slow on first run | normal (precompilation); minutes, once |
 
 ## 6. After the install
