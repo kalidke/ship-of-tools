@@ -62,7 +62,7 @@ command -v tmux && tmux -V # REQUIRED on any host that RUNS the backend (local /
   **tmux < 3.2 → graceful degrade, not an error**: `new-session -e` (used to
   stamp the pane's `SOT_*` awareness env) is a 3.2 flag, and on older tmux (e.g.
   3.0a on Ubuntu 20.04) it was rejected at arg-parse — which historically drove a
-  respawn storm that forked ~339k zombie tmux clients (expectations, 2026-07-11).
+  respawn storm that forked ~339k zombie tmux clients (a shared Ubuntu 20.04 host, 2026-07-11).
   The daemon now **version-gates** the flag: on tmux < 3.2 it omits `-e` and falls
   back to a best-effort `set-environment`. Agent panes still get the `SOT_*`
   vars (the boot wrapper re-reads the session env before launching the agent);

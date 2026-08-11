@@ -440,7 +440,7 @@ fn spawn_tmux_pair(
     // userland — exactly the old lab backends this app targets) the client
     // rejects it at arg-parse and exits in ~4ms; pre-fix that drove an
     // unthrottled reader respawn loop (~150/s) and a 339k-zombie fork bomb
-    // (expectations 2026-07-11 report). So probe the tmux version ONCE, gate `-e`
+    // (shared-host report, 2026-07-11). So probe the tmux version ONCE, gate `-e`
     // on it, and fail CLOSED — an unknown/absent/unparseable version omits `-e`
     // rather than risk the storm.
     let supports_e = tmux_supports_dash_e();
@@ -917,7 +917,7 @@ fn append_recent(recent: &mut Vec<u8>, bytes: &[u8]) {
 /// respawns a fresh pair sized to the latest cached dims, swapping the new
 /// master/writer into the shared slots and taking the new reader.
 ///
-/// Failure breaker (expectations 2026-07-11 report): a child that dies within
+/// Failure breaker (shared-host report, 2026-07-11): a child that dies within
 /// `PTY_HEALTHY_THRESHOLD` of being spawned is a "short-lived failure" and is
 /// counted; consecutive short-lived failures back off (`respawn_backoff`) and,
 /// past `PTY_GIVE_UP_CAP`, drop into a `PTY_COOLDOWN` before one more controlled
@@ -1132,7 +1132,7 @@ mod tests {
         // The shapes tmux -V actually emits across the versions we care about.
         assert_eq!(parse_tmux_version("tmux 3.2\n"), Some((3, 2)));
         assert_eq!(parse_tmux_version("tmux 3.2a"), Some((3, 2)));
-        assert_eq!(parse_tmux_version("tmux 3.0a\n"), Some((3, 0))); // the expectations box
+        assert_eq!(parse_tmux_version("tmux 3.0a\n"), Some((3, 0))); // the Ubuntu 20.04 report
         assert_eq!(parse_tmux_version("tmux 3.3a"), Some((3, 3)));
         assert_eq!(parse_tmux_version("tmux next-3.4"), Some((3, 4)));
         assert_eq!(parse_tmux_version("tmux 2.9a"), Some((2, 9)));
