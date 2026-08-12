@@ -18,6 +18,8 @@
 #   sot-fe docs    <workspace> <abs-path>          [--fe <handle>]
 #   sot-fe repl run  <workspace> <path>            [--fresh] [--timeout <s>] [--origin <who>]
 #   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>] [--origin <who>]
+#   sot-fe repl interrupt <workspace>              [--timeout <s>]
+#   sot-fe repl status [<workspace>]
 #
 #   preview  — switch the FE to <workspace>, Files mode, and preview <path>.
 #   reveal   — switch + reveal <path> in the file tree (cursor it, no preview).
@@ -40,6 +42,20 @@
 #              the run finishes (or --timeout, default 120s) and returns the
 #              output. Non-destructive — runs in the REPL's current project,
 #              no reset. Exit 0 on outcome:ok, 2 otherwise.
+#   repl interrupt — stop a RUNNING eval without losing the kernel. The
+#              LEAST DESTRUCTIVE recovery for a run that is wedged or simply
+#              taking too long: the child keeps its compiled packages, so you
+#              do NOT pay the multi-minute Makie/precompile bill that --fresh
+#              costs. Reach for this BEFORE --fresh, and before killing a pid
+#              by hand. Safe to send while the REPL is busy — that is what the
+#              op is for.
+#   repl status — what the daemon already knows about a workspace's REPL:
+#              lifecycle (not_started | starting | ready | dead), whether a
+#              kernel is running, and the project it is in. Omit <workspace>
+#              to list every workspace whose REPL has been started. Use this
+#              BEFORE ps/ss archaeology — and note it distinguishes "cannot
+#              reach the daemon" from "the REPL is dead", which look identical
+#              from the outside and mislead in opposite directions.
 #
 #   --fe <handle>  scope delivery to one FE by its sot-comm handle (sets the
 #                  wire `target`); absent = every FE acts (the badge floor).
@@ -232,6 +248,7 @@ send_repl_execute() {
         echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
         exit 1
     fi
+    ws="$(_ws_id_or_passthrough "$ws")"
     local secs="${TIMEOUT:-120}"
     local ms=$(( secs * 1000 ))
     # Wait a little past the backend budget so the daemon's timeout result (not
@@ -282,6 +299,7 @@ send_repl_run_file() {
         echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
         exit 1
     fi
+    ws="$(_ws_id_or_passthrough "$ws")"
     # The restart spawns a fresh julia child before the ack; give it more room
     # than sot_send's 6s default (honour --timeout if the caller set it).
     export SEND_TIMEOUT="${TIMEOUT:-30}"
@@ -310,6 +328,158 @@ send_repl_run_file() {
     local err
     err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
     [ -z "$err" ] || exit 2
+}
+
+# Resolve ENDPOINT in the CALLER's shell (never from inside a $( ) subshell),
+# reporting an unreachable daemon as its own outcome. That distinction is
+# load-bearing: a transport failure and a dead REPL look identical from a
+# failing CLI and point at opposite fixes — one is your endpoint, the other is
+# the kernel. A stale tcp: endpoint aimed at a dead port lands here.
+_need_endpoint() {
+    if ! ENDPOINT="$(resolve_endpoint)"; then
+        echo "ERROR: could not find the sotd daemon — this is a TRANSPORT problem, not a REPL problem. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT). A stale tcp: endpoint pointing at a dead port fails exactly like this." >&2
+        exit 1
+    fi
+}
+
+# Fetch workspace.list once and echo the row matching $1 (by workspace_id,
+# label OR slug) as compact JSON; empty when nothing matched.
+#
+# The daemon's own resolver accepts workspace_id and slug but NOT label, so a
+# perfectly reasonable `repl interrupt <Label>` would come back as
+# "unknown_workspace" from the daemon. Resolving here instead lets every repl
+# verb accept the same three identifiers and fail with a message that names the
+# alternatives.
+# NOTE: this runs inside $( ) — a SUBSHELL — so it must NOT be the thing that
+# resolves ENDPOINT: an assignment here dies with the subshell and the caller
+# would send to an empty endpoint. Callers resolve first (see _need_endpoint).
+_ws_row() {
+    local want="$1" req resp
+    req="$(jq -nc '{v:1, id:2, kind:"req", op:"workspace.list", payload:{}}')"
+    resp="$(SEND_TIMEOUT="${SEND_TIMEOUT:-15}" sot_send "$req" workspace.list || true)"
+    if [ -z "$resp" ]; then
+        echo "ERROR: the daemon did not answer workspace.list via $ENDPOINT. TRANSPORT, not the REPL — nothing can be concluded about any kernel." >&2
+        exit 1
+    fi
+    printf '%s' "$resp" | jq -c --arg w "$want" \
+        'first(.payload.workspaces[] | select(.workspace_id == $w or .label == $w or .slug == $w)) // empty'
+}
+
+# Best-effort id resolution for run/eval: echo $1's canonical workspace_id, or
+# $1 UNCHANGED if it cannot be resolved. Strictly additive — every string that
+# works today still goes through verbatim — so this can only ADD label support,
+# never take away an id/slug that already worked (these verbs are called from
+# skills and other scripts; a hard failure here would be a regression). Without
+# it `repl status <Label>` would work while `repl eval <Label>` returned
+# unknown_workspace, since the daemon's resolver takes id/slug only.
+_ws_id_or_passthrough() {
+    local want="$1" row=""
+    row="$(_ws_row "$want" 2>/dev/null || true)"
+    if [ -n "$row" ]; then
+        printf '%s' "$row" | jq -r '.workspace_id'
+    else
+        printf '%s' "$want"
+    fi
+}
+
+# Send a repl.interrupt request — stop the RUNNING eval, keep the kernel.
+# $1=workspace (id, label or slug). The op is deliberately readable while the
+# REPL is busy (that is its whole point), so this is the first thing to try on a
+# wedged run: unlike --fresh it preserves the child's compiled packages, and
+# unlike killing the pid it goes through the supervisor. Exits 2 on a
+# daemon-reported error.
+send_repl_interrupt() {
+    local ws="$1" row state ws_id
+    _need_endpoint
+    row="$(_ws_row "$ws")"
+    if [ -z "$row" ]; then
+        echo "ERROR: no workspace matched '$ws' (tried workspace_id, label and slug). Run \`sot-fe repl status\` to see what exists." >&2
+        exit 1
+    fi
+    ws_id="$(printf '%s' "$row" | jq -r '.workspace_id')"
+    state="$(printf '%s' "$row" | jq -r '.repl_state // "not_started"')"
+    # Refuse rather than SPAWN. Every submission path calls ensure_supervisor(),
+    # so sending an interrupt to a workspace with no REPL would start a julia
+    # child (and pay its precompile) purely to interrupt nothing — the opposite
+    # of what someone reaching for a recovery verb wants.
+    if [ "$state" = "not_started" ]; then
+        echo "nothing to interrupt: $ws has no REPL child (repl_state=not_started)." >&2
+        echo "note: not sending — an interrupt would SPAWN a kernel just to interrupt nothing." >&2
+        exit 0
+    fi
+    export SEND_TIMEOUT="${TIMEOUT:-30}"
+    local payload req resp
+    payload="$(jq -nc --arg w "$ws_id" '{workspace_id:$w}')"
+    req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.interrupt", payload:$p}')"
+    resp="$(sot_send "$req" repl.interrupt || true)"
+    if [ -z "$resp" ]; then
+        # Say what silence means here, because it does NOT mean "not interrupted":
+        # the request is enqueued before any reply is written.
+        echo "ERROR: no response to repl.interrupt within ${SEND_TIMEOUT}s via $ENDPOINT. That does NOT mean the interrupt failed — it may have landed and the reply was lost. Check \`sot-fe repl status $ws\` before escalating to --fresh or a kill; re-sending an interrupt is harmless, bouncing the kernel is not." >&2
+        exit 1
+    fi
+    printf '%s' "$resp" | jq -r '
+        .payload as $p |
+        if ($p.error != null) then
+            "ERROR: \($p.error) [\($p.code // "?")]"
+        else
+            "interrupt delivered to the REPL"
+            + "\nnote: the kernel is KEPT (compiled packages intact). A long-running eval may take a moment to unwind; confirm with `sot-fe repl status`."
+        end
+    '
+    local err
+    err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
+    [ -z "$err" ] || exit 2
+}
+
+# Report the daemon's own view of a workspace's REPL (workspace.list →
+# repl_state). $1=workspace, or empty for every workspace with a started REPL.
+#
+# This exists because the alternative is ps/ss/proc archaeology to answer
+# questions the daemon already knows the answer to. It deliberately reports
+# "cannot reach the daemon" as its own outcome (exit 1) rather than folding it
+# into "no REPL": those two look identical from a failing CLI and point at
+# opposite fixes — one is your endpoint, the other is the kernel.
+send_repl_status() {
+    local want="$1"
+    _need_endpoint
+    export SEND_TIMEOUT="${TIMEOUT:-15}"
+    local req resp
+    req="$(jq -nc '{v:1, id:2, kind:"req", op:"workspace.list", payload:{}}')"
+    resp="$(sot_send "$req" workspace.list || true)"
+    if [ -z "$resp" ]; then
+        echo "ERROR: the daemon did not answer workspace.list within ${SEND_TIMEOUT}s via $ENDPOINT. Again: TRANSPORT, not the REPL — the daemon is unreachable or wedged, so nothing can be concluded about any kernel." >&2
+        exit 1
+    fi
+    if [ -n "$want" ]; then
+        local found
+        found="$(printf '%s' "$resp" | jq -r --arg w "$want" \
+            '[.payload.workspaces[] | select(.workspace_id == $w or .label == $w or .slug == $w)] | length')"
+        if [ "$found" = "0" ]; then
+            echo "ERROR: no workspace matched '$want' (tried workspace_id, label and slug). Run \`sot-fe repl status\` with no argument to see what exists." >&2
+            exit 1
+        fi
+    fi
+    printf '%s' "$resp" | jq -r --arg w "$want" '
+        .payload.workspaces
+        | map(select(
+            if $w == "" then (.repl_state // "not_started") != "not_started"
+            else (.workspace_id == $w or .label == $w or .slug == $w) end))
+        | if length == 0 then
+            "no workspace has a started REPL yet (every repl_state is not_started)."
+          else
+            map(
+              "workspace: \(.label)   repl: \(.repl_state // "?")   kernel_running: \(.kernel_running)"
+              + "\n  id: \(.workspace_id)   project: \(.project_root)"
+              + "\n  " + (
+                  if .repl_state == "ready" then "alive and accepting work."
+                  elif .repl_state == "starting" then "spawning or precompiling — a first boot can take MINUTES; do not re-send, and do not read the wait as wedged."
+                  elif .repl_state == "dead" then "the child exited; the NEXT eval respawns it, and that respawn also revokes the old child'"'"'s announced browser ports. Nothing to clean up by hand."
+                  else "no REPL child yet — the first eval spawns one (expect precompilation)."
+                  end)
+            ) | join("\n")
+          end
+    '
 }
 
 case "$CMD" in
@@ -467,7 +637,16 @@ case "$CMD" in
                 INPUT="$(jq -nc --arg c "$EVAL_CODE" '{kind:"eval", code:$c}')"
                 send_repl_execute "$INPUT" "$WS"
                 ;;
-            *) echo "usage: sot-fe repl run <workspace> <path> | sot-fe repl eval <workspace> (--code <c> | --stdin)" >&2; exit 1 ;;
+            interrupt)
+                WS="${POS[1]:-}"
+                [ -n "$WS" ] || { echo "usage: sot-fe repl interrupt <workspace> [--timeout <s>]" >&2; exit 1; }
+                send_repl_interrupt "$WS"
+                ;;
+            status)
+                # <workspace> optional: bare `status` lists every started REPL.
+                send_repl_status "${POS[1]:-}"
+                ;;
+            *) echo "usage: sot-fe repl run <workspace> <path> | sot-fe repl eval <workspace> (--code <c> | --stdin) | sot-fe repl interrupt <workspace> | sot-fe repl status [<workspace>]" >&2; exit 1 ;;
         esac
         ;;
     -h|--help|help) usage 0 ;;

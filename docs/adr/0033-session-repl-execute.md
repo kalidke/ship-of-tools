@@ -85,6 +85,27 @@ Mechanics:
    connection are skipped by op-grep). Reuses `sot-fe`'s endpoint resolution +
    `hello`/token auth. Bounded single-line response ⇒ bash is adequate here
    (unlike the streaming/blob ops). Exit 0 on `ok`, 2 otherwise.
+9. **Recovery + introspection CLI** (added 2026-08-12): `sot-fe repl interrupt
+   <ws>` and `sot-fe repl status [<ws>]`. Both are thin surfaces over capability
+   the daemon already had — `repl.interrupt`, and `repl_state` as returned by
+   `workspace.list` — and neither needed a new op. They exist because without
+   them the documented recovery for a wedged run was "hand-write JSON frames
+   over the socket", and answering "is this REPL alive?" meant `ps`/`ss`
+   archaeology over facts the daemon already knew. `interrupt` is the
+   least-destructive rung of the ladder: it keeps the kernel's compiled
+   packages, where `--fresh` re-pays the precompile bill and a manual kill
+   bypasses the supervisor. Two behaviours worth keeping:
+   - Both resolve the workspace CLIENT-side (id, **label**, or slug) via
+     `workspace.list`; the daemon's own `resolve()` takes id/slug only, so a
+     `<Label>` would otherwise come back `unknown_workspace`.
+   - `interrupt` REFUSES on `repl_state = not_started` instead of sending. Every
+     submission path calls `ensure_supervisor()`, so an interrupt aimed at a
+     workspace with no REPL would *spawn* a kernel (and pay its precompile) to
+     interrupt nothing.
+   Both report an unreachable daemon as a distinct TRANSPORT failure rather than
+   as a REPL verdict — the two are indistinguishable from a failing CLI and
+   point at opposite fixes (a real session lost an afternoon to a stale `tcp:`
+   endpoint that fails exactly like a dead kernel).
 
 ## Consequences
 
