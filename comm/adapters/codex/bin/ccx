@@ -67,7 +67,11 @@ fi
 # interactive "do you trust this directory" prompt on every first visit —
 # fatal in a daemon-booted pane nobody is watching. Trusting is correct by
 # construction here: the daemon only creates workspaces at user-chosen roots.
-CODEX_CFG="$HOME/.codex/config.toml"
+# Honor $CODEX_HOME: a host that points it elsewhere (e.g. machine-local, to
+# keep codex's flock() off NFS) reads a DIFFERENT config, so writing this to
+# ~/.codex would be a no-op nobody notices.
+CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+CODEX_CFG="$CODEX_HOME_DIR/config.toml"
 CWD_ABS="$(pwd -P)"
 if ! grep -qF "[projects.\"$CWD_ABS\"]" "$CODEX_CFG" 2>/dev/null; then
     printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$CWD_ABS" >> "$CODEX_CFG"
@@ -87,7 +91,10 @@ fi
 # poll detects it; with node's dir on PATH the exec-death class is gone.
 # --dangerously-bypass-hook-trust: our state hooks ship as the sot-comm
 # plugin; trust is persisted per hook hash, so any hook-script update would
-# silently disable state reporting until a human re-trusts in /hooks. The
-# hooks are ours by construction — bypass keeps daemon-spawned sessions
-# reporting unconditionally.
-exec "$CODEX_BIN" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust "You are the comm-aware agent @$SOT_COMM_NAME on the sot-comm network. House conventions are in your GLOBAL ~/.codex/AGENTS.md (plus the project's own AGENTS.md when it has one, and \$SOT_MANUAL/docs/USING.md for product help). Then run: $COMM/comm-poll.sh — and handle anything queued. Inbound messages will be typed into this session prefixed '[relay]'."
+# otherwise leave state reporting disabled until a human re-trusts in /hooks.
+# The hooks are ours by construction, so the bypass keeps daemon-spawned
+# sessions reporting. codex runs a hook when `bypass_hook_trust || trusted`, so
+# the flag really does execute an untrusted hook — a /hooks panel reading
+# Active=0 reflects PERSISTED trust and does not predict behaviour under this
+# flag. See comm/adapters/codex/hooks.README.md.
+exec "$CODEX_BIN" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust "You are the comm-aware agent @$SOT_COMM_NAME on the sot-comm network. House conventions are in your GLOBAL $CODEX_HOME_DIR/AGENTS.md (plus the project's own AGENTS.md when it has one, and \$SOT_MANUAL/docs/USING.md for product help). Then run: $COMM/comm-poll.sh — and handle anything queued. Inbound messages will be typed into this session prefixed '[relay]'."

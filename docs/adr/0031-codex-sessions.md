@@ -16,6 +16,15 @@ test (verify codex hook loading/trust gating; until then codex rows rely on
 explicit comm-status calls per AGENTS.md), FE row sigils, comm-spawn
 --agent codex.
 
+> **Status note (2026-08-12).** The "state hooks did not observably fire" gap is
+> resolved, and it was never trust gating. Two independent silent defects in the
+> hooks payload: an unrecognized top-level `_comment` key, which makes codex
+> reject the whole file, and snake_case event keys, which no released codex has
+> ever accepted. Either alone zeroes every hook, with no error reported
+> anywhere. Also, the installer wrote codex skills and `AGENTS.md` to `~/.codex`
+> while sessions read `$CODEX_HOME`. See `comm/adapters/codex/hooks.README.md`
+> for the measured behaviour and the re-check procedure.
+
 ## Context
 
 Decision: implement Codex (OpenAI Codex CLI) sessions alongside Claude Code

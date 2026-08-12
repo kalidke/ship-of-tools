@@ -2,7 +2,7 @@
 #
 # Source of truth: comm/ in the repo. install_comm copies the CLI-agnostic core
 # scripts to ~/.sot-comm/bin and each per-CLI adapter to that CLI's dir
-# (~/.claude/skills, ~/.codex/skills, ~/.local/bin, hooks/plugins).
+# (~/.claude/skills, $CODEX_HOME/skills, ~/.local/bin, hooks/plugins).
 # See comm/PROTOCOL.md for the wire contract.
 #
 # The Claude adapter additionally installs three work-state hooks
@@ -25,8 +25,71 @@
 const COMM_PROTOCOL_VERSION = 1
 const COMM_SRC = normpath(joinpath(@__DIR__, "..", "comm"))
 
+# A set-but-EMPTY override is treated as unset, matching the repo's own shell
+# convention (`${SOT_COMM_HOME:-...}`). Taking "" literally would yield a
+# relative path that scatters the install into the process CWD, and mkpath("")
+# throws partway through — a confusing failure for a trivially recoverable env
+# slip.
+_env_dir(var, default) = (v = get(ENV, var, ""); isempty(v) ? default : v)
+
 "Resolved runtime home for sot-comm (honors `\$SOT_COMM_HOME`)."
-comm_home() = get(ENV, "SOT_COMM_HOME", joinpath(homedir(), ".sot-comm"))
+comm_home() = _env_dir("SOT_COMM_HOME", joinpath(homedir(), ".sot-comm"))
+
+# Codex reads its skills, AGENTS.md, config and plugin cache from $CODEX_HOME,
+# NOT unconditionally from ~/.codex — and a host that points CODEX_HOME
+# elsewhere (e.g. a machine-local dir, to keep per-host state off a shared NFS
+# HOME) turned every hardcoded ~/.codex write into a no-op the sessions never
+# read: skills and AGENTS.md installed into a directory codex had no interest
+# in, while `codex plugin add` — which inherits the env — correctly wrote the
+# plugin half to the real CODEX_HOME, leaving the install split across two
+# dirs. Honor the env like comm_home() does.
+"Resolved runtime home for codex (honors `\$CODEX_HOME`)."
+codex_home() = _env_dir("CODEX_HOME", joinpath(homedir(), ".codex"))
+
+# Top-level object keys of a JSON document, without taking a JSON dependency.
+# Used only to guard the codex hooks payload (see the call site for why an
+# unrecognized top-level key is catastrophic there). A regex over indented key
+# lines was the obvious approach and is wrong: it stops matching the moment
+# anyone reformats the file, and a guard that silently stops guarding is worse
+# than none. This walks the text instead, so it is indentation-independent and
+# is not fooled by braces, colons or escaped quotes inside string values.
+function _json_toplevel_keys(txt::AbstractString)
+    ks = String[]
+    depth = 0
+    instr = false
+    esc = false
+    buf = IOBuffer()
+    pending = nothing   # a string that closed at depth 1: a key iff ':' follows
+    for c in txt
+        if instr
+            if esc
+                esc = false
+            elseif c == '\\'
+                esc = true
+            elseif c == '"'
+                instr = false
+                s = String(take!(buf))
+                pending = depth == 1 ? s : nothing
+            else
+                write(buf, c)
+            end
+        elseif c == '"'
+            instr = true
+        elseif c == '{' || c == '['
+            depth += 1
+            pending = nothing
+        elseif c == '}' || c == ']'
+            depth -= 1
+            pending = nothing
+        elseif c == ':'
+            pending === nothing || push!(ks, pending)
+            pending = nothing
+        elseif !isspace(c)
+            pending = nothing
+        end
+    end
+    return ks
+end
 
 # Managed bin/ files removed or RENAMED in a past commit. install_comm deletes
 # these from `$SOT_COMM_HOME/bin` so a pull + update_comm cleans the orphan on
@@ -98,14 +161,14 @@ function _install_adapter(cli::Symbol)
         _install_claude_hooks(joinpath(srcdir, "hooks"))
     elseif cli === :codex
         # ADR 0031 — codex adapter: ccx launcher, the PermissionRequest->blocked
-        # hook script, and ~/.codex/hooks.json (state-nav wiring). The shared
+        # hook script, and the hooks.json plugin payload (state-nav wiring). The shared
         # state scripts (comm-status-*.sh) and codex-watch.sh ride the core
         # deploy above.
         srcdir = joinpath(COMM_SRC, "adapters", "codex")
         isdir(srcdir) || return nothing
         skills_src = joinpath(srcdir, "skills")
         if isdir(skills_src)
-            skillsroot = joinpath(homedir(), ".codex", "skills")
+            skillsroot = joinpath(codex_home(), "skills")
             installed = String[]
             for name in readdir(skills_src)
                 src = joinpath(skills_src, name, "SKILL.md")
@@ -127,14 +190,15 @@ function _install_adapter(cli::Symbol)
                 chmod(dst, 0o755)
             end
         end
-        # Global codex memory: our AGENTS.md also installs as ~/.codex/AGENTS.md
-        # so conventions reach codex sessions in ANY project — workspaces are
-        # arbitrary repos that won't carry our file (found live: the first
-        # daemon-booted codex reported "AGENTS.md conventions not found" from a
-        # scratch workspace). Marker-guarded like hooks.json.
+        # Global codex memory: our AGENTS.md also installs as
+        # $CODEX_HOME/AGENTS.md so conventions reach codex sessions in ANY
+        # project — workspaces are arbitrary repos that won't carry our file
+        # (found live: the first daemon-booted codex reported "AGENTS.md
+        # conventions not found" from a scratch workspace). Marker-guarded like
+        # hooks.json.
         src_agents = joinpath(dirname(COMM_SRC), "AGENTS.md")
         if isfile(src_agents)
-            dstdir = joinpath(homedir(), ".codex")
+            dstdir = codex_home()
             mkpath(dstdir)
             dst = joinpath(dstdir, "AGENTS.md")
             marker = "Codex sessions in Ship of Tools"
@@ -142,20 +206,34 @@ function _install_adapter(cli::Symbol)
                 cp(src_agents, dst; force = true)
                 @info "Installed global codex AGENTS.md" file = dst
             else
-                @warn "~/.codex/AGENTS.md exists and is not ours — merge manually" file = dst
+                @warn "codex AGENTS.md exists and is not ours — merge manually" file = dst
             end
         end
         # Hooks deploy as a LOCAL PLUGIN (found the hard way, 2026-07-06:
         # codex 0.142 loads lifecycle hooks from config and ENABLED PLUGINS —
-        # a standalone ~/.codex/hooks.json is silently ignored, which was the
-        # "session coloring isn't working" bug). Layout: the implicit local
-        # marketplace ~/.agents/plugins/marketplace.json + a sot-comm plugin
-        # dir (manifest + hooks/hooks.json), then `codex plugin add`. Paths in
-        # marketplace.json resolve from TWO levels above the file ($HOME).
-        # Hook TRUST: persisted per hook hash via the /hooks TUI (done once,
-        # shared $HOME covers the Linux cohort); ccx additionally passes
-        # --dangerously-bypass-hook-trust so a changed hash can't silently
-        # disable state reporting on daemon-spawned sessions.
+        # a standalone hooks.json in the codex home is silently ignored, which
+        # was the "session coloring isn't working" bug). Layout: the implicit
+        # local marketplace ~/.agents/plugins/marketplace.json + a sot-comm
+        # plugin dir (manifest + hooks/hooks.json), then `codex plugin add`
+        # (which re-copies into $CODEX_HOME/plugins/cache on every run, so a
+        # repo edit does propagate). Paths in marketplace.json resolve from TWO
+        # levels above the file ($HOME) — the marketplace stays HOME-relative
+        # even when CODEX_HOME points elsewhere, which is why only skills and
+        # AGENTS.md above needed codex_home().
+        #
+        # Hook TRUST: persisted per hook HASH in $CODEX_HOME/config.toml under
+        # [hooks.state], granted once via the /hooks TUI. NOT covered by a
+        # shared $HOME when CODEX_HOME is machine-local (this deployment points
+        # it at /var/tmp to keep codex's flock() off NFS) — so trust is
+        # per-machine. ccx additionally passes --dangerously-bypass-hook-trust
+        # so a changed hash can't silently disable state reporting on
+        # daemon-spawned sessions.
+        #
+        # The two silent-death traps this file has already fallen into (both
+        # cost weeks of colourless sessions, both report Installed=0 in /hooks
+        # with no error anywhere) are written up in
+        # comm/adapters/codex/hooks.README.md — read it before editing
+        # hooks.json. The guard below enforces the first one.
         src = joinpath(srcdir, "hooks.json")
         if isfile(src)
             pdir = joinpath(homedir(), ".agents", "plugins", "sot-comm")
@@ -164,6 +242,30 @@ function _install_adapter(cli::Symbol)
             cp(joinpath(srcdir, "plugin", ".codex-plugin", "plugin.json"),
                joinpath(pdir, ".codex-plugin", "plugin.json"); force = true)
             txt = replace(read(src, String), "\$HOME" => homedir())
+            # codex REJECTS the whole hooks file — every event, silently — if it
+            # carries ANY unrecognized top-level key (the config struct is
+            # deny_unknown_fields). A "_comment" key documenting the file did
+            # exactly that, for weeks. Fail loudly here instead of shipping a
+            # file that installs nothing.
+            #
+            # The scanner does NOT validate JSON syntax, and on malformed input
+            # (unbalanced braces) a stray key can sit at depth <= 0 and be
+            # missed — measured, not hypothetical. So require the "hooks" key to
+            # be PRESENT as well: that fails closed on truncated, array-rooted
+            # or empty files, and on any future scanner bug. test/runtests.jl
+            # additionally parses the file for real.
+            ks = _json_toplevel_keys(txt)
+            "hooks" in ks || error("""
+                codex hooks.json has no top-level "hooks" key — the file is truncated,
+                mangled, or not the shape codex expects. Nothing would install and no
+                session would ever show its work-state.""")
+            stray = filter(!=("hooks"), ks)
+            isempty(stray) || error("""
+                codex hooks.json has unrecognized top-level key(s): $(join(stray, ", ")).
+                codex silently rejects the ENTIRE file when one is present — every hook
+                would report Installed=0 and no session would ever show its work-state.
+                Only "hooks" may appear at the top level; put prose in
+                comm/adapters/codex/hooks.README.md instead.""")
             write(joinpath(pdir, "hooks", "hooks.json"), txt)
             mp = joinpath(homedir(), ".agents", "plugins", "marketplace.json")
             if !isfile(mp) || occursin("sot-local", read(mp, String))
@@ -191,7 +293,14 @@ function _install_adapter(cli::Symbol)
                 @info "codex CLI not installed (optional) — plugin files staged; if you later install codex, run `codex plugin add sot-comm@sot-local`" plugin = pdir
             else
                 ok = success(pipeline(`codex plugin add sot-comm@sot-local`; stdout = devnull, stderr = devnull))
-                @info "Installed codex hooks plugin" plugin = pdir added = ok
+                # Name the trust step on the SUCCESS path too: a hook whose
+                # definition changed is untrusted again, and an untrusted hook
+                # is silently inert in any session not launched by ccx (which
+                # passes --dangerously-bypass-hook-trust). Trust is per
+                # $CODEX_HOME, so a machine-local CODEX_HOME means per-machine.
+                @info """Installed codex hooks plugin — verify in codex with /hooks: \
+                    the four events should read Installed=1, and Active=1 once trusted \
+                    (press `t` there; needed once per machine)""" plugin = pdir added = ok codex_home = codex_home()
                 ok || @warn "codex plugin add failed or already installed — check `codex plugin list` / trust via /hooks"
             end
         end
