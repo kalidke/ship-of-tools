@@ -278,6 +278,22 @@ way — broadcast by default (the badge floor), `--fe <handle>` to target one FE
   non-destructive (runs in the REPL's current project, no reset). This is how a
   session drives another workspace's REPL and reads the result — e.g. serving a
   `wglshow` figure into a peer's browser.
+- **`repl interrupt <ws>`** — stop the RUNNING eval, KEEP the kernel (compiled
+  packages intact). The least destructive rung of REPL recovery: try it BEFORE
+  `repl run --fresh` (which re-pays minutes of precompile) and long before any
+  manual `kill`. Workspace-wide — it interrupts THE eval in that workspace,
+  whoever started it. Lands at the eval's next yield point, so a non-yielding
+  compute-bound eval may never take it; then `--fresh` is the honest escalation.
+  Exit 0 = an eval was interrupted; 3 = nothing to interrupt; refuses (exit 3)
+  when the REPL is `not_started`/`dead` (sending would SPAWN a kernel) or
+  `starting` (a boot is not a wedge).
+- **`repl status [<ws>]`** — the daemon's own view of a workspace's REPL:
+  lifecycle (`not_started | starting | ready | dead`) + workspace root. Run
+  this BEFORE any ps/ss archaeology — a `dead` REPL needs NO cleanup (the next
+  eval respawns it). Reports an unreachable daemon as a TRANSPORT failure,
+  distinct from any REPL verdict: those look identical from a failing command
+  and point at opposite fixes (a stale `tcp:` endpoint fails exactly like a
+  dead kernel).
 
 **Discipline: every new BE->FE command lands in THIS section, in lockstep with the
 `sot-fe` verb that ships it.** A capability no session can discover is dead weight —

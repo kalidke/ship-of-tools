@@ -18,6 +18,8 @@
 #   sot-fe docs    <workspace> <abs-path>          [--fe <handle>]
 #   sot-fe repl run  <workspace> <path>            [--fresh] [--timeout <s>] [--origin <who>]
 #   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>] [--origin <who>]
+#   sot-fe repl interrupt <workspace>              [--timeout <s>]
+#   sot-fe repl status [<workspace>]               [--timeout <s>]
 #
 #   preview  — switch the FE to <workspace>, Files mode, and preview <path>.
 #   reveal   — switch + reveal <path> in the file tree (cursor it, no preview).
@@ -40,6 +42,34 @@
 #              the run finishes (or --timeout, default 120s) and returns the
 #              output. Non-destructive — runs in the REPL's current project,
 #              no reset. Exit 0 on outcome:ok, 2 otherwise.
+#   repl interrupt — stop the RUNNING eval without losing the kernel. The
+#              least destructive recovery rung: the child keeps its compiled
+#              packages, so you do NOT pay the multi-minute Makie/precompile
+#              bill that --fresh costs. Reach for this BEFORE --fresh, and
+#              before killing a pid by hand. The op stays readable while the
+#              REPL is busy — but the interrupt lands at the eval's next
+#              YIELD POINT (Ctrl-C semantics on a single thread), so a
+#              non-yielding compute-bound eval (tight numeric loop, long
+#              ccall/BLAS) may never take it; if repeated interrupts change
+#              nothing, --fresh is the honest next rung. WORKSPACE-WIDE: it
+#              interrupts THE eval running in <workspace>, whoever started it
+#              (this CLI, the FE drawer, another session) — there is no
+#              per-run scoping. Exit: 0 an eval was interrupted; 3 nothing to
+#              interrupt (no eval running / no live kernel); 2 daemon error;
+#              1 transport failure or no reply.
+#   repl status — what the daemon already knows about a workspace's REPL:
+#              lifecycle (not_started | starting | ready | dead) and the
+#              workspace root it serves. NOTE the reported root is the
+#              WORKSPACE's, not necessarily the child's active project — a
+#              --fresh run restarts the child into the FILE's project, and a
+#              workspace without Project.toml runs in the shim env; the wire
+#              carries neither. Also NOT here: a busy/idle bit (the wire has
+#              none), so status cannot confirm an interrupt landed — the
+#              interrupt's own reply carries that. Omit <workspace> to list
+#              every workspace whose REPL has been started. Use this BEFORE
+#              ps/ss archaeology — and note it distinguishes "cannot reach
+#              the daemon" from "the REPL is dead", which look identical from
+#              the outside and mislead in opposite directions.
 #
 #   --fe <handle>  scope delivery to one FE by its sot-comm handle (sets the
 #                  wire `target`); absent = every FE acts (the badge floor).
@@ -115,7 +145,16 @@ while [ $# -gt 0 ]; do
         --fresh)    FRESH=true; shift ;;
         --level)    LEVEL="$2"; shift 2 ;;
         --ws)       NOTIFY_WS="$2"; shift 2 ;;
-        --timeout)  TIMEOUT="$2"; shift 2 ;;
+        # Validate here, once: TIMEOUT feeds `timeout(1)` and $((...)) math in
+        # four different functions. Unvalidated, a non-numeric value made
+        # `timeout` itself fail with its complaint discarded (2>/dev/null) and
+        # the CLI then reported a FABRICATED "no response — it may have landed"
+        # transport error for a frame that was never sent; `--timeout 0` means
+        # "no limit" to GNU timeout and hung forever against a wedged daemon.
+        --timeout)  case "${2:-}" in
+                        ''|0|*[!0-9]*) echo "ERROR: --timeout expects a positive integer (seconds), got '${2:-}'" >&2; exit 1 ;;
+                    esac
+                    TIMEOUT="$2"; shift 2 ;;
         --code)     CODE="$2"; shift 2 ;;
         --stdin)    READ_STDIN=true; shift ;;
         --origin)   ORIGIN="$2"; shift 2 ;;
@@ -232,6 +271,7 @@ send_repl_execute() {
         echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
         exit 1
     fi
+    ws="$(_ws_id_or_passthrough "$ws")"
     local secs="${TIMEOUT:-120}"
     local ms=$(( secs * 1000 ))
     # Wait a little past the backend budget so the daemon's timeout result (not
@@ -282,6 +322,7 @@ send_repl_run_file() {
         echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
         exit 1
     fi
+    ws="$(_ws_id_or_passthrough "$ws")"
     # The restart spawns a fresh julia child before the ack; give it more room
     # than sot_send's 6s default (honour --timeout if the caller set it).
     export SEND_TIMEOUT="${TIMEOUT:-30}"
@@ -310,6 +351,245 @@ send_repl_run_file() {
     local err
     err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
     [ -z "$err" ] || exit 2
+}
+
+# Resolve ENDPOINT in the CALLER's shell (never from inside a $( ) subshell),
+# reporting an unreachable daemon as its own outcome. That distinction is
+# load-bearing: a transport failure and a dead REPL look identical from a
+# failing CLI and point at opposite fixes — one is your endpoint, the other is
+# the kernel. A stale tcp: endpoint aimed at a dead port lands here.
+_need_endpoint() {
+    if ! ENDPOINT="$(resolve_endpoint)"; then
+        echo "ERROR: could not find the sotd daemon — this is a TRANSPORT problem, not a REPL problem. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT). A stale tcp: endpoint pointing at a dead port fails exactly like this." >&2
+        exit 1
+    fi
+}
+
+# Fetch workspace.list once and echo the row matching $1 (by workspace_id,
+# label OR slug) as compact JSON; empty when nothing matched.
+#
+# The daemon's own resolver accepts workspace_id and slug but NOT label, so a
+# perfectly reasonable `repl interrupt <Label>` would come back as
+# "unknown_workspace" from the daemon. Resolving here instead lets every repl
+# verb accept the same three identifiers and fail with a message that names the
+# alternatives.
+# NOTE: this runs inside $( ) — a SUBSHELL — so it must NOT be the thing that
+# resolves ENDPOINT: an assignment here dies with the subshell and the caller
+# would send to an empty endpoint. Callers resolve first (see _need_endpoint).
+_ws_row() {
+    local want="$1" req resp err
+    req="$(jq -nc '{v:1, id:2, kind:"req", op:"workspace.list", payload:{}}')"
+    resp="$(SEND_TIMEOUT="${SEND_TIMEOUT:-15}" sot_send "$req" workspace.list || true)"
+    if [ -z "$resp" ]; then
+        echo "ERROR: the daemon did not answer workspace.list via $ENDPOINT. TRANSPORT, not the REPL — nothing can be concluded about any kernel." >&2
+        exit 1
+    fi
+    # A daemon that REJECTS the request (bad/missing token, protocol skew)
+    # answers with the SAME op and a {error, code} payload — which passes the
+    # empty check above and then has no .workspaces to iterate. Unguarded,
+    # that crashed jq ("Cannot iterate over null") on exactly the recovery
+    # verbs a user runs when things are already broken. Surface the daemon's
+    # own words instead.
+    err="$(printf '%s' "$resp" | jq -r '.payload.error // empty' 2>/dev/null || true)"
+    if [ -n "$err" ]; then
+        echo "ERROR: the daemon refused workspace.list: $err [$(printf '%s' "$resp" | jq -r '.payload.code // "?"')] — likely a token/auth problem (\$SOT_TOKEN / ~/.config/sot/token), not a REPL problem." >&2
+        exit 1
+    fi
+    printf '%s' "$resp" | jq -c --arg w "$want" \
+        'first((.payload.workspaces // [])[] | select(.workspace_id == $w or .label == $w or .slug == $w)) // empty'
+}
+
+# Best-effort id resolution for run/eval: echo $1's canonical workspace_id, or
+# $1 UNCHANGED if it cannot be resolved. Strictly additive — every string that
+# works today still goes through verbatim — so this can only ADD label support,
+# never take away an id/slug that already worked (these verbs are called from
+# skills and other scripts; a hard failure here would be a regression). Without
+# it `repl status <Label>` would work while `repl eval <Label>` returned
+# unknown_workspace, since the daemon's resolver takes id/slug only.
+#
+# COST DISCIPLINE: this sits on the run/eval hot path, so it must not add a
+# round-trip when it cannot help. A canonical `ws-*` id needs no resolution —
+# skip the lookup entirely. For everything else the lookup's socket budget is
+# capped at min(--timeout, 10)s so a slow daemon cannot burn more of the
+# caller's budget pre-flight than the caller allotted overall. A failed lookup
+# passes through with one stderr note — silent downgrade would resurface later
+# as a misattributed repl.execute failure.
+_ws_id_or_passthrough() {
+    local want="$1" row="" cap=10
+    case "$want" in
+        ws-*) printf '%s' "$want"; return 0 ;;
+    esac
+    if [ -n "$TIMEOUT" ] && [ "$TIMEOUT" -lt "$cap" ]; then cap="$TIMEOUT"; fi
+    row="$(SEND_TIMEOUT="$cap" _ws_row "$want" 2>/dev/null || true)"
+    if [ -n "$row" ]; then
+        printf '%s' "$row" | jq -r '.workspace_id'
+    else
+        echo "note: could not resolve '$want' via workspace.list (daemon slow, unreachable, or no such workspace) — sending it to the daemon as-is." >&2
+        printf '%s' "$want"
+    fi
+}
+
+# Send a repl.interrupt request — stop the RUNNING eval, keep the kernel.
+# $1=workspace (id, label or slug). The op is deliberately readable while the
+# REPL is busy (that is its whole point), so this is the first thing to try on a
+# wedged run: unlike --fresh it preserves the child's compiled packages, and
+# unlike killing the pid it goes through the supervisor. Exits 2 on a
+# daemon-reported error.
+send_repl_interrupt() {
+    local ws="$1" row state ws_id
+    _need_endpoint
+    # Export the caller's budget BEFORE the workspace.list pre-flight, so
+    # --timeout governs BOTH round-trips. Ordered the other way, the pre-flight
+    # ran on _ws_row's 15s floor and a `--timeout 120` against a daemon slow
+    # precisely because of the runaway eval died before the interrupt was sent.
+    export SEND_TIMEOUT="${TIMEOUT:-30}"
+    row="$(_ws_row "$ws")"
+    if [ -z "$row" ]; then
+        echo "ERROR: no workspace matched '$ws' (tried workspace_id, label and slug). Run \`sot-fe repl status\` to see what exists." >&2
+        exit 1
+    fi
+    ws_id="$(printf '%s' "$row" | jq -r '.workspace_id')"
+    if [ "$(printf '%s' "$row" | jq 'has("repl_state")')" != "true" ]; then
+        # Pre-repl_state daemon (version skew): we cannot pre-check the
+        # lifecycle, but repl.interrupt itself predates the field — send, and
+        # say why the guard was skipped rather than silently guessing.
+        echo "note: this daemon predates repl_state — cannot pre-check the REPL lifecycle; sending the interrupt anyway." >&2
+        state="unknown"
+    else
+        state="$(printf '%s' "$row" | jq -r '.repl_state')"
+    fi
+    # Refuse rather than SPAWN. Every submission path calls ensure_supervisor(),
+    # which (re)starts a julia child whenever none is live — so an interrupt
+    # aimed at a not_started OR dead REPL would pay a full precompile purely to
+    # interrupt nothing (and the fresh shim would then answer interrupted:false
+    # anyway). `dead` needs no cleanup: the next eval respawns it.
+    case "$state" in
+        not_started|dead)
+            echo "nothing to interrupt: $ws has no live REPL child (repl_state=$state)." >&2
+            echo "note: not sending — an interrupt here would SPAWN a kernel just to interrupt nothing." >&2
+            [ "$state" = dead ] && echo "note: a dead REPL needs no cleanup — the next eval respawns it (and the respawn revokes the old child's announced browser ports)." >&2
+            exit 3 ;;
+        starting)
+            # A booting child reads stdin only once its serve loop is up, so an
+            # interrupt sent now stalls past any reasonable budget and then
+            # reads as a transport failure — for a HEALTHY, documented state
+            # (first boot precompiles for minutes). Worse, if an eval is queued
+            # behind the boot, the late-landing interrupt kills that first
+            # legitimate run. Refuse with the real story.
+            echo "not sending: $ws's REPL is starting (first boot precompiles — can take MINUTES; the wait is not a wedge)." >&2
+            echo "note: an interrupt sent now would sit unread until the boot finishes and then kill the first queued eval. Wait for repl_state=ready; if you truly want to abandon the boot, \`repl run --fresh\` replaces it." >&2
+            exit 3 ;;
+    esac
+    local payload req resp
+    payload="$(jq -nc --arg w "$ws_id" '{workspace_id:$w}')"
+    req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.interrupt", payload:$p}')"
+    resp="$(sot_send "$req" repl.interrupt || true)"
+    if [ -z "$resp" ]; then
+        # Say what silence means here, because it does NOT mean "not interrupted":
+        # the request is enqueued before any reply is written. Status can NOT
+        # confirm delivery (the wire has no busy/idle bit) — the only positive
+        # confirmation is a reply, so re-send (harmless) rather than bounce.
+        echo "ERROR: no response to repl.interrupt within ${SEND_TIMEOUT}s via $ENDPOINT. That does NOT mean the interrupt failed — it may have landed and the reply was lost. Re-sending an interrupt is harmless; bouncing the kernel (--fresh) is the escalation if repeated interrupts change nothing (a non-yielding compute-bound eval never takes one)." >&2
+        exit 1
+    fi
+    # The shim answers {interrupted:true} or {interrupted:false, note} — that
+    # one bit is the difference between "I cancelled your run" and "there was
+    # nothing to cancel", and an escalation ladder keys on it. Branch on it and
+    # give each outcome its own exit code; treat a reply with NEITHER field as
+    # the garbage it is instead of defaulting to success.
+    local err interrupted
+    err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
+    if [ -n "$err" ]; then
+        printf 'ERROR: %s [%s]\n' "$err" "$(printf '%s' "$resp" | jq -r '.payload.code // "?"')" >&2
+        exit 2
+    fi
+    # NOT `.payload.interrupted // empty`: jq's // treats false as absent, so
+    # the legitimate {interrupted:false} reply would read as garbage.
+    interrupted="$(printf '%s' "$resp" | jq -r '.payload | if has("interrupted") then (.interrupted | tostring) else "missing" end')"
+    case "$interrupted" in
+        true)
+            echo "eval interrupted — the running eval got an InterruptException; the kernel is KEPT (compiled packages intact)."
+            echo "note: the exception lands at the eval's next yield point — a non-yielding compute-bound eval may still be running; if repeated interrupts change nothing, escalate to --fresh."
+            ;;
+        false)
+            echo "nothing to interrupt: $(printf '%s' "$resp" | jq -r '.payload.note // "no eval in progress"') (the kernel is fine)."
+            exit 3
+            ;;
+        *)
+            echo "ERROR: unexpected repl.interrupt reply (no interrupted flag): $resp" >&2
+            exit 2
+            ;;
+    esac
+}
+
+# Report the daemon's own view of a workspace's REPL (workspace.list →
+# repl_state). $1=workspace, or empty for every workspace with a started REPL.
+#
+# This exists because the alternative is ps/ss/proc archaeology to answer
+# questions the daemon already knows the answer to. It deliberately reports
+# "cannot reach the daemon" as its own outcome (exit 1) rather than folding it
+# into "no REPL": those two look identical from a failing CLI and point at
+# opposite fixes — one is your endpoint, the other is the kernel.
+send_repl_status() {
+    local want="$1"
+    _need_endpoint
+    export SEND_TIMEOUT="${TIMEOUT:-15}"
+    local req resp
+    req="$(jq -nc '{v:1, id:2, kind:"req", op:"workspace.list", payload:{}}')"
+    resp="$(sot_send "$req" workspace.list || true)"
+    if [ -z "$resp" ]; then
+        echo "ERROR: the daemon did not answer workspace.list within ${SEND_TIMEOUT}s via $ENDPOINT. Again: TRANSPORT, not the REPL — the daemon is unreachable or wedged, so nothing can be concluded about any kernel." >&2
+        exit 1
+    fi
+    # Same rejected-request guard as _ws_row: a well-formed {error, code} res
+    # passes the empty check and must not fall into the iteration below.
+    local rerr
+    rerr="$(printf '%s' "$resp" | jq -r '.payload.error // empty' 2>/dev/null || true)"
+    if [ -n "$rerr" ]; then
+        echo "ERROR: the daemon refused workspace.list: $rerr [$(printf '%s' "$resp" | jq -r '.payload.code // "?"')] — likely a token/auth problem (\$SOT_TOKEN / ~/.config/sot/token), not a REPL problem." >&2
+        exit 1
+    fi
+    if [ -n "$want" ]; then
+        local found
+        found="$(printf '%s' "$resp" | jq -r --arg w "$want" \
+            '[(.payload.workspaces // [])[] | select(.workspace_id == $w or .label == $w or .slug == $w)] | length')"
+        if [ "$found" = "0" ]; then
+            echo "ERROR: no workspace matched '$want' (tried workspace_id, label and slug). Run \`sot-fe repl status\` with no argument to see what exists." >&2
+            exit 1
+        fi
+    fi
+    # Deliberately NOT printed: kernel_running. That field is the lazily-built
+    # INTROSPECTION Kernel handle (workspaces.rs kernel_built()), unrelated to
+    # the REPL child and stale by design — a workspace can read repl:dead with
+    # kernel_running:true and vice versa. Printing it here steered readers
+    # toward exactly the wrong escalation. `root:` is the WORKSPACE root, not
+    # necessarily the child's active project (see the header note).
+    #
+    # A row with NO repl_state key is a pre-repl_state daemon (version skew,
+    # the field is #[serde(default)] for rollout) — say "unknown" out loud
+    # instead of collapsing to not_started, which turned running kernels into
+    # a confident "no workspace has a started REPL yet".
+    printf '%s' "$resp" | jq -r --arg w "$want" '
+        (.payload.workspaces // [])
+        | map(select(
+            if $w == "" then (has("repl_state") | not) or (.repl_state != "not_started")
+            else (.workspace_id == $w or .label == $w or .slug == $w) end))
+        | if length == 0 then
+            "no workspace has a started REPL yet (every repl_state is not_started)."
+          else
+            map(
+              "workspace: \(.label)   repl: \(if has("repl_state") then .repl_state else "unknown" end)"
+              + "\n  id: \(.workspace_id)   root: \(.project_root)"
+              + "\n  " + (
+                  if (has("repl_state") | not) then "this daemon predates repl_state — lifecycle unknown; upgrade the daemon for real answers."
+                  elif .repl_state == "ready" then "alive and accepting work (the wire has no busy/idle bit — a rejected next eval with outcome:busy means a run is still in flight)."
+                  elif .repl_state == "starting" then "spawning or precompiling — a first boot can take MINUTES; do not re-send, and do not read the wait as wedged."
+                  elif .repl_state == "dead" then "the child exited; the NEXT eval respawns it, and that respawn also revokes the old child'"'"'s announced browser ports. Nothing to clean up by hand."
+                  else "no REPL child yet — the first eval spawns one (expect precompilation)."
+                  end)
+            ) | join("\n")
+          end
+    '
 }
 
 case "$CMD" in
@@ -467,7 +747,16 @@ case "$CMD" in
                 INPUT="$(jq -nc --arg c "$EVAL_CODE" '{kind:"eval", code:$c}')"
                 send_repl_execute "$INPUT" "$WS"
                 ;;
-            *) echo "usage: sot-fe repl run <workspace> <path> | sot-fe repl eval <workspace> (--code <c> | --stdin)" >&2; exit 1 ;;
+            interrupt)
+                WS="${POS[1]:-}"
+                [ -n "$WS" ] || { echo "usage: sot-fe repl interrupt <workspace> [--timeout <s>]" >&2; exit 1; }
+                send_repl_interrupt "$WS"
+                ;;
+            status)
+                # <workspace> optional: bare `status` lists every started REPL.
+                send_repl_status "${POS[1]:-}"
+                ;;
+            *) echo "usage: sot-fe repl run <workspace> <path> | sot-fe repl eval <workspace> (--code <c> | --stdin) | sot-fe repl interrupt <workspace> | sot-fe repl status [<workspace>]" >&2; exit 1 ;;
         esac
         ;;
     -h|--help|help) usage 0 ;;

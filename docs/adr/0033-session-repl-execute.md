@@ -85,6 +85,54 @@ Mechanics:
    connection are skipped by op-grep). Reuses `sot-fe`'s endpoint resolution +
    `hello`/token auth. Bounded single-line response ⇒ bash is adequate here
    (unlike the streaming/blob ops). Exit 0 on `ok`, 2 otherwise.
+9. **Recovery + introspection CLI** (added 2026-08-12): `sot-fe repl interrupt
+   <ws>` and `sot-fe repl status [<ws>]`. Both are thin surfaces over capability
+   the daemon already had — `repl.interrupt`, and `repl_state` as returned by
+   `workspace.list` — and neither needed a new op. They exist because without
+   them the documented recovery for a wedged run was "hand-write JSON frames
+   over the socket", and answering "is this REPL alive?" meant `ps`/`ss`
+   archaeology over facts the daemon already knew. `interrupt` is the
+   least-destructive rung of the ladder: it keeps the kernel's compiled
+   packages, where `--fresh` re-pays the precompile bill and a manual kill
+   bypasses the supervisor. Behaviours worth keeping (several were review
+   findings against the first cut of this item — the notes below correct it):
+   - **All four repl verbs** resolve the workspace CLIENT-side (id, **label**,
+     or slug) via `workspace.list`; the daemon's own `resolve()` takes id/slug
+     only, so a `<Label>` would otherwise come back `unknown_workspace`.
+     `run`/`eval` do it via a passthrough that skips the lookup entirely for
+     canonical `ws-*` ids and caps the lookup's socket budget at
+     min(`--timeout`, 10)s — item 8's single-round-trip description holds for
+     `ws-*` callers; label/slug callers buy one bounded pre-flight.
+   - `interrupt` REFUSES (exit 3) on `repl_state ∈ {not_started, dead}`. Every
+     submission path calls `ensure_supervisor()`, which (re)spawns whenever no
+     child is live — so an interrupt aimed at either state would *spawn* a
+     kernel (and pay its precompile) to interrupt nothing. It also refuses on
+     `starting`: a booting child reads stdin only once its serve loop is up,
+     so the frame would sit unread past any budget (reading as a transport
+     failure for a healthy state) and then kill the first queued eval.
+   - `interrupt` surfaces the shim's `interrupted` flag rather than treating
+     "request delivered" as success: `{interrupted:false, note:"no eval in
+     progress"}` is a distinct outcome (exit 3) from a real cancellation
+     (exit 0) — an escalation ladder keys on exactly that bit. The interrupt
+     is **workspace-wide** (the shim kills its single `CURRENT_EVAL`; there is
+     no per-run scoping), and it lands at the eval's next **yield point** —
+     a non-yielding compute-bound eval may never take it, in which case
+     `--fresh` is the honest escalation. `status` cannot confirm delivery:
+     the wire has no busy/idle bit.
+   - `status` does NOT print `kernel_running`: that field is the lazily-built
+     introspection Kernel handle (`kernel_built()`), unrelated to the REPL
+     child and stale by design. It labels the path `root:` (the workspace
+     root) because the child's *active* project can differ (`--fresh` restarts
+     into the file's project; a no-`Project.toml` workspace runs in the shim
+     env) and the wire carries neither. A row with no `repl_state` key (a
+     pre-rollout daemon; the field is `#[serde(default)]`) reports
+     `unknown` rather than collapsing to `not_started`.
+   Both report an unreachable daemon as a distinct TRANSPORT failure rather than
+   as a REPL verdict — the two are indistinguishable from a failing CLI and
+   point at opposite fixes (a real session lost an afternoon to a stale `tcp:`
+   endpoint that fails exactly like a dead kernel). Same guard for a daemon
+   that ANSWERS but refuses (token/auth): its `{error, code}` res is surfaced
+   verbatim instead of crashing jq on a missing `.workspaces`.
 
 ## Consequences
 
