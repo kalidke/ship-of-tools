@@ -318,5 +318,5 @@ top line of the nav pane always shows the pane-switch keys.**
   (`~/.local/share/applications/ship-of-tools.desktop`) or the macOS app
   (`~/Applications/Ship of Tools.app`). Agent comm resources written by
   `ShipTools.update_comm()` (`~/.sot-comm`, skills under `~/.claude` /
-  `~/.codex`, launchers in `~/.local/bin`) are shared with other checkouts —
+  `$CODEX_HOME` (default `~/.codex`), launchers in `~/.local/bin`) are shared with other checkouts —
   remove them only if this was the machine's only Ship of Tools install.

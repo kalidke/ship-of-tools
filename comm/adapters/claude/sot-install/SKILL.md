@@ -1,6 +1,6 @@
 ---
 name: sot-install
-description: Install or update Ship of Tools agent resources (Claude Code skills, Codex skills/hooks, and sot-comm scripts) from the package into ~/.claude, ~/.codex, ~/.local/bin, and ~/.sot-comm. Idempotent. Run after pulling the Ship of Tools repo on a machine to close version skew. Activates for "install sot", "update sot comm", "sync sot", "sot install", "reinstall comm".
+description: Install or update Ship of Tools agent resources (Claude Code skills, Codex skills/hooks, and sot-comm scripts) from the package into ~/.claude, $CODEX_HOME, ~/.local/bin, and ~/.sot-comm. Idempotent. Run after pulling the Ship of Tools repo on a machine to close version skew. Activates for "install sot", "update sot comm", "sync sot", "sot install", "reinstall comm".
 ---
 
 # sot-install
@@ -8,7 +8,7 @@ description: Install or update Ship of Tools agent resources (Claude Code skills
 Sync Ship of Tools' agent-side resources from the package source into your home dir.
 This wraps `ShipTools.install_comm()` — copies the comm scripts to
 `~/.sot-comm/bin/`, Claude Code skills to `~/.claude/skills/`, and Codex skills
-to `~/.codex/skills/`. Idempotent:
+to `$CODEX_HOME/skills/` (default `~/.codex/skills/`). Idempotent:
 running it again updates an existing install.
 
 ## Run this
@@ -27,7 +27,8 @@ This:
    `sot-session-start`, `sot-be-session-start`, `sot-fe-session-start`) →
    `~/.claude/skills/`
 3. Copies Codex skills (`sot-comm`, `sot-session-start`,
-   `sot-be-session-start`, `sot-fe-session-start`) → `~/.codex/skills/`
+   `sot-be-session-start`, `sot-fe-session-start`) → `$CODEX_HOME/skills/`
+   (default `~/.codex/skills/`)
 4. Installs launcher commands (`ccb`, `ccbe`, `ccx`) → `~/.local/bin/`
 5. Installs state-nav hooks/plugin wiring for Claude Code and Codex
 6. Stamps/checks the protocol version
