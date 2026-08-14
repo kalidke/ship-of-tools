@@ -512,6 +512,31 @@ EOF
     fi
 fi
 
+# ---- 9. install manifest -------------------------------------------------------
+# $PREFIX/install.json (schema 1) — how the binaries find their own install
+# instead of guessing from XDG env vars: the updater resolves its staging root
+# (and, in later phases, the checkout and bin dirs) from `prefix`. Written
+# LAST so it always describes a completed install; an update re-run refreshes
+# it. Read by sot-updater's InstallManifest (rust/updater/src/manifest.rs) —
+# keep the two in sync.
+SERVICE="none"
+[ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ] && SERVICE="systemd"
+COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
+cat > "$PREFIX/install.json" <<EOF
+{
+  "schema": 1,
+  "role": "$ROLE",
+  "prefix": "$PREFIX",
+  "config": "$CONFIG",
+  "service": "$SERVICE",
+  "version": "${VERSION#v}",
+  "tag": "$VERSION",
+  "commit": "$COMMIT",
+  "installed_at": "$(date -u +%FT%TZ)"
+}
+EOF
+say "wrote $PREFIX/install.json (schema 1, role=$ROLE, service=$SERVICE)"
+
 say "DONE — Ship of Tools $VERSION installed ($ROLE)."
 [ "$ROLE" = remote ] && say "reminder: key-based ssh to '$BE_ALIAS' is required (ssh $BE_ALIAS true)"
 exit 0

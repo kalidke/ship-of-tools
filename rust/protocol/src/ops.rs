@@ -1568,6 +1568,10 @@ pub struct UpdateCheckReq {}
 /// sha256-verified, and unpacked into the staging dir. `status` is a
 /// human/structured string: `"ok"`, `"disabled: dev build"`,
 /// `"disabled: update mode off"`, or `"check unavailable: <why>"`.
+/// The Phase-C identity fields (`tag` … `asset_sha256`) pin the exact release
+/// the backend saw so a frontend on another machine can stage the SAME
+/// release rather than re-resolving "latest" (which may have moved). All
+/// default so older peers interoperate.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateCheckRes {
     pub current: String,
@@ -1575,6 +1579,18 @@ pub struct UpdateCheckRes {
     pub update_available: bool,
     pub staged: bool,
     pub status: String,
+    /// Full release tag (`vX.Y.Z`) of `latest`; empty when no check ran.
+    #[serde(default)]
+    pub tag: String,
+    /// `owner/repo` the backend checks against.
+    #[serde(default)]
+    pub repo: String,
+    /// The BACKEND's release-matrix platform (its own asset's target).
+    #[serde(default)]
+    pub target: String,
+    /// sha256 of the backend-platform asset, from the release's SHA256SUMS.
+    #[serde(default)]
+    pub asset_sha256: String,
 }
 
 /// `proxy.connect` request (ADR 0035) — the FIRST frame on a dedicated

@@ -1,0 +1,16 @@
+[package]
+name = "sot-updater"
+description = "Ship of Tools release discovery, verification, and staging primitives (ADR 0030 Phase C)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+gethostname = "0.5"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

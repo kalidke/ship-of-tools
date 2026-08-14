@@ -4,6 +4,7 @@ members = [
     "protocol",
     "backend",
     "frontend",
+    "updater",
 ]
 
 [workspace.package]
@@ -22,6 +23,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 notify = "8"
 interprocess = { version = "2", features = ["tokio"] }
 anyhow = "1"
+sha2 = "0.10"
 
 # Frontend rendering stack (per ADR 0012). NOT terminal-based; we own the renderer.
 ratatui = { version = "0.29", default-features = false }
