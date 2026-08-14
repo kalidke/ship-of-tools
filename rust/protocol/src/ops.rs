@@ -1591,6 +1591,13 @@ pub struct UpdateCheckRes {
     /// sha256 of the backend-platform asset, from the release's SHA256SUMS.
     #[serde(default)]
     pub asset_sha256: String,
+    /// True once the versioned checkout + Julia envs for `latest` are
+    /// prepared on the backend host (Phase C2 transactional prepare).
+    #[serde(default)]
+    pub prepared: bool,
+    /// True once the pending pointer arms `latest` for apply at next launch.
+    #[serde(default)]
+    pub armed: bool,
 }
 
 /// `proxy.connect` request (ADR 0035) — the FIRST frame on a dedicated

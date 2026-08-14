@@ -24,7 +24,9 @@ pub mod hash;
 pub mod identity;
 pub mod lock;
 pub mod manifest;
+pub mod pending;
 pub mod platform;
+pub mod prepare;
 pub mod semver;
 pub mod sums;
 

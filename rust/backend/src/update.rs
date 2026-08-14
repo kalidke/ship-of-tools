@@ -24,7 +24,8 @@ use sot_protocol::{app_version, op, FeCommandEvt, Frame, UpdateCheckRes};
 use std::time::Duration;
 use tokio::sync::broadcast;
 
-use sot_updater::{CheckOutcome, Fetcher, UpdaterConfig};
+use sot_updater::prepare::{PrepareSpec, PreparedState};
+use sot_updater::{CheckOutcome, Fetcher, InstallManifest, ReleaseIdentity, UpdaterConfig};
 
 use crate::handlers::HandlerOutput;
 
@@ -125,6 +126,49 @@ impl Updater {
     }
 }
 
+/// Stage → prepare → arm: the full background pipeline for one discovered
+/// release (Phase C2). Prepare and arm run only on release installs (an
+/// install manifest exists) — a dev/canary box without one stops after the
+/// stage, exactly the pre-C2 behavior. Julia envs are instantiated for
+/// backend roles (`local`/`be-only`); `remote` prepares the checkout only.
+async fn stage_prepare_arm(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
+    if let Err(e) = sot_updater::stage(cfg, id).await {
+        tracing::warn!(tag = %id.tag, error = %e, "staging update failed");
+        return;
+    }
+    let Some(install) = InstallManifest::for_current_exe() else {
+        tracing::info!(tag = %id.tag, "staged (no install manifest — prepare/arm skipped)");
+        return;
+    };
+    let spec = prepare_spec(&install, cfg, id);
+    let state = match sot_updater::prepare::prepare(&spec).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(tag = %id.tag, error = %e, "preparing update failed — not arming");
+            return;
+        }
+    };
+    match sot_updater::pending::arm(&cfg.updates_root, id, &state.checkout, &state.commit).await {
+        Ok(true) => {}
+        Ok(false) => tracing::info!(tag = %id.tag, "a newer release is already armed"),
+        Err(e) => tracing::warn!(tag = %id.tag, error = %e, "arming update failed"),
+    }
+}
+
+fn prepare_spec(install: &InstallManifest, cfg: &UpdaterConfig, id: &ReleaseIdentity) -> PrepareSpec {
+    let backend_role = install.role != "remote";
+    PrepareSpec {
+        identity: id.clone(),
+        repo_dir: install.prefix.join("repo"),
+        stage_dir: sot_updater::stage_dir(&cfg.updates_root, &id.tag),
+        origin_url: None,
+        julia_bin: backend_role.then(|| {
+            std::env::var("SOT_JULIA_BIN").unwrap_or_else(|_| "julia".to_string())
+        }),
+        npm: backend_role,
+    }
+}
+
 /// Notify text ADR 0030 §4 specifies.
 fn notify_text(latest: &str, current: &str) -> String {
     format!(
@@ -184,11 +228,7 @@ async fn run_check_once(updater: &Updater, fe_command_tx: &broadcast::Sender<FeC
         let _ = fe_command_tx.send(evt);
         let Some(id) = out.identity else { return };
         match updater.mechanism() {
-            Ok(cfg) => {
-                if let Err(e) = sot_updater::stage(&cfg, &id).await {
-                    tracing::warn!(tag = %id.tag, error = %e, "staging update failed");
-                }
-            }
+            Ok(cfg) => stage_prepare_arm(&cfg, &id).await,
             Err(e) => tracing::warn!(error = %e, "no staging root — skipping stage"),
         }
     } else if out.status.starts_with("check unavailable") {
@@ -210,19 +250,25 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
     let updater = Updater::from_env();
     let out = updater.check().await;
     let mechanism = updater.mechanism().ok();
-    let staged = match (&out.identity, &mechanism) {
-        (Some(id), Some(cfg)) => sot_updater::is_staged(&cfg.updates_root, id).await,
-        _ => false,
+    let (staged, prepared, armed) = match (&out.identity, &mechanism) {
+        (Some(id), Some(cfg)) => {
+            let stage_dir = sot_updater::stage_dir(&cfg.updates_root, &id.tag);
+            (
+                sot_updater::is_staged(&cfg.updates_root, id).await,
+                PreparedState::matches(&stage_dir, id).await,
+                matches!(
+                    sot_updater::pending::read(&cfg.updates_root).await,
+                    Ok(Some(p)) if p.identity == *id
+                ),
+            )
+        }
+        _ => (false, false, false),
     };
 
-    if out.update_available && !staged {
+    if out.update_available && !armed {
         if let (Some(id), Some(cfg)) = (out.identity.clone(), mechanism) {
             // Fire-and-forget: make progress without holding the op response open.
-            tokio::spawn(async move {
-                if let Err(e) = sot_updater::stage(&cfg, &id).await {
-                    tracing::warn!(tag = %id.tag, error = %e, "on-demand staging failed");
-                }
-            });
+            tokio::spawn(async move { stage_prepare_arm(&cfg, &id).await });
         }
     }
 
@@ -231,6 +277,8 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
         latest: out.latest,
         update_available: out.update_available,
         staged,
+        prepared,
+        armed,
         status: out.status,
         tag: out
             .identity

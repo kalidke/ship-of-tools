@@ -14,9 +14,13 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 
 const LOCK_DIR: &str = ".lock";
-/// A lock older than this is presumed abandoned (a stage, including a Julia
-/// instantiate in later phases, can legitimately take many minutes).
-const TAKEOVER_AGE: Duration = Duration::from_secs(2 * 3600);
+/// A lock older than this is presumed abandoned. Generous on purpose: a
+/// prepare (git fetch + several Julia instantiates + load-tests) can
+/// legitimately hold the lock for a long time, and the lock dir's mtime is
+/// its creation time — a takeover mid-prepare would corrupt a live stage.
+/// The updater runs on a daily cadence; a wedged holder self-heals within
+/// six hours.
+const TAKEOVER_AGE: Duration = Duration::from_secs(6 * 3600);
 
 /// Held staging lock; released on drop (best-effort) or via `release()`.
 #[derive(Debug)]

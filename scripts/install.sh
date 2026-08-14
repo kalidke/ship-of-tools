@@ -203,50 +203,89 @@ say "binaries: $("$PREFIX/bin/sotd" --version)"
 DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 
 # ---- 4. the repo checkout — manual, resources, julia code (ADR 0030 add.) -----
-# The checkout at $PREFIX/repo/current IS the product's resource tree and its
-# help system: resource_dir resolves julia/kernel, julia/repl, sidecars, and
-# examples from it, and the FE Terminal's agent reads docs/ + ADRs + source as
-# the manual. Blobless partial clone (--filter=blob:none): full history for
-# blame, only the tag's tree downloaded. Update = re-run this installer with
-# the new version — fetch tags + checkout moves the same tree. READ-ONLY BY
-# CONVENTION: a dirty tree refuses to move (fail loud).
-CHECKOUT="$PREFIX/repo/current"
+# The checkout IS the product's resource tree and its help system:
+# resource_dir resolves julia/kernel, julia/repl, sidecars, and examples from
+# $PREFIX/repo/current, and the FE Terminal's agent reads docs/ + ADRs +
+# source as the manual.
+#
+# Phase-C layout (versioned, transactional — Codex-reviewed design):
+#   repo/base            blobless --no-checkout clone (the fetch target)
+#   repo/versions/<tag>  detached git worktree pinned at that release
+#   repo/current         SYMLINK to the active version dir
+# The auto-updater prepares new version dirs off the live tree and applying
+# an update is a pointer flip; this installer produces the same layout (and
+# migrates the pre-Phase-C in-place clone). READ-ONLY BY CONVENTION: a dirty
+# tree refuses to move (fail loud).
+REPO_DIR="$PREFIX/repo"
+BASE="$REPO_DIR/base"
+CHECKOUT="$REPO_DIR/versions/$VERSION"
+CURRENT="$REPO_DIR/current"
 command -v git >/dev/null || die "git is required (the install includes a repo checkout)"
-if [ -d "$CHECKOUT/.git" ]; then
-    if [ -n "$(git -C "$CHECKOUT" status --porcelain)" ]; then
-        die "the checkout at $CHECKOUT has local changes — commit/stash/revert, then re-run (updates refuse to move a dirty tree)"
-    fi
-    say "updating checkout to $VERSION"
-    # --force on the tag fetch: a release tag force-moved upstream (e.g. the
-    # public-flip history rewrite) otherwise makes the whole fetch abort with
-    # "would clobber existing tag", blocking every upgrade re-run (issue #4).
-    # The checkout is READ-ONLY BY CONVENTION, so force-updating tags is safe.
-    git -C "$CHECKOUT" fetch --tags --force --filter=blob:none origin || die "fetch failed"
-    git -C "$CHECKOUT" checkout -q "$VERSION" || die "checkout $VERSION failed"
-else
-    say "cloning repo at $VERSION (blobless partial clone)"
+if [ ! -d "$BASE" ]; then
+    say "creating base clone (blobless, no checkout)"
     if [ "$FETCH" = gh ]; then
         git -c "credential.helper=!gh auth git-credential" \
-            clone --filter=blob:none --branch "$VERSION" "https://github.com/$REPO" "$CHECKOUT" \
-            || die "clone failed"
+            clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
+            || die "base clone failed"
     else
         # Public repo: plain https clone, no auth needed.
-        git clone --filter=blob:none --branch "$VERSION" \
-            "https://github.com/$REPO" "$CHECKOUT" \
-            || die "clone failed"
+        git clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
+            || die "base clone failed"
     fi
 fi
-# Enforce HEAD == the tag's recorded commit (fresh clone AND update): a moved
-# tag, wrong ref, or half-checkout must fail HERE, not at first use.
-want="$(git -C "$CHECKOUT" rev-parse "refs/tags/$VERSION^{commit}" 2>/dev/null)" \
-    || die "tag $VERSION not present in the checkout"
+# --force on the tag fetch: a release tag force-moved upstream (e.g. the
+# public-flip history rewrite) otherwise makes the whole fetch abort with
+# "would clobber existing tag", blocking every upgrade re-run (issue #4).
+# The checkouts are READ-ONLY BY CONVENTION, so force-updating tags is safe.
+git -C "$BASE" fetch --tags --force origin || die "fetch failed"
+want="$(git -C "$BASE" rev-parse "refs/tags/$VERSION^{commit}" 2>/dev/null)" \
+    || die "tag $VERSION not present after fetch"
+if [ -d "$CHECKOUT" ]; then
+    if [ -n "$(git -C "$CHECKOUT" status --porcelain 2>/dev/null)" ]; then
+        die "the checkout at $CHECKOUT has local changes — commit/stash/revert, then re-run (updates refuse to move a dirty tree)"
+    fi
+else
+    say "adding version worktree $VERSION"
+    git -C "$BASE" worktree prune
+    git -C "$BASE" worktree add --detach "$CHECKOUT" "$want" || die "worktree add failed"
+fi
+# Enforce HEAD == the tag's recorded commit (fresh AND reused worktree): a
+# moved tag, wrong ref, or half-checkout must fail HERE, not at first use.
 have="$(git -C "$CHECKOUT" rev-parse HEAD)"
 [ "$have" = "$want" ] || die "checkout HEAD ($have) != $VERSION commit ($want) — refusing"
+# Flip repo/current to this version. Migration from the pre-Phase-C layout:
+# current used to BE the clone (a plain dir) — refuse if dirty, then delete
+# it (read-only by convention; its only untracked files are julia Manifests,
+# regenerated by instantiate below).
+PREV_VERSION=""
+if [ -L "$CURRENT" ]; then
+    PREV_VERSION="$(basename "$(readlink "$CURRENT")")"
+elif [ -d "$CURRENT" ]; then
+    if [ -n "$(git -C "$CURRENT" status --porcelain 2>/dev/null)" ]; then
+        die "the old-layout checkout at $CURRENT has local changes — commit/stash/revert, then re-run"
+    fi
+    say "migrating pre-versioned layout (removing in-place clone at repo/current)"
+    rm -rf "$CURRENT"
+fi
+ln -sfn "$CHECKOUT" "$CURRENT"
 # Compat: older pre-clone binaries resolve resources via julia/current
 # (the retired bundle's mount point). Point it at the checkout — repo-shaped
 # either way — so the clone-based install works with any binary generation.
 mkdir -p "$PREFIX/julia"
 ln -sfn "$CHECKOUT" "$PREFIX/julia/current"
+# Keep the previously-active version dir for rollback; prune everything else.
+for v in "$REPO_DIR/versions"/*; do
+    [ -d "$v" ] || continue
+    case "$(basename "$v")" in
+        "$VERSION") ;;
+        "$PREV_VERSION") ;;
+        *)
+            say "pruning old version dir $(basename "$v")"
+            git -C "$BASE" worktree remove --force "$v" 2>/dev/null || rm -rf "$v"
+            ;;
+    esac
+done
+git -C "$BASE" worktree prune 2>/dev/null || true
 
 # ---- 5. Julia + agent comm -----------------------------------------------------
 chan="1.12"
@@ -510,6 +549,19 @@ Categories=Development;
 EOF
     say "FE launcher: sot-launch (+ desktop entry)"
     fi
+fi
+
+# ---- 8b. pick up the new version in a RUNNING daemon ---------------------------
+# An installer update swaps binaries + flips repo/current, but a running sotd
+# keeps executing the old binary until restarted. Restart it here so the
+# update takes effect now, not at the next reboot. (Launcher-started daemons
+# — macOS / --no-service — are restarted by the next sot-launch; say so.)
+if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ] \
+   && systemctl --user is-active sotd.service >/dev/null 2>&1; then
+    say "restarting sotd to pick up the new version"
+    systemctl --user try-restart sotd.service || true
+elif [ "$ROLE" != remote ]; then
+    say "note: a running sotd keeps the old version until restarted (next sot-launch restarts it if its socket is gone; or stop it manually)"
 fi
 
 # ---- 9. install manifest -------------------------------------------------------
