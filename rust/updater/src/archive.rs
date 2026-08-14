@@ -16,7 +16,14 @@ use anyhow::{bail, Context, Result};
 const EXTRACT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Files a release archive may contain, under its single top-level dir.
-const ALLOWED_FILES: &[&str] = &["sot", "sotd", "sot.exe", "sotd.exe", "sotd.service"];
+const ALLOWED_FILES: &[&str] = &[
+    "sot",
+    "sotd",
+    "sot.exe",
+    "sotd.exe",
+    "sotd.service",
+    "sot-apply",
+];
 
 /// Validate one archive entry name against the expected top-level dir
 /// (`sot-<version>-<target>`). Accepts `top/`, `top` and `top/<allowed>`;

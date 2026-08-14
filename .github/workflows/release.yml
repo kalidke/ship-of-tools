@@ -95,6 +95,9 @@ jobs:
             cp rust/target/release/sot rust/target/release/sotd "$stage/"
           fi
           cp deploy/sotd.service "$stage/"
+          # The offline apply/rollback script rides in the archive so a staged
+          # update always carries its own applier (Phase C3).
+          cp scripts/sot-apply.sh "$stage/sot-apply"
           tar -czf "$stage.tar.gz" "$stage"
       - name: Package (windows)
         if: runner.os == 'Windows'

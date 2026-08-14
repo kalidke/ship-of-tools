@@ -33,7 +33,7 @@ pub use ops::{
     TmuxCreateSessionReq, TmuxKillSessionReq, TmuxListPanesReq, TmuxListPanesRes,
     TmuxListSessionsRes, TmuxPane, TmuxSession, ToggleHiddenReq, ToggleHiddenRes, TreeChildrenReq,
     TreeChildrenRes, TreeRootReq,
-    TreeRootRes, UpdateCheckReq, UpdateCheckRes, WorkspaceCreateReq, WorkspaceCreateRes,
+    TreeRootRes, UpdateApplyReq, UpdateApplyRes, UpdateCheckReq, UpdateCheckRes, WorkspaceCreateReq, WorkspaceCreateRes,
     WorkspaceDestroyReq, WorkspaceDestroyRes,
     WorkspaceListEntry, WorkspaceListReq, WorkspaceListRes,
 };

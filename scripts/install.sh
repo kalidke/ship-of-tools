@@ -199,6 +199,9 @@ for b in sot sotd; do
     # Gatekeeper: strip any quarantine attr (browser downloads carry it).
     [ "$OS" = Darwin ] && xattr -d com.apple.quarantine "$PREFIX/bin/$b" 2>/dev/null || true
 done
+# The offline apply/rollback script (Phase C3). Newer releases ship it in the
+# archive; otherwise it lands from the checkout below.
+[ -f "$BINDIR/sot-apply" ] && install -m 0755 "$BINDIR/sot-apply" "$PREFIX/bin/sot-apply"
 say "binaries: $("$PREFIX/bin/sotd" --version)"
 DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 
@@ -273,6 +276,10 @@ ln -sfn "$CHECKOUT" "$CURRENT"
 # either way — so the clone-based install works with any binary generation.
 mkdir -p "$PREFIX/julia"
 ln -sfn "$CHECKOUT" "$PREFIX/julia/current"
+# sot-apply from the checkout when the release archive predates shipping it.
+if [ ! -f "$PREFIX/bin/sot-apply" ] && [ -f "$CHECKOUT/scripts/sot-apply.sh" ]; then
+    install -m 0755 "$CHECKOUT/scripts/sot-apply.sh" "$PREFIX/bin/sot-apply"
+fi
 # Keep the previously-active version dir for rollback; prune everything else.
 for v in "$REPO_DIR/versions"/*; do
     [ -d "$v" ] || continue
@@ -405,6 +412,7 @@ fi
 if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
     mkdir -p "$HOME/.config/systemd/user"
     sed -e "s|@SOT_BIN@|$PREFIX/bin/sotd|" \
+        -e "s|@SOT_APPLY@|$PREFIX/bin/sot-apply|" \
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
         "$BINDIR/sotd.service" > "$HOME/.config/systemd/user/sotd.service"
     systemctl --user daemon-reload
@@ -418,9 +426,28 @@ if [ "$ROLE" != be-only ]; then
     if [ "$ROLE" = local ]; then
         cat > "$HOME/.local/bin/sot-launch" <<EOF
 #!/usr/bin/env bash
-# All-in-one launcher: start the backend on demand if its per-user socket is
-# missing (macOS has no service wiring yet; Linux normally has the systemd
-# unit), then launch the frontend.
+# All-in-one launcher: apply any armed pending update (offline pointer flip,
+# fail-open), start the backend on demand if its per-user socket is missing
+# (macOS has no service wiring yet; Linux normally has the systemd unit),
+# then SUPERVISE the frontend: exit-75 respawn (ADR 0017 on Unix) and
+# crash-loop rollback of a just-applied update (ADR 0030 Phase C3).
+restart_daemon() {
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active sotd.service >/dev/null 2>&1; then
+        systemctl --user try-restart sotd.service || true
+    else
+        pkill -u "\$(id -u)" -f "$PREFIX/bin/sotd" 2>/dev/null && sleep 1
+    fi
+}
+if [ -x "$PREFIX/bin/sot-apply" ]; then
+    APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
+    [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
+    case "\$APPLY_OUT" in *APPLIED*)
+        # The whole install moves together: a running old daemon must not
+        # keep serving a new checkout. (A killed launcher-managed daemon is
+        # started fresh below.)
+        restart_daemon
+    ;; esac
+fi
 SOCKET="\$("$PREFIX/bin/sotd" session-socket-path sot)"
 socket_open() {
     [ -S "\$SOCKET" ] || return 1
@@ -440,13 +467,45 @@ socket_open() {
     # probe; the frontend will still fail loud if the connect cannot complete.
     return 0
 }
-if ! socket_open; then
-    rm -f "\$SOCKET" 2>/dev/null || true
-    nohup "$PREFIX/bin/sotd" --project-root "\$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
-    i=0; while [ \$i -lt 40 ]; do socket_open && break; sleep 0.25; i=\$((i+1)); done
-    socket_open || { echo "ERROR: backend did not open \$SOCKET; see /tmp/sotd.log" >&2; exit 1; }
-fi
-exec "$PREFIX/bin/sot" --socket "\$SOCKET"
+start_daemon_if_needed() {
+    if ! socket_open; then
+        rm -f "\$SOCKET" 2>/dev/null || true
+        nohup "$PREFIX/bin/sotd" --project-root "\$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
+        i=0; while [ \$i -lt 40 ]; do socket_open && break; sleep 0.25; i=\$((i+1)); done
+        socket_open || { echo "ERROR: backend did not open \$SOCKET; see /tmp/sotd.log" >&2; exit 1; }
+    fi
+}
+start_daemon_if_needed
+FAILS=0; ROLLED=0
+while :; do
+    START="\$(date +%s)"
+    "$PREFIX/bin/sot" --socket "\$SOCKET"
+    RC=\$?
+    if [ "\$RC" -eq 75 ]; then
+        # ADR-0017 self-relaunch: pick up any staged update, then respawn.
+        if [ -x "$PREFIX/bin/sot-apply" ]; then
+            APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
+            [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
+            case "\$APPLY_OUT" in *APPLIED*) restart_daemon; start_daemon_if_needed ;; esac
+        fi
+        FAILS=0
+        continue
+    fi
+    NOW="\$(date +%s)"
+    if [ "\$RC" -ne 0 ] && [ \$((NOW - START)) -le 10 ]; then
+        FAILS=\$((FAILS + 1))
+        if [ "\$FAILS" -ge 2 ]; then
+            [ "\$ROLLED" -eq 1 ] && exit "\$RC"
+            echo "frontend crash-looped — rolling back the last update (if any)" >&2
+            [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" --rollback >&2
+            restart_daemon
+            start_daemon_if_needed
+            ROLLED=1; FAILS=0
+        fi
+        continue
+    fi
+    exit "\$RC"
+done
 EOF
     else
         cat > "$HOME/.local/bin/sot-launch" <<EOF
@@ -456,6 +515,14 @@ EOF
 # the remote user's per-user sotd socket. Browser/webview pages ride the same
 # control tunnel via the daemon proxy (ADR 0035); the legacy fixed helper-port
 # forwards are opt-in via SOT_LEGACY_FORWARDS=1 (pre-v0.5.0 backends only).
+# Applies armed pending updates for THIS machine (FE binary + checkout —
+# staged by the frontend's own self-check) before launching, and supervises
+# the frontend (exit-75 respawn, crash-loop rollback). The backend host
+# updates itself on its own cadence.
+if [ -x "$PREFIX/bin/sot-apply" ]; then
+    APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
+    [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
+fi
 REMOTE_SOCKET="\${SOT_REMOTE_SOCKET:-}"
 if [ -z "\$REMOTE_SOCKET" ]; then
     REMOTE_SOCKET="\$(ssh "$BE_ALIAS" '\${SOT_REMOTE_SOTD:-\$HOME/.local/share/sot/bin/sotd} session-socket-path sot')" \
@@ -499,7 +566,30 @@ else
       || { echo "ERROR: could not open SSH tunnel" >&2; exit 1; }
 fi
 ensure_aux_tunnel
-exec "$PREFIX/bin/sot" --tcp "127.0.0.1:$PORT"
+FAILS=0; ROLLED=0
+while :; do
+    START="\$(date +%s)"
+    "$PREFIX/bin/sot" --tcp "127.0.0.1:$PORT"
+    RC=\$?
+    if [ "\$RC" -eq 75 ]; then
+        # ADR-0017 self-relaunch: pick up any staged update, then respawn.
+        [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" >&2
+        FAILS=0
+        continue
+    fi
+    NOW="\$(date +%s)"
+    if [ "\$RC" -ne 0 ] && [ \$((NOW - START)) -le 10 ]; then
+        FAILS=\$((FAILS + 1))
+        if [ "\$FAILS" -ge 2 ]; then
+            [ "\$ROLLED" -eq 1 ] && exit "\$RC"
+            echo "frontend crash-looped — rolling back the last update (if any)" >&2
+            [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" --rollback >&2
+            ROLLED=1; FAILS=0
+        fi
+        continue
+    fi
+    exit "\$RC"
+done
 EOF
     fi
     chmod +x "$HOME/.local/bin/sot-launch"

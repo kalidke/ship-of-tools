@@ -31,9 +31,17 @@ pub struct PendingPointer {
     pub armed_at: u64,
 }
 
+/// Marker naming a version that crash-looped right after an apply; the
+/// launcher writes it during rollback (Phase C3) and [`arm`] refuses to
+/// re-arm that version until a NEWER release supersedes it.
+pub fn bad_marker(updates_root: &Path, tag: &str) -> PathBuf {
+    updates_root.join(format!("bad-{tag}"))
+}
+
 /// Arm `identity` for apply. Newer-wins: when a pending pointer for a NEWER
 /// version already exists, it is kept and `Ok(false)` is returned; same or
-/// older pendings are replaced. Callers hold the staging lock.
+/// older pendings are replaced. A version marked bad (crash-loop rollback)
+/// is never armed again.
 pub async fn arm(
     updates_root: &Path,
     identity: &ReleaseIdentity,
@@ -41,6 +49,10 @@ pub async fn arm(
     commit: &str,
 ) -> Result<bool> {
     identity.validate()?;
+    if bad_marker(updates_root, &identity.tag).exists() {
+        tracing::warn!(tag = %identity.tag, "version is marked bad (crash-loop rollback) — not arming");
+        return Ok(false);
+    }
     if let Ok(Some(existing)) = read(updates_root).await {
         if compare_versions(&existing.identity.version, &identity.version) == Ordering::Greater {
             tracing::info!(

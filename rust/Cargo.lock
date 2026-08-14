@@ -3860,6 +3860,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sot-protocol",
+ "sot-updater",
  "tiny-skia",
  "tokio",
  "tracing",

@@ -1204,6 +1204,9 @@ where
                 handlers::handle_fe_command_send(frame.id, frame.payload, &fe_command_tx).await
             }
             op::UPDATE_CHECK => crate::update::handle_update_check(frame.id).await,
+            op::UPDATE_APPLY => {
+                crate::update::handle_update_apply(frame.id, &fe_command_tx).await
+            }
             op::WORKSPACE_DESTROY => {
                 handlers::handle_workspace_destroy(
                     frame.id,

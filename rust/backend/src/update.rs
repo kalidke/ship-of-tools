@@ -20,7 +20,7 @@
 
 use anyhow::Result;
 use serde_json::json;
-use sot_protocol::{app_version, op, FeCommandEvt, Frame, UpdateCheckRes};
+use sot_protocol::{app_version, op, FeCommandEvt, Frame, UpdateApplyRes, UpdateCheckRes};
 use std::time::Duration;
 use tokio::sync::broadcast;
 
@@ -299,6 +299,81 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
     };
     Ok(vec![(
         Frame::res(req_id, op::UPDATE_CHECK, serde_json::to_value(res)?),
+        None,
+    )])
+}
+
+/// `update.apply` op (ADR 0030 Phase C3): validate the armed pending pointer,
+/// answer, broadcast a notify, then EXIT so the single apply owner (systemd
+/// `ExecStartPre` via Restart=always, or the user's next `sot-launch`) runs
+/// the fast offline flip. The daemon deliberately does NOT apply in-process —
+/// one apply owner per platform, and it isn't the running binary being
+/// replaced.
+pub async fn handle_update_apply(
+    req_id: u64,
+    fe_command_tx: &broadcast::Sender<FeCommandEvt>,
+) -> Result<HandlerOutput> {
+    let refuse = |status: &str| -> Result<HandlerOutput> {
+        let res = UpdateApplyRes {
+            ok: false,
+            tag: String::new(),
+            will_restart: false,
+            status: status.into(),
+        };
+        Ok(vec![(
+            Frame::res(req_id, op::UPDATE_APPLY, serde_json::to_value(res)?),
+            None,
+        )])
+    };
+
+    let updater = Updater::from_env();
+    if updater.dev {
+        return refuse("disabled: dev build");
+    }
+    let cfg = match updater.mechanism() {
+        Ok(c) => c,
+        Err(e) => return refuse(&format!("no updates root: {e}")),
+    };
+    let pending = match sot_updater::pending::read(&cfg.updates_root).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return refuse("nothing armed"),
+        Err(e) => return refuse(&format!("pending pointer unreadable: {e}")),
+    };
+
+    let will_restart = InstallManifest::for_current_exe()
+        .and_then(|m| m.service)
+        .is_some_and(|s| s == "systemd");
+    let tag = pending.identity.tag.clone();
+    tracing::info!(tag = %tag, will_restart, "update.apply: exiting for the apply owner to flip");
+
+    let evt = FeCommandEvt {
+        v: 1,
+        cmd: "notify".into(),
+        args: json!({ "text": format!(
+            "Applying Ship of Tools {tag} — backend {}",
+            if will_restart { "restarting" } else { "exiting; your next launch completes the update" }
+        )}),
+        target: None,
+    };
+    let _ = fe_command_tx.send(evt);
+
+    // Give the response + notify time to flush, then exit 0. Under systemd
+    // (Restart=always) the ExecStartPre apply runs on the way back up; for
+    // launcher-managed daemons the next sot-launch applies and starts fresh.
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        tracing::info!("update.apply: exiting now");
+        std::process::exit(0);
+    });
+
+    let res = UpdateApplyRes {
+        ok: true,
+        tag,
+        will_restart,
+        status: "applying".into(),
+    };
+    Ok(vec![(
+        Frame::res(req_id, op::UPDATE_APPLY, serde_json::to_value(res)?),
         None,
     )])
 }
