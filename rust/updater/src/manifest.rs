@@ -112,15 +112,22 @@ pub struct ReadyManifest {
     pub schema: u32,
     #[serde(flatten)]
     pub identity: ReleaseIdentity,
+    /// The source commit the release's binaries were built from, when the
+    /// release publishes a `COMMIT` file (sums-verified). Prepare refuses a
+    /// tag whose commit disagrees — a moved tag must not execute code the
+    /// verified binaries weren't built from.
+    #[serde(default)]
+    pub source_commit: Option<String>,
     /// Unix seconds when the stage completed.
     pub staged_at: u64,
 }
 
 impl ReadyManifest {
-    pub fn new(identity: ReleaseIdentity) -> Self {
+    pub fn new(identity: ReleaseIdentity, source_commit: Option<String>) -> Self {
         Self {
             schema: INSTALL_SCHEMA,
             identity,
+            source_commit,
             staged_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -164,23 +171,32 @@ impl ReadyManifest {
 }
 
 /// Resolve the updates root, in order:
-/// 1. `SOT_UPDATE_ROOT` env (tests, unusual layouts),
-/// 2. the install manifest next to the running binary (`<prefix>/updates`),
+/// 1. the install manifest next to the running binary (`<prefix>/updates`) —
+///    the CANONICAL root: `sot-apply` and the systemd `ExecStartPre` owner
+///    read exactly this location, so on a release install nothing (not even
+///    an env override) may point producers elsewhere or armed updates would
+///    never be consumed;
+/// 2. `SOT_UPDATE_ROOT` env (tests, manifest-less dev layouts);
 /// 3. the legacy per-OS data dir (pre-manifest installs).
 ///
 /// When none resolves this FAILS — there is deliberately no temp-dir
 /// fallback, because staging executables into a world-writable temp dir is
 /// how updaters get owned.
 pub fn resolve_updates_root() -> Result<PathBuf> {
+    if let Some(m) = InstallManifest::for_current_exe() {
+        if std::env::var_os("SOT_UPDATE_ROOT").is_some() {
+            tracing::warn!(
+                "SOT_UPDATE_ROOT ignored: this is a release install — the manifest root is canonical (the apply owners read it)"
+            );
+        }
+        return Ok(m.updates_root());
+    }
     if let Some(root) = std::env::var_os("SOT_UPDATE_ROOT") {
         let p = PathBuf::from(root);
         if p.as_os_str().is_empty() {
             bail!("SOT_UPDATE_ROOT is set but empty");
         }
         return Ok(p);
-    }
-    if let Some(m) = InstallManifest::for_current_exe() {
-        return Ok(m.updates_root());
     }
     legacy_updates_root()
 }
@@ -233,7 +249,7 @@ mod tests {
         tokio::fs::create_dir_all(&dir).await.unwrap();
 
         assert!(ReadyManifest::read(&dir).await.is_err()); // absent
-        let m = ReadyManifest::new(identity());
+        let m = ReadyManifest::new(identity(), Some("abc123".into()));
         m.write(&dir).await.unwrap();
         let back = ReadyManifest::read(&dir).await.unwrap();
         assert_eq!(back.identity, identity());
@@ -246,6 +262,23 @@ mod tests {
         assert!(!ReadyManifest::matches(&dir, &other).await);
 
         tokio::fs::remove_dir_all(&dir).await.unwrap();
+    }
+
+    #[test]
+    fn ready_manifest_parses_without_source_commit() {
+        // Pre-commit-binding stages (legacy) must keep parsing.
+        let text = r#"{
+            "schema": 1,
+            "repo": "kalidke/ship-of-tools",
+            "tag": "v0.6.0",
+            "version": "0.6.0",
+            "target": "linux-x86_64",
+            "asset": "sot-0.6.0-linux-x86_64.tar.gz",
+            "asset_sha256": "abababababababababababababababababababababababababababababababab",
+            "staged_at": 5
+        }"#;
+        let m: ReadyManifest = serde_json::from_str(text).unwrap();
+        assert!(m.source_commit.is_none());
     }
 
     #[test]

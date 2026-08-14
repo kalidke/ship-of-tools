@@ -318,8 +318,11 @@ replaced by **whole-install transactions**. What shipped:
   `--no-service`, including `.app` launches — it also supervises the FE now:
   exit-75 respawn on Unix, crash-loop → `sot-apply --rollback` → previous
   version restored + `bad-<tag>` marker). The `update.apply` op arms, acks,
-  and exits; it never applies in-process. Cross-process serialization is a
-  mkdir lock under the updates root.
+  and exits — "arms" meaning it validates that the pipeline already armed a
+  pointer (it does not arm on its own); it never applies in-process.
+  Cross-process serialization is a mkdir lock under the updates root
+  (owner-nonce verified: breaks and releases only ever touch a lock whose
+  recorded owner matches the observation).
 - **Remote FEs self-stage**: the frontend runs its own check→stage→prepare
   (checkout-only)→arm at startup on `remote`-role installs, independent of
   the control channel (a protocol mismatch kills the connection before any
@@ -341,13 +344,37 @@ replaced by **whole-install transactions**. What shipped:
   artifacts are smoke-tested with exact-version asserts (Windows previously
   shipped unverified).
 
+A second adversarial Codex pass over the full diff added (all shipped):
+**commit binding** — releases publish a sums-covered `COMMIT` file and
+prepare refuses a tag whose commit disagrees with what the binaries were
+built from (moved-tag defense); **per-target transaction state** — pending
+pointer, bad markers, last-good, and the health marker are all
+`-<target>`-suffixed and the applier enforces its own host target (shared
+`$HOME` roots serve several platforms); **per-file digests** — stages write
+`files.sha256` and apply verifies the ACTUAL binaries it installs, dropping
+a damaged stage + pointer so the pipeline re-stages instead of looping;
+**apply is all-or-restore** — any post-mutation failure restores previous
+binaries and symlinks before exiting, and success arms a 30-minute
+crash-loop health window (rollback fires only inside it, never on unrelated
+crashes weeks later; a manual installer run clears stale rollback state);
+**single apply owner enforced in the launcher** — systemd installs route
+through `try-restart`/`ExecStartPre` with the daemon stopped, launcher-owned
+daemons are stopped before applying; **safe migration** — the old in-place
+clone is probed loudly and preserved at `repo/current.pre-versioned`, never
+deleted on a failed diagnostic.
+
 **Deliberately deferred, tracked in the ops sidecar**: artifact signing
 (integrity = GitHub TLS + SHA256SUMS + strict validation + pipeline least
 privilege, documented trade-off); Windows production auto-update (needs the
 Phase-D `install.ps1` + supervisor rework — the shared crate already handles
 Windows staging); macOS launchd wiring and daemon-side crash-loop
 auto-rollback (manual: `sot-apply --rollback`, or re-run the installer);
-refreshing agent comm resources (`update_comm`) on auto-apply.
+refreshing agent comm resources (`update_comm`) on auto-apply; routing the
+INSTALLER's own upgrade path through prepare/apply (it remains a live update
+with the safety probes above); flush-coupled `update.apply` exit; refreshing
+installed control-plane artifacts (`sotd.service`, the `sot-launch`
+heredocs) from the archive at apply time; persisting repo/fetcher choice in
+`install.json` for private-fork installs.
 
 **Migration**: existing release installs pick up the versioned layout on
 their next installer re-run; installs without an `install.json` get

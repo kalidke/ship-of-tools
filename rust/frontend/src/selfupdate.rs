@@ -51,7 +51,7 @@ pub fn spawn_startup_selfcheck() {
         tracing::debug!(role = %install.role, "fe self-update: backend owns updates on this machine");
         return;
     }
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("sot-selfupdate".into())
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
@@ -62,8 +62,10 @@ pub fn spawn_startup_selfcheck() {
                 }
             };
             rt.block_on(run(install, current));
-        })
-        .ok();
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "fe self-update: could not spawn worker thread — self-update disabled this run");
+    }
 }
 
 async fn run(install: InstallManifest, current: String) {
@@ -72,11 +74,18 @@ async fn run(install: InstallManifest, current: String) {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| DEFAULT_REPO.to_string());
+    let updates_root = match sot_updater::resolve_updates_root() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "fe self-update: no updates root");
+            return;
+        }
+    };
     let cfg = UpdaterConfig {
         repo,
         current_version: current,
         fetcher: Fetcher::from_env(),
-        updates_root: install.updates_root(),
+        updates_root,
     };
     let out = sot_updater::check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher).await;
     if !out.update_available {

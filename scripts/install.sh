@@ -89,6 +89,19 @@ if [ -z "$ROLE" ]; then
     fi
 fi
 
+# Canonicalize the prefix (a relative one produces a repo/current symlink
+# whose target resolves from repo/, i.e. a broken link) and refuse characters
+# the systemd-unit sed, JSON manifest, and launcher heredocs cannot carry
+# safely. Explicit rejection over silent corruption.
+case "$PREFIX" in
+    /*) ;;
+    *) PREFIX="$(pwd)/$PREFIX" ;;
+esac
+case "$PREFIX" in
+    *[\&\|\;\"\'\\\`]*|*' '*|*'	'*)
+        die "unsupported characters in prefix '$PREFIX' — no spaces, quotes, backslashes, or shell metacharacters" ;;
+esac
+
 # ---- 1. preflight ------------------------------------------------------------
 OS="$(uname -s)"
 case "$OS" in
@@ -202,6 +215,10 @@ done
 # The offline apply/rollback script (Phase C3). Newer releases ship it in the
 # archive; otherwise it lands from the checkout below.
 [ -f "$BINDIR/sot-apply" ] && install -m 0755 "$BINDIR/sot-apply" "$PREFIX/bin/sot-apply"
+# A manual installer run is a NEW transaction: stale rollback state from a
+# previous auto-apply must not pair old last-good pointers with these fresh
+# .prev binaries (a later crash-loop rollback would mix versions).
+rm -f "$PREFIX"/updates/last-good-*.json "$PREFIX"/updates/just-applied-* 2>/dev/null || true
 say "binaries: $("$PREFIX/bin/sotd" --version)"
 DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 
@@ -264,11 +281,18 @@ PREV_VERSION=""
 if [ -L "$CURRENT" ]; then
     PREV_VERSION="$(basename "$(readlink "$CURRENT")")"
 elif [ -d "$CURRENT" ]; then
-    if [ -n "$(git -C "$CURRENT" status --porcelain 2>/dev/null)" ]; then
+    # Probe separately and LOUDLY: an unreadable or non-git dir must not
+    # fall through to deletion on empty command-substitution output.
+    git -C "$CURRENT" rev-parse --git-dir >/dev/null 2>&1 \
+        || die "repo/current exists but is not a readable git checkout — refusing to migrate (inspect $CURRENT)"
+    if [ -n "$(git -C "$CURRENT" status --porcelain)" ]; then
         die "the old-layout checkout at $CURRENT has local changes — commit/stash/revert, then re-run"
     fi
-    say "migrating pre-versioned layout (removing in-place clone at repo/current)"
-    rm -rf "$CURRENT"
+    # Preserve, don't delete: the old clone is moved aside recoverably; a
+    # later successful run can clean it up manually.
+    say "migrating pre-versioned layout (old clone preserved at repo/current.pre-versioned)"
+    rm -rf "$REPO_DIR/current.pre-versioned"
+    mv "$CURRENT" "$REPO_DIR/current.pre-versioned"
 fi
 ln -sfn "$CHECKOUT" "$CURRENT"
 # Compat: older pre-clone binaries resolve resources via julia/current
@@ -431,23 +455,26 @@ if [ "$ROLE" != be-only ]; then
 # (macOS has no service wiring yet; Linux normally has the systemd unit),
 # then SUPERVISE the frontend: exit-75 respawn (ADR 0017 on Unix) and
 # crash-loop rollback of a just-applied update (ADR 0030 Phase C3).
-restart_daemon() {
+PENDING="$PREFIX/updates/pending-$TARGET.json"
+MARKER="$PREFIX/updates/just-applied-$TARGET"
+stop_daemon() { pkill -u "\$(id -u)" -f "$PREFIX/bin/sotd" 2>/dev/null && sleep 1; }
+# Single apply owner (ADR 0030 Phase C): on systemd installs the apply runs
+# ONLY inside ExecStartPre (daemon stopped, whole install — FE binary
+# included — flips together); a try-restart triggers it. Launcher-managed
+# daemons (macOS / --no-service) are stopped FIRST, then sot-apply runs here.
+apply_pending() {
+    [ -f "\$PENDING" ] || return 0
+    [ -x "$PREFIX/bin/sot-apply" ] || return 0
     if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active sotd.service >/dev/null 2>&1; then
+        echo "pending update armed — restarting sotd so ExecStartPre applies it" >&2
         systemctl --user try-restart sotd.service || true
     else
-        pkill -u "\$(id -u)" -f "$PREFIX/bin/sotd" 2>/dev/null && sleep 1
+        stop_daemon
+        APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
+        [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
     fi
 }
-if [ -x "$PREFIX/bin/sot-apply" ]; then
-    APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
-    [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
-    case "\$APPLY_OUT" in *APPLIED*)
-        # The whole install moves together: a running old daemon must not
-        # keep serving a new checkout. (A killed launcher-managed daemon is
-        # started fresh below.)
-        restart_daemon
-    ;; esac
-fi
+apply_pending
 SOCKET="\$("$PREFIX/bin/sotd" session-socket-path sot)"
 socket_open() {
     [ -S "\$SOCKET" ] || return 1
@@ -481,26 +508,33 @@ while :; do
     START="\$(date +%s)"
     "$PREFIX/bin/sot" --socket "\$SOCKET"
     RC=\$?
+    NOW="\$(date +%s)"
+    RUNTIME=\$((NOW - START))
+    # A healthy run closes the crash-loop health window.
+    [ "\$RUNTIME" -ge 60 ] && rm -f "\$MARKER" 2>/dev/null
     if [ "\$RC" -eq 75 ]; then
         # ADR-0017 self-relaunch: pick up any staged update, then respawn.
-        if [ -x "$PREFIX/bin/sot-apply" ]; then
-            APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
-            [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
-            case "\$APPLY_OUT" in *APPLIED*) restart_daemon; start_daemon_if_needed ;; esac
-        fi
+        apply_pending
+        start_daemon_if_needed
         FAILS=0
         continue
     fi
-    NOW="\$(date +%s)"
-    if [ "\$RC" -ne 0 ] && [ \$((NOW - START)) -le 10 ]; then
+    if [ "\$RC" -ne 0 ] && [ "\$RUNTIME" -le 10 ]; then
         FAILS=\$((FAILS + 1))
         if [ "\$FAILS" -ge 2 ]; then
-            [ "\$ROLLED" -eq 1 ] && exit "\$RC"
-            echo "frontend crash-looped — rolling back the last update (if any)" >&2
-            [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" --rollback >&2
-            restart_daemon
-            start_daemon_if_needed
-            ROLLED=1; FAILS=0
+            # Roll back ONLY inside the just-applied health window — an
+            # unrelated crash weeks later must not downgrade a healthy
+            # release.
+            if [ "\$ROLLED" -eq 0 ] && [ -f "\$MARKER" ] \
+               && [ -n "\$(find "\$MARKER" -mmin -30 2>/dev/null)" ]; then
+                echo "frontend crash-looped inside the post-update window — rolling back" >&2
+                stop_daemon
+                [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" --rollback >&2
+                start_daemon_if_needed
+                ROLLED=1; FAILS=0
+                continue
+            fi
+            exit "\$RC"
         fi
         continue
     fi
@@ -519,6 +553,7 @@ EOF
 # staged by the frontend's own self-check) before launching, and supervises
 # the frontend (exit-75 respawn, crash-loop rollback). The backend host
 # updates itself on its own cadence.
+MARKER="$PREFIX/updates/just-applied-$TARGET"
 if [ -x "$PREFIX/bin/sot-apply" ]; then
     APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
     [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
@@ -571,20 +606,28 @@ while :; do
     START="\$(date +%s)"
     "$PREFIX/bin/sot" --tcp "127.0.0.1:$PORT"
     RC=\$?
+    NOW="\$(date +%s)"
+    RUNTIME=\$((NOW - START))
+    # A healthy run closes the crash-loop health window.
+    [ "\$RUNTIME" -ge 60 ] && rm -f "\$MARKER" 2>/dev/null
     if [ "\$RC" -eq 75 ]; then
         # ADR-0017 self-relaunch: pick up any staged update, then respawn.
         [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" >&2
         FAILS=0
         continue
     fi
-    NOW="\$(date +%s)"
-    if [ "\$RC" -ne 0 ] && [ \$((NOW - START)) -le 10 ]; then
+    if [ "\$RC" -ne 0 ] && [ "\$RUNTIME" -le 10 ]; then
         FAILS=\$((FAILS + 1))
         if [ "\$FAILS" -ge 2 ]; then
-            [ "\$ROLLED" -eq 1 ] && exit "\$RC"
-            echo "frontend crash-looped — rolling back the last update (if any)" >&2
-            [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" --rollback >&2
-            ROLLED=1; FAILS=0
+            # Roll back ONLY inside the just-applied health window.
+            if [ "\$ROLLED" -eq 0 ] && [ -f "\$MARKER" ] \
+               && [ -n "\$(find "\$MARKER" -mmin -30 2>/dev/null)" ]; then
+                echo "frontend crash-looped inside the post-update window — rolling back" >&2
+                [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" --rollback >&2
+                ROLLED=1; FAILS=0
+                continue
+            fi
+            exit "\$RC"
         fi
         continue
     fi

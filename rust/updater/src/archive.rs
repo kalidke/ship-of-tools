@@ -115,6 +115,12 @@ pub async fn extract_validated(archive: &Path, dest: &Path, top: &str) -> Result
     if entries.is_empty() {
         bail!("archive lists no entries");
     }
+    // Shape ceiling: a release archive is one dir + a handful of files. A
+    // listing beyond this is malformed or hostile — refuse before extraction
+    // can fill the filesystem.
+    if entries.len() > 64 {
+        bail!("archive lists {} entries — far beyond a release's shape", entries.len());
+    }
     for e in &entries {
         validate_entry_name(e, top)?;
     }
@@ -171,7 +177,18 @@ pub async fn extract_validated(archive: &Path, dest: &Path, top: &str) -> Result
         bail!("don't know how to unpack {name}");
     }
 
-    validate_tree(&dest.join(top), top).await
+    // The top-level object itself must be a REAL directory: an archive whose
+    // sole entry is `top -> ../../somewhere` extracts fine, and a follow-y
+    // read_dir would then happily "validate" whatever the link points at.
+    let top_path = dest.join(top);
+    let top_meta = tokio::fs::symlink_metadata(&top_path)
+        .await
+        .with_context(|| format!("extracted {top} missing"))?;
+    if top_meta.file_type().is_symlink() || !top_meta.is_dir() {
+        bail!("extracted {top} is not a real directory — rejecting");
+    }
+
+    validate_tree(&top_path, top).await
 }
 
 /// Post-extraction sweep of `dir` (= `dest/top`): regular files from the

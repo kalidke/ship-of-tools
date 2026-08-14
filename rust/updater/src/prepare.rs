@@ -99,11 +99,14 @@ impl PreparedState {
     }
 
     /// True when `stage_dir` records a completed prepare of exactly
-    /// `identity` AND the worktree still exists at the recorded commit.
+    /// `identity` AND the worktree still exists at the recorded commit with a
+    /// clean tree (modified tracked files leave HEAD unchanged — cleanliness
+    /// is part of "still what we prepared").
     pub async fn matches(stage_dir: &Path, identity: &ReleaseIdentity) -> bool {
         match Self::read(stage_dir).await {
             Ok(s) if s.identity == *identity => {
                 head_commit(&s.checkout).await.as_deref() == Some(s.commit.as_str())
+                    && worktree_clean(&s.checkout).await
             }
             _ => false,
         }
@@ -134,6 +137,7 @@ async fn prepare_locked(spec: &PrepareSpec) -> Result<PreparedState> {
     if let Ok(existing) = PreparedState::read(&spec.stage_dir).await {
         if existing.identity == spec.identity
             && head_commit(&existing.checkout).await.as_deref() == Some(existing.commit.as_str())
+            && worktree_clean(&existing.checkout).await
             && (spec.julia_bin.is_none() || existing.julia_instantiated)
         {
             return Ok(existing);
@@ -150,6 +154,21 @@ async fn prepare_locked(spec: &PrepareSpec) -> Result<PreparedState> {
     let commit = rev_parse(&base, &format!("refs/tags/{}^{{commit}}", spec.identity.tag))
         .await
         .with_context(|| format!("tag {} not present after fetch", spec.identity.tag))?;
+
+    // Commit binding (moved-tag defense): when the staged release published a
+    // COMMIT file, the tag we are about to check out MUST resolve to exactly
+    // that commit — otherwise the verified binaries and the checkout come
+    // from different sources and we refuse to prepare (and thus to arm).
+    if let Ok(ready) = crate::manifest::ReadyManifest::read(&spec.stage_dir).await {
+        if let Some(src) = &ready.source_commit {
+            if *src != commit {
+                bail!(
+                    "tag {} resolves to {commit} but the release was built from {src} — moved tag, refusing",
+                    spec.identity.tag
+                );
+            }
+        }
+    }
 
     let versions = spec.repo_dir.join("versions");
     tokio::fs::create_dir_all(&versions).await.context("creating versions dir")?;
@@ -336,6 +355,15 @@ pub async fn remove_worktree(base: &Path, checkout: &Path) -> Result<()> {
 
 async fn head_commit(dir: &Path) -> Option<String> {
     rev_parse(dir, "HEAD").await.ok()
+}
+
+/// No modified TRACKED files (`-uno`: untracked build products — julia
+/// Manifests, mathjax node_modules — are expected in a prepared worktree).
+async fn worktree_clean(dir: &Path) -> bool {
+    match git_capture(dir, &["status", "--porcelain", "-uno"], GIT_TIMEOUT).await {
+        Ok(out) => out.iter().all(|b| b.is_ascii_whitespace()),
+        Err(_) => false,
+    }
 }
 
 async fn rev_parse(dir: &Path, what: &str) -> Result<String> {

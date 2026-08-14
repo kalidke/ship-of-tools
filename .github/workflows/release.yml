@@ -317,6 +317,11 @@ jobs:
             fi
           done
           exit "$missing"
+      - name: Source commit (release↔checkout binding)
+        # The updater refuses to prepare a tag whose commit disagrees with
+        # what the binaries were built from (moved-tag defense). COMMIT is
+        # covered by SHA256SUMS below, so it rides the same trust path.
+        run: git rev-parse HEAD > assets/COMMIT
       - name: Checksums
         run: cd assets && sha256sum * > SHA256SUMS
       - name: Release notes (git-cliff, conventional commits)

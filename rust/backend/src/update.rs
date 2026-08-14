@@ -176,7 +176,7 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
     };
     match sot_updater::pending::arm(&cfg.updates_root, id, &state.checkout, &state.commit).await {
         Ok(true) => {}
-        Ok(false) => tracing::info!(tag = %id.tag, "a newer release is already armed"),
+        Ok(false) => tracing::info!(tag = %id.tag, "a newer release is already armed (or this one is marked bad)"),
         Err(e) => tracing::warn!(tag = %id.tag, error = %e, "arming update failed"),
     }
 }
@@ -273,14 +273,19 @@ async fn run_check_once(
 
         if updater.mode == Mode::Auto {
             let armed = matches!(
-                sot_updater::pending::read(&cfg.updates_root).await,
+                sot_updater::pending::read(&cfg.updates_root, &id.target).await,
                 Ok(Some(p)) if p.identity == id
             );
             let attached = clients.count();
             if armed && attached == 0 {
                 tracing::info!(tag = %id.tag, "auto mode: armed and no clients attached — exiting for the apply owner");
                 tokio::time::sleep(Duration::from_millis(250)).await;
-                std::process::exit(0);
+                // Re-check after the grace sleep: a client that attached in
+                // the window must not have its session killed.
+                if clients.count() == 0 {
+                    std::process::exit(0);
+                }
+                tracing::info!(tag = %id.tag, "auto mode: a client attached during the exit window — deferring");
             } else if armed {
                 tracing::info!(tag = %id.tag, attached, "auto mode: armed but clients attached — applying at next launch/restart instead");
             }
@@ -318,17 +323,24 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
         },
     };
     let mechanism = updater.mechanism().ok();
+    // The status probes hit the filesystem (and git, for prepared) — bound
+    // them too, or a hung NFS checkout wedges this connection's op loop.
     let (staged, prepared, armed) = match (&out.identity, &mechanism) {
         (Some(id), Some(cfg)) => {
             let stage_dir = sot_updater::stage_dir(&cfg.updates_root, id);
-            (
-                sot_updater::is_staged(&cfg.updates_root, id).await,
-                PreparedState::matches(&stage_dir, id).await,
-                matches!(
-                    sot_updater::pending::read(&cfg.updates_root).await,
-                    Ok(Some(p)) if p.identity == *id
-                ),
-            )
+            let probes = async {
+                (
+                    sot_updater::is_staged(&cfg.updates_root, id).await,
+                    PreparedState::matches(&stage_dir, id).await,
+                    matches!(
+                        sot_updater::pending::read(&cfg.updates_root, &id.target).await,
+                        Ok(Some(p)) if p.identity == *id
+                    ),
+                )
+            };
+            tokio::time::timeout(Duration::from_secs(10), probes)
+                .await
+                .unwrap_or((false, false, false))
         }
         _ => (false, false, false),
     };
@@ -402,7 +414,10 @@ pub async fn handle_update_apply(
         Ok(c) => c,
         Err(e) => return refuse(&format!("no updates root: {e}")),
     };
-    let pending = match sot_updater::pending::read(&cfg.updates_root).await {
+    let Some(target) = sot_updater::platform::this_platform() else {
+        return refuse("platform not in the release matrix");
+    };
+    let pending = match sot_updater::pending::read(&cfg.updates_root, target).await {
         Ok(Some(p)) => p,
         Ok(None) => return refuse("nothing armed"),
         Err(e) => return refuse(&format!("pending pointer unreadable: {e}")),
@@ -428,8 +443,10 @@ pub async fn handle_update_apply(
     // Give the response + notify time to flush, then exit 0. Under systemd
     // (Restart=always) the ExecStartPre apply runs on the way back up; for
     // launcher-managed daemons the next sot-launch applies and starts fresh.
+    // (A flush-coupled exit — after the writer confirms the frame left — is
+    // a tracked follow-up; 1.5s is comfortably beyond a loopback write.)
     tokio::spawn(async {
-        tokio::time::sleep(Duration::from_millis(750)).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
         tracing::info!("update.apply: exiting now");
         std::process::exit(0);
     });

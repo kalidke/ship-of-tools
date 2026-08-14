@@ -208,7 +208,29 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
         archive::extract_validated(&archive_path, &tmp, &top)
             .await
             .context("extracting release archive")?;
-        ReadyManifest::new(id.clone()).write(&tmp).await?;
+
+        // Per-file digests of the validated tree, in `sha256sum -c` format —
+        // the shell applier re-verifies the ACTUAL binaries it installs
+        // against these (the archive hash alone doesn't bind the extracted,
+        // independently-mutable files).
+        let mut sums_lines = String::new();
+        let mut rd = tokio::fs::read_dir(tmp.join(&top)).await?;
+        while let Some(entry) = rd.next_entry().await? {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let digest = hash::sha256_file(&entry.path()).await?;
+            sums_lines.push_str(&format!("{digest}  {top}/{name}\n"));
+        }
+        tokio::fs::write(tmp.join("files.sha256"), sums_lines)
+            .await
+            .context("writing files.sha256")?;
+
+        // Commit binding: releases that publish a COMMIT file (sums-listed)
+        // pin the source commit the binaries were built from; prepare later
+        // refuses a tag whose commit disagrees (moved-tag defense). Legacy
+        // releases without one stage with a warning.
+        let source_commit = fetch_source_commit(cfg, id, &tmp).await?;
+
+        ReadyManifest::new(id.clone(), source_commit).write(&tmp).await?;
         Ok::<(), anyhow::Error>(())
     }
     .await;
@@ -222,6 +244,52 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
         .with_context(|| format!("committing stage into {}", dest.display()))?;
     tracing::info!(tag = %id.tag, asset = %id.asset, dir = %dest.display(), "update staged");
     Ok(true)
+}
+
+/// Fetch + verify the release's `COMMIT` file (tag-pinned): re-download the
+/// tag's own SHA256SUMS, and when it lists a COMMIT entry, download it,
+/// verify its digest, and return the 40-hex commit. `Ok(None)` for releases
+/// that predate commit publishing; a listed-but-unverifiable COMMIT is an
+/// error (the stage retries next cycle).
+async fn fetch_source_commit(
+    cfg: &UpdaterConfig,
+    id: &ReleaseIdentity,
+    tmp: &Path,
+) -> Result<Option<String>> {
+    let sums_path = tmp.join("SHA256SUMS");
+    cfg.fetcher
+        .download(&id.repo, &id.tag, "SHA256SUMS", &sums_path)
+        .await
+        .context("downloading tag-pinned SHA256SUMS")?;
+    let sums_text = tokio::fs::read_to_string(&sums_path).await?;
+    let entries = sums::parse_sums(&sums_text)?;
+    // Cross-check: the tag-pinned sums must agree with the discovery-time
+    // digest for our asset (a half-moved release dies here).
+    let pinned = sums::lookup(&entries, &id.asset)?;
+    if pinned != id.asset_sha256.to_ascii_lowercase() {
+        bail!(
+            "tag-pinned SHA256SUMS digest for {} disagrees with discovery — refusing",
+            id.asset
+        );
+    }
+    let Ok(commit_digest) = sums::lookup(&entries, "COMMIT") else {
+        tracing::warn!(tag = %id.tag, "release publishes no COMMIT file — source-commit binding unavailable (legacy release)");
+        return Ok(None);
+    };
+    let commit_path = tmp.join("COMMIT");
+    cfg.fetcher
+        .download(&id.repo, &id.tag, "COMMIT", &commit_path)
+        .await
+        .context("downloading COMMIT")?;
+    let got = hash::sha256_file(&commit_path).await?;
+    if got != commit_digest {
+        bail!("COMMIT file digest mismatch — refusing");
+    }
+    let commit = tokio::fs::read_to_string(&commit_path).await?.trim().to_string();
+    if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("COMMIT file does not contain a commit hash: {commit:?}");
+    }
+    Ok(Some(commit))
 }
 
 /// The single top-level dir a release archive extracts to
