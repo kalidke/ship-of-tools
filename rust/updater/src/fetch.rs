@@ -60,7 +60,9 @@ impl Fetcher {
         match self {
             Fetcher::Curl => {
                 let url = format!("https://github.com/{repo}/releases/latest/download/SHA256SUMS");
-                let bytes = curl_fetch(&url, Duration::from_secs(60)).await?;
+                // Short budget: this runs inline in the `update.check` op —
+                // a slow check must not wedge the daemon connection.
+                let bytes = curl_fetch(&url, None, Duration::from_secs(30)).await?;
                 Ok(LatestRelease {
                     tag: None,
                     sums_text: String::from_utf8(bytes).context("SHA256SUMS is not UTF-8")?,
@@ -120,11 +122,9 @@ impl Fetcher {
         match self {
             Fetcher::Curl => {
                 let url = format!("https://github.com/{repo}/releases/download/{tag}/{name}");
-                // Downloads can be tens of MB; give them a generous ceiling.
-                let bytes = curl_fetch(&url, Duration::from_secs(900)).await?;
-                tokio::fs::write(dest, bytes)
-                    .await
-                    .with_context(|| format!("writing {}", dest.display()))?;
+                // Downloads can be tens of MB; stream straight to the file
+                // (curl -o) — never buffered through this process's memory.
+                curl_fetch(&url, Some(dest), Duration::from_secs(900)).await?;
                 Ok(())
             }
             Fetcher::Gh => {
@@ -168,32 +168,37 @@ impl Fetcher {
 }
 
 /// Fetch a URL with curl, HTTPS-only end to end (`--proto =https
-/// --proto-redir =https`), bounded redirects and time. Returns the body.
-async fn curl_fetch(url: &str, max_time: Duration) -> Result<Vec<u8>> {
-    run_cmd(
-        "curl",
-        &[
-            "-fsSL",
-            "--proto",
-            "=https",
-            "--proto-redir",
-            "=https",
-            "--tlsv1.2",
-            "--max-redirs",
-            "4",
-            "--connect-timeout",
-            "15",
-            "--max-time",
-            &max_time.as_secs().to_string(),
-            "--retry",
-            "2",
-            url,
-        ],
-        // Outer ceiling above curl's own --max-time so curl owns the timeout
-        // and we still have a backstop that kills a wedged process.
-        max_time + Duration::from_secs(30),
-    )
-    .await
+/// --proto-redir =https`), bounded redirects and time. With `output`, curl
+/// streams straight to that file and the returned Vec is empty; without it,
+/// the body is returned (small documents only).
+async fn curl_fetch(url: &str, output: Option<&Path>, max_time: Duration) -> Result<Vec<u8>> {
+    let max_time_s = max_time.as_secs().to_string();
+    let mut args = vec![
+        "-fsSL",
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
+        "--tlsv1.2",
+        "--max-redirs",
+        "4",
+        "--connect-timeout",
+        "15",
+        "--max-time",
+        &max_time_s,
+        "--retry",
+        "2",
+    ];
+    let out_s;
+    if let Some(dest) = output {
+        out_s = dest.to_string_lossy().into_owned();
+        args.push("-o");
+        args.push(&out_s);
+    }
+    args.push(url);
+    // Outer ceiling above curl's own --max-time so curl owns the timeout
+    // and we still have a backstop that kills a wedged process.
+    run_cmd("curl", &args, max_time + Duration::from_secs(30)).await
 }
 
 /// Run a command with a timeout, killing the child if the timeout fires

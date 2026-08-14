@@ -39,19 +39,25 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 
 // ─── Config ─────────────────────────────────────────────────────────────
 
-/// Update behavior from `SOT_UPDATE_MODE`. `auto` is reserved (ADR 0030 §4);
-/// until the transactional apply path lands it is treated as `notify`.
+/// Update behavior from `SOT_UPDATE_MODE` (ADR 0030 §4). `notify` (default):
+/// stage + prepare + arm in the background, apply at next launch. `auto`:
+/// additionally exit for the apply owner once armed, but ONLY while no
+/// clients are attached. Caveat (documented in the ADR amendment): "no
+/// clients" means no live daemon connections — detached tmux workspaces and
+/// their REPLs can still be running, and an auto restart interrupts them;
+/// `auto` is opt-in for exactly that reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Off,
     Notify,
+    Auto,
 }
 
 fn mode_from_env() -> Mode {
     match std::env::var("SOT_UPDATE_MODE").ok().as_deref().map(str::trim) {
         Some("off") => Mode::Off,
-        // "auto" is reserved; treat it as notify for now (no stage-time apply).
-        Some("auto") | Some("notify") | None | Some("") => Mode::Notify,
+        Some("auto") => Mode::Auto,
+        Some("notify") | None | Some("") => Mode::Notify,
         Some(other) => {
             tracing::warn!(value = %other, "unknown SOT_UPDATE_MODE; defaulting to notify");
             Mode::Notify
@@ -104,8 +110,9 @@ impl Updater {
     }
 
     /// Query the latest release and compare against `current`. Never errors:
-    /// a dev build / mode=off / unresolvable root / unreachable release all
-    /// map to a structured status.
+    /// a dev build / mode=off / unreachable release all map to a structured
+    /// status. Deliberately does NOT require a staging root — hosts where no
+    /// root resolves must still be able to report availability.
     async fn check(&self) -> CheckOutcome {
         let disabled = |status: &str| CheckOutcome {
             identity: None,
@@ -119,12 +126,17 @@ impl Updater {
         if self.mode == Mode::Off {
             return disabled("disabled: update mode off");
         }
-        match self.mechanism() {
-            Ok(cfg) => sot_updater::check(&cfg).await,
-            Err(e) => disabled(&format!("check unavailable: {e}")),
-        }
+        sot_updater::check_release(&self.repo, &self.current, &Fetcher::from_env()).await
     }
 }
+
+/// Process-local dedupe for the background pipeline: repeated `update.check`
+/// ops during one in-flight multi-minute download must NOT pile up tasks
+/// that all block on (their own process's) staging lock. One pipeline run at
+/// a time per daemon; extra requests are a cheap no-op — the next check
+/// reports the truth.
+static PIPELINE_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Stage → prepare → arm: the full background pipeline for one discovered
 /// release (Phase C2). Prepare and arm run only on release installs (an
@@ -132,6 +144,20 @@ impl Updater {
 /// stage, exactly the pre-C2 behavior. Julia envs are instantiated for
 /// backend roles (`local`/`be-only`); `remote` prepares the checkout only.
 async fn stage_prepare_arm(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
+    use std::sync::atomic::Ordering;
+    if PIPELINE_RUNNING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        tracing::debug!(tag = %id.tag, "update pipeline already running — skipping duplicate");
+        return;
+    }
+    let result = stage_prepare_arm_inner(cfg, id).await;
+    PIPELINE_RUNNING.store(false, Ordering::Release);
+    result
+}
+
+async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
     if let Err(e) = sot_updater::stage(cfg, id).await {
         tracing::warn!(tag = %id.tag, error = %e, "staging update failed");
         return;
@@ -160,7 +186,7 @@ fn prepare_spec(install: &InstallManifest, cfg: &UpdaterConfig, id: &ReleaseIden
     PrepareSpec {
         identity: id.clone(),
         repo_dir: install.prefix.join("repo"),
-        stage_dir: sot_updater::stage_dir(&cfg.updates_root, &id.tag),
+        stage_dir: sot_updater::stage_dir(&cfg.updates_root, id),
         origin_url: None,
         julia_bin: backend_role.then(|| {
             std::env::var("SOT_JULIA_BIN").unwrap_or_else(|_| "julia".to_string())
@@ -185,7 +211,10 @@ fn notify_text(latest: &str, current: &str) -> String {
 /// connected FEs (via the existing ADR 0025 channel — the identical mechanism
 /// `fe.command.send` uses), then stages. Emits exactly one boot log describing
 /// the updater's state (the ADR-required dev-build info line lives here).
-pub fn spawn_periodic(fe_command_tx: broadcast::Sender<FeCommandEvt>) {
+pub fn spawn_periodic(
+    fe_command_tx: broadcast::Sender<FeCommandEvt>,
+    clients: crate::clients::Clients,
+) {
     let updater = Updater::from_env();
     if updater.dev {
         tracing::info!(
@@ -201,20 +230,26 @@ pub fn spawn_periodic(fe_command_tx: broadcast::Sender<FeCommandEvt>) {
     tracing::info!(
         repo = %updater.repo,
         current = %updater.current,
-        "auto-update active (mode=notify); first check in ~2min, then daily"
+        mode = ?updater.mode,
+        "auto-update active; first check in ~2min, then daily"
     );
     tokio::spawn(async move {
         tokio::time::sleep(FIRST_CHECK_DELAY).await;
         loop {
-            run_check_once(&updater, &fe_command_tx).await;
+            run_check_once(&updater, &fe_command_tx, &clients).await;
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
     });
 }
 
 /// One check cycle for the periodic task: check, and on a newer release notify
-/// + stage. All failures degrade to a log line; the task never dies.
-async fn run_check_once(updater: &Updater, fe_command_tx: &broadcast::Sender<FeCommandEvt>) {
+/// + stage/prepare/arm — then, in `auto` mode with nobody attached, exit for
+/// the apply owner. All failures degrade to a log line; the task never dies.
+async fn run_check_once(
+    updater: &Updater,
+    fe_command_tx: &broadcast::Sender<FeCommandEvt>,
+    clients: &crate::clients::Clients,
+) {
     let out = updater.check().await;
     if out.update_available {
         tracing::info!(latest = %out.latest, current = %updater.current, "update available");
@@ -227,11 +262,33 @@ async fn run_check_once(updater: &Updater, fe_command_tx: &broadcast::Sender<FeC
         // Fire-and-forget broadcast; a send error just means no FE is attached.
         let _ = fe_command_tx.send(evt);
         let Some(id) = out.identity else { return };
-        match updater.mechanism() {
-            Ok(cfg) => stage_prepare_arm(&cfg, &id).await,
-            Err(e) => tracing::warn!(error = %e, "no staging root — skipping stage"),
+        let cfg = match updater.mechanism() {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                tracing::warn!(error = %e, "no staging root — skipping stage");
+                return;
+            }
+        };
+        stage_prepare_arm(&cfg, &id).await;
+
+        if updater.mode == Mode::Auto {
+            let armed = matches!(
+                sot_updater::pending::read(&cfg.updates_root).await,
+                Ok(Some(p)) if p.identity == id
+            );
+            let attached = clients.count();
+            if armed && attached == 0 {
+                tracing::info!(tag = %id.tag, "auto mode: armed and no clients attached — exiting for the apply owner");
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                std::process::exit(0);
+            } else if armed {
+                tracing::info!(tag = %id.tag, attached, "auto mode: armed but clients attached — applying at next launch/restart instead");
+            }
         }
-    } else if out.status.starts_with("check unavailable") {
+    } else if out.status != "ok" && !out.status.starts_with("disabled") {
+        // Off-matrix platform, malformed SHA256SUMS, tag mismatch, network —
+        // all of these mean "this host cannot see updates" and deserve a
+        // warn, not a debug line nobody reads.
         tracing::warn!(status = %out.status, "update check could not run");
     } else {
         tracing::debug!(latest = %out.latest, status = %out.status, "no update available");
@@ -248,11 +305,22 @@ async fn run_check_once(updater: &Updater, fe_command_tx: &broadcast::Sender<FeC
 /// Never errors on a failed check: the failure rides in `status`.
 pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
     let updater = Updater::from_env();
-    let out = updater.check().await;
+    // Hard ceiling: this handler runs inline on the connection — a wedged
+    // network path must degrade to a status string, not stall the daemon's
+    // op loop (the curl budget is shorter still; this is the backstop).
+    let out = match tokio::time::timeout(Duration::from_secs(45), updater.check()).await {
+        Ok(out) => out,
+        Err(_) => CheckOutcome {
+            identity: None,
+            latest: String::new(),
+            update_available: false,
+            status: "check unavailable: timed out".into(),
+        },
+    };
     let mechanism = updater.mechanism().ok();
     let (staged, prepared, armed) = match (&out.identity, &mechanism) {
         (Some(id), Some(cfg)) => {
-            let stage_dir = sot_updater::stage_dir(&cfg.updates_root, &id.tag);
+            let stage_dir = sot_updater::stage_dir(&cfg.updates_root, id);
             (
                 sot_updater::is_staged(&cfg.updates_root, id).await,
                 PreparedState::matches(&stage_dir, id).await,

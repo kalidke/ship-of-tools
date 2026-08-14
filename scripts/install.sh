@@ -664,12 +664,16 @@ fi
 SERVICE="none"
 [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ] && SERVICE="systemd"
 COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
+# Paths go through a minimal JSON string escape (backslash + double quote) so
+# an exotic prefix can't produce a manifest that parses wrong — a broken
+# manifest silently redirects the updater's staging root.
+json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 cat > "$PREFIX/install.json" <<EOF
 {
   "schema": 1,
   "role": "$ROLE",
-  "prefix": "$PREFIX",
-  "config": "$CONFIG",
+  "prefix": "$(json_str "$PREFIX")",
+  "config": "$(json_str "$CONFIG")",
   "service": "$SERVICE",
   "version": "${VERSION#v}",
   "tag": "$VERSION",

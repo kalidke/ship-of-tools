@@ -80,6 +80,7 @@ trap cleanup EXIT INT TERM
 # ---- parse the pointer (our own pretty-printed JSON: one key per line) -------
 field() { sed -n 's/^ *"'"$1"'": *"\([^"]*\)".*/\1/p' "$PENDING" | head -1; }
 TAG="$(field tag)"
+TARGET="$(field target)"
 CHECKOUT="$(field checkout)"
 COMMIT="$(field commit)"
 ASSET="$(field asset)"
@@ -92,10 +93,15 @@ esac
 case "$TAG" in
     */*|*..*|*\\*) log "pending tag '$TAG' contains path material — ignoring pointer"; exit 0 ;;
 esac
-[ -n "$CHECKOUT" ] && [ -n "$COMMIT" ] && [ -n "$ASSET" ] && [ -n "$ASSET_SHA" ] || {
+[ -n "$TARGET" ] && [ -n "$CHECKOUT" ] && [ -n "$COMMIT" ] && [ -n "$ASSET" ] && [ -n "$ASSET_SHA" ] || {
     log "pending pointer is missing fields — ignoring"; exit 0; }
+case "$TARGET" in
+    */*|*..*|*\\*) log "pending target '$TARGET' contains path material — ignoring pointer"; exit 0 ;;
+esac
 
-READY="$UPDATES/$TAG"
+# Stage dirs are keyed <tag>-<target> (shared-\$HOME machines of different
+# platforms share one updates root).
+READY="$UPDATES/$TAG-$TARGET"
 TOP="${ASSET%.tar.gz}"; TOP="${TOP%.zip}"
 STAGED="$READY/$TOP"
 
@@ -188,10 +194,11 @@ for v in "$PREFIX/repo/versions"/*; do
 done
 git -C "$PREFIX/repo/base" worktree prune 2>/dev/null
 
-# Old staged release dirs (keep the just-applied one for re-verification).
-for d in "$UPDATES"/v[0-9]*; do
+# Old staged release dirs FOR THIS TARGET (keep the just-applied one for
+# re-verification; other targets' stages belong to other machines).
+for d in "$UPDATES"/v[0-9]*-"$TARGET"; do
     [ -d "$d" ] || continue
-    [ "$(basename "$d")" = "$TAG" ] || rm -rf "$d"
+    [ "$(basename "$d")" = "$TAG-$TARGET" ] || rm -rf "$d"
 done
 
 log "APPLIED $TAG (previous: ${CUR_TAG:-unknown}; rollback state in updates/last-good.json)"

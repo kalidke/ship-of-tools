@@ -41,8 +41,11 @@ pub use identity::ReleaseIdentity;
 pub use manifest::{resolve_updates_root, InstallManifest, ReadyManifest};
 
 /// How long a stage will wait for another process's stage to finish before
-/// giving up on the lock.
-const LOCK_WAIT: Duration = Duration::from_secs(600);
+/// giving up on the lock. Must exceed a worst-case stage hold (a 900s
+/// download plus hashing plus a 300s extract); a giver-upper only warns and
+/// retries on the next daily cycle, but waiting through a sibling's stage is
+/// strictly better.
+const LOCK_WAIT: Duration = Duration::from_secs(3600);
 
 /// Everything a check/stage needs to know. Callers construct it; policy
 /// (modes, dev guards) stays theirs.
@@ -81,8 +84,10 @@ fn outcome_err(status: String) -> CheckOutcome {
     }
 }
 
-/// Query the latest release and pin this platform's identity.
-pub async fn check(cfg: &UpdaterConfig) -> CheckOutcome {
+/// Query the latest release and pin this platform's identity. Deliberately
+/// takes no staging root: a check must work (and report availability) even
+/// on hosts where no updates root resolves.
+pub async fn check_release(repo: &str, current_version: &str, fetcher: &Fetcher) -> CheckOutcome {
     let Some(target) = platform::this_platform() else {
         return outcome_err(format!(
             "platform {}-{} is not in the release matrix",
@@ -90,7 +95,7 @@ pub async fn check(cfg: &UpdaterConfig) -> CheckOutcome {
             platform::TARGET_ARCH
         ));
     };
-    let latest = match cfg.fetcher.latest(&cfg.repo).await {
+    let latest = match fetcher.latest(repo).await {
         Ok(l) => l,
         Err(e) => return outcome_err(format!("check unavailable: {e}")),
     };
@@ -98,7 +103,7 @@ pub async fn check(cfg: &UpdaterConfig) -> CheckOutcome {
         Ok(v) => v,
         Err(e) => return outcome_err(format!("bad SHA256SUMS: {e}")),
     };
-    let identity = match sums::discover(&entries, &cfg.repo, target) {
+    let identity = match sums::discover(&entries, repo, target) {
         Ok(id) => id,
         Err(e) => return outcome_err(format!("{e}")),
     };
@@ -114,7 +119,7 @@ pub async fn check(cfg: &UpdaterConfig) -> CheckOutcome {
         }
     }
     let update_available =
-        semver::compare_versions(&identity.version, &cfg.current_version) == Ordering::Greater;
+        semver::compare_versions(&identity.version, current_version) == Ordering::Greater;
     CheckOutcome {
         latest: identity.version.clone(),
         identity: Some(identity),
@@ -123,14 +128,22 @@ pub async fn check(cfg: &UpdaterConfig) -> CheckOutcome {
     }
 }
 
-/// The completed-stage directory for a tag.
-pub fn stage_dir(updates_root: &Path, tag: &str) -> PathBuf {
-    updates_root.join(tag)
+/// Back-compat wrapper: check via a full config (ignores the root).
+pub async fn check(cfg: &UpdaterConfig) -> CheckOutcome {
+    check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher).await
 }
 
-/// True when `updates_root/<tag>` holds a completed stage of exactly `id`.
+/// The completed-stage directory for one release identity. Keyed by tag AND
+/// target: on a shared `$HOME`, machines of different platforms share one
+/// updates root, and tag-only dirs would make them clobber each other's
+/// completed stages in an endless re-download ping-pong.
+pub fn stage_dir(updates_root: &Path, id: &ReleaseIdentity) -> PathBuf {
+    updates_root.join(format!("{}-{}", id.tag, id.target))
+}
+
+/// True when the identity's stage dir holds a completed stage of exactly `id`.
 pub async fn is_staged(updates_root: &Path, id: &ReleaseIdentity) -> bool {
-    ReadyManifest::matches(&stage_dir(updates_root, &id.tag), id).await
+    ReadyManifest::matches(&stage_dir(updates_root, id), id).await
 }
 
 /// Download → verify → validate → extract → commit one release for this
@@ -154,7 +167,7 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
     if is_staged(&cfg.updates_root, id).await {
         return Ok(true);
     }
-    let dest = stage_dir(&cfg.updates_root, &id.tag);
+    let dest = stage_dir(&cfg.updates_root, id);
     if dest.exists() {
         // Present but not a matching completed stage: a partial from a
         // crashed run, or different contents under the same tag. Rebuild it.
@@ -320,9 +333,9 @@ mod tests {
         // Idempotent.
         assert!(stage(&cfg, &id).await.unwrap());
 
-        let staged_bin = stage_dir(&updates, &id.tag).join(&top).join("sot");
+        let staged_bin = stage_dir(&updates, &id).join(&top).join("sot");
         assert_eq!(tokio::fs::read(&staged_bin).await.unwrap(), b"fe-binary");
-        let manifest = ReadyManifest::read(&stage_dir(&updates, &id.tag)).await.unwrap();
+        let manifest = ReadyManifest::read(&stage_dir(&updates, &id)).await.unwrap();
         assert_eq!(manifest.identity, id);
 
         // A running check against the staged version reports no update.

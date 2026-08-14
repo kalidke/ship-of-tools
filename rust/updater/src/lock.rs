@@ -108,12 +108,26 @@ impl StageLock {
             }
         }
         if stale {
-            tracing::warn!(lock = %dir.display(), age_s = age.as_secs(), "breaking stale staging lock");
-            let _ = std::fs::remove_file(dir.join("owner"));
-            match std::fs::remove_dir(dir) {
-                Ok(()) => Ok(true),
+            // Break by RENAME, not remove: rename is atomic, so exactly ONE
+            // of several concurrent breakers wins. Removing in place would
+            // let a slow breaker delete the FRESH lock a fast breaker just
+            // re-acquired (two-reader race on the same stale observation).
+            let graveyard = dir.with_file_name(format!(
+                ".lock-stale-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            match std::fs::rename(dir, &graveyard) {
+                Ok(()) => {
+                    tracing::warn!(lock = %dir.display(), age_s = age.as_secs(), "broke stale staging lock");
+                    let _ = std::fs::remove_dir_all(&graveyard);
+                    Ok(true)
+                }
+                // Lost the race (already broken/re-acquired) — not ours to free.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
-                // Someone else may have re-acquired between our checks; not stale anymore.
                 Err(_) => Ok(false),
             }
         } else {

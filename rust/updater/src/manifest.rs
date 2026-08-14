@@ -67,6 +67,12 @@ impl InstallManifest {
     /// Locate the manifest for the running binary: `<exe>/../../install.json`
     /// (binaries live in `<prefix>/bin/`). `None` for layouts without one —
     /// dev builds from `target/`, pre-manifest installs.
+    ///
+    /// The exe location is the AUTHORITY on the prefix: a manifest whose
+    /// recorded `prefix` disagrees (copied install, edited file) is corrected
+    /// to the exe-derived prefix rather than trusted — otherwise a stray
+    /// manifest could redirect staging (and later the apply flip) to an
+    /// arbitrary directory.
     pub fn for_current_exe() -> Option<Self> {
         let exe = std::env::current_exe().ok()?;
         let prefix = exe.parent()?.parent()?;
@@ -75,7 +81,17 @@ impl InstallManifest {
             return None;
         }
         match Self::read(&path) {
-            Ok(m) => Some(m),
+            Ok(mut m) => {
+                if m.prefix != prefix {
+                    tracing::warn!(
+                        recorded = %m.prefix.display(),
+                        actual = %prefix.display(),
+                        "install manifest prefix disagrees with the binary's location — using the binary's"
+                    );
+                    m.prefix = prefix.to_path_buf();
+                }
+                Some(m)
+            }
             Err(e) => {
                 tracing::warn!(error = %e, path = %path.display(), "unreadable install manifest — ignoring");
                 None

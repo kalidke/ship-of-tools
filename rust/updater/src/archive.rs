@@ -15,20 +15,26 @@ use anyhow::{bail, Context, Result};
 
 const EXTRACT_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Files a release archive may contain, under its single top-level dir.
-const ALLOWED_FILES: &[&str] = &[
-    "sot",
-    "sotd",
-    "sot.exe",
-    "sotd.exe",
-    "sotd.service",
-    "sot-apply",
-];
+/// A sane single filename component: non-empty, bounded, no path separators
+/// or traversal or control characters, doesn't start with a dot. Release
+/// archives may grow NEW files over time and already-deployed updaters must
+/// not refuse them (auto-update is the only channel that ships fixes), so
+/// membership in a fixed list is deliberately NOT required — the security
+/// property is path/symlink/shape control plus the per-platform REQUIRED
+/// set, not filename enumeration.
+fn sane_component(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
 
 /// Validate one archive entry name against the expected top-level dir
-/// (`sot-<version>-<target>`). Accepts `top/`, `top` and `top/<allowed>`;
-/// rejects everything else — absolute paths, `..`, backslashes, unexpected
-/// nesting, unlisted files.
+/// (`sot-<version>-<target>`). Accepts `top/`, `top` and `top/<sane-file>`;
+/// rejects everything else — absolute paths, `..`, backslashes, deeper
+/// nesting, hostile names.
 pub fn validate_entry_name(entry: &str, top: &str) -> Result<()> {
     if entry.contains('\\') || entry.contains('\u{0}') {
         bail!("archive entry {entry:?} contains forbidden characters");
@@ -43,10 +49,10 @@ pub fn validate_entry_name(entry: &str, top: &str) -> Result<()> {
     let Some(rest) = trimmed.strip_prefix(&format!("{top}/")) else {
         bail!("archive entry {entry:?} is outside the expected {top}/ dir");
     };
-    if ALLOWED_FILES.contains(&rest) {
+    if sane_component(rest) {
         Ok(())
     } else {
-        bail!("archive entry {entry:?} is not an allowlisted release file");
+        bail!("archive entry {entry:?} is not a sane release filename");
     }
 }
 
@@ -136,7 +142,10 @@ pub async fn extract_validated(archive: &Path, dest: &Path, top: &str) -> Result
                     "-NoProfile",
                     "-Command",
                     &format!(
-                        "Expand-Archive -Force -LiteralPath '{}' -DestinationPath '{}'",
+                        // ErrorActionPreference=Stop: a non-terminating
+                        // extractor error must exit nonzero, never commit a
+                        // partial tree as staged.
+                        "$ErrorActionPreference='Stop'; Expand-Archive -Force -ErrorAction Stop -LiteralPath '{}' -DestinationPath '{}'",
                         archive.display().to_string().replace('\'', "''"),
                         dest.display().to_string().replace('\'', "''")
                     ),
@@ -166,16 +175,18 @@ pub async fn extract_validated(archive: &Path, dest: &Path, top: &str) -> Result
 }
 
 /// Post-extraction sweep of `dir` (= `dest/top`): regular files from the
-/// allowlist only, no symlinks, no subdirectories.
+/// allowlist only, no symlinks, no subdirectories — and the platform's
+/// REQUIRED binaries must actually be present ("not empty" is not enough: a
+/// non-terminating extractor error must never let a partial stage read as
+/// complete).
 async fn validate_tree(dir: &Path, top: &str) -> Result<()> {
     let mut rd = tokio::fs::read_dir(dir)
         .await
         .with_context(|| format!("extracted dir {} missing", dir.display()))?;
-    let mut saw_any = false;
+    let mut seen: Vec<String> = Vec::new();
     while let Some(entry) = rd.next_entry().await? {
-        saw_any = true;
         let name = entry.file_name();
-        let name = name.to_string_lossy();
+        let name = name.to_string_lossy().into_owned();
         let meta = tokio::fs::symlink_metadata(entry.path()).await?;
         if meta.file_type().is_symlink() {
             bail!("extracted {top}/{name} is a symlink — rejecting");
@@ -183,12 +194,23 @@ async fn validate_tree(dir: &Path, top: &str) -> Result<()> {
         if !meta.is_file() {
             bail!("extracted {top}/{name} is not a regular file — rejecting");
         }
-        if !ALLOWED_FILES.contains(&name.as_ref()) {
-            bail!("extracted {top}/{name} is not an allowlisted release file");
+        if !sane_component(&name) {
+            bail!("extracted {top}/{name} is not a sane release filename");
         }
+        if meta.len() == 0 {
+            bail!("extracted {top}/{name} is empty — rejecting partial extraction");
+        }
+        seen.push(name);
     }
-    if !saw_any {
-        bail!("extracted {top}/ is empty");
+    let required: &[&str] = if top.ends_with("windows-x86_64") {
+        &["sot.exe", "sotd.exe"]
+    } else {
+        &["sot", "sotd"]
+    };
+    for want in required {
+        if !seen.iter().any(|s| s == want) {
+            bail!("extracted {top}/ is missing required file {want}");
+        }
     }
     Ok(())
 }
@@ -214,22 +236,27 @@ mod tests {
     const TOP: &str = "sot-0.6.0-linux-x86_64";
 
     #[test]
-    fn entry_allowlist() {
+    fn entry_validation() {
         validate_entry_name("sot-0.6.0-linux-x86_64/", TOP).unwrap();
         validate_entry_name("sot-0.6.0-linux-x86_64", TOP).unwrap();
         validate_entry_name("sot-0.6.0-linux-x86_64/sot", TOP).unwrap();
         validate_entry_name("sot-0.6.0-linux-x86_64/sotd", TOP).unwrap();
         validate_entry_name("sot-0.6.0-linux-x86_64/sotd.service", TOP).unwrap();
+        // Unknown-but-sane files are tolerated: future releases add files,
+        // and deployed updaters must not refuse to stage them.
+        validate_entry_name("sot-0.6.0-linux-x86_64/sot-apply", TOP).unwrap();
+        validate_entry_name("sot-0.6.0-linux-x86_64/NEW_FILE.txt", TOP).unwrap();
 
         for bad in [
             "/etc/passwd",
             "../../evil",
             "sot-0.6.0-linux-x86_64/../evil",
             "sot-0.6.0-linux-x86_64/nested/sot",
-            "sot-0.6.0-linux-x86_64/rogue.sh",
             "other-dir/sot",
             "sot-0.6.0-linux-x86_64\\sot",
             "./sot-0.6.0-linux-x86_64/sot",
+            "sot-0.6.0-linux-x86_64/.hidden",
+            "sot-0.6.0-linux-x86_64/sp ace",
         ] {
             assert!(validate_entry_name(bad, TOP).is_err(), "accepted {bad:?}");
         }
@@ -269,8 +296,8 @@ mod tests {
             b"fe"
         );
 
-        // A rogue file in the archive fails validation before extraction.
-        tokio::fs::write(base.join("build").join(TOP).join("rogue.sh"), b"x")
+        // A missing required binary fails the post-extraction sweep.
+        tokio::fs::remove_file(base.join("build").join(TOP).join("sotd"))
             .await
             .unwrap();
         let bad = base.join("bad.tar.gz");
@@ -287,7 +314,8 @@ mod tests {
         assert!(st.success());
         let dest2 = base.join("out2");
         tokio::fs::create_dir_all(&dest2).await.unwrap();
-        assert!(extract_validated(&bad, &dest2, TOP).await.is_err());
+        let err = extract_validated(&bad, &dest2, TOP).await.unwrap_err();
+        assert!(err.to_string().contains("missing required file"), "{err}");
 
         tokio::fs::remove_dir_all(&base).await.unwrap();
     }

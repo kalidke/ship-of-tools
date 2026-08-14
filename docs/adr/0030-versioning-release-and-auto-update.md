@@ -285,6 +285,75 @@ both move on one tag. Risk accepted: checkout weight (media grows per release)
 — mitigated by the blobless clone and, if ever needed, moving heavyweight
 media to release assets.
 
+## Amendment 2026-08-13 — Phase C shipped: transactional versioned auto-update
+
+Phase C is implemented (PR series C1–C4), with the design **revised by an
+adversarial Codex review** before implementation: after the clone-based
+install amendment, a version is *binaries + tag-pinned checkout + Julia
+envs*, so §4's original "each process replaces its own binary" model was
+replaced by **whole-install transactions**. What shipped:
+
+- **Discovery is gh-free** (`sot-updater` crate, shared by `sotd` and `sot`):
+  `GET releases/latest/download/SHA256SUMS` over plain HTTPS via `curl` — one
+  documented request yields the released version (derived from the
+  deterministic asset names) and the digests. Every later fetch is pinned to
+  the derived tag; a full release identity `{repo, tag, version, target,
+  asset, sha256}` travels through every stage, and tag/repo strings are
+  strictly validated before touching a URL or path. `SOT_UPDATE_FETCHER=gh`
+  remains for private forks; `dir:<path>` sideloads (and drives the tests).
+- **Prepare at stage time, OFF the live tree**: the install layout is now
+  `repo/base` (blobless fetch target) + `repo/versions/<tag>` (detached
+  worktrees) + `repo/current` (symlink). The daemon stages (download →
+  streamed sha256 → allowlist-validated extraction → ready manifest) and
+  prepares (worktree at the tag's commit, HEAD==commit gate, Julia
+  instantiate + load-test, mathjax `npm ci`) in the background, then **arms**
+  an atomic pending pointer (newer-wins; crash-loop-marked versions refuse to
+  re-arm). `git checkout` never runs over `repo/current` — the live daemon
+  resolves resources through it.
+- **Apply is a fast offline flip with ONE owner per platform**:
+  `sot-apply` (shipped in `<prefix>/bin` AND inside every release archive)
+  re-verifies digest + commit, swaps binaries keeping `.prev`, flips the
+  `current` symlinks, rewrites `install.json`, clears the pointer. Owners:
+  systemd `ExecStartPre=-` (Linux service), `sot-launch` (macOS /
+  `--no-service`, including `.app` launches — it also supervises the FE now:
+  exit-75 respawn on Unix, crash-loop → `sot-apply --rollback` → previous
+  version restored + `bad-<tag>` marker). The `update.apply` op arms, acks,
+  and exits; it never applies in-process. Cross-process serialization is a
+  mkdir lock under the updates root.
+- **Remote FEs self-stage**: the frontend runs its own check→stage→prepare
+  (checkout-only)→arm at startup on `remote`-role installs, independent of
+  the control channel (a protocol mismatch kills the connection before any
+  op — the exact case an updater must survive). Non-remote roles defer to
+  the backend pipeline so an env-less prepare can never arm on a BE host.
+- **`install.json`** (schema 1, written by the installer, updated by apply)
+  records role/prefix/config/service/version; binaries resolve their staging
+  root from it (fixes `--prefix` installs). No temp-dir staging fallback —
+  unresolvable roots fail loud.
+- **Modes**: `notify` (default — stage+prepare+arm, apply at next launch),
+  `auto` (additionally exits for the apply owner when **zero clients** are
+  attached — caveat: detached tmux workspaces/REPLs don't count as attached
+  and can be interrupted; that is why auto is opt-in), `off`. Config surface
+  is env (`SOT_UPDATE_MODE/FETCHER/REPO/ROOT`); a `settings.toml [update]`
+  table is deferred until the FE/BE settings parsers are unified.
+- **Release pipeline hardening** (it is the auto-updater's code-execution
+  trust root): workflow token is read-only with `contents: write` scoped to
+  the publish job, all actions pinned to commit SHAs, and all three platform
+  artifacts are smoke-tested with exact-version asserts (Windows previously
+  shipped unverified).
+
+**Deliberately deferred, tracked in the ops sidecar**: artifact signing
+(integrity = GitHub TLS + SHA256SUMS + strict validation + pipeline least
+privilege, documented trade-off); Windows production auto-update (needs the
+Phase-D `install.ps1` + supervisor rework — the shared crate already handles
+Windows staging); macOS launchd wiring and daemon-side crash-loop
+auto-rollback (manual: `sot-apply --rollback`, or re-run the installer);
+refreshing agent comm resources (`update_comm`) on auto-apply.
+
+**Migration**: existing release installs pick up the versioned layout on
+their next installer re-run; installs without an `install.json` get
+check/notify/stage against the legacy path but never prepare/arm (fail-safe:
+they keep working exactly as before, updated manually).
+
 ## Public baseline hygiene
 
 For the sanitized public baseline, operational content lives in the private

@@ -78,7 +78,7 @@ async fn run(install: InstallManifest, current: String) {
         fetcher: Fetcher::from_env(),
         updates_root: install.updates_root(),
     };
-    let out = sot_updater::check(&cfg).await;
+    let out = sot_updater::check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher).await;
     if !out.update_available {
         tracing::debug!(status = %out.status, "fe self-update: nothing to do");
         return;
@@ -93,7 +93,7 @@ async fn run(install: InstallManifest, current: String) {
     let spec = PrepareSpec {
         identity: id.clone(),
         repo_dir: install.prefix.join("repo"),
-        stage_dir: sot_updater::stage_dir(&cfg.updates_root, &id.tag),
+        stage_dir: sot_updater::stage_dir(&cfg.updates_root, &id),
         origin_url: None,
         julia_bin: None,
         npm: false,

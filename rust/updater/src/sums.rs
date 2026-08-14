@@ -75,14 +75,18 @@ pub fn discover(entries: &[SumEntry], repo: &str, target: &str) -> Result<Releas
         let Some((v, plat)) = parse_asset_name(&e.name) else {
             continue; // non-archive release file (e.g. sotd.service copies)
         };
+        // Only PRODUCT archives count: the version part must be strict
+        // semver. A future companion asset that happens to match the
+        // `sot-*-<platform>` shape (e.g. `sot-installer-1.0-…`) must be
+        // skipped, not allowed to brick discovery for every deployed
+        // updater — auto-update is the only channel that ships fixes.
+        if parse_semver(&v).is_none() {
+            tracing::debug!(asset = %e.name, "skipping non-product sot-* asset in SHA256SUMS");
+            continue;
+        }
         saw_archives = true;
         match &version {
-            None => {
-                if parse_semver(&v).is_none() {
-                    bail!("asset {} embeds unparsable version {v:?}", e.name);
-                }
-                version = Some(v.clone());
-            }
+            None => version = Some(v.clone()),
             Some(prev) if *prev != v => {
                 bail!("SHA256SUMS mixes versions {prev} and {v} — refusing");
             }

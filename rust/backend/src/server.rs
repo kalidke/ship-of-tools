@@ -567,13 +567,6 @@ pub async fn run(opts: Opts) -> Result<()> {
     // connections; the FE self-filters on `target`.
     let (fe_command_tx, _fe_command_rx) = broadcast::channel::<FeCommandEvt>(256);
 
-    // Auto-updater (ADR 0030 §4, Phase C): daily check that, on a newer
-    // release, pushes an `fe.command` `notify` over the bus above and stages
-    // the platform binary. A `-dev` build (the whole fleet) disables it at the
-    // hard guard inside `spawn_periodic`, which logs the disabled state and
-    // returns without spawning anything.
-    crate::update::spawn_periodic(fe_command_tx.clone());
-
     // Server-monitoring data plane (ADR 0020): always-on samplers (one per
     // host) feeding a tiered ring + the `monitor.tick` broadcast bus. Stored on
     // the registry (mirrors `set_repl_frame_tx`) so every connection can
@@ -588,6 +581,15 @@ pub async fn run(opts: Opts) -> Result<()> {
     // across both listeners so the live count spans transports; each
     // connection registers on hello and deregisters on drop.
     let clients = Clients::new();
+
+    // Auto-updater (ADR 0030 §4, Phase C): daily check that, on a newer
+    // release, pushes an `fe.command` `notify` over the bus above and runs
+    // the stage → prepare → arm pipeline. In `auto` mode it may also exit
+    // for the apply owner when no clients are attached (hence the roster
+    // handle). A `-dev` build (the whole fleet) disables it at the hard
+    // guard inside `spawn_periodic`, which logs the disabled state and
+    // returns without spawning anything.
+    crate::update::spawn_periodic(fe_command_tx.clone(), clients.clone());
 
     let label = Arc::new(opts.label);
     let mut tasks: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();
