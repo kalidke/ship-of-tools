@@ -104,11 +104,21 @@ bash scripts/install.sh --be-only --no-service # shared-home deployment; skip sy
 Requirements: **git**, **curl**, **tar**; **tmux** on any host that runs the
 backend (fatal if absent); Linux frontend roles need glibc ≥ 2.35, while
 `--be-only` skips the frontend floor because the backend binary is static.
-Remote layouts require key-based SSH to the backend host. **Re-running the
-installer is also the updater**; `--version vX.Y.Z` pins a specific release
-and `--prefix <dir>` relocates the install. Changing roles backs up and
-rewrites `hosts.toml`. Details:
+Remote layouts require key-based SSH to the backend host. `--version vX.Y.Z`
+pins a specific release and `--prefix <dir>` relocates the install. Changing
+roles backs up and rewrites `hosts.toml`. Details:
 **[Install](https://kalidke.github.io/ship-of-tools/dev/start/install/)**.
+
+**Auto-update (Linux/macOS installs).** The backend checks the latest release
+daily (plain HTTPS, no GitHub auth), notifies attached frontends, and
+prepares the whole new version in the background — binaries, a tag-pinned
+checkout, and instantiated Julia environments, all verified against the
+release's `SHA256SUMS`. The staged update **applies automatically at the next
+launch** (or daemon restart) as a fast offline switch, with the previous
+version kept for rollback. `SOT_UPDATE_MODE=off` disables it; `auto` also
+restarts an idle backend by itself; re-running the installer remains the
+manual updater (and is what migrates pre-0.6 installs onto the auto-update
+layout). Windows auto-update lands with the native Windows installer.
 
 **From source (contributors).**
 

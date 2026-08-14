@@ -19,6 +19,7 @@ mod layout;
 mod monitor_view;
 mod preview;
 mod proxy_listen;
+mod selfupdate;
 mod settings;
 mod state;
 mod state_persistence;
@@ -73,6 +74,11 @@ fn main() -> Result<()> {
     // merges into the pinned shortcut's button (Windows-only; see above).
     #[cfg(windows)]
     set_app_user_model_id();
+
+    // Remote-role release installs stage their own platform's update in the
+    // background (ADR 0030 Phase C3); no-op everywhere else. Must not depend
+    // on the backend connection — see selfupdate.rs.
+    selfupdate::spawn_startup_selfcheck();
 
     tracing::info!("sot-frontend starting");
     tracing::info!(

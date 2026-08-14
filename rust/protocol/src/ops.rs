@@ -249,6 +249,14 @@ pub mod op {
     /// also runs this check on a daily timer and pushes an `FE_COMMAND`
     /// `notify` when a newer release appears; this op is the manual trigger.
     pub const UPDATE_CHECK: &str = "update.check";
+    /// Apply the ARMED pending update now (ADR 0030 Phase C3). Empty request
+    /// (`UpdateApplyReq`). The daemon validates that a pending pointer is
+    /// armed, answers `UpdateApplyRes { ok, tag, will_restart, status }`,
+    /// broadcasts a notify, then EXITS — the single apply owner (systemd
+    /// ExecStartPre, or the next `sot-launch`) performs the fast offline
+    /// flip and brings up the new version. `will_restart` is true only under
+    /// a service manager; otherwise the user's next launch completes it.
+    pub const UPDATE_APPLY: &str = "update.apply";
     /// TCP proxy handshake (ADR 0035). Sent as the FIRST frame on a
     /// DEDICATED daemon-socket connection (never on the multiplexed control
     /// connection): `ProxyConnectReq { port, token? }`. The daemon validates
@@ -1568,12 +1576,52 @@ pub struct UpdateCheckReq {}
 /// sha256-verified, and unpacked into the staging dir. `status` is a
 /// human/structured string: `"ok"`, `"disabled: dev build"`,
 /// `"disabled: update mode off"`, or `"check unavailable: <why>"`.
+/// The Phase-C identity fields (`tag` … `asset_sha256`) pin the exact release
+/// the backend saw so a frontend on another machine can stage the SAME
+/// release rather than re-resolving "latest" (which may have moved). All
+/// default so older peers interoperate.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateCheckRes {
     pub current: String,
     pub latest: String,
     pub update_available: bool,
     pub staged: bool,
+    pub status: String,
+    /// Full release tag (`vX.Y.Z`) of `latest`; empty when no check ran.
+    #[serde(default)]
+    pub tag: String,
+    /// `owner/repo` the backend checks against.
+    #[serde(default)]
+    pub repo: String,
+    /// The BACKEND's release-matrix platform (its own asset's target).
+    #[serde(default)]
+    pub target: String,
+    /// sha256 of the backend-platform asset, from the release's SHA256SUMS.
+    #[serde(default)]
+    pub asset_sha256: String,
+    /// True once the versioned checkout + Julia envs for `latest` are
+    /// prepared on the backend host (Phase C2 transactional prepare).
+    #[serde(default)]
+    pub prepared: bool,
+    /// True once the pending pointer arms `latest` for apply at next launch.
+    #[serde(default)]
+    pub armed: bool,
+}
+
+/// `update.apply` request — no fields (applies whatever is armed).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateApplyReq {}
+
+/// `update.apply` response, sent BEFORE the daemon exits. `ok` false means
+/// nothing was armed (or the arm failed validation) and the daemon stays up;
+/// `status` says why. On `ok` true, `tag` is the release being applied and
+/// `will_restart` tells the frontend whether the backend comes back on its
+/// own (systemd) or needs the user's next launch.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateApplyRes {
+    pub ok: bool,
+    pub tag: String,
+    pub will_restart: bool,
     pub status: String,
 }
 

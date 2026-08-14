@@ -89,6 +89,19 @@ if [ -z "$ROLE" ]; then
     fi
 fi
 
+# Canonicalize the prefix (a relative one produces a repo/current symlink
+# whose target resolves from repo/, i.e. a broken link) and refuse characters
+# the systemd-unit sed, JSON manifest, and launcher heredocs cannot carry
+# safely. Explicit rejection over silent corruption.
+case "$PREFIX" in
+    /*) ;;
+    *) PREFIX="$(pwd)/$PREFIX" ;;
+esac
+case "$PREFIX" in
+    *[\&\|\;\"\'\\\`]*|*' '*|*'	'*)
+        die "unsupported characters in prefix '$PREFIX' — no spaces, quotes, backslashes, or shell metacharacters" ;;
+esac
+
 # ---- 1. preflight ------------------------------------------------------------
 OS="$(uname -s)"
 case "$OS" in
@@ -199,54 +212,111 @@ for b in sot sotd; do
     # Gatekeeper: strip any quarantine attr (browser downloads carry it).
     [ "$OS" = Darwin ] && xattr -d com.apple.quarantine "$PREFIX/bin/$b" 2>/dev/null || true
 done
+# The offline apply/rollback script (Phase C3). Newer releases ship it in the
+# archive; otherwise it lands from the checkout below.
+[ -f "$BINDIR/sot-apply" ] && install -m 0755 "$BINDIR/sot-apply" "$PREFIX/bin/sot-apply"
+# A manual installer run is a NEW transaction: stale rollback state from a
+# previous auto-apply must not pair old last-good pointers with these fresh
+# .prev binaries (a later crash-loop rollback would mix versions).
+rm -f "$PREFIX"/updates/last-good-*.json "$PREFIX"/updates/just-applied-* 2>/dev/null || true
 say "binaries: $("$PREFIX/bin/sotd" --version)"
 DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 
 # ---- 4. the repo checkout — manual, resources, julia code (ADR 0030 add.) -----
-# The checkout at $PREFIX/repo/current IS the product's resource tree and its
-# help system: resource_dir resolves julia/kernel, julia/repl, sidecars, and
-# examples from it, and the FE Terminal's agent reads docs/ + ADRs + source as
-# the manual. Blobless partial clone (--filter=blob:none): full history for
-# blame, only the tag's tree downloaded. Update = re-run this installer with
-# the new version — fetch tags + checkout moves the same tree. READ-ONLY BY
-# CONVENTION: a dirty tree refuses to move (fail loud).
-CHECKOUT="$PREFIX/repo/current"
+# The checkout IS the product's resource tree and its help system:
+# resource_dir resolves julia/kernel, julia/repl, sidecars, and examples from
+# $PREFIX/repo/current, and the FE Terminal's agent reads docs/ + ADRs +
+# source as the manual.
+#
+# Phase-C layout (versioned, transactional — Codex-reviewed design):
+#   repo/base            blobless --no-checkout clone (the fetch target)
+#   repo/versions/<tag>  detached git worktree pinned at that release
+#   repo/current         SYMLINK to the active version dir
+# The auto-updater prepares new version dirs off the live tree and applying
+# an update is a pointer flip; this installer produces the same layout (and
+# migrates the pre-Phase-C in-place clone). READ-ONLY BY CONVENTION: a dirty
+# tree refuses to move (fail loud).
+REPO_DIR="$PREFIX/repo"
+BASE="$REPO_DIR/base"
+CHECKOUT="$REPO_DIR/versions/$VERSION"
+CURRENT="$REPO_DIR/current"
 command -v git >/dev/null || die "git is required (the install includes a repo checkout)"
-if [ -d "$CHECKOUT/.git" ]; then
-    if [ -n "$(git -C "$CHECKOUT" status --porcelain)" ]; then
-        die "the checkout at $CHECKOUT has local changes — commit/stash/revert, then re-run (updates refuse to move a dirty tree)"
-    fi
-    say "updating checkout to $VERSION"
-    # --force on the tag fetch: a release tag force-moved upstream (e.g. the
-    # public-flip history rewrite) otherwise makes the whole fetch abort with
-    # "would clobber existing tag", blocking every upgrade re-run (issue #4).
-    # The checkout is READ-ONLY BY CONVENTION, so force-updating tags is safe.
-    git -C "$CHECKOUT" fetch --tags --force --filter=blob:none origin || die "fetch failed"
-    git -C "$CHECKOUT" checkout -q "$VERSION" || die "checkout $VERSION failed"
-else
-    say "cloning repo at $VERSION (blobless partial clone)"
+if [ ! -d "$BASE" ]; then
+    say "creating base clone (blobless, no checkout)"
     if [ "$FETCH" = gh ]; then
         git -c "credential.helper=!gh auth git-credential" \
-            clone --filter=blob:none --branch "$VERSION" "https://github.com/$REPO" "$CHECKOUT" \
-            || die "clone failed"
+            clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
+            || die "base clone failed"
     else
         # Public repo: plain https clone, no auth needed.
-        git clone --filter=blob:none --branch "$VERSION" \
-            "https://github.com/$REPO" "$CHECKOUT" \
-            || die "clone failed"
+        git clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
+            || die "base clone failed"
     fi
 fi
-# Enforce HEAD == the tag's recorded commit (fresh clone AND update): a moved
-# tag, wrong ref, or half-checkout must fail HERE, not at first use.
-want="$(git -C "$CHECKOUT" rev-parse "refs/tags/$VERSION^{commit}" 2>/dev/null)" \
-    || die "tag $VERSION not present in the checkout"
+# --force on the tag fetch: a release tag force-moved upstream (e.g. the
+# public-flip history rewrite) otherwise makes the whole fetch abort with
+# "would clobber existing tag", blocking every upgrade re-run (issue #4).
+# The checkouts are READ-ONLY BY CONVENTION, so force-updating tags is safe.
+git -C "$BASE" fetch --tags --force origin || die "fetch failed"
+want="$(git -C "$BASE" rev-parse "refs/tags/$VERSION^{commit}" 2>/dev/null)" \
+    || die "tag $VERSION not present after fetch"
+if [ -d "$CHECKOUT" ]; then
+    if [ -n "$(git -C "$CHECKOUT" status --porcelain 2>/dev/null)" ]; then
+        die "the checkout at $CHECKOUT has local changes — commit/stash/revert, then re-run (updates refuse to move a dirty tree)"
+    fi
+else
+    say "adding version worktree $VERSION"
+    git -C "$BASE" worktree prune
+    git -C "$BASE" worktree add --detach "$CHECKOUT" "$want" || die "worktree add failed"
+fi
+# Enforce HEAD == the tag's recorded commit (fresh AND reused worktree): a
+# moved tag, wrong ref, or half-checkout must fail HERE, not at first use.
 have="$(git -C "$CHECKOUT" rev-parse HEAD)"
 [ "$have" = "$want" ] || die "checkout HEAD ($have) != $VERSION commit ($want) — refusing"
+# Flip repo/current to this version. Migration from the pre-Phase-C layout:
+# current used to BE the clone (a plain dir) — refuse if dirty, then delete
+# it (read-only by convention; its only untracked files are julia Manifests,
+# regenerated by instantiate below).
+PREV_VERSION=""
+if [ -L "$CURRENT" ]; then
+    PREV_VERSION="$(basename "$(readlink "$CURRENT")")"
+elif [ -d "$CURRENT" ]; then
+    # Probe separately and LOUDLY: an unreadable or non-git dir must not
+    # fall through to deletion on empty command-substitution output.
+    git -C "$CURRENT" rev-parse --git-dir >/dev/null 2>&1 \
+        || die "repo/current exists but is not a readable git checkout — refusing to migrate (inspect $CURRENT)"
+    if [ -n "$(git -C "$CURRENT" status --porcelain)" ]; then
+        die "the old-layout checkout at $CURRENT has local changes — commit/stash/revert, then re-run"
+    fi
+    # Preserve, don't delete: the old clone is moved aside recoverably; a
+    # later successful run can clean it up manually.
+    say "migrating pre-versioned layout (old clone preserved at repo/current.pre-versioned)"
+    rm -rf "$REPO_DIR/current.pre-versioned"
+    mv "$CURRENT" "$REPO_DIR/current.pre-versioned"
+fi
+ln -sfn "$CHECKOUT" "$CURRENT"
 # Compat: older pre-clone binaries resolve resources via julia/current
 # (the retired bundle's mount point). Point it at the checkout — repo-shaped
 # either way — so the clone-based install works with any binary generation.
 mkdir -p "$PREFIX/julia"
 ln -sfn "$CHECKOUT" "$PREFIX/julia/current"
+# sot-apply from the checkout when the release archive predates shipping it.
+if [ ! -f "$PREFIX/bin/sot-apply" ] && [ -f "$CHECKOUT/scripts/sot-apply.sh" ]; then
+    install -m 0755 "$CHECKOUT/scripts/sot-apply.sh" "$PREFIX/bin/sot-apply"
+fi
+# Keep the previously-active version dir for rollback; prune everything else.
+for v in "$REPO_DIR/versions"/*; do
+    [ -d "$v" ] || continue
+    case "$(basename "$v")" in
+        "$VERSION") ;;
+        "$PREV_VERSION") ;;
+        *)
+            say "pruning old version dir $(basename "$v")"
+            git -C "$BASE" worktree remove --force "$v" 2>/dev/null || rm -rf "$v"
+            ;;
+    esac
+done
+git -C "$BASE" worktree prune 2>/dev/null || true
 
 # ---- 5. Julia + agent comm -----------------------------------------------------
 chan="1.12"
@@ -366,6 +436,7 @@ fi
 if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
     mkdir -p "$HOME/.config/systemd/user"
     sed -e "s|@SOT_BIN@|$PREFIX/bin/sotd|" \
+        -e "s|@SOT_APPLY@|$PREFIX/bin/sot-apply|" \
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
         "$BINDIR/sotd.service" > "$HOME/.config/systemd/user/sotd.service"
     systemctl --user daemon-reload
@@ -379,9 +450,31 @@ if [ "$ROLE" != be-only ]; then
     if [ "$ROLE" = local ]; then
         cat > "$HOME/.local/bin/sot-launch" <<EOF
 #!/usr/bin/env bash
-# All-in-one launcher: start the backend on demand if its per-user socket is
-# missing (macOS has no service wiring yet; Linux normally has the systemd
-# unit), then launch the frontend.
+# All-in-one launcher: apply any armed pending update (offline pointer flip,
+# fail-open), start the backend on demand if its per-user socket is missing
+# (macOS has no service wiring yet; Linux normally has the systemd unit),
+# then SUPERVISE the frontend: exit-75 respawn (ADR 0017 on Unix) and
+# crash-loop rollback of a just-applied update (ADR 0030 Phase C3).
+PENDING="$PREFIX/updates/pending-$TARGET.json"
+MARKER="$PREFIX/updates/just-applied-$TARGET"
+stop_daemon() { pkill -u "\$(id -u)" -f "$PREFIX/bin/sotd" 2>/dev/null && sleep 1; }
+# Single apply owner (ADR 0030 Phase C): on systemd installs the apply runs
+# ONLY inside ExecStartPre (daemon stopped, whole install — FE binary
+# included — flips together); a try-restart triggers it. Launcher-managed
+# daemons (macOS / --no-service) are stopped FIRST, then sot-apply runs here.
+apply_pending() {
+    [ -f "\$PENDING" ] || return 0
+    [ -x "$PREFIX/bin/sot-apply" ] || return 0
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active sotd.service >/dev/null 2>&1; then
+        echo "pending update armed — restarting sotd so ExecStartPre applies it" >&2
+        systemctl --user try-restart sotd.service || true
+    else
+        stop_daemon
+        APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
+        [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
+    fi
+}
+apply_pending
 SOCKET="\$("$PREFIX/bin/sotd" session-socket-path sot)"
 socket_open() {
     [ -S "\$SOCKET" ] || return 1
@@ -401,13 +494,52 @@ socket_open() {
     # probe; the frontend will still fail loud if the connect cannot complete.
     return 0
 }
-if ! socket_open; then
-    rm -f "\$SOCKET" 2>/dev/null || true
-    nohup "$PREFIX/bin/sotd" --project-root "\$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
-    i=0; while [ \$i -lt 40 ]; do socket_open && break; sleep 0.25; i=\$((i+1)); done
-    socket_open || { echo "ERROR: backend did not open \$SOCKET; see /tmp/sotd.log" >&2; exit 1; }
-fi
-exec "$PREFIX/bin/sot" --socket "\$SOCKET"
+start_daemon_if_needed() {
+    if ! socket_open; then
+        rm -f "\$SOCKET" 2>/dev/null || true
+        nohup "$PREFIX/bin/sotd" --project-root "\$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
+        i=0; while [ \$i -lt 40 ]; do socket_open && break; sleep 0.25; i=\$((i+1)); done
+        socket_open || { echo "ERROR: backend did not open \$SOCKET; see /tmp/sotd.log" >&2; exit 1; }
+    fi
+}
+start_daemon_if_needed
+FAILS=0; ROLLED=0
+while :; do
+    START="\$(date +%s)"
+    "$PREFIX/bin/sot" --socket "\$SOCKET"
+    RC=\$?
+    NOW="\$(date +%s)"
+    RUNTIME=\$((NOW - START))
+    # A healthy run closes the crash-loop health window.
+    [ "\$RUNTIME" -ge 60 ] && rm -f "\$MARKER" 2>/dev/null
+    if [ "\$RC" -eq 75 ]; then
+        # ADR-0017 self-relaunch: pick up any staged update, then respawn.
+        apply_pending
+        start_daemon_if_needed
+        FAILS=0
+        continue
+    fi
+    if [ "\$RC" -ne 0 ] && [ "\$RUNTIME" -le 10 ]; then
+        FAILS=\$((FAILS + 1))
+        if [ "\$FAILS" -ge 2 ]; then
+            # Roll back ONLY inside the just-applied health window — an
+            # unrelated crash weeks later must not downgrade a healthy
+            # release.
+            if [ "\$ROLLED" -eq 0 ] && [ -f "\$MARKER" ] \
+               && [ -n "\$(find "\$MARKER" -mmin -30 2>/dev/null)" ]; then
+                echo "frontend crash-looped inside the post-update window — rolling back" >&2
+                stop_daemon
+                [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" --rollback >&2
+                start_daemon_if_needed
+                ROLLED=1; FAILS=0
+                continue
+            fi
+            exit "\$RC"
+        fi
+        continue
+    fi
+    exit "\$RC"
+done
 EOF
     else
         cat > "$HOME/.local/bin/sot-launch" <<EOF
@@ -417,6 +549,15 @@ EOF
 # the remote user's per-user sotd socket. Browser/webview pages ride the same
 # control tunnel via the daemon proxy (ADR 0035); the legacy fixed helper-port
 # forwards are opt-in via SOT_LEGACY_FORWARDS=1 (pre-v0.5.0 backends only).
+# Applies armed pending updates for THIS machine (FE binary + checkout —
+# staged by the frontend's own self-check) before launching, and supervises
+# the frontend (exit-75 respawn, crash-loop rollback). The backend host
+# updates itself on its own cadence.
+MARKER="$PREFIX/updates/just-applied-$TARGET"
+if [ -x "$PREFIX/bin/sot-apply" ]; then
+    APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
+    [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
+fi
 REMOTE_SOCKET="\${SOT_REMOTE_SOCKET:-}"
 if [ -z "\$REMOTE_SOCKET" ]; then
     REMOTE_SOCKET="\$(ssh "$BE_ALIAS" '\${SOT_REMOTE_SOTD:-\$HOME/.local/share/sot/bin/sotd} session-socket-path sot')" \
@@ -460,7 +601,38 @@ else
       || { echo "ERROR: could not open SSH tunnel" >&2; exit 1; }
 fi
 ensure_aux_tunnel
-exec "$PREFIX/bin/sot" --tcp "127.0.0.1:$PORT"
+FAILS=0; ROLLED=0
+while :; do
+    START="\$(date +%s)"
+    "$PREFIX/bin/sot" --tcp "127.0.0.1:$PORT"
+    RC=\$?
+    NOW="\$(date +%s)"
+    RUNTIME=\$((NOW - START))
+    # A healthy run closes the crash-loop health window.
+    [ "\$RUNTIME" -ge 60 ] && rm -f "\$MARKER" 2>/dev/null
+    if [ "\$RC" -eq 75 ]; then
+        # ADR-0017 self-relaunch: pick up any staged update, then respawn.
+        [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" >&2
+        FAILS=0
+        continue
+    fi
+    if [ "\$RC" -ne 0 ] && [ "\$RUNTIME" -le 10 ]; then
+        FAILS=\$((FAILS + 1))
+        if [ "\$FAILS" -ge 2 ]; then
+            # Roll back ONLY inside the just-applied health window.
+            if [ "\$ROLLED" -eq 0 ] && [ -f "\$MARKER" ] \
+               && [ -n "\$(find "\$MARKER" -mmin -30 2>/dev/null)" ]; then
+                echo "frontend crash-looped inside the post-update window — rolling back" >&2
+                [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" --rollback >&2
+                ROLLED=1; FAILS=0
+                continue
+            fi
+            exit "\$RC"
+        fi
+        continue
+    fi
+    exit "\$RC"
+done
 EOF
     fi
     chmod +x "$HOME/.local/bin/sot-launch"
@@ -511,6 +683,48 @@ EOF
     say "FE launcher: sot-launch (+ desktop entry)"
     fi
 fi
+
+# ---- 8b. pick up the new version in a RUNNING daemon ---------------------------
+# An installer update swaps binaries + flips repo/current, but a running sotd
+# keeps executing the old binary until restarted. Restart it here so the
+# update takes effect now, not at the next reboot. (Launcher-started daemons
+# — macOS / --no-service — are restarted by the next sot-launch; say so.)
+if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ] \
+   && systemctl --user is-active sotd.service >/dev/null 2>&1; then
+    say "restarting sotd to pick up the new version"
+    systemctl --user try-restart sotd.service || true
+elif [ "$ROLE" != remote ]; then
+    say "note: a running sotd keeps the old version until restarted (next sot-launch restarts it if its socket is gone; or stop it manually)"
+fi
+
+# ---- 9. install manifest -------------------------------------------------------
+# $PREFIX/install.json (schema 1) — how the binaries find their own install
+# instead of guessing from XDG env vars: the updater resolves its staging root
+# (and, in later phases, the checkout and bin dirs) from `prefix`. Written
+# LAST so it always describes a completed install; an update re-run refreshes
+# it. Read by sot-updater's InstallManifest (rust/updater/src/manifest.rs) —
+# keep the two in sync.
+SERVICE="none"
+[ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ] && SERVICE="systemd"
+COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
+# Paths go through a minimal JSON string escape (backslash + double quote) so
+# an exotic prefix can't produce a manifest that parses wrong — a broken
+# manifest silently redirects the updater's staging root.
+json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+cat > "$PREFIX/install.json" <<EOF
+{
+  "schema": 1,
+  "role": "$ROLE",
+  "prefix": "$(json_str "$PREFIX")",
+  "config": "$(json_str "$CONFIG")",
+  "service": "$SERVICE",
+  "version": "${VERSION#v}",
+  "tag": "$VERSION",
+  "commit": "$COMMIT",
+  "installed_at": "$(date -u +%FT%TZ)"
+}
+EOF
+say "wrote $PREFIX/install.json (schema 1, role=$ROLE, service=$SERVICE)"
 
 say "DONE — Ship of Tools $VERSION installed ($ROLE)."
 [ "$ROLE" = remote ] && say "reminder: key-based ssh to '$BE_ALIAS' is required (ssh $BE_ALIAS true)"

@@ -8,6 +8,9 @@
 # Token values:
 #   @SOT_BIN@          dev fleet: <repo>/rust/target/release/sotd
 #                      public install: ~/.local/share/sot/bin/sotd (ADR 0030 §4)
+#   @SOT_APPLY@        public install: ~/.local/share/sot/bin/sot-apply
+#                      dev fleet: any path (may not exist — the '-' prefix
+#                      tolerates a missing executable, so dev units are fine)
 #   @SOT_PROJECT_ROOT@ the project the daemon serves
 #
 # Default transport is the per-user socket derived from `--label sot`
@@ -22,6 +25,13 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+# The single systemd-side apply owner (ADR 0030 Phase C3): consumes an armed
+# pending update — fast offline pointer flip, no network/Julia — on every
+# start, so `update.apply`'s exit and plain restarts/reboots both come back
+# on the new version. FAIL-OPEN twice over: the script always exits 0, and
+# the '-' prefix tolerates even a missing/broken script — a bad update path
+# must never keep the daemon down.
+ExecStartPre=-@SOT_APPLY@
 ExecStart=@SOT_BIN@ --project-root @SOT_PROJECT_ROOT@ --label sot
 Restart=always
 RestartSec=2
