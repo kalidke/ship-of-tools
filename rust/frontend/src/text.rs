@@ -101,6 +101,22 @@ pub struct TextLayer {
     /// shape cost falls off a cliff.
     sigs: Vec<BufferSig>,
 
+    /// Overlay layer: a SECOND glyphon TextRenderer sharing the same
+    /// atlas/viewport/font system, rendered by `render_overlay` as a
+    /// separate draw AFTER the main `render`. Anything prepared here
+    /// paints on top of *everything* in the main pass — image quads AND
+    /// main-pass glyphs — which one shared renderer cannot express (one
+    /// renderer = one z-plane). First consumer is the nav-spill row
+    /// overlay; the layer is general on purpose (tooltips, toasts, ghost
+    /// text all want the same "text above the world" plane).
+    overlay_renderer: TextRenderer,
+    /// Overlay-line Buffers + sigs — same persistence/skip strategy as
+    /// the main `buffers`/`sigs` pair, kept separate so overlay churn
+    /// (rows appear/disappear with the spill timer) never invalidates
+    /// the stable chrome rows' shape cache.
+    overlay_buffers: Vec<Buffer>,
+    overlay_sigs: Vec<BufferSig>,
+
     metrics: Metrics,
     last_width: u32,
     last_height: u32,
@@ -129,6 +145,11 @@ impl TextLayer {
         let mut atlas = TextAtlas::new(device, queue, &cache, surface_format);
         let text_renderer =
             TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
+        // Second renderer on the SAME atlas — glyphon supports N renderers
+        // per atlas (each holds only its own vertex buffers), so the
+        // overlay shares every cached glyph with the main pass for free.
+        let overlay_renderer =
+            TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
 
         Self {
             font_system,
@@ -136,6 +157,9 @@ impl TextLayer {
             viewport,
             atlas,
             text_renderer,
+            overlay_renderer,
+            overlay_buffers: Vec::new(),
+            overlay_sigs: Vec::new(),
             buffers: Vec::new(),
             sigs: Vec::new(),
             metrics: Metrics::new(14.0 * scale, 18.0 * scale),
@@ -176,6 +200,12 @@ impl TextLayer {
         self.metrics = metrics;
         let fs = &mut self.font_system;
         for buf in self.buffers.iter_mut() {
+            buf.set_metrics(fs, metrics);
+        }
+        // Overlay buffers zoom in lockstep — a font-scale change while a
+        // spill overlay is up would otherwise render the overlay at the
+        // old glyph size until its sig next changed.
+        for buf in self.overlay_buffers.iter_mut() {
             buf.set_metrics(fs, metrics);
         }
     }
@@ -366,6 +396,123 @@ impl TextLayer {
         self.text_renderer
             .render(&self.atlas, &self.viewport, render_pass)
             .context("glyphon render failed")?;
+        Ok(())
+    }
+
+    /// Shape + upload the overlay layer's lines for this frame. MUST be
+    /// called every frame the caller wants overlay output — a glyphon
+    /// renderer re-renders its last prepared geometry, so skipping the
+    /// call on an "overlay just vanished" frame would ghost the previous
+    /// frame's overlay forever. An empty `lines` is the cheap and correct
+    /// way to clear (prepare with zero areas).
+    pub fn prepare_overlay(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        lines: &[Line],
+    ) -> Result<()> {
+        while self.overlay_buffers.len() < lines.len() {
+            self.overlay_buffers
+                .push(Buffer::new(&mut self.font_system, self.metrics));
+            self.overlay_sigs.push(BufferSig::default());
+        }
+        self.overlay_buffers.truncate(lines.len());
+        self.overlay_sigs.truncate(lines.len());
+
+        for ((buf, sig), line) in self
+            .overlay_buffers
+            .iter_mut()
+            .zip(self.overlay_sigs.iter_mut())
+            .zip(lines.iter())
+        {
+            // Unlike the main `prepare`, the sig check alone gates the
+            // reshape: `BufferSig` carries width/height, so a surface
+            // resize changes every sig and forces the reshape without a
+            // separate `size_changed` bool.
+            let new_sig = BufferSig {
+                text: line.text.clone(),
+                bold: line.bold,
+                italic: line.italic,
+                width,
+                height,
+            };
+            if *sig == new_sig {
+                continue;
+            }
+            buf.set_size(
+                &mut self.font_system,
+                Some(width as f32),
+                Some(height as f32),
+            );
+            let mut attrs = Attrs::new().family(Family::Monospace);
+            if line.bold {
+                attrs = attrs.weight(Weight::BOLD);
+            }
+            if line.italic {
+                attrs = attrs.style(Style::Italic);
+            }
+            buf.set_text(&mut self.font_system, &line.text, attrs, Shaping::Advanced);
+            buf.shape_until_scroll(&mut self.font_system, false);
+            *sig = new_sig;
+        }
+
+        let areas: Vec<TextArea> = self
+            .overlay_buffers
+            .iter()
+            .zip(lines.iter())
+            .map(|(buf, line)| {
+                // Same default-fg / DIM conventions as the main chrome
+                // areas so an overlay row is colour-identical to the
+                // underlying row it covers.
+                let (mut r, mut g, mut b) = line.color.unwrap_or((204, 204, 204));
+                if line.dim {
+                    r = ((r as u16 * 65) / 100) as u8;
+                    g = ((g as u16 * 65) / 100) as u8;
+                    b = ((b as u16 * 65) / 100) as u8;
+                }
+                TextArea {
+                    buffer: buf,
+                    left: line.x,
+                    top: line.y,
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: width as i32,
+                        bottom: height as i32,
+                    },
+                    default_color: Color::rgb(r, g, b),
+                    custom_glyphs: &[],
+                }
+            })
+            .collect();
+
+        self.overlay_renderer
+            .prepare(
+                device,
+                queue,
+                &mut self.font_system,
+                &mut self.atlas,
+                &self.viewport,
+                areas,
+                &mut self.swash_cache,
+            )
+            .context("glyphon overlay prepare failed")?;
+        Ok(())
+    }
+
+    /// Draw the overlay layer. Call AFTER `render` (and after any quads
+    /// that should sit under the overlay, e.g. its backing strips) — draw
+    /// order inside the pass is the z-order.
+    pub fn render_overlay<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+    ) -> Result<()> {
+        self.overlay_renderer
+            .render(&self.atlas, &self.viewport, render_pass)
+            .context("glyphon overlay render failed")?;
         Ok(())
     }
 

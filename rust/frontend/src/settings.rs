@@ -59,11 +59,12 @@
 //                                   # ~/Downloads), falling back to cwd.
 //
 //   [nav]
-//   spill_ms = 2000                 # While the nav cursor is moving, the
-//                                   # nav column temporarily widens over the
-//                                   # preview pane so truncated row names
-//                                   # show in full, springing back this many
-//                                   # ms after the last move. 0 disables.
+//   spill_ms = 2000                 # While the nav cursor is moving, rows
+//                                   # too long for the nav column float
+//                                   # their full text over the preview
+//                                   # pane's left edge (the panes don't
+//                                   # move), vanishing this many ms after
+//                                   # the last move. 0 disables.
 //
 //   [gpu]
 //   power_preference = "low"        # low (default, integrated) | high
@@ -310,10 +311,11 @@ pub struct Settings {
     /// "a bit small" on big monitors.
     pub font_scale: Option<f32>,
     /// `[nav] spill_ms` — while the user is actively moving the nav cursor,
-    /// the nav column temporarily widens over the preview pane's left edge
-    /// so truncated row names are readable in full; it springs back this
-    /// many milliseconds after the last cursor move. `0` disables the
-    /// spill entirely. Default 2000.
+    /// rows whose text overflows the nav column float their full text over
+    /// the preview pane's left edge (rendered by the overlay text layer;
+    /// pane geometry never moves); the overlay vanishes this many
+    /// milliseconds after the last cursor move. `0` disables the spill
+    /// entirely. Default 2000.
     pub nav_spill_ms: u64,
     /// `[gpu] power_preference` — which adapter to request from wgpu.
     /// Default [`GpuPowerPreference::Low`] (integrated), which keeps the
