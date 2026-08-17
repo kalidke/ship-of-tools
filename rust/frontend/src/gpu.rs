@@ -10895,6 +10895,18 @@ impl State {
                                 Some(info.slug.clone()),
                                 Some(info.tmux_session.clone()),
                             );
+                            // Land focus in the LLM pane so the freshly
+                            // spawned agent is immediately interactive —
+                            // without this every create leaves focus in the
+                            // nav tree and costs a Ctrl+Arrow hop. Safe to
+                            // set after the switch: focus is global, not
+                            // part of the restored workspace UI snapshot.
+                            // Wide-preview hides the LLM pane (and blocks
+                            // focus entry into it) — drop it so the pane
+                            // and the focus move are actually visible.
+                            self.wide_preview = false;
+                            self.focus = PaneFocus::Llm;
+                            self.window.request_redraw();
                         }
                         Err(msg) => {
                             self.status = format!("workspace.create failed · {msg}");
