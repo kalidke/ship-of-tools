@@ -1204,6 +1204,40 @@ fn files_node_id_under_root(path: &str, root: &str) -> Option<String> {
     Some(format!("files:{rel}"))
 }
 
+/// Resolve a `preview.changed` event to a node id in the ACTIVE workspace's
+/// `files:` space, or `None` when the event isn't ours to render.
+///
+/// Acceptance is two-path (2026-08-17, live-debugged against a peer FE):
+///
+/// 1. **Workspace-tag match** — the emitting workspace IS the active one
+///    (slug equality; callers normalize a `None` active to the default
+///    slug): trust the carried `node_id` verbatim. Needs no project-root
+///    knowledge, so it stays correct while `workspace_project_roots` is
+///    unpopulated (fresh connection, `workspace.list` in flight) — the gap
+///    that previously left a non-default workspace deaf to its own file
+///    events.
+/// 2. **Path translation** — workspaces overlap (umbrella roots, watch
+///    budgets), so OUR files can arrive tagged with another workspace's
+///    slug; any copy whose absolute path lies under the active root is
+///    ours, re-addressed into our id space (the 2026-07-17 scheme). This
+///    requires the KNOWN active root — never a fallback root, which
+///    mistranslates foreign paths into phantom refreshes of the active
+///    tree.
+fn resolve_preview_changed(
+    event_ws: Option<&str>,
+    event_node_id: Option<&str>,
+    event_path: Option<&str>,
+    active_ws: Option<&str>,
+    known_active_root: Option<&str>,
+) -> Option<String> {
+    if let (Some(ews), Some(nid)) = (event_ws, event_node_id) {
+        if Some(ews) == active_ws && nid.starts_with("files:") && nid.len() > "files:".len() {
+            return Some(nid.to_string());
+        }
+    }
+    files_node_id_under_root(event_path?, known_active_root?)
+}
+
 /// One axis of a raster's physical scale (ADR 0034). `per_px` is the physical
 /// length of one *source* pixel, in the payload's `unit`. `name` is the axis
 /// label (`"x"`, `"z"`, …) so an anisotropic (XZ) view labels each bar.
@@ -5142,6 +5176,24 @@ impl State {
                     }) {
                         tracing::warn!(error = %e, "drop tree.root request — channel closed");
                     }
+                } else if !self.tree.rows.iter().any(|r| r.depth >= 1 && r.expanded) {
+                    // Restored parked view with NO expanded subdirectories:
+                    // refresh the root listing. Watcher events are dropped
+                    // while another mode is up (refresh_tree_dir_if_expanded
+                    // gates on Files), so files created meanwhile never
+                    // appeared on return — the parked view came back stale
+                    // and stayed stale (2026-08-17 report). With nothing
+                    // expanded the splice can't collapse a subtree and
+                    // apply_children re-anchors the cursor by node id, so
+                    // this is lossless; a view WITH expansions keeps the
+                    // accepted parked-slot staleness residual (codex r3:
+                    // a refetch would collapse it).
+                    if let Err(e) = self.req_tx.send(OutgoingReq::TreeChildren {
+                        parent_id: "files:".to_string(),
+                        workspace_id: self.active_workspace_id.clone(),
+                    }) {
+                        tracing::warn!(error = %e, "drop tree.children (files-entry refresh)");
+                    }
                 }
             }
             Mode::Modules => {
@@ -7108,12 +7160,29 @@ impl State {
     /// backend, because a workspace swap changes the file tree's
     /// meaning of `<rel>` without changing the daemon startup root.
     fn active_project_root(&self) -> Option<&str> {
-        if let Some(slug) = self.active_workspace_id.as_deref() {
-            if let Some(root) = self.workspace_project_roots.get(slug) {
-                return Some(root.as_str());
+        match self.active_workspace_id.as_deref() {
+            Some(slug) => {
+                if let Some(root) = self.workspace_project_roots.get(slug) {
+                    return Some(root.as_str());
+                }
+                // Lookup miss for a known non-default slug (workspace.list
+                // not yet processed, or a session outside the registry):
+                // return None, NOT the daemon root — a wrong root is worse
+                // than none. The old fallback mistranslated paths here:
+                // `preview.changed` events from the daemon-root repo
+                // resolved as if they were the active workspace's files
+                // (phantom tree refreshes, observed live 2026-08-17), while
+                // the active workspace's own events missed translation and
+                // were dropped — the "nav never updates" bug. The default
+                // slug IS the daemon root, so it keeps the fallback.
+                if self.default_workspace_slug.as_deref() == Some(slug) {
+                    self.daemon_project_root.as_deref()
+                } else {
+                    None
+                }
             }
+            None => self.daemon_project_root.as_deref(),
         }
-        self.daemon_project_root.as_deref()
     }
 
     /// Resolve the cursored NavTree row to a backend-absolute path,
@@ -10603,62 +10672,74 @@ impl State {
                         // it in the Files nav tree — otherwise the pane shows a
                         // stale listing until a manual re-nav (the reported bug).
                         //
-                        // Gate + address by PATH, not by the event's workspace
-                        // tag (2026-07-17 fix). Workspaces overlap — an umbrella
-                        // workspace registered over the same tree, and watch
-                        // budgets capping a watcher's coverage — so the event
-                        // copy tagged with OUR active slug may simply never
-                        // exist (files added to an open folder never refreshed
-                        // when the folder was viewed through a workspace whose
-                        // own watcher didn't cover the path). Every copy carries
-                        // the backend-absolute path; any copy whose path falls
-                        // inside the active workspace's root is ours — translate
-                        // it to OUR `files:<rel>` node id (the carried node_id
-                        // is relative to the EMITTING workspace, not ours) and
-                        // act on that. Duplicate copies from overlapping
-                        // watchers re-fire the same idempotent refresh; cheap.
-                        let node_id = payload
-                            .get("path")
-                            .and_then(|v| v.as_str())
-                            .zip(self.active_project_root())
-                            .and_then(|(p, root)| files_node_id_under_root(p, root));
-                        let Some(node_id) = node_id else {
-                            // Outside the active workspace (or no root known
-                            // yet) — not ours to render.
+                        // Acceptance is two-path — workspace-tag match on the
+                        // carried node_id, else path translation under the KNOWN
+                        // active root — see `resolve_preview_changed` for the
+                        // rationale (and the 2026-08-17 live forensics that
+                        // replaced the path-only scheme). Duplicate copies from
+                        // overlapping watchers re-fire the same idempotent
+                        // refresh; cheap.
+                        let event_ws = payload.get("workspace_id").and_then(|v| v.as_str());
+                        let event_node = payload.get("node_id").and_then(|v| v.as_str());
+                        let event_path = payload.get("path").and_then(|v| v.as_str());
+                        let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                        let active_ws = self
+                            .active_workspace_id
+                            .as_deref()
+                            .or(self.default_workspace_slug.as_deref());
+                        let resolved = resolve_preview_changed(
+                            event_ws,
+                            event_node,
+                            event_path,
+                            active_ws,
+                            self.active_project_root(),
+                        );
+                        // Receipt log — the arm used to skip silently, which
+                        // made the live-refresh path undiagnosable from the FE
+                        // log (2026-08-17 forensics). Events are debounced
+                        // daemon-side, so info-level is low-volume.
+                        tracing::info!(
+                            kind,
+                            event_ws = ?event_ws,
+                            path = ?event_path,
+                            active_ws = ?active_ws,
+                            resolved = ?resolved,
+                            "preview.changed received"
+                        );
+                        let Some(node_id) = resolved else {
+                            // Not ours to render (foreign workspace, or the
+                            // active root is unknown and the tag didn't match).
                             continue;
                         };
-                        let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                        let changed_node_id = Some(node_id.as_str());
                         if kind == "created" || kind == "removed" {
-                            if let Some(node_id) = changed_node_id {
-                                let parent = parent_files_node_id(node_id);
-                                self.refresh_tree_dir_if_expanded(&parent);
-                            }
-                        } else if kind == "modified" {
-                            // A modify leaves the directory *listing* unchanged,
-                            // but if the modified file is the one the preview pane
-                            // is currently showing, its bytes changed underneath
-                            // us (e.g. a tool re-rendered a PDF in place). Re-fire
-                            // `preview.get` so the pane reflects the new content
-                            // instead of the stale render. `preview_node_id_fired`
-                            // is the source of truth for "what the preview pane is
-                            // showing right now" (same anchor the reconnect
-                            // re-fetch uses); hold the current page so a paginated
-                            // preview doesn't snap back to page 1.
-                            if let Some(node_id) = changed_node_id {
-                                if self.preview_node_id_fired.as_deref() == Some(node_id) {
-                                    let (fit_w, fit_h) = self.preview_fit_px();
-                                    let _ = self.req_tx.send(
-                                        crate::transport::OutgoingReq::PreviewGet {
-                                            node_id: node_id.to_string(),
-                                            workspace_id: self.active_workspace_id.clone(),
-                                            page: self.preview_page.map(|(p, _)| p),
-                                            fit_w,
-                                            fit_h,
-                                        },
-                                    );
-                                }
-                            }
+                            let parent = parent_files_node_id(&node_id);
+                            self.refresh_tree_dir_if_expanded(&parent);
+                        }
+                        // A change to the file the preview pane is currently
+                        // showing means its bytes changed underneath us — re-fire
+                        // `preview.get` so the pane reflects the new content.
+                        // BOTH kinds matter: an in-place rewrite arrives as
+                        // "modified", but atomic savers (write temp + rename
+                        // into place) deliver the SAME logical update as
+                        // "created" — the old modified-only gate left renamed-in
+                        // figures stale (the reported same-filename bug).
+                        // `preview_node_id_fired` is the source of truth for
+                        // "what the pane shows right now" (same anchor the
+                        // reconnect re-fetch uses); hold the current page so a
+                        // paginated preview doesn't snap back to page 1.
+                        if (kind == "modified" || kind == "created")
+                            && self.preview_node_id_fired.as_deref() == Some(node_id.as_str())
+                        {
+                            let (fit_w, fit_h) = self.preview_fit_px();
+                            let _ =
+                                self.req_tx
+                                    .send(crate::transport::OutgoingReq::PreviewGet {
+                                        node_id: node_id.clone(),
+                                        workspace_id: self.active_workspace_id.clone(),
+                                        page: self.preview_page.map(|(p, _)| p),
+                                        fit_w,
+                                        fit_h,
+                                    });
                         }
                     } else {
                         tracing::debug!(%op, "evt");
@@ -20609,6 +20690,81 @@ mod tests {
         // The root itself is not a files node.
         assert_eq!(files_node_id_under_root("/a/ws", "/a/ws"), None);
         assert_eq!(files_node_id_under_root("/a/ws/", "/a/ws"), None);
+    }
+
+    #[test]
+    fn preview_changed_tag_match_uses_carried_node_id() {
+        // Active workspace's own event: carried id is trusted verbatim,
+        // no root knowledge needed (the workspace.list-lag case).
+        assert_eq!(
+            resolve_preview_changed(
+                Some("alpha"),
+                Some("files:fig/out.png"),
+                Some("/a/alpha/fig/out.png"),
+                Some("alpha"),
+                None,
+            ),
+            Some("files:fig/out.png".to_string())
+        );
+        // Empty rel ("files:") and non-files ids are never trusted.
+        assert_eq!(
+            resolve_preview_changed(Some("alpha"), Some("files:"), None, Some("alpha"), None),
+            None
+        );
+        assert_eq!(
+            resolve_preview_changed(Some("alpha"), Some("modules:X"), None, Some("alpha"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn preview_changed_foreign_ws_translates_by_path_under_known_root() {
+        // Overlap case: tagged with another workspace, but the path lies
+        // under OUR root — re-addressed into our id space.
+        assert_eq!(
+            resolve_preview_changed(
+                Some("umbrella"),
+                Some("files:pais/fig/out.png"),
+                Some("/a/alpha/fig/out.png"),
+                Some("alpha"),
+                Some("/a/alpha"),
+            ),
+            Some("files:fig/out.png".to_string())
+        );
+    }
+
+    #[test]
+    fn preview_changed_foreign_ws_without_known_root_is_dropped() {
+        // Regression (2026-08-17): with the active root UNKNOWN, a foreign
+        // event must be dropped — the old daemon-root fallback translated
+        // it into the active tree's id space and fired phantom refreshes.
+        assert_eq!(
+            resolve_preview_changed(
+                Some("sot"),
+                Some("files:nav-live-A.txt"),
+                Some("/a/sot/nav-live-A.txt"),
+                Some("alpha"),
+                None,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn preview_changed_default_ws_normalization() {
+        // Active None normalizes to the default slug at the call site; the
+        // resolver itself just compares — verify the default-vs-default
+        // shape trusts the carried id.
+        assert_eq!(
+            resolve_preview_changed(
+                Some("sot"),
+                Some("files:README.md"),
+                Some("/a/sot/README.md"),
+                Some("sot"),
+                Some("/a/sot"),
+            ),
+            Some("files:README.md".to_string())
+        );
     }
 
     #[test]
