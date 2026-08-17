@@ -58,6 +58,13 @@
 //                                   # Linux XDG_DOWNLOAD_DIR/~/Downloads, mac
 //                                   # ~/Downloads), falling back to cwd.
 //
+//   [nav]
+//   spill_ms = 2000                 # While the nav cursor is moving, the
+//                                   # nav column temporarily widens over the
+//                                   # preview pane so truncated row names
+//                                   # show in full, springing back this many
+//                                   # ms after the last move. 0 disables.
+//
 //   [gpu]
 //   power_preference = "low"        # low (default, integrated) | high
 //                                   # (discrete). "low" keeps the dGPU
@@ -302,6 +309,12 @@ pub struct Settings {
     /// `default_font_scale_for_width`) > 1.0. Maintainer note, 2026-07-03: default was
     /// "a bit small" on big monitors.
     pub font_scale: Option<f32>,
+    /// `[nav] spill_ms` — while the user is actively moving the nav cursor,
+    /// the nav column temporarily widens over the preview pane's left edge
+    /// so truncated row names are readable in full; it springs back this
+    /// many milliseconds after the last cursor move. `0` disables the
+    /// spill entirely. Default 2000.
+    pub nav_spill_ms: u64,
     /// `[gpu] power_preference` — which adapter to request from wgpu.
     /// Default [`GpuPowerPreference::Low`] (integrated), which keeps the
     /// discrete GPU asleep on hybrid-graphics laptops.
@@ -326,6 +339,7 @@ impl Default for Settings {
             downloads_dir: None,
             new_session_root: None,
             font_scale: None,
+            nav_spill_ms: 2000,
             gpu_power_preference: GpuPowerPreference::Low,
         }
     }
@@ -426,6 +440,11 @@ impl Settings {
                     Ok(v) if (0.5..=3.0).contains(&v) => self.font_scale = Some(v),
                     _ => tracing::warn!(line = lineno + 1, value = %value,
                         "font.scale: expected a number in [0.5, 3.0]"),
+                },
+                ("nav", "spill_ms") => match value.trim().parse::<u64>() {
+                    Ok(v) => self.nav_spill_ms = v,
+                    Err(_) => tracing::warn!(line = lineno + 1, value = %value,
+                        "nav.spill_ms: expected a non-negative integer (ms; 0 disables)"),
                 },
                 ("gpu", "power_preference") => match GpuPowerPreference::parse(&value) {
                     Some(p) => self.gpu_power_preference = p,

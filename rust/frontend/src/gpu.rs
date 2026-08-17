@@ -2932,6 +2932,20 @@ struct State {
     /// on the hidden LLM pane while active; a capture-ROI paste that
     /// targets the LLM pane reveals it again.
     wide_preview: bool,
+    /// Transient nav spill (`[nav] spill_ms`): while the user is actively
+    /// moving the nav cursor, the nav column temporarily widens over the
+    /// preview pane's left edge so truncated row names read in full, then
+    /// springs back once this deadline passes with no further moves.
+    /// `None` = spill not active. Expiry repaint rides the `about_to_wait`
+    /// idle tick, same as `notify_sticky_until`.
+    nav_spill_until: Option<std::time::Instant>,
+    /// Last (mode, workspace, tree cursor, picker cursor) the spill
+    /// trigger saw — a change between frames is what (re)arms the timer.
+    /// Frame-side detection so every cursor mover (keys, wheel, mode and
+    /// workspace switches) triggers uniformly without touching each input
+    /// path. `None` until the first frame, which deliberately does not
+    /// arm (boot isn't a user move).
+    nav_spill_cursor: Option<(Mode, Option<String>, usize, Option<usize>)>,
     /// Resolved keybindings (defaults overlaid with the user's
     /// `keybindings.toml` if present). See `keybindings.rs` for the
     /// file format and discovery order. Read-only once loaded — the
@@ -4112,6 +4126,8 @@ impl State {
             last_pty_wheel_at: None,
             maximized: cli.start_maximized,
             wide_preview: false,
+            nav_spill_until: None,
+            nav_spill_cursor: None,
             bindings: KeyBindings::load_layered(),
             settings,
             upload: None,
@@ -12225,6 +12241,47 @@ impl State {
             let empty = self.tree.rows.is_empty();
             (rows, empty)
         };
+        // Transient nav spill: a nav-cursor move (re)arms the timer; while
+        // it runs, the geom adjustment inside the closure widens the nav
+        // column over the preview's left edge so truncated rows read in
+        // full, then it springs back `[nav] spill_ms` after the last move.
+        // Detected here frame-side, by diffing the cursor tuple, instead of
+        // in every input path — keys, wheel, mode and workspace switches
+        // all trigger uniformly. The picker cursor rides in the tuple so
+        // workspace-picker browsing spills too.
+        let spill_cursor_now = (
+            self.mode,
+            self.active_workspace_id.clone(),
+            self.tree.selected,
+            self.workspace_picker.as_ref().map(|p| p.selected),
+        );
+        if self.nav_spill_cursor.as_ref() != Some(&spill_cursor_now) {
+            let booting = self.nav_spill_cursor.is_none();
+            self.nav_spill_cursor = Some(spill_cursor_now);
+            // The first frame isn't a user move — don't spill on boot.
+            if !booting && self.settings.nav_spill_ms > 0 {
+                self.nav_spill_until = Some(
+                    std::time::Instant::now()
+                        + std::time::Duration::from_millis(self.settings.nav_spill_ms),
+                );
+            }
+        }
+        let nav_spill_active = self
+            .nav_spill_until
+            .map(|u| std::time::Instant::now() < u)
+            .unwrap_or(false);
+        // Widest nav row, in chars. `chars().count()` under-measures the
+        // occasional double-width glyph; the +2 pad at the geom adjustment
+        // absorbs that, and the preview-half cap bounds the worst case.
+        let nav_longest_row: usize = if nav_spill_active {
+            tree_lines
+                .iter()
+                .map(|r| r.0.chars().count())
+                .max()
+                .unwrap_or(0)
+        } else {
+            0
+        };
         // Layout proportions from the user's settings file (or
         // defaults). Snapshotted here so the ratatui closure doesn't
         // borrow `self`. Maximisation overrides the geom inside the
@@ -12285,7 +12342,14 @@ impl State {
                 } else {
                     None
                 };
-                let geom = crate::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
+                let mut geom =
+                    crate::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
+                // Transient nav spill — geometry math and its rationale
+                // live in `layout::apply_nav_spill` (tested there).
+                // Skipped when maximized: no divider to move.
+                if nav_spill_active && maximize_slot.is_none() {
+                    crate::layout::apply_nav_spill(&mut geom, nav_longest_row);
+                }
                 // Names preserved so the rest of the closure reads
                 // unchanged: nav = old TL (left column), preview = old
                 // TR (middle column), llm = old BL (rightmost column
@@ -17638,6 +17702,15 @@ impl ApplicationHandler for App {
             if std::time::Instant::now() >= until {
                 state.notify_sticky_until = None;
                 state.rebuild_connection_status();
+                state.window.request_redraw();
+            }
+        }
+        // Nav-spill expiry: same pattern as the toast — once the spill
+        // window elapses, repaint so the nav column springs back to its
+        // preset width. The ~1s idle tick bounds how late that lands.
+        if let Some(until) = state.nav_spill_until {
+            if std::time::Instant::now() >= until {
+                state.nav_spill_until = None;
                 state.window.request_redraw();
             }
         }

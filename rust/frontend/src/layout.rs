@@ -283,6 +283,48 @@ pub fn aspect_to_label(aspect: f32) -> &'static str {
     }
 }
 
+/// Transient nav spill (`[nav] spill_ms`): widen the nav column over the
+/// preview's left edge just enough to show a `nav_longest_row`-char row
+/// (+2 pad for row decoration and the odd double-width glyph the caller's
+/// `chars().count()` under-measures), capped so the preview keeps at least
+/// half its width. Mutating the computed geom — rects *and* the divider
+/// vline — keeps every consumer (wireframe, titles, the wgpu preview
+/// surface rect, mouse hit-testing) in agreement automatically.
+///
+/// No-ops unless nav and preview are laid out in strict left-to-right
+/// adjacency (one border cell between), so a user-reordered `columns`
+/// list never misadjusts; callers skip it entirely when maximized (no
+/// divider to move).
+pub fn apply_nav_spill(geom: &mut LayoutGeom, nav_longest_row: usize) {
+    let (Some(nav), Some(prev)) = (geom.nav, geom.preview) else {
+        return;
+    };
+    if prev.x != nav.x + nav.width + 1 {
+        return;
+    }
+    let need = (nav_longest_row + 2).saturating_sub(nav.width as usize);
+    let cap = (prev.width / 2) as usize;
+    let d = need.min(cap) as u16;
+    if d == 0 {
+        return;
+    }
+    let old_divider = prev.x - 1;
+    geom.nav = Some(Rect {
+        width: nav.width + d,
+        ..nav
+    });
+    geom.preview = Some(Rect {
+        x: prev.x + d,
+        width: prev.width - d,
+        ..prev
+    });
+    for v in geom.vlines.iter_mut() {
+        if *v == old_divider {
+            *v = old_divider + d;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,5 +477,58 @@ mod tests {
         let pr = g.preview.unwrap();
         assert_eq!(pr.width, 118);
         assert_eq!(pr.height, 38);
+    }
+
+    #[test]
+    fn nav_spill_widens_and_moves_divider() {
+        let preset = LayoutPreset::default_ultrawide();
+        let mut g = compute_default(area(120, 40), &preset, false);
+        let nav0 = g.nav.unwrap();
+        let prev0 = g.preview.unwrap();
+        let divider = prev0.x - 1;
+        assert!(g.vlines.contains(&divider), "precondition: divider vline present");
+        // A row 10 cells wider than nav needs d = 12 (10 + 2 pad).
+        let longest = nav0.width as usize + 10;
+        apply_nav_spill(&mut g, longest);
+        let nav1 = g.nav.unwrap();
+        let prev1 = g.preview.unwrap();
+        assert_eq!(nav1.width, nav0.width + 12);
+        assert_eq!(prev1.x, prev0.x + 12);
+        assert_eq!(prev1.width, prev0.width - 12);
+        assert!(g.vlines.contains(&(divider + 12)));
+        assert!(!g.vlines.contains(&divider));
+    }
+
+    #[test]
+    fn nav_spill_caps_at_half_preview() {
+        let preset = LayoutPreset::default_ultrawide();
+        let mut g = compute_default(area(120, 40), &preset, false);
+        let nav0 = g.nav.unwrap();
+        let prev0 = g.preview.unwrap();
+        // An absurdly long row can only take half the preview.
+        apply_nav_spill(&mut g, 10_000);
+        assert_eq!(g.nav.unwrap().width, nav0.width + prev0.width / 2);
+        assert_eq!(g.preview.unwrap().width, prev0.width - prev0.width / 2);
+    }
+
+    #[test]
+    fn nav_spill_noop_when_row_fits() {
+        let preset = LayoutPreset::default_ultrawide();
+        let mut g = compute_default(area(120, 40), &preset, false);
+        let nav0 = g.nav.unwrap();
+        // Row + pad fits inside nav — geometry must be untouched.
+        apply_nav_spill(&mut g, nav0.width.saturating_sub(2) as usize);
+        assert_eq!(g.nav.unwrap(), nav0);
+    }
+
+    #[test]
+    fn nav_spill_noop_without_adjacent_preview() {
+        // Maximised nav: preview slot absent entirely.
+        let preset = LayoutPreset::default_ultrawide();
+        let mut g = compute(area(120, 40), &preset, false, Some(Slot::Nav));
+        let nav0 = g.nav;
+        apply_nav_spill(&mut g, 10_000);
+        assert_eq!(g.nav, nav0);
+        assert!(g.preview.is_none());
     }
 }
