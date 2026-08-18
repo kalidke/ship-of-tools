@@ -1585,15 +1585,15 @@ impl TreeView {
         );
     }
 
-    /// Splice the children of `parent_id` into the flat list, replacing any
-    /// previously-shown children for that parent. Marks the parent expanded
-    /// so the disclosure char flips and Left can collapse it again.
-    /// Preserves the cursor on its previous node by node-id lookup: if the
-    /// node survives (it was outside the spliced range, or it reappears as
-    /// one of the new children) the cursor follows it to the new index; if
-    /// it was inside the spliced-out subtree and not in the new children,
-    /// the cursor falls back to the parent row so the user stays anchored
-    /// to the surrounding context.
+    /// Merge the fresh children of `parent_id` into the flat list: the
+    /// parent's listing is replaced (new names appear, vanished names drop,
+    /// order follows the reply), but every surviving child that was
+    /// expanded keeps its expansion AND its previously-shown descendant
+    /// rows. Marks the parent expanded so the disclosure char flips and
+    /// Left can collapse it again. Preserves the cursor on its previous
+    /// node by node-id lookup — with the merge, a cursor on a NESTED node
+    /// under a surviving child now survives refreshes too; only a cursor
+    /// whose node truly vanished falls back to the parent row.
     fn apply_children(&mut self, parent_id: &str, children: Vec<TreeNode>) {
         let Some((pidx, pdepth)) = self.rows.iter().enumerate().find_map(|(i, r)| {
             if r.node.id == parent_id {
@@ -1610,18 +1610,49 @@ impl TreeView {
         while end < self.rows.len() && self.rows[end].depth > pdepth {
             end += 1;
         }
-        self.rows.drain((pidx + 1)..end);
+        // MERGE, don't wipe (2026-08-18 regression fix): the old drain-and-
+        // reinsert collapsed every expanded subtree under the parent and
+        // kicked a nested cursor to the parent row. Harmless while the
+        // watcher path was mostly dead (the wrong-root bug dropped its
+        // events), it became a live grenade once PR #101 made events flow:
+        // any root-level file event — editor temp-file churn included —
+        // reset the whole nav ("nav pane keeps resetting", owner report,
+        // caught in the receipt log). Now: save each departing direct
+        // child's (expanded, descendant rows), rebuild in the NEW
+        // children's order, and re-attach the saved subtree under every
+        // surviving id. Vanished children's subtrees drop; new children
+        // arrive collapsed; a cursor on a surviving nested node keeps its
+        // node (re-anchored by id below).
+        let old: Vec<TreeRow> = self.rows.drain((pidx + 1)..end).collect();
         let child_depth = pdepth + 1;
-        for (i, c) in children.into_iter().enumerate() {
-            self.rows.insert(
-                pidx + 1 + i,
-                TreeRow {
-                    node: c,
-                    depth: child_depth,
-                    expanded: false,
-                },
-            );
+        let mut saved: HashMap<String, (bool, Vec<TreeRow>)> = HashMap::new();
+        let mut cur: Option<(String, bool, Vec<TreeRow>)> = None;
+        for row in old {
+            if row.depth == child_depth {
+                if let Some((id, ex, desc)) = cur.take() {
+                    saved.insert(id, (ex, desc));
+                }
+                cur = Some((row.node.id.clone(), row.expanded, Vec::new()));
+            } else if let Some((_, _, desc)) = cur.as_mut() {
+                desc.push(row);
+            }
         }
+        if let Some((id, ex, desc)) = cur.take() {
+            saved.insert(id, (ex, desc));
+        }
+        let mut rebuilt: Vec<TreeRow> = Vec::with_capacity(children.len());
+        for c in children {
+            let (expanded, desc) = saved.remove(&c.id).unwrap_or((false, Vec::new()));
+            rebuilt.push(TreeRow {
+                node: c,
+                depth: child_depth,
+                expanded,
+            });
+            rebuilt.extend(desc);
+        }
+        let tail = self.rows.split_off(pidx + 1);
+        self.rows.extend(rebuilt);
+        self.rows.extend(tail);
         self.rows[pidx].expanded = true;
         let prev_selected = self.selected;
         self.selected = prev_id
@@ -5176,18 +5207,17 @@ impl State {
                     }) {
                         tracing::warn!(error = %e, "drop tree.root request — channel closed");
                     }
-                } else if !self.tree.rows.iter().any(|r| r.depth >= 1 && r.expanded) {
-                    // Restored parked view with NO expanded subdirectories:
-                    // refresh the root listing. Watcher events are dropped
-                    // while another mode is up (refresh_tree_dir_if_expanded
-                    // gates on Files), so files created meanwhile never
-                    // appeared on return — the parked view came back stale
-                    // and stayed stale (2026-08-17 report). With nothing
-                    // expanded the splice can't collapse a subtree and
-                    // apply_children re-anchors the cursor by node id, so
-                    // this is lossless; a view WITH expansions keeps the
-                    // accepted parked-slot staleness residual (codex r3:
-                    // a refetch would collapse it).
+                } else {
+                    // Restored parked view: refresh the root listing so files
+                    // created while another mode was up (watcher refreshes
+                    // gate on Files) appear on return — the parked view used
+                    // to come back stale and stay stale (2026-08-17 report).
+                    // Unconditionally safe since apply_children became a
+                    // MERGE (2026-08-18): expanded subtrees and a nested
+                    // cursor survive the refresh, so there's no codex-r3
+                    // collapse hazard left. Expanded subdirs' own listings
+                    // keep the accepted staleness residual (only the root
+                    // level re-lists here).
                     if let Err(e) = self.req_tx.send(OutgoingReq::TreeChildren {
                         parent_id: "files:".to_string(),
                         workspace_id: self.active_workspace_id.clone(),
@@ -20956,6 +20986,61 @@ mod tests {
             t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
             vec!["r", "a", "a/x", "b"]
         );
+    }
+
+    #[test]
+    fn apply_children_merge_preserves_expanded_subtree_and_nested_cursor() {
+        // Regression (2026-08-18, "nav pane keeps resetting"): a root-listing
+        // refresh — fired by any root-level file event, editor temp-file
+        // churn included — must NOT collapse expanded subtrees or kick a
+        // nested cursor to row 0.
+        let mut t = TreeView::new();
+        t.set_root(
+            node("r", "r", true),
+            vec![node("a", "a", true), node("b", "b", false)],
+        );
+        t.apply_children(
+            "a",
+            vec![node("a/1", "a1", false), node("a/2", "a2", false)],
+        );
+        t.selected = 3; // nested, on a/2
+        // Root refresh: same surviving children plus a newcomer (the
+        // temp-file case). `a` must stay expanded with its subtree intact,
+        // the cursor must stay on a/2, and the newcomer arrives collapsed.
+        t.apply_children(
+            "r",
+            vec![
+                node("a", "a", true),
+                node("b", "b", false),
+                node("c.tmp", "ctmp", false),
+            ],
+        );
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["r", "a", "a/1", "a/2", "b", "c.tmp"]
+        );
+        assert!(t.rows[1].expanded, "surviving child keeps its expansion");
+        assert!(!t.rows[5].expanded, "newcomer arrives collapsed");
+        assert_eq!(t.selected_node_id().as_deref(), Some("a/2"));
+    }
+
+    #[test]
+    fn apply_children_merge_drops_vanished_childs_subtree() {
+        let mut t = TreeView::new();
+        t.set_root(
+            node("r", "r", true),
+            vec![node("a", "a", true), node("b", "b", false)],
+        );
+        t.apply_children("a", vec![node("a/1", "a1", false)]);
+        t.selected = 2; // on a/1
+        // `a` vanished from the fresh listing: its subtree goes with it,
+        // and the orphaned cursor falls back to the refreshed parent.
+        t.apply_children("r", vec![node("b", "b", false)]);
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["r", "b"]
+        );
+        assert_eq!(t.selected, 0);
     }
 
     #[test]
