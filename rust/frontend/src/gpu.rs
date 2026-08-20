@@ -10317,6 +10317,18 @@ impl State {
                                     edit.original = edit.buf.body().to_string();
                                     edit.file_version = Some(version);
                                 }
+                                // Surface the save (peer report 2026-08-19):
+                                // this arm used to set no status and request
+                                // no redraw, so an active-edit save was
+                                // SILENT — and the snapped dirty baseline
+                                // didn't repaint until some other event came
+                                // along. Same toast shape as the create path.
+                                let name = node_id
+                                    .rsplit(['/', ':'])
+                                    .next()
+                                    .unwrap_or(node_id.as_str());
+                                self.status = format!("saved · {name}");
+                                self.window.request_redraw();
                             }
                             if matches_create {
                                 self.pending_created_node_id = None;
@@ -10351,6 +10363,14 @@ impl State {
                                     edit.stale_banner = true;
                                 }
                                 self.rebuild_edit_preview();
+                                // The banner lives in the rebuilt preview, but
+                                // nothing here scheduled a paint for it — pair
+                                // it with a status line and an explicit redraw
+                                // so the refusal is visible immediately.
+                                self.status =
+                                    "save refused · file changed on disk (reload to update)"
+                                        .to_string();
+                                self.window.request_redraw();
                             }
                             if matches_create {
                                 // The name collided on disk (a file the tree
@@ -10363,6 +10383,17 @@ impl State {
                         }
                         crate::transport::FileWriteResult::Error { code, message } => {
                             tracing::error!(%node_id, %code, %message, "file.write failed");
+                            if matches_active {
+                                // A FAILED save of the user's live edit was
+                                // completely silent outside the log — the
+                                // most dangerous of the three outcomes (the
+                                // user walks away believing it saved). The
+                                // edit buffer stays as-is so nothing is lost;
+                                // say so.
+                                self.status =
+                                    format!("SAVE FAILED · {message} (edit kept in buffer)");
+                                self.window.request_redraw();
+                            }
                             if matches_create {
                                 self.pending_created_node_id = None;
                                 self.status = format!("new file failed · {message}");
