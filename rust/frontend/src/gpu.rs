@@ -1588,12 +1588,16 @@ impl TreeView {
     /// Merge the fresh children of `parent_id` into the flat list: the
     /// parent's listing is replaced (new names appear, vanished names drop,
     /// order follows the reply), but every surviving child that was
-    /// expanded keeps its expansion AND its previously-shown descendant
-    /// rows. Marks the parent expanded so the disclosure char flips and
-    /// Left can collapse it again. Preserves the cursor on its previous
-    /// node by node-id lookup — with the merge, a cursor on a NESTED node
-    /// under a surviving child now survives refreshes too; only a cursor
-    /// whose node truly vanished falls back to the parent row.
+    /// expanded — and is still a compatible container — keeps its expansion
+    /// AND its previously-shown descendant rows. Preserves the cursor on
+    /// its previous node by node-id lookup — with the merge, a cursor on a
+    /// NESTED node under a surviving child now survives refreshes too; only
+    /// a cursor whose node truly vanished falls back to the parent row.
+    ///
+    /// Contract change (codex review): this NEVER expands the parent. A
+    /// reply for a collapsed parent is dropped, so intentional expands mark
+    /// their row `expanded` at REQUEST time; background refreshes can then
+    /// never reopen something the user closed.
     fn apply_children(&mut self, parent_id: &str, children: Vec<TreeNode>) {
         let Some((pidx, pdepth)) = self.rows.iter().enumerate().find_map(|(i, r)| {
             if r.node.id == parent_id {
@@ -1605,6 +1609,17 @@ impl TreeView {
             tracing::debug!(%parent_id, "tree.children reply for unknown parent — ignoring");
             return;
         };
+        // A reply for a parent the user has since COLLAPSED is dropped
+        // (codex review, collapse-race): apply_children no longer force-
+        // opens anything. Every INTENTIONAL expand marks its row expanded
+        // at request time (try_expand_selected / the reveal ancestor walk),
+        // so a collapsed parent here means a background refresh raced a
+        // user collapse — honoring the collapse wins; the listing is
+        // re-fetched fresh on the next expand anyway.
+        if !self.rows[pidx].expanded {
+            tracing::debug!(%parent_id, "tree.children reply for collapsed parent — dropping");
+            return;
+        }
         let prev_id = self.selected_node_id();
         let mut end = pidx + 1;
         while end < self.rows.len() && self.rows[end].depth > pdepth {
@@ -1618,31 +1633,44 @@ impl TreeView {
         // any root-level file event — editor temp-file churn included —
         // reset the whole nav ("nav pane keeps resetting", owner report,
         // caught in the receipt log). Now: save each departing direct
-        // child's (expanded, descendant rows), rebuild in the NEW
+        // child's (kind, expanded, descendant rows), rebuild in the NEW
         // children's order, and re-attach the saved subtree under every
         // surviving id. Vanished children's subtrees drop; new children
         // arrive collapsed; a cursor on a surviving nested node keeps its
         // node (re-anchored by id below).
         let old: Vec<TreeRow> = self.rows.drain((pidx + 1)..end).collect();
         let child_depth = pdepth + 1;
-        let mut saved: HashMap<String, (bool, Vec<TreeRow>)> = HashMap::new();
-        let mut cur: Option<(String, bool, Vec<TreeRow>)> = None;
+        let mut saved: HashMap<String, (String, bool, Vec<TreeRow>)> = HashMap::new();
+        let mut cur: Option<(String, String, bool, Vec<TreeRow>)> = None;
         for row in old {
             if row.depth == child_depth {
-                if let Some((id, ex, desc)) = cur.take() {
-                    saved.insert(id, (ex, desc));
+                if let Some((id, kind, ex, desc)) = cur.take() {
+                    saved.insert(id, (kind, ex, desc));
                 }
-                cur = Some((row.node.id.clone(), row.expanded, Vec::new()));
-            } else if let Some((_, _, desc)) = cur.as_mut() {
+                cur = Some((
+                    row.node.id.clone(),
+                    row.node.kind.clone(),
+                    row.expanded,
+                    Vec::new(),
+                ));
+            } else if let Some((_, _, _, desc)) = cur.as_mut() {
                 desc.push(row);
             }
         }
-        if let Some((id, ex, desc)) = cur.take() {
-            saved.insert(id, (ex, desc));
+        if let Some((id, kind, ex, desc)) = cur.take() {
+            saved.insert(id, (kind, ex, desc));
         }
         let mut rebuilt: Vec<TreeRow> = Vec::with_capacity(children.len());
         for c in children {
-            let (expanded, desc) = saved.remove(&c.id).unwrap_or((false, Vec::new()));
+            // Restore saved expansion/descendants ONLY when the fresh node
+            // is still a compatible container (codex review): same kind and
+            // still has_children. An expanded directory replaced by a
+            // same-named FILE (or emptied out) must arrive as a plain leaf,
+            // not resurrect ghost descendants under it.
+            let (expanded, desc) = match saved.remove(&c.id) {
+                Some((kind, ex, desc)) if kind == c.kind && c.has_children => (ex, desc),
+                _ => (false, Vec::new()),
+            };
             rebuilt.push(TreeRow {
                 node: c,
                 depth: child_depth,
@@ -1653,7 +1681,6 @@ impl TreeView {
         let tail = self.rows.split_off(pidx + 1);
         self.rows.extend(rebuilt);
         self.rows.extend(tail);
-        self.rows[pidx].expanded = true;
         let prev_selected = self.selected;
         self.selected = prev_id
             .as_deref()
@@ -4440,6 +4467,15 @@ impl State {
                 tracing::warn!(error = %e, "drop expand request — channel closed");
                 return false;
             }
+            // Flip the disclosure at REQUEST time: apply_children now drops
+            // replies for collapsed parents (so background refreshes can't
+            // reopen a user's collapse), which makes marking here the
+            // expand's half of that contract. Rows whose reply path
+            // rebuilds the whole view (project.scan / workspace.list) just
+            // get the flag rebuilt with them — harmless.
+            if let Some(r) = self.tree.rows.get_mut(self.tree.selected) {
+                r.expanded = true;
+            }
             return true;
         }
         false
@@ -4850,6 +4886,12 @@ impl State {
                 return;
             }
             tracing::info!(%target_id, anc = %anc_id, "reveal: expanding ancestor");
+            // Same request-time disclosure flip as try_expand_selected:
+            // apply_children drops replies for collapsed parents, so the
+            // reveal's intentional ancestor expand must mark the row now.
+            if let Some(r) = self.tree.rows.iter_mut().find(|r| r.node.id == anc_id) {
+                r.expanded = true;
+            }
             self.reveal_awaiting = Some(anc_id);
             return;
         }
@@ -5207,17 +5249,24 @@ impl State {
                     }) {
                         tracing::warn!(error = %e, "drop tree.root request — channel closed");
                     }
-                } else {
-                    // Restored parked view: refresh the root listing so files
-                    // created while another mode was up (watcher refreshes
-                    // gate on Files) appear on return — the parked view used
-                    // to come back stale and stay stale (2026-08-17 report).
-                    // Unconditionally safe since apply_children became a
+                } else if self
+                    .tree
+                    .rows
+                    .iter()
+                    .any(|r| r.node.id == "files:" && r.expanded)
+                {
+                    // Restored parked view with an EXPANDED root: refresh the
+                    // root listing so files created while another mode was up
+                    // (watcher refreshes gate on Files) appear on return — the
+                    // parked view used to come back stale and stay stale
+                    // (2026-08-17 report). Safe since apply_children became a
                     // MERGE (2026-08-18): expanded subtrees and a nested
-                    // cursor survive the refresh, so there's no codex-r3
-                    // collapse hazard left. Expanded subdirs' own listings
-                    // keep the accepted staleness residual (only the root
-                    // level re-lists here).
+                    // cursor survive the refresh. A COLLAPSED root is left
+                    // alone (codex review): the user closed it, and a
+                    // background refresh must not reopen it — the reply-side
+                    // collapsed-parent gate would drop the reply anyway.
+                    // Expanded subdirs' own listings keep the accepted
+                    // staleness residual (only the root level re-lists here).
                     if let Err(e) = self.req_tx.send(OutgoingReq::TreeChildren {
                         parent_id: "files:".to_string(),
                         workspace_id: self.active_workspace_id.clone(),
@@ -20969,6 +21018,9 @@ mod tests {
             node("r", "r", true),
             vec![node("a", "a", true), node("b", "b", false)],
         );
+        // Intentional expands mark the row at request time (the reply-side
+        // collapsed-parent gate would otherwise drop the splice).
+        t.rows[1].expanded = true;
         t.apply_children(
             "a",
             vec![node("a/1", "a1", false), node("a/2", "a2", false)],
@@ -20999,6 +21051,7 @@ mod tests {
             node("r", "r", true),
             vec![node("a", "a", true), node("b", "b", false)],
         );
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
         t.apply_children(
             "a",
             vec![node("a/1", "a1", false), node("a/2", "a2", false)],
@@ -21025,12 +21078,61 @@ mod tests {
     }
 
     #[test]
+    fn apply_children_ignores_reply_for_collapsed_parent() {
+        // Codex finding (collapse race): a background refresh whose reply
+        // lands AFTER the user collapsed the parent must not reopen it or
+        // splice rows back in.
+        let mut t = TreeView::new();
+        t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
+        t.apply_children("a", vec![node("a/1", "a1", false)]);
+        t.selected = 1; // on `a`
+        assert!(t.collapse_selected());
+        // The stale reply arrives for the now-collapsed `a`.
+        t.apply_children("a", vec![node("a/1", "a1", false), node("a/2", "a2", false)]);
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["r", "a"]
+        );
+        assert!(!t.rows[1].expanded, "collapse must survive the stale reply");
+        // Same rule for a collapsed ROOT.
+        t.selected = 0;
+        assert!(t.collapse_selected());
+        t.apply_children("r", vec![node("a", "a", true)]);
+        assert!(!t.rows[0].expanded);
+        assert_eq!(t.rows.len(), 1);
+    }
+
+    #[test]
+    fn apply_children_drops_saved_subtree_when_child_became_a_leaf() {
+        // Codex finding (ghost subtree): an expanded DIRECTORY replaced by a
+        // same-named node that is no longer a container (kind change or
+        // has_children=false) must arrive as a plain collapsed leaf — never
+        // resurrect the old descendants under it.
+        let mut t = TreeView::new();
+        t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
+        t.apply_children("a", vec![node("a/1", "a1", false)]);
+        // Root refresh where `a` is now a childless leaf (dir -> file).
+        let mut leaf = node("a", "a", false);
+        leaf.kind = "file".to_string();
+        t.apply_children("r", vec![leaf]);
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["r", "a"],
+            "old descendants must not survive under the leaf"
+        );
+        assert!(!t.rows[1].expanded);
+    }
+
+    #[test]
     fn apply_children_merge_drops_vanished_childs_subtree() {
         let mut t = TreeView::new();
         t.set_root(
             node("r", "r", true),
             vec![node("a", "a", true), node("b", "b", false)],
         );
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
         t.apply_children("a", vec![node("a/1", "a1", false)]);
         t.selected = 2; // on a/1
         // `a` vanished from the fresh listing: its subtree goes with it,
@@ -21047,6 +21149,7 @@ mod tests {
     fn collapse_selected_drops_descendants_and_unflags() {
         let mut t = TreeView::new();
         t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
         t.apply_children("a", vec![node("a/1", "a1", false)]);
         t.selected = 1; // on `a`
         assert!(t.collapse_selected());
@@ -21064,6 +21167,7 @@ mod tests {
     fn parent_of_selected_walks_back_to_lesser_depth() {
         let mut t = TreeView::new();
         t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
         t.apply_children("a", vec![node("a/1", "a1", false)]);
         t.selected = 2; // on a/1, depth=2
         assert_eq!(t.parent_of_selected(), Some(1));
@@ -21174,6 +21278,7 @@ mod tests {
             vec![node("a", "a", true), node("b", "b", false)],
         );
         t.selected = 2; // on `b`, after the splice point under `a`
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
         t.apply_children(
             "a",
             vec![node("a/1", "a1", false), node("a/2", "a2", false)],
@@ -21187,6 +21292,7 @@ mod tests {
     fn apply_children_falls_back_to_parent_when_cursored_child_disappears() {
         let mut t = TreeView::new();
         t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
         t.apply_children(
             "a",
             vec![node("a/1", "a1", false), node("a/2", "a2", false)],
