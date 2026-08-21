@@ -609,20 +609,28 @@ the single-eval guard in `handle_eval` / `handle_run_file`.
 const CURRENT_EMIT = Ref{Union{Function,Nothing}}(nothing)
 const ANNOUNCED_BROWSER_URLS = Set{String}()
 
+# Dedupe key for the per-eval announce set. Keyed on (url, open) — not url
+# alone — so an explicit LATER open policy is never swallowed (codex review):
+# `wglshow(fig; open=false)` followed by returning `browserview(url)` in the
+# same eval must still emit the open=true frame (one no-open announce for the
+# allowlist, then one deliberate open), and vice versa. Identical-policy
+# repeats still dedupe to one frame.
+browser_announce_key(bv::BrowserView) = string(bv.url, '|', bv.open)
+
 """
     announce_browserview(bv::BrowserView) -> bv
 
 Emit `bv` as a `browser` frame NOW (mid-eval), so the FE opens it and the
 daemon allowlists its port even if the surrounding call swallows the return
-value. No-op outside a streamed eval. Idempotent per eval per URL.
+value. No-op outside a streamed eval. Idempotent per eval per (URL, open).
 """
 function announce_browserview(bv::BrowserView)
     em = CURRENT_EMIT[]
     em === nothing && return bv
-    bv.url in ANNOUNCED_BROWSER_URLS && return bv
+    browser_announce_key(bv) in ANNOUNCED_BROWSER_URLS && return bv
     try
         em(Dict(:kind => "browser", :url => bv.url, :open => bv.open))
-        push!(ANNOUNCED_BROWSER_URLS, bv.url)
+        push!(ANNOUNCED_BROWSER_URLS, browser_announce_key(bv))
     catch
         # Emission is best-effort: a failed announce must not break the serve
         # itself — the value-position path still covers a returned BrowserView.
@@ -743,11 +751,14 @@ function value_frames_for(result)
     # Checked before the image/text MIME probes so it wins even though a served
     # figure may also be `showable` as an image.
     if result isa BrowserView
-        # Skip if this URL was already announced mid-eval (wglshow's
-        # serve-time announce) — a second browser frame would open a second
-        # tab. A hand-built BrowserView (plain `browserview(url)` as the last
-        # expression) was never announced and still emits here.
-        result.url in ANNOUNCED_BROWSER_URLS && return out
+        # Skip if this (URL, open) was already announced mid-eval (wglshow's
+        # serve-time announce) — a second identical browser frame would open
+        # a second tab. Keyed on the policy too: a returned BrowserView with
+        # a DIFFERENT `open` than the announce is a deliberate override and
+        # still emits (codex review). A hand-built BrowserView (plain
+        # `browserview(url)` as the last expression) was never announced and
+        # still emits here.
+        browser_announce_key(result) in ANNOUNCED_BROWSER_URLS && return out
         push!(out, Dict(:kind => "browser", :url => result.url, :open => result.open))
         return out
     end

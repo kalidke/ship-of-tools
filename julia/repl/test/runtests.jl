@@ -224,6 +224,18 @@ const DR = ShipToolsRepl
         other = DR.BrowserView("http://127.0.0.1:59992/")
         vf = DR.value_frames_for(other)
         @test length(vf) == 1 && vf[1][:kind] == "browser"
+        # Policy override (codex review): dedupe is keyed on (url, open), so a
+        # no-open serve announce followed by RETURNING an open=true view of
+        # the same URL still emits the deliberate open — one allowlist frame,
+        # one open frame, never a swallowed policy.
+        empty!(DR.ANNOUNCED_BROWSER_URLS)
+        empty!(frames)
+        silent = DR.announce_browserview(DR.browserview("http://127.0.0.1:59993/"; open = false))
+        @test length(frames) == 1 && frames[1][:open] === false
+        opened = DR.value_frames_for(DR.browserview("http://127.0.0.1:59993/"))
+        @test length(opened) == 1 && opened[1][:open] === true
+        # Same policy still dedupes to nothing.
+        @test isempty(DR.value_frames_for(silent))
         # Outside a streamed eval the announce is a harmless no-op.
         DR.CURRENT_EMIT[] = nothing
         @test DR.announce_browserview(other) === other
