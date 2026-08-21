@@ -151,6 +151,16 @@ dynamically) and returns `browserview(url)`.
   `browser` frame currently opens the browser on every FE. Acceptable for the
   single-FE norm; a later refinement can gate the auto-open on the frame's
   `workspace_id` matching the FE's active workspace (as preview filtering does).
+  > **Update (2026-08-21).** Broadcast-open is now opt-out-able per serve:
+  > `wglshow(fig; open = false)` / `browserview(url; open = false)` set
+  > `open: false` on the `browser` frame — it still flows (so the ADR-0035
+  > proxy allowlist learns the port) but NO frontend auto-opens; the caller
+  > then targets exactly one FE with `sot-fe open-url <url> --fe <handle>`
+  > (whose per-URL proxy arms on demand). Motivated by a live multi-FE
+  > failure: two browser clients on one served figure race the shared
+  > layout (`resize_to = :parent`), corrupting axis placement and hitboxes.
+  > The workspace-gate refinement above remains open (it addresses roaming,
+  > not two FEs on the same workspace).
 - **Focus**: opening a browser window is a deliberate, user-initiated action
   (the user returned a `BrowserView`), so it does not violate the no-yank
   show-image doctrine — it is the requested show, on the user's own machine.

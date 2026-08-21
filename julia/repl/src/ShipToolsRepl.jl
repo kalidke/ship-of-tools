@@ -28,15 +28,26 @@ that produces `url` lives in the *user's* project env (whichever WGLMakie they
 """
 struct BrowserView
     url::String
+    """
+    Whether front-ends should auto-open the URL. `false` = serve-only: the
+    browser frame still flows (so the daemon's ADR-0035 proxy allowlist
+    learns the port) but NO frontend opens a tab — the caller then targets
+    exactly one FE with `sot-fe open-url <url> --fe <handle>`. The escape
+    from the multi-FE broadcast-open, where two live clients race one
+    shared Figure layout (`resize_to = :parent`).
+    """
+    open::Bool
 end
+BrowserView(url::AbstractString) = BrowserView(String(url), true)
 
 """
-    browserview(url) -> BrowserView
+    browserview(url; open = true) -> BrowserView
 
 Convenience constructor. `return browserview(server_url)` at the end of an eval
-to open `url` in the frontend's browser.
+to open `url` in the frontend's browser; `open = false` serves without opening
+anywhere (see [`BrowserView`](@ref)).
 """
-browserview(url::AbstractString) = BrowserView(String(url))
+browserview(url::AbstractString; open::Bool = true) = BrowserView(String(url), open)
 
 # Tracks the Bonito server started by `wglshow` so a repeat call frees the port
 # instead of hitting EADDRINUSE. `Any` — ShipToolsRepl never loads Bonito.
@@ -172,10 +183,17 @@ function wgl_pick_port(preferred::Int)
 end
 
 """
-    wglshow(fig; port = nothing) -> BrowserView
+    wglshow(fig; port = nothing, open = true) -> BrowserView
 
 Serve an interactive WGLMakie figure over Bonito on a loopback port and return a
 [`BrowserView`](@ref), so the frontend auto-opens it in the browser (ADR 0032).
+
+`open = false` serves WITHOUT opening a browser anywhere: the frame still flows
+(the daemon's proxy allowlist learns the port) and the collected output prints
+the URL plus the targeted follow-up (`sot-fe open-url <url> --fe <handle>`), so
+a session can put the figure on exactly ONE frontend. Use it when multiple
+frontends are attached — two live browser clients on one served figure race the
+shared layout (`resize_to = :parent`), corrupting axis placement and hitboxes.
 Call it as the last expression of an eval:
 
     using WGLMakie
@@ -197,7 +215,7 @@ The figure fills the browser window and grows with it as the window is resized
 
 Pinned against WGLMakie 0.13 / Bonito 5.1 (validated live, ADR 0032).
 """
-function wglshow(fig; port::Union{Integer,Nothing} = nothing)
+function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Bool = true)
     isdefined(Main, :WGLMakie) ||
         error("wglshow: no WGLMakie loaded — run `using WGLMakie` in this REPL first")
     WGL = getfield(Main, :WGLMakie)
@@ -260,7 +278,14 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing)
     # Announce AT SERVE TIME (browser frame now), not only via the last-value
     # path — a wrapper that swallows this return value would otherwise make
     # the serve invisible (port never allowlisted, FE never opens the page).
-    return announce_browserview(BrowserView(url))
+    # With `open = false` the frame still flows (allowlist intact) but no
+    # frontend opens a tab; print the targeted-open recipe so the caller has
+    # the URL and the follow-up command in the collected output.
+    if !open
+        println("wglshow: serving (no auto-open) at $url — open on ONE frontend with:")
+        println("  sot-fe open-url '$url' --fe <fe-handle>")
+    end
+    return announce_browserview(BrowserView(url, open))
 end
 
 # Serializes envelope writes to `io_out`. With streaming (ADR 0009 phase-2)
@@ -596,7 +621,7 @@ function announce_browserview(bv::BrowserView)
     em === nothing && return bv
     bv.url in ANNOUNCED_BROWSER_URLS && return bv
     try
-        em(Dict(:kind => "browser", :url => bv.url))
+        em(Dict(:kind => "browser", :url => bv.url, :open => bv.open))
         push!(ANNOUNCED_BROWSER_URLS, bv.url)
     catch
         # Emission is best-effort: a failed announce must not break the serve
@@ -723,7 +748,7 @@ function value_frames_for(result)
         # tab. A hand-built BrowserView (plain `browserview(url)` as the last
         # expression) was never announced and still emits here.
         result.url in ANNOUNCED_BROWSER_URLS && return out
-        push!(out, Dict(:kind => "browser", :url => result.url))
+        push!(out, Dict(:kind => "browser", :url => result.url, :open => result.open))
         return out
     end
     img_mimes = (MIME"image/png"(), MIME"image/svg+xml"())

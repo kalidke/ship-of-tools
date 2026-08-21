@@ -10145,8 +10145,22 @@ impl State {
                     // browser-open (reusing the pluto/video/docs path) and skip the
                     // repl-log append entirely. The URL resolves directly on a
                     // local FE and via the launcher's `-L` tunnel on a remote one.
-                    if let ReplFrame::Browser { url } = &frame {
+                    if let ReplFrame::Browser { url, open } = &frame {
                         let url = url.clone();
+                        // `open: false` (`wglshow(fig; open=false)`) — the eval
+                        // is serving for a TARGETED open: some session will
+                        // follow up with `sot-fe open-url <url> --fe <handle>`
+                        // for exactly one FE. Every FE must stay hands-off
+                        // here (auto-opening on all FEs is the multi-client
+                        // layout race the flag exists to avoid); surface the
+                        // URL in the status line so a human at any FE can
+                        // still open it deliberately.
+                        if !open {
+                            tracing::info!(%url, "wgl: browser frame served no-open");
+                            self.status = format!("interactive figure served · {url}");
+                            self.window.request_redraw();
+                            continue;
+                        }
                         self.ensure_proxy_for_url(&url);
                         match open_url_in_browser(&url) {
                             Ok(()) => {
@@ -17858,11 +17872,12 @@ fn build_repl_lines(
                     }
                 }
                 ReplFrame::Done { .. } => {}
-                ReplFrame::Browser { url } => {
+                ReplFrame::Browser { url, .. } => {
                     // Browser frames are consumed as a side-effect (OS
-                    // browser-open) in drain_events and never appended to the
-                    // log, so this arm is defensive — if one ever lands here,
-                    // render a compact caption rather than dropping it silently.
+                    // browser-open, or a no-open status for `open:false`) in
+                    // drain_events and never appended to the log, so this arm
+                    // is defensive — if one ever lands here, render a compact
+                    // caption rather than dropping it silently.
                     out.push(RtLine::from(vec![Span::styled(
                         format!("↗ interactive figure · {url}"),
                         Style::default().fg(Color::LightBlue),

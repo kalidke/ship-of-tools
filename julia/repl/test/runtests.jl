@@ -42,6 +42,14 @@ const DR = ShipToolsRepl
         @test frames[1][:url] == url
         # browserview() is the exported constructor and round-trips identically.
         @test DR.value_frames_for(DR.browserview(url)) == frames
+        # Auto-open is on by default; `open = false` (serve-only, targeted
+        # open via `sot-fe open-url --fe`) rides the frame so front-ends can
+        # skip the broadcast browser-open.
+        @test frames[1][:open] === true
+        no_open = DR.value_frames_for(DR.browserview(url; open = false))
+        @test length(no_open) == 1
+        @test no_open[1][:open] === false
+        @test no_open[1][:url] == url
     end
 
     @testset "stream_eval_frames: stdout then value, in order" begin
