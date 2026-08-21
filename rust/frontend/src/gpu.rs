@@ -1472,6 +1472,15 @@ struct TreeRow {
 struct TreeView {
     rows: Vec<TreeRow>,
     selected: usize,
+    /// Bumped on every CONTENT mutation (set_root / set_flat /
+    /// apply_children). The nav-spill trigger compares it across frames to
+    /// tell a USER cursor move (selected changed, content same) from a
+    /// content change that MOVED the cursor under the user (initial async
+    /// tree load, cursor restore, a refresh splicing rows above the
+    /// cursor) — only the former arms the spill (codex review: the old
+    /// first-frame-only boot suppression made startup spill
+    /// timing-dependent).
+    generation: u64,
 }
 
 impl TreeView {
@@ -1479,6 +1488,7 @@ impl TreeView {
         Self {
             rows: Vec::new(),
             selected: 0,
+            generation: 0,
         }
     }
 
@@ -1497,6 +1507,7 @@ impl TreeView {
     /// when that node is still present in the new rows; falls back to 0
     /// when the previously-cursored node is gone.
     fn set_flat(&mut self, rows: Vec<TreeRow>) {
+        self.generation = self.generation.wrapping_add(1);
         let prev_id = self.selected_node_id();
         let prev_selected = self.selected;
         let prev_len = self.rows.len();
@@ -1520,6 +1531,7 @@ impl TreeView {
     /// root; falls back to 0 when the previously-cursored node is gone
     /// (different root, deleted, etc.).
     fn set_root(&mut self, root: TreeNode, children: Vec<TreeNode>) {
+        self.generation = self.generation.wrapping_add(1);
         let prev_id = self.selected_node_id();
         let prev_selected = self.selected;
         let prev_len = self.rows.len();
@@ -1571,6 +1583,7 @@ impl TreeView {
             tracing::debug!(%parent_id, "tree.children reply for unknown parent — ignoring");
             return;
         };
+        self.generation = self.generation.wrapping_add(1);
         let prev_id = self.selected_node_id();
         let mut end = pidx + 1;
         while end < self.rows.len() && self.rows[end].depth > pdepth {
@@ -2959,7 +2972,7 @@ struct State {
     /// workspace switches) triggers uniformly without touching each input
     /// path. `None` until the first frame, which deliberately does not
     /// arm (boot isn't a user move).
-    nav_spill_cursor: Option<(Mode, Option<String>, usize, Option<usize>)>,
+    nav_spill_cursor: Option<(Mode, Option<String>, usize, Option<usize>, u64)>,
     /// Resolved keybindings (defaults overlaid with the user's
     /// `keybindings.toml` if present). See `keybindings.rs` for the
     /// file format and discovery order. Read-only once loaded — the
@@ -3242,11 +3255,31 @@ struct NavSpillSeg {
 /// reach cap? `Some(n)` = overlay the first `n` chars; `None` = the row
 /// fits (or there is no reach to spill into). Pure so the policy is
 /// testable outside the draw closure.
-fn nav_spill_take(char_w: usize, nav_w: usize, max_cells: usize) -> Option<usize> {
-    if char_w <= nav_w || max_cells == 0 {
+fn nav_spill_take(cell_w: usize, nav_w: usize, max_cells: usize) -> Option<usize> {
+    if cell_w <= nav_w || max_cells == 0 {
         return None;
     }
-    Some(char_w.min(max_cells))
+    Some(cell_w.min(max_cells))
+}
+
+/// Truncate `text` to at most `cells` terminal cells (unicode-width — a CJK
+/// glyph counts 2), returning the kept prefix and its exact cell width. A
+/// double-width glyph that would straddle the boundary is dropped, so the
+/// result NEVER exceeds `cells` (codex review: chars().count() let wide
+/// glyphs overrun the backing strip).
+fn truncate_to_cells(text: &str, cells: usize) -> (String, usize) {
+    use unicode_width::UnicodeWidthChar;
+    let mut out = String::new();
+    let mut w = 0usize;
+    for ch in text.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if w + cw > cells {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    (out, w)
 }
 
 /// Letterbox an image of `(iw, ih)` into `outer`, preserving aspect ratio.
@@ -12315,6 +12348,11 @@ impl State {
             let empty = self.tree.rows.is_empty();
             (rows, empty)
         };
+        // Spill collection needs the tree-row span of body_lines: rows sit at
+        // body indices [3, 3+len) after the status/hint/blank header (see the
+        // nav-scroll comment) — chrome lines (status, hint, concept, key)
+        // must never spill (codex review).
+        let spill_tree_rows = tree_lines.len();
         // Transient nav spill: a nav-cursor move (re)arms the timer; while
         // it runs, nav rows whose text overflows the nav column render
         // their FULL text as a floating overlay across the preview pane's
@@ -12330,12 +12368,24 @@ impl State {
             self.active_workspace_id.clone(),
             self.tree.selected,
             self.workspace_picker.as_ref().map(|p| p.selected),
+            self.tree.generation,
         );
         if self.nav_spill_cursor.as_ref() != Some(&spill_cursor_now) {
-            let booting = self.nav_spill_cursor.is_none();
+            // Arm ONLY on a user cursor move: same mode+workspace, same tree
+            // CONTENT (generation), different cursor. Everything else that
+            // perturbs the tuple — boot, the async initial tree load, a
+            // cursor restore, a refresh splicing rows around the cursor, a
+            // mode/workspace switch swapping the tree — updates the baseline
+            // without arming (codex review: first-frame-only suppression
+            // made startup spill timing-dependent).
+            let user_move = match (self.nav_spill_cursor.as_ref(), &spill_cursor_now) {
+                (Some((pm, pw, ps, pp, pg)), (m, w, s, p, g)) => {
+                    pm == m && pw == w && pg == g && (ps != s || pp != p)
+                }
+                (None, _) => false,
+            };
             self.nav_spill_cursor = Some(spill_cursor_now);
-            // The first frame isn't a user move — don't spill on boot.
-            if !booting && self.settings.nav_spill_ms > 0 {
+            if user_move && self.settings.nav_spill_ms > 0 {
                 self.nav_spill_until = Some(
                     std::time::Instant::now()
                         + std::time::Duration::from_millis(self.settings.nav_spill_ms),
@@ -12610,33 +12660,40 @@ impl State {
                         nav_scroll = max_scroll;
                     }
                 }
-                // Nav-spill segment collection: for each VISIBLE body line
+                // Nav-spill segment collection: for each visible TREE row
                 // whose text is wider than the nav column, record the full
                 // row (truncated to the overlay's reach cap) so the render-
                 // pass tail can float it over the preview's left edge.
-                // Width/truncation are both `chars().count()`-based — a
-                // double-width glyph makes text run a cell or two past the
-                // backing pad, bounded by the reach cap (tuning knob).
+                // TREE rows only — body indices [3, 3+spill_tree_rows): the
+                // status/hint header and the trailing concept/key chrome
+                // lines never spill (codex review). Widths are terminal
+                // CELLS via unicode-width, so CJK/emoji names measure and
+                // truncate exactly (codex review).
                 if nav_spill_active && nav_rect.width > 0 && preview_rect.width > 0 {
+                    use unicode_width::UnicodeWidthStr;
                     // Reach: from the nav left edge to 2 cells short of the
                     // preview's right edge, in cells.
                     let max_cells = (preview_rect.x + preview_rect.width)
                         .saturating_sub(2)
                         .saturating_sub(nav_rect.x) as usize;
                     let first = nav_scroll as usize;
+                    let tree_span = 3..(3 + spill_tree_rows);
                     let visible = body_lines
                         .iter()
                         .skip(first)
                         .take(nav_rect.height as usize);
                     for (vis_idx, line) in visible.enumerate() {
+                        if !tree_span.contains(&(first + vis_idx)) {
+                            continue;
+                        }
                         let text: String = line
                             .spans
                             .iter()
                             .map(|s| s.content.as_ref())
                             .collect();
-                        let char_w = text.chars().count();
+                        let cell_w = UnicodeWidthStr::width(text.as_str());
                         let Some(take) =
-                            nav_spill_take(char_w, nav_rect.width as usize, max_cells)
+                            nav_spill_take(cell_w, nav_rect.width as usize, max_cells)
                         else {
                             continue;
                         };
@@ -12648,15 +12705,16 @@ impl State {
                         let style = line
                             .spans
                             .iter()
-                            .max_by_key(|s| s.content.chars().count())
+                            .max_by_key(|s| UnicodeWidthStr::width(s.content.as_ref()))
                             .map(|s| s.style)
                             .unwrap_or_default();
-                        let shown: String = if take < char_w {
-                            text.chars().take(take).collect()
+                        let (shown, shown_cells) = if take < cell_w {
+                            truncate_to_cells(&text, take)
                         } else {
-                            text
+                            let w = UnicodeWidthStr::width(text.as_str());
+                            (text, w)
                         };
-                        let width_cells = shown.chars().count() as u16;
+                        let width_cells = shown_cells as u16;
                         nav_spill_segs_out.push(NavSpillSeg {
                             x: nav_rect.x,
                             row: nav_rect.y + vis_idx as u16,
@@ -19686,6 +19744,18 @@ mod tests {
         assert_eq!(nav_spill_take(100, 20, 0), None);
         // Degenerate nav width still respects the cap.
         assert_eq!(nav_spill_take(5, 0, 3), Some(3));
+    }
+
+    #[test]
+    fn truncate_to_cells_respects_wide_glyphs() {
+        // ASCII: 1 cell each.
+        assert_eq!(truncate_to_cells("abcdef", 4), ("abcd".to_string(), 4));
+        // CJK: 2 cells each — "日本語" is 6 cells; a 5-cell budget keeps two
+        // glyphs (4 cells) rather than straddling the boundary.
+        assert_eq!(truncate_to_cells("日本語", 5), ("日本".to_string(), 4));
+        assert_eq!(truncate_to_cells("日本語", 6), ("日本語".to_string(), 6));
+        // Budget larger than the text returns it whole at its true width.
+        assert_eq!(truncate_to_cells("ab", 10), ("ab".to_string(), 2));
     }
 
     #[test]
