@@ -696,6 +696,12 @@ pub struct ReplRunFileRes {
     pub frames: Vec<ReplFrame>,
 }
 
+/// Serde default for `ReplFrame::Browser::open` — frames from shims that
+/// predate the field keep the original auto-open behavior.
+fn default_open() -> bool {
+    true
+}
+
 /// Per ADR 0009. `kind`-tagged enum on the wire so new frame kinds (image
 /// blobs, html, …) land additively.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -744,6 +750,15 @@ pub enum ReplFrame {
     /// hands it to the OS browser-open; no bytes cross the protocol. ADR 0032.
     Browser {
         url: String,
+        /// Whether front-ends should AUTO-OPEN the URL in the OS browser.
+        /// `wglshow(fig; open=false)` sets this false to serve without
+        /// opening anywhere — the frame still flows (so the daemon's
+        /// ADR-0035 proxy allowlist still learns the port) and a session
+        /// then opens it on exactly one FE via
+        /// `sot-fe open-url <url> --fe <handle>`. Absent (older shims)
+        /// defaults to true — the original broadcast-open behavior.
+        #[serde(default = "default_open")]
+        open: bool,
     },
     Error {
         message: String,
