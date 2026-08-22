@@ -5548,8 +5548,15 @@ impl State {
             return false;
         }
         if let (Some(id), Some(target)) = (collapsed_id, self.pending_reveal.as_ref()) {
-            // Root ids end in ':' ("files:"); deeper ids scope with '/'.
-            let scoped = if id.ends_with(':') {
+            // A ROOT id is `<mode>:` with an EMPTY rest ("files:") — not
+            // merely ends-with-':' (codex round 4: a directory literally
+            // named "ab:" yields id "files:ab:", and an ends-with test would
+            // let collapsing it cancel a reveal of the SIBLING "files:ab:cd").
+            // Deeper ids scope with '/'.
+            let is_root = id
+                .split_once(':')
+                .is_some_and(|(_, rest)| rest.is_empty());
+            let scoped = if is_root {
                 target != &id && target.starts_with(&id)
             } else {
                 target.starts_with(&format!("{id}/"))
@@ -9611,7 +9618,17 @@ impl State {
                     // the transport and the reveal starved silently.
                     tracing::info!(%parent_id, %error, "tree.children FAILED");
                     self.status = format!("tree expand failed · {parent_id}: {error}");
-                    if self.reveal_awaiting.as_deref() == Some(parent_id.as_str()) {
+                    let refetch_gated = self
+                        .reveal_refetched
+                        .as_ref()
+                        .is_some_and(|(_, anc)| anc == &parent_id);
+                    if self.reveal_awaiting.as_deref() == Some(parent_id.as_str()) || refetch_gated
+                    {
+                        // Covers BOTH wait states (codex round 4): a failed
+                        // reply for the awaited level OR for the force-
+                        // refreshed ancestor would otherwise leave the reveal
+                        // gated forever (only that dir's reply advances the
+                        // walk now).
                         tracing::info!(%parent_id, "reveal: aborted — awaited children failed");
                         self.pending_reveal = None;
                         self.reveal_awaiting = None;
