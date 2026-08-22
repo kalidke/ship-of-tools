@@ -128,7 +128,7 @@ sot_send() {
     case "$ENDPOINT" in
         tcp:*)  hp="${ENDPOINT#tcp:}"
                 { _sot_hello; printf '%s\n' "$frame"; } | timeout 6 nc "${hp%:*}" "${hp##*:}" 2>/dev/null | grep -m1 "\"op\":\"$op\"" ;;
-        unix:*) { _sot_hello; printf '%s\n' "$frame"; } | timeout 6 nc -U "${ENDPOINT#unix:}" 2>/dev/null | grep -m1 "\"op\":\"$op\"" ;;
+        unix:*) sot_oneshot_request "$frame" "$op" ;;
         *)      return 1 ;;
     esac
 }
