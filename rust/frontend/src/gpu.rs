@@ -12348,11 +12348,6 @@ impl State {
             let empty = self.tree.rows.is_empty();
             (rows, empty)
         };
-        // Spill collection needs the tree-row span of body_lines: rows sit at
-        // body indices [3, 3+len) after the status/hint/blank header (see the
-        // nav-scroll comment) — chrome lines (status, hint, concept, key)
-        // must never spill (codex review).
-        let spill_tree_rows = tree_lines.len();
         // Transient nav spill: a nav-cursor move (re)arms the timer; while
         // it runs, nav rows whose text overflows the nav column render
         // their FULL text as a floating overlay across the preview pane's
@@ -12529,6 +12524,14 @@ impl State {
                         Style::default().add_modifier(Modifier::DIM),
                     )]));
                 }
+                // Exact tree-row span of body_lines, captured AT ASSEMBLY
+                // (codex round 4: the header is not a constant — Files/
+                // Modules carry 4 chrome lines, Sessions 5, the picker 3 —
+                // so any fixed offset either spills chrome or misses bottom
+                // rows). The picker's own header row lives inside
+                // tree_lines and stays spill-eligible on purpose: floating
+                // the full picker path is exactly what the spill is for.
+                let tree_rows_body_start = body_lines.len();
                 for (text, is_selected, is_stale, is_pinned, agent, flash, is_pending) in
                     &tree_lines
                 {
@@ -12619,6 +12622,7 @@ impl State {
                         body_lines.push(RtLine::from(vec![Span::styled(text.clone(), style)]));
                     }
                 }
+                let tree_rows_body_end = body_lines.len();
                 body_lines.push(RtLine::from(""));
                 body_lines.push(RtLine::from(vec![Span::styled(
                     concept_status.clone(),
@@ -12664,9 +12668,9 @@ impl State {
                 // whose text is wider than the nav column, record the full
                 // row (truncated to the overlay's reach cap) so the render-
                 // pass tail can float it over the preview's left edge.
-                // TREE rows only — body indices [3, 3+spill_tree_rows): the
-                // status/hint header and the trailing concept/key chrome
-                // lines never spill (codex review). Widths are terminal
+                // TREE rows only — the assembly-captured span above: header
+                // and trailing chrome lines (status/help/concept/key) never
+                // spill (codex review). Widths are terminal
                 // CELLS via unicode-width, so CJK/emoji names measure and
                 // truncate exactly (codex review).
                 if nav_spill_active && nav_rect.width > 0 && preview_rect.width > 0 {
@@ -12677,7 +12681,7 @@ impl State {
                         .saturating_sub(2)
                         .saturating_sub(nav_rect.x) as usize;
                     let first = nav_scroll as usize;
-                    let tree_span = 3..(3 + spill_tree_rows);
+                    let tree_span = tree_rows_body_start..tree_rows_body_end;
                     let visible = body_lines
                         .iter()
                         .skip(first)
