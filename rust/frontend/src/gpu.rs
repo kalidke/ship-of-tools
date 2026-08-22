@@ -1593,6 +1593,15 @@ fn suppress_collapsed_subtrees(
 struct TreeView {
     rows: Vec<TreeRow>,
     selected: usize,
+    /// Bumped on every CONTENT mutation (set_root / set_flat /
+    /// apply_children). The nav-spill trigger compares it across frames to
+    /// tell a USER cursor move (selected changed, content same) from a
+    /// content change that MOVED the cursor under the user (initial async
+    /// tree load, cursor restore, a refresh splicing rows above the
+    /// cursor) — only the former arms the spill (codex review: the old
+    /// first-frame-only boot suppression made startup spill
+    /// timing-dependent).
+    generation: u64,
 }
 
 impl TreeView {
@@ -1600,6 +1609,7 @@ impl TreeView {
         Self {
             rows: Vec::new(),
             selected: 0,
+            generation: 0,
         }
     }
 
@@ -1618,6 +1628,7 @@ impl TreeView {
     /// when that node is still present in the new rows; falls back to 0
     /// when the previously-cursored node is gone.
     fn set_flat(&mut self, rows: Vec<TreeRow>) {
+        self.generation = self.generation.wrapping_add(1);
         let prev_id = self.selected_node_id();
         let prev_selected = self.selected;
         let prev_len = self.rows.len();
@@ -1652,6 +1663,7 @@ impl TreeView {
     /// root; falls back to 0 when the previously-cursored node is gone
     /// (different root, deleted, etc.).
     fn set_root(&mut self, root: TreeNode, children: Vec<TreeNode>) {
+        self.generation = self.generation.wrapping_add(1);
         let prev_id = self.selected_node_id();
         let prev_selected = self.selected;
         let prev_len = self.rows.len();
@@ -1728,11 +1740,13 @@ impl TreeView {
         // at request time (try_expand_selected / the reveal ancestor walk),
         // so a collapsed parent here means a background refresh raced a
         // user collapse — honoring the collapse wins; the listing is
-        // re-fetched fresh on the next expand anyway.
+        // re-fetched fresh on the next expand anyway. Gate BEFORE the
+        // spill generation bump: a dropped reply changes no content.
         if !self.rows[pidx].expanded {
             tracing::debug!(%parent_id, "tree.children reply for collapsed parent — dropping");
             return;
         }
+        self.generation = self.generation.wrapping_add(1);
         let prev_id = self.selected_node_id();
         let mut end = pidx + 1;
         while end < self.rows.len() && self.rows[end].depth > pdepth {
@@ -2261,6 +2275,13 @@ struct State {
     /// hurt readability per user feedback). Solid colour with full alpha
     /// — the chrome's near-black bg shows around glyph antialias edges.
     selection_bg_quad: Quad,
+    /// A 1×1 near-opaque surface-navy RGBA texture: the backing strip
+    /// under nav-spill overlay rows. Rendered AFTER the main text pass
+    /// (so it covers preview glyphs and images alike), then the overlay
+    /// text layer draws the row text on top. Alpha slightly under full
+    /// so an image preview barely ghosts through — reads as "floating
+    /// above", not "hole cut into the preview".
+    overlay_back_quad: Quad,
     /// A 1×1 dark slate RGBA texture used as the markdown-preview code
     /// bg — both inline `<code>` and fenced code blocks render against
     /// it so `Vec<u8>` doesn't look like prose. Paint pass walks
@@ -3101,6 +3122,27 @@ struct State {
     /// on the hidden LLM pane while active; a capture-ROI paste that
     /// targets the LLM pane reveals it again.
     wide_preview: bool,
+    /// Transient nav spill (`[nav] spill_ms`): while the user is actively
+    /// moving the nav cursor, nav rows whose text overflows the column
+    /// float their FULL text over the preview pane's left edge (overlay
+    /// text layer + backing strip — pane geometry never moves), vanishing
+    /// once this deadline passes with no further moves. `None` = spill
+    /// not active. Expiry repaint rides the `about_to_wait` idle tick,
+    /// same as `notify_sticky_until`.
+    nav_spill_until: Option<std::time::Instant>,
+    /// The spill rows collected by the LAST draw-closure run — the
+    /// `media_paint_targets` pattern: the closure writes cell-space
+    /// segments here, the render-pass tail reads them for the backing
+    /// quads and the overlay text prepare. Empty whenever the spill is
+    /// inactive or nothing overflows.
+    nav_spill_segments: Vec<NavSpillSeg>,
+    /// Last (mode, workspace, tree cursor, picker cursor) the spill
+    /// trigger saw — a change between frames is what (re)arms the timer.
+    /// Frame-side detection so every cursor mover (keys, wheel, mode and
+    /// workspace switches) triggers uniformly without touching each input
+    /// path. `None` until the first frame, which deliberately does not
+    /// arm (boot isn't a user move).
+    nav_spill_cursor: Option<(Mode, Option<String>, usize, Option<usize>, u64)>,
     /// Resolved keybindings (defaults overlaid with the user's
     /// `keybindings.toml` if present). See `keybindings.rs` for the
     /// file format and discovery order. Read-only once loaded — the
@@ -3349,6 +3391,65 @@ struct PaneRects {
     /// closed. Consumers using `.repl.height` already handle zero
     /// safely (clamp to 1 / no-op).
     repl: ratatui::layout::Rect,
+}
+
+/// One nav row the spill overlay repaints in full over the preview's
+/// left edge (nav-spill, `[nav] spill_ms`). Collected in the draw
+/// closure for VISIBLE rows whose text overflows the nav column;
+/// consumed by the overlay backing-quad + overlay-text draws at the END
+/// of the render pass. Cell coordinates — converted to px at paint time
+/// with the same `chrome_origin + cell * cell_w/h` math as the
+/// underlying chrome row, so the nav-resident prefix realigns
+/// pixel-identically and the row reads as one continuous run.
+#[derive(Clone, Debug, PartialEq)]
+struct NavSpillSeg {
+    /// Absolute cell column of the row's first glyph (the nav content
+    /// rect's left edge).
+    x: u16,
+    /// Absolute cell row on the grid.
+    row: u16,
+    /// The full row text (already truncated to the overlay's reach cap).
+    text: String,
+    /// Display width of `text` in cells (chars ≈ cells; see collection
+    /// site comment on the double-width approximation).
+    width_cells: u16,
+    /// Resolved fg + modifiers mirroring the underlying row's style so
+    /// the overlay is colour-identical to what it covers.
+    color: Option<(u8, u8, u8)>,
+    bold: bool,
+    dim: bool,
+}
+
+/// Nav-spill overflow decision: should a `char_w`-cell row in a
+/// `nav_w`-cell nav column spill, and if so how many chars survive the
+/// reach cap? `Some(n)` = overlay the first `n` chars; `None` = the row
+/// fits (or there is no reach to spill into). Pure so the policy is
+/// testable outside the draw closure.
+fn nav_spill_take(cell_w: usize, nav_w: usize, max_cells: usize) -> Option<usize> {
+    if cell_w <= nav_w || max_cells == 0 {
+        return None;
+    }
+    Some(cell_w.min(max_cells))
+}
+
+/// Truncate `text` to at most `cells` terminal cells (unicode-width — a CJK
+/// glyph counts 2), returning the kept prefix and its exact cell width. A
+/// double-width glyph that would straddle the boundary is dropped, so the
+/// result NEVER exceeds `cells` (codex review: chars().count() let wide
+/// glyphs overrun the backing strip).
+fn truncate_to_cells(text: &str, cells: usize) -> (String, usize) {
+    use unicode_width::UnicodeWidthChar;
+    let mut out = String::new();
+    let mut w = 0usize;
+    for ch in text.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if w + cw > cells {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    (out, w)
 }
 
 /// Letterbox an image of `(iw, ih)` into `outer`, preserving aspect ratio.
@@ -3848,6 +3949,20 @@ impl State {
         let selection_bg_quad =
             Quad::from_rgba8(&device, &queue, &quad_pipeline, &[252, 240, 130, 140], 1, 1)
                 .context("failed to build selection_bg_quad")?;
+        // Nav-spill overlay backing: the surface's deep-navy tone
+        // ((0.020, 0.035, 0.090) visible-srgb ≈ (5, 9, 23) u8) at
+        // NAV_SPILL_BACK_ALPHA so the strip reads as the nav background
+        // continuing over the preview, with imagery barely ghosting
+        // through. Alpha is a tune-by-eye knob.
+        let overlay_back_quad = Quad::from_rgba8(
+            &device,
+            &queue,
+            &quad_pipeline,
+            &[5, 9, 23, NAV_SPILL_BACK_ALPHA],
+            1,
+            1,
+        )
+        .context("failed to build overlay_back_quad")?;
         // Markdown code-bg panel. (52, 60, 92, 230) is VS-Code Dark+'s
         // `#1e1e1e`-leaning panel tone lifted a touch toward the
         // chrome's midnight-navy surface so the panel reads as "lifted
@@ -4066,6 +4181,7 @@ impl State {
             terminal,
             quad_pipeline,
             selection_bg_quad,
+            overlay_back_quad,
             code_bg_quad,
             code_border_quad,
             strike_line_quad,
@@ -4281,6 +4397,9 @@ impl State {
             last_pty_wheel_at: None,
             maximized: cli.start_maximized,
             wide_preview: false,
+            nav_spill_until: None,
+            nav_spill_segments: Vec::new(),
+            nav_spill_cursor: None,
             bindings: KeyBindings::load_layered(),
             settings,
             upload: None,
@@ -12211,6 +12330,11 @@ impl State {
         // self after `draw` returns.
         let mut new_pane_rects = self.pane_rects;
         let mut new_repl_scroll = self.repl_scroll;
+        // Nav-spill overlay rows collected by this draw (same captured-
+        // local pattern as `preview_cells`); written to
+        // `self.nav_spill_segments` after `draw` returns for the render-
+        // pass tail to paint.
+        let mut nav_spill_segs_out: Vec<NavSpillSeg> = Vec::new();
 
         // When a NavTree text prompt is up, the status line becomes the
         // prompt's input field so the user sees what they're typing — least
@@ -12613,6 +12737,49 @@ impl State {
             let empty = self.tree.rows.is_empty();
             (rows, empty)
         };
+        // Transient nav spill: a nav-cursor move (re)arms the timer; while
+        // it runs, nav rows whose text overflows the nav column render
+        // their FULL text as a floating overlay across the preview pane's
+        // left edge (segment collection below in the draw closure; painted
+        // by the overlay text layer at the end of the render pass — pane
+        // geometry never moves). It vanishes `[nav] spill_ms` after the
+        // last move. Detected here frame-side, by diffing the cursor
+        // tuple, instead of in every input path — keys, wheel, mode and
+        // workspace switches all trigger uniformly. The picker cursor
+        // rides in the tuple so workspace-picker browsing spills too.
+        let spill_cursor_now = (
+            self.mode,
+            self.active_workspace_id.clone(),
+            self.tree.selected,
+            self.workspace_picker.as_ref().map(|p| p.selected),
+            self.tree.generation,
+        );
+        if self.nav_spill_cursor.as_ref() != Some(&spill_cursor_now) {
+            // Arm ONLY on a user cursor move: same mode+workspace, same tree
+            // CONTENT (generation), different cursor. Everything else that
+            // perturbs the tuple — boot, the async initial tree load, a
+            // cursor restore, a refresh splicing rows around the cursor, a
+            // mode/workspace switch swapping the tree — updates the baseline
+            // without arming (codex review: first-frame-only suppression
+            // made startup spill timing-dependent).
+            let user_move = match (self.nav_spill_cursor.as_ref(), &spill_cursor_now) {
+                (Some((pm, pw, ps, pp, pg)), (m, w, s, p, g)) => {
+                    pm == m && pw == w && pg == g && (ps != s || pp != p)
+                }
+                (None, _) => false,
+            };
+            self.nav_spill_cursor = Some(spill_cursor_now);
+            if user_move && self.settings.nav_spill_ms > 0 {
+                self.nav_spill_until = Some(
+                    std::time::Instant::now()
+                        + std::time::Duration::from_millis(self.settings.nav_spill_ms),
+                );
+            }
+        }
+        let nav_spill_active = self
+            .nav_spill_until
+            .map(|u| std::time::Instant::now() < u)
+            .unwrap_or(false);
         // Layout proportions from the user's settings file (or
         // defaults). Snapshotted here so the ratatui closure doesn't
         // borrow `self`. Maximisation overrides the geom inside the
@@ -12673,7 +12840,8 @@ impl State {
                 } else {
                     None
                 };
-                let geom = crate::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
+                let geom =
+                    crate::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
                 // Names preserved so the rest of the closure reads
                 // unchanged: nav = old TL (left column), preview = old
                 // TR (middle column), llm = old BL (rightmost column
@@ -12745,6 +12913,14 @@ impl State {
                         Style::default().add_modifier(Modifier::DIM),
                     )]));
                 }
+                // Exact tree-row span of body_lines, captured AT ASSEMBLY
+                // (codex round 4: the header is not a constant — Files/
+                // Modules carry 4 chrome lines, Sessions 5, the picker 3 —
+                // so any fixed offset either spills chrome or misses bottom
+                // rows). The picker's own header row lives inside
+                // tree_lines and stays spill-eligible on purpose: floating
+                // the full picker path is exactly what the spill is for.
+                let tree_rows_body_start = body_lines.len();
                 for (text, is_selected, is_stale, is_pinned, agent, flash, is_pending) in
                     &tree_lines
                 {
@@ -12835,6 +13011,7 @@ impl State {
                         body_lines.push(RtLine::from(vec![Span::styled(text.clone(), style)]));
                     }
                 }
+                let tree_rows_body_end = body_lines.len();
                 body_lines.push(RtLine::from(""));
                 body_lines.push(RtLine::from(vec![Span::styled(
                     concept_status.clone(),
@@ -12874,6 +13051,72 @@ impl State {
                     let max_scroll = body_len.saturating_sub(nav_inner_h) as u16;
                     if nav_scroll > max_scroll {
                         nav_scroll = max_scroll;
+                    }
+                }
+                // Nav-spill segment collection: for each visible TREE row
+                // whose text is wider than the nav column, record the full
+                // row (truncated to the overlay's reach cap) so the render-
+                // pass tail can float it over the preview's left edge.
+                // TREE rows only — the assembly-captured span above: header
+                // and trailing chrome lines (status/help/concept/key) never
+                // spill (codex review). Widths are terminal
+                // CELLS via unicode-width, so CJK/emoji names measure and
+                // truncate exactly (codex review).
+                if nav_spill_active && nav_rect.width > 0 && preview_rect.width > 0 {
+                    use unicode_width::UnicodeWidthStr;
+                    // Reach: from the nav left edge to 2 cells short of the
+                    // preview's right edge, in cells.
+                    let max_cells = (preview_rect.x + preview_rect.width)
+                        .saturating_sub(2)
+                        .saturating_sub(nav_rect.x) as usize;
+                    let first = nav_scroll as usize;
+                    let tree_span = tree_rows_body_start..tree_rows_body_end;
+                    let visible = body_lines
+                        .iter()
+                        .skip(first)
+                        .take(nav_rect.height as usize);
+                    for (vis_idx, line) in visible.enumerate() {
+                        if !tree_span.contains(&(first + vis_idx)) {
+                            continue;
+                        }
+                        let text: String = line
+                            .spans
+                            .iter()
+                            .map(|s| s.content.as_ref())
+                            .collect();
+                        let cell_w = UnicodeWidthStr::width(text.as_str());
+                        let Some(take) =
+                            nav_spill_take(cell_w, nav_rect.width as usize, max_cells)
+                        else {
+                            continue;
+                        };
+                        // Style of the widest span — rows are one span, or
+                        // sigil + text where the text span dominates (and
+                        // the pending sigil shares the text's accent
+                        // anyway), so a single-run overlay is colour-
+                        // faithful in practice.
+                        let style = line
+                            .spans
+                            .iter()
+                            .max_by_key(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                            .map(|s| s.style)
+                            .unwrap_or_default();
+                        let (shown, shown_cells) = if take < cell_w {
+                            truncate_to_cells(&text, take)
+                        } else {
+                            let w = UnicodeWidthStr::width(text.as_str());
+                            (text, w)
+                        };
+                        let width_cells = shown_cells as u16;
+                        nav_spill_segs_out.push(NavSpillSeg {
+                            x: nav_rect.x,
+                            row: nav_rect.y + vis_idx as u16,
+                            text: shown,
+                            width_cells,
+                            color: crate::chrome::ratatui_color_to_rgb(style.fg),
+                            bold: style.add_modifier.contains(Modifier::BOLD),
+                            dim: style.add_modifier.contains(Modifier::DIM),
+                        });
                     }
                 }
                 let nav_body = Paragraph::new(body_lines).scroll((nav_scroll, 0));
@@ -13179,6 +13422,7 @@ impl State {
         self.tree_scroll = nav_scroll;
         self.repl_scroll = new_repl_scroll;
         self.pane_rects = new_pane_rects;
+        self.nav_spill_segments = nav_spill_segs_out;
 
         // Open the LLM-pane pty on the first redraw that has a real
         // BL content rect, or resize it when the rect grew/shrank.
@@ -13928,6 +14172,33 @@ impl State {
             self.config.height,
             &lines,
             &extras,
+        )?;
+
+        // Nav-spill overlay text: the segments the draw closure just
+        // collected, converted cell→px with the SAME origin/cell math the
+        // chrome lines use so the overlay realigns pixel-identically over
+        // the row it covers. Prepared EVERY frame — an empty list is what
+        // clears the overlay renderer's retained geometry (see
+        // `prepare_overlay`'s doc), so no `if` around this call.
+        let overlay_lines: Vec<crate::text::Line> = self
+            .nav_spill_segments
+            .iter()
+            .map(|seg| crate::text::Line {
+                text: seg.text.clone(),
+                x: self.chrome_origin_x + seg.x as f32 * self.cell_w,
+                y: self.chrome_origin_y + seg.row as f32 * self.cell_h,
+                color: seg.color,
+                bold: seg.bold,
+                italic: false,
+                dim: seg.dim,
+            })
+            .collect();
+        self.text.prepare_overlay(
+            &self.device,
+            &self.queue,
+            self.config.width,
+            self.config.height,
+            &overlay_lines,
         )?;
 
         let frame = match self.surface.get_current_texture() {
@@ -14690,6 +14961,38 @@ impl State {
             }
 
             self.text.render(&mut rpass)?;
+
+            // Nav-spill overlay — the ONLY draws above the main text pass.
+            // Backing strips first (near-opaque surface navy, one cell row
+            // tall, from the nav left edge across the border cell to the
+            // spilled text's end + 1 cell pad), then the overlay glyphs on
+            // top via the overlay text layer. Draw order inside the pass
+            // is the z-order: these cover preview images AND main-pass
+            // glyphs, which is exactly what "floating over the preview"
+            // means. Full-surface scissor — the segments were reach-capped
+            // at collection time.
+            if !self.nav_spill_segments.is_empty() {
+                rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+                let strip_rects: Vec<ScreenRect> = self
+                    .nav_spill_segments
+                    .iter()
+                    .map(|seg| ScreenRect {
+                        x: self.chrome_origin_x + seg.x as f32 * self.cell_w,
+                        y: self.chrome_origin_y + seg.row as f32 * self.cell_h,
+                        w: (seg.width_cells + 1) as f32 * self.cell_w,
+                        h: self.cell_h,
+                    })
+                    .collect();
+                self.overlay_back_quad.render_many(
+                    &self.device,
+                    &self.queue,
+                    &self.quad_pipeline,
+                    &mut rpass,
+                    &strip_rects,
+                    (self.config.width, self.config.height),
+                )?;
+                self.text.render_overlay(&mut rpass)?;
+            }
         }
 
         // If `--capture` is set and we've waited long enough for transport
@@ -18029,6 +18332,15 @@ impl ApplicationHandler for App {
                 state.window.request_redraw();
             }
         }
+        // Nav-spill expiry: same pattern as the toast — once the spill
+        // window elapses, repaint so the nav column springs back to its
+        // preset width. The ~1s idle tick bounds how late that lands.
+        if let Some(until) = state.nav_spill_until {
+            if std::time::Instant::now() >= until {
+                state.nav_spill_until = None;
+                state.window.request_redraw();
+            }
+        }
         if !state.dirty {
             // Fullscreen VRR/OLED brightness-flicker fix (2026-07-12, a VRR/OLED
             // ultrawide OLED). In borderless fullscreen DWM composition
@@ -18869,6 +19181,13 @@ fn scale_rgb(rgb: (u8, u8, u8), f: f32) -> (u8, u8, u8) {
 /// "dim" contrast lever, so the selected name pops by contrast. Distinct
 /// from (stronger than) the existing wilt/idle ~0.65 dim.
 const CONTRAST_DIM_FACTOR: f32 = 0.55;
+
+/// Alpha of the nav-spill overlay's backing strip (0–255). Near-opaque:
+/// high enough that spilled row text reads crisply over any preview
+/// content, low enough that an image preview barely ghosts through —
+/// signalling "floating above the preview", not "the preview has a hole".
+/// Tune by eye on a real image preview.
+const NAV_SPILL_BACK_ALPHA: u8 = 242;
 /// Brightness multiplier applied to the *selected* coloured session name
 /// under the "bright" lever, so the active row's tone reads clearly brighter
 /// than non-selected coloured rows (which keep their full tone).
@@ -19805,6 +20124,32 @@ mod tests {
         assert!(!DrawerContent::Closed.is_open());
         assert!(DrawerContent::Repl.is_open());
         assert!(DrawerContent::Terminal.is_open());
+    }
+
+    #[test]
+    fn nav_spill_take_fits_and_overflows() {
+        // Fits exactly — no spill.
+        assert_eq!(nav_spill_take(20, 20, 40), None);
+        // One over — spill the whole row.
+        assert_eq!(nav_spill_take(21, 20, 40), Some(21));
+        // Overflow beyond the reach — clamp to the cap.
+        assert_eq!(nav_spill_take(100, 20, 40), Some(40));
+        // No reach (preview absent / zero-width) — never spill.
+        assert_eq!(nav_spill_take(100, 20, 0), None);
+        // Degenerate nav width still respects the cap.
+        assert_eq!(nav_spill_take(5, 0, 3), Some(3));
+    }
+
+    #[test]
+    fn truncate_to_cells_respects_wide_glyphs() {
+        // ASCII: 1 cell each.
+        assert_eq!(truncate_to_cells("abcdef", 4), ("abcd".to_string(), 4));
+        // CJK: 2 cells each — "日本語" is 6 cells; a 5-cell budget keeps two
+        // glyphs (4 cells) rather than straddling the boundary.
+        assert_eq!(truncate_to_cells("日本語", 5), ("日本".to_string(), 4));
+        assert_eq!(truncate_to_cells("日本語", 6), ("日本語".to_string(), 6));
+        // Budget larger than the text returns it whole at its true width.
+        assert_eq!(truncate_to_cells("ab", 10), ("ab".to_string(), 2));
     }
 
     #[test]

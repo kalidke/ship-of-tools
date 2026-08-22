@@ -29,6 +29,9 @@ interprocess = { workspace = true }
 winit = { workspace = true }
 wgpu = { workspace = true }
 ratatui = { workspace = true }
+# Terminal-cell width for the nav-spill overlay (codex review: chars().count()
+# mis-measures CJK/emoji). Same version ratatui already pulls transitively.
+unicode-width = "0.1"
 cosmic-text = { workspace = true }
 glyphon = { workspace = true }
 image = { workspace = true }

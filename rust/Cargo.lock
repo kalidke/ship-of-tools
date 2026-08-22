@@ -3873,6 +3873,7 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-toml-ng",
+ "unicode-width 0.1.14",
  "usvg",
  "vt100-ctt",
  "wgpu",
