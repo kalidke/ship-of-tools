@@ -1204,6 +1204,40 @@ fn files_node_id_under_root(path: &str, root: &str) -> Option<String> {
     Some(format!("files:{rel}"))
 }
 
+/// Resolve a `preview.changed` event to a node id in the ACTIVE workspace's
+/// `files:` space, or `None` when the event isn't ours to render.
+///
+/// Acceptance is two-path (2026-08-17, live-debugged against a peer FE):
+///
+/// 1. **Workspace-tag match** — the emitting workspace IS the active one
+///    (slug equality; callers normalize a `None` active to the default
+///    slug): trust the carried `node_id` verbatim. Needs no project-root
+///    knowledge, so it stays correct while `workspace_project_roots` is
+///    unpopulated (fresh connection, `workspace.list` in flight) — the gap
+///    that previously left a non-default workspace deaf to its own file
+///    events.
+/// 2. **Path translation** — workspaces overlap (umbrella roots, watch
+///    budgets), so OUR files can arrive tagged with another workspace's
+///    slug; any copy whose absolute path lies under the active root is
+///    ours, re-addressed into our id space (the 2026-07-17 scheme). This
+///    requires the KNOWN active root — never a fallback root, which
+///    mistranslates foreign paths into phantom refreshes of the active
+///    tree.
+fn resolve_preview_changed(
+    event_ws: Option<&str>,
+    event_node_id: Option<&str>,
+    event_path: Option<&str>,
+    active_ws: Option<&str>,
+    known_active_root: Option<&str>,
+) -> Option<String> {
+    if let (Some(ews), Some(nid)) = (event_ws, event_node_id) {
+        if Some(ews) == active_ws && nid.starts_with("files:") && nid.len() > "files:".len() {
+            return Some(nid.to_string());
+        }
+    }
+    files_node_id_under_root(event_path?, known_active_root?)
+}
+
 /// One axis of a raster's physical scale (ADR 0034). `per_px` is the physical
 /// length of one *source* pixel, in the payload's `unit`. `name` is the axis
 /// label (`"x"`, `"z"`, …) so an anisotropic (XZ) view labels each bar.
@@ -1468,6 +1502,93 @@ struct TreeRow {
     expanded: bool,
 }
 
+/// Group a drained subtree run (rows strictly deeper than the parent) into
+/// per-direct-child buckets: id -> (kind, expanded, descendant rows). Shared
+/// by every merge-preserving rebuild (apply_children, set_root) so they all
+/// apply the same compatible-container rule.
+fn harvest_child_state(
+    old: Vec<TreeRow>,
+    child_depth: usize,
+) -> HashMap<String, (String, bool, Vec<TreeRow>)> {
+    let mut saved: HashMap<String, (String, bool, Vec<TreeRow>)> = HashMap::new();
+    let mut cur: Option<(String, String, bool, Vec<TreeRow>)> = None;
+    for row in old {
+        if row.depth == child_depth {
+            if let Some((id, kind, ex, desc)) = cur.take() {
+                saved.insert(id, (kind, ex, desc));
+            }
+            cur = Some((
+                row.node.id.clone(),
+                row.node.kind.clone(),
+                row.expanded,
+                Vec::new(),
+            ));
+        } else if let Some((_, _, _, desc)) = cur.as_mut() {
+            desc.push(row);
+        }
+    }
+    if let Some((id, kind, ex, desc)) = cur.take() {
+        saved.insert(id, (kind, ex, desc));
+    }
+    saved
+}
+
+/// Rebuild a children run in the NEW reply's order, re-attaching each
+/// surviving child's saved (expanded, descendants) — but only when the fresh
+/// node is still a compatible container (same kind, has_children): an
+/// expanded directory replaced by a same-named file arrives as a plain leaf,
+/// never resurrecting ghost descendants.
+fn rebuild_children_preserving(
+    saved: &mut HashMap<String, (String, bool, Vec<TreeRow>)>,
+    children: Vec<TreeNode>,
+    child_depth: usize,
+) -> Vec<TreeRow> {
+    let mut rebuilt: Vec<TreeRow> = Vec::with_capacity(children.len());
+    for c in children {
+        let (expanded, desc) = match saved.remove(&c.id) {
+            Some((kind, ex, desc)) if kind == c.kind && c.has_children => (ex, desc),
+            _ => (false, Vec::new()),
+        };
+        rebuilt.push(TreeRow {
+            node: c,
+            depth: child_depth,
+            expanded,
+        });
+        rebuilt.extend(desc);
+    }
+    rebuilt
+}
+
+/// Drop the incoming subtree rows of every id the user is currently showing
+/// COLLAPSED, keeping (and re-collapsing) the container row itself. Applied
+/// by whole-tree rebuild paths (set_flat) so a reply that races a user
+/// collapse — the modules root Right-then-Left case — cannot reopen it
+/// (codex review, round 3).
+fn suppress_collapsed_subtrees(
+    rows: Vec<TreeRow>,
+    collapsed: &std::collections::HashSet<String>,
+) -> Vec<TreeRow> {
+    if collapsed.is_empty() {
+        return rows;
+    }
+    let mut out: Vec<TreeRow> = Vec::with_capacity(rows.len());
+    let mut skip_deeper: Option<usize> = None;
+    for mut row in rows {
+        if let Some(d) = skip_deeper {
+            if row.depth > d {
+                continue;
+            }
+            skip_deeper = None;
+        }
+        if collapsed.contains(&row.node.id) {
+            row.expanded = false;
+            skip_deeper = Some(row.depth);
+        }
+        out.push(row);
+    }
+    out
+}
+
 #[derive(Clone, Default)]
 struct TreeView {
     rows: Vec<TreeRow>,
@@ -1500,7 +1621,18 @@ impl TreeView {
         let prev_id = self.selected_node_id();
         let prev_selected = self.selected;
         let prev_len = self.rows.len();
-        self.rows = rows;
+        // Whole-tree rebuilds must not reopen what the user closed: every
+        // container currently showing collapsed keeps its collapse, its
+        // incoming subtree dropped (the next expand re-fetches). Covers the
+        // Right-then-Left-before-reply race on rebuild-path roots (codex
+        // review, round 3).
+        let collapsed: std::collections::HashSet<String> = self
+            .rows
+            .iter()
+            .filter(|r| r.node.has_children && !r.expanded)
+            .map(|r| r.node.id.clone())
+            .collect();
+        self.rows = suppress_collapsed_subtrees(rows, &collapsed);
         self.selected = prev_id
             .as_deref()
             .and_then(|id| self.rows.iter().position(|r| r.node.id == id))
@@ -1523,18 +1655,33 @@ impl TreeView {
         let prev_id = self.selected_node_id();
         let prev_selected = self.selected;
         let prev_len = self.rows.len();
-        let root_expanded = !children.is_empty();
+        // Re-seeding the SAME root (Sessions-mode refresh, enter-mode
+        // refreshes) is a merge, not a wipe (codex review, round 3):
+        // surviving children keep their expansion + shown descendants — so
+        // a workspace.list reply racing a session-row expand no longer
+        // clears the request-time expanded mark (which made the following
+        // panes reply drop) — and a user-collapsed root STAYS collapsed
+        // (children dropped; the next expand re-fetches). A DIFFERENT root
+        // id is a genuine re-seed (workspace switch): fresh rows.
+        let same_root = self
+            .rows
+            .first()
+            .map(|r| r.node.id == root.id)
+            .unwrap_or(false);
+        let root_collapsed = same_root && !self.rows[0].expanded;
+        let mut saved = if same_root {
+            let old: Vec<TreeRow> = self.rows.drain(1..).collect();
+            harvest_child_state(old, 1)
+        } else {
+            HashMap::new()
+        };
         let mut rows = vec![TreeRow {
+            expanded: !root_collapsed && !children.is_empty(),
             node: root,
             depth: 0,
-            expanded: root_expanded,
         }];
-        for c in children {
-            rows.push(TreeRow {
-                node: c,
-                depth: 1,
-                expanded: false,
-            });
+        if !root_collapsed {
+            rows.extend(rebuild_children_preserving(&mut saved, children, 1));
         }
         self.rows = rows;
         self.selected = prev_id
@@ -1551,15 +1698,19 @@ impl TreeView {
         );
     }
 
-    /// Splice the children of `parent_id` into the flat list, replacing any
-    /// previously-shown children for that parent. Marks the parent expanded
-    /// so the disclosure char flips and Left can collapse it again.
-    /// Preserves the cursor on its previous node by node-id lookup: if the
-    /// node survives (it was outside the spliced range, or it reappears as
-    /// one of the new children) the cursor follows it to the new index; if
-    /// it was inside the spliced-out subtree and not in the new children,
-    /// the cursor falls back to the parent row so the user stays anchored
-    /// to the surrounding context.
+    /// Merge the fresh children of `parent_id` into the flat list: the
+    /// parent's listing is replaced (new names appear, vanished names drop,
+    /// order follows the reply), but every surviving child that was
+    /// expanded — and is still a compatible container — keeps its expansion
+    /// AND its previously-shown descendant rows. Preserves the cursor on
+    /// its previous node by node-id lookup — with the merge, a cursor on a
+    /// NESTED node under a surviving child now survives refreshes too; only
+    /// a cursor whose node truly vanished falls back to the parent row.
+    ///
+    /// Contract change (codex review): this NEVER expands the parent. A
+    /// reply for a collapsed parent is dropped, so intentional expands mark
+    /// their row `expanded` at REQUEST time; background refreshes can then
+    /// never reopen something the user closed.
     fn apply_children(&mut self, parent_id: &str, children: Vec<TreeNode>) {
         let Some((pidx, pdepth)) = self.rows.iter().enumerate().find_map(|(i, r)| {
             if r.node.id == parent_id {
@@ -1571,24 +1722,42 @@ impl TreeView {
             tracing::debug!(%parent_id, "tree.children reply for unknown parent — ignoring");
             return;
         };
+        // A reply for a parent the user has since COLLAPSED is dropped
+        // (codex review, collapse-race): apply_children no longer force-
+        // opens anything. Every INTENTIONAL expand marks its row expanded
+        // at request time (try_expand_selected / the reveal ancestor walk),
+        // so a collapsed parent here means a background refresh raced a
+        // user collapse — honoring the collapse wins; the listing is
+        // re-fetched fresh on the next expand anyway.
+        if !self.rows[pidx].expanded {
+            tracing::debug!(%parent_id, "tree.children reply for collapsed parent — dropping");
+            return;
+        }
         let prev_id = self.selected_node_id();
         let mut end = pidx + 1;
         while end < self.rows.len() && self.rows[end].depth > pdepth {
             end += 1;
         }
-        self.rows.drain((pidx + 1)..end);
+        // MERGE, don't wipe (2026-08-18 regression fix): the old drain-and-
+        // reinsert collapsed every expanded subtree under the parent and
+        // kicked a nested cursor to the parent row. Harmless while the
+        // watcher path was mostly dead (the wrong-root bug dropped its
+        // events), it became a live grenade once PR #101 made events flow:
+        // any root-level file event — editor temp-file churn included —
+        // reset the whole nav ("nav pane keeps resetting", owner report,
+        // caught in the receipt log). Now: save each departing direct
+        // child's (kind, expanded, descendant rows), rebuild in the NEW
+        // children's order, and re-attach the saved subtree under every
+        // surviving id. Vanished children's subtrees drop; new children
+        // arrive collapsed; a cursor on a surviving nested node keeps its
+        // node (re-anchored by id below).
+        let old: Vec<TreeRow> = self.rows.drain((pidx + 1)..end).collect();
         let child_depth = pdepth + 1;
-        for (i, c) in children.into_iter().enumerate() {
-            self.rows.insert(
-                pidx + 1 + i,
-                TreeRow {
-                    node: c,
-                    depth: child_depth,
-                    expanded: false,
-                },
-            );
-        }
-        self.rows[pidx].expanded = true;
+        let mut saved = harvest_child_state(old, child_depth);
+        let rebuilt = rebuild_children_preserving(&mut saved, children, child_depth);
+        let tail = self.rows.split_off(pidx + 1);
+        self.rows.extend(rebuilt);
+        self.rows.extend(tail);
         let prev_selected = self.selected;
         self.selected = prev_id
             .as_deref()
@@ -4375,6 +4544,18 @@ impl State {
                 tracing::warn!(error = %e, "drop expand request — channel closed");
                 return false;
             }
+            // Flip the disclosure at REQUEST time: apply_children now drops
+            // replies for collapsed parents (so background refreshes can't
+            // reopen a user's collapse), which makes marking here the
+            // expand's half of that contract. Rows whose reply path
+            // rebuilds the whole view (project.scan / workspace.list) are
+            // covered by the rebuilds' own collapse preservation: set_flat
+            // suppresses subtrees of currently-collapsed ids and set_root
+            // keeps a collapsed same-id root collapsed, so a Left between
+            // request and reply wins there too (codex review, round 3).
+            if let Some(r) = self.tree.rows.get_mut(self.tree.selected) {
+                r.expanded = true;
+            }
             return true;
         }
         false
@@ -4631,7 +4812,9 @@ impl State {
                 // collapses the loaded tree, stranding an intervening reveal and
                 // letting the auto-follow clobber the driven preview.
                 self.pending_reveal = Some(node_id);
-                self.drive_reveal_step();
+                self.reveal_awaiting = None;
+                self.reveal_refetched = None;
+                self.drive_reveal_step(None);
             } else {
                 // Files tree NOT loaded FOR THE ACTIVE WS: empty, rows belong to
                 // another mode, OR the tree is stamped to a different workspace
@@ -4689,7 +4872,7 @@ impl State {
     /// re-enter here. Self-terminating: if the deepest visible ancestor is
     /// already expanded yet the target still isn't present, the path doesn't
     /// resolve and the reveal is dropped (the preview body already showed).
-    fn drive_reveal_step(&mut self) {
+    fn drive_reveal_step(&mut self, replied_parent: Option<&str>) {
         let Some(target_id) = self.pending_reveal.clone() else {
             return;
         };
@@ -4707,6 +4890,27 @@ impl State {
             self.window.request_redraw();
             tracing::info!(%target_id, "reveal: landed cursor on driven-open target");
             return;
+        }
+        // Scope reply-driven re-entry to the level the walk is waiting on
+        // (codex review, round 3): with request-time expansion, an UNRELATED
+        // tree.children reply (watcher refresh, another dir's expand) sees
+        // the optimistically-expanded ancestor and would double-refresh — or
+        // trip the refetched-still-absent abort before the awaited reply
+        // arrived. While a wait is armed, only the awaited dir's own reply
+        // advances the walk; the awaited level is cleared here exactly when
+        // its reply shows up. (Landing on a visible target above is always
+        // allowed — any splice may legitimately surface it.)
+        let gate = self
+            .reveal_awaiting
+            .clone()
+            .or_else(|| self.reveal_refetched.as_ref().map(|(_, anc)| anc.clone()));
+        if let Some(g) = gate {
+            if replied_parent != Some(g.as_str()) {
+                return;
+            }
+            if self.reveal_awaiting.as_deref() == Some(g.as_str()) {
+                self.reveal_awaiting = None;
+            }
         }
         let Some(rel) = target_id.strip_prefix("files:") else {
             self.pending_reveal = None;
@@ -4785,6 +4989,12 @@ impl State {
                 return;
             }
             tracing::info!(%target_id, anc = %anc_id, "reveal: expanding ancestor");
+            // Same request-time disclosure flip as try_expand_selected:
+            // apply_children drops replies for collapsed parents, so the
+            // reveal's intentional ancestor expand must mark the row now.
+            if let Some(r) = self.tree.rows.iter_mut().find(|r| r.node.id == anc_id) {
+                r.expanded = true;
+            }
             self.reveal_awaiting = Some(anc_id);
             return;
         }
@@ -5142,6 +5352,30 @@ impl State {
                     }) {
                         tracing::warn!(error = %e, "drop tree.root request — channel closed");
                     }
+                } else if self
+                    .tree
+                    .rows
+                    .iter()
+                    .any(|r| r.node.id == "files:" && r.expanded)
+                {
+                    // Restored parked view with an EXPANDED root: refresh the
+                    // root listing so files created while another mode was up
+                    // (watcher refreshes gate on Files) appear on return — the
+                    // parked view used to come back stale and stay stale
+                    // (2026-08-17 report). Safe since apply_children became a
+                    // MERGE (2026-08-18): expanded subtrees and a nested
+                    // cursor survive the refresh. A COLLAPSED root is left
+                    // alone (codex review): the user closed it, and a
+                    // background refresh must not reopen it — the reply-side
+                    // collapsed-parent gate would drop the reply anyway.
+                    // Expanded subdirs' own listings keep the accepted
+                    // staleness residual (only the root level re-lists here).
+                    if let Err(e) = self.req_tx.send(OutgoingReq::TreeChildren {
+                        parent_id: "files:".to_string(),
+                        workspace_id: self.active_workspace_id.clone(),
+                    }) {
+                        tracing::warn!(error = %e, "drop tree.children (files-entry refresh)");
+                    }
                 }
             }
             Mode::Modules => {
@@ -5299,6 +5533,45 @@ impl State {
         }
     }
 
+    /// Collapse the selected row via TreeView, and — on success — cancel any
+    /// pending deep reveal whose target lives UNDER the collapsed row
+    /// (codex review, round 3): the walk would otherwise re-expand the very
+    /// row the user just closed on its next continuation. The user's
+    /// collapse outranks a driven reveal; the preview body already showed.
+    fn collapse_selected_row(&mut self) -> bool {
+        let collapsed_id = self
+            .tree
+            .rows
+            .get(self.tree.selected)
+            .map(|r| r.node.id.clone());
+        if !self.tree.collapse_selected() {
+            return false;
+        }
+        if let (Some(id), Some(target)) = (collapsed_id, self.pending_reveal.as_ref()) {
+            // A ROOT id is `<mode>:` with an EMPTY rest ("files:") — not
+            // merely ends-with-':' (codex round 4: a directory literally
+            // named "ab:" yields id "files:ab:", and an ends-with test would
+            // let collapsing it cancel a reveal of the SIBLING "files:ab:cd").
+            // Deeper ids scope with '/'.
+            let is_root = id
+                .split_once(':')
+                .is_some_and(|(_, rest)| rest.is_empty());
+            let scoped = if is_root {
+                target != &id && target.starts_with(&id)
+            } else {
+                target.starts_with(&format!("{id}/"))
+            };
+            if scoped {
+                tracing::info!(collapsed = %id, target = %target,
+                    "reveal: cancelled by user collapse of an ancestor");
+                self.pending_reveal = None;
+                self.reveal_awaiting = None;
+                self.reveal_refetched = None;
+            }
+        }
+        true
+    }
+
     /// Live-refresh one directory's listing in the Files nav tree by re-fetching
     /// its `tree.children` (the reply runs `apply_children`, which *replaces*
     /// that dir's rows). Used by the file-watcher (`preview.changed`) path so a
@@ -5430,7 +5703,7 @@ impl State {
                         self.try_expand_selected();
                     }
                     "collapse" => {
-                        if !self.tree.collapse_selected() {
+                        if !self.collapse_selected_row() {
                             if let Some(p) = self.tree.parent_of_selected() {
                                 self.tree.selected = p;
                             }
@@ -6176,7 +6449,9 @@ impl State {
                                 .map(|r| r.node.id.clone());
                         }
                         self.pending_reveal = Some(node_id.clone());
-                        self.drive_reveal_step();
+                        self.reveal_awaiting = None;
+                        self.reveal_refetched = None;
+                        self.drive_reveal_step(None);
                     } else {
                         // First visit (a tree.root was requested but its rows
                         // aren't in yet), a restored-but-FOREIGN tree, or a
@@ -7108,12 +7383,29 @@ impl State {
     /// backend, because a workspace swap changes the file tree's
     /// meaning of `<rel>` without changing the daemon startup root.
     fn active_project_root(&self) -> Option<&str> {
-        if let Some(slug) = self.active_workspace_id.as_deref() {
-            if let Some(root) = self.workspace_project_roots.get(slug) {
-                return Some(root.as_str());
+        match self.active_workspace_id.as_deref() {
+            Some(slug) => {
+                if let Some(root) = self.workspace_project_roots.get(slug) {
+                    return Some(root.as_str());
+                }
+                // Lookup miss for a known non-default slug (workspace.list
+                // not yet processed, or a session outside the registry):
+                // return None, NOT the daemon root — a wrong root is worse
+                // than none. The old fallback mistranslated paths here:
+                // `preview.changed` events from the daemon-root repo
+                // resolved as if they were the active workspace's files
+                // (phantom tree refreshes, observed live 2026-08-17), while
+                // the active workspace's own events missed translation and
+                // were dropped — the "nav never updates" bug. The default
+                // slug IS the daemon root, so it keeps the fallback.
+                if self.default_workspace_slug.as_deref() == Some(slug) {
+                    self.daemon_project_root.as_deref()
+                } else {
+                    None
+                }
             }
+            None => self.daemon_project_root.as_deref(),
         }
-        self.daemon_project_root.as_deref()
     }
 
     /// Resolve the cursored NavTree row to a backend-absolute path,
@@ -9156,7 +9448,7 @@ impl State {
                             self.pending_reveal = Some(sel);
                             self.reveal_awaiting = None;
                             self.reveal_refetched = None;
-                            self.drive_reveal_step();
+                            self.drive_reveal_step(None);
                         } else {
                             tracing::info!(?armed_ws, active = ?self.active_workspace_id,
                                 "resume: nav restore discarded — workspace changed before the root arrived");
@@ -9259,7 +9551,9 @@ impl State {
                                     .map(|r| r.node.id.clone());
                             }
                             self.pending_reveal = Some(node_id);
-                            self.drive_reveal_step();
+                            self.reveal_awaiting = None;
+                            self.reveal_refetched = None;
+                            self.drive_reveal_step(None);
                         }
                     }
                 }
@@ -9297,7 +9591,7 @@ impl State {
                     if self.pending_reveal.is_some() {
                         tracing::info!(%parent_id, "reveal: re-entering after children splice");
                     }
-                    self.drive_reveal_step();
+                    self.drive_reveal_step(Some(&parent_id));
                 }
                 crate::transport::IncomingEvt::TreeChildrenFailed {
                     workspace_id,
@@ -9324,7 +9618,17 @@ impl State {
                     // the transport and the reveal starved silently.
                     tracing::info!(%parent_id, %error, "tree.children FAILED");
                     self.status = format!("tree expand failed · {parent_id}: {error}");
-                    if self.reveal_awaiting.as_deref() == Some(parent_id.as_str()) {
+                    let refetch_gated = self
+                        .reveal_refetched
+                        .as_ref()
+                        .is_some_and(|(_, anc)| anc == &parent_id);
+                    if self.reveal_awaiting.as_deref() == Some(parent_id.as_str()) || refetch_gated
+                    {
+                        // Covers BOTH wait states (codex round 4): a failed
+                        // reply for the awaited level OR for the force-
+                        // refreshed ancestor would otherwise leave the reveal
+                        // gated forever (only that dir's reply advances the
+                        // walk now).
                         tracing::info!(%parent_id, "reveal: aborted — awaited children failed");
                         self.pending_reveal = None;
                         self.reveal_awaiting = None;
@@ -10648,62 +10952,74 @@ impl State {
                         // it in the Files nav tree — otherwise the pane shows a
                         // stale listing until a manual re-nav (the reported bug).
                         //
-                        // Gate + address by PATH, not by the event's workspace
-                        // tag (2026-07-17 fix). Workspaces overlap — an umbrella
-                        // workspace registered over the same tree, and watch
-                        // budgets capping a watcher's coverage — so the event
-                        // copy tagged with OUR active slug may simply never
-                        // exist (files added to an open folder never refreshed
-                        // when the folder was viewed through a workspace whose
-                        // own watcher didn't cover the path). Every copy carries
-                        // the backend-absolute path; any copy whose path falls
-                        // inside the active workspace's root is ours — translate
-                        // it to OUR `files:<rel>` node id (the carried node_id
-                        // is relative to the EMITTING workspace, not ours) and
-                        // act on that. Duplicate copies from overlapping
-                        // watchers re-fire the same idempotent refresh; cheap.
-                        let node_id = payload
-                            .get("path")
-                            .and_then(|v| v.as_str())
-                            .zip(self.active_project_root())
-                            .and_then(|(p, root)| files_node_id_under_root(p, root));
-                        let Some(node_id) = node_id else {
-                            // Outside the active workspace (or no root known
-                            // yet) — not ours to render.
+                        // Acceptance is two-path — workspace-tag match on the
+                        // carried node_id, else path translation under the KNOWN
+                        // active root — see `resolve_preview_changed` for the
+                        // rationale (and the 2026-08-17 live forensics that
+                        // replaced the path-only scheme). Duplicate copies from
+                        // overlapping watchers re-fire the same idempotent
+                        // refresh; cheap.
+                        let event_ws = payload.get("workspace_id").and_then(|v| v.as_str());
+                        let event_node = payload.get("node_id").and_then(|v| v.as_str());
+                        let event_path = payload.get("path").and_then(|v| v.as_str());
+                        let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                        let active_ws = self
+                            .active_workspace_id
+                            .as_deref()
+                            .or(self.default_workspace_slug.as_deref());
+                        let resolved = resolve_preview_changed(
+                            event_ws,
+                            event_node,
+                            event_path,
+                            active_ws,
+                            self.active_project_root(),
+                        );
+                        // Receipt log — the arm used to skip silently, which
+                        // made the live-refresh path undiagnosable from the FE
+                        // log (2026-08-17 forensics). Events are debounced
+                        // daemon-side, so info-level is low-volume.
+                        tracing::info!(
+                            kind,
+                            event_ws = ?event_ws,
+                            path = ?event_path,
+                            active_ws = ?active_ws,
+                            resolved = ?resolved,
+                            "preview.changed received"
+                        );
+                        let Some(node_id) = resolved else {
+                            // Not ours to render (foreign workspace, or the
+                            // active root is unknown and the tag didn't match).
                             continue;
                         };
-                        let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                        let changed_node_id = Some(node_id.as_str());
                         if kind == "created" || kind == "removed" {
-                            if let Some(node_id) = changed_node_id {
-                                let parent = parent_files_node_id(node_id);
-                                self.refresh_tree_dir_if_expanded(&parent);
-                            }
-                        } else if kind == "modified" {
-                            // A modify leaves the directory *listing* unchanged,
-                            // but if the modified file is the one the preview pane
-                            // is currently showing, its bytes changed underneath
-                            // us (e.g. a tool re-rendered a PDF in place). Re-fire
-                            // `preview.get` so the pane reflects the new content
-                            // instead of the stale render. `preview_node_id_fired`
-                            // is the source of truth for "what the preview pane is
-                            // showing right now" (same anchor the reconnect
-                            // re-fetch uses); hold the current page so a paginated
-                            // preview doesn't snap back to page 1.
-                            if let Some(node_id) = changed_node_id {
-                                if self.preview_node_id_fired.as_deref() == Some(node_id) {
-                                    let (fit_w, fit_h) = self.preview_fit_px();
-                                    let _ = self.req_tx.send(
-                                        crate::transport::OutgoingReq::PreviewGet {
-                                            node_id: node_id.to_string(),
-                                            workspace_id: self.active_workspace_id.clone(),
-                                            page: self.preview_page.map(|(p, _)| p),
-                                            fit_w,
-                                            fit_h,
-                                        },
-                                    );
-                                }
-                            }
+                            let parent = parent_files_node_id(&node_id);
+                            self.refresh_tree_dir_if_expanded(&parent);
+                        }
+                        // A change to the file the preview pane is currently
+                        // showing means its bytes changed underneath us — re-fire
+                        // `preview.get` so the pane reflects the new content.
+                        // BOTH kinds matter: an in-place rewrite arrives as
+                        // "modified", but atomic savers (write temp + rename
+                        // into place) deliver the SAME logical update as
+                        // "created" — the old modified-only gate left renamed-in
+                        // figures stale (the reported same-filename bug).
+                        // `preview_node_id_fired` is the source of truth for
+                        // "what the pane shows right now" (same anchor the
+                        // reconnect re-fetch uses); hold the current page so a
+                        // paginated preview doesn't snap back to page 1.
+                        if (kind == "modified" || kind == "created")
+                            && self.preview_node_id_fired.as_deref() == Some(node_id.as_str())
+                        {
+                            let (fit_w, fit_h) = self.preview_fit_px();
+                            let _ =
+                                self.req_tx
+                                    .send(crate::transport::OutgoingReq::PreviewGet {
+                                        node_id: node_id.clone(),
+                                        workspace_id: self.active_workspace_id.clone(),
+                                        page: self.preview_page.map(|(p, _)| p),
+                                        fit_w,
+                                        fit_h,
+                                    });
                         }
                     } else {
                         tracing::debug!(%op, "evt");
@@ -16295,7 +16611,7 @@ impl ApplicationHandler for App {
                                 state.try_expand_selected();
                             }
                             Key::Named(NamedKey::ArrowLeft) if !event.repeat => {
-                                if !state.tree.collapse_selected() {
+                                if !state.collapse_selected_row() {
                                     if let Some(p) = state.tree.parent_of_selected() {
                                         state.tree.selected = p;
                                     }
@@ -20685,6 +21001,81 @@ mod tests {
     }
 
     #[test]
+    fn preview_changed_tag_match_uses_carried_node_id() {
+        // Active workspace's own event: carried id is trusted verbatim,
+        // no root knowledge needed (the workspace.list-lag case).
+        assert_eq!(
+            resolve_preview_changed(
+                Some("alpha"),
+                Some("files:fig/out.png"),
+                Some("/a/alpha/fig/out.png"),
+                Some("alpha"),
+                None,
+            ),
+            Some("files:fig/out.png".to_string())
+        );
+        // Empty rel ("files:") and non-files ids are never trusted.
+        assert_eq!(
+            resolve_preview_changed(Some("alpha"), Some("files:"), None, Some("alpha"), None),
+            None
+        );
+        assert_eq!(
+            resolve_preview_changed(Some("alpha"), Some("modules:X"), None, Some("alpha"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn preview_changed_foreign_ws_translates_by_path_under_known_root() {
+        // Overlap case: tagged with another workspace, but the path lies
+        // under OUR root — re-addressed into our id space.
+        assert_eq!(
+            resolve_preview_changed(
+                Some("umbrella"),
+                Some("files:pais/fig/out.png"),
+                Some("/a/alpha/fig/out.png"),
+                Some("alpha"),
+                Some("/a/alpha"),
+            ),
+            Some("files:fig/out.png".to_string())
+        );
+    }
+
+    #[test]
+    fn preview_changed_foreign_ws_without_known_root_is_dropped() {
+        // Regression (2026-08-17): with the active root UNKNOWN, a foreign
+        // event must be dropped — the old daemon-root fallback translated
+        // it into the active tree's id space and fired phantom refreshes.
+        assert_eq!(
+            resolve_preview_changed(
+                Some("sot"),
+                Some("files:nav-live-A.txt"),
+                Some("/a/sot/nav-live-A.txt"),
+                Some("alpha"),
+                None,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn preview_changed_default_ws_normalization() {
+        // Active None normalizes to the default slug at the call site; the
+        // resolver itself just compares — verify the default-vs-default
+        // shape trusts the carried id.
+        assert_eq!(
+            resolve_preview_changed(
+                Some("sot"),
+                Some("files:README.md"),
+                Some("/a/sot/README.md"),
+                Some("sot"),
+                Some("/a/sot"),
+            ),
+            Some("files:README.md".to_string())
+        );
+    }
+
+    #[test]
     fn nav_envelope_parses_valid_v1() {
         let txt = r#"{"sot_ui":{"v":1,"cmd":"nav.preview","workspace":"mypackage","mode":"files","path":"src/edge.jl"}}"#;
         assert_eq!(
@@ -20856,6 +21247,9 @@ mod tests {
             node("r", "r", true),
             vec![node("a", "a", true), node("b", "b", false)],
         );
+        // Intentional expands mark the row at request time (the reply-side
+        // collapsed-parent gate would otherwise drop the splice).
+        t.rows[1].expanded = true;
         t.apply_children(
             "a",
             vec![node("a/1", "a1", false), node("a/2", "a2", false)],
@@ -20876,9 +21270,191 @@ mod tests {
     }
 
     #[test]
+    fn apply_children_merge_preserves_expanded_subtree_and_nested_cursor() {
+        // Regression (2026-08-18, "nav pane keeps resetting"): a root-listing
+        // refresh — fired by any root-level file event, editor temp-file
+        // churn included — must NOT collapse expanded subtrees or kick a
+        // nested cursor to row 0.
+        let mut t = TreeView::new();
+        t.set_root(
+            node("r", "r", true),
+            vec![node("a", "a", true), node("b", "b", false)],
+        );
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
+        t.apply_children(
+            "a",
+            vec![node("a/1", "a1", false), node("a/2", "a2", false)],
+        );
+        t.selected = 3; // nested, on a/2
+        // Root refresh: same surviving children plus a newcomer (the
+        // temp-file case). `a` must stay expanded with its subtree intact,
+        // the cursor must stay on a/2, and the newcomer arrives collapsed.
+        t.apply_children(
+            "r",
+            vec![
+                node("a", "a", true),
+                node("b", "b", false),
+                node("c.tmp", "ctmp", false),
+            ],
+        );
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["r", "a", "a/1", "a/2", "b", "c.tmp"]
+        );
+        assert!(t.rows[1].expanded, "surviving child keeps its expansion");
+        assert!(!t.rows[5].expanded, "newcomer arrives collapsed");
+        assert_eq!(t.selected_node_id().as_deref(), Some("a/2"));
+    }
+
+    #[test]
+    fn set_root_same_root_preserves_expansion_and_collapsed_root() {
+        // Codex round 3: a same-root re-seed (Sessions refresh) must keep a
+        // surviving child's expansion + descendants (the workspace.list-vs-
+        // session-expand race), and a user-collapsed root must stay
+        // collapsed with its children dropped.
+        let mut t = TreeView::new();
+        t.set_root(
+            node("r", "r", true),
+            vec![node("a", "a", true), node("b", "b", false)],
+        );
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
+        t.apply_children("a", vec![node("a/1", "a1", false)]);
+        t.selected = 2; // nested, on a/1
+        // Same-root re-seed with a newcomer: `a` keeps its subtree + cursor.
+        t.set_root(
+            node("r", "r", true),
+            vec![node("a", "a", true), node("b", "b", false), node("c", "c", false)],
+        );
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["r", "a", "a/1", "b", "c"]
+        );
+        assert!(t.rows[1].expanded);
+        assert_eq!(t.selected_node_id().as_deref(), Some("a/1"));
+        // Collapsed root: re-seed keeps it closed, children dropped.
+        t.selected = 0;
+        assert!(t.collapse_selected());
+        t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
+        assert_eq!(t.rows.len(), 1);
+        assert!(!t.rows[0].expanded);
+    }
+
+    #[test]
+    fn set_root_different_root_is_a_fresh_seed() {
+        let mut t = TreeView::new();
+        t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
+        t.apply_children("a", vec![node("a/1", "a1", false)]);
+        // New root id (workspace switch): nothing carries over.
+        t.set_root(node("q", "q", true), vec![node("a", "a", true)]);
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["q", "a"]
+        );
+        assert!(!t.rows[1].expanded, "expansion never crosses a root change");
+    }
+
+    #[test]
+    fn set_flat_suppresses_previously_collapsed_subtrees() {
+        // Codex round 3: the modules-root Right-then-Left race — a rebuild
+        // reply must not reopen a container the user is showing collapsed.
+        let rows = |expanded_root: bool| {
+            vec![
+                TreeRow {
+                    node: node("m", "m", true),
+                    depth: 0,
+                    expanded: expanded_root,
+                },
+                TreeRow {
+                    node: node("m/f", "f", false),
+                    depth: 1,
+                    expanded: false,
+                },
+            ]
+        };
+        let mut t = TreeView::new();
+        t.set_flat(rows(true));
+        t.selected = 0;
+        assert!(t.collapse_selected());
+        // The in-flight scan reply arrives with the full expanded tree.
+        t.set_flat(rows(true));
+        assert_eq!(t.rows.len(), 1, "collapsed root keeps its subtree dropped");
+        assert!(!t.rows[0].expanded);
+    }
+
+    #[test]
+    fn apply_children_ignores_reply_for_collapsed_parent() {
+        // Codex finding (collapse race): a background refresh whose reply
+        // lands AFTER the user collapsed the parent must not reopen it or
+        // splice rows back in.
+        let mut t = TreeView::new();
+        t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
+        t.apply_children("a", vec![node("a/1", "a1", false)]);
+        t.selected = 1; // on `a`
+        assert!(t.collapse_selected());
+        // The stale reply arrives for the now-collapsed `a`.
+        t.apply_children("a", vec![node("a/1", "a1", false), node("a/2", "a2", false)]);
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["r", "a"]
+        );
+        assert!(!t.rows[1].expanded, "collapse must survive the stale reply");
+        // Same rule for a collapsed ROOT.
+        t.selected = 0;
+        assert!(t.collapse_selected());
+        t.apply_children("r", vec![node("a", "a", true)]);
+        assert!(!t.rows[0].expanded);
+        assert_eq!(t.rows.len(), 1);
+    }
+
+    #[test]
+    fn apply_children_drops_saved_subtree_when_child_became_a_leaf() {
+        // Codex finding (ghost subtree): an expanded DIRECTORY replaced by a
+        // same-named node that is no longer a container (kind change or
+        // has_children=false) must arrive as a plain collapsed leaf — never
+        // resurrect the old descendants under it.
+        let mut t = TreeView::new();
+        t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
+        t.apply_children("a", vec![node("a/1", "a1", false)]);
+        // Root refresh where `a` is now a childless leaf (dir -> file).
+        let mut leaf = node("a", "a", false);
+        leaf.kind = "file".to_string();
+        t.apply_children("r", vec![leaf]);
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["r", "a"],
+            "old descendants must not survive under the leaf"
+        );
+        assert!(!t.rows[1].expanded);
+    }
+
+    #[test]
+    fn apply_children_merge_drops_vanished_childs_subtree() {
+        let mut t = TreeView::new();
+        t.set_root(
+            node("r", "r", true),
+            vec![node("a", "a", true), node("b", "b", false)],
+        );
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
+        t.apply_children("a", vec![node("a/1", "a1", false)]);
+        t.selected = 2; // on a/1
+        // `a` vanished from the fresh listing: its subtree goes with it,
+        // and the orphaned cursor falls back to the refreshed parent.
+        t.apply_children("r", vec![node("b", "b", false)]);
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["r", "b"]
+        );
+        assert_eq!(t.selected, 0);
+    }
+
+    #[test]
     fn collapse_selected_drops_descendants_and_unflags() {
         let mut t = TreeView::new();
         t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
         t.apply_children("a", vec![node("a/1", "a1", false)]);
         t.selected = 1; // on `a`
         assert!(t.collapse_selected());
@@ -20896,6 +21472,7 @@ mod tests {
     fn parent_of_selected_walks_back_to_lesser_depth() {
         let mut t = TreeView::new();
         t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
         t.apply_children("a", vec![node("a/1", "a1", false)]);
         t.selected = 2; // on a/1, depth=2
         assert_eq!(t.parent_of_selected(), Some(1));
@@ -21006,6 +21583,7 @@ mod tests {
             vec![node("a", "a", true), node("b", "b", false)],
         );
         t.selected = 2; // on `b`, after the splice point under `a`
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
         t.apply_children(
             "a",
             vec![node("a/1", "a1", false), node("a/2", "a2", false)],
@@ -21019,6 +21597,7 @@ mod tests {
     fn apply_children_falls_back_to_parent_when_cursored_child_disappears() {
         let mut t = TreeView::new();
         t.set_root(node("r", "r", true), vec![node("a", "a", true)]);
+        t.rows[1].expanded = true; // request-time expand mark (see contract)
         t.apply_children(
             "a",
             vec![node("a/1", "a1", false), node("a/2", "a2", false)],
