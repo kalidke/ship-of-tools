@@ -188,31 +188,11 @@ _sot_hello() {
     printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":1,"app_version":"comm","token":"%s"}}\n' "$tok"
 }
 sot_send() {
-    local frame="$1" op="$2" hp host port
-    case "$ENDPOINT" in
-        tcp:*)
-            hp="${ENDPOINT#tcp:}"; host="${hp%:*}"; port="${hp##*:}"
-            if [ "$HAVE_NC" = 1 ]; then
-                { _sot_hello; printf '%s\n' "$frame"; } | timeout "${SEND_TIMEOUT:-6}" nc "$host" "$port" 2>/dev/null | grep -m1 "\"op\":\"$op\""
-            else
-                (
-                    exec 9<>"/dev/tcp/$host/$port" \
-                        || { echo "ERROR: /dev/tcp connect to $host:$port failed (and nc not found)" >&2; exit 1; }
-                    { _sot_hello; printf '%s\n' "$frame"; } >&9
-                    timeout "${SEND_TIMEOUT:-6}" cat <&9
-                    exec 9<&- 9>&- 2>/dev/null || true
-                ) | grep -m1 "\"op\":\"$op\""
-            fi
-            ;;
-        unix:*)
-            if [ "$HAVE_NC" = 1 ]; then
-                { _sot_hello; printf '%s\n' "$frame"; } | timeout "${SEND_TIMEOUT:-6}" nc -U "${ENDPOINT#unix:}" 2>/dev/null | grep -m1 "\"op\":\"$op\""
-            else
-                echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2; return 1
-            fi
-            ;;
-        *) return 1 ;;
-    esac
+    # Delegates to comm-lib's hardened one-shot (poll-file read, writer
+    # linger) — the old inline `writer | nc | grep -m1` raced the response
+    # on a busy daemon. See sot_oneshot_request in comm-lib.sh.
+    local frame="$1" op="$2"
+    sot_oneshot_request "$frame" "$op"
 }
 
 # Frame an `fe.command.send` req from a cmd verb ($1) + an args JSON object ($2),
@@ -236,6 +216,27 @@ send_fe_command() {
         '{v:1, id:1, kind:"req", op:"fe.command.send", payload:$p}')"
     local resp
     resp="$(sot_send "$req" fe.command.send || true)"
+    if [ -z "$resp" ]; then
+        # Empty response = the read lost a race (busy daemon, giant
+        # broadcast frames queued ahead) — NOT proof of refusal: the daemon
+        # broadcasts BEFORE acking, so the command may already have been
+        # delivered. Retry once ONLY for idempotent commands (a replayed
+        # preview/reveal/goto/mode/notify is a no-op FE-side); open_url and
+        # docs.open would open a second tab, so those fail loud with a
+        # rerun hint instead (codex review).
+        case "$fe_cmd" in
+            open_url|docs)
+                echo "WARNING: no response — the command may or may not have been delivered." >&2
+                echo "  (open commands are not auto-retried: a duplicate would open a second tab." >&2
+                echo "   Check the target FE; rerun manually if nothing opened.)" >&2
+                ;;
+            *)
+                echo "note: no response on first attempt — retrying once" >&2
+                sleep 1
+                resp="$(sot_send "$req" fe.command.send || true)"
+                ;;
+        esac
+    fi
     local ok
     ok="$(printf '%s' "$resp" | jq -r '.payload.ok // empty' 2>/dev/null || true)"
     if [ "$ok" != "true" ]; then
