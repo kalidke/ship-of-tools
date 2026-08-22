@@ -225,7 +225,7 @@ send_fe_command() {
         # docs.open would open a second tab, so those fail loud with a
         # rerun hint instead (codex review).
         case "$fe_cmd" in
-            open_url|docs.open)
+            open_url|docs)
                 echo "WARNING: no response — the command may or may not have been delivered." >&2
                 echo "  (open commands are not auto-retried: a duplicate would open a second tab." >&2
                 echo "   Check the target FE; rerun manually if nothing opened.)" >&2
