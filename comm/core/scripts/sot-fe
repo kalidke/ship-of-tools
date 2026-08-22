@@ -218,11 +218,24 @@ send_fe_command() {
     resp="$(sot_send "$req" fe.command.send || true)"
     if [ -z "$resp" ]; then
         # Empty response = the read lost a race (busy daemon, giant
-        # broadcast frames queued ahead) — NOT proof of refusal. One retry
-        # on a fresh connection; the command is idempotent FE-side.
-        echo "note: no response on first attempt — retrying once" >&2
-        sleep 1
-        resp="$(sot_send "$req" fe.command.send || true)"
+        # broadcast frames queued ahead) — NOT proof of refusal: the daemon
+        # broadcasts BEFORE acking, so the command may already have been
+        # delivered. Retry once ONLY for idempotent commands (a replayed
+        # preview/reveal/goto/mode/notify is a no-op FE-side); open_url and
+        # docs.open would open a second tab, so those fail loud with a
+        # rerun hint instead (codex review).
+        case "$fe_cmd" in
+            open_url|docs.open)
+                echo "WARNING: no response — the command may or may not have been delivered." >&2
+                echo "  (open commands are not auto-retried: a duplicate would open a second tab." >&2
+                echo "   Check the target FE; rerun manually if nothing opened.)" >&2
+                ;;
+            *)
+                echo "note: no response on first attempt — retrying once" >&2
+                sleep 1
+                resp="$(sot_send "$req" fe.command.send || true)"
+                ;;
+        esac
     fi
     local ok
     ok="$(printf '%s' "$resp" | jq -r '.payload.ok // empty' 2>/dev/null || true)"

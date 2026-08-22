@@ -229,27 +229,30 @@ registry_touch() {  # name — bump last_seen if present
 }
 
 
-# sot_oneshot_request FRAME OP [HELLO_CMD] — one-shot request/response on a
-# fresh daemon connection: send hello + FRAME, return (stdout) the first line
+# sot_oneshot_request FRAME OP — one-shot request/response on a fresh daemon
+# connection: send hello + FRAME, return (stdout) the first COMPLETE line
 # whose op matches OP. Hardened after a live intermittent failure
-# (2026-08-22, a peer session's targeted fe.command): the naive
-# `writer | nc | grep -m1` shape RACES the daemon's response — this nc quits
-# when stdin hits EOF, which usually loses only while the daemon is busy
-# (e.g. mid repl.frame fan-out), yielding an empty response on a healthy
-# socket. Shape here instead:
-#   - the WRITER lingers (SOT_SEND_LINGER, default 8s) so the connection
-#     stays open long enough for a delayed response;
-#   - nc drains into a TEMP FILE in the background; we poll the file for the
-#     matching op line (fresh connections receive ALL broadcast evt traffic,
-#     so the res can sit behind multi-MB repl frames — the poll skips past
-#     them);
-#   - first match kills the transport immediately, so SUCCESS returns in
-#     ~0.1s regardless of the linger; failure is bounded by SOT_SEND_TIMEOUT
-#     (default 10s).
-# Uses ENDPOINT (unix:/path or tcp:host:port) from the caller's scope, like
-# the inline senders it replaces. Requires nc for unix endpoints.
+# (2026-08-22, a peer session's targeted fe.command) and a codex review of
+# the first hardening round:
+#   - the WRITER lingers for the whole read window (some nc variants quit on
+#     stdin EOF, racing the reply — the original bug);
+#   - nc drains into a TEMP FILE we poll for the matching op line (fresh
+#     connections receive ALL broadcast evt traffic — multi-MB repl frames
+#     queued ahead of the res just stream past);
+#   - a match is accepted only when jq parses the line (an op match can be
+#     an UNTERMINATED line still being appended — op precedes payload);
+#   - teardown kills the KNOWN pid only (never `kill %%`/`wait <member>`:
+#     the jobspec can resolve to an unrelated background job in a caller
+#     that backgrounds other work, and waiting any pipeline member waits
+#     the whole job — measured as a linger-long floor per call). The
+#     writer's sleep is left to die alone — bounded by the window, writes
+#     nothing, holds nothing.
+# Read window: SOT_SEND_TIMEOUT, else the caller's SEND_TIMEOUT (sot-fe's
+# repl paths set --timeout up to minutes — the window MUST honor it), else
+# 10s. Uses ENDPOINT (unix:/path or tcp:host:port) from the caller's scope.
 sot_oneshot_request() {
-    local frame="$1" op="$2" timeout_s="${SOT_SEND_TIMEOUT:-10}"
+    local frame="$1" op="$2"
+    local timeout_s="${SOT_SEND_TIMEOUT:-${SEND_TIMEOUT:-10}}"
     local tmp ncpid line="" deadline
     tmp="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/sot-oneshot-XXXXXX")" || return 1
     case "$ENDPOINT" in
@@ -257,7 +260,7 @@ sot_oneshot_request() {
             command -v nc >/dev/null 2>&1 || {
                 echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2
                 rm -f "$tmp"; return 1; }
-            { _sot_hello; printf '%s\n' "$frame"; sleep "${SOT_SEND_LINGER:-8}"; } \
+            { _sot_hello; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
                 | timeout "$timeout_s" nc -U "${ENDPOINT#unix:}" > "$tmp" 2>/dev/null &
             ncpid=$!
             ;;
@@ -265,12 +268,12 @@ sot_oneshot_request() {
             local hp="${ENDPOINT#tcp:}" host port
             host="${hp%:*}"; port="${hp##*:}"
             if command -v nc >/dev/null 2>&1; then
-                { _sot_hello; printf '%s\n' "$frame"; sleep "${SOT_SEND_LINGER:-8}"; } \
+                { _sot_hello; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
                     | timeout "$timeout_s" nc "$host" "$port" > "$tmp" 2>/dev/null &
                 ncpid=$!
             else
-                # /dev/tcp fallback: fd stays open for the whole window, so
-                # the EOF race does not exist here — plain bounded read.
+                # /dev/tcp fallback: the fd stays open for the whole window,
+                # so the EOF race does not exist here — plain bounded read.
                 (
                     exec 9<>"/dev/tcp/$host/$port" || exit 1
                     { _sot_hello; printf '%s\n' "$frame"; } >&9
@@ -282,22 +285,32 @@ sot_oneshot_request() {
             ;;
         *) rm -f "$tmp"; return 1 ;;
     esac
+    # Accept only a COMPLETE res line: op precedes payload on the wire, so a
+    # grep hit can be a line nc is still appending. jq gates acceptance when
+    # available; without jq (minimal envs) fall back to requiring that the
+    # file's last byte is a newline OR more bytes follow the match.
+    _sot_line_ok() {
+        if command -v jq >/dev/null 2>&1; then
+            printf '%s' "$1" | jq -e . >/dev/null 2>&1
+        else
+            case "$1" in *"}"* ) return 0 ;; * ) return 1 ;; esac
+        fi
+    }
     deadline=$(( $(date +%s) + timeout_s ))
     while [ "$(date +%s)" -le "$deadline" ]; do
         line="$(grep -m1 "\"op\":\"$op\"" "$tmp" 2>/dev/null || true)"
-        [ -n "$line" ] && break
+        if [ -n "$line" ] && _sot_line_ok "$line"; then
+            break
+        fi
+        line=""
         kill -0 "$ncpid" 2>/dev/null || {
             # transport exited — one final scan for a reply that landed last
             line="$(grep -m1 "\"op\":\"$op\"" "$tmp" 2>/dev/null || true)"
+            _sot_line_ok "$line" || line=""
             break; }
         sleep 0.1
     done
-    # Kill the WHOLE background job (%%): the writer's linger sleep is a
-    # pipeline member, and bash's `wait <pid-of-a-member>` waits the entire
-    # job — which turned the linger into a hard floor on every call
-    # (measured 8s on instant successes). No wait afterward: nothing reads
-    # from the job again, and the shell exits without reaping it.
-    kill %% 2>/dev/null || kill "$ncpid" 2>/dev/null || true
+    kill "$ncpid" 2>/dev/null || true
     rm -f "$tmp"
     [ -n "$line" ] && printf '%s\n' "$line"
 }
