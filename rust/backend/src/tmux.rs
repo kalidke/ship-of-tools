@@ -308,9 +308,13 @@ impl TmuxClient {
             crate::paths::secure_private_dir(dir)
                 .with_context(|| format!("securing tmux socket dir {}", dir.display()))?;
         }
+        let readiness = ensure_server_present(&socket);
         let mut cmd = Command::new("tmux");
         cmd.arg("-S");
         cmd.arg(&socket);
+        if matches!(readiness, ServerReadiness::Present) && crate::pty::tmux_supports_dash_n() {
+            cmd.arg("-N");
+        }
         cmd.args(args);
         let out = cmd
             .output()
@@ -326,6 +330,70 @@ impl TmuxClient {
         }
         Ok(out.stdout)
     }
+}
+
+/// Whether a tmux server is (now) listening on the target socket, and
+/// therefore whether an invocation may safely pass `-N`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServerReadiness {
+    /// The socket exists — a keeper-owned (or pre-existing) server is up.
+    Present,
+    /// No server and no keeper available: fall back to tmux's implicit
+    /// server start (legacy behavior — the server becomes a child of THIS
+    /// process). Tolerated so non-systemd hosts (macOS, --no-service
+    /// installs) keep working; loudly warned once.
+    ImplicitFallback,
+}
+
+/// ADR 0038: the tmux server must not be an implicit child of sotd. Before any
+/// server-touching invocation, make sure a server is already listening on the
+/// socket — starting `sot-tmux.service` (the keeper unit, which owns the server
+/// in its OWN cgroup) if it isn't. Without this, the first tmux client to run
+/// after a server death forks the server inside the daemon's cgroup, and
+/// `KillMode=control-group` turns every daemon restart into a fleet-wide
+/// session massacre (root-caused 2026-08; see the ADR).
+///
+/// Fallback policy: if the keeper can't be started (unit not installed, no
+/// systemd — macOS), warn ONCE and allow the legacy implicit start rather than
+/// bricking session creation. On such hosts the massacre hazard is absent
+/// (no cgroup kill) or accepted (documented in the ADR).
+pub(crate) fn ensure_server_present(socket: &Path) -> ServerReadiness {
+    use std::sync::Once;
+    if socket.exists() {
+        return ServerReadiness::Present;
+    }
+    let started = Command::new("systemctl")
+        .args(["--user", "start", "sot-tmux.service"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if started {
+        // The keeper's server daemonizes and binds promptly; poll briefly
+        // rather than racing it. (Callers run on blocking threads —
+        // spawn_blocking handlers, pty threads — so a short sleep is fine.)
+        for _ in 0..25 {
+            if socket.exists() {
+                tracing::info!(
+                    socket = %socket.display(),
+                    "tmux keeper started on demand (sot-tmux.service)"
+                );
+                return ServerReadiness::Present;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+    static WARNED: Once = Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            socket = %socket.display(),
+            keeper_start_ok = started,
+            "no tmux server on the private socket and the sot-tmux keeper unit is \
+             unavailable — falling back to tmux's implicit server start (the server \
+             will be a child of this daemon; on systemd hosts a daemon restart then \
+             kills every session). Install/enable sot-tmux.service (ADR 0038)."
+        );
+    });
+    ServerReadiness::ImplicitFallback
 }
 
 fn parse_session_line(line: &str) -> Result<SessionInfo> {

@@ -1,0 +1,43 @@
+# Ship of Tools tmux keeper — systemd user unit (ADR 0038).
+#
+# Owns the per-user tmux server that hosts sot sessions, in its OWN cgroup.
+# Without this unit, the first tmux client to run after a server death —
+# usually sotd itself — implicitly forks the server as a child of
+# sotd.service, and KillMode=control-group then turns every daemon
+# restart/upgrade into a fleet-wide session kill (root-caused 2026-08).
+#
+# Install (no token substitution needed):
+#   cp sot-tmux.service ~/.config/systemd/user/sot-tmux.service
+#   systemctl --user daemon-reload && systemctl --user enable --now sot-tmux
+#   loginctl enable-linger $USER    # keep it (and the sessions) alive without
+#                                   # an open login session — REQUIRED on hosts
+#                                   # reached only via transient ssh
+#
+# The socket path MUST match what `sotd tmux-socket-path` resolves — default
+# $XDG_RUNTIME_DIR/sot/tmux.sock (%t is systemd's specifier for the user
+# runtime dir). A host still running the legacy SOT_TMUX_SOCK migration
+# override must either drop the override or point this unit's -S at the same
+# path via `systemctl --user edit sot-tmux`.
+#
+# Form notes (validated on tmux 3.0a and next-3.7, the fleet's extremes):
+# `start-server ";" set -s exit-empty off` starts the server with zero
+# sessions and keeps it alive when the last session closes; the server
+# daemonizes, which Type=forking tracks. `-D` (foreground server) is 3.4+
+# only, so it is deliberately not used. No `-f` override: the server reads
+# the user's normal tmux.conf, same as the implicit server it replaces.
+# ExecStartPre secures the socket dir exactly like the daemon's
+# `paths::secure_private_dir` expects (owner-only).
+
+[Unit]
+Description=Ship of Tools tmux keeper (session server outside sotd's cgroup)
+
+[Service]
+Type=forking
+ExecStartPre=/bin/sh -c 'd="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/sot"; mkdir -p "$d" && chmod 700 "$d"'
+ExecStart=/usr/bin/env tmux -S %t/sot/tmux.sock start-server ";" set -s exit-empty off
+ExecStop=-/usr/bin/env tmux -S %t/sot/tmux.sock kill-server
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

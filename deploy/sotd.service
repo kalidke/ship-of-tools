@@ -20,7 +20,15 @@
 
 [Unit]
 Description=Ship of Tools backend daemon (sotd)
-After=default.target network-online.target
+# ADR 0038: the sot-tmux keeper owns the tmux server in its own cgroup, so a
+# sotd restart can never kill the sessions. Wants= (NOT Requires=/PartOf= —
+# no stop propagation in either direction, and sotd must still run where the
+# keeper is absent: macOS, --no-service installs; the daemon then warns and
+# falls back to the legacy implicit server). After= orders the boot so the
+# default-workspace create finds the socket present; the daemon additionally
+# starts the keeper on demand if the socket is ever missing.
+Wants=sot-tmux.service
+After=default.target network-online.target sot-tmux.service
 StartLimitIntervalSec=0
 
 [Service]
