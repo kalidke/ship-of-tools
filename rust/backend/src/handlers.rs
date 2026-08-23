@@ -668,6 +668,10 @@ async fn build_preview_payload(
     // `extras.physical_scale` so the FE can render a dynamic scalebar on raster
     // previews. Backend-side (rasters are served here, not via the kernel).
     let extras = merge_scale_sidecar(&path, &mime, extras);
+    // ADR 0034 tier 2 (embedded metadata, PNG half): a PNG that declares its
+    // own density via `pHYs` gets a scalebar with no sidecar on disk. Fills
+    // only when the sidecar tier produced nothing (resolution order, §1).
+    let extras = merge_png_phys_scale(&bytes, &mime, extras);
 
     // Ship an oversize raster as a preview-sized PNG instead of the raw file.
     // Only oversize rasters take the spawn_blocking detour (decode is CPU-heavy
@@ -1281,6 +1285,90 @@ fn merge_scale_sidecar(
         _ => serde_json::Map::new(),
     };
     obj.insert("physical_scale".to_string(), scale);
+    Some(serde_json::Value::Object(obj))
+}
+
+/// ADR 0034 resolver tier 2 (embedded metadata), PNG half: read a `pHYs`
+/// chunk's pixels-per-metre as `nm_per_px`. Returns `(x_nm_per_px,
+/// y_nm_per_px)` when the PNG declares a metre-unit density (`unit == 1`)
+/// with nonzero counts; `None` for an absent/other-unit `pHYs` (unit 0 is
+/// aspect ratio only, dimensionless) or a malformed stream. Read-only: SoT
+/// never WRITES `pHYs` (u32 px/metre quantizes nm-scale values — the
+/// sidecar is the exact write channel; ADR 0034 §5).
+///
+/// A hand-rolled chunk walk, not an image decode: `pHYs` must precede
+/// `IDAT`, so this touches a handful of header chunks and never the pixel
+/// data. Bounds-checked throughout; any structural surprise returns `None`
+/// (best-effort tier).
+fn png_phys_nm_per_px(bytes: &[u8]) -> Option<(f64, f64)> {
+    const SIG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if bytes.len() < SIG.len() || bytes[..SIG.len()] != SIG {
+        return None;
+    }
+    let mut off = SIG.len();
+    // Chunk layout: len(4) + type(4) + data(len) + crc(4).
+    while off + 8 <= bytes.len() {
+        let len = u32::from_be_bytes(bytes[off..off + 4].try_into().ok()?) as usize;
+        let ty = &bytes[off + 4..off + 8];
+        let data_start = off + 8;
+        let data_end = data_start.checked_add(len)?;
+        if data_end.checked_add(4)? > bytes.len() {
+            return None; // truncated chunk
+        }
+        match ty {
+            b"pHYs" if len == 9 => {
+                let d = &bytes[data_start..data_end];
+                let ppm_x = u32::from_be_bytes(d[0..4].try_into().ok()?);
+                let ppm_y = u32::from_be_bytes(d[4..8].try_into().ok()?);
+                if d[8] != 1 || ppm_x == 0 || ppm_y == 0 {
+                    return None;
+                }
+                return Some((1e9 / ppm_x as f64, 1e9 / ppm_y as f64));
+            }
+            b"IDAT" | b"IEND" => return None, // pHYs must precede IDAT
+            _ => {}
+        }
+        off = data_end + 4;
+    }
+    None
+}
+
+/// ADR 0034 tier 2 merge: when no higher tier (the sidecar) produced a
+/// `physical_scale`, fall back to the PNG's own `pHYs` declaration — the
+/// in-file channel scale-producing pipelines prefer, since the PNG stays a
+/// single self-describing artifact. Emits the same `physical_scale` schema
+/// as the sidecar (named x/y axes, `nm`), so the FE and the downsample
+/// rescale can't tell tiers apart. The sidecar keeps priority: it carries
+/// exact floats and is what `preview.set_scale` writes, so a user-entered
+/// correction overrides a wrong in-file value.
+fn merge_png_phys_scale(
+    bytes: &[u8],
+    mime: &str,
+    extras: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    if mime != "image/png" {
+        return extras;
+    }
+    if matches!(&extras, Some(serde_json::Value::Object(m)) if m.contains_key("physical_scale")) {
+        return extras;
+    }
+    let Some((x_nm, y_nm)) = png_phys_nm_per_px(bytes) else {
+        return extras;
+    };
+    let mut obj = match extras {
+        Some(serde_json::Value::Object(m)) => m,
+        _ => serde_json::Map::new(),
+    };
+    obj.insert(
+        "physical_scale".to_string(),
+        json!({
+            "axes": [
+                { "name": "x", "nm_per_px": x_nm },
+                { "name": "y", "nm_per_px": y_nm },
+            ],
+            "unit": "nm",
+        }),
+    );
     Some(serde_json::Value::Object(obj))
 }
 
@@ -4805,6 +4893,96 @@ mod scalebar_sidecar_tests {
         std::fs::write(dir.join("b.png.scale.json"), b"not json{").unwrap();
         assert!(merge_scale_sidecar(&img, "image/png", None).is_none());
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod phys_scale_tests {
+    use super::{merge_png_phys_scale, png_phys_nm_per_px};
+
+    const SIG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+    /// A PNG chunk with a dummy CRC — `png_phys_nm_per_px` walks structure,
+    /// it never validates CRCs.
+    fn chunk(ty: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut v = (data.len() as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(ty);
+        v.extend_from_slice(data);
+        v.extend_from_slice(&[0, 0, 0, 0]);
+        v
+    }
+
+    fn phys_data(ppm_x: u32, ppm_y: u32, unit: u8) -> Vec<u8> {
+        let mut d = ppm_x.to_be_bytes().to_vec();
+        d.extend_from_slice(&ppm_y.to_be_bytes());
+        d.push(unit);
+        d
+    }
+
+    fn png_with(chunks: &[Vec<u8>]) -> Vec<u8> {
+        let mut v = SIG.to_vec();
+        for c in chunks {
+            v.extend_from_slice(c);
+        }
+        v
+    }
+
+    #[test]
+    fn metre_unit_phys_resolves_exactly() {
+        // 100_000_000 px/m == 10 nm/px exactly; anisotropic y at 5 nm/px.
+        let png = png_with(&[
+            chunk(b"IHDR", &[0; 13]),
+            chunk(b"pHYs", &phys_data(100_000_000, 200_000_000, 1)),
+            chunk(b"IDAT", &[0; 4]),
+            chunk(b"IEND", &[]),
+        ]);
+        assert_eq!(png_phys_nm_per_px(&png), Some((10.0, 5.0)));
+    }
+
+    #[test]
+    fn aspect_only_zero_density_and_missing_phys_resolve_none() {
+        // unit 0 = aspect ratio only (dimensionless).
+        let aspect = png_with(&[chunk(b"pHYs", &phys_data(2, 1, 0)), chunk(b"IEND", &[])]);
+        assert_eq!(png_phys_nm_per_px(&aspect), None);
+        let zero = png_with(&[chunk(b"pHYs", &phys_data(0, 5, 1)), chunk(b"IEND", &[])]);
+        assert_eq!(png_phys_nm_per_px(&zero), None);
+        let none = png_with(&[chunk(b"IHDR", &[0; 13]), chunk(b"IEND", &[])]);
+        assert_eq!(png_phys_nm_per_px(&none), None);
+    }
+
+    #[test]
+    fn malformed_streams_resolve_none() {
+        assert_eq!(png_phys_nm_per_px(b"not a png"), None);
+        // pHYs after IDAT violates the spec — the walk stops at IDAT.
+        let late = png_with(&[
+            chunk(b"IDAT", &[0; 4]),
+            chunk(b"pHYs", &phys_data(1_000_000, 1_000_000, 1)),
+        ]);
+        assert_eq!(png_phys_nm_per_px(&late), None);
+        // Truncated: declared length runs past the buffer.
+        let mut trunc = png_with(&[chunk(b"pHYs", &phys_data(1_000_000, 1_000_000, 1))]);
+        trunc.truncate(trunc.len() - 6);
+        assert_eq!(png_phys_nm_per_px(&trunc), None);
+    }
+
+    #[test]
+    fn merge_fills_only_when_sidecar_did_not() {
+        let png = png_with(&[
+            chunk(b"pHYs", &phys_data(100_000_000, 100_000_000, 1)),
+            chunk(b"IEND", &[]),
+        ]);
+        // No prior extras → pHYs fills, sidecar schema shape.
+        let merged = merge_png_phys_scale(&png, "image/png", None).unwrap();
+        let axes = &merged["physical_scale"]["axes"];
+        assert_eq!(axes[0]["name"], "x");
+        assert_eq!(axes[0]["nm_per_px"], 10.0);
+        assert_eq!(merged["physical_scale"]["unit"], "nm");
+        // Sidecar already resolved → untouched (exact floats win).
+        let sidecar = serde_json::json!({"physical_scale": {"axes": [], "unit": "nm"}});
+        let kept = merge_png_phys_scale(&png, "image/png", Some(sidecar.clone()));
+        assert_eq!(kept, Some(sidecar));
+        // Non-PNG mime → untouched.
+        assert_eq!(merge_png_phys_scale(&png, "image/jpeg", None), None);
     }
 }
 
