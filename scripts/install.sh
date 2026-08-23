@@ -435,11 +435,21 @@ if [ "$OS" = Darwin ] && [ "$ROLE" != remote ]; then
 fi
 if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
     mkdir -p "$HOME/.config/systemd/user"
+    # ADR 0038: the tmux keeper goes in FIRST (and enable --now BEFORE sotd),
+    # so the tmux server is never an implicit child of sotd's cgroup. Static
+    # unit, no tokens. Tolerate an older release stage that lacks the file.
+    if [ -f "$BINDIR/sot-tmux.service" ]; then
+        cp "$BINDIR/sot-tmux.service" "$HOME/.config/systemd/user/sot-tmux.service"
+    fi
     sed -e "s|@SOT_BIN@|$PREFIX/bin/sotd|" \
         -e "s|@SOT_APPLY@|$PREFIX/bin/sot-apply|" \
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
         "$BINDIR/sotd.service" > "$HOME/.config/systemd/user/sotd.service"
     systemctl --user daemon-reload
+    if [ -f "$HOME/.config/systemd/user/sot-tmux.service" ]; then
+        systemctl --user enable --now sot-tmux.service
+        say "sot-tmux keeper: $(systemctl --user is-active sot-tmux.service)"
+    fi
     systemctl --user enable --now sotd.service
     loginctl enable-linger "$USER" 2>/dev/null || true
     say "sotd running: $(systemctl --user is-active sotd.service) (socket $DEFAULT_SOCKET)"

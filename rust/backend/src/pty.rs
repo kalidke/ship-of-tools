@@ -412,12 +412,20 @@ fn spawn_tmux_pair(
         crate::paths::secure_private_dir(dir)
             .with_context(|| format!("securing tmux socket dir {}", dir.display()))?;
     }
+    // ADR 0038: never let this spawn implicitly fork the tmux server as a
+    // child of the daemon (cgroup capture → daemon restart kills every
+    // session). Primary guard is the keeper check; `-N` (tmux >= 3.4)
+    // additionally closes the check-to-spawn race.
+    let readiness = crate::tmux::ensure_server_present(&socket);
     // `tmux new-session -A -s <target>`: create the session if
     // it doesn't exist, attach if it does. -A is the relevant
     // flag (vs -d which would refuse to attach).
     let mut cmd = CommandBuilder::new("tmux");
     cmd.arg("-S");
     cmd.arg(&socket);
+    if readiness == crate::tmux::ServerReadiness::Present && tmux_supports_dash_n() {
+        cmd.arg("-N");
+    }
     cmd.arg("new-session");
     cmd.arg("-A");
     cmd.arg("-s");
@@ -561,6 +569,21 @@ pub(crate) fn tmux_supports_dash_e() -> bool {
             }
         }
     })
+}
+
+/// Does this tmux understand the global `-N` client flag ("do not start the
+/// server even if the command would normally do so")? Arrived in tmux 3.4;
+/// older tmux (3.0a on the old lab backends) rejects it at arg-parse exactly
+/// like `-e`. Probed once and cached; fail-closed (unknown version omits `-N`).
+///
+/// ADR 0038: `-N` is the belt-and-suspenders half of keeping the tmux server
+/// out of sotd's cgroup — `tmux::ensure_server_present` is the primary guard
+/// (universal, version-independent); `-N` additionally closes the race where
+/// the keeper dies between that check and the spawn, so the client errors
+/// instead of silently resurrecting a server as a child of the daemon.
+pub(crate) fn tmux_supports_dash_n() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| matches!(tmux_version(), Some(v) if v >= (3, 4)))
 }
 
 /// `(major, minor)` from `tmux -V`, or `None` on any failure. Runs the probe on
@@ -1152,6 +1175,20 @@ mod tests {
         assert!(supports((4, 0)));
         assert!(!supports((3, 0))); // 3.0a -> storm without the gate
         assert!(!supports((2, 9)));
+    }
+
+    #[test]
+    fn tmux_dash_n_floor_is_3_4() {
+        // The `tmux_supports_dash_n` gate (ADR 0038): only >= 3.4 gets the
+        // global `-N`. 3.0a rejects it at arg-parse — same failure class as
+        // `-e` on < 3.2 — so the floor must exclude it. Exercised against
+        // real parse shapes, not just tuples.
+        let supports = |v: (u32, u32)| v >= (3, 4);
+        assert!(supports((3, 4)));
+        assert!(supports(parse_tmux_version("tmux next-3.7").unwrap()));
+        assert!(supports(parse_tmux_version("tmux 3.4").unwrap()));
+        assert!(!supports(parse_tmux_version("tmux 3.3a").unwrap()));
+        assert!(!supports(parse_tmux_version("tmux 3.0a").unwrap()));
     }
 
     #[test]
