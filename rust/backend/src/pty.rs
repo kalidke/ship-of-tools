@@ -412,6 +412,21 @@ fn spawn_tmux_pair(
         crate::paths::secure_private_dir(dir)
             .with_context(|| format!("securing tmux socket dir {}", dir.display()))?;
     }
+    // Cgroup escape (tmux.rs module top, ADR 0037): with no server alive, the
+    // `new-session -A` below would auto-spawn it as OUR child — inside the
+    // daemon's systemd cgroup, where `KillMode=control-group` turns every
+    // daemon restart/crash into a kill of the server and every session on it.
+    // Pre-create the session via `TmuxClient::create_session`, which routes
+    // the server spawn through a transient scope (same name/cwd/slug, no
+    // command — identical to what `-A` would create); the `-A` below then
+    // merely attaches. Best-effort: on failure the attach still creates the
+    // session, just with the old in-cgroup hazard (already logged inside).
+    if crate::tmux::scoped_spawn_available() && !crate::tmux::server_alive(&socket) {
+        if let Err(e) = crate::tmux::TmuxClient::new().create_session(target, None, cwd, slug) {
+            tracing::warn!(error = %e, target,
+                "scoped pre-create before pty attach failed — continuing with plain new-session -A");
+        }
+    }
     // `tmux new-session -A -s <target>`: create the session if
     // it doesn't exist, attach if it does. -A is the relevant
     // flag (vs -d which would refuse to attach).

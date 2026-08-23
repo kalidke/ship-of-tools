@@ -17,6 +17,17 @@
 # (`/run/user/<uid>/sot/sessions/sot.sock` on normal Linux hosts). Remote FEs
 # should forward a local TCP port to that socket over SSH rather than targeting
 # a machine-wide remote TCP bind.
+#
+# tmux vs KillMode (ADR 0037): the daemon creates agent sessions on a tmux
+# server. If the daemon is the first tmux client after a server death, the
+# auto-spawned server would land in THIS unit's cgroup — and the default
+# KillMode=control-group would then SIGKILL the server (and every session on
+# it: the whole agent fleet, plus anything else on a shared socket) on every
+# daemon restart or crash. The daemon defends itself: server-spawning tmux
+# calls run under `systemd-run --user --scope`, placing the server in its own
+# transient scope. Do NOT "fix" a fleet kill by setting KillMode=process here
+# — that would leak the daemon's real children (kernels, REPLs) on restart;
+# keep the default and let the scope wrapper isolate only the tmux server.
 
 [Unit]
 Description=Ship of Tools backend daemon (sotd)

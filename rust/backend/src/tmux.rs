@@ -23,11 +23,117 @@
 // compatibility break noted in an earlier revision of this comment is
 // closed.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
+
+// ---- tmux-server cgroup escape (systemd) -----------------------------------
+//
+// The first tmux client to run after a server death AUTO-SPAWNS the server as
+// its own child. When that client is this daemon running as a systemd service,
+// the server lands inside the service's cgroup — and the default
+// `KillMode=control-group` then makes every daemon restart (or crash, via
+// `Restart=always`) SIGKILL the tmux server and with it every session it
+// hosts: all workspace agent sessions, plus anything else a shared-socket
+// deployment (`SOT_TMUX_SOCK`) keeps on that server. Root-caused on a shared
+// dev host, 2026-08-23 (ADR 0037): earlier "the whole agent fleet died when
+// the daemon bounced" incidents were all this — systemd cgroup teardown, not
+// daemon code.
+//
+// Escape: the ONE invocation that can spawn the server (`new-session` with no
+// server alive) is wrapped in `systemd-run --user --scope`, so the server
+// lands in its own transient scope — a sibling of the service, untouched by
+// the unit's kill. Every other invocation is a momentary client against a
+// live server; its cgroup doesn't matter and it stays unwrapped.
+
+/// Is a tmux server currently accepting connections on `socket`? A stale
+/// socket file with no listener refuses the connect, so this is a liveness
+/// check, not an existence check.
+#[cfg(unix)]
+pub(crate) fn server_alive(socket: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(socket).is_ok()
+}
+#[cfg(not(unix))]
+pub(crate) fn server_alive(_socket: &Path) -> bool {
+    true // no unix tmux server to spawn here; never scope
+}
+
+/// One-shot probe: should (and can) server-spawning tmux calls be wrapped in
+/// a transient systemd scope? True only when all three hold: Linux; this
+/// process runs under a systemd unit (`INVOCATION_ID` is stamped by the
+/// manager — a terminal-launched dev daemon has no cgroup-kill hazard); and
+/// `systemd-run --user --scope` actually works here (user manager and bus
+/// reachable). Probed once, stable for the process lifetime.
+pub(crate) fn scoped_spawn_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        if !cfg!(target_os = "linux") {
+            return false;
+        }
+        if std::env::var_os("INVOCATION_ID").is_none() {
+            tracing::debug!(
+                "tmux cgroup escape: not under a systemd unit (no INVOCATION_ID) — plain spawns"
+            );
+            return false;
+        }
+        let ok = probe_systemd_run();
+        if ok {
+            tracing::info!(
+                "tmux cgroup escape: systemd-run --user --scope available — a spawned tmux server will escape the service cgroup"
+            );
+        } else {
+            tracing::warn!(
+                "tmux cgroup escape: under systemd but `systemd-run --user --scope` FAILED — a tmux server this daemon spawns lands in the service cgroup, and every daemon restart/crash kills it and every session on it (ADR 0037)"
+            );
+        }
+        ok
+    })
+}
+
+/// `systemd-run --user --scope --collect --quiet -- true`, bounded at 3s on a
+/// throwaway thread (mirrors `pty::tmux_version`) so a wedged user bus can't
+/// stall session creation.
+fn probe_systemd_run() -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("systemd-run-probe".into())
+        .spawn(move || {
+            let out = Command::new("systemd-run")
+                .args(["--user", "--scope", "--collect", "--quiet", "--", "true"])
+                .output();
+            let _ = tx.send(out);
+        });
+    if spawned.is_err() {
+        return false;
+    }
+    matches!(
+        rx.recv_timeout(std::time::Duration::from_secs(3)),
+        Ok(Ok(out)) if out.status.success()
+    )
+}
+
+/// The systemd-run argv that runs `tmux -S <socket> <args…>` inside a
+/// transient user scope. `--collect` garbage-collects a failed scope;
+/// the scope itself lives exactly as long as processes remain in it — i.e.
+/// as long as the tmux server the wrapped client spawns. Pure, so the shape
+/// is testable without systemd.
+fn scoped_tmux_argv(socket: &Path, args: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = vec![
+        "--user".into(),
+        "--scope".into(),
+        "--collect".into(),
+        "--quiet".into(),
+        "--".into(),
+        "tmux".into(),
+        "-S".into(),
+        socket.to_string_lossy().into_owned(),
+    ];
+    v.extend(args.iter().map(|s| s.to_string()));
+    v
+}
 
 /// Every invocation targets the private per-user socket
 /// (`paths::tmux_socket_path()`) via `-S` — see the module doc comment.
@@ -198,7 +304,20 @@ impl TmuxClient {
             args.push(cmd.into());
         }
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        self.run(&arg_refs)?;
+        // Server-spawn hazard (cgroup-escape section, module top): if no
+        // server is alive, THIS call spawns it — route it through a transient
+        // scope where possible. Fail OPEN on a scoped failure: an in-cgroup
+        // server beats no session at all, and the fallback logs the hazard it
+        // re-opens.
+        if scoped_spawn_available() && !server_alive(&self.socket_checked()?) {
+            if let Err(e) = self.run_scoped(&arg_refs) {
+                tracing::warn!(error = %e, session = name,
+                    "scoped tmux server spawn failed — falling back to a plain spawn; the server lands in this daemon's cgroup and dies with it (ADR 0037)");
+                self.run(&arg_refs)?;
+            }
+        } else {
+            self.run(&arg_refs)?;
+        }
         if !supports_e {
             // tmux < 3.2 rejects `new-session -e` at arg-parse (the respawn-storm
             // gotcha — see `tmux_supports_dash_e`). Recover via set-environment:
@@ -294,20 +413,29 @@ impl TmuxClient {
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
-    fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
+    /// Resolve the private socket and verify its containing directory.
+    /// Shared by `run` and `run_scoped` so the security check below cannot be
+    /// bypassed on one path.
+    ///
+    /// The socket FILE is tmux's to create; the containing DIRECTORY is
+    /// ours, and needs to exist (and be verified private) before the
+    /// first invocation. F2 (security review): this used to `let _ =`
+    /// the result and spawn tmux regardless — a failed/insecure dir
+    /// check (F1: a hijacked/symlinked dir, wrong owner, loose mode)
+    /// silently fell through to placing the socket wherever
+    /// `secure_private_dir` refused. Now the check must pass, or the
+    /// spawn is aborted with the reason instead of running open.
+    fn socket_checked(&self) -> Result<PathBuf> {
         let socket = crate::paths::tmux_socket_path();
-        // The socket FILE is tmux's to create; the containing DIRECTORY is
-        // ours, and needs to exist (and be verified private) before the
-        // first invocation. F2 (security review): this used to `let _ =`
-        // the result and spawn tmux regardless — a failed/insecure dir
-        // check (F1: a hijacked/symlinked dir, wrong owner, loose mode)
-        // silently fell through to placing the socket wherever
-        // `secure_private_dir` refused. Now the check must pass, or the
-        // spawn is aborted with the reason instead of running open.
         if let Some(dir) = socket.parent() {
             crate::paths::secure_private_dir(dir)
                 .with_context(|| format!("securing tmux socket dir {}", dir.display()))?;
         }
+        Ok(socket)
+    }
+
+    fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
+        let socket = self.socket_checked()?;
         let mut cmd = Command::new("tmux");
         cmd.arg("-S");
         cmd.arg(&socket);
@@ -319,6 +447,30 @@ impl TmuxClient {
             let stderr = String::from_utf8_lossy(&out.stderr);
             anyhow::bail!(
                 "tmux {:?} failed (exit={:?}): {}",
+                args,
+                out.status.code(),
+                stderr.trim()
+            );
+        }
+        Ok(out.stdout)
+    }
+
+    /// `run`, wrapped in `systemd-run --user --scope` — used for the one
+    /// invocation that may auto-spawn the tmux SERVER (see the cgroup-escape
+    /// section at the top of this module). The transient scope outlives this
+    /// daemon, so the server does too.
+    fn run_scoped(&self, args: &[&str]) -> Result<Vec<u8>> {
+        let socket = self.socket_checked()?;
+        let out = Command::new("systemd-run")
+            .args(scoped_tmux_argv(&socket, args))
+            .output()
+            .with_context(|| {
+                format!("spawn systemd-run … tmux -S {} {args:?}", socket.display())
+            })?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            anyhow::bail!(
+                "systemd-run tmux {:?} failed (exit={:?}): {}",
                 args,
                 out.status.code(),
                 stderr.trim()
@@ -431,6 +583,32 @@ mod tests {
     #[test]
     fn parse_pane_line_rejects_short() {
         assert!(parse_pane_line("a|b|c|d").is_err());
+    }
+
+    /// The scope wrapper must (a) run a USER scope, (b) `--collect` failed
+    /// scopes, (c) terminate systemd-run's own options with `--` BEFORE the
+    /// tmux argv, and (d) keep `-S <socket>` ahead of the subcommand — tmux
+    /// requires global flags before the command word.
+    #[test]
+    fn scoped_argv_shape() {
+        let v = scoped_tmux_argv(Path::new("/tmp/x/sock"), &["new-session", "-d", "-s", "n"]);
+        assert_eq!(
+            v,
+            vec![
+                "--user",
+                "--scope",
+                "--collect",
+                "--quiet",
+                "--",
+                "tmux",
+                "-S",
+                "/tmp/x/sock",
+                "new-session",
+                "-d",
+                "-s",
+                "n",
+            ]
+        );
     }
 
     /// Round-trips a real tmux session through the client. Gated on
