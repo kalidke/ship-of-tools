@@ -307,9 +307,12 @@ model. If another session has the skill installed but hasn't joined, you can
 enroll it: find its tmux target and nudge it.
 
 ```bash
-# discover live panes (each is a candidate session)
-tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}  #{pane_id}'
-# paste a join+reply instruction into it
+# discover live panes (each is a candidate session). NOTE -S: sot sessions
+# live on the PRIVATE per-user tmux server (the ADR 0038 keeper socket), so a
+# bare `tmux` — the default server — shows none of them.
+SOCK="${SOT_TMUX_SOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/sot/tmux.sock}"   # or: sotd tmux-socket-path
+tmux -S "$SOCK" list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}  #{pane_id}'
+# paste a join+reply instruction into it (resolves the same socket itself)
 ~/.sot-comm/bin/comm-bootstrap.sh sot-be-lab-guide:1.1 lab-guide
 ```
 
@@ -385,9 +388,11 @@ are two paths by who is spawning:
   Do NOT hand-roll tmux panes for claude: they inherit your
   `CLAUDECODE`/`CLAUDE_CODE_*` env and, worse, claude's TUI in a never-attached
   pane exits cleanly with no error (silent failure).
-- **Human at a shell**: `tmux new-session -s <name> -c <repo>
-  ~/.local/bin/ccb` (`ccbe` for a Ship of Tools backend) — **no `-d`**: create and
-  attach in one step. Claude never starts in a detached pane.
+- **Human at a shell**: `tmux -S "$SOCK" new-session -s <name> -c <repo>
+  ~/.local/bin/ccb` (`ccbe` for a Ship of Tools backend; `$SOCK` as in the
+  discovery snippet above — the keeper socket, so the session is visible to
+  the daemon and the FE Sessions list) — **no `-d`**: create and attach in
+  one step. Claude never starts in a detached pane.
 
 See "Starting peer sessions" in the **sot-session-start** skill, including the
 handle-collision warning (never take a registry handle that already exists, even
