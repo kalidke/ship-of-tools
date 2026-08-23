@@ -1,139 +1,103 @@
-# ADR 0038: sot-tmux keeper — the tmux server leaves sotd's cgroup
+# ADR 0038: sot-tmux keeper — daemon restarts must stop killing sessions
 
-**Status:** Accepted (2026-08-23). This is P0 of ADR 0037 (The Ship's Log): an
-immediate, tmux-native fire extinguisher, independent of the substrate that
-eventually replaces tmux.
+**Status:** Accepted (2026-08-23). This is the first, immediately-shipped piece of
+ADR 0037 — pure systemd plus a small guard in the daemon; none of the new
+architecture is needed for it.
 **Date:** 2026-08-23
 
-## Context
+## The bug, in plain words
 
-Nothing in the codebase ever runs `tmux start-server`: the server is created
-implicitly by whichever client forks first — in practice `sotd` itself (the
-default-workspace create at boot, or any `pty.open`/`workspace.create`). That
-makes the tmux server a **child of `sotd.service`**, inside its cgroup, and the
-unit's (default) `KillMode=control-group` means **every daemon restart or
-upgrade SIGKILLs the server and every session on it** — all `sot-be-*` agent
-sessions, plus anything else a sibling toolchain parked on the same private
-socket. Root-caused in production 2026-08 (a `systemctl --user restart sotd`
-killed the whole session fleet; a mid-upgrade toolchain was collateral). The
-failure has zero trace: sessions simply vanish.
+tmux is a client/server program: the sessions live in one background *server*
+process, and every `tmux ...` command is a short-lived client talking to it. If no
+server is running, **the first client to run starts one** — as its own child.
 
-Facts that shape the fix:
+In our setup that first client is almost always the daemon itself (it creates the
+home workspace's session at boot). So the tmux server — carrying *every* session on
+the machine — ends up a child of `sotd.service` in systemd's bookkeeping. And
+systemd's default cleanup rule for a service is "when it stops, kill everything it
+started." Net effect, root-caused in production 2026-08: **restarting the daemon
+silently killed every session on the machine.** Sessions just vanished, with nothing
+in any log to say why. The fleet had learned to fear daemon restarts without knowing
+the reason.
 
-- The daemon already targets a **private per-user socket**
-  (`paths::tmux_socket_path()` → `$XDG_RUNTIME_DIR/sot/tmux.sock`, override
-  `SOT_TMUX_SOCK`) on every server-touching invocation. The socket path is
-  fine; the *parentage* is the bug.
-- Fleet tmux versions span **3.0a to next-3.7**. `-D` (foreground server) and
-  `-N` (never implicitly start a server) exist only on 3.4+.
-- Observed: a query like `has-session` on a **missing** socket fails safely
-  (no server is auto-started); the dangerous invocations are the
-  session-creating ones (`new-session`), which do implicitly fork a server.
-- `loginctl` linger is not guaranteed on every host; on a host reached only
-  via transient ssh, `$XDG_RUNTIME_DIR` and user units exist only while a
-  login session does. "Survives indefinitely" requires linger.
+Facts that shaped the fix:
 
-## Decision
+- The daemon already keeps its sessions on a private per-user socket (that part is
+  fine). The bug is purely *who is the server's parent*.
+- The machines run tmux versions from 3.0a to next-3.7. The convenient new flags
+  (`-D`, `-N`) only exist from 3.4, so nothing may depend on them.
+- Some hosts are reached only over ssh; user services on those hosts need
+  `loginctl enable-linger` or they die with the last login.
 
-### 1. A keeper unit owns the server: `deploy/sot-tmux.service`
+## The fix
 
-```ini
-[Service]
-Type=forking
-ExecStartPre=/bin/sh -c 'd=".../sot"; mkdir -p "$d" && chmod 700 "$d"'
-ExecStart=/usr/bin/env tmux -S %t/sot/tmux.sock start-server ";" set -s exit-empty off
-ExecStop=-/usr/bin/env tmux -S %t/sot/tmux.sock kill-server
-Restart=on-failure
-```
+**Give the tmux server its own tiny service, so it is nobody's accident.**
 
-- **Same socket path** the daemon resolves (`%t` = the user runtime dir), so
-  nothing else changes: every existing `-S` invocation, Rust and shell, lands
-  on the keeper's server.
-- **`start-server ";" set -s exit-empty off`** — validated on both fleet
-  extremes (3.0a and next-3.7): the server starts with zero sessions and
-  stays alive when the last session closes. No `-D`, so no version split and
-  no per-host unit variants. The server daemonizes; `Type=forking` tracks it
-  (exactly one process remains in the unit's cgroup, so main-PID guessing is
-  deterministic in practice).
-- **No `-f` override**: the keeper's server reads the user's normal
-  tmux.conf, same as the implicit server it replaces.
-- **KillMode stays `control-group` (default) on BOTH units.** The bug was
-  cgroup *membership*, not KillMode; weakening KillMode would leave unmanaged
-  orphans. Stopping the keeper deliberately kills the server — that is now an
-  explicit, single-purpose act instead of a side effect of a daemon restart.
-- No `PartOf=`/`Requires=` anywhere: no stop propagation in either direction.
+1. **A keeper unit, `sot-tmux.service`**, whose only job is to start the tmux server
+   on the usual socket and own it. Its start command —
+   `tmux -S <socket> start-server ";" set -s exit-empty off` — does two things:
+   start the server with no sessions, and tell it to keep running when the last
+   session closes (normally it would exit). This exact form was tested on both the
+   oldest (3.0a) and newest (next-3.7) tmux in the fleet, so there is one unit for
+   every host, no version variants. The server reads the user's normal tmux.conf,
+   same as before. Stopping this unit is now the *one deliberate way* to kill the
+   server — instead of a side effect of restarting something else.
 
-`sotd.service` gains `Wants=sot-tmux.service` + `After=... sot-tmux.service`
-(ordering + best-effort pull-in, not a hard dependency — sotd must still run
-where the keeper is absent).
+2. **The daemon is ordered after the keeper** (`Wants=`/`After=` in
+   `sotd.service`) — a soft preference, not a hard requirement, because the daemon
+   must still run on machines with no systemd (macOS) or no keeper installed.
 
-### 2. The daemon never implicitly starts a server again
+3. **The daemon never starts a server by accident again.** Before any tmux command
+   that could start one, it now checks that the server's socket exists; if not, it
+   asks systemd to start the keeper and waits briefly. Only if there is no keeper at
+   all (not installed, no systemd) does it fall back to the old behavior — with a
+   loud warning, once, naming the unit to install. On tmux 3.4+ it additionally
+   passes the `-N` flag ("never start a server yourself"), so even a
+   perfectly-timed race can only produce an error message, never a captive server.
+   The version check for `-N` fails closed, exactly like the existing `-e` check —
+   an unknown tmux is assumed old.
 
-`tmux::ensure_server_present(socket)` runs before every server-touching spawn
-(`TmuxClient::run` — the single funnel for all generic ops — and
-`pty::spawn_tmux_pair`):
+4. **Install and release plumbing:** the installer copies the unit and enables it
+   *before* the daemon; the release tarball ships it; the auto-updater needs no
+   change.
 
-1. Socket exists → proceed (`Present`).
-2. Missing → `systemctl --user start sot-tmux.service` (on demand), then poll
-   the socket briefly (≤5 s). This also gives boot "readiness retry" beyond
-   `After=` ordering, which orders but does not prove readiness.
-3. Still missing (unit not installed; no systemd — macOS, `--no-service`) →
-   **warn once, loudly**, and fall back to the legacy implicit start rather
-   than bricking session creation. On non-systemd hosts the cgroup-kill
-   hazard doesn't exist; on systemd hosts the warning names the unit to
-   install.
+Deliberately *not* changed: systemd's kill behavior on either unit. The bug was the
+server being in the wrong service's care, not the cleanup rule — weakening the rule
+would just leave orphaned processes.
 
-Belt-and-suspenders: when the server is `Present` and tmux is ≥ 3.4
-(`tmux_supports_dash_n()`, probed once, fail-closed like the `-e` gate), the
-global **`-N`** flag is added, so even the check-to-spawn race cannot resurrect
-a captive server — the client errors instead. On 3.0a the primary guard alone
-carries the protection.
+## Switching a machine over
 
-`tmux -V` (the version probe) touches no server and is untouched.
+tmux cannot hand live sessions from one server to another, so each machine needs
+**one last scheduled restart** — the final one of its kind:
 
-### 3. Install / release plumbing
+1. Pick a time; warn the sessions' owner (that's you). Stop the daemon — the old
+   captive server dies with it, one last time.
+2. Remove any leftover `SOT_TMUX_SOCK` override from the old migration, so
+   everything resolves the standard socket.
+3. Install both units, reload systemd, enable the keeper, start the daemon.
+4. Resume sessions the normal way (`ccb` / `ccbe --continue`, frontend workspace
+   creates).
 
-`scripts/install.sh` copies the (token-free) unit and runs
-`enable --now sot-tmux.service` **before** enabling sotd; the release workflow
-stages `sot-tmux.service` next to `sotd.service`. The updater needs no change
-(non-archive release files are skipped by asset-name shape). Linger is already
-enabled by the installer; hosts configured by hand MUST run
-`loginctl enable-linger` or the keeper (and its sessions) dies with the last
-login session.
+(A zero-downtime alternative exists — moving the live server's process between
+systemd's accounting groups by hand — but it is unproven; test it on a scratch unit
+before ever trusting it. The scheduled restart is the documented path.)
 
-## Cutover (per host, one-time)
+## How to check it worked
 
-tmux cannot transfer live sessions between servers, so the existing captive
-server must be released once. **Drain, don't migrate:**
+On a host with the keeper installed, with a throwaway session open:
 
-1. Schedule it — this final restart is the last massacre. Stop `sotd`
-   (the captive server dies with it).
-2. Drop any legacy `SOT_TMUX_SOCK` environment override so the daemon and the
-   comm scripts resolve the default runtime-dir socket.
-3. Install both units, `daemon-reload`, `enable --now sot-tmux`, then start
-   `sotd`.
-4. Recreate/resume sessions (`ccb`/`ccbe --continue`, FE workspace creates).
+- `systemctl --user restart sotd` → **the session must survive.** This is the whole
+  point, and the test.
+- `systemd-cgls --user-unit sot-tmux.service` → the tmux server is listed under the
+  keeper, not under the daemon.
+- Kill the keeper's server, then do anything that touches tmux (open a workspace) →
+  the daemon starts the keeper on demand rather than quietly adopting a new server
+  of its own.
 
-*Experimental alternative (zero-kill), to be validated on a scratch unit
-before ever using it:* on cgroup-v2 hosts the live server PID can be migrated
-into the keeper's cgroup by writing to its `cgroup.procs` (same-user delegated
-subtree), after which sotd restarts no longer reach it. Not the documented
-path; the drain is.
+## Known loose ends (tracked, not blocking)
 
-**Acceptance test** (per host): with a disposable session live,
-`systemctl --user restart sotd` — the session must survive; `systemd-cgls
---user-unit sot-tmux.service` must show the tmux server; killing the keeper's
-server and running any workspace op must show the daemon starting the keeper
-on demand rather than adopting a new captive server.
-
-## Consequences
-
-- Daemon restarts and upgrades stop killing sessions — for this project's
-  `sot-be-*` fleet and for any sibling toolchain on the same private socket.
-- One new, tiny, single-purpose unit per host; stopping it is now the one
-  deliberate way to kill the server.
-- On non-systemd hosts nothing changes except a one-time warning.
-- Known follow-ups (out of P0 scope): `comm-bootstrap.sh` still validates
-  panes against the default socket (bare `tmux`, a pre-existing gap); a few
-  skill docs teach bare-`tmux` one-liners; macOS keeper wiring arrives with
-  the launchd work already on the roadmap.
+- One comm script still checks panes against tmux's *default* socket rather than
+  ours (a pre-existing gap, unrelated to this change).
+- A few skill documents show bare-`tmux` one-liners that assume the default socket.
+- macOS gets its keeper when the planned launchd wiring lands; until then macOS
+  simply keeps today's behavior (it has no cgroup-kill hazard).

@@ -1,204 +1,174 @@
-# ADR 0037: The Ship's Log — session substrate (voyage / capsule / catalog / bridge)
+# ADR 0037: The Ship's Log — sessions become durable records
 
-**Status:** Accepted (2026-08-23). Phased delivery: P0 ships first as ADR 0038 (tmux
-keeper unit — immediate fire extinguisher, zero new architecture); the substrate
-itself (P1+) lands incrementally as a new crate in the existing Rust workspace.
+**Status:** Accepted (2026-08-23). Built in phases: the first piece (ADR 0038) ships
+immediately and needs none of the new machinery; the rest lands step by step as a new
+crate in the existing Rust workspace.
 **Date:** 2026-08-23
 
-> Design provenance: converged over seven adversarial design rounds between the
-> maintainer's Claude session and an external critic model (Codex), with the
-> requirements deliberately held open. Three successive shapes were proposed and
-> killed for cause — a central session daemon (blast radius: upgrading it kills every
-> session, the exact failure class that motivated the work), then an "immortal
-> per-session scribe" (a sole PTY holder cannot crash without ending interactivity,
-> and frozen code preserves vulnerable parsers forever) — before the third
-> decomposition below survived attack. Final verdict: "the decomposition and failure
-> boundaries are sound."
+> How this was designed: an extended back-and-forth between the maintainer's Claude
+> session and a second AI model acting as critic, with the requirements deliberately
+> kept open. Two earlier designs were discarded for concrete flaws — a single central
+> session daemon (restarting it would kill every session, which is the very problem
+> being solved) and an "immortal" per-session helper (nothing that holds a live
+> terminal can promise to never die, and code that is never upgraded keeps its bugs
+> forever). The third design below survived the criticism.
 
-## Context
+## The problem, in plain words
 
-A session today *is* a running process. Claude/agent sessions live in tmux panes on
-the backend host; the Julia REPL is a child of `sotd`; a frontend-drawer session is a
-child of the frontend. Consequences, all observed in production:
+Today a session *is* a running program. Your conversation with Claude lives inside
+that process; the Julia REPL's loaded packages and variables live inside that
+process. When the process dies — a daemon restart, a reboot, a crash — the session is
+gone, and there is no record of what it did. Everything we have built to cope (tmux,
+keep-alive tunnels, the frontend relaunch dance) is scaffolding to keep fragile
+processes alive, and it still fails: one daemon restart in August killed every
+session on the machine at once.
 
-- A daemon restart can kill every tmux session on the host (root cause and immediate
-  fix: ADR 0038). The fleet *behaves around* this fragility — daemon upgrades are
-  avoided, session bootstrap requires a multi-step re-arm ritual after every restart.
-- The REPL's heap (loaded packages, compiled state, workspace, GPU allocations) dies
-  with every daemon bounce.
-- Frontend relaunches kill the session driving them (the ADR 0017 sentinel dance
-  exists to manage this).
-- Session history is scrollback: partial, per-machine, and gone on restart. "What did
-  that agent do last Tuesday" is unanswerable.
+## The idea
 
-Meanwhile the ambition is larger than keep-alive: a **system of record** for a
-person's entire agent fleet over years — every session permanently replayable,
-forkable, and searchable; sessions that move between hosts; producers beyond
-terminals (headless agents, REPLs, long simulations, instrument acquisitions); and
-surfaces beyond the TUI (later: chat, voice, mobile viewports).
+Flip it: **the session is a notebook, not a program.** Every session gets a
+permanent, append-only record — everything typed in, everything printed out, every
+turn, every figure produced — written down as it happens. The running program is just
+the thing *currently writing in the notebook*. If it crashes, nothing of the session
+is lost: the notebook is already on disk. Start a new writer, hand it the notebook,
+continue.
 
-## Decision
+Once that is taken seriously, several hard features stop being features and simply
+follow from what a notebook is:
 
-### The axiom
+- **Surviving restarts** — notebooks don't die when programs die.
+- **Scrollback and replay** — flip to an earlier page.
+- **Pausing a session for a week** — a notebook nobody is writing in. Costs nothing.
+- **Moving a session to another machine** — carry the notebook over, start a writer
+  there.
+- **Forking** — two continuations that share their first forty pages, like a git
+  branch.
+- **A permanent, searchable archive** of everything your agents ever did — with
+  every figure traceable to the exact moment and session that produced it.
 
-**The log is the session; the voyage is immortal, the sailor is not.** Processes
-crash, respawn, and move; the hash-linked record is the identity and the truth.
+## The four parts
 
-The system in three sentences: a **Voyage** is a stable session identity over
-immutable, hash-linked segments and artifacts, while **Capsules** exclusively own
-individual producer incarnations behind fenced local sockets. A rebuildable per-host
-**Catalog** discovers and launches Capsules, and remote clients reach them only
-through an SSH-executed **Bridge** carrying a bounded, versioned envelope. Non-leaf
-failures never kill executions, leaf failures affect at most one incarnation, and
-committed history survives every process crash.
+- **Voyage** — the notebook itself: one session's permanent record. (A ship's log is
+  exactly this — the durable record of a journey — hence the name.) Technically: a
+  stable ID plus an append-only chain of sealed, checksummed record files.
+- **Capsule** — one writer: a small process that babysits one running program
+  (Claude, a Julia REPL, a simulation, an instrument acquisition) and writes its
+  voyage. One capsule per running session, so if a capsule dies, exactly *one*
+  session hiccups — never the whole fleet. That was the fatal flaw of tmux and of the
+  first draft of this design: one big process holding everyone's sessions.
+- **Catalog** — the card index in the library, one per machine: it finds notebooks
+  and starts writers, but holds no truth of its own. Delete it and it rebuilds itself
+  from the notebooks. Restarting or upgrading it is a non-event.
+- **Bridge** — how another machine reads or writes a notebook: plain SSH, which the
+  fleet already trusts. No new open ports, no passwords, no certificates to manage.
 
-Features that become corollaries rather than roadmap items: keep-alive (the log
-persists), replay (read from a sequence number), hibernation (a voyage with no live
-incarnation), migration/promotion (move a sealed head; start a new incarnation from
-an adapter checkpoint — never a promise of generic live process migration), forking
-(a ref recording a parent `(voyage, seq/hash)` — no copying), audit (the log *is* the
-record), crash recovery (the state was never anywhere else).
+Terminals are just the *first kind* of writer. A headless Claude run driven through
+its SDK, a Julia REPL speaking our existing typed frames, a long simulation, or a
+microscope acquisition are all equally sessions — same notebook format, same tools.
 
-### Invariants (the design test)
+## The rules that keep it honest
 
-1. Every non-leaf service can crash or upgrade without killing executions.
-2. A resource-owner failure affects at most one incarnation.
-3. Committed history survives every process crash.
-4. Planned leaf upgrades use drain/handoff where the adapter allows it, else an
-   honest one-incarnation restart — a security fix may end an incarnation, never a
-   voyage.
+1. Any helper (daemon, catalog, viewer) can restart or upgrade **without killing
+   anyone's session**.
+2. When something that owns a live process fails, it takes down **at most that one
+   session's current run** — never its record, never its neighbors.
+3. Whatever the record says happened **stays on disk through any crash**.
+4. Upgrades of the writer itself either hand over gracefully or honestly restart
+   that one session. A security fix may end a run; it never ends a voyage.
 
-### Concepts
+## Details that matter (the fine print)
 
-- **Voyage** — UUID + DAG of immutable, hash-linked segments + content-addressed
-  artifacts + refs (`main` only in v1). Advancing a ref requires a durable generation
-  and compare-and-swap on the previous head; with no branch machinery in v1 a
-  competing writer **fails closed** (conflict-branches arrive with fork support).
-- **Envelope / frames** — tagged typed records (`input | output | resize | state |
-  exit`, rich kinds `turn | tool | artifact`); unknown kinds are skipped AND
-  preserved; length + checksum + seq + explicit durability points; every allocation
-  bounded. **Committed means:** input is logged durably before it reaches the
-  producer; recovery truncates only to the last validated boundary; artifacts are
-  hashed and durably published before anything references them. **Raw input payloads
-  are redacted by default** (opt-in per voyage) — no-echo secrets must not become
-  plaintext history. Disk-full stops input AND bounds producer output, visibly.
-- **Capsule** — one process owning one incarnation: the producer resource, the
-  current segment, and the takeover actor. Mutating frames carry
-  `(voyage, incarnation, controller_epoch, input_seq)`; attach is **observe** or
-  explicit **take** — takeover increments the epoch before acknowledgement and
-  revokes the old controller; auto-reconnects re-observe, never steal; the writer
-  exclusively owns resize. Input acks are `{op_id, seq}` = "sequenced", never
-  "consumed"; reconnects resend idempotently. **Birth is transactional** (publish
-  only after manifest, initial segment, endpoint, containment object, and producer
-  readiness are durable; fsync/atomic-replace per OS). **Death is precise** (revoke
-  input; kill and await the exact cgroup/job/process identity — the capsule owns its
-  own containment object, since reaping must not depend on the crashable Catalog;
-  seal the valid tail; tombstone; the voyage log is always retained). Producer
-  adapters: PTY (`portable-pty` + derived VT checkpoint `{through_seq, grid}`) first;
-  agent SDKs (Claude Agent SDK streaming/interrupt/resume-fork; Codex app-server when
-  stable), the Julia REPL's existing typed-frame shim, telemetry samplers, and
-  instrument acquisitions as peers. **Never infer turns from bytes.**
-- **Catalog** (per host) — non-authoritative and rebuildable from the store:
-  discovery (readdir + lifetime-lock liveness; never probe-timeout reaping), capsule
-  launch, orphan sweep, search/location/checkpoint indexes, retention *execution*. It
-  may never infer deletability from its own index; packs contain original segment
-  bytes with a store-resident manifest published and verified before loose copies
-  disappear. Its crash or upgrade is a non-event.
-- **Bridge** — remote attach: `ssh <host> sot-bridge <id>`, no PTY, stdout reserved
-  exclusively for frames, version negotiation, backpressure and half-close preserved,
-  identifiers and local peer credentials validated, stale incarnation/epoch traffic
-  fenced. Resolves the active endpoint without needing the Catalog alive.
+- **What "saved" means.** Input is written to disk *before* the program sees it. A
+  crash can only cut off the unfinished tail of the record, never the middle. A
+  figure is saved before anything else is allowed to point at it.
+- **Who may type.** One writer at a time. Watching is free for everyone; typing
+  requires explicitly *taking* the pen, and taking it cleanly revokes the previous
+  holder — so a stalled laptop's buffered keystrokes can never land in the middle of
+  a command you're typing from another machine. Reconnecting makes you a watcher,
+  never silently the typist again.
+- **What an acknowledgment means.** "Your input was recorded", never "the agent has
+  acted on it". If the connection drops mid-send, the sender can safely ask and
+  resend without double-typing.
+- **Passwords stay out.** Typed input is *not* stored by default (the record keeps
+  that input happened, not the bytes) — otherwise a password typed at a hidden
+  prompt would become permanent plaintext history. Storing input is per-session
+  opt-in.
+- **Disk full stops the session visibly** instead of silently dropping history.
+- **Old records are packed, never rewritten.** Compaction may re-bundle files, but
+  the content is immutable; "cleanup" is never a silent delete.
+- **Identity is written down from day one.** Every record carries which voyage,
+  which run, and what came before it — because you cannot retrofit "where did this
+  come from" into an archive later. The fancy machinery on top (branching UI,
+  cross-fleet timelines, clever clocks) deliberately waits.
+- **Two classes of program.** Agents with real control interfaces (Claude via its
+  SDK, Codex via its server protocol, our Julia REPL shim) give the record true
+  turns, tool calls, and artifacts. Everything else gets a faithful terminal
+  recording. We never *guess* turn boundaries from raw terminal bytes — that guess
+  cannot be made reliable.
 
-### Identity-complete, semantics-small
+## How machines connect
 
-The v1 record schema MUST carry: voyage/incarnation/segment identity, adapter and
-host provenance, format/hash versions, predecessor and causal-parent identity, ref
-name, record sequence + commit semantics, artifact hashes, ref CAS — because identity
-is the one thing an archive cannot retrofit. v1 EXCLUDES: HLC timestamps (a future
-*tagged* timestamp field beats a reserved slot), global indexing, branch UX,
-timelines, cross-log ordering. Fleet history is a partial order, forever.
+A **star, not a mesh**: each frontend machine dials each backend machine directly,
+over SSH, using the host list that already exists in `hosts.toml`. Backends never
+talk to each other, and there is no distributed bookkeeping — four SSH connections,
+nothing else. Sessions on a laptop are **private automatically**: the laptop accepts
+no incoming connections, so nobody can even ask. Publishing work is a deliberate
+act — move the notebook to a backend ("promotion") and it becomes visible to every
+frontend.
 
-### Two tiers
+Security is what we *removed*: no listening ports, no tokens, no certificate
+authority, nothing to rotate. SSH between machines; ordinary owner-only file
+permissions on disk and on local sockets; records live on each machine's own disk
+(never on the shared network home, which cannot host them safely).
 
-**Rich tier** = cooperative producers driven through their real control APIs,
-emitting turn/tool/artifact frames. **Dumb tier** = arbitrary TUI processes:
-keep-alive, grid attach, byte-level record only. Turn semantics are never inferred
-from the byte stream (a known tar pit).
+## What happens to old records
 
-### Topology and security
+Each session declares its fate when it starts, with sensible defaults per kind:
 
-A **star, not a mesh**: each frontend host dials each backend host directly from
-`hosts.toml`; zero backend-to-backend protocol and zero distributed state (a BE-BE
-link is added only if the existing relay path is retired AND cross-host agent control
-with all frontends offline is actually needed). **Local sessions are private by
-topology** — frontend hosts accept no inbound dials; *promotion* (move a sealed head
-to a backend) is what publishes work. Security is subtraction: SSH is the only
-network boundary (no listening ports, no tokens, no PKI, nothing to rotate); locally,
-owner-only Unix sockets / owner-DACL named pipes; state in an explicitly validated
-owner-only, non-NFS per-host `state_root` (a shared `$HOME` does not make
-"host-local" automatic); plain files a human can audit. Target platforms: Linux,
-macOS, Windows 11.
+- **archive** — pack the full record off to bulk storage. For work whose history
+  matters.
+- **discard** — throw the record away when the session ends. For scratch work and
+  sensitive work; costs nothing while running.
+- **distill** — have an LLM read the finished record and keep only a written
+  summary. The bytes age out; the meaning survives, and the summary stays linked to
+  where it came from. This is machine-generated handoff — the form future sessions
+  actually consume.
 
-### Retention (shape agreed; details open)
+Defaults, the summary prompt, and pack layout are still open decisions.
 
-Per-voyage **retention class, declared at birth**, executed by the Catalog under the
-never-silently-delete rule: **archive** (pack full-fidelity segments to bulk
-storage), **discard** (ephemeral; birth-time declaration lets the capsule skip
-durability costs entirely — also the sensitive-work tier), **distill** (an LLM reads
-the sealed voyage and writes a summary; bytes age out, meaning survives; the summary
-is an artifact frame whose causal parent is the sealed head, so distilled voyages
-keep their place in the DAG). Open: default class per session kind; distillation
-ownership; pack layout; interaction with input-redaction opt-in.
+## Build order
 
-## Phases
+- **P0 (ships now, ADR 0038):** stop daemon restarts from killing tmux sessions.
+  Pure systemd; no new code concepts.
+- **P1:** the capsule and the record format, on Linux, recording terminals. Gated on
+  crash-injection tests — the file format is read forever, so it gets the care
+  first.
+- **P2:** the first rich writer: Claude through its SDK.
+- **P3 / P4 (either order):** capsules on the frontend machines (macOS, then
+  Windows) so local sessions survive frontend restarts — this retires the ADR 0017
+  relaunch dance; and remote attach over SSH — this retires "quit and relaunch to
+  switch hosts" (ADR 0015).
+- **P5:** the daemon's terminal plumbing moves onto capsules behind a switch; the
+  tmux path is deleted only after a long soak with a tested way back. The machine
+  monitor (ADR 0020) becomes just another writer, which finally makes its history
+  survive restarts.
+- **Later, cheaply, because the records make them cheap:** forking, moving sessions
+  between machines, fleet-wide timelines, session-to-session messaging over the same
+  records, and other viewers (chat, voice, mobile).
 
-- **P0** — stop the daemon-restart massacre with a tmux keeper unit (ADR 0038;
-  zero new architecture, immediate value).
-- **P1** — capsule + store (Linux, PTY adapter): hash-linked segments, transactional
-  birth/death, observe/take with epochs, replay, checkpoints. **Gates:
-  crash/fault-injection tests and a store verifier** — the frame codec and segment
-  format are read forever, so they get the care first. Catalog = readdir + locks.
-- **P2** — rich producer: Claude via the Agent SDK (headless legs need no PTY).
-  Codex/Julia adapters follow as their upstreams stabilize.
-- **P3 / P4** (order swappable) — FE-local capsules one OS at a time (macOS →
-  Windows; detached spawn on first FE launch; contract: survives FE crash/relaunch,
-  not logout/reboot; retires the ADR 0017 dance) / `sot-bridge` star attach (retires
-  relaunch-to-switch-host, ADR 0015).
-- **P5** — cutover and growth: `sotd`'s pty layer moves to capsules behind a rollout
-  switch; **the tmux path is deleted only after a soak period with tested rollback**;
-  Catalog search lands off every critical path; the machine monitor (ADR 0020)
-  becomes a sampler capsule (history survives daemon restarts; no cross-host SSH
-  sampler children).
-- **Later, as DAG corollaries:** fork/branch UX, promotion, fleet timelines,
-  inter-session comm riding the envelope, gateway + chat/voice/mobile viewports —
-  each a client, each a separate decision.
+## What this costs (stated honestly)
 
-## Consequences
+- The record format and its crash-safety are real engineering that renders no
+  pixels. The phasing forces each step to pay rent.
+- tmux and capsules coexist for a while; the session list must show which is which.
+- The archive is valuable and therefore sensitive: it needs a backup plan and gets
+  treated like a vault. Discard-mode and the no-stored-input default exist for
+  exactly this.
+- More small processes instead of one big tmux server; the catalog must make the
+  fleet easy to inspect or it becomes opaque in a new way.
 
-- Restarts and upgrades of everything non-leaf become routine; the fleet stops
-  behaving around fragility.
-- The REPL keeps its heap across daemon restarts; frontend relaunches stop killing
-  their own sessions; disconnected viewers lose nothing.
-- Session history becomes queryable ground truth — provenance for outputs, an
-  accountability layer for autonomous agents, and the substrate the Outputs/Agents
-  modes were waiting for.
-- Costs, named: the store engineering (fsync discipline, checksums, epoch fencing,
-  fault harness) is real work that renders no pixels; tmux and capsules coexist for
-  a transition period (the provenance glyph distinguishes them); archives now live on
-  local disks and therefore need an explicit backup/pack tier; process count rises
-  (N capsules + catalog vs one tmux server) and observability must keep up.
-- Session data becomes a concentrated asset: `state_root` is treated like a vault for
-  backup purposes; redaction-by-default and the discard class exist for exactly this.
+## Names
 
-## Deferred / research
-
-Transactional turns; steering queues beyond synchronous ok/error; fork at older
-turns (filesystem anchoring via worktrees/snapshots); fleet consistency epochs; live
-job extraction; drain/handoff for capsule upgrades; conflict-branch creation.
-
-## Naming
-
-The nautical term and the technical term coincide — a ship's log is the durable
-record of a voyage — and the project is Ship of Tools, steered from a wheel. Session
-= **voyage**; incarnation = **leg**; the substrate is **the Ship's Log**. Component
-binaries: `sot-bridge` (remote attach); capsule/catalog binary names are fixed at P1.
+Session = **voyage**; one run of it = a **leg**; the whole system = **the Ship's
+Log**. The nautical word and the technical word mean the same thing here, which is
+why the name is right. Binary names are fixed as each piece lands (`sot-bridge` for
+remote attach).
