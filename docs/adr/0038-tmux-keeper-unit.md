@@ -48,14 +48,23 @@ Facts that shaped the fix:
    must still run on machines with no systemd (macOS) or no keeper installed.
 
 3. **The daemon never starts a server by accident again.** Before any tmux command
-   that could start one, it now checks that the server's socket exists; if not, it
-   asks systemd to start the keeper and waits briefly. Only if there is no keeper at
-   all (not installed, no systemd) does it fall back to the old behavior — with a
-   loud warning, once, naming the unit to install. On tmux 3.4+ it additionally
-   passes the `-N` flag ("never start a server yourself"), so even a
-   perfectly-timed race can only produce an error message, never a captive server.
-   The version check for `-N` fails closed, exactly like the existing `-e` check —
-   an unknown tmux is assumed old.
+   that could start one, it now checks that a server is actually *listening* on the
+   socket — a connect probe, not a file-exists check, because a leftover socket
+   file with a dead server behind it must fall through to repair, not read as
+   healthy (review finding on the first cut: `-N` forbids exactly the
+   unlink-and-restart self-heal tmux would do on a stale socket, so trusting
+   `exists()` could wedge every invocation with the repair path unreachable). If
+   nothing is listening, the daemon asks systemd to start the keeper and waits
+   briefly; the keeper's own client never passes `-N`, so it performs the stale
+   unlink. Only if the keeper *cannot be started* (not installed, no systemd) does
+   the daemon fall back to the old behavior — with a loud warning, once, naming
+   the unit to install. If the keeper *claims* to have started but its server
+   never comes live, the daemon errors out rather than spawning an implicit
+   server that would race it. On tmux 3.4+ it additionally passes the `-N` flag
+   ("never start a server yourself"), so even a perfectly-timed race can only
+   produce an error message, never a captive server. The version check for `-N`
+   fails closed, exactly like the existing `-e` check — an unknown tmux is
+   assumed old.
 
 4. **Install and release plumbing:** the installer copies the unit and enables it
    *before* the daemon; the release tarball ships it; the auto-updater needs no
@@ -96,6 +105,11 @@ On a host with the keeper installed, with a throwaway session open:
 
 ## Known loose ends (tracked, not blocking)
 
+- Hosts that only ever receive releases through the auto-updater (`sot-apply`
+  pointer flips) never re-run the installer, so they don't get the keeper unit
+  enabled on their own. They degrade to the loudly-warned legacy fallback until
+  someone enables the unit (or `sot-apply` learns to install units — a candidate
+  follow-up).
 - One comm script still checks panes against tmux's *default* socket rather than
   ours (a pre-existing gap, unrelated to this change).
 - A few skill documents show bare-`tmux` one-liners that assume the default socket.

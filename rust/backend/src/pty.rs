@@ -416,7 +416,7 @@ fn spawn_tmux_pair(
     // child of the daemon (cgroup capture → daemon restart kills every
     // session). Primary guard is the keeper check; `-N` (tmux >= 3.4)
     // additionally closes the check-to-spawn race.
-    let readiness = crate::tmux::ensure_server_present(&socket);
+    let readiness = crate::tmux::ensure_server_present(&socket)?;
     // `tmux new-session -A -s <target>`: create the session if
     // it doesn't exist, attach if it does. -A is the relevant
     // flag (vs -d which would refuse to attach).
