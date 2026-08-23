@@ -14060,9 +14060,9 @@ impl State {
                     // ordinary clamps below still apply. Deliberately no
                     // `preview_roi_applied` echo: that event is the
                     // ADR-0025 contract for explicit aims only.
-                    let (_, rect) = self.pending_roi_restore.take().expect("checked Some above");
+                    let (nid, rect) = self.pending_roi_restore.take().expect("checked Some above");
                     let (src_w, src_h) = self.preview_png_dims.unwrap_or(quad.size_px);
-                    if let Some((z, pan)) = solve_roi_view(
+                    match solve_roi_view(
                         image_rect.w,
                         image_rect.h,
                         letterbox_rect.w,
@@ -14072,8 +14072,16 @@ impl State {
                         src_h,
                         rect,
                     ) {
-                        self.preview_png_zoom = z;
-                        self.preview_png_pan_px = pan;
+                        Some((z, pan)) => {
+                            self.preview_png_zoom = z;
+                            self.preview_png_pan_px = pan;
+                        }
+                        // Degraded, not broken — the view stays at fit. Logged
+                        // (debug, not the aim path's warn: no user asked for
+                        // this rect) so a mysteriously-not-carried view is
+                        // diagnosable.
+                        None => tracing::debug!(node_id = %nid,
+                            "view carry: degenerate geometry — restore dropped"),
                     }
                 }
                 let zoom = self.preview_png_zoom.clamp(1.0, zoom_max);
