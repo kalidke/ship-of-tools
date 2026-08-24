@@ -53,7 +53,32 @@ enum FactState {
     Refused,
 }
 
+/// The two registered required features (ADR 0039 registry, 2026-08-24).
+/// `json-f64-v1` is enforced bidirectionally (undeclared + fractional =
+/// loud, inline or spilled). `cgroup-fence-v1` is accept-only HERE: the
+/// locator-must-declare direction needs the spawn-detail schema the adapter
+/// PR fixes, and is owed there (review F3 — deliberate deferral, not a
+/// gap silently forgotten).
+pub const REGISTERED_FEATURES: [&str; 2] =
+    ["sot.producer.json-f64-v1", "sot.capsule.cgroup-fence-v1"];
+
+/// Turn-closure predicate (ADR 0039 §Verifier, ADR 0040).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyMode {
+    /// Zero unmatched turn_opens. The default and the only CERTIFYING mode.
+    Complete,
+    /// Non-certifying diagnostic: tolerates at most one unmatched open,
+    /// and only in the currently open tip's epoch. A verifier cannot prove
+    /// a writer is live; only the owning capsule may treat this as health.
+    AllowOpenTip,
+}
+
+/// Certifying verification (Complete mode).
 pub fn verify_voyage(root: &Path, voyage_id: &str) -> Result<()> {
+    verify_voyage_mode(root, voyage_id, VerifyMode::Complete)
+}
+
+pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Result<()> {
     let seg_dir = root.join("seg");
     let mut entries: Vec<(u64, u64, SegmentState)> = Vec::new();
     for entry in std::fs::read_dir(&seg_dir)? {
@@ -104,6 +129,7 @@ pub fn verify_voyage(root: &Path, voyage_id: &str) -> Result<()> {
     // Exactly one non-duplicate_of turn_close per turn: turn_open seq ->
     // the winning close's seq.
     let mut turn_close_winner: HashMap<(u64, u64), (u64, u64)> = HashMap::new();
+    let mut turn_opens: HashSet<(u64, u64)> = HashSet::new();
 
     // input_fact chain lattice, all keyed by idem_key.
     let mut idem_state: HashMap<String, FactState> = HashMap::new();
@@ -153,12 +179,18 @@ pub fn verify_voyage(root: &Path, voyage_id: &str) -> Result<()> {
         if (*idx == 0) != reader.header.retention_class.is_some() {
             return Err(Error::Schema("retention_class is genesis-only".into()));
         }
-        if !reader.header.required_features.is_empty() {
-            return Err(Error::State(format!(
-                "segment {idx} requires features {:?} (none registered in v1)",
-                reader.header.required_features
-            )));
+        for feat in &reader.header.required_features {
+            if !REGISTERED_FEATURES.contains(&feat.as_str()) {
+                return Err(Error::State(format!(
+                    "segment {idx} requires unknown feature {feat:?}"
+                )));
+            }
         }
+        let f64_ok = reader
+            .header
+            .required_features
+            .iter()
+            .any(|f| f == "sot.producer.json-f64-v1");
         // Chain.
         let header_prev = reader.header.prev_seal_digest.as_ref().map(|d| d.value.clone());
         if header_prev != prev_digest {
@@ -608,10 +640,109 @@ pub fn verify_voyage(root: &Path, voyage_id: &str) -> Result<()> {
                 check_blob_on_disk(root, &pr.blob, env.seq)?;
             }
 
+            if env.class == Class::TurnOpen {
+                turn_opens.insert((env.seq.epoch, env.seq.n));
+            }
+            // Producer-payload numbers: integer atoms unless the segment
+            // declares sot.producer.json-f64-v1 (ADR 0039 registry). Covers
+            // BOTH carriers (review F1): the inline payload AND a
+            // payload_ref with encoding json-utf8 — a spilled JSON payload
+            // is still JSON and must obey the same atoms. encoding "bytes"
+            // is never parsed, so no number rule can apply to it.
+            if env.class == Class::Producer && !f64_ok {
+                if let Some(payload) = &env.payload {
+                    check_integer_numbers(payload).map_err(|what| {
+                        Error::Schema(format!(
+                            "producer frame {:?}: {what} without sot.producer.json-f64-v1",
+                            env.seq
+                        ))
+                    })?;
+                }
+                if let Some(pr) = &env.payload_ref {
+                    if pr.encoding == crate::envelope::PayloadEncoding::JsonUtf8 {
+                        let bytes = read_blob(root, &pr.blob, env.seq)?;
+                        let v: serde_json::Value =
+                            serde_json::from_slice(&bytes).map_err(|e| Error::Schema(format!(
+                                "producer frame {:?}: json-utf8 payload_ref does not parse: {e}",
+                                env.seq
+                            )))?;
+                        check_integer_numbers(&v).map_err(|what| {
+                            Error::Schema(format!(
+                                "producer frame {:?} (via payload_ref): {what} without sot.producer.json-f64-v1",
+                                env.seq
+                            ))
+                        })?;
+                    }
+                }
+            }
             seen.insert((env.seq.epoch, env.seq.n), env.class);
         }
     }
+
+    // Turn closure (ADR 0039 amended / ADR 0040): every open needs a winner.
+    let unmatched: Vec<(u64, u64)> = {
+        let mut u: Vec<(u64, u64)> = turn_opens
+            .iter()
+            .filter(|t| !turn_close_winner.contains_key(*t))
+            .copied()
+            .collect();
+        u.sort_unstable();
+        u
+    };
+    match mode {
+        VerifyMode::Complete => {
+            if let Some(t) = unmatched.first() {
+                return Err(Error::State(format!(
+                    "turn_open {t:?} has no winning close ({} unmatched; complete mode)",
+                    unmatched.len()
+                )));
+            }
+        }
+        VerifyMode::AllowOpenTip => {
+            let tip_open_epoch = entries
+                .last()
+                .filter(|(_, _, st)| *st == SegmentState::Open)
+                .map(|(_, ep, _)| *ep);
+            let tolerable = |t: &(u64, u64)| Some(t.0) == tip_open_epoch;
+            if unmatched.len() > 1 || unmatched.first().is_some_and(|t| !tolerable(t)) {
+                return Err(Error::State(format!(
+                    "{} unmatched turn_open(s) beyond the open tip's allowance: {:?}",
+                    unmatched.len(),
+                    unmatched
+                )));
+            }
+        }
+    }
     Ok(())
+}
+
+/// Producer payloads without the f64 feature: every number must be an
+/// integer with |v| <= 2^53-1 (the §3 atoms), recursively.
+fn check_integer_numbers(v: &serde_json::Value) -> std::result::Result<(), String> {
+    match v {
+        serde_json::Value::Number(n) => {
+            let ok = n.as_i64().map(|i| i.unsigned_abs() <= crate::envelope::U53_MAX)
+                .or_else(|| n.as_u64().map(|u| u <= crate::envelope::U53_MAX))
+                .unwrap_or(false);
+            if ok { Ok(()) } else { Err(format!("non-integer or out-of-range number {n}")) }
+        }
+        serde_json::Value::Array(a) => a.iter().try_for_each(check_integer_numbers),
+        serde_json::Value::Object(m) => m.values().try_for_each(check_integer_numbers),
+        _ => Ok(()),
+    }
+}
+
+/// Read a blob's bytes from the CAS (existence/length already verified by
+/// `check_blob_on_disk` in the same pass; this re-reads for content checks).
+fn read_blob(root: &Path, blob: &BlobRef, seq: Seq) -> Result<Vec<u8>> {
+    let path = root
+        .join("blobs")
+        .join(&blob.algo)
+        .join(&blob.digest[0..2])
+        .join(&blob.digest);
+    std::fs::read(&path).map_err(|e| Error::Schema(format!(
+        "frame {seq:?}: payload_ref blob unreadable: {e}"
+    )))
 }
 
 /// A `BlobRef` must resolve to a CAS file of exactly the recorded length.
@@ -724,6 +855,159 @@ mod tests {
         w.append(&e, Commit::Immediate).unwrap();
         w.seal(None).unwrap();
         assert!(verify_voyage(&dir.path().join("v3"), "v3").is_err());
+    }
+
+    #[test]
+    fn turn_closure_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "tc1");
+        let mut w = s.open_segment(0).unwrap();
+        let mut open = test_env(1, 1);
+        open.class = Class::TurnOpen;
+        open.payload = Some(json!({"admitted_by": "test/rule"}));
+        w.append(&open, Commit::Immediate).unwrap();
+        // Segment stays OPEN (tip) with an unclosed turn.
+        w.commit().unwrap();
+        drop(w);
+        let root = dir.path().join("tc1");
+        // Complete: unmatched open is loud.
+        assert!(verify_voyage(&root, "tc1").is_err());
+        // AllowOpenTip: tolerated (one unmatched, in the open tip's epoch).
+        verify_voyage_mode(&root, "tc1", VerifyMode::AllowOpenTip).unwrap();
+
+        // Now a CLOSED turn in a sealed segment passes complete.
+        let dir2 = tempfile::tempdir().unwrap();
+        let mut s2 = store(dir2.path(), "tc2");
+        let mut w2 = s2.open_segment(0).unwrap();
+        let mut o2 = test_env(1, 1);
+        o2.class = Class::TurnOpen;
+        o2.payload = Some(json!({"admitted_by": "test/rule"}));
+        w2.append(&o2, Commit::Immediate).unwrap();
+        let mut c2 = test_env(1, 2);
+        c2.class = Class::TurnClose;
+        c2.payload = Some(json!({"reason": "producer_done"}));
+        c2.refs = vec![FrameRef { kind: RefKind::CausedBy, frame: Seq { epoch: 1, n: 1 } }];
+        w2.append(&c2, Commit::Immediate).unwrap();
+        w2.seal(None).unwrap();
+        verify_voyage(&dir2.path().join("tc2"), "tc2").unwrap();
+    }
+
+    #[test]
+    fn f64_feature_gates_fractional_producer_numbers() {
+        use crate::segment::{HeaderBody, RetentionClass, SegmentWriter};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("f1");
+        crate::voyage::VoyageStore::bootstrap(&root, "f1", RetentionClass::Discard).unwrap();
+        let build = |features: Vec<String>, name: &str, dir: &std::path::Path| {
+            let root = dir.join(name);
+            crate::voyage::VoyageStore::bootstrap(&root, name, RetentionClass::Discard).ok();
+            let header = HeaderBody {
+                version: 1,
+                required_features: features,
+                voyage_id: name.into(),
+                segment_index: 0,
+                epoch: 1,
+                prev_seal_digest: None,
+                created_wall_ms: 0,
+                retention_class: Some(RetentionClass::Discard),
+            };
+            let mut w = SegmentWriter::create(&root.join("seg"), header).unwrap();
+            let mut att = test_env(1, 1);
+            att.class = Class::ProducerAttached;
+            att.payload = Some(json!({
+                "producer_kind": "t", "version": "1",
+                "profile_def": {"id": "d", "sha256": "0".repeat(64), "rules": {}}
+            }));
+            w.append(&att, Commit::Immediate).unwrap();
+            let mut prod = test_env(1, 2);
+            prod.refs = vec![FrameRef { kind: RefKind::AttachedTo, frame: Seq { epoch: 1, n: 1 } }];
+            prod.payload = Some(json!({"cost": 0.0123, "exp": 1.5e-8, "n": 3}));
+            w.append(&prod, Commit::Immediate).unwrap();
+            w.seal(None).unwrap();
+            root
+        };
+        // Without the feature: fractional producer numbers are loud.
+        let r1 = build(vec![], "f_no", dir.path());
+        assert!(verify_voyage(&r1, "f_no").is_err());
+        // With the registered feature: green.
+        let r2 = build(vec!["sot.producer.json-f64-v1".into()], "f_yes", dir.path());
+        verify_voyage(&r2, "f_yes").unwrap();
+        // Unknown feature: loud.
+        let r3 = build(vec!["sot.future.unknown-v9".into()], "f_unk", dir.path());
+        assert!(verify_voyage(&r3, "f_unk").is_err());
+    }
+
+    /// Review F1: a producer frame whose JSON payload rides a payload_ref
+    /// (spilled) must hit the same f64 gate as an inline payload.
+    #[test]
+    fn f64_gate_covers_spilled_json_payload_ref() {
+        use crate::envelope::{PayloadEncoding, PayloadRef};
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "sp1");
+        let content = br#"{"cost": 0.5}"#;
+        let digest = s.publish_blob(content).unwrap();
+        let mut w = s.open_segment(0).unwrap();
+        let mut att = test_env(1, 1);
+        att.class = Class::ProducerAttached;
+        att.payload = Some(json!({
+            "producer_kind": "t", "version": "1",
+            "profile_def": {"id": "d", "sha256": "0".repeat(64), "rules": {}}
+        }));
+        w.append(&att, Commit::Immediate).unwrap();
+        let mut prod = test_env(1, 2);
+        prod.refs = vec![FrameRef { kind: RefKind::AttachedTo, frame: Seq { epoch: 1, n: 1 } }];
+        prod.payload = None;
+        prod.payload_ref = Some(PayloadRef {
+            blob: crate::envelope::BlobRef {
+                algo: "sha256".into(),
+                digest,
+                length: content.len() as u64,
+                media_type: "application/json".into(),
+            },
+            encoding: PayloadEncoding::JsonUtf8,
+        });
+        w.append(&prod, Commit::Immediate).unwrap();
+        w.seal(None).unwrap();
+        let err = verify_voyage(&dir.path().join("sp1"), "sp1").unwrap_err();
+        assert!(format!("{err}").contains("via payload_ref"), "got: {err}");
+    }
+
+    /// Review F2 pin: an unmatched open in a SEALED segment of the SAME
+    /// epoch as the open tip is tolerated by allow-open-tip — rotation
+    /// within one run is normal, and a live turn may span it (the ADR's
+    /// predicate is per-EPOCH, deliberately).
+    #[test]
+    fn allow_open_tip_tolerates_rotation_spanning_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "rot1");
+        let mut w = s.open_segment(0).unwrap();
+        let mut open = test_env(1, 1);
+        open.class = Class::TurnOpen;
+        open.payload = Some(json!({"admitted_by": "test/rule"}));
+        w.append(&open, Commit::Immediate).unwrap();
+        let d = w.seal(None).unwrap(); // rotation: sealed with the turn open
+        s.advance_chain(d);
+        let mut w2 = s.open_segment(0).unwrap(); // same epoch, open tip
+        let mut lc = test_env(1, 2);
+        lc.class = Class::Lifecycle;
+        lc.payload = Some(json!({"kind": "producer_ready"}));
+        w2.append(&lc, Commit::Immediate).unwrap();
+        w2.commit().unwrap();
+        drop(w2);
+        let root = dir.path().join("rot1");
+        assert!(verify_voyage(&root, "rot1").is_err()); // complete: loud
+        verify_voyage_mode(&root, "rot1", VerifyMode::AllowOpenTip).unwrap();
+    }
+
+    /// Review F4 pin: the integer-atoms rule is WIRE-FORM integrality —
+    /// "3.0" is not an integer atom (matches the §3 shortest-decimal rule),
+    /// deliberately. A refactor to value-integrality must fail here.
+    #[test]
+    fn integral_float_wire_form_is_refused_without_f64() {
+        assert!(check_integer_numbers(&json!(3.0)).is_err());
+        assert!(check_integer_numbers(&json!(3)).is_ok());
+        assert!(check_integer_numbers(&json!({"a": [1, {"b": 2}]})).is_ok());
+        assert!(check_integer_numbers(&json!({"a": [1, {"b": 2.0}]})).is_err());
     }
 
     #[test]

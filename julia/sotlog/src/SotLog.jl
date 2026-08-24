@@ -278,6 +278,9 @@ Base.:(==)(a::Seq, b::Seq) = a.epoch == b.epoch && a.n == b.n
 
 const RETENTION_CLASSES = ("archive", "discard", "distill")
 
+"ADR 0039 feature registry (amended 2026-08-24) — unknown features FAIL CLOSED."
+const REGISTERED_FEATURES = ("sot.producer.json-f64-v1", "sot.capsule.cgroup-fence-v1")
+
 """
     HeaderBody
 
@@ -346,6 +349,10 @@ function parse_header_body(body::Vector{UInt8})::HeaderBody
     haskey(obj, :created_wall_ms) || throw(SchemaError("header missing created_wall_ms"))
 
     required_features = String[String(s) for s in jget(obj, :required_features, [])]
+    for f in required_features
+        f in REGISTERED_FEATURES ||
+            throw(SchemaError("segment requires unknown feature $(repr(f))"))
+    end
     prev = jget(obj, :prev_seal_digest, nothing)
     prev_digest = prev === nothing ? nothing : parse_digest(prev)
     retention_class = jget(obj, :retention_class, nothing)

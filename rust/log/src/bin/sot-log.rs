@@ -1,13 +1,17 @@
 //! Minimal CLI for the sot-log crate (ADR 0039 §"Verifier and gates").
 //!
-//! Usage: sot-log verify <voyage_root> <voyage_id>
+//! Usage: sot-log verify <voyage_root> <voyage_id> [--allow-open-tip]
+//!
+//! --allow-open-tip is a NON-CERTIFYING diagnostic for a voyage under a live
+//! writer (tolerates one unclosed turn in the open tip). Default (complete)
+//! is the only certifying mode.
 //!
 //! Exit codes: 0 = verified, 1 = verification error, 2 = usage error.
 
 use std::path::{Path, PathBuf};
 
 fn usage() -> ! {
-    eprintln!("usage: sot-log verify <voyage_root> <voyage_id>");
+    eprintln!("usage: sot-log verify <voyage_root> <voyage_id> [--allow-open-tip]");
     std::process::exit(2);
 }
 
@@ -20,13 +24,21 @@ fn main() {
     }
     let Some(root) = args.next() else { usage() };
     let Some(voyage_id) = args.next() else { usage() };
+    let mode = match args.next().as_deref() {
+        None => sot_log::verify::VerifyMode::Complete,
+        Some("--allow-open-tip") => sot_log::verify::VerifyMode::AllowOpenTip,
+        Some(other) => {
+            eprintln!("unknown argument: {other}");
+            usage();
+        }
+    };
     if args.next().is_some() {
         eprintln!("too many arguments");
         usage();
     }
 
     let root = PathBuf::from(root);
-    match sot_log::verify::verify_voyage(&root, &voyage_id) {
+    match sot_log::verify::verify_voyage_mode(&root, &voyage_id, mode) {
         Ok(()) => {
             println!(
                 "ok: {} segments verified",

@@ -191,4 +191,41 @@ end
         @test_throws SL.SchemaError SL.validate_frame(unknown_class)
     end
 
+
+    @testset "6. f64 golden: registered feature accepted, fractional numbers round-trip" begin
+        f64_path = joinpath(REPO_ROOT, "rust", "log", "tests", "fixtures", "golden-f64-v1.sotseg")
+        @assert isfile(f64_path)
+        seg = read_segment(f64_path)
+        @test seg.header.required_features == ["sot.producer.json-f64-v1"]
+        @test verify_seal(f64_path) === true
+        f3 = seg.frames[3]
+        @test f3.payload.total_cost_usd ≈ 0.048731
+        @test f3.payload.tiny ≈ 1.5e-8
+        @test Int64(f3.payload.edge) == 9007199254740991
+    end
+
+    @testset "7. unknown required feature fails closed" begin
+        bytes0 = read(FIXTURE_PATH)
+        hdr, _, _ = SL.parse_records(bytes0)
+        body_str = String(copy(hdr.body))
+        new_body = replace(body_str, "\"required_features\":[]" =>
+            "\"required_features\":[\"sot.future.x-v9\"]")
+        @test new_body != body_str
+        nb = Vector{UInt8}(new_body)
+        prelude = zeros(UInt8, 18)
+        prelude[1] = 0xA9; prelude[2] = 0x5F
+        prelude[3] = 0x01; prelude[4] = 0x01; prelude[5] = 0x01; prelude[6] = 0x00
+        len = UInt32(length(nb))
+        prelude[7] = UInt8(len & 0xff); prelude[8] = UInt8((len >> 8) & 0xff)
+        prelude[9] = UInt8((len >> 16) & 0xff); prelude[10] = UInt8((len >> 24) & 0xff)
+        pcrc = crc32c(prelude[3:10])
+        prelude[11] = UInt8(pcrc & 0xff); prelude[12] = UInt8((pcrc >> 8) & 0xff)
+        prelude[13] = UInt8((pcrc >> 16) & 0xff); prelude[14] = UInt8((pcrc >> 24) & 0xff)
+        bcrc = crc32c(nb)
+        prelude[15] = UInt8(bcrc & 0xff); prelude[16] = UInt8((bcrc >> 8) & 0xff)
+        prelude[17] = UInt8((bcrc >> 16) & 0xff); prelude[18] = UInt8((bcrc >> 24) & 0xff)
+        rec = SL.decode_at(vcat(prelude, nb), 1)
+        @test rec.kind == SL.HEADER_KIND
+        @test_throws SL.SchemaError SL.parse_header_body(rec.body)
+    end
 end

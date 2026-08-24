@@ -57,7 +57,13 @@ segments are the only truth.
 - **Epoch = leg = one producer-run attempt** by one capsule incarnation, with
   at most one admitted spawn. Producer death seals the segment and bumps the
   epoch. Zero-run epochs (crash before spawn) are legal. Live-producer
-  handover is out of scope for v1.
+  handover is out of scope for v1. **"Producer" names a logical lifecycle
+  role, not necessarily the innermost process** (amended 2026-08-24, ADR
+  0040): an adapter-owned wrapper (e.g. the Claude SDK helper) may be the
+  epoch's producer, with the processes it drives classified as internal
+  query executions; lifecycle frames refer to the role-holder. Provenance is
+  unaffected — wrapper-originated policy frames remain `emitter: adapter` /
+  `synthetic`; the role does not launder machinery into producer-native.
 - **Epoch allocation**: under the writer lock, `max(epoch across durable
   segment headers) + 1`. An epoch exists once its first segment header and
   directory entry are fsynced; reuse after a pre-publication crash is
@@ -321,11 +327,21 @@ exists.
   defines its complete body layout when built; it must authenticate the
   immutable segment-header identity and declare bounded expansion; a segment
   rotation precedes first use. v1 registers codec 1 (JSON-UTF8) only.
-- **`required_features`**: namespaced strings `sot.<area>.<name>`; v1's list
-  is empty. Every segment using a feature lists it. A registry entry is
-  required to extend any closed enum above or introduce an
-  authority-changing field; readers refuse segments whose features they
-  don't implement. Unknown plain JSON fields remain ignorable.
+- **`required_features`**: namespaced strings `sot.<area>.<name>`. Every
+  segment using a feature lists it. A registry entry is required to extend
+  any closed enum above or introduce an authority-changing field; readers
+  refuse segments whose features they don't implement. Unknown plain JSON
+  fields remain ignorable. **Registry (amended 2026-08-24, ADR 0040):**
+  - `sot.producer.json-f64-v1` — producer-class payload numbers may be any
+    finite IEEE-754 binary64 value in ordinary valid JSON spelling
+    (exponents permitted); control and envelope fields remain u53/i53.
+    Without this feature, producer-payload numbers obey the integer atoms.
+  - `sot.capsule.cgroup-fence-v1` — `producer_spawn.detail` carries an
+    authority-bearing kill-domain locator (a cgroup path) that successor
+    epochs act on destructively. Enforcement note: the verifier currently
+    ACCEPTS this feature; the reverse check — a locator-bearing spawn frame
+    must declare it — lands with the adapter PR that fixes the detail
+    schema, and is owed before any successor acts on a locator.
 - **Wrapper/header versions** cover everything else. Migration is only ever
   by derived copies or new linked segments — never in-place rewriting.
 
@@ -351,7 +367,23 @@ boundaries; frame `seq.epoch` = segment epoch; per-epoch `n` contiguous from
 cross-field matrix; capture-before-inline-input; stream `prev`-chains
 per-cell linear; blob presence + digest + length; take_epoch strictly
 increasing with a committed null-holder state opening each writer epoch;
-idem_key chains matching the lattice exactly.
+idem_key chains matching the lattice exactly; producer-payload numbers
+conforming to the integer atoms unless the segment declares
+`sot.producer.json-f64-v1`.
+
+**Turn closure (amended 2026-08-24, ADR 0040):** every `turn_open` must have
+exactly one winning `turn_close`. Two verification predicates exist —
+**complete** (the default and the only CERTIFYING mode: zero unmatched
+opens; required for archival, recovery acceptance, CI, and offline
+verification) and **`--allow-open-tip`** (a non-certifying diagnostic for a
+voyage under a live writer: tolerates at most one unmatched open, and only
+in the currently open tip's epoch; a verifier cannot prove a writer is
+live, so this mode certifies nothing). The mode is always an explicit
+argument, never inferred from epoch maximality: a dead-but-latest epoch
+fails complete mode loudly, which is correct — it needs successor closure,
+not tolerance. Adapters that emit turns must perform successor closure
+(synthesize a death close for each unmatched prior-epoch open, fsynced,
+under the writer lock, before accepting input).
 
 Merge gates for the crate: cross-language golden fixtures (Rust writes,
 Julia reads — the fixtures are conformance tests for this ADR, not its
