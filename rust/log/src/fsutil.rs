@@ -48,12 +48,17 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
     }
 }
 
+/// Non-Linux unix FAILS CLOSED (review finding on the first cut, which used
+/// hard_link + unlink here): that pair is not atomic, so a crash between the
+/// two syscalls leaves `.open` and `.sotseg` coexisting — a state the
+/// reconciliation table rightly treats as loud. Silently weaker atomicity is
+/// the thing this crate exists to refuse; macOS lands with P3 alongside
+/// Windows, each with a real atomic primitive (renamex_np / MoveFileExW).
 #[cfg(all(unix, not(target_os = "linux")))]
-pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
-    // Non-linux unix: hard-link + unlink gives no-clobber semantics.
-    std::fs::hard_link(from, to)?;
-    std::fs::remove_file(from)?;
-    Ok(())
+pub fn rename_noreplace(_from: &Path, _to: &Path) -> Result<()> {
+    Err(Error::Unsupported(
+        "atomic no-clobber rename requires Linux renameat2 in v1",
+    ))
 }
 
 /// Windows placeholder until the P3 implementation (`MoveFileExW` WITHOUT

@@ -239,12 +239,22 @@ and header identity must agree. Record order per segment:
 3. **Seal**: append seal → fsync file → RENAME_NOREPLACE to `.sotseg` → fsync
    dir. Destination-exists is loud.
 4. **Recovery** (provable tears only; loud conditions halt): rename `.open` →
-   `.recovering` (no-clobber, fsync dir) → build `.recovering-out` = valid
-   prefix + recovery seal `{recovered: true, truncated_bytes,
-   truncation_reason, recovered_by_epoch}` → fsync it → RENAME_NOREPLACE to
-   `.sotseg` (fsync dir) → verify → unlink `.recovering` → fsync dir. The
-   original is transaction scratch; every retained record lives in the
-   published file and the recovery seal is the audit. Startup reconciliation,
+   `.recovering` (no-clobber, fsync dir) → build `.recovering-out` = **the
+   valid prefix copied byte-verbatim** + a seal → fsync it → RENAME_NOREPLACE
+   to `.sotseg` (fsync dir) → verify → unlink `.recovering` → fsync dir.
+   **Retained bytes are never decoded-and-re-encoded**: re-serialization
+   would reorder JSON keys (changing committed frames' wire bytes and their
+   digests) and strip unknown ignorable members — the format's
+   forward-compat mechanism. Recovery may only ever *remove* the torn tail
+   and *append* a seal. The recovery metadata group `{recovered: true,
+   truncated_bytes, truncation_reason, recovered_by_epoch}` appears in the
+   seal **iff bytes were actually discarded**; a clean unsealed tip that a
+   successor epoch closes (writer died between output and seal, nothing
+   torn) receives a **plain seal** — its content is exactly what the
+   original writer wrote, and false recovery metadata would be a permanent
+   lie in read-forever bytes. The original `.recovering` file is transaction
+   scratch; every retained byte lives verbatim in the published file and the
+   seal is the audit. Startup reconciliation,
    in order: headerless `.open` ⇒ reinitialize; `.open` with a valid seal at
    EOF ⇒ publish as-is; `.open` with a provable tear ⇒ recover; `.open` with
    a loud condition ⇒ halt; `.sotseg` alone ⇒ done; `.recovering`+`.sotseg`
@@ -295,11 +305,15 @@ voyage written on one OS reads on any other. The three platform touchpoints
 and their Windows equivalents: directory flush (`FlushFileBuffers` on a
 `FILE_FLAG_BACKUP_SEMANTICS` directory handle), no-clobber rename
 (`MoveFileExW` WITHOUT `MOVEFILE_REPLACE_EXISTING` — std's rename clobbers),
-and the lock above. Until the Windows implementations land (P3), the store
-**fails closed** on Windows — the writer lock refuses to open, so an
-undurable store can never silently run. Live voyage directories live on a
-LOCAL filesystem on every OS; sealed segments may later be packed to shared
-storage when the pack format exists.
+and the lock above. Until the P3 implementations land, the store **fails
+closed** off Linux: on Windows the writer lock refuses to open, and on
+non-Linux unix the no-clobber rename refuses (it requires `renameat2` —
+hard-link-plus-unlink is not atomic, and a crash between the two syscalls
+would manufacture exactly the invalid file-state combinations reconciliation
+treats as loud). Silently weaker atomicity is the thing this store exists to
+refuse. Live voyage directories live on a LOCAL filesystem on every OS;
+sealed segments may later be packed to shared storage when the pack format
+exists.
 
 ## The seams (how v1 grows without changing v1 bytes)
 

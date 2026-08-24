@@ -7,9 +7,7 @@
 //! crash point; states are distinguished by filename.
 
 use crate::fsutil;
-use crate::segment::{
-    RecoveryMeta, SegmentIdentity, SegmentReader, SegmentState, SegmentWriter,
-};
+use crate::segment::{RecoveryMeta, SegmentIdentity, SegmentReader, SegmentState};
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 
@@ -135,58 +133,73 @@ fn reconcile_open(seg_dir: &Path, id: &SegmentIdentity, recovering_epoch: u64) -
     recover_from_quarantine(seg_dir, id, recovering_epoch)
 }
 
-/// Build `.recovering-out` from the quarantined original's valid prefix,
-/// seal it with recovery metadata, publish, verify, retire the original.
+/// Build `.recovering-out` from the quarantined original's valid prefix —
+/// **byte-verbatim** — seal it, publish, verify, retire the original.
+///
+/// The prefix is copied as WIRE BYTES, never decoded-and-re-encoded:
+/// re-serialization would re-sort JSON object keys (changing committed
+/// frames' bytes), violate the ADR's digests-over-wire-bytes rule, and —
+/// sharpest — silently strip unknown ignorable members, which are the
+/// format's forward-compat mechanism. Recovery must never alter retained
+/// content (review finding on the first cut, which rebuilt via re-append).
+///
+/// Recovery metadata appears in the seal IFF bytes were actually discarded;
+/// a clean quarantined tip (successor sealing a predecessor's survivor) gets
+/// a plain seal — its content is exactly what the original writer wrote, and
+/// stamping "torn tail" on it would be a permanent falsehood.
 fn recover_from_quarantine(
     seg_dir: &Path,
     id: &SegmentIdentity,
     recovering_epoch: u64,
 ) -> Result<Reconciled> {
+    use sha2::Digest as _;
     let r_path = id.path(seg_dir, SegmentState::Recovering);
     let reader = SegmentReader::read(&r_path, false)?;
     if reader.seal.is_some() {
-        // A sealed quarantine means the tear was after the seal — but the
-        // reader already made post-seal records loud, so the only way here
-        // is a seal at EOF: publish it.
+        // Post-seal records are loud in the reader, so a sealed quarantine
+        // can only be a seal at EOF: publish it as-is.
         reader.verify_seal()?;
         fsutil::rename_noreplace(&r_path, &id.path(seg_dir, SegmentState::Sealed))?;
         fsutil::fsync_dir(seg_dir)?;
         return Ok(Reconciled::PublishedAsIs);
     }
-    let truncated = reader
-        .tail_tear
-        .map(|(_, dropped)| dropped)
-        .unwrap_or(0);
+    let recovery = reader.tail_tear.map(|(_, dropped)| RecoveryMeta {
+        truncated_bytes: dropped,
+        reason: "torn tail".into(),
+        by_epoch: recovering_epoch,
+    });
+    let prefix = &reader.raw_bytes()[..reader.valid_prefix_len() as usize];
 
-    // Rebuild: rewrite header + valid frames through a fresh writer into the
-    // staging name, then seal with recovery metadata. (Byte-identical prefix
-    // copy + seal-append would also satisfy the format; the writer path
-    // reuses one implementation and revalidates every frame on the way.)
     let staging = id.path(seg_dir, SegmentState::RecoveringOut);
     if staging.exists() {
         std::fs::remove_file(&staging)?;
         fsutil::fsync_dir(seg_dir)?;
     }
-    let mut w = SegmentWriter::create_at_state(
-        seg_dir,
-        reader.header.clone(),
-        SegmentState::RecoveringOut,
-    )?;
-    for env in &reader.frames {
-        w.append(env, crate::segment::Commit::Buffered)?;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(crate::segment::SEAL_DOMAIN);
+    hasher.update(prefix);
+    let meta = crate::segment::SealMeta {
+        frame_count: reader.frames.len() as u64,
+        first_seq: reader.frames.first().map(|f| f.seq),
+        last_seq: reader.frames.last().map(|f| f.seq),
+        recovery,
+    };
+    let (seal_wire, _digest) = crate::segment::build_seal_record(hasher, &meta)?;
+    {
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging)?;
+        f.write_all(prefix)?;
+        f.write_all(&seal_wire)?;
+        f.sync_all()?;
     }
-    w.commit()?;
-    w.seal_from_state(
-        SegmentState::RecoveringOut,
-        Some(RecoveryMeta {
-            truncated_bytes: truncated,
-            reason: "torn tail".into(),
-            by_epoch: recovering_epoch,
-        }),
-    )?;
-    // Publish happened inside seal (rename staging -> .sotseg). Verify, then
-    // retire the original (transaction scratch — every retained record lives
-    // in the published file, the recovery seal is the audit).
+    fsutil::rename_noreplace(&staging, &id.path(seg_dir, SegmentState::Sealed))?;
+    fsutil::fsync_dir(seg_dir)?;
+    // Verify the published result, then retire the original (transaction
+    // scratch — every retained byte lives verbatim in the published file,
+    // the recovery seal is the audit).
     let published = id.path(seg_dir, SegmentState::Sealed);
     SegmentReader::read(&published, true)?.verify_seal()?;
     std::fs::remove_file(&r_path)?;
@@ -324,6 +337,68 @@ mod tests {
         )
         .unwrap();
         assert!(reconcile(dir.path(), &id(0, 1), 2).is_err());
+    }
+
+    /// The review-finding regression: recovery must copy the valid prefix
+    /// BYTE-VERBATIM. A frame with an unknown envelope member and
+    /// deliberately non-sorted payload keys (hand-crafted wire bytes — the
+    /// struct serializer would normalize both) must survive recovery with
+    /// identical bytes: no key re-sorting, no unknown-member stripping.
+    #[test]
+    fn recovery_preserves_wire_bytes_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = SegmentWriter::create(dir.path(), header(0, 1)).unwrap();
+        drop(w); // durable header only
+        let p = dir.path().join("00000000-00000000000001.open");
+
+        // Hand-crafted frame body: valid per the open-schema rules, but with
+        // z-before-a key order and a member no Envelope field captures.
+        let body = br#"{"seq":{"epoch":1,"n":1},"class":"lifecycle","source":{"emitter":"capsule","actor":{"kind":"unknown"},"derivation":"synthetic"},"t_wall_ms":0,"t_mono_us":0,"refs":[],"payload":{"kind":"producer_ready","zeta":1,"alpha":2},"zz_future_member":{"keep":"me"}}"#;
+        let frame_wire = crate::record::encode(crate::record::RecordKind::Frame, body, None).unwrap();
+        let mut bytes = std::fs::read(&p).unwrap();
+        bytes.extend_from_slice(&frame_wire);
+        let prefix_len = bytes.len();
+        bytes.extend_from_slice(&frame_wire[..7]); // torn tail
+        std::fs::write(&p, &bytes).unwrap();
+
+        assert_eq!(
+            reconcile(dir.path(), &id(0, 1), 9).unwrap(),
+            Reconciled::Recovered
+        );
+        let sealed = std::fs::read(dir.path().join("00000000-00000000000001.sotseg")).unwrap();
+        assert_eq!(
+            &sealed[..prefix_len],
+            &bytes[..prefix_len],
+            "retained prefix must be byte-identical"
+        );
+        let text = String::from_utf8_lossy(&sealed[..prefix_len]);
+        assert!(text.contains(r#""zeta":1,"alpha":2"#), "key order must survive");
+        assert!(text.contains("zz_future_member"), "unknown member must survive");
+        SegmentReader::read(&dir.path().join("00000000-00000000000001.sotseg"), true)
+            .unwrap()
+            .verify_seal()
+            .unwrap();
+    }
+
+    /// Clean-survivor honesty (review finding 2): a quarantined tip with NO
+    /// tear gets a PLAIN seal — no recovery metadata, no false "torn tail".
+    #[test]
+    fn clean_quarantine_gets_plain_seal() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = write_open_with_frames(dir.path(), 2);
+        drop(w);
+        let open = dir.path().join("00000000-00000000000001.open");
+        std::fs::rename(&open, dir.path().join("00000000-00000000000001.recovering")).unwrap();
+        assert_eq!(
+            reconcile(dir.path(), &id(0, 1), 5).unwrap(),
+            Reconciled::Recovered
+        );
+        let r = SegmentReader::read(&dir.path().join("00000000-00000000000001.sotseg"), true).unwrap();
+        r.verify_seal().unwrap();
+        let seal = r.seal.as_ref().unwrap();
+        assert_eq!(seal.recovered, None, "clean content: no recovery metadata");
+        assert_eq!(seal.truncation_reason, None);
+        assert_eq!(seal.frame_count, 2);
     }
 
     #[test]

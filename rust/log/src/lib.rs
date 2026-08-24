@@ -7,6 +7,7 @@
 //! retention deletion, no forks, no packs — those return through the
 //! `codec_id` / `required_features` / version seams).
 
+pub mod capsule;
 pub mod envelope;
 pub mod record;
 pub mod recovery;

@@ -163,11 +163,57 @@ pub enum Commit {
     Buffered,
 }
 
+/// Everything a seal record needs to know. `recovery` present iff bytes were
+/// actually discarded (the all-or-none group; a clean successor-seal carries
+/// none — ADR 0039 lifecycle §4 as revised after review).
+pub(crate) struct SealMeta {
+    pub frame_count: u64,
+    pub first_seq: Option<Seq>,
+    pub last_seq: Option<Seq>,
+    pub recovery: Option<RecoveryMeta>,
+}
+
+/// Build the seal record for a segment whose preceding bytes have already
+/// been fed to `hasher` (SEAL_DOMAIN ‖ header record ‖ frame records — as
+/// WIRE BYTES, never re-serialized). Returns (seal record wire bytes, digest).
+pub(crate) fn build_seal_record(mut hasher: Sha256, meta: &SealMeta) -> Result<(Vec<u8>, Digest)> {
+    let placeholder = SealBody {
+        frame_count: meta.frame_count,
+        first_seq: meta.first_seq,
+        last_seq: meta.last_seq,
+        recovered: meta.recovery.as_ref().map(|_| true),
+        truncated_bytes: meta.recovery.as_ref().map(|r| r.truncated_bytes),
+        truncation_reason: meta.recovery.as_ref().map(|r| r.reason.clone()),
+        recovered_by_epoch: meta.recovery.as_ref().map(|r| r.by_epoch),
+        digest: Digest {
+            algo: "sha256".into(),
+            value: DIGEST_PLACEHOLDER.into(),
+        },
+    };
+    let placeholder_body = serde_json::to_vec(&placeholder)?;
+    // Preimage seal record: 64-zero digest in the body; zeroed body-CRC via
+    // the encode override (both length-preserving, ADR encoding atoms).
+    let preimage_wire = record::encode(RecordKind::Seal, &placeholder_body, Some(0))?;
+    hasher.update(&preimage_wire);
+    let digest_hex = hex(&hasher.finalize());
+    // Real record: identical body bytes with the 64 chars replaced in place.
+    let mut body = placeholder_body;
+    let range = digest_value_range(&body)?;
+    body[range].copy_from_slice(digest_hex.as_bytes());
+    let wire = record::encode(RecordKind::Seal, &body, None)?;
+    Ok((
+        wire,
+        Digest {
+            algo: "sha256".into(),
+            value: digest_hex,
+        },
+    ))
+}
+
 pub struct SegmentWriter {
     file: File,
     seg_dir: PathBuf,
     identity: SegmentIdentity,
-    state: SegmentState,
     hasher: Sha256, // domain ‖ header ‖ frames, updated per record write
     frame_count: u64,
     first_seq: Option<Seq>,
@@ -179,15 +225,6 @@ impl SegmentWriter {
     /// O_EXCL-create `.open`, write the header record, fsync file + dir —
     /// only after this may frames append or acks fire (ADR 0039 §lifecycle 2).
     pub fn create(seg_dir: &Path, header: HeaderBody) -> Result<Self> {
-        Self::create_at_state(seg_dir, header, SegmentState::Open)
-    }
-
-    /// Recovery staging uses the same writer pointed at `.recovering-out`.
-    pub(crate) fn create_at_state(
-        seg_dir: &Path,
-        header: HeaderBody,
-        state: SegmentState,
-    ) -> Result<Self> {
         if header.segment_index > U53_MAX || header.epoch > U53_MAX {
             return Err(Error::Schema("segment identity exceeds u53".into()));
         }
@@ -204,7 +241,7 @@ impl SegmentWriter {
             segment_index: header.segment_index,
             epoch: header.epoch,
         };
-        let path = identity.path(seg_dir, state);
+        let path = identity.path(seg_dir, SegmentState::Open);
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -221,7 +258,6 @@ impl SegmentWriter {
             file,
             seg_dir: seg_dir.to_path_buf(),
             identity,
-            state,
             hasher,
             frame_count: 0,
             first_seq: None,
@@ -277,58 +313,25 @@ impl SegmentWriter {
 
     /// Seal + publish: append seal record → fsync → RENAME_NOREPLACE to
     /// `.sotseg` → fsync dir. Returns the seal digest for chaining.
-    pub fn seal(self, recovery: Option<RecoveryMeta>) -> Result<Digest> {
-        let state = self.state;
-        self.seal_from_state(state, recovery)
-    }
-
-    pub(crate) fn seal_from_state(
-        mut self,
-        from_state: SegmentState,
-        recovery: Option<RecoveryMeta>,
-    ) -> Result<Digest> {
+    pub fn seal(mut self, recovery: Option<RecoveryMeta>) -> Result<Digest> {
         if self.sealed {
             return Err(Error::State("segment already sealed".into()));
         }
-        let placeholder = SealBody {
+        let meta = SealMeta {
             frame_count: self.frame_count,
             first_seq: self.first_seq,
             last_seq: self.last_seq,
-            recovered: recovery.as_ref().map(|_| true),
-            truncated_bytes: recovery.as_ref().map(|r| r.truncated_bytes),
-            truncation_reason: recovery.as_ref().map(|r| r.reason.clone()),
-            recovered_by_epoch: recovery.as_ref().map(|r| r.by_epoch),
-            digest: Digest {
-                algo: "sha256".into(),
-                value: DIGEST_PLACEHOLDER.into(),
-            },
+            recovery,
         };
-        let placeholder_body = serde_json::to_vec(&placeholder)?;
-        // Preimage seal record: body has the 64-zero digest already; the
-        // body-CRC prelude field is zeroed via the override.
-        let preimage_wire = record::encode(RecordKind::Seal, &placeholder_body, Some(0))?;
-        let mut h = self.hasher.clone();
-        h.update(&preimage_wire);
-        let digest_hex = hex(&h.finalize());
-
-        // Real record: identical body bytes with the 64 chars replaced in
-        // place (serialization is not repeated — the substitution is on the
-        // exact bytes that were hashed).
-        let mut body = placeholder_body;
-        let range = digest_value_range(&body)?;
-        body[range].copy_from_slice(digest_hex.as_bytes());
-        let wire = record::encode(RecordKind::Seal, &body, None)?;
+        let (wire, digest) = build_seal_record(self.hasher.clone(), &meta)?;
         self.file.write_all(&wire)?;
         self.file.sync_all()?;
-        let from = self.identity.path(&self.seg_dir, from_state);
+        let from = self.identity.path(&self.seg_dir, SegmentState::Open);
         let to = self.identity.path(&self.seg_dir, SegmentState::Sealed);
         fsutil::rename_noreplace(&from, &to)?;
         fsutil::fsync_dir(&self.seg_dir)?;
         self.sealed = true;
-        Ok(Digest {
-            algo: "sha256".into(),
-            value: digest_hex,
-        })
+        Ok(digest)
     }
 }
 

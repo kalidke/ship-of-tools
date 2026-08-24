@@ -22,11 +22,30 @@ pub struct VoyageStore {
     pub prev_seal_digest: Option<Digest>,
     pub next_segment_index: u64,
     pub retention_class: RetentionClass,
+    /// Highest committed `take_state.take_epoch` seen in sealed history —
+    /// a resumed writer's revoke-first `take_state {holder: null}` must use
+    /// a value strictly greater than this (ADR 0039 take predicate).
+    pub last_take_epoch: u64,
     /// True when an `.open` segment survived reconciliation (the live tip a
     /// previous incarnation left; this writer must seal it before rotating —
     /// v1 keeps it simple: reconcile() recovers tears, and a clean survivor
     /// is sealed by `seal_survivor` before new writing).
     survivor_open: Option<SegmentIdentity>,
+}
+
+/// Max take_epoch across a segment's committed `take_state` frames.
+fn max_take_epoch(reader: &SegmentReader) -> u64 {
+    reader
+        .frames
+        .iter()
+        .filter_map(|f| {
+            let p = f.payload.as_ref()?;
+            (p.get("kind")?.as_str()? == "take_state")
+                .then(|| p.get("take")?.get("take_epoch")?.as_u64())
+                .flatten()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 impl VoyageStore {
@@ -89,6 +108,7 @@ impl VoyageStore {
         let mut next_index = 0u64;
         let mut survivor: Option<SegmentIdentity> = None;
         let mut retention: Option<RetentionClass> = None;
+        let mut last_take = 0u64;
         for (idx, ep) in &idents {
             let id = SegmentIdentity {
                 voyage_id: voyage_id.to_string(),
@@ -98,6 +118,14 @@ impl VoyageStore {
             match recovery::reconcile(&seg_dir, &id, my_epoch)? {
                 Reconciled::ReinitializedOpen => continue, // identity never existed
                 Reconciled::StillOpen => {
+                    let r = SegmentReader::read(&id.path(&seg_dir, SegmentState::Open), false)?;
+                    if r.header.voyage_id != voyage_id {
+                        return Err(Error::State(format!(
+                            "voyage_id mismatch: store holds {:?}, caller opened {:?}",
+                            r.header.voyage_id, voyage_id
+                        )));
+                    }
+                    last_take = last_take.max(max_take_epoch(&r));
                     survivor = Some(id);
                     next_index = idx + 1;
                 }
@@ -105,6 +133,15 @@ impl VoyageStore {
                     let sealed = id.path(&seg_dir, SegmentState::Sealed);
                     let r = SegmentReader::read(&sealed, true)?;
                     r.verify_seal()?;
+                    // A writer opened under the wrong id must refuse HERE —
+                    // not write mismatched headers for verify to find later
+                    // (review finding 4).
+                    if r.header.voyage_id != voyage_id {
+                        return Err(Error::State(format!(
+                            "voyage_id mismatch: store holds {:?}, caller opened {:?}",
+                            r.header.voyage_id, voyage_id
+                        )));
+                    }
                     if r.header.prev_seal_digest.as_ref().map(|d| &d.value)
                         != prev.as_ref().map(|d| &d.value)
                     {
@@ -116,6 +153,7 @@ impl VoyageStore {
                     if *idx == 0 {
                         retention = r.header.retention_class;
                     }
+                    last_take = last_take.max(max_take_epoch(&r));
                     prev = r.seal.as_ref().map(|s| s.digest.clone());
                     next_index = idx + 1;
                 }
@@ -130,6 +168,7 @@ impl VoyageStore {
             prev_seal_digest: prev,
             next_segment_index: next_index,
             retention_class: retention.unwrap_or(RetentionClass::Archive),
+            last_take_epoch: last_take,
             survivor_open: survivor,
         })
     }
@@ -223,7 +262,15 @@ impl VoyageStore {
             fsutil::fsync_dir(&shard)?;
             return Ok(digest);
         }
-        let tmp = blobs.join(".tmp").join(format!("{}-{}", std::process::id(), &digest[0..16]));
+        // Random suffix (not pid+digest): two same-process publishes of
+        // identical content must not race each other's temp file.
+        let nonce: u64 = {
+            use std::io::Read as _;
+            let mut b = [0u8; 8];
+            std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+            u64::from_le_bytes(b)
+        };
+        let tmp = blobs.join(".tmp").join(format!("{:016x}-{}", nonce, &digest[0..16]));
         {
             let mut f = std::fs::File::create(&tmp)?;
             f.write_all(content)?;
