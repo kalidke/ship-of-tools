@@ -103,3 +103,45 @@ fn golden_segment_bytes_are_pinned() {
     r.verify_seal().unwrap();
     assert_eq!(r.frames.len(), 3);
 }
+
+
+/// Second golden: the sot.producer.json-f64-v1 feature + fractional and
+/// exponent number spellings. Regenerate: UPDATE_GOLDEN=1.
+#[test]
+fn golden_f64_segment_bytes_are_pinned() {
+    let dir = tempfile::tempdir().unwrap();
+    let header = HeaderBody {
+        version: 1,
+        required_features: vec!["sot.producer.json-f64-v1".into()],
+        voyage_id: "01900000-0000-7000-8000-0000000000f6".into(),
+        segment_index: 0,
+        epoch: 1,
+        prev_seal_digest: None,
+        created_wall_ms: 1_756_000_000_000,
+        retention_class: Some(RetentionClass::Archive),
+    };
+    let mut w = SegmentWriter::create(dir.path(), header).unwrap();
+    let mut frames = fixture_frames();
+    frames[2].payload = Some(serde_json::json!({
+        "native": {"text": "hello, f64"},
+        "total_cost_usd": 0.048731,
+        "tiny": 1.5e-8,
+        "edge": 9007199254740991u64
+    }));
+    for f in frames {
+        w.append(&f, Commit::Buffered).unwrap();
+    }
+    w.commit().unwrap();
+    w.seal(None).unwrap();
+    let generated = std::fs::read(dir.path().join("00000000-00000000000001.sotseg")).unwrap();
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/golden-f64-v1.sotseg");
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, &generated).unwrap();
+    }
+    let committed = std::fs::read(&path).expect("fixture missing — run with UPDATE_GOLDEN=1 once");
+    assert_eq!(committed, generated, "wire bytes changed — format event");
+    let r = SegmentReader::read(&path, true).unwrap();
+    r.verify_seal().unwrap();
+    assert_eq!(r.frames.len(), 3);
+}
