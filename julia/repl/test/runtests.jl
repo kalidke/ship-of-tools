@@ -258,4 +258,20 @@ const DR = ShipToolsRepl
         @test 1024 < picked <= 65535
         close(squatter)
     end
+
+    @testset "serve: ready sentinel is the first stdout envelope (ADR 0009 update)" begin
+        out = IOBuffer()
+        DR.serve(IOBuffer(""), out)   # empty input: dispatch loop exits immediately
+        lines = split(String(take!(out)), '\n'; keepempty = false)
+        @test !isempty(lines)
+        first_env = JSON3.read(lines[1])
+        @test first_env.kind == "evt"
+        @test first_env.op == "repl.ready"
+        @test first_env.payload.protocol == 1
+        @test first_env.payload.julia == string(VERSION)
+        # Nothing else is emitted for empty input — the sentinel is serve's
+        # ONLY unsolicited envelope, so old supervisors (first-line trigger)
+        # see exactly one boot line and new ones see a designed signal.
+        @test length(lines) == 1
+    end
 end

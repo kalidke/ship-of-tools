@@ -306,12 +306,24 @@ impl Repl {
         crate::paths::resource_dir("julia/repl")
     }
 
-    /// Request/response op: queue the submission with a reply channel and
-    /// await the terminal res payload. Used by `repl.interrupt`, which stays a
-    /// simple req→one-res exchange. (Eval/run_file are now fire-and-forget via
-    /// `submit`; their frames stream over the broadcast bus instead.)
-    pub async fn request(&self, op: &str, payload: Value) -> Result<Value> {
-        let tx = self.ensure_supervisor().await?;
+    /// Request/response op that NEVER spawns a child: queue the submission on
+    /// the live supervisor sender if one exists and await the terminal res
+    /// payload, else report `Ok(None)`. Used by `repl.interrupt`, which stays
+    /// a simple req→one-res exchange (eval/run_file are fire-and-forget via
+    /// `submit`; their frames stream over the broadcast bus instead). The
+    /// no-spawn property is the daemon-side guard the #96 CLI pre-flight
+    /// approximated from outside: an `ensure_supervisor` here would pay a
+    /// full kernel spawn — minutes of precompile — just to answer
+    /// `interrupted:false` against a workspace whose REPL was never started
+    /// or has died.
+    pub async fn request_if_running(&self, op: &str, payload: Value) -> Result<Option<Value>> {
+        let tx = {
+            let guard = self.inner.submit.lock().await;
+            match guard.as_ref() {
+                Some(tx) if !tx.is_closed() => tx.clone(),
+                _ => return Ok(None),
+            }
+        };
         let (reply_tx, reply_rx) = oneshot::channel();
         tx.send(Submission {
             op: op.to_string(),
@@ -324,6 +336,7 @@ impl Repl {
         reply_rx
             .await
             .map_err(|_| anyhow!("repl supervisor dropped reply channel"))?
+            .map(Some)
     }
 
     /// Execute op (`repl.execute`, ADR 0033): submit WITH both a reply channel
@@ -703,9 +716,13 @@ async fn supervisor_task(
             line = stdout_lines.next_line() => {
                 match line {
                     Ok(Some(line)) => {
-                        // First stdout line = the shim's serve loop is up
-                        // (`using ShipToolsRepl` compiled, precompile done):
-                        // Starting -> Ready. Gen-guarded + change-gated, so
+                        // First stdout line = the shim's serve loop is up:
+                        // Starting -> Ready. Since the ADR 0009 ready
+                        // sentinel (2026-08-24) that first line IS a designed
+                        // `repl.ready` evt emitted as serve's first act, so a
+                        // booted-but-idle child flips Ready at boot; for an
+                        // older shim (no sentinel) the first eval output
+                        // still triggers this. Gen-guarded + change-gated, so
                         // this is a one-shot per spawn and free thereafter.
                         lifecycle_transition(
                             &lifecycle,
@@ -813,6 +830,15 @@ fn route_line(
         }
     };
 
+    if env.op == "repl.ready" {
+        // The boot sentinel (serve's first act). The Starting -> Ready flip
+        // already fired on the first-line trigger in the caller; the envelope
+        // itself carries no run data, so it is acknowledged and dropped here
+        // rather than falling through to the res-ack path below.
+        tracing::debug!(payload = %env.payload, "repl ready sentinel");
+        return;
+    }
+
     if env.op == "repl.frame" {
         // Streamed frame evt. Payload shape is `{eval_id, frame}`; pull both
         // out and fan the frame onto the broadcast bus. A missing eval_id is
@@ -886,6 +912,60 @@ fn route_line(
             // Fire-and-forget eval's terminal ack — expected, not an error.
             tracing::debug!(id = env.id, op = %env.op, "repl res for untracked id (fire-and-forget ack); dropping");
         }
+    }
+}
+
+#[cfg(test)]
+mod interrupt_guard_tests {
+    use super::*;
+
+    /// `request_if_running` must be a no-spawn path: with no supervisor ever
+    /// started it reports `Ok(None)` and leaves the lifecycle at `NotStarted`
+    /// — the daemon-side twin of the #96 CLI guard, where `request`'s
+    /// `ensure_supervisor` would boot a kernel (minutes of precompile) just
+    /// to answer `interrupted:false`.
+    #[tokio::test]
+    async fn request_if_running_never_spawns() {
+        let (tx, _rx) = broadcast::channel(8);
+        let repl = Repl::new(PathBuf::from("/nonexistent"), tx, None, None);
+        let res = repl
+            .request_if_running("repl.interrupt", serde_json::json!({}))
+            .await
+            .expect("no-child path must not error");
+        assert!(res.is_none());
+        assert_eq!(repl.state(), ReplLifecycle::NotStarted);
+    }
+
+    /// The boot sentinel is acknowledged and dropped by `route_line` — it
+    /// must not be misread as a res ack (its id is 0) nor fanned onto the
+    /// frame bus.
+    #[test]
+    fn route_line_drops_ready_sentinel() {
+        let (frame_tx, mut frame_rx) = broadcast::channel(8);
+        let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
+        let (reply_tx, mut reply_rx) = oneshot::channel();
+        pending.insert(0u64, reply_tx); // adversarial: a pending entry at the sentinel's id
+        let mut streaming = std::collections::HashSet::new();
+        let mut collectors = HashMap::new();
+        let mut collector_ids = HashMap::new();
+        route_line(
+            r#"{"v":1,"id":0,"kind":"evt","op":"repl.ready","payload":{"julia":"1.12.5","protocol":1}}"#,
+            &mut pending,
+            &mut streaming,
+            &mut collectors,
+            &mut collector_ids,
+            &frame_tx,
+            &None,
+        );
+        assert!(
+            pending.contains_key(&0),
+            "sentinel must not consume a pending reply"
+        );
+        assert!(reply_rx.try_recv().is_err());
+        assert!(
+            frame_rx.try_recv().is_err(),
+            "sentinel is not a repl.frame; nothing goes on the bus"
+        );
     }
 }
 
