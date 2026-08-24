@@ -51,9 +51,10 @@ turn's prompt is delivered as a ONE-MESSAGE streaming-input iterable (not a
 plain prompt string): the SDK supports `interrupt()` only in streaming-input
 mode, and one message per query preserves the per-input result barrier —
 found during helper implementation, resolved without weakening the model.
-Anything else is terminal. The streaming-input single-query mode is an
-optimization seam, adoptable only after a pinned-SDK fixture proves
-per-input result barriers empirically.
+Anything else is terminal. The optimization seam is one PERSISTENT query
+spanning all turns (many messages on one iterable), adoptable only after a
+pinned-SDK fixture proves per-input result barriers hold empirically in
+that mode.
 
 ## Codec
 
