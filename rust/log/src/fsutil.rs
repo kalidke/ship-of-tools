@@ -99,16 +99,31 @@ pub fn lock_writer(lock_path: &Path) -> Result<WriterLock> {
         .create(true)
         .custom_flags(libc::O_CLOEXEC)
         .open(lock_path)?;
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if rc != 0 {
+    // Bounded retry on WouldBlock: a flock lives on the open file
+    // description, and a just-dead writer's lock can outlive it by
+    // milliseconds through a forked-but-not-yet-exec'd producer child (the
+    // fork window closes at the child's close_range, but a SIGKILLed-and-
+    // reaped capsule doesn't wait for its child's schedule). Those holds
+    // resolve in ms; a GENUINE live writer holds indefinitely and still
+    // fails here within the deadline — fail-closed is preserved, only the
+    // transient artifact is absorbed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+    loop {
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc == 0 {
+            return Ok(WriterLock { file });
+        }
         let e = std::io::Error::last_os_error();
-        return Err(if e.kind() == std::io::ErrorKind::WouldBlock {
-            Error::State("voyage writer lock held by another process".into())
-        } else {
-            Error::Io(e)
-        });
+        if e.kind() != std::io::ErrorKind::WouldBlock {
+            return Err(Error::Io(e));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::State(
+                "voyage writer lock held by another process".into(),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    Ok(WriterLock { file })
 }
 
 #[cfg(not(unix))]

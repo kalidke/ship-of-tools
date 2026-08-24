@@ -85,6 +85,12 @@ fn kill9_sweep_recovers_green_every_round() {
             libc::kill(capsule.id() as i32, libc::SIGKILL);
         }
         let _ = capsule.wait();
+        // Reap the orphaned producer too (its own session on a now-dead
+        // PTY — it can block there indefinitely). The marker string is
+        // unique to this test.
+        let _ = std::process::Command::new("pkill")
+            .args(["-9", "-f", "payload-line-"])
+            .status();
 
         // Reopen = reconcile + recover under the writer lock. The next
         // incarnation must (a) come up, (b) seal the previous run's tip,

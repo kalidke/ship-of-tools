@@ -123,6 +123,16 @@ fn spawn_on_pty(argv: &[String]) -> Result<PtyChild> {
                     return Err(std::io::Error::last_os_error());
                 }
             }
+            // Close EVERY inherited fd ≥ 3 before exec. O_CLOEXEC alone is
+            // not enough: between fork and exec this child holds copies of
+            // all parent fds, and a flock lives on the open file
+            // description — so a capsule-host thread dropping and reopening
+            // a voyage lock during this window would collide with its own
+            // lock through us (observed as a rare parallel-test flake).
+            // close_range severs those references at the earliest point.
+            if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             Ok(())
         });
     }
