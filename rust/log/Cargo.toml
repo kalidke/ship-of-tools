@@ -1,0 +1,21 @@
+[package]
+name = "sot-log"
+description = "Ship's Log voyage store: frame codec + segment format (ADR 0037/0039)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+crc32c = { workspace = true }
+uuid = { workspace = true }
+thiserror = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
