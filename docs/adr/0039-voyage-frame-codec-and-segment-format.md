@@ -276,14 +276,30 @@ signals out of band; recovery repairs first.
 
 ## Writer fencing
 
-`writer.lock` is a persistent inode, never unlinked. The fence is
-`flock(LOCK_EX | LOCK_NB)` exactly — one primitive; the descriptor is opened
-`O_CLOEXEC` and never passed to the producer or any child. The lock-file body
+`writer.lock` is a persistent lock file, never unlinked. The fence is **one
+kernel-held exclusive lock per platform, pinned**: on unix,
+`flock(LOCK_EX | LOCK_NB)` exactly, descriptor opened `O_CLOEXEC` and never
+passed to the producer or any child; on Windows (specified and implemented
+with phase P3's FE-local capsules), `LockFileEx` exclusive on the same file,
+handle non-inheritable — the same semantics: held for the writer's lifetime,
+released by the kernel on process death. Per-platform primitives create no
+interop hazard because a voyage's live directory is local to one host — two
+operating systems never contend for the same lock. The lock-file body
 `{pid, boot_id, epoch}` is diagnostic only; the kernel lock is the truth
 (PID reuse and probe-and-replace races are thereby irrelevant). Epoch
-allocation happens while holding it. Live voyage directories live on a LOCAL
-filesystem; sealed segments may later be packed to shared storage when the
-pack format exists.
+allocation happens while holding it.
+
+**The format is OS-neutral; only the store's durability operations are
+platform code.** Nothing in the wire or on-disk contract is unix-specific — a
+voyage written on one OS reads on any other. The three platform touchpoints
+and their Windows equivalents: directory flush (`FlushFileBuffers` on a
+`FILE_FLAG_BACKUP_SEMANTICS` directory handle), no-clobber rename
+(`MoveFileExW` WITHOUT `MOVEFILE_REPLACE_EXISTING` — std's rename clobbers),
+and the lock above. Until the Windows implementations land (P3), the store
+**fails closed** on Windows — the writer lock refuses to open, so an
+undurable store can never silently run. Live voyage directories live on a
+LOCAL filesystem on every OS; sealed segments may later be packed to shared
+storage when the pack format exists.
 
 ## The seams (how v1 grows without changing v1 bytes)
 

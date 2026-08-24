@@ -13,10 +13,12 @@ pub fn fsync_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Windows cannot open a directory handle through std, and the v1 store's
-/// durability contract is unix-only anyway (ADR 0039 writer fencing). The
-/// no-op keeps the codec + state-machine logic testable on Windows CI
-/// without claiming directory-entry durability there.
+/// Windows placeholder until the P3 implementation (`FlushFileBuffers` on a
+/// `FILE_FLAG_BACKUP_SEMANTICS` directory handle — std cannot open directory
+/// handles, so it needs windows-sys). The format is OS-neutral; only these
+/// durability ops are platform code, and the store FAILS CLOSED on Windows
+/// meanwhile (`lock_writer` refuses), so this no-op is reachable only by
+/// tests exercising the state-machine logic — never by a real store.
 #[cfg(not(unix))]
 pub fn fsync_dir(_dir: &Path) -> Result<()> {
     Ok(())
@@ -54,10 +56,11 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Windows: best-effort no-clobber (exists-check + rename). NOT atomic —
-/// acceptable only because the v1 store never runs for real off unix (the
-/// writer lock refuses); this keeps the state-machine tests meaningful on
-/// Windows CI.
+/// Windows placeholder until the P3 implementation (`MoveFileExW` WITHOUT
+/// `MOVEFILE_REPLACE_EXISTING` — an atomic no-replace rename on NTFS; std's
+/// rename passes REPLACE_EXISTING and clobbers, hence not usable). This
+/// exists-check + rename is NOT atomic and is reachable only by tests — the
+/// store fails closed on Windows via `lock_writer` until P3.
 #[cfg(not(unix))]
 pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
     if to.exists() {
@@ -70,9 +73,12 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The writer fence: `flock(LOCK_EX | LOCK_NB)` on a persistent inode,
-/// exactly (ADR 0039 — one primitive, pinned). O_CLOEXEC so no child can
-/// inherit the lock. Held for the guard's lifetime.
+/// The writer fence: one kernel-held exclusive lock per platform, pinned
+/// (ADR 0039). Unix: `flock(LOCK_EX | LOCK_NB)` on a persistent inode,
+/// O_CLOEXEC so no child inherits it; held for the guard's lifetime.
+/// Windows: `LockFileEx` exclusive, non-inheritable handle — lands with P3
+/// (FE-local capsules); until then `lock_writer` FAILS CLOSED on non-unix so
+/// an undurable store can never silently run.
 pub struct WriterLock {
     #[allow(dead_code)] // held for its Drop (kernel releases the lock)
     file: File,
