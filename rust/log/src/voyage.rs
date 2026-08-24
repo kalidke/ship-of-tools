@@ -208,13 +208,23 @@ impl VoyageStore {
 
     /// Open the next segment for THIS writer's epoch.
     pub fn open_segment(&mut self, created_wall_ms: i64) -> Result<SegmentWriter> {
+        self.open_segment_with_features(created_wall_ms, vec![])
+    }
+
+    /// As `open_segment`, declaring required features (ADR 0039 registry) —
+    /// every segment an adapter writes under a feature must list it.
+    pub fn open_segment_with_features(
+        &mut self,
+        created_wall_ms: i64,
+        required_features: Vec<String>,
+    ) -> Result<SegmentWriter> {
         if self.survivor_open.is_some() {
             return Err(Error::State("seal the survivor tip first".into()));
         }
         let index = self.next_segment_index;
         let header = HeaderBody {
             version: 1,
-            required_features: vec![],
+            required_features,
             voyage_id: self.voyage_id.clone(),
             segment_index: index,
             epoch: self.epoch,
