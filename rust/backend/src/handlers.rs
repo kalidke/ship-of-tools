@@ -2082,10 +2082,17 @@ pub async fn handle_repl_interrupt(
     let (_, rev) = session.snapshot().await;
     let payload = match result {
         Ok(Some(v)) => v,
-        Ok(None) => json!({
-            "interrupted": false,
-            "note": format!("no running repl child (repl_state={})", state.as_str()),
-        }),
+        Ok(None) => {
+            // `ready` reaching here means the state read raced a child death
+            // (request_if_running found the sender closed) — name that fact
+            // so the note isn't self-contradictory ("no child" + "ready").
+            let note = if state == crate::repl::ReplLifecycle::Ready {
+                "no running repl child (repl_state=ready but supervisor sender closed — child just exited)".to_string()
+            } else {
+                format!("no running repl child (repl_state={})", state.as_str())
+            };
+            json!({ "interrupted": false, "note": note })
+        }
         Err(e) => json!({
             "error": format!("{e:#}"),
             "code": "repl_interrupt_failed",
