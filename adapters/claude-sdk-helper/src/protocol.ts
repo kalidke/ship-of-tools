@@ -17,7 +17,8 @@ export type FatalReason =
   | "query_error"
   | "busy"
   | "serializer"
-  | "line_too_large";
+  | "line_too_large"
+  | "turn_too_large";
 
 export type InOp =
   | { op: "user_turn"; query_id: number; text: string }
@@ -64,10 +65,11 @@ export function parseOp(line: string): ParsedOp {
   }
 }
 
+/** The 8 MiB cap covers the wire bytes actually written, so it includes the trailing newline. */
 function encodeEnvelope(obj: Record<string, unknown>): string {
-  const line = JSON.stringify(obj);
+  const line = JSON.stringify(obj) + "\n";
   if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) throw new LineTooLargeError();
-  return line + "\n";
+  return line;
 }
 
 export function helloLine(sdkVersion: string): string {
@@ -78,8 +80,8 @@ export function msgLine(body: Json): string {
   return encodeEnvelope({ ev: "msg", body });
 }
 
-export function turnEndLine(queryId: number): string {
-  return encodeEnvelope({ ev: "turn_end", query_id: queryId });
+export function turnEndLine(queryId: number, results: number): string {
+  return encodeEnvelope({ ev: "turn_end", query_id: queryId, results });
 }
 
 export function interruptedLine(id: number, ok: boolean, sdkReturn: Json | null): string {
@@ -93,11 +95,19 @@ export function fatalLine(reason: FatalReason, detail?: string): string {
   return encodeEnvelope(obj);
 }
 
-/** Buffers stdin chunks into complete \n-terminated NDJSON lines (a trailing \r is trimmed). */
+/**
+ * Buffers stdin chunks into complete \n-terminated NDJSON lines (a trailing
+ * \r is trimmed). Input is capped at the same 8 MiB as an output line: a
+ * peer that sends that much data without ever completing a line throws
+ * LineTooLargeError rather than growing #buf without bound. The caller (see
+ * main.ts) maps that to fatal reason "protocol" — a misbehaving peer, not
+ * one of our own output lines being too large.
+ */
 export class LineReader {
   #buf = "";
   push(chunk: string): string[] {
     this.#buf += chunk;
+    if (Buffer.byteLength(this.#buf, "utf8") > MAX_LINE_BYTES) throw new LineTooLargeError();
     const lines = this.#buf.split("\n");
     this.#buf = lines.pop() ?? "";
     return lines.map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));

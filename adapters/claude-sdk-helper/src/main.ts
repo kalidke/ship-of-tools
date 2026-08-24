@@ -68,6 +68,29 @@ function helperSdkVersion(): string {
 const SDK_VERSION = helperSdkVersion();
 
 /**
+ * 64 MiB per turn (sum of every emitted "msg" line's wire bytes, reset per
+ * turn) — the spool bound from ADR 0040's Codec section. Exceeding it is a
+ * terminal fatal ("turn_too_large"), never a truncation: the line that
+ * would cross the bound is never written.
+ *
+ * HELPER_TEST_TURN_CAP overrides the default — test-only, read once at
+ * module load, and never consulted by the real capsule wiring (the capsule
+ * only ever sets HELPER_MODEL). It exists because 64 MiB of scripted test
+ * messages would be impractical to actually construct and push through a
+ * PassThrough in a unit test; a lowered cap lets the same code path be
+ * exercised with a handful of small messages instead.
+ */
+const DEFAULT_TURN_SPOOL_CAP_BYTES = 64 * 1024 * 1024;
+export const TURN_SPOOL_CAP_BYTES = readTurnSpoolCap();
+
+function readTurnSpoolCap(): number {
+  const override = process.env.HELPER_TEST_TURN_CAP;
+  if (override === undefined) return DEFAULT_TURN_SPOOL_CAP_BYTES;
+  const n = Number(override);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_TURN_SPOOL_CAP_BYTES;
+}
+
+/**
  * Runs the helper protocol loop over injected I/O. Resolves once the loop
  * has decided to end (fatal, shutdown, or stdin EOF) and has called `exit`;
  * `exit` defaults to process.exit but is injectable so tests can observe the
@@ -82,14 +105,22 @@ export function run(
 ): Promise<void> {
   return new Promise((resolveRun) => {
     let pinnedSessionId: string | null = null;
-    let inFlight: { queryId: number; handle: SdkQuery } | null = null;
+    let inFlight: { queryId: number; handle: SdkQuery; interrupted: boolean } | null = null;
     let exiting = false;
     const reader = new LineReader();
 
+    /**
+     * Resolves on the write's own completion callback — the data has been
+     * handed to the OS, not merely queued in this process — not on write()'s
+     * boolean return value. That return value only reports whether the
+     * internal buffer is under the highWaterMark; on platforms where a pipe
+     * write can complete asynchronously even when it returns true, resolving
+     * on that instead could let a caller call process.exit() (e.g. after the
+     * final fatal line) before the bytes actually left the process.
+     */
     function writeLine(text: string): Promise<void> {
-      return new Promise((resolve) => {
-        if (stdout.write(text)) resolve();
-        else stdout.once("drain", () => resolve());
+      return new Promise((resolve, reject) => {
+        stdout.write(text, (err) => (err ? reject(err) : resolve()));
       });
     }
 
@@ -134,8 +165,9 @@ export function run(
       if (env.HELPER_MODEL) options.model = env.HELPER_MODEL;
       if (pinnedSessionId !== null) options.resume = pinnedSessionId;
       const handle = sdk.query({ prompt: oneShotPrompt(op.text), options });
-      inFlight = { queryId: op.query_id, handle };
+      inFlight = { queryId: op.query_id, handle, interrupted: false };
       let resultCount = 0;
+      let spooledBytes = 0;
       try {
         for await (const raw of handle) {
           if (exiting) {
@@ -162,18 +194,37 @@ export function run(
             inFlight = null;
             return fail("serializer", "an SDK message could not be projected to JSON");
           }
-          if (!(await emit(() => msgLine(body)))) {
+          let text: string;
+          try {
+            text = msgLine(body);
+          } catch (err) {
             inFlight = null;
-            return;
+            if (err instanceof LineTooLargeError) {
+              return fail("line_too_large", "a projected message line exceeded the 8 MiB cap");
+            }
+            throw err;
           }
+          spooledBytes += Buffer.byteLength(text, "utf8");
+          if (spooledBytes > TURN_SPOOL_CAP_BYTES) {
+            inFlight = null;
+            return fail("turn_too_large", "the turn's cumulative msg output exceeded the per-turn spool cap");
+          }
+          await writeLine(text);
         }
       } catch (err) {
         inFlight = null;
         return fail("query_error", err instanceof Error ? err.constructor.name : "unknown error");
       }
+      const wasInterrupted = inFlight.interrupted;
       inFlight = null;
-      if (resultCount === 0) return fail("no_result", "the turn's iterator exhausted without a result message");
-      await emit(() => turnEndLine(op.query_id));
+      if (resultCount === 0) {
+        if (wasInterrupted) {
+          await emit(() => turnEndLine(op.query_id, 0));
+          return;
+        }
+        return fail("no_result", "the turn's iterator exhausted without a result message");
+      }
+      await emit(() => turnEndLine(op.query_id, resultCount));
     }
 
     async function handleInterrupt(op: { id: number }): Promise<void> {
@@ -181,6 +232,7 @@ export function run(
         await emit(() => interruptedLine(op.id, false, null));
         return;
       }
+      inFlight.interrupted = true;
       const handle = inFlight.handle;
       let ok: boolean;
       let raw: unknown;
@@ -223,7 +275,17 @@ export function run(
 
     stdin.setEncoding("utf8");
     stdin.on("data", (chunk: string) => {
-      for (const line of reader.push(chunk)) void handleLine(line);
+      let lines: string[];
+      try {
+        lines = reader.push(chunk);
+      } catch (err) {
+        if (err instanceof LineTooLargeError) {
+          void fail("protocol", "input exceeded the 8 MiB line cap without completing a line");
+          return;
+        }
+        throw err;
+      }
+      for (const line of lines) void handleLine(line);
     });
     stdin.on("end", () => {
       if (exiting) return;

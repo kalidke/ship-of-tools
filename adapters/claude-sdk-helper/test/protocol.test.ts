@@ -69,8 +69,9 @@ test("msgLine wraps the projected body", () => {
   assert.deepEqual(JSON.parse(line), { ev: "msg", body: { type: "assistant" } });
 });
 
-test("turnEndLine carries the query id", () => {
-  assert.deepEqual(JSON.parse(turnEndLine(9)), { ev: "turn_end", query_id: 9 });
+test("turnEndLine carries the query id and the result count", () => {
+  assert.deepEqual(JSON.parse(turnEndLine(9, 3)), { ev: "turn_end", query_id: 9, results: 3 });
+  assert.deepEqual(JSON.parse(turnEndLine(9, 0)), { ev: "turn_end", query_id: 9, results: 0 });
 });
 
 test("interruptedLine always carries adapter-derived note, and null sdk_return renders as null", () => {
@@ -103,11 +104,22 @@ test("a line exceeding the 8 MiB cap throws LineTooLargeError", () => {
   assert.throws(() => msgLine({ huge }), LineTooLargeError);
 });
 
-test("a line at exactly the cap does not throw", () => {
-  // Budget for the JSON wrapper `{"ev":"msg","body":"..."}` around the string.
-  const overhead = Buffer.byteLength(JSON.stringify({ ev: "msg", body: "" }), "utf8");
+test("a line at exactly the cap, INCLUDING the trailing newline, does not throw", () => {
+  // Budget for the JSON wrapper `{"ev":"msg","body":"..."}\n` around the
+  // string, newline included — the cap measures wire bytes actually
+  // written, not JSON.stringify()'s output alone.
+  const overhead = Buffer.byteLength(JSON.stringify({ ev: "msg", body: "" }) + "\n", "utf8");
   const body = "x".repeat(MAX_LINE_BYTES - overhead);
-  assert.doesNotThrow(() => msgLine(body));
+  const line = msgLine(body);
+  assert.equal(Buffer.byteLength(line, "utf8"), MAX_LINE_BYTES);
+});
+
+test("the trailing newline counts toward the cap: a line whose JSON alone is exactly at the cap now throws", () => {
+  // Before the fix, only JSON.stringify(obj)'s length was measured, so this
+  // body would NOT have thrown even though line + "\n" is one byte over.
+  const overheadNoNewline = Buffer.byteLength(JSON.stringify({ ev: "msg", body: "" }), "utf8");
+  const body = "x".repeat(MAX_LINE_BYTES - overheadNoNewline);
+  assert.throws(() => msgLine(body), LineTooLargeError);
 });
 
 test("LineReader buffers partial lines and yields complete ones in order", () => {
@@ -125,4 +137,22 @@ test("LineReader trims a trailing carriage return", () => {
 test("LineReader handles multiple lines arriving in one chunk", () => {
   const r = new LineReader();
   assert.deepEqual(r.push("one\ntwo\nthree\n"), ["one", "two", "three"]);
+});
+
+test("LineReader throws LineTooLargeError rather than growing without bound on unterminated input", () => {
+  const r = new LineReader();
+  assert.throws(() => r.push("x".repeat(MAX_LINE_BYTES + 1)), LineTooLargeError);
+});
+
+test("LineReader's cap accumulates across pushes, not just within one", () => {
+  const r = new LineReader();
+  const half = "x".repeat(Math.ceil(MAX_LINE_BYTES / 2) + 1);
+  assert.deepEqual(r.push(half), []); // first half alone is under the cap
+  assert.throws(() => r.push(half), LineTooLargeError); // combined, over it
+});
+
+test("LineReader does not throw once a line completes before the cap is reached", () => {
+  const r = new LineReader();
+  assert.deepEqual(r.push("short\n"), ["short"]);
+  assert.doesNotThrow(() => r.push("x".repeat(1024)));
 });

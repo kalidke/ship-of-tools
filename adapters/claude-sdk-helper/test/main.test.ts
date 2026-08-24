@@ -30,6 +30,42 @@ function neverEndingQuery(interrupt: () => Promise<unknown>): SdkQuery {
   };
 }
 
+/** A query whose iterator only advances when told to — for tests that need to interleave a mid-turn op. */
+function controllableQuery(interrupt: () => Promise<unknown>): { query: SdkQuery; push: (m: Msg) => void; end: () => void } {
+  let resolveNext: ((r: IteratorResult<Msg>) => void) | null = null;
+  const pending: Msg[] = [];
+  let ended = false;
+  const iterator: AsyncIterator<Msg> = {
+    next: () => {
+      if (pending.length > 0) return Promise.resolve({ value: pending.shift() as Msg, done: false });
+      if (ended) return Promise.resolve({ value: undefined, done: true });
+      return new Promise((resolve) => {
+        resolveNext = resolve;
+      });
+    },
+  };
+  return {
+    query: { [Symbol.asyncIterator]: () => iterator, interrupt },
+    push: (m: Msg) => {
+      if (resolveNext) {
+        const r = resolveNext;
+        resolveNext = null;
+        r({ value: m, done: false });
+      } else {
+        pending.push(m);
+      }
+    },
+    end: () => {
+      ended = true;
+      if (resolveNext) {
+        const r = resolveNext;
+        resolveNext = null;
+        r({ value: undefined, done: true });
+      }
+    },
+  };
+}
+
 class FakeSdk implements SdkLike {
   calls: SdkQueryOpts[] = [];
   /** Each call's prompt iterable, fully drained (fire-and-forget, since query() is sync). */
@@ -112,7 +148,7 @@ test("happy two-turn flow: fresh query then resume, identical authority-bearing 
     assert.equal(call.options.includePartialMessages, false);
     assert.equal(call.options.model, "claude-sonnet-5");
   }
-  assert.deepEqual(lines[lines.length - 1], { ev: "turn_end", query_id: 2 });
+  assert.deepEqual(lines[lines.length - 1], { ev: "turn_end", query_id: 2, results: 1 });
 });
 
 test("each turn delivers exactly one SDKUserMessage on the prompt iterable, then ends", async () => {
@@ -158,19 +194,44 @@ test("a message that cannot be projected fatals as serializer", async () => {
   sdk.enqueue(scriptedQuery([{ type: "system", subtype: "init", session_id: "s", cursed: 10n }]));
   const { stdin, lines, exitCodes } = harness(sdk);
   send(stdin, { op: "user_turn", query_id: 1, text: "hi" });
-  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal"));
+  // writeLine now resolves on the write's completion callback (M6), which
+  // can settle after the stdout 'data' event that populates `lines` — so
+  // wait for exitCodes too, not just the fatal line, before asserting on it.
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal") && exitCodes.length > 0);
   assert.deepEqual(lines[lines.length - 1], { ev: "fatal", reason: "serializer", detail: "an SDK message could not be projected to JSON" });
   assert.deepEqual(exitCodes, [1]);
 });
 
-test("zero result messages fatals as no_result", async () => {
+test("zero result messages fatals as no_result (no interrupt was ever sent for this turn)", async () => {
   const sdk = new FakeSdk();
   sdk.enqueue(scriptedQuery([{ type: "system", subtype: "init", session_id: "s" }, { type: "assistant", session_id: "s" }]));
   const { stdin, lines, exitCodes } = harness(sdk);
   send(stdin, { op: "user_turn", query_id: 1, text: "hi" });
-  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal"));
+  // writeLine now resolves on the write's completion callback (M6), which
+  // can settle after the stdout 'data' event that populates `lines` — so
+  // wait for exitCodes too, not just the fatal line, before asserting on it.
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal") && exitCodes.length > 0);
   assert.equal((lines[lines.length - 1] as { reason?: string }).reason, "no_result");
   assert.deepEqual(exitCodes, [1]);
+});
+
+test("interrupt then a result-less exhaustion ends the turn normally: turn_end results:0, no fatal", async () => {
+  const sdk = new FakeSdk();
+  const ctl = controllableQuery(() => Promise.resolve(undefined));
+  sdk.enqueue(ctl.query);
+  const { stdin, lines, exitCodes } = harness(sdk);
+  send(stdin, { op: "user_turn", query_id: 1, text: "hi" });
+  await waitFor(() => sdk.calls.length === 1);
+  ctl.push({ type: "system", subtype: "init", session_id: "s" });
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "msg"));
+  send(stdin, { op: "interrupt", id: 9 });
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "interrupted"));
+  ctl.end();
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "turn_end"));
+  const turnEnd = lines.find((l) => (l as { ev?: string }).ev === "turn_end");
+  assert.deepEqual(turnEnd, { ev: "turn_end", query_id: 1, results: 0 });
+  assert.equal(lines.some((l) => (l as { ev?: string }).ev === "fatal"), false);
+  assert.deepEqual(exitCodes, []);
 });
 
 test("more than one result message fatals as multi_result", async () => {
@@ -184,7 +245,10 @@ test("more than one result message fatals as multi_result", async () => {
   );
   const { stdin, lines, exitCodes } = harness(sdk);
   send(stdin, { op: "user_turn", query_id: 1, text: "hi" });
-  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal"));
+  // writeLine now resolves on the write's completion callback (M6), which
+  // can settle after the stdout 'data' event that populates `lines` — so
+  // wait for exitCodes too, not just the fatal line, before asserting on it.
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal") && exitCodes.length > 0);
   assert.equal((lines[lines.length - 1] as { reason?: string }).reason, "multi_result");
   assert.deepEqual(exitCodes, [1]);
 });
@@ -199,7 +263,10 @@ test("a session_id that drifts from the resumed session fatals as session_drift"
   );
   const { stdin, lines, exitCodes } = harness(sdk);
   send(stdin, { op: "user_turn", query_id: 1, text: "hi" });
-  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal"));
+  // writeLine now resolves on the write's completion callback (M6), which
+  // can settle after the stdout 'data' event that populates `lines` — so
+  // wait for exitCodes too, not just the fatal line, before asserting on it.
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal") && exitCodes.length > 0);
   assert.equal((lines[lines.length - 1] as { reason?: string }).reason, "session_drift");
   assert.deepEqual(exitCodes, [1]);
 });
@@ -209,7 +276,10 @@ test("the SDK iterator rejecting fatals as query_error", async () => {
   sdk.enqueue(scriptedQuery([{ type: "system", subtype: "init", session_id: "s" }], { throwAfter: new Error("boom") }));
   const { stdin, lines, exitCodes } = harness(sdk);
   send(stdin, { op: "user_turn", query_id: 1, text: "hi" });
-  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal"));
+  // writeLine now resolves on the write's completion callback (M6), which
+  // can settle after the stdout 'data' event that populates `lines` — so
+  // wait for exitCodes too, not just the fatal line, before asserting on it.
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal") && exitCodes.length > 0);
   assert.deepEqual(lines[lines.length - 1], { ev: "fatal", reason: "query_error", detail: "Error" });
   assert.deepEqual(exitCodes, [1]);
 });
@@ -219,7 +289,10 @@ test("a projected message line over the 8 MiB cap fatals as line_too_large", asy
   sdk.enqueue(scriptedQuery([{ type: "assistant", huge: "x".repeat(MAX_LINE_BYTES) }]));
   const { stdin, lines, exitCodes } = harness(sdk);
   send(stdin, { op: "user_turn", query_id: 1, text: "hi" });
-  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal"));
+  // writeLine now resolves on the write's completion callback (M6), which
+  // can settle after the stdout 'data' event that populates `lines` — so
+  // wait for exitCodes too, not just the fatal line, before asserting on it.
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal") && exitCodes.length > 0);
   assert.equal((lines[lines.length - 1] as { reason?: string }).reason, "line_too_large");
   assert.deepEqual(exitCodes, [1]);
 });
@@ -267,7 +340,10 @@ test("a second user_turn while one is in flight fatals as busy", async () => {
   sdk.enqueue(neverEndingQuery(() => Promise.resolve(undefined)));
   const { stdin, lines, exitCodes } = harness(sdk);
   send(stdin, { op: "user_turn", query_id: 1, text: "hi" }, { op: "user_turn", query_id: 2, text: "again" });
-  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal"));
+  // writeLine now resolves on the write's completion callback (M6), which
+  // can settle after the stdout 'data' event that populates `lines` — so
+  // wait for exitCodes too, not just the fatal line, before asserting on it.
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal") && exitCodes.length > 0);
   assert.equal((lines[lines.length - 1] as { reason?: string }).reason, "busy");
   assert.deepEqual(exitCodes, [1]);
 });
@@ -275,7 +351,10 @@ test("a second user_turn while one is in flight fatals as busy", async () => {
 test("an unknown op fatals as protocol, with no detail field", async () => {
   const { stdin, lines, exitCodes } = harness(new FakeSdk());
   send(stdin, { op: "not_a_real_op" });
-  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal"));
+  // writeLine now resolves on the write's completion callback (M6), which
+  // can settle after the stdout 'data' event that populates `lines` — so
+  // wait for exitCodes too, not just the fatal line, before asserting on it.
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal") && exitCodes.length > 0);
   const ev = lines.find((l) => (l as { ev?: string }).ev === "fatal") as Record<string, unknown>;
   assert.equal(ev.reason, "protocol");
   assert.equal("detail" in ev, false);
@@ -285,7 +364,22 @@ test("an unknown op fatals as protocol, with no detail field", async () => {
 test("a malformed input line fatals as protocol", async () => {
   const { stdin, lines, exitCodes } = harness(new FakeSdk());
   stdin.write("{not json\n");
-  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal"));
+  // writeLine now resolves on the write's completion callback (M6), which
+  // can settle after the stdout 'data' event that populates `lines` — so
+  // wait for exitCodes too, not just the fatal line, before asserting on it.
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal") && exitCodes.length > 0);
+  assert.deepEqual(exitCodes, [1]);
+});
+
+test("unterminated input past the 8 MiB cap fatals as protocol, never grows memory unbounded", async () => {
+  const { stdin, lines, exitCodes } = harness(new FakeSdk());
+  stdin.write("x".repeat(MAX_LINE_BYTES + 1)); // no trailing newline, ever
+  // writeLine now resolves on the write's completion callback (M6), which
+  // can settle after the stdout 'data' event that populates `lines` — so
+  // wait for exitCodes too, not just the fatal line, before asserting on it.
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal") && exitCodes.length > 0);
+  const fatal = lines.find((l) => (l as { ev?: string }).ev === "fatal") as Record<string, unknown>;
+  assert.equal(fatal.reason, "protocol");
   assert.deepEqual(exitCodes, [1]);
 });
 

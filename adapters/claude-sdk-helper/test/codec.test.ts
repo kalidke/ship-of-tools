@@ -80,6 +80,29 @@ test("does not treat a shared (non-cyclic) reference as a cycle", () => {
   assert.deepEqual(project({ a: shared, b: shared }), { a: { v: 1 }, b: { v: 1 } });
 });
 
+test("catches a cycle hidden behind toJSON, which manufactures a fresh wrapper every call", () => {
+  // a.toJSON() returns a NEW object literal each call, so post-toJSON
+  // identity never repeats — cycle detection must key on the PRE-toJSON
+  // reference (`a` itself) to catch this, or it recurses until the real JS
+  // call stack overflows instead of failing cleanly.
+  const a: { toJSON: () => { self: unknown } } = {
+    toJSON: () => ({ self: a }),
+  };
+  assert.throws(() => project(a), SerializerError);
+});
+
+test("depth bound: a structure nested well past the bound fatals cleanly, not a stack overflow", () => {
+  let deep: unknown = { bottom: true };
+  for (let i = 0; i < 500; i++) deep = { child: deep };
+  assert.throws(() => project(deep), SerializerError);
+});
+
+test("depth bound: a structure well within the bound is unaffected", () => {
+  let ok: unknown = { bottom: true };
+  for (let i = 0; i < 50; i++) ok = { child: ok };
+  assert.doesNotThrow(() => project(ok));
+});
+
 test("throws SerializerError on values that are neither array, plain object, nor primitive", () => {
   assert.throws(() => project(new Map()), SerializerError);
   assert.throws(() => project(new Set()), SerializerError);
