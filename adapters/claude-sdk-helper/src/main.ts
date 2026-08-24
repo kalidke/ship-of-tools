@@ -6,7 +6,7 @@
  * The real SDK is wired behind SdkLike so `run()` is testable with a fake.
  */
 
-import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
+import { query as sdkQuery, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { project, type Json } from "./codec.js";
@@ -23,7 +23,7 @@ import {
 } from "./protocol.js";
 
 export interface SdkQueryOpts {
-  prompt: string;
+  prompt: AsyncIterable<SDKUserMessage>;
   options: {
     permissionMode: "bypassPermissions";
     allowDangerouslySkipPermissions: true;
@@ -44,6 +44,19 @@ export interface SdkLike {
 const realSdk: SdkLike = {
   query: (opts) => sdkQuery(opts) as unknown as SdkQuery,
 };
+
+/**
+ * Streaming-input mode, one message, then done: the exact SDKUserMessage
+ * shape from sdk.d.ts (only `type`, `message`, `parent_tool_use_id` are
+ * required; every other field is optional and omitted here). This is what
+ * makes `interrupt()` a *supported* call per the SDK's own doc note ("only
+ * supported when streaming input/output is used") while still satisfying
+ * the exactly-one-result-then-exhaustion turn contract: one input in the
+ * iterable is one result barrier, same as single-prompt mode was.
+ */
+async function* oneShotPrompt(text: string): AsyncGenerator<SDKUserMessage> {
+  yield { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+}
 
 /** "<from package>": our own pinned dependency entry, the source of truth for the exact SDK build in use. */
 function helperSdkVersion(): string {
@@ -120,7 +133,7 @@ export function run(
       };
       if (env.HELPER_MODEL) options.model = env.HELPER_MODEL;
       if (pinnedSessionId !== null) options.resume = pinnedSessionId;
-      const handle = sdk.query({ prompt: op.text, options });
+      const handle = sdk.query({ prompt: oneShotPrompt(op.text), options });
       inFlight = { queryId: op.query_id, handle };
       let resultCount = 0;
       try {

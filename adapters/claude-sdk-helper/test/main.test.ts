@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { MAX_LINE_BYTES } from "../src/protocol.js";
 import { run, type SdkLike, type SdkQuery, type SdkQueryOpts } from "../src/main.js";
 
@@ -31,6 +32,8 @@ function neverEndingQuery(interrupt: () => Promise<unknown>): SdkQuery {
 
 class FakeSdk implements SdkLike {
   calls: SdkQueryOpts[] = [];
+  /** Each call's prompt iterable, fully drained (fire-and-forget, since query() is sync). */
+  receivedPrompts: SDKUserMessage[][] = [];
   #queue: SdkQuery[] = [];
   enqueue(q: SdkQuery): this {
     this.#queue.push(q);
@@ -38,6 +41,11 @@ class FakeSdk implements SdkLike {
   }
   query(opts: SdkQueryOpts): SdkQuery {
     this.calls.push(opts);
+    const received: SDKUserMessage[] = [];
+    this.receivedPrompts.push(received);
+    void (async () => {
+      for await (const m of opts.prompt) received.push(m);
+    })();
     const q = this.#queue.shift();
     if (!q) throw new Error(`FakeSdk: no queued query for call #${this.calls.length}`);
     return q;
@@ -91,11 +99,12 @@ test("happy two-turn flow: fresh query then resume, identical authority-bearing 
 
   send(stdin, { op: "user_turn", query_id: 2, text: "again" });
   await waitFor(() => lines.filter((l) => (l as { ev?: string }).ev === "turn_end").length === 2);
+  await waitFor(() => sdk.receivedPrompts[1]?.length === 1);
 
   assert.equal(sdk.calls.length, 2);
-  assert.equal(sdk.calls[0].prompt, "hello");
+  assert.equal(sdk.receivedPrompts[0][0].message.content, "hello");
   assert.equal(sdk.calls[0].options.resume, undefined);
-  assert.equal(sdk.calls[1].prompt, "again");
+  assert.equal(sdk.receivedPrompts[1][0].message.content, "again");
   assert.equal(sdk.calls[1].options.resume, "sess-A");
   for (const call of sdk.calls) {
     assert.equal(call.options.permissionMode, "bypassPermissions");
@@ -104,6 +113,30 @@ test("happy two-turn flow: fresh query then resume, identical authority-bearing 
     assert.equal(call.options.model, "claude-sonnet-5");
   }
   assert.deepEqual(lines[lines.length - 1], { ev: "turn_end", query_id: 2 });
+});
+
+test("each turn delivers exactly one SDKUserMessage on the prompt iterable, then ends", async () => {
+  const sdk = new FakeSdk();
+  sdk.enqueue(
+    scriptedQuery([
+      { type: "system", subtype: "init", session_id: "s" },
+      { type: "result", session_id: "s" },
+    ]),
+  );
+  const { stdin, lines } = harness(sdk);
+  send(stdin, { op: "user_turn", query_id: 1, text: "only one, please" });
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "turn_end"));
+  await waitFor(() => sdk.receivedPrompts[0]?.length === 1);
+  // No further messages ever arrive on the iterable after the first — give
+  // the fake's drain loop a further tick to prove that, not just assert
+  // count-at-this-instant.
+  await new Promise((r) => setImmediate(r));
+  assert.equal(sdk.receivedPrompts[0].length, 1);
+  assert.deepEqual(sdk.receivedPrompts[0][0], {
+    type: "user",
+    message: { role: "user", content: "only one, please" },
+    parent_tool_use_id: null,
+  });
 });
 
 test("HELPER_MODEL is omitted from options when unset", async () => {

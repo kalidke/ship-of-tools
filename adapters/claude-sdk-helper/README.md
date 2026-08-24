@@ -56,13 +56,42 @@ an error.
 
 ## Turn model
 
-One SDK `query()` per `user_turn`, **not** streaming-input mode — every turn
-is a single prompt string. The first turn is a fresh query; every later turn
-adds `resume: <session_id>`, captured from the first turn's
-`system`/`init` message. Every `query()` call repeats the same
-authority-bearing options: `model` (from `HELPER_MODEL` if set),
-`permissionMode: "bypassPermissions"`, `includePartialMessages: false`, no
-`hooks`, no `canUseTool`.
+One SDK `query()` per `user_turn`, in **streaming-input mode**: `prompt` is a
+one-message `AsyncIterable<SDKUserMessage>` (`oneShotPrompt()` in
+`src/main.ts`), not a plain string. The generator yields exactly one message
+and returns — one input in, one result out, same turn boundary a
+single-prompt string would have given, but over the streaming-input
+transport. The message is the minimal `SDKUserMessage` shape from the
+installed SDK's `sdk.d.ts` (only `type`, `message`, and `parent_tool_use_id`
+are required; every other field is optional and omitted):
+
+```ts
+{
+  type: "user",
+  message: { role: "user", content: op.text },
+  parent_tool_use_id: null,
+}
+```
+
+**Why streaming-input instead of a plain string:** the SDK's own doc
+comment on `Query#interrupt()` (and its sibling control-request methods)
+says they are "only supported when streaming input/output is used." A
+single-prompt string query is documented to exit the underlying process
+once the turn completes, and control requests like `interrupt()` are not
+guaranteed to be honored against it. Since this adapter's protocol makes
+`interrupt` a first-class op, the query mode has to actually support it —
+so every turn goes through streaming-input mode, one message at a time,
+which keeps the exactly-one-result-then-exhaustion contract identical to
+what single-prompt mode would have given while making `interrupt()` a
+genuinely supported call rather than an unspecified one. (This resolves
+what was flagged as an unresolved spec-vs-SDK tension in an earlier
+revision of this package — see git history for that revision's language.)
+
+The first turn is a fresh query; every later turn adds
+`resume: <session_id>`, captured from the first turn's `system`/`init`
+message. Every `query()` call repeats the same authority-bearing options:
+`model` (from `HELPER_MODEL` if set), `permissionMode: "bypassPermissions"`,
+`includePartialMessages: false`, no `hooks`, no `canUseTool`.
 
 A well-formed turn is exactly **one** top-level `result` message followed by
 normal iterator exhaustion. Zero results, more than one result, a
@@ -71,6 +100,19 @@ itself rejecting, are each a distinct fatal (`no_result` / `multi_result` /
 `session_drift` / `query_error`). A second `user_turn` while one is still in
 flight is `busy` — the capsule is expected to enforce one-in-flight itself;
 this is the helper's own double-check.
+
+**Open question, fixture-decides:** the `session_drift` check compares every
+message's `session_id` field against the pinned/resumed session as a flat
+equality check across the whole turn. This assumes every message in the
+turn — including any subagent-originated messages (`SDKUserMessage` carries
+optional `subagent_type`/`task_description` fields for exactly this case) —
+reports the *main* session's `session_id`, not a subagent-local one. If the
+pinned-SDK conformance fixtures (golden Rust-writes/Julia-reads fixtures per
+ADR 0039) show subagent messages carrying their own distinct session ids,
+this check needs to learn to scope the comparison to top-level/main-thread
+messages only (e.g. by `parent_tool_use_id === null`) rather than flat
+equality across every message. Not resolved here because it depends on
+observed SDK behavior this package cannot fabricate a fixture for.
 
 ## Codec (protocol 1 projection)
 
@@ -123,19 +165,20 @@ npm test      # build, then node --test over dist/test/*.test.js
 npm start     # run the real helper against real stdio (HELPER_MODEL optional)
 ```
 
-## Known spec-vs-SDK tension (flagged, not papered over)
+## Design choices beyond the literal wire spec (flagged, not papered over)
 
-The installed SDK's own `sdk.d.ts` documents `Query#interrupt()` (and its
-sibling control-request methods) as "only supported when streaming
-input/output is used." This package's turn model is mandated non-streaming
-(a single prompt string per `query()` call, per the P2 adapter spec). The
-helper still calls `.interrupt()` on the in-flight query exactly as
-specified — that's the given contract — but whether the real CLI honors an
-interrupt against a single-prompt query in practice is a live open question
-this package does not resolve; it is inherited from the spec, not
-introduced here.
+An earlier revision of this package used single-prompt-string `query()`
+calls and flagged, as an open tension, that the SDK's own `sdk.d.ts`
+documents `interrupt()` as "only supported when streaming input/output is
+used" — i.e. that the mandated non-streaming turn model might not actually
+support the mandated `interrupt` op. That flag was reviewed and resolved by
+switching the turn model to streaming-input mode with a one-message
+iterable (see "Turn model" above): every turn now uses the mode `interrupt()`
+is documented to support, while preserving the same one-result-per-turn
+contract. It is no longer an open tension; kept here as the record of why
+the turn model looks the way it does.
 
-Two more spec points needed a concrete choice where the wire spec was silent:
+Three more spec points needed a concrete choice where the wire spec was silent, reviewed and accepted:
 
 - **`allowDangerouslySkipPermissions: true`** is set alongside
   `permissionMode: "bypassPermissions"` on every `query()` call. The spec
@@ -148,3 +191,9 @@ Two more spec points needed a concrete choice where the wire spec was silent:
   when there is none. Since `ok` is defined as "whether `interrupt()`
   resolved without throwing," and nothing was invoked in this case, `false`
   is the most literal reading.
+- **Uniform drain-await on every outgoing line**, not only around message
+  emission — the spec's literal backpressure requirement is scoped to
+  "before reading the next SDK message," but applying the same await
+  uniformly to `hello`/`turn_end`/`interrupted`/`fatal` lines too is a strict
+  superset of that guarantee and keeps the write path in one code path
+  (`emit()`) instead of two.
