@@ -75,6 +75,34 @@ while IFS= read -r line; do
   esac
 done
 "#,
+        "bad_version" => r#"#!/bin/bash
+echo '{"ev":"hello","protocol":1,"sdk_version":"evil-9"}'
+read -r _line
+"#,
+        "interrupt_no_result" => r#"#!/bin/bash
+echo '{"ev":"hello","protocol":1,"sdk_version":"fake-0"}'
+while IFS= read -r line; do
+  case "$line" in
+    *'"query_id":1'*)
+      echo '{"ev":"msg","body":{"type":"system","subtype":"init","session_id":"s1"}}' ;;
+    *'"op":"interrupt"'*)
+      echo '{"ev":"interrupted","id":1,"ok":true,"sdk_return":null,"note":"adapter-derived"}'
+      echo '{"ev":"turn_end","query_id":1,"results":0}' ;;
+    *'"op":"shutdown"'*) exit 0 ;;
+  esac
+done
+"#,
+        "double_result" => r#"#!/bin/bash
+echo '{"ev":"hello","protocol":1,"sdk_version":"fake-0"}'
+while IFS= read -r line; do
+  case "$line" in
+    *'"query_id":1'*)
+      echo '{"ev":"msg","body":{"type":"result","subtype":"success","session_id":"s1"}}'
+      echo '{"ev":"msg","body":{"type":"result","subtype":"success","session_id":"s1"}}'
+      echo '{"ev":"turn_end","query_id":1}' ;;
+  esac
+done
+"#,
         "die_mid_turn" => r#"#!/bin/bash
 echo '{"ev":"hello","protocol":1,"sdk_version":"fake-0"}'
 while IFS= read -r line; do
@@ -122,8 +150,13 @@ fn all_sealed_frames(root: &Path) -> Vec<sot_log::Envelope> {
     out
 }
 
-/// Drive run() on a thread; feed commands with settling delays.
+/// Drive run() on a thread; feed commands with settling delays. The rig's
+/// scenarios are TIMING-based (fixed settling sleeps), so they serialize
+/// through one lock — parallel test scheduling starved the sleeps and
+/// produced order-dependent flakes.
 fn drive(cfg: ClaudeConfig, cmds: Vec<(u64, OperatorCmd)>) -> sot_log::claude::ClaudeSummary {
+    static RIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _serial = RIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || run(cfg, rx).unwrap());
     for (delay_ms, cmd) in cmds {
@@ -288,4 +321,79 @@ fn helper_death_mid_turn_closes_synthesized_and_successor_run_is_green() {
     ]);
     assert_eq!(s2.turns, 1, "terminal: {}", s2.terminal_reason);
     verify_voyage(&root, "v5").unwrap();
+}
+
+#[test]
+fn sdk_version_mismatch_is_terminal_attestation() {
+    let dir = tempfile::tempdir().unwrap();
+    let helper = write_fake_helper(dir.path(), "bad_version");
+    let cfg = config(dir.path(), "v6", &helper);
+    let root = cfg.voyage_root.clone();
+    let summary = drive(cfg, vec![(200, OperatorCmd::Shutdown)]);
+    assert!(summary.terminal_reason.contains("sdk version mismatch"),
+        "got: {}", summary.terminal_reason);
+    verify_voyage(&root, "v6").unwrap();
+}
+
+#[test]
+fn interrupted_query_without_result_closes_interrupted_with_outcome() {
+    let dir = tempfile::tempdir().unwrap();
+    let helper = write_fake_helper(dir.path(), "interrupt_no_result");
+    let cfg = config(dir.path(), "v7", &helper);
+    let root = cfg.voyage_root.clone();
+    let summary = drive(cfg, vec![
+        (150, OperatorCmd::Turn("long".into())),
+        (200, OperatorCmd::Interrupt),
+        (300, OperatorCmd::Shutdown),
+    ]);
+    assert_eq!(summary.turns, 1, "terminal: {}", summary.terminal_reason);
+    verify_voyage(&root, "v7").unwrap();
+    let frames = all_sealed_frames(&root);
+    let close = frames.iter().find(|f| f.class == Class::TurnClose).unwrap();
+    assert_eq!(close.payload.as_ref().unwrap()["reason"], "interrupted");
+    let outcome = frames.iter().find(|f| f.class == Class::ControlExchange
+        && f.payload.as_ref().unwrap()["phase"] == "outcome").expect("outcome frame");
+    assert_eq!(outcome.payload.as_ref().unwrap()["scope"], "turn");
+    assert!(outcome.payload.as_ref().unwrap()["target"].as_str().unwrap().contains(':'));
+    assert!(!outcome.refs.iter().any(|r| r.kind == RefKind::RespondsTo));
+}
+
+#[test]
+fn double_result_is_terminal_and_log_stays_verify_green() {
+    let dir = tempfile::tempdir().unwrap();
+    let helper = write_fake_helper(dir.path(), "double_result");
+    let cfg = config(dir.path(), "v8", &helper);
+    let root = cfg.voyage_root.clone();
+    let summary = drive(cfg, vec![(150, OperatorCmd::Turn("go".into()))]);
+    assert!(summary.terminal_reason.contains("second result"),
+        "got: {}", summary.terminal_reason);
+    // The invariant under attack (review B3): a hostile helper must never
+    // make the capsule write a log that fails verify.
+    verify_voyage(&root, "v8").unwrap();
+}
+
+#[test]
+fn refused_turn_is_recorded_as_bare_input() {
+    let dir = tempfile::tempdir().unwrap();
+    // interrupt_no_result holds the first turn OPEN until interrupted, so
+    // the second Turn is deterministically refused (no timing race).
+    let helper = write_fake_helper(dir.path(), "interrupt_no_result");
+    let cfg = config(dir.path(), "v9", &helper);
+    let root = cfg.voyage_root.clone();
+    let summary = drive(cfg, vec![
+        (150, OperatorCmd::Turn("first".into())),
+        (150, OperatorCmd::Turn("refused-while-busy".into())),
+        (150, OperatorCmd::Interrupt),
+        (300, OperatorCmd::Shutdown),
+    ]);
+    assert_eq!(summary.turns, 1, "terminal: {}", summary.terminal_reason);
+    assert_eq!(summary.refused_turns, 1);
+    verify_voyage(&root, "v9").unwrap();
+    // Two input frames exist; exactly one has a forward_intent behind it.
+    let frames = all_sealed_frames(&root);
+    let inputs = frames.iter().filter(|f| f.class == Class::Input).count();
+    let intents = frames.iter().filter(|f| f.class == Class::Lifecycle
+        && f.payload.as_ref().unwrap().pointer("/fact/fact") == Some(&serde_json::json!("forward_intent"))).count();
+    assert_eq!(inputs, 2);
+    assert_eq!(intents, 1);
 }

@@ -113,13 +113,57 @@ pub struct ClaudeSummary {
     pub turns: u64,
     pub frames_written: u64,
     pub terminal_reason: String,
+    /// Frames left turn-free because a correlation id did not resolve —
+    /// the signal the adapter's turn model drifted from the SDK's (A2; the
+    /// warning is operational by design: the lifecycle vocabulary is closed).
+    pub unresolved_correlation_warnings: u64,
+    /// Operator turns refused (busy/draining/pre-ready) — each recorded as a
+    /// bare input frame whose {input}-only lattice chain MEANS "recorded,
+    /// never attempted" (C2: refusals are auditable, not invisible).
+    pub refused_turns: u64,
 }
 
 enum Event {
     HelperLine(String),
     HelperStderr(Vec<u8>),
+    HelperOversize,
     HelperEof,
     Operator(OperatorCmd),
+}
+
+/// Read one \n-terminated line with the cap enforced DURING the read (C1:
+/// `read_line` grows unboundedly before any post-hoc check — a hostile line
+/// must not OOM the one process that has to survive to write the log).
+fn read_capped_line(r: &mut impl BufRead, out: &mut Vec<u8>) -> std::io::Result<CappedRead> {
+    out.clear();
+    loop {
+        let buf = r.fill_buf()?;
+        if buf.is_empty() {
+            return Ok(if out.is_empty() { CappedRead::Eof } else { CappedRead::Line });
+        }
+        if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            if out.len() + pos > LINE_CAP {
+                r.consume(pos + 1);
+                return Ok(CappedRead::CapBreached);
+            }
+            out.extend_from_slice(&buf[..pos]);
+            r.consume(pos + 1);
+            return Ok(CappedRead::Line);
+        }
+        let take = buf.len();
+        if out.len() + take > LINE_CAP {
+            r.consume(take);
+            return Ok(CappedRead::CapBreached);
+        }
+        out.extend_from_slice(buf);
+        r.consume(take);
+    }
+}
+
+enum CappedRead {
+    Line,
+    Eof,
+    CapBreached,
 }
 
 /// v1 operator surface: turns + interrupt + shutdown, from the capsule's
@@ -201,7 +245,7 @@ impl Fx {
 /// whether this is the current turn's RESULT, whether this is an operator
 /// echo needing redaction, or a terminal protocol error).
 enum Attribution {
-    Frame { turn: Option<Seq>, is_result: bool, is_echo: bool },
+    Frame { turn: Option<Seq>, is_result: bool, is_echo: bool, warn_unresolved: bool },
     UnknownType,
     Terminal(String),
 }
@@ -246,20 +290,24 @@ fn attribute(
     match ty {
         // Rule 1: the current query's top-level result closes its turn.
         Some("result") if corr.is_empty() => match current {
-            Some(t) => Attribution::Frame { turn: Some(t.open_seq), is_result: true, is_echo: false },
+            Some(t) => Attribution::Frame { turn: Some(t.open_seq), is_result: true, is_echo: false, warn_unresolved: false },
             None => Attribution::Terminal("result with no open query-turn".into()),
         },
         // Rule 3: session-scoped types are turn-free.
         Some("system") => match subtype {
             Some("init" | "compact_boundary" | "informational" | "worker_shutting_down"
                 | "api_retry" | "rate_limit") =>
-                Attribution::Frame { turn: None, is_result: false, is_echo: false },
+                Attribution::Frame { turn: None, is_result: false, is_echo: false, warn_unresolved: false },
             _ => Attribution::UnknownType,
         },
         Some("assistant") | Some("user") | Some("result") => {
-            // Rule 2: correlation ids must agree on ONE turn.
+            // Rule 2: ALL correlation ids resolve first; ANY disagreement is
+            // terminal regardless of id order (review A1 — the old
+            // first-unresolved short-circuit let block order pick the
+            // verdict); any unresolved id => turn-free + WARN (A2).
             if !corr.is_empty() {
                 let mut resolved: Option<Seq> = None;
+                let mut any_unresolved = false;
                 for id in &corr {
                     match tool_index.get(id) {
                         Some(t) => match resolved {
@@ -271,22 +319,22 @@ fn attribute(
                                 ))
                             }
                         },
-                        None => {
-                            return Attribution::Frame { turn: None, is_result: false, is_echo: false }
-                            // unresolved id: turn-free (warning is the caller's)
-                        }
+                        None => any_unresolved = true,
                     }
                 }
-                return Attribution::Frame { turn: resolved, is_result: false, is_echo: false };
+                if any_unresolved {
+                    return Attribution::Frame { turn: None, is_result: false, is_echo: false, warn_unresolved: true };
+                }
+                return Attribution::Frame { turn: resolved, is_result: false, is_echo: false, warn_unresolved: false };
             }
             // Rule 4: operator echo (user role, no tool_result blocks).
             if ty == Some("user") && !has_tool_result {
-                return Attribution::Frame { turn: None, is_result: false, is_echo: true };
+                return Attribution::Frame { turn: None, is_result: false, is_echo: true, warn_unresolved: false };
             }
             // Rule 5: known mainline message -> the current query's turn.
             match current {
-                Some(t) => Attribution::Frame { turn: Some(t.open_seq), is_result: false, is_echo: false },
-                None => Attribution::Frame { turn: None, is_result: false, is_echo: false },
+                Some(t) => Attribution::Frame { turn: Some(t.open_seq), is_result: false, is_echo: false, warn_unresolved: false },
+                None => Attribution::Frame { turn: None, is_result: false, is_echo: false, warn_unresolved: false },
             }
         }
         // Rule 6: unknown type.
@@ -495,17 +543,17 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
         let out = child.stdout.take().expect("piped");
         std::thread::spawn(move || {
             let mut r = BufReader::new(out);
-            let mut line = String::new();
+            let mut buf: Vec<u8> = Vec::new();
             loop {
-                line.clear();
-                match r.read_line(&mut line) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) if n > LINE_CAP => {
-                        let _ = tx.send(Event::HelperLine(String::new())); // cap breach -> parse fails -> terminal
+                match read_capped_line(&mut r, &mut buf) {
+                    Err(_) | Ok(CappedRead::Eof) => break,
+                    Ok(CappedRead::CapBreached) => {
+                        let _ = tx.send(Event::HelperOversize);
                         break;
                     }
-                    Ok(_) => {
-                        if tx.send(Event::HelperLine(line.trim_end_matches('\n').to_string())).is_err() {
+                    Ok(CappedRead::Line) => {
+                        let line = String::from_utf8_lossy(&buf).into_owned();
+                        if tx.send(Event::HelperLine(line)).is_err() {
                             break;
                         }
                     }
@@ -548,13 +596,29 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
     let mut next_query_id: u64 = 1;
     let mut next_interrupt_id: u64 = 1;
     let mut pending_interrupt_req: Option<(u64, Seq)> = None;
+    let mut interrupt_answered_this_turn = false;
     let mut terminal_reason = String::from("shutdown");
     let mut refusing_input = false;
+    let mut warnings: u64 = 0;
+    let mut refused: u64 = 0;
+    const LIVENESS_BOUND: Duration = Duration::from_secs(600);
 
     'main: loop {
-        let ev = match rx.recv() {
-            Ok(e) => e,
-            Err(_) => break 'main,
+        let bounded = turn.is_some() || refusing_input;
+        let ev = if bounded {
+            match rx.recv_timeout(LIVENESS_BOUND) {
+                Ok(e) => e,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    terminal_reason = "helper silent past the liveness bound mid-turn".into();
+                    break 'main;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break 'main,
+            }
+        } else {
+            match rx.recv() {
+                Ok(e) => e,
+                Err(_) => break 'main,
+            }
         };
         match ev {
             Event::HelperStderr(bytes) => {
@@ -590,6 +654,16 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
                             terminal_reason = "helper protocol: bad hello".into();
                             break 'main;
                         }
+                        // B1: the attested producer version must be the one
+                        // actually running — attestation is the point.
+                        let reported = parsed.get("sdk_version").and_then(Value::as_str).unwrap_or("");
+                        if reported != config.expected_sdk_version {
+                            terminal_reason = format!(
+                                "sdk version mismatch: attested {:?}, helper reports {:?}",
+                                config.expected_sdk_version, reported
+                            );
+                            break 'main;
+                        }
                         hello_seen = true;
                         let f = fx.base(Class::Lifecycle, json!({"kind": "producer_ready"}));
                         put!(f);
@@ -622,7 +696,18 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
                                     break 'main;
                                 }
                             }
-                            Attribution::Frame { turn: t, is_result, is_echo } => {
+                            Attribution::Frame { turn: t, is_result, is_echo, warn_unresolved } => {
+                                if warn_unresolved {
+                                    warnings += 1; // operational signal (A2)
+                                }
+                                // B3: a second top-level result for the same
+                                // turn must never yield a second close — the
+                                // capsule's invariant is "never emit a log
+                                // that fails verify".
+                                if is_result && turn.as_ref().map(|ts| ts.saw_result) == Some(true) {
+                                    terminal_reason = "second result within one turn".into();
+                                    break 'main;
+                                }
                                 let assigned = t;
                                 let (body_out, transformed) = if is_echo {
                                     let (b, ops) = redact_echo(&body);
@@ -670,7 +755,13 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
                     }
                     "turn_end" if hello_seen => {
                         let qid = parsed.get("query_id").and_then(Value::as_u64);
+                        let results = parsed.get("results").and_then(Value::as_u64);
                         match turn.take() {
+                            None => {
+                                // B4b: its own reason, not "without a result".
+                                terminal_reason = "turn_end with no open turn".into();
+                                break 'main;
+                            }
                             Some(ts) if qid != Some(ts.query_id) => {
                                 let _ = ts;
                                 terminal_reason = "turn_end query_id mismatch".into();
@@ -678,19 +769,44 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
                             }
                             Some(ts) if ts.saw_result => {
                                 turns_done += 1;
+                                interrupt_answered_this_turn = false;
                                 if refusing_input {
                                     terminal_reason = "unknown producer message type (drained)".into();
                                     break 'main;
                                 }
                             }
-                            _ => {
+                            Some(ts) if results == Some(0) && interrupt_answered_this_turn => {
+                                // H2: an interrupted query may exhaust with
+                                // no result — the helper reports it honestly
+                                // and the adapter closes the turn as
+                                // interrupted, then emits the OUTCOME frame
+                                // (disposition now known — the ADR's third
+                                // exchange frame).
+                                let mut c = fx.base(Class::TurnClose, json!({"reason": "interrupted"}));
+                                c.refs = vec![FrameRef { kind: RefKind::CausedBy, frame: ts.open_seq }];
+                                put!(c);
+                                let out = fx.controller(Class::ControlExchange, json!({
+                                    "phase": "outcome", "kind_ns": "claude-sdk/interrupt",
+                                    "scope": "turn",
+                                    "target": format!("{}:{}", ts.open_seq.epoch, ts.open_seq.n),
+                                    "body": {"disposition": "interrupted"}}));
+                                put!(out);
+                                turns_done += 1;
+                                interrupt_answered_this_turn = false;
+                            }
+                            Some(_) => {
                                 terminal_reason = "turn_end without a result".into();
                                 break 'main;
                             }
                         }
                     }
                     "interrupted" if hello_seen => {
-                        if let Some((_id, req_seq)) = pending_interrupt_req.take() {
+                        if let Some((id, req_seq)) = pending_interrupt_req.take() {
+                            if parsed.get("id").and_then(Value::as_u64) != Some(id) {
+                                terminal_reason = "interrupted id mismatch".into();
+                                break 'main;
+                            }
+                            interrupt_answered_this_turn = turn.is_some();
                             let mut resp = fx.controller(
                                 Class::ControlExchange,
                                 json!({"phase": "response", "kind_ns": "claude-sdk/interrupt",
@@ -705,6 +821,11 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
                             break 'main;
                         }
                     }
+                    "msg" | "turn_end" | "interrupted" => {
+                        // Known ev, wrong time (pre-hello): B4 legibility.
+                        terminal_reason = format!("helper protocol: {ev_name} before hello");
+                        break 'main;
+                    }
                     "fatal" => {
                         terminal_reason = format!(
                             "helper fatal: {}",
@@ -717,6 +838,10 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
                         break 'main;
                     }
                 }
+            }
+            Event::HelperOversize => {
+                terminal_reason = "helper line cap breached".into();
+                break 'main;
             }
             Event::HelperEof => {
                 terminal_reason = if turn.is_some() {
@@ -748,8 +873,17 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
             }
             Event::Operator(OperatorCmd::Turn(text)) => {
                 if turn.is_some() || refusing_input || !hello_seen {
-                    // busy / draining / not ready: refuse at the boundary
-                    // (queued input was deleted in review).
+                    // Refused at the boundary (queued input was deleted in
+                    // review) — but RECORDED (C2): a bare input frame with
+                    // no forward_intent is the lattice's honest encoding of
+                    // "received, never attempted".
+                    let input = fx.controller(
+                        Class::Input,
+                        json!({"idem_key": random_hex32()?, "content": "redacted",
+                                "length": text.len()}),
+                    );
+                    put!(input);
+                    refused += 1;
                     continue;
                 }
                 // WAL + turn order per ADR 0040:
@@ -820,10 +954,16 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
     let _ = child.kill();
     let _ = child.wait();
     if let Some(ts) = turn.take() {
-        let mut c = fx.base(Class::TurnClose, json!({"reason": "synthesized_death"}));
-        c.refs = vec![FrameRef { kind: RefKind::CausedBy, frame: ts.open_seq }];
-        w.append(&c, Commit::Immediate)?;
-        frames += 1;
+        // Only synthesize a close for a turn that never got one — a turn
+        // whose result already closed it (e.g. terminal fired between the
+        // close and turn_end) must not receive a second close (the same
+        // invariant review B3 demanded of the msg path).
+        if !ts.saw_result {
+            let mut c = fx.base(Class::TurnClose, json!({"reason": "synthesized_death"}));
+            c.refs = vec![FrameRef { kind: RefKind::CausedBy, frame: ts.open_seq }];
+            w.append(&c, Commit::Immediate)?;
+            frames += 1;
+        }
     }
     let f = fx.base(Class::Lifecycle,
         json!({"kind": "producer_dead", "detail": {"reason": terminal_reason.clone()}}));
@@ -832,5 +972,11 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
     let digest = w.seal(None)?;
     store.advance_chain(digest);
 
-    Ok(ClaudeSummary { turns: turns_done, frames_written: frames, terminal_reason })
+    Ok(ClaudeSummary {
+        turns: turns_done,
+        frames_written: frames,
+        terminal_reason,
+        unresolved_correlation_warnings: warnings,
+        refused_turns: refused,
+    })
 }
