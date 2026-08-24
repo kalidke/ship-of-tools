@@ -46,7 +46,11 @@ helper imported and validated its pinned SDK and can accept a query".
 state, hooks, background workers, or prompt cache — the adapter repeats
 every authority-bearing option on every query and records that this is the
 continuity model. A turn is well-formed iff its query yields exactly one
-top-level result message with the expected session id, then exhausts.
+top-level result message with the expected session id, then exhausts. The
+turn's prompt is delivered as a ONE-MESSAGE streaming-input iterable (not a
+plain prompt string): the SDK supports `interrupt()` only in streaming-input
+mode, and one message per query preserves the per-input result barrier —
+found during helper implementation, resolved without weakening the model.
 Anything else is terminal. The streaming-input single-query mode is an
 optimization seam, adoptable only after a pinned-SDK fixture proves
 per-input result barriers empirically.
