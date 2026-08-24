@@ -54,6 +54,11 @@ enum FactState {
 }
 
 /// The two registered required features (ADR 0039 registry, 2026-08-24).
+/// `json-f64-v1` is enforced bidirectionally (undeclared + fractional =
+/// loud, inline or spilled). `cgroup-fence-v1` is accept-only HERE: the
+/// locator-must-declare direction needs the spawn-detail schema the adapter
+/// PR fixes, and is owed there (review F3 — deliberate deferral, not a
+/// gap silently forgotten).
 pub const REGISTERED_FEATURES: [&str; 2] =
     ["sot.producer.json-f64-v1", "sot.capsule.cgroup-fence-v1"];
 
@@ -639,7 +644,11 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
                 turn_opens.insert((env.seq.epoch, env.seq.n));
             }
             // Producer-payload numbers: integer atoms unless the segment
-            // declares sot.producer.json-f64-v1 (ADR 0039 registry).
+            // declares sot.producer.json-f64-v1 (ADR 0039 registry). Covers
+            // BOTH carriers (review F1): the inline payload AND a
+            // payload_ref with encoding json-utf8 — a spilled JSON payload
+            // is still JSON and must obey the same atoms. encoding "bytes"
+            // is never parsed, so no number rule can apply to it.
             if env.class == Class::Producer && !f64_ok {
                 if let Some(payload) = &env.payload {
                     check_integer_numbers(payload).map_err(|what| {
@@ -648,6 +657,22 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
                             env.seq
                         ))
                     })?;
+                }
+                if let Some(pr) = &env.payload_ref {
+                    if pr.encoding == crate::envelope::PayloadEncoding::JsonUtf8 {
+                        let bytes = read_blob(root, &pr.blob, env.seq)?;
+                        let v: serde_json::Value =
+                            serde_json::from_slice(&bytes).map_err(|e| Error::Schema(format!(
+                                "producer frame {:?}: json-utf8 payload_ref does not parse: {e}",
+                                env.seq
+                            )))?;
+                        check_integer_numbers(&v).map_err(|what| {
+                            Error::Schema(format!(
+                                "producer frame {:?} (via payload_ref): {what} without sot.producer.json-f64-v1",
+                                env.seq
+                            ))
+                        })?;
+                    }
                 }
             }
             seen.insert((env.seq.epoch, env.seq.n), env.class);
@@ -705,6 +730,19 @@ fn check_integer_numbers(v: &serde_json::Value) -> std::result::Result<(), Strin
         serde_json::Value::Object(m) => m.values().try_for_each(check_integer_numbers),
         _ => Ok(()),
     }
+}
+
+/// Read a blob's bytes from the CAS (existence/length already verified by
+/// `check_blob_on_disk` in the same pass; this re-reads for content checks).
+fn read_blob(root: &Path, blob: &BlobRef, seq: Seq) -> Result<Vec<u8>> {
+    let path = root
+        .join("blobs")
+        .join(&blob.algo)
+        .join(&blob.digest[0..2])
+        .join(&blob.digest);
+    std::fs::read(&path).map_err(|e| Error::Schema(format!(
+        "frame {seq:?}: payload_ref blob unreadable: {e}"
+    )))
 }
 
 /// A `BlobRef` must resolve to a CAS file of exactly the recorded length.
@@ -897,6 +935,79 @@ mod tests {
         // Unknown feature: loud.
         let r3 = build(vec!["sot.future.unknown-v9".into()], "f_unk", dir.path());
         assert!(verify_voyage(&r3, "f_unk").is_err());
+    }
+
+    /// Review F1: a producer frame whose JSON payload rides a payload_ref
+    /// (spilled) must hit the same f64 gate as an inline payload.
+    #[test]
+    fn f64_gate_covers_spilled_json_payload_ref() {
+        use crate::envelope::{PayloadEncoding, PayloadRef};
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "sp1");
+        let content = br#"{"cost": 0.5}"#;
+        let digest = s.publish_blob(content).unwrap();
+        let mut w = s.open_segment(0).unwrap();
+        let mut att = test_env(1, 1);
+        att.class = Class::ProducerAttached;
+        att.payload = Some(json!({
+            "producer_kind": "t", "version": "1",
+            "profile_def": {"id": "d", "sha256": "0".repeat(64), "rules": {}}
+        }));
+        w.append(&att, Commit::Immediate).unwrap();
+        let mut prod = test_env(1, 2);
+        prod.refs = vec![FrameRef { kind: RefKind::AttachedTo, frame: Seq { epoch: 1, n: 1 } }];
+        prod.payload = None;
+        prod.payload_ref = Some(PayloadRef {
+            blob: crate::envelope::BlobRef {
+                algo: "sha256".into(),
+                digest,
+                length: content.len() as u64,
+                media_type: "application/json".into(),
+            },
+            encoding: PayloadEncoding::JsonUtf8,
+        });
+        w.append(&prod, Commit::Immediate).unwrap();
+        w.seal(None).unwrap();
+        let err = verify_voyage(&dir.path().join("sp1"), "sp1").unwrap_err();
+        assert!(format!("{err}").contains("via payload_ref"), "got: {err}");
+    }
+
+    /// Review F2 pin: an unmatched open in a SEALED segment of the SAME
+    /// epoch as the open tip is tolerated by allow-open-tip — rotation
+    /// within one run is normal, and a live turn may span it (the ADR's
+    /// predicate is per-EPOCH, deliberately).
+    #[test]
+    fn allow_open_tip_tolerates_rotation_spanning_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "rot1");
+        let mut w = s.open_segment(0).unwrap();
+        let mut open = test_env(1, 1);
+        open.class = Class::TurnOpen;
+        open.payload = Some(json!({"admitted_by": "test/rule"}));
+        w.append(&open, Commit::Immediate).unwrap();
+        let d = w.seal(None).unwrap(); // rotation: sealed with the turn open
+        s.advance_chain(d);
+        let mut w2 = s.open_segment(0).unwrap(); // same epoch, open tip
+        let mut lc = test_env(1, 2);
+        lc.class = Class::Lifecycle;
+        lc.payload = Some(json!({"kind": "producer_ready"}));
+        w2.append(&lc, Commit::Immediate).unwrap();
+        w2.commit().unwrap();
+        drop(w2);
+        let root = dir.path().join("rot1");
+        assert!(verify_voyage(&root, "rot1").is_err()); // complete: loud
+        verify_voyage_mode(&root, "rot1", VerifyMode::AllowOpenTip).unwrap();
+    }
+
+    /// Review F4 pin: the integer-atoms rule is WIRE-FORM integrality —
+    /// "3.0" is not an integer atom (matches the §3 shortest-decimal rule),
+    /// deliberately. A refactor to value-integrality must fail here.
+    #[test]
+    fn integral_float_wire_form_is_refused_without_f64() {
+        assert!(check_integer_numbers(&json!(3.0)).is_err());
+        assert!(check_integer_numbers(&json!(3)).is_ok());
+        assert!(check_integer_numbers(&json!({"a": [1, {"b": 2}]})).is_ok());
+        assert!(check_integer_numbers(&json!({"a": [1, {"b": 2.0}]})).is_err());
     }
 
     #[test]
