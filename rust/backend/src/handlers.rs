@@ -2065,10 +2065,27 @@ pub async fn handle_repl_interrupt(
         )]);
     };
     let repl = ws.repl(workspaces.repl_frame_tx());
-    let result = repl.request("repl.interrupt", payload_json).await;
+    // Daemon-side interrupt guard (P0.5 pre-work; twin of the #96 CLI
+    // pre-flight, now enforced for EVERY caller — FE Ctrl-C and raw-socket
+    // included): an interrupt must never be the thing that spawns a kernel.
+    // Only a `ready` child is forwarded to; `starting` is refused too (the
+    // serve loop isn't consuming yet — boot ≠ wedge, and a queued interrupt
+    // would land on the first legitimate eval instead). `request_if_running`
+    // closes the remaining race: even a stale `ready` reading cannot respawn.
+    let state = repl.state();
+    let result = match state {
+        crate::repl::ReplLifecycle::Ready => {
+            repl.request_if_running("repl.interrupt", payload_json).await
+        }
+        _ => Ok(None),
+    };
     let (_, rev) = session.snapshot().await;
     let payload = match result {
-        Ok(v) => v,
+        Ok(Some(v)) => v,
+        Ok(None) => json!({
+            "interrupted": false,
+            "note": format!("no running repl child (repl_state={})", state.as_str()),
+        }),
         Err(e) => json!({
             "error": format!("{e:#}"),
             "code": "repl_interrupt_failed",
