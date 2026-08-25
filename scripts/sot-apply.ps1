@@ -100,6 +100,21 @@ function Read-JsonFile([string]$path) {
     catch { Write-ApplyLog "unparseable JSON at ${path}: $($_.Exception.Message)"; return $null }
 }
 
+# Write UTF-8 with NO BOM.
+#
+# `Set-Content -Encoding utf8` on Windows PowerShell 5.1 emits EF BB BF, and
+# `serde_json::from_str` -- which is what reads install.json back in
+# rust/updater/src/manifest.rs -- REJECTS a leading BOM. Getting this wrong is
+# a one-shot, self-concealing failure: the first update applies cleanly, the
+# rewritten manifest then fails to parse, `InstallManifest::for_current_exe()`
+# returns None, and the frontend silently stops checking for updates forever
+# after -- reporting only a debug-level "unreadable install manifest".
+# Every JSON this script writes goes through here. (install-manifest.ps1 uses
+# the same encoding for the same reason.)
+function Write-Utf8NoBom([string]$path, [string]$text) {
+    [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Get-Sha256([string]$path) {
     try { return (Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() }
     catch { return $null }
@@ -207,7 +222,9 @@ if ($Rollback) {
     if ($installText -and $lgTag) {
         $t = Set-JsonField $installText 'version' ($lgTag -replace '^v', '')
         $t = Set-JsonField $t 'tag' $lgTag
-        Set-Content -LiteralPath $InstallJson -Value $t -Encoding utf8 -ErrorAction SilentlyContinue
+        try { Write-Utf8NoBom $InstallJson $t } catch {
+            Write-ApplyLog "could not rewrite install.json during rollback: $($_.Exception.Message)"
+        }
     }
     Remove-Item -LiteralPath $Pending, $Marker -Force -ErrorAction SilentlyContinue
     Write-ApplyLog "rollback complete -- running $lgTag"
@@ -298,12 +315,15 @@ if ($dirty) {
 # ---- record last-good (the pre-apply state) for rollback --------------------
 $prevCheckout = Get-JunctionTarget (Join-Path $Prefix 'repo\current')
 $lgTmp = "$LastGood.tmp"
-@"
+$lgBody = @"
 {
   "tag": "$curTag",
   "checkout": "$($prevCheckout -replace '\\', '\\\\')"
 }
-"@ | Set-Content -LiteralPath $lgTmp -Encoding utf8 -ErrorAction SilentlyContinue
+"@
+try { Write-Utf8NoBom $lgTmp $lgBody } catch {
+    Write-ApplyLog "could not write last-good state: $($_.Exception.Message)"
+}
 Move-Item -LiteralPath $lgTmp -Destination $LastGood -Force -ErrorAction SilentlyContinue
 
 # ---- the flip: binaries, then pointers -- all-or-restore ---------------------
@@ -354,7 +374,7 @@ if ($installText) {
         $t = Set-JsonField $installText 'version' ($tag -replace '^v', '')
         $t = Set-JsonField $t 'tag' $tag
         $t = Set-JsonField $t 'commit' $commit
-        Set-Content -LiteralPath $InstallJson -Value $t -Encoding utf8 -ErrorAction Stop
+        Write-Utf8NoBom $InstallJson $t
     } catch {
         Restore-Previous "rewriting install.json failed: $($_.Exception.Message)"
     }

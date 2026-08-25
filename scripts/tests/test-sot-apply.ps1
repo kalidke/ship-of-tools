@@ -119,6 +119,16 @@ Check 'install.json version rewritten' ($ij2 -match '"version":\s*"0\.6\.0"') 'v
 Check 'unknown field preserved' ($ij2 -match 'must-survive-the-rewrite') 'additive field lost'
 $jt = @((Get-Item (Join-Path $p2 'repo\current') -Force).Target)
 Check 'repo\current junction' ([bool]($jt.Count -gt 0 -and $jt[0])) 'junction missing'
+# install.json must stay BOM-less: serde_json::from_str rejects a leading BOM,
+# so a BOM here makes InstallManifest::for_current_exe() return None and the
+# frontend silently stops checking for updates after the FIRST successful
+# apply. Set-Content -Encoding utf8 on 5.1 emits one; WriteAllText does not.
+$b2 = [System.IO.File]::ReadAllBytes((Join-Path $p2 'install.json'))
+Check 'install.json has no BOM after apply' `
+    (-not ($b2[0] -eq 0xEF -and $b2[1] -eq 0xBB -and $b2[2] -eq 0xBF)) 'BOM written - Rust will refuse to parse it'
+$lgb = [System.IO.File]::ReadAllBytes((Join-Path $f2.updates 'last-good-windows-x86_64.json'))
+Check 'last-good has no BOM' `
+    (-not ($lgb[0] -eq 0xEF -and $lgb[1] -eq 0xBB -and $lgb[2] -eq 0xBF)) 'BOM written'
 Check 'lock released' (-not (Test-Path (Join-Path $f2.updates '.lock'))) 'lock dir left behind'
 
 Write-Host "`n=== 3. corrupt archive digest: drops pointer + stage, no mutation ===" -ForegroundColor Cyan
@@ -147,6 +157,9 @@ Check 'binary restored' ((Get-Content (Join-Path $f4.bin 'sot.exe') -Raw) -eq 'O
 $ij4 = Get-Content (Join-Path $p4 'install.json') -Raw
 Check 'install.json rolled back' ($ij4 -match '"tag":\s*"v0\.5\.0"') 'tag not rolled back'
 Check 'bad marker written' (Test-Path (Join-Path $f4.updates 'bad-v0.6.0-windows-x86_64')) 'no bad marker'
+$b4 = [System.IO.File]::ReadAllBytes((Join-Path $p4 'install.json'))
+Check 'install.json has no BOM after rollback' `
+    (-not ($b4[0] -eq 0xEF -and $b4[1] -eq 0xBB -and $b4[2] -eq 0xBF)) 'BOM written on the rollback path'
 Check 'marker cleared' (-not (Test-Path (Join-Path $f4.updates 'just-applied-windows-x86_64'))) 'marker still armed'
 
 Write-Host "`n=== 5. already at tag: clears stale pointer ===" -ForegroundColor Cyan
