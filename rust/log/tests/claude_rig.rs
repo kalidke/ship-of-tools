@@ -157,14 +157,52 @@ fn all_sealed_frames(root: &Path) -> Vec<sot_log::Envelope> {
 fn drive(cfg: ClaudeConfig, cmds: Vec<(u64, OperatorCmd)>) -> sot_log::claude::ClaudeSummary {
     static RIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _serial = RIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = cfg.voyage_root.clone();
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || run(cfg, rx).unwrap());
+    // Readiness gate, not a sleep: the adapter's preamble fsyncs can outlast
+    // any fixed settle on a cold CI runner, and a pre-ready first Turn is
+    // (correctly) refused-and-recorded — deterministic tests wait for the
+    // producer_ready frame to hit the open segment instead.
+    wait_for_open_segment_bytes(&root, b"producer_ready", &handle);
     for (delay_ms, cmd) in cmds {
         std::thread::sleep(Duration::from_millis(delay_ms));
         let _ = tx.send(cmd);
     }
     drop(tx);
     handle.join().unwrap()
+}
+
+/// Poll the voyage's `.open` segment for a byte pattern (10 s bound). Test
+/// rig only — live readers never tail `.open` (ADR 0039); a test asserting
+/// on its own single-writer voyage is outside that rule's scope.
+fn wait_for_open_segment_bytes(
+    root: &Path,
+    needle: &[u8],
+    running: &std::thread::JoinHandle<sot_log::claude::ClaudeSummary>,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if running.is_finished() {
+            return; // adapter already terminal (e.g. attestation refusal)
+        }
+        if let Ok(entries) = std::fs::read_dir(root.join("seg")) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().is_some_and(|x| x == "open") {
+                    if let Ok(bytes) = std::fs::read(&p) {
+                        if bytes.windows(needle.len()).any(|w| w == needle) {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            return; // let the test fail with its own assertion, legibly
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]
