@@ -506,11 +506,16 @@ impl SegmentReader {
     }
 }
 
-// The STORE (not the codec) is Linux-only in v1: publication needs an
-// atomic no-clobber rename, and `rename_noreplace` fails closed off
-// Linux (ADR 0039). These tests therefore run where the store runs;
-// Windows joins with P3, macOS when it gets a renamex_np arm. The
-// pure-codec tests in record.rs/envelope.rs stay on every platform.
+// The STORE (not the codec) is Linux-only AS OF THIS COMMIT: publication
+// needs an atomic no-clobber rename, and `rename_noreplace` fails closed
+// off Linux (ADR 0039). These tests therefore run where the store runs;
+// the pure-codec tests in record.rs/envelope.rs stay on every platform.
+//
+// PROVISIONAL, deliberately: the P3 store port (ADR 0041, PR #122) adds
+// the real Windows arms and widens these gates to
+// `any(target_os = "linux", windows)`. Read this as "where the store
+// works today", never as a settled contract — macOS joins when it gets a
+// renamex_np arm, which ADR 0039 already anticipates.
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) mod tests {
     use super::*;
