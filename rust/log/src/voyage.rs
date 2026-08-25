@@ -72,6 +72,10 @@ impl VoyageStore {
         let mut lockf = std::fs::File::create(staging.join("writer.lock"))?;
         lockf.write_all(b"{}")?;
         lockf.sync_all()?;
+        // Windows refuses to rename a directory while any handle is open
+        // beneath it (ERROR_ACCESS_DENIED) — the lock handle must close
+        // before the publish rename below.
+        drop(lockf);
         // Persist the voyage identity + retention where the genesis header
         // will restate it (bootstrap happens before any segment exists).
         fsutil::fsync_dir(&staging.join("blobs").join(".tmp"))?;
