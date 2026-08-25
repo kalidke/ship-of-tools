@@ -135,6 +135,35 @@ function Set-Junction([string]$link, [string]$target) {
     }
 }
 
+# Canonicalise a path for COMPARISON. Windows hands back the same directory
+# under different spellings, and a raw string compare then reports a correct
+# junction as "did not flip" -- which sends the applier down Restore-Previous
+# and means the machine NEVER accepts an update. Caught on the CI Windows
+# runner, whose TEMP is the 8.3 form `C:\Users\RUNNER~1\...` while the
+# junction's own Target reports the expanded `C:\Users\runneradmin\...`.
+# Any install path containing a short-name component hits this.
+#
+# Normalise BOTH sides to the 8.3 SHORT form rather than trying to expand to
+# the long one. Scripting.FileSystemObject's .Path just echoes back whichever
+# spelling it was handed (so it cannot resolve the disagreement), but
+# .ShortPath maps the long and short spellings of a directory onto the same
+# string -- verified both directions. .NET's GetFullPath and Resolve-Path
+# leave 8.3 untouched, so neither helps here.
+# If 8.3 creation is disabled on the volume, .ShortPath returns the long form
+# for both sides, which is still consistent. Case needs no handling:
+# PowerShell's -eq/-ne on strings is already case-insensitive.
+# Falls back to the trimmed input if the path is gone or COM is unavailable --
+# no worse than the previous behaviour.
+function Get-ComparablePath([string]$p) {
+    if (-not $p) { return '' }
+    $t = $p.TrimEnd('\')
+    try {
+        $fso = New-Object -ComObject Scripting.FileSystemObject
+        if ($fso.FolderExists($t)) { return ([string]$fso.GetFolder($t).ShortPath).TrimEnd('\') }
+    } catch {}
+    return $t
+}
+
 function Get-JunctionTarget([string]$link) {
     try {
         $i = Get-Item -LiteralPath $link -Force -ErrorAction Stop
@@ -312,8 +341,10 @@ foreach ($b in @('sot.exe', 'sotd.exe')) {
 }
 
 if (-not (Set-Junction (Join-Path $Prefix 'repo\current') $checkout)) { Restore-Previous 'flipping repo\current failed' }
-if ((Get-JunctionTarget (Join-Path $Prefix 'repo\current')).TrimEnd('\') -ne $checkout.TrimEnd('\')) {
-    Restore-Previous 'repo\current did not flip'
+$flipped = Get-ComparablePath (Get-JunctionTarget (Join-Path $Prefix 'repo\current'))
+$wanted  = Get-ComparablePath $checkout
+if ($flipped -ne $wanted) {
+    Restore-Previous "repo\current did not flip (points at '$flipped', wanted '$wanted')"
 }
 if (-not (Set-Junction (Join-Path $Prefix 'julia\current') $checkout)) { Restore-Previous 'flipping julia\current failed' }
 

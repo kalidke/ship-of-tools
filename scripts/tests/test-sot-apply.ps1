@@ -173,6 +173,33 @@ $out7 = & $apply -Prefix $p7 6>&1 2>&1
 Check 'skipped under lock' ((Get-Content (Join-Path $f7.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied while locked'
 Check 'said so' (($out7 -join ' ') -match 'lock held') "log was: $out7"
 
+Write-Host "`n=== 8. prefix given as an 8.3 short path still applies ===" -ForegroundColor Cyan
+# Regression: the post-flip check used to compare the junction target to the
+# wanted checkout as raw strings. Windows reports the same directory under both
+# the short (PROGRA~1) and long spelling, so a correct junction read as "did not
+# flip" and the applier restored instead of completing -- i.e. that machine
+# could never accept an update. The CI runner hit it for real: its TEMP is
+# C:\Users\RUNNER~1\... while the junction's Target expands to ...\runneradmin\...
+$longName = Join-Path $root 'a-deliberately-long-directory-name-for-8dot3'
+New-Item -ItemType Directory -Force -Path $longName | Out-Null
+$short = $longName
+try {
+    $fso = New-Object -ComObject Scripting.FileSystemObject
+    $short = $fso.GetFolder($longName).ShortPath
+} catch {}
+if ($short -eq $longName -or $short -notmatch '~') {
+    Write-Host "  SKIP  8.3 short names unavailable on this volume" -ForegroundColor Yellow
+} else {
+    Write-Host "  using short prefix: $short" -ForegroundColor DarkGray
+    $p8 = Join-Path $short 'p8'
+    $f8 = New-Fixture $p8 'v0.5.0' 'v0.6.0'
+    $out8 = & $apply -Prefix $p8 6>&1 2>&1
+    Write-Host ($out8 | ForEach-Object { "    $_" }) -ForegroundColor DarkGray
+    Check '8.3 prefix: binary swapped' ((Get-Content (Join-Path $f8.bin 'sot.exe') -Raw) -eq 'NEW-BINARY') 'did not apply through a short path'
+    Check '8.3 prefix: pointer cleared' (-not (Test-Path (Join-Path $f8.updates 'pending-windows-x86_64.json'))) 'pointer kept'
+    Check '8.3 prefix: marker armed' (Test-Path (Join-Path $f8.updates 'just-applied-windows-x86_64')) 'no marker'
+}
+
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 if ($fail) { exit 1 }
