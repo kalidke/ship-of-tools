@@ -35,6 +35,9 @@ export interface SdkQueryOpts {
 
 export interface SdkQuery extends AsyncIterable<Record<string, unknown>> {
   interrupt(): Promise<unknown>;
+  /** Forceful disposal: terminates the CLI subprocess and all resources.
+   * Optional in the type only for test fakes; the real SDK always has it. */
+  close?(): void;
 }
 
 export interface SdkLike {
@@ -81,6 +84,7 @@ const SDK_VERSION = helperSdkVersion();
  * exercised with a handful of small messages instead.
  */
 const DEFAULT_TURN_SPOOL_CAP_BYTES = 64 * 1024 * 1024;
+const DEFAULT_INTERRUPT_TIMEOUT_MS = 30_000;
 export const TURN_SPOOL_CAP_BYTES = readTurnSpoolCap();
 
 function readTurnSpoolCap(): number {
@@ -108,6 +112,13 @@ export function run(
     let inFlight: { queryId: number; handle: SdkQuery; interrupted: boolean } | null = null;
     let exiting = false;
     const reader = new LineReader();
+    // How long interrupt() may take to settle before the helper declares
+    // the SDK hung and goes terminal (HELPER_TEST_* override: tests only,
+    // same convention as the turn cap; read per-run from the env param).
+    const interruptTimeoutMs = (() => {
+      const n = Number(env.HELPER_TEST_INTERRUPT_TIMEOUT_MS);
+      return Number.isFinite(n) && n > 0 ? n : DEFAULT_INTERRUPT_TIMEOUT_MS;
+    })();
 
     /**
      * Resolves on the write's own completion callback — the data has been
@@ -140,9 +151,19 @@ export function run(
       return true;
     }
 
+    /** Reap the CLI subprocess of an in-flight query on any terminal
+     * path. close() is the SDK's forceful disposal (synchronous child
+     * kill); the graceful abortController path is useless here because the
+     * helper exits immediately after — its ~2s grace window would never
+     * run and the CLI would orphan (observed against 0.3.241). */
+    function reapInFlight(): void {
+      if (inFlight) inFlight.handle.close?.();
+    }
+
     async function fail(reason: FatalReason, detail?: string): Promise<void> {
       if (exiting) return;
       exiting = true;
+      reapInFlight();
       await writeLine(fatalLine(reason, detail));
       resolveRun();
       exit(1);
@@ -151,6 +172,7 @@ export function run(
     function shutdown(): void {
       if (exiting) return;
       exiting = true;
+      reapInFlight();
       resolveRun();
       exit(0);
     }
@@ -234,14 +256,36 @@ export function run(
       }
       inFlight.interrupted = true;
       const handle = inFlight.handle;
+      // The pinned SDK can hang interrupt() forever when the query is
+      // mid-API-call (observed against 0.3.241: the CLI aborts the HTTP
+      // request, then neither settles the promise nor concludes the
+      // iterator). An operator interrupt is a demand for prompt cession,
+      // so an unanswered one is TERMINAL — the capsule's kill domain, not
+      // this process, owns cleanup from there.
+      const TIMED_OUT = Symbol("interrupt-timeout");
+      let timer: NodeJS.Timeout | undefined;
+      const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
+        timer = setTimeout(() => resolve(TIMED_OUT), interruptTimeoutMs);
+      });
       let ok: boolean;
       let raw: unknown;
       try {
-        raw = await handle.interrupt();
+        const settling = handle.interrupt();
+        settling.catch(() => {}); // a post-timeout rejection must not crash the drain
+        const settled = await Promise.race([settling, deadline]);
+        if (settled === TIMED_OUT) {
+          return fail(
+            "interrupt_unanswered",
+            `interrupt() did not settle within ${interruptTimeoutMs} ms`,
+          );
+        }
+        raw = settled;
         ok = true;
       } catch {
         ok = false;
         raw = undefined;
+      } finally {
+        clearTimeout(timer);
       }
       let sdkReturn: Json | null = null;
       if (ok && raw !== undefined) {
@@ -290,7 +334,9 @@ export function run(
     stdin.on("end", () => {
       if (exiting) return;
       exiting = true;
-      if (inFlight) void inFlight.handle.interrupt().catch(() => {});
+      // The operator is gone; nobody is left to consume a graceful
+      // interrupt's outcome — reap the subprocess and go.
+      reapInFlight();
       resolveRun();
       exit(0);
     });

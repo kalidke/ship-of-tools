@@ -73,3 +73,29 @@ jobs:
         working-directory: scripts
         run: |
           for f in *.sh; do bash -n "$f" && echo "ok: $f"; done
+
+  p2-e2e:
+    name: P2 e2e (real helper, offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: adapters/claude-sdk-helper/package-lock.json
+      - name: Install helper deps
+        working-directory: adapters/claude-sdk-helper
+        run: npm ci
+      - name: Test helper
+        working-directory: adapters/claude-sdk-helper
+        run: npm test
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Run P2 e2e test
+        working-directory: rust
+        env:
+          SOT_HELPER_E2E: "1"
+        run: cargo test -p sot-log --test claude_e2e -- --nocapture

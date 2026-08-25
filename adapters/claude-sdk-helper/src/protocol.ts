@@ -18,7 +18,8 @@ export type FatalReason =
   | "busy"
   | "serializer"
   | "line_too_large"
-  | "turn_too_large";
+  | "turn_too_large"
+  | "interrupt_unanswered";
 
 export type InOp =
   | { op: "user_turn"; query_id: number; text: string }

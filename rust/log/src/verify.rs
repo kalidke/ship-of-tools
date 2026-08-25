@@ -55,10 +55,11 @@ enum FactState {
 
 /// The two registered required features (ADR 0039 registry, 2026-08-24).
 /// `json-f64-v1` is enforced bidirectionally (undeclared + fractional =
-/// loud, inline or spilled). `cgroup-fence-v1` is accept-only HERE: the
-/// locator-must-declare direction needs the spawn-detail schema the adapter
-/// PR fixes, and is owed there (review F3 — deliberate deferral, not a
-/// gap silently forgotten).
+/// loud, inline or spilled). `cgroup-fence-v1` is likewise bidirectional
+/// since the wiring PR fixed the spawn-detail schema: a `producer_spawn`
+/// whose `kill_domain` bears authority (scheme "cgroup") must sit in a
+/// segment declaring the feature; scheme "none" and an absent
+/// `kill_domain` claim no authority; unknown schemes fail closed.
 pub const REGISTERED_FEATURES: [&str; 2] =
     ["sot.producer.json-f64-v1", "sot.capsule.cgroup-fence-v1"];
 
@@ -191,6 +192,11 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
             .required_features
             .iter()
             .any(|f| f == "sot.producer.json-f64-v1");
+        let fence_ok = reader
+            .header
+            .required_features
+            .iter()
+            .any(|f| f == "sot.capsule.cgroup-fence-v1");
         // Chain.
         let header_prev = reader.header.prev_seal_digest.as_ref().map(|d| d.value.clone());
         if header_prev != prev_digest {
@@ -370,6 +376,44 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
                     }
                     if kind == LifecycleKind::CaptureOptin {
                         capture_enabled = true;
+                    }
+                    if kind == LifecycleKind::ProducerSpawn {
+                        // Locator-must-declare (ADR 0039 registry): an
+                        // authority-bearing kill-domain locator is only
+                        // interpretable under `cgroup-fence-v1` — successor
+                        // epochs act on it destructively, so an undeclared
+                        // one fails closed. Absent kill_domain (the P1 PTY
+                        // capsule) and scheme "none" (an explicitly unfenced
+                        // rig) claim no authority and need no feature.
+                        if let Some(kd) = payload.get("detail").and_then(|d| d.get("kill_domain")) {
+                            match kd.get("scheme").and_then(|s| s.as_str()) {
+                                Some("none") => {}
+                                Some("cgroup") => {
+                                    let path_ok = kd
+                                        .get("path")
+                                        .and_then(|p| p.as_str())
+                                        .is_some_and(|p| !p.is_empty());
+                                    if !path_ok {
+                                        return Err(Error::Schema(format!(
+                                            "lifecycle {:?}: cgroup kill_domain needs a non-empty path",
+                                            env.seq
+                                        )));
+                                    }
+                                    if !fence_ok {
+                                        return Err(Error::State(format!(
+                                            "lifecycle {:?}: locator-bearing producer_spawn in a segment that does not declare sot.capsule.cgroup-fence-v1",
+                                            env.seq
+                                        )));
+                                    }
+                                }
+                                other => {
+                                    return Err(Error::Schema(format!(
+                                        "lifecycle {:?}: unknown kill_domain scheme {other:?} fails closed",
+                                        env.seq
+                                    )));
+                                }
+                            }
+                        }
                     }
                     if kind == LifecycleKind::TakeState {
                         let take: TakeObj = serde_json::from_value(
@@ -855,6 +899,45 @@ mod tests {
         w.append(&e, Commit::Immediate).unwrap();
         w.seal(None).unwrap();
         assert!(verify_voyage(&dir.path().join("v3"), "v3").is_err());
+    }
+
+    /// Locator-must-declare (ADR 0039 registry): scheme "cgroup" requires
+    /// the segment to declare cgroup-fence-v1; "none"/absent claim no
+    /// authority; unknown schemes and empty paths fail closed.
+    #[test]
+    fn locator_must_declare_cgroup_fence() {
+        let run = |name: &str, features: Vec<String>, detail: serde_json::Value| {
+            let dir = tempfile::tempdir().unwrap();
+            let mut s = store(dir.path(), name);
+            let mut w = s.open_segment_with_features(0, features).unwrap();
+            let mut e = test_env(1, 1);
+            e.class = Class::Lifecycle;
+            e.payload = Some(json!({"kind": "producer_spawn", "detail": detail}));
+            w.append(&e, Commit::Immediate).unwrap();
+            w.seal(None).unwrap();
+            verify_voyage(&dir.path().join(name), name).map(|_| ())
+        };
+        let fence = || vec!["sot.capsule.cgroup-fence-v1".to_string()];
+        let err = run(
+            "l1",
+            vec![],
+            json!({"kill_domain": {"scheme": "cgroup", "path": "/sys/fs/cgroup/x"}}),
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("does not declare"), "got: {err}");
+        run(
+            "l2",
+            fence(),
+            json!({"kill_domain": {"scheme": "cgroup", "path": "/sys/fs/cgroup/x"}}),
+        )
+        .unwrap();
+        // No authority claimed — explicitly ("none") or by absence (the P1
+        // PTY capsule's spawn detail): no feature needed.
+        run("l3", vec![], json!({"kill_domain": {"scheme": "none"}})).unwrap();
+        run("l4", vec![], json!({"argv": ["sh"]})).unwrap();
+        // Unknown scheme and empty path fail closed even when declared.
+        assert!(run("l5", fence(), json!({"kill_domain": {"scheme": "jail"}})).is_err());
+        assert!(run("l6", fence(), json!({"kill_domain": {"scheme": "cgroup", "path": ""}})).is_err());
     }
 
     #[test]
