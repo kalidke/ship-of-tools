@@ -200,9 +200,11 @@ const TURN_END_SETTLE: Duration = Duration::from_millis(750);
 /// Close-wait with in-loop refusal triage: a turn sent into the
 /// close-to-turn_end gap is refused (bare input, no forward_intent) and
 /// would otherwise burn the full 90s reading as "never closed" — instead
-/// it fails in ~1s, named. The 1s persistence window keeps the normal
-/// input→forward_intent commit gap (two consecutive fsync'd appends, ms)
-/// from reading as a refusal.
+/// it fails in ~5s, named. The persistence window keeps the normal
+/// input→forward_intent commit gap from reading as a refusal — input
+/// bytes are READABLE before their sync_all returns, and the intent
+/// appends only after it, so the window must outlast a slow fsync stall,
+/// not just the ms-scale happy path (review round 3).
 fn expect_close(root: &Path, n: usize, mut still: impl FnMut() -> bool, what: &str) {
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut refusal_since: Option<Instant> = None;
@@ -215,7 +217,7 @@ fn expect_close(root: &Path, n: usize, mut still: impl FnMut() -> bool, what: &s
         if inputs > intents {
             let since = *refusal_since.get_or_insert_with(Instant::now);
             assert!(
-                since.elapsed() < Duration::from_secs(1),
+                since.elapsed() < Duration::from_secs(5),
                 "{what}: turn REFUSED — a command landed in the close-to-turn_end gap ({inputs} inputs vs {intents} forward_intents; the settle starved)"
             );
         } else {
