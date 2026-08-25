@@ -28,7 +28,12 @@ NOTHING; an optional `initial_command` (which replaces the
 the shell, independent of `--relaunched`. Explicitly NOT in P3: the
 relaunch mechanism itself (ADR 0017 §1–§3 stays); the fe-inbox
 down-window (the FE process remains the inbox writer — relay traffic
-during a respawn is still dropped; stated, not fixed); the Claude SDK
+while no FE is attached is still dropped; stated, not fixed — BUT its
+DETECTION is preserved: the retired ritual's session-start catch-up was
+the only mechanism that ever noticed a miss, so on every attach the FE
+writes an `fe_down {from, to}` marker line into fe-inbox.jsonl; the
+surviving drawer session's inbox Monitor wakes on it and can catch up.
+The feature must not make the failure quieter); the Claude SDK
 adapter on Windows (the drawer is recorded as a RAW TERMINAL voyage);
 named jobs / a `winjob-fence-v1` feature / probe-successors; ReFS (local
 NTFS only until ReFS passes the same suite); any change to the merged
@@ -167,6 +172,12 @@ inheritable — a permissive parent directory cannot inject ACEs into the
 tree. The ephemeral pipe uses the account SID too. The threat model is
 other local users and anonymous access, not the owner.
 
+Windows voyages live in their OWN protected subtree —
+`%LOCALAPPDATA%\sot\voyages\<id>\` — so the `SE_DACL_PROTECTED`
+descriptor governs exactly the voyage tree and can never end up owning
+the staged binaries, logs, or the relaunch sentinel that the launcher
+and relaunch script must keep writing under `%LOCALAPPDATA%\sot\`.
+
 There is no `detach` op — ordered pipe EOF is detach, clean or crash.
 
 - **mgmt lane** (PERMANENTLY PINNED v0 framing, never versioned):
@@ -201,18 +212,38 @@ snapshot can never show bytes the voyage could still lose.
 ONE spawn owner — the supervisor (the launcher loop that already
 outlives FE respawns and keeps the ssh tunnel). The FE is attach-only.
 
-**The rule: only an explicit FE exit 0 ends the run.** Exit 75, nonzero
-exits, FE crashes, supervisor death — all are FE loss; the capsule is
-untouched.
+**The rule: a run ends ONLY by an explicit `EndRun` issued over the
+mgmt lane.** Quit intent travels IN-BAND — the FE's real-quit path
+issues EndRun itself before exiting, never leaving the supervisor to
+infer intent from an exit code it may not even be alive to observe
+(review from the target hardware found today's quit path produces only
+an IMPLICIT exit 0, and the nightly cleanup script ends the FE with
+`Stop-Process -Force`, which runs no exit path at all). Exit codes play
+no role in run lifetime: any exit code, an FE crash, supervisor death —
+all are FE loss; the capsule is untouched. Exit 75 keeps its ADR 0017
+relaunch meaning and lands squarely in FE loss.
 
 **The transition: `EndRun(reason)`** is the only teardown
-implementation, invoked by FE real quit, the machine-cleanup script, and
-incompatible-upgrade end-run. EndRun = mgmt `shutdown` → the capsule
+implementation, invoked by the FE real-quit path, `shutdown-sot.ps1`,
+and incompatible-upgrade end-run. EndRun = mgmt `shutdown` → the capsule
 acks, drains, seals, exits. Proof of completion is capsule ack + pipe
 closure + verify-green + lock release — never `WaitForExit` (an
 adopting supervisor has no child handle). A raw-terminal EndRun writes
 `producer_dead` + seal only — raw terminals emit no turns, so there are
 no synthesized closes.
+
+**The machine-teardown ORDER is pinned** (the nightly close): EndRun →
+capsule ack + seal + lock release → supervisor stop → FE close → tunnel
+down. `shutdown-sot.ps1` today force-kills the supervisor FIRST — under
+P3 that order would strand the capsule headless behind a dead tunnel;
+its rewrite is an explicit build-order deliverable. The
+daemon-detach-before-tunnel property the current script achieves is
+preserved by this order.
+
+**Adoption is ANNOUNCED, never silent**: whenever the probe adopts a
+live capsule, the supervisor and the FE surface "adopted a running
+session (started <time>)" — a next-morning attach to yesterday's
+session must be a visible event, not a silent substitution.
 
 **The probe algorithm** — supervisor start is a pinned state table on
 (pipe, writer.lock):
@@ -256,8 +287,11 @@ unconditionally. The release pipeline packages the capsule binary.
 
 ## Build order (each step lands green)
 
-1. Promote the state-dir helper into a shared frontend `paths.rs`
-   (three divergent copies exist today).
+1. Promote the state-dir helper into a shared frontend `paths.rs`.
+   This is a latent-bug fix, not cleanup: the three copies DISAGREE
+   (one resolves XDG_STATE_HOME first, another uses LOCALAPPDATA only)
+   — with XDG_STATE_HOME set, the FE reads state from one directory and
+   drops the relaunch sentinel in another.
 2. The store port: Windows fsutil + getrandom + volume preflight;
    UNGATE the deterministic suites on Windows (the reconciliation
    matrix, goldens, and verifier tests are compiled out by `cfg(unix)`
@@ -268,8 +302,10 @@ unconditionally. The release pipeline packages the capsule binary.
    containment + DSR carry + request/outcome resize + the budget table.
 5. The pipe protocol (mgmt v0 + attach lane) through the ordered writer
    loop; watermark attach; connection-scoped pen.
-6. Supervisor probe/adopt/EndRun + FE attach-only backend +
-   `initial_command` + packaging + machine-cleanup orphan stop.
+6. Supervisor probe/adopt/EndRun (adoption announced) + FE attach-only
+   backend with in-band EndRun on real quit + the `fe_down` attach
+   marker + `initial_command` + packaging + the `shutdown-sot.ps1`
+   REWRITE to the pinned teardown order (EndRun first; orphan stop).
 7. Acceptance on a real Windows machine, the full matrix: exit-75
    relaunch reattaches with screen restored and no ritual; FE hard
    crash; supervisor hard death then adoption; capsule hard kill →
@@ -283,13 +319,25 @@ unconditionally. The release pipeline packages the capsule binary.
    tip recovered, all acknowledged input preserved, only a provable
    unpublished tail discarded, a new epoch, verify green); converging
    supervisor race; breakaway-denied degraded path; alternate-screen
-   attach fidelity roundtrip.
+   attach fidelity roundtrip; the NIGHTLY COMPOSITE (supervisor AND FE
+   force-killed AND tunnel torn, no EndRun — the capsule survives
+   headless, and the next supervisor start ADOPTS it with the visible
+   announcement, never silently); rewritten `shutdown-sot.ps1` ends the
+   run (EndRun → seal → verify green) before any process dies; the
+   `fe_down` marker appears on attach after a respawn and wakes the
+   drawer session's Monitor.
 
 ## Consequences
 
 - The drawer session stops dying with the frontend; the resume ritual —
   the single most fragile piece of the FE session lifecycle — is
   deleted rather than repaired.
+- OPERATOR NOTE — an intuition inversion: after P3, QUITTING (real quit
+  = EndRun) is what ends the drawer session, while crashes and
+  rebuild-relaunches are harmless to it. Today it is exactly backwards
+  (quit is safe, crashes lose work). The visible adoption announcement
+  and the "run ended — new leg" UX exist to keep this inversion honest
+  at 6pm.
 - The store becomes genuinely cross-platform with equal guarantees,
   which P4 (bridge) and every later phase inherit for free.
 - The Windows kill domain is SIMPLER than Linux's in the common crash
