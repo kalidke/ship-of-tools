@@ -86,6 +86,15 @@ the contract, not the code. Changes:
   hello and fails loud. (In practice BE + Julia bundle ship as a unit, so this is a
   belt-and-suspenders check.)
 - `Frame.v` stays stamped as today; the Hello gate makes per-frame validation redundant.
+- **The FE also surfaces the skew continuously, not only when it is fatal.** The
+  handshake gate above only fires on *protocol integer* mismatch; two builds can differ
+  in product version while speaking the same wire contract — the common dev-fleet case
+  (rebuild one side, forget the other). So the FE paints a `fe <ver> · be <ver>` stamp
+  on the bottom chrome edge, sourced from `app_version()` and `HelloRes::app_version`,
+  dark gray when the halves agree and **yellow when they don't**. Both halves are always
+  shown: collapsing to a single version when they match would hide exactly the field
+  being watched. An unknown BE (pre-hello, or a pre-versioning daemon) renders `be ?` and
+  is not treated as skew.
 - `COMM_PROTOCOL_VERSION` (sot-comm) is dev-fleet internal and out of scope here.
 
 ### 3. Release unit and CI pipeline
