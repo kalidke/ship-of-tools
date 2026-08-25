@@ -118,12 +118,15 @@ handles that like any helper fatal — terminal state, synthesized close for
 the abandoned turn, kill-domain cleanup.
 
 **Subprocess reaping.** Every terminal exit path (`fatal`, `shutdown`,
-stdin EOF) calls the SDK's `close()` on an in-flight query first — the
-documented forceful disposal that terminates the CLI subprocess. The
-graceful `abortController` route is useless on these paths: its ~2 s grace
-window never runs in a process that exits immediately afterwards, and the
-CLI would orphan (observed). The kill domain remains the production
-backstop; the helper still must not leak on its own.
+stdin EOF) reaps an in-flight query's CLI subprocess first: the SDK's
+`close()` as the portable best effort, then — where `/proc` exists — a
+SIGKILL of every direct child, because against a wedged SDK (the interrupt
+hang) `close()`'s termination proved ignorable by the stuck CLI. The
+helper's only children are SDK CLI subprocesses. The graceful
+`abortController` route is useless on these paths: its ~2 s grace window
+never runs in a process that exits immediately afterwards, and the CLI
+would orphan (observed). The kill domain remains the production backstop;
+the helper still must not leak on its own.
 
 **Zero results** is fatal `no_result` — *unless* `interrupt` was invoked for
 this turn's query at any point before the iterator exhausted, in which case

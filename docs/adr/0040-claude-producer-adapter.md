@@ -50,10 +50,12 @@ HELPER bounds `interrupt()` (30 s) and goes terminal `fatal
 state-machine arc: helper-fatal is already terminal with the reason
 propagated, the abandoned turn closes `synthesized_death`, and the kill
 domain owns cleanup. On every terminal helper exit (`fatal`, `shutdown`,
-stdin EOF) the helper first reaps its CLI subprocess via the SDK's
-forceful `close()` — the graceful abort route's ~2 s grace window cannot
-run in a process that exits immediately afterwards, and the CLI orphans
-(observed). The e2e fixture pins this behavior; an SDK bump that fixes the
+stdin EOF) the helper first reaps its CLI subprocess — the SDK's forceful
+`close()` as the portable best effort, then a `/proc`-walk SIGKILL of its
+direct children where available, because a wedged SDK's `close()`
+termination proved ignorable by the stuck CLI. The graceful abort route's
+~2 s grace window cannot run in a process that exits immediately
+afterwards, and the CLI orphans (observed). The e2e fixture pins this behavior; an SDK bump that fixes the
 hang must fail it and be re-pinned to the fixed semantics.
 
 ## One query per turn

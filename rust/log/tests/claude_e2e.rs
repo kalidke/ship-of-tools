@@ -240,24 +240,44 @@ fn all_sealed_frames(root: &Path) -> Vec<sot_log::Envelope> {
 /// fixture may survive it. The scratch path rides only the ENVIRONMENT
 /// (CLAUDE_CONFIG_DIR/HOME) — cmdlines never carry it — so the scan reads
 /// /proc/*/environ (own-uid processes are readable; that covers everything
-/// this test can have spawned).
+/// this test can have spawned). Quiescence means SETTLES to zero, not
+/// zero-at-first-glance: a just-killed child needs a beat to die (the CI
+/// runner proved it), so the scan polls, same as the fence's populated-0.
 fn assert_no_survivors(scratch: &Path) {
     let needle = scratch.to_string_lossy().into_owned().into_bytes();
     let me = std::process::id().to_string();
-    let mut survivors = vec![];
-    for e in std::fs::read_dir("/proc").unwrap().flatten() {
-        let pid = e.file_name().to_string_lossy().into_owned();
-        if !pid.chars().all(|c| c.is_ascii_digit()) || pid == me {
-            continue;
-        }
-        if let Ok(env) = std::fs::read(e.path().join("environ")) {
-            if env.windows(needle.len()).any(|w| w == needle) {
-                let cmd = std::fs::read(e.path().join("cmdline")).unwrap_or_default();
-                survivors.push(format!("{pid}: {}", String::from_utf8_lossy(&cmd).replace('\0', " ")));
+    let survivors = |()| -> Vec<String> {
+        let mut found = vec![];
+        for e in std::fs::read_dir("/proc").unwrap().flatten() {
+            let pid = e.file_name().to_string_lossy().into_owned();
+            if !pid.chars().all(|c| c.is_ascii_digit()) || pid == me {
+                continue;
+            }
+            if let Ok(env) = std::fs::read(e.path().join("environ")) {
+                if env.windows(needle.len()).any(|w| w == needle) {
+                    let cmd = std::fs::read(e.path().join("cmdline")).unwrap_or_default();
+                    found.push(format!(
+                        "{pid}: {}",
+                        String::from_utf8_lossy(&cmd).replace('\0', " ")
+                    ));
+                }
             }
         }
+        found
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let found = survivors(());
+        if found.is_empty() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "processes survived the fixture:\n{}",
+            found.join("\n")
+        );
+        std::thread::sleep(Duration::from_millis(100));
     }
-    assert!(survivors.is_empty(), "processes survived the fixture:\n{}", survivors.join("\n"));
 }
 
 /// THE RULE-5 GATE (ADR 0040 §Attribution): two turns through the real

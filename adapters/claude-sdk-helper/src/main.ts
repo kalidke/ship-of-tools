@@ -7,6 +7,7 @@
  */
 
 import { query as sdkQuery, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { project, type Json } from "./codec.js";
@@ -152,12 +153,42 @@ export function run(
     }
 
     /** Reap the CLI subprocess of an in-flight query on any terminal
-     * path. close() is the SDK's forceful disposal (synchronous child
-     * kill); the graceful abortController path is useless here because the
-     * helper exits immediately after — its ~2s grace window would never
-     * run and the CLI would orphan (observed against 0.3.241). */
+     * path. close() is the SDK's forceful disposal and the portable best
+     * effort — but against a WEDGED SDK (the interrupt hang) it proved
+     * unreliable: its termination is ignorable by a stuck CLI. Where /proc
+     * exists, SIGKILL every direct child outright — the helper's only
+     * children are SDK CLI subprocesses, and a process about to exit owes
+     * the system a clean tree. (The graceful abortController path is
+     * useless here: its ~2s grace window never runs in a process that
+     * exits immediately afterwards.) */
     function reapInFlight(): void {
-      if (inFlight) inFlight.handle.close?.();
+      if (!inFlight) return;
+      try {
+        inFlight.handle.close?.();
+      } catch {
+        /* a wedged SDK must not block reaping */
+      }
+      try {
+        for (const pid of readdirSync("/proc")) {
+          if (!/^\d+$/.test(pid)) continue;
+          let ppid = -1;
+          try {
+            const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+            ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+          } catch {
+            continue;
+          }
+          if (ppid === process.pid) {
+            try {
+              process.kill(Number(pid), "SIGKILL");
+            } catch {
+              /* already gone */
+            }
+          }
+        }
+      } catch {
+        /* non-Linux: no /proc — close() was the best effort */
+      }
     }
 
     async function fail(reason: FatalReason, detail?: string): Promise<void> {
