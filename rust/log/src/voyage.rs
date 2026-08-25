@@ -1,6 +1,6 @@
 //! Voyage store: bootstrap, writer lock + epoch allocation, rotation, blob
-//! CAS publication (ADR 0039). Unix-only for the parts that need kernel
-//! semantics; the codec itself is portable.
+//! CAS publication (ADR 0039). Kernel-semantics parts have Linux and
+//! Windows arms (ADR 0041 §store port); the codec itself is portable.
 
 use crate::envelope::Digest;
 use crate::fsutil::{self, WriterLock};
@@ -52,6 +52,11 @@ impl VoyageStore {
     /// Bootstrap a new voyage: build under `<root>.creating/`, fsync
     /// bottom-up, publish by no-clobber rename (ADR 0039 §lifecycle 1).
     pub fn bootstrap(root: &Path, voyage_id: &str, retention: RetentionClass) -> Result<()> {
+        // Absolutize first: a relative root would (a) make the parent of a
+        // bare name the empty path and (b) leave every later operation
+        // raceable against set_current_dir elsewhere in the process.
+        let root = std::path::absolute(root)?;
+        let root = root.as_path();
         let parent = root
             .parent()
             .ok_or_else(|| Error::State("voyage root needs a parent dir".into()))?;
@@ -105,10 +110,26 @@ impl VoyageStore {
     /// identity found, allocate this writer's epoch (max durable + 1), and
     /// compute the chain tip.
     pub fn open_for_writing(root: &Path, voyage_id: &str) -> Result<Self> {
+        // Absolutize for the same reasons as bootstrap: the stored root must
+        // not be re-resolvable against a moved CWD while the lock is held.
+        // (Ancestor-junction retargeting by another PRINCIPAL is out of the
+        // fence's threat model: the voyage container's ancestors are
+        // owner-controlled, and the ADR's DACL step protects the subtree.)
+        let root = std::path::absolute(root)?;
+        let root = root.as_path();
         // Re-run the volume preflight on the resolved voyage dir (ADR 0041):
         // a store bootstrapped elsewhere and moved to an unsuitable volume
         // must refuse before the fence is even touched.
         fsutil::preflight_volume(root)?;
+        // Restate the root's anchoring: bootstrap's publish rename may have
+        // become visible while its container flush was lost to a crash — the
+        // callers' bootstrap-if-absent check would then skip bootstrap
+        // forever, leaving a store that acknowledges records from a root the
+        // next power loss can remove. Idempotent, so every open re-anchors.
+        fsutil::fsync_dir(root)?;
+        if let Some(parent) = root.parent() {
+            fsutil::fsync_dir(parent)?;
+        }
         let lock = fsutil::lock_writer(&root.join("writer.lock"))?;
         let seg_dir = root.join("seg");
 

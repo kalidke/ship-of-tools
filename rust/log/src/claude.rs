@@ -442,6 +442,10 @@ fn unmatched_opens(root: &Path, voyage_id: &str) -> Result<Vec<Seq>> {
 /// the binary; a channel in tests).
 pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Result<ClaudeSummary> {
     if !config.voyage_root.exists() {
+        // Same container-durability contract as the PTY capsule's run().
+        if let Some(parent) = std::path::absolute(&config.voyage_root)?.parent() {
+            crate::fsutil::create_dir_all_durable(parent)?;
+        }
         VoyageStore::bootstrap(&config.voyage_root, &config.voyage_id, config.retention)?;
     }
     let mut store = VoyageStore::open_for_writing(&config.voyage_root, &config.voyage_id)?;

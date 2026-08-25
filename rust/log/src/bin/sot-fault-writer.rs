@@ -24,7 +24,24 @@ fn wall_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn main() -> sot_log::Result<()> {
+/// Exit codes are part of the test contract: std's `Child::kill()` on
+/// Windows is `TerminateProcess(handle, 1)`, and a `main() -> Result` error
+/// ALSO exits 1 — indistinguishable. So organic failures exit 3, a clean
+/// end is unrepresentable (`Never`), and exit code 1 on Windows therefore
+/// proves TerminateProcess, not an organic death, ended the writer.
+fn main() {
+    match run() {
+        Err(e) => {
+            eprintln!("sot-fault-writer: {e}");
+            std::process::exit(3);
+        }
+        Ok(never) => match never {},
+    }
+}
+
+enum Never {}
+
+fn run() -> sot_log::Result<Never> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let root = std::path::PathBuf::from(&args[0]);
     let voyage_id = args[1].clone();
@@ -80,12 +97,12 @@ fn main() -> sot_log::Result<()> {
     // kill always lands mid-write. Never sealed: the kill is what ends us.
     let mut n = 3u64;
     loop {
-        // Vary the record size (0..~4.7KB of filler): uniform small records
-        // always flush on record boundaries, so a kill could never land
-        // mid-record. Irregular sizes make records straddle buffer-flush
-        // boundaries, opening a (small) mid-record kill window. Empirically
-        // tears stay RARE even so — a kill lands between atomic write
-        // syscalls, and the true production source of torn tails is
+        // Vary the record size (0..~4.7KB of filler). Each append writes
+        // its record whole via `write_all` (Commit::Buffered defers only
+        // the fsync), so a mid-record tear needs the kill to land inside a
+        // SHORT-write retry — larger, irregular records widen that window
+        // slightly, but tears stay RARE by nature (observed ~1 in dozens of
+        // rounds): the true production source of torn tails is
         // power-loss/storage reordering, which no process-kill harness
         // simulates. Deterministic tear coverage is reconcile_matrix row 4;
         // the sweep's tear count is reported, never asserted.

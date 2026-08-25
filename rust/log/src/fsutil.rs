@@ -76,6 +76,37 @@ pub fn fsync_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `create_dir_all` that durably ANCHORS what it creates: every created
+/// level's directory entry is pinned by flushing its parent — including the
+/// deepest PRE-EXISTING ancestor, which holds the first created entry.
+/// Plain `create_dir_all` leaves the whole new chain cache-only, so a
+/// "successful" setup could vanish on power loss. This is the container
+/// half of bootstrap's contract: bootstrap refuses a missing container, and
+/// the container's creator (capsule/adapter run(), or the operator) calls
+/// this to create one durably.
+pub fn create_dir_all_durable(dir: &Path) -> Result<()> {
+    let dir = std::path::absolute(dir)?;
+    let mut missing: Vec<std::path::PathBuf> = Vec::new();
+    let mut cur = dir.as_path();
+    while !cur.exists() {
+        missing.push(cur.to_path_buf());
+        cur = cur
+            .parent()
+            .ok_or_else(|| Error::State(format!("no existing ancestor for {dir:?}")))?;
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&dir)?;
+    // Deepest-first: each flush pins the entry of the level below it; the
+    // final flush (the pre-existing ancestor) pins the shallowest new one.
+    for d in &missing {
+        fsync_dir(d)?;
+    }
+    fsync_dir(cur)?;
+    Ok(())
+}
+
 /// Flush an existing file's contents by path (write-open + `sync_all`).
 /// Recovery's publish-as-is rows need this: a writer killed between
 /// `write_all(seal)` and its own fsync leaves a complete, cache-visible seal
@@ -206,21 +237,33 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
     flush_renamed(to)
 }
 
-/// NUL-terminated UTF-16 in extended-length (`\\?\`) form. std's own fs ops
+/// NUL-terminated UTF-16 in extended-length form. std's own fs ops
 /// verbatim-normalize long paths internally, so a store std could create
 /// and write would then fail to PUBLISH through a raw `MoveFileExW` given
 /// the un-prefixed path (default MAX_PATH limit). `std::path::absolute` is
-/// `GetFullPathNameW`-backed on Windows (separators and dots normalized),
-/// which makes unconditional prefixing legal for drive paths; a path
-/// already starting `\\` (UNC/verbatim) passes through — non-local volumes
-/// were already refused by the preflight.
+/// `GetFullPathNameW`-backed on Windows (separators, dots, and
+/// drive-relative forms normalized), so the remaining prefix rules mirror
+/// std's own conversion: verbatim (`\\?\`) and device (`\\.\`) namespaces
+/// pass through untouched; UNC gets the extended `\\?\UNC\` form (mostly
+/// moot here — the preflight refuses non-local volumes); everything else
+/// (drive paths) gets the plain `\\?\` prefix.
 #[cfg(windows)]
 fn wide_verbatim(p: &Path) -> Result<Vec<u16>> {
     use std::os::windows::ffi::OsStrExt;
     let abs = std::path::absolute(p)?;
     let raw: Vec<u16> = abs.as_os_str().encode_wide().collect();
-    let mut w: Vec<u16> = if raw.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+    let bs = b'\\' as u16;
+    let starts = |pre: &str| {
+        let pw: Vec<u16> = std::ffi::OsStr::new(pre).encode_wide().collect();
+        raw.len() >= pw.len() && raw[..pw.len()] == pw[..]
+    };
+    let mut w: Vec<u16> = if starts(r"\\?\") || starts(r"\\.\") {
         raw
+    } else if raw.starts_with(&[bs, bs]) {
+        std::ffi::OsStr::new(r"\\?\UNC\")
+            .encode_wide()
+            .chain(raw[2..].iter().copied())
+            .collect()
     } else {
         std::ffi::OsStr::new(r"\\?\")
             .encode_wide()
@@ -308,13 +351,16 @@ pub fn lock_writer(lock_path: &Path) -> Result<WriterLock> {
     }
 }
 
+/// Unix lock open: open-existing ONLY, matching the Windows arm — bootstrap
+/// created the fence, and absence means a mutilated store. With `create`,
+/// unlinking the held lock path would let the next writer mint a fresh
+/// inode and take an independent flock: two live fences.
 #[cfg(unix)]
 fn open_lock_file(lock_path: &Path) -> Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     let f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .create(true)
         .custom_flags(libc::O_CLOEXEC) // no child inherits the fence
         .open(lock_path)?;
     Ok(f)

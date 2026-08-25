@@ -213,6 +213,12 @@ impl FrameCtx {
 #[allow(unused_assignments)]
 pub fn run(config: CapsuleConfig) -> Result<ExitSummary> {
     if !config.voyage_root.exists() {
+        // The run owns the container's durability (bootstrap refuses a
+        // missing container rather than silently creating unanchored
+        // ancestor levels).
+        if let Some(parent) = std::path::absolute(&config.voyage_root)?.parent() {
+            crate::fsutil::create_dir_all_durable(parent)?;
+        }
         VoyageStore::bootstrap(&config.voyage_root, &config.voyage_id, config.retention)?;
     }
     let mut store = VoyageStore::open_for_writing(&config.voyage_root, &config.voyage_id)?;

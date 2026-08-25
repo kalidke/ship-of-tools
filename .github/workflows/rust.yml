@@ -45,8 +45,11 @@ jobs:
           workspaces: rust
       - name: Build workspace
         run: cargo build --workspace --locked
+      # --nocapture: the fault sweeps REPORT (never assert) their torn-tail
+      # hit counts on stderr — captured output would hide them from CI logs,
+      # making the sweeps' actual coverage invisible (review finding).
       - name: Test workspace
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked -- --nocapture
       # The PowerShell scripts are executed by nothing in CI, and no dev box in
       # the Linux fleet has pwsh — so before this step, a ps1 syntax error
       # shipped to main was first discovered by the next FE LAUNCH (launchers

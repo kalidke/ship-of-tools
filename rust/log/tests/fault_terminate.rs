@@ -98,10 +98,13 @@ fn terminate_sweep_recovers_green_every_round() {
             if let Some(status) = writer.try_wait().unwrap() {
                 panic!("round {round}: writer died before ready ({status:?})");
             }
-            assert!(
-                std::time::Instant::now() < ready_deadline,
-                "round {round}: writer never became ready"
-            );
+            if std::time::Instant::now() >= ready_deadline {
+                // Dropping a Child does NOT terminate it — a bare panic here
+                // would leak an endless disk-writing process.
+                let _ = writer.kill();
+                let _ = writer.wait();
+                panic!("round {round}: writer never became ready");
+            }
             std::thread::sleep(Duration::from_millis(2));
         }
 
@@ -112,14 +115,27 @@ fn terminate_sweep_recovers_green_every_round() {
         // writer has no child of its own.
         writer.kill().unwrap();
         let status = writer.wait().unwrap();
-        // The kill must be what ended it (a clean exit means the round
-        // tested nothing).
-        assert!(!status.success(), "round {round}: writer exited cleanly");
+        // The kill must be what ended it — CAUSALLY, not just "unsuccessful"
+        // (`Child::kill()` returns Ok on an already-exited child). Unix:
+        // the SIGKILL signal. Windows: std's kill is TerminateProcess(_, 1)
+        // and the writer reserves exit 1 for exactly that (organic failure
+        // exits 3; a clean end is unrepresentable), so code 1 proves the
+        // termination was ours.
         #[cfg(unix)]
         {
             use std::os::unix::process::ExitStatusExt;
-            assert_eq!(status.signal(), Some(libc::SIGKILL));
+            assert_eq!(
+                status.signal(),
+                Some(libc::SIGKILL),
+                "round {round}: writer not ended by SIGKILL ({status:?})"
+            );
         }
+        #[cfg(windows)]
+        assert_eq!(
+            status.code(),
+            Some(1),
+            "round {round}: writer not ended by TerminateProcess ({status:?})"
+        );
 
         // Observe (read-only) whether this round's tip is provably torn —
         // deterministic tear coverage lives in reconcile_matrix; here we
