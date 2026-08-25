@@ -1,0 +1,36 @@
+# VENDORED FORK (ADR 0041 build-order step 3). Upstream: vt100-ctt 0.17.1
+# (ChrisTitusTech/vt100-rust, itself a fork of doy/vt100-rust), MIT. Wired
+# over the registry crate via [patch.crates-io] in the workspace root, so
+# dependents keep their `package = "vt100-ctt"` lines unchanged. This copy
+# adds the capsule checkpoint/restore (ADR 0041 §terminal state) — the
+# reason the project owns the fork. Keep the version equal to the upstream
+# release it vendors; local changes ride the workspace, not crates.io.
+
+[package]
+name = "vt100-ctt"
+version = "0.17.1"
+edition = "2021"
+rust-version = "1.70"
+authors = [
+    "Chris Titus <contact@christitus.com>",
+    "Jesse Luehrs <doy@tozt.net>",
+]
+description = "Library for parsing terminal data (Ship of Tools vendored fork with capsule checkpoint/restore)"
+license = "MIT"
+
+[lib]
+name = "vt100_ctt"
+path = "src/lib.rs"
+
+[features]
+default = ["tui-term"]
+tui-term = ["dep:tui-term", "dep:ratatui", "dep:ratatui-core"]
+
+[dependencies]
+itoa = "1.0.11"
+log = "0.4.22"
+unicode-width = "0.2.0"
+vte = "0.13.0"
+ratatui = { version = "0.29.0", optional = true, default-features = false }
+ratatui-core = { version = "0.1.0", optional = true, default-features = false }
+tui-term = { version = "0.3.1", optional = true, default-features = false }

@@ -6,6 +6,7 @@ members = [
     "frontend",
     "updater",
     "log",
+    "vt100",
 ]
 
 [workspace.package]
@@ -44,3 +45,9 @@ comrak = { version = "0.31", default-features = false }
 pollster = "0.4"
 bytemuck = { version = "1.21", features = ["derive"] }
 bytemuck_derive = "1.9"
+
+# The project-owned vt100 fork (ADR 0041 step 3): every dependent's
+# `package = "vt100-ctt"` line resolves to the vendored copy in rust/vt100
+# instead of the registry release it forked from.
+[patch.crates-io]
+vt100-ctt = { path = "vt100" }
