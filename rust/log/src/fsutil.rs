@@ -84,26 +84,63 @@ pub fn fsync_dir(dir: &Path) -> Result<()> {
 /// half of bootstrap's contract: bootstrap refuses a missing container, and
 /// the container's creator (capsule/adapter run(), or the operator) calls
 /// this to create one durably.
-pub fn create_dir_all_durable(dir: &Path) -> Result<()> {
-    let dir = std::path::absolute(dir)?;
-    let mut missing: Vec<std::path::PathBuf> = Vec::new();
-    let mut cur = dir.as_path();
-    while !cur.exists() {
-        missing.push(cur.to_path_buf());
-        cur = cur
+/// Resolve a caller-supplied voyage root ONCE, and make its container exist
+/// durably. Returns the absolute root that every later operation must use —
+/// re-resolving a relative config path at each step lets a concurrent
+/// `set_current_dir` point the existence check, the bootstrap, and the
+/// fenced open at different stores.
+///
+/// The container (the root's parent) is created when missing and anchored in
+/// the root's GRANDPARENT, which must already exist: this crate creates at
+/// most one level, and whoever owns that grandparent (installer, launcher,
+/// operator) owns its durability. A missing grandparent is a loud,
+/// actionable error rather than a silent chain of unanchored levels.
+/// Idempotent — safe (and required) to call when the store already exists.
+pub fn ensure_container(root: &Path) -> Result<std::path::PathBuf> {
+    let root = std::path::absolute(root)?;
+    {
+        let container = root
             .parent()
-            .ok_or_else(|| Error::State(format!("no existing ancestor for {dir:?}")))?;
+            .ok_or_else(|| Error::State(format!("voyage root {root:?} has no parent")))?;
+        let base = container.parent().ok_or_else(|| {
+            Error::State(format!("voyage container {container:?} has no parent"))
+        })?;
+        create_dir_all_durable(base, container)?;
     }
-    if missing.is_empty() {
-        return Ok(());
+    Ok(root)
+}
+
+pub fn create_dir_all_durable(base: &Path, dir: &Path) -> Result<()> {
+    let base = std::path::absolute(base)?;
+    let dir = std::path::absolute(dir)?;
+    if !base.is_dir() {
+        return Err(Error::State(format!(
+            "durability base {base:?} does not exist — create it before {dir:?}"
+        )));
+    }
+    if !dir.starts_with(&base) {
+        return Err(Error::State(format!("{dir:?} is not under base {base:?}")));
     }
     std::fs::create_dir_all(&dir)?;
-    // Deepest-first: each flush pins the entry of the level below it; the
-    // final flush (the pre-existing ancestor) pins the shallowest new one.
-    for d in &missing {
-        fsync_dir(d)?;
+    // Anchor UNCONDITIONALLY — never skip because the levels already exist.
+    // A crash between `create_dir_all` and the last flush leaves levels that
+    // are cache-visible but unanchored, and those are indistinguishable from
+    // durable ones; a replaying caller that trusted the residue would leave
+    // the chain losable under acknowledged writes (round-3 blocker).
+    //
+    // The span is PATH-derived, not existence-derived, so every replay
+    // repeats exactly the same flushes. It stops at `base`, whose own
+    // durability is the caller's/operator's contract — walking to the
+    // filesystem root is neither needed nor possible (a standard user
+    // cannot open a volume root for write on Windows).
+    let mut cur = dir.as_path();
+    while let Some(parent) = cur.parent() {
+        fsync_dir(parent)?; // a level's entry lives in its PARENT's data
+        if parent == base {
+            break;
+        }
+        cur = parent;
     }
-    fsync_dir(cur)?;
     Ok(())
 }
 

@@ -306,7 +306,14 @@ impl VoyageStore {
         let blobs = self.root.join("blobs");
         let shard = blobs.join("sha256").join(&digest[0..2]);
         std::fs::create_dir_all(&shard)?;
-        fsutil::fsync_dir(&blobs.join("sha256"))?;
+        // Anchor bottom-up. `sha256/` is created at bootstrap in stores made
+        // since ADR 0041, but voyages bootstrapped by earlier builds lack it
+        // (and it can be deleted) — then `create_dir_all` just made it here,
+        // and ITS entry lives in `blobs/`. Flushing only `sha256` would let a
+        // blob reference become durable while its namespace parent stays
+        // losable (round-3 finding; also the migration path for old stores).
+        fsutil::fsync_dir(&blobs.join("sha256"))?; // anchors the shard entry
+        fsutil::fsync_dir(&blobs)?; // anchors the sha256 entry
         let dest = shard.join(&digest);
         if dest.exists() {
             let existing = std::fs::read(&dest)?;

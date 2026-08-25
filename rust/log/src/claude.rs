@@ -441,17 +441,16 @@ fn unmatched_opens(root: &Path, voyage_id: &str) -> Result<Vec<Seq>> {
 /// Run one Claude producer leg. `operator` is the command stream (stdin in
 /// the binary; a channel in tests).
 pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Result<ClaudeSummary> {
-    if !config.voyage_root.exists() {
-        // Same container-durability contract as the PTY capsule's run().
-        if let Some(parent) = std::path::absolute(&config.voyage_root)?.parent() {
-            crate::fsutil::create_dir_all_durable(parent)?;
-        }
-        VoyageStore::bootstrap(&config.voyage_root, &config.voyage_id, config.retention)?;
+    // Resolve ONCE — see the capsule's run() for why (a relative path
+    // re-resolved after the fence is taken can scan an unfenced store).
+    let voyage_root = crate::fsutil::ensure_container(&config.voyage_root)?;
+    if !voyage_root.exists() {
+        VoyageStore::bootstrap(&voyage_root, &config.voyage_id, config.retention)?;
     }
-    let mut store = VoyageStore::open_for_writing(&config.voyage_root, &config.voyage_id)?;
+    let mut store = VoyageStore::open_for_writing(&voyage_root, &config.voyage_id)?;
     store.seal_survivor()?;
     let prior_take = store.last_take_epoch;
-    let stale_opens = unmatched_opens(&config.voyage_root, &config.voyage_id)?;
+    let stale_opens = unmatched_opens(&voyage_root, &config.voyage_id)?;
 
     let mut fx = Fx {
         epoch: store.epoch,
