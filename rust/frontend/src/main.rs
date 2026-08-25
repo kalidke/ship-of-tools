@@ -17,6 +17,7 @@ mod hosts;
 mod keybindings;
 mod layout;
 mod monitor_view;
+mod paths;
 mod preview;
 mod proxy_listen;
 mod selfupdate;

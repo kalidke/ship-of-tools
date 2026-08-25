@@ -3913,6 +3913,7 @@ name = "sot-log"
 version = "0.5.8"
 dependencies = [
  "crc32c",
+ "getrandom 0.3.4",
  "libc",
  "serde",
  "serde_json",
@@ -3920,6 +3921,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "uuid",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

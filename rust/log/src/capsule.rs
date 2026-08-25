@@ -65,9 +65,8 @@ enum Event {
 
 /// 16 random bytes from the OS, as lowercase hex32 (the ADR idem_key shape).
 fn random_idem_key() -> Result<String> {
-    let mut f = std::fs::File::open("/dev/urandom")?;
     let mut b = [0u8; 16];
-    f.read_exact(&mut b)?;
+    getrandom::fill(&mut b).map_err(std::io::Error::from)?;
     Ok(b.iter().map(|x| format!("{:02x}", x)).collect())
 }
 

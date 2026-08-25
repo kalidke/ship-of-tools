@@ -55,6 +55,11 @@ impl VoyageStore {
         let parent = root
             .parent()
             .ok_or_else(|| Error::State("voyage root needs a parent dir".into()))?;
+        // Volume preflight BEFORE any `.creating` mutation (ADR 0041): the
+        // container dir may not exist yet — creating it claims no
+        // durability, so it may precede the check.
+        std::fs::create_dir_all(parent)?;
+        fsutil::preflight_volume(parent)?;
         let staging = parent.join(format!(
             "{}.creating",
             root.file_name()
@@ -83,6 +88,10 @@ impl VoyageStore {
     /// identity found, allocate this writer's epoch (max durable + 1), and
     /// compute the chain tip.
     pub fn open_for_writing(root: &Path, voyage_id: &str) -> Result<Self> {
+        // Re-run the volume preflight on the resolved voyage dir (ADR 0041):
+        // a store bootstrapped elsewhere and moved to an unsuitable volume
+        // must refuse before the fence is even touched.
+        fsutil::preflight_volume(root)?;
         let lock = fsutil::lock_writer(&root.join("writer.lock"))?;
         let seg_dir = root.join("seg");
 
@@ -275,9 +284,8 @@ impl VoyageStore {
         // Random suffix (not pid+digest): two same-process publishes of
         // identical content must not race each other's temp file.
         let nonce: u64 = {
-            use std::io::Read as _;
             let mut b = [0u8; 8];
-            std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+            getrandom::fill(&mut b).map_err(std::io::Error::from)?;
             u64::from_le_bytes(b)
         };
         let tmp = blobs.join(".tmp").join(format!("{:016x}-{}", nonce, &digest[0..16]));
@@ -306,7 +314,7 @@ impl VoyageStore {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::envelope::Class;
