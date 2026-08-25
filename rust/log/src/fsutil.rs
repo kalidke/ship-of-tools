@@ -76,72 +76,48 @@ pub fn fsync_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `create_dir_all` that durably ANCHORS what it creates: every created
-/// level's directory entry is pinned by flushing its parent — including the
-/// deepest PRE-EXISTING ancestor, which holds the first created entry.
-/// Plain `create_dir_all` leaves the whole new chain cache-only, so a
-/// "successful" setup could vanish on power loss. This is the container
-/// half of bootstrap's contract: bootstrap refuses a missing container, and
-/// the container's creator (capsule/adapter run(), or the operator) calls
-/// this to create one durably.
 /// Resolve a caller-supplied voyage root ONCE, and make its container exist
 /// durably. Returns the absolute root that every later operation must use —
 /// re-resolving a relative config path at each step lets a concurrent
 /// `set_current_dir` point the existence check, the bootstrap, and the
 /// fenced open at different stores.
 ///
-/// The container (the root's parent) is created when missing and anchored in
-/// the root's GRANDPARENT, which must already exist: this crate creates at
-/// most one level, and whoever owns that grandparent (installer, launcher,
-/// operator) owns its durability. A missing grandparent is a loud,
-/// actionable error rather than a silent chain of unanchored levels.
-/// Idempotent — safe (and required) to call when the store already exists.
+/// This crate creates AT MOST the container level (the root's parent). The
+/// container's own parent is the durability boundary: it must already exist,
+/// and flushing it is exactly what anchors the container's directory entry —
+/// nothing above it is ever created, walked, or flushed, since its
+/// durability is the installer's/operator's contract (and a standard user
+/// cannot open a volume root for write on Windows).
+///
+/// Idempotent, and deliberately unconditional: a container that is merely
+/// cache-visible is indistinguishable from a durable one, so a replay after
+/// a crash must redo the flush rather than trust the residue.
 pub fn ensure_container(root: &Path) -> Result<std::path::PathBuf> {
-    let root = std::path::absolute(root)?;
-    {
-        let container = root
-            .parent()
-            .ok_or_else(|| Error::State(format!("voyage root {root:?} has no parent")))?;
-        let base = container.parent().ok_or_else(|| {
-            Error::State(format!("voyage container {container:?} has no parent"))
+    let abs = std::path::absolute(root)?;
+    let container = abs
+        .parent()
+        .ok_or_else(|| Error::State(format!("voyage root {abs:?} has no parent")))?;
+    let name = abs
+        .file_name()
+        .ok_or_else(|| Error::State(format!("voyage root {abs:?} has no final component")))?;
+    // No parent means the container IS a filesystem/volume root: it always
+    // exists, and its entry has no directory to be anchored in.
+    if let Some(base) = container.parent() {
+        // canonicalize (not `absolute`) so the boundary is fully resolved:
+        // `absolute` keeps `..` on POSIX, and a symlinked ancestor would put
+        // the container's entry in a different directory than the lexical
+        // parent names. It also fails loudly when the boundary is missing.
+        let base = std::fs::canonicalize(base).map_err(|e| {
+            Error::State(format!(
+                "voyage container's parent {base:?} must exist first: {e}"
+            ))
         })?;
-        create_dir_all_durable(base, container)?;
+        std::fs::create_dir_all(container)?;
+        fsync_dir(&base)?; // anchors the container's entry
     }
-    Ok(root)
-}
-
-pub fn create_dir_all_durable(base: &Path, dir: &Path) -> Result<()> {
-    let base = std::path::absolute(base)?;
-    let dir = std::path::absolute(dir)?;
-    if !base.is_dir() {
-        return Err(Error::State(format!(
-            "durability base {base:?} does not exist — create it before {dir:?}"
-        )));
-    }
-    if !dir.starts_with(&base) {
-        return Err(Error::State(format!("{dir:?} is not under base {base:?}")));
-    }
-    std::fs::create_dir_all(&dir)?;
-    // Anchor UNCONDITIONALLY — never skip because the levels already exist.
-    // A crash between `create_dir_all` and the last flush leaves levels that
-    // are cache-visible but unanchored, and those are indistinguishable from
-    // durable ones; a replaying caller that trusted the residue would leave
-    // the chain losable under acknowledged writes (round-3 blocker).
-    //
-    // The span is PATH-derived, not existence-derived, so every replay
-    // repeats exactly the same flushes. It stops at `base`, whose own
-    // durability is the caller's/operator's contract — walking to the
-    // filesystem root is neither needed nor possible (a standard user
-    // cannot open a volume root for write on Windows).
-    let mut cur = dir.as_path();
-    while let Some(parent) = cur.parent() {
-        fsync_dir(parent)?; // a level's entry lives in its PARENT's data
-        if parent == base {
-            break;
-        }
-        cur = parent;
-    }
-    Ok(())
+    // Resolve the container now that it exists, so the returned root is
+    // free of `..` and symlink aliases: ONE stable identity for the fence.
+    Ok(std::fs::canonicalize(container)?.join(name))
 }
 
 /// Flush an existing file's contents by path (write-open + `sync_all`).
@@ -435,4 +411,43 @@ fn open_lock_file(lock_path: &Path) -> Result<File> {
         )));
     }
     Ok(f)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_container_creates_one_level_and_replays() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voyages").join("v1");
+        let got = ensure_container(&root).unwrap();
+        assert_eq!(got, std::fs::canonicalize(dir.path()).unwrap().join("voyages").join("v1"));
+        assert!(dir.path().join("voyages").is_dir());
+        // The ROOT is bootstrap's job, never this helper's.
+        assert!(!root.exists());
+        // Replay after a crash must redo the anchoring, not trust residue.
+        ensure_container(&root).unwrap();
+    }
+
+    #[test]
+    fn ensure_container_refuses_an_unanchorable_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        // The container's parent is missing too: creating BOTH levels would
+        // leave the outer one unanchored, so this is loud by design.
+        let root = dir.path().join("a").join("b").join("v1");
+        let e = ensure_container(&root).unwrap_err();
+        assert!(format!("{e}").contains("must exist first"), "{e}");
+    }
+
+    #[test]
+    fn ensure_container_resolves_dot_dot_without_escaping() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a").join("b")).unwrap();
+        let root = dir.path().join("a").join("b").join("..").join("c").join("v1");
+        let got = ensure_container(&root).unwrap();
+        assert!(dir.path().join("a").join("c").is_dir());
+        // The returned identity is fully resolved — no `..` left to alias.
+        assert_eq!(got, std::fs::canonicalize(dir.path()).unwrap().join("a").join("c").join("v1"));
+    }
 }
