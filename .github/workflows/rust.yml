@@ -3,10 +3,16 @@
 # Deliberately NO `cargo fmt --check` / `clippy -D warnings` yet — the
 # workspace predates the gate and isn't fmt/clippy-clean; normalizing it is a
 # fleet-coordinated one-time pass (would conflict with in-flight branches).
-# Add both steps here when that lands. macOS joins the matrix at the release
-# workflow first (experimental, non-blocking per ADR 0030) — as a private
-# repo, macOS runners burn 10x Actions minutes for a platform nobody
-# dogfoods yet.
+# Add both steps here when that lands.
+#
+# macOS IS in this matrix (added after v0.5.9's release build failed on it).
+# The old rationale for leaving it out — "a private repo burns 10x Actions
+# minutes" — died at the public flip: public repos get free GitHub-hosted
+# runners, macOS included. And it was never actually non-blocking: release.yml
+# lists macos-aarch64 with experimental:false, so a macOS failure SKIPS the
+# publish job and kills the whole release. Testing it only at tag time meant
+# the tag was the first place anyone learned it was broken, with no way to
+# fix it in place. Pre-merge is where that belongs.
 
 name: Rust
 
@@ -33,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     defaults:
       run:
         working-directory: rust

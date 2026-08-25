@@ -1,4 +1,4 @@
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 //! Randomized kill -9 sweep — the fault-harness half of ADR 0039's merge
 //! gates that deterministic surgery can't cover: a REAL capsule process
 //! (the actual `sot-capsule` binary, producer on a real PTY) is SIGKILLed at
