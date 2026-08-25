@@ -90,6 +90,13 @@ pub enum IncomingEvt {
         /// `--socket <local> --tcp <addr>` remote config, which falls back to
         /// tcp, is correctly detected as remote.
         remote: bool,
+        /// The backend's product version (`HelloRes::app_version`), e.g.
+        /// `0.5.8` or `0.5.8-dev+a1b2c3d`. Painted next to the FE's own
+        /// version on the bottom chrome edge so a running FE/BE skew is
+        /// visible continuously — not only when it is hard enough to trip
+        /// the ADR 0030 §2 protocol-mismatch overlay. Empty for a
+        /// pre-versioning backend that doesn't send the field.
+        backend_version: String,
     },
     Disconnected {
         reason: String,
@@ -1558,6 +1565,7 @@ where
         project_root: hello_res.project_root.clone(),
         proxy: hello_res.proxy,
         remote: via_tcp,
+        backend_version: hello_res.app_version.clone(),
     });
     window.request_redraw();
     tracing::info!(

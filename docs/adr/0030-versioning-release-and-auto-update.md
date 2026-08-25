@@ -86,6 +86,15 @@ the contract, not the code. Changes:
   hello and fails loud. (In practice BE + Julia bundle ship as a unit, so this is a
   belt-and-suspenders check.)
 - `Frame.v` stays stamped as today; the Hello gate makes per-frame validation redundant.
+- **The FE also surfaces the skew continuously, not only when it is fatal.** The
+  handshake gate above only fires on *protocol integer* mismatch; two builds can differ
+  in product version while speaking the same wire contract — the common dev-fleet case
+  (rebuild one side, forget the other). So the FE paints a `fe <ver> · be <ver>` stamp
+  on the bottom chrome edge, sourced from `app_version()` and `HelloRes::app_version`,
+  dark gray when the halves agree and **yellow when they don't**. Both halves are always
+  shown: collapsing to a single version when they match would hide exactly the field
+  being watched. An unknown BE (pre-hello, or a pre-versioning daemon) renders `be ?` and
+  is not treated as skew.
 - `COMM_PROTOCOL_VERSION` (sot-comm) is dev-fleet internal and out of scope here.
 
 ### 3. Release unit and CI pipeline
@@ -146,6 +155,25 @@ regenerate CHANGELOG, commit `release: vX.Y.Z`, tag, push. CI does the rest.
   (dev), else keep the current staged copy. That last branch is what makes the launcher
   work on machines **with no source tree** — the public install is just the staged dir
   plus config.
+
+  **Amendment (Windows applier).** The "pending binary" above was originally a literal
+  `updates\pending\sot.exe` that `launch-sot.ps1` moved into place. Phase C3 replaced
+  that contract with a per-target *pointer* (`updates/pending-<target>.json`) naming a
+  verified stage under `<tag>-<target>/`, consumed by `sot-apply`. The PowerShell
+  launcher was never migrated, so on Windows it kept testing a path nothing writes —
+  dead code — and there was no `sot-apply` for the platform (`sot-apply.sh` exits early
+  on any `uname` outside Linux/Darwin). Windows therefore had **no working apply step at
+  all**, compounded by `install.sh` — the sole writer of `install.json` — refusing to run
+  there, which meant the FE's `spawn_startup_selfcheck` never got past its
+  "not a release install" guard and never even checked.
+  Closed by `scripts/sot-apply.ps1` (the Windows applier: same verify → swap-with-`.prev`
+  → flip → rewrite-manifest → arm-marker transaction, using directory **junctions**
+  instead of symlinks so no Developer Mode or elevation is needed) and
+  `scripts/install-manifest.ps1` (writes `install.json`, called from
+  `install-shortcut.ps1`). `launch-sot.ps1` now invokes the applier before launch and
+  delegates crash-loop rollback to `sot-apply.ps1 -Rollback`, so a revert restores the
+  whole transaction and marks the bad tag, rather than only copying back the `.exe`.
+  Regression cover: `scripts/tests/test-sot-apply.ps1`, run on the CI Windows leg.
 - **Apply, BE** *(bundle mechanics retired — see Amendment 2026-07-04; the binary swap and restart survive)*: download `sotd` + the julia bundle; unpack the bundle to a versioned dir
   (`<data>/sot/julia/vX.Y.Z/`), `Pkg.instantiate` against the shipped Manifest, flip the
   `current` symlink, replace the binary, `systemctl --user restart sotd` (Linux) / restart

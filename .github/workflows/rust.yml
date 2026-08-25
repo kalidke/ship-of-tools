@@ -52,9 +52,18 @@ jobs:
       # shipped to main was first discovered by the next FE LAUNCH (launchers
       # self-update from main on every start, unpinned). Parse them where a
       # PowerShell host already exists: this Windows leg.
+      #
+      # `shell: powershell` (Windows PowerShell 5.1), NOT `pwsh` (7): this gate
+      # used to run under pwsh and could not catch the bug class it exists for.
+      # 5.1 decodes a BOM-less .ps1 as cp1252; pwsh 7 decodes it as UTF-8. A
+      # UTF-8 non-ASCII char inside a STRING LITERAL therefore mojibakes into a
+      # phantom double-quote under 5.1 and fails the whole file to parse, while
+      # pwsh reports it clean. 5.1 is what the .lnk launcher actually runs, so
+      # it is what must vet these files. (See the AUTHORING GOTCHA at the top
+      # of launch-sot.ps1.)
       - name: Parse PowerShell scripts
         if: matrix.os == 'windows-latest'
-        shell: pwsh
+        shell: powershell
         working-directory: scripts
         run: |
           $failed = $false
@@ -70,6 +79,15 @@ jobs:
             }
           }
           if ($failed) { exit 1 }
+      # Behavioural cover for the Windows update applier. Parsing proves the
+      # file loads; this proves it actually applies, verifies digests, rolls
+      # back, and refuses a foreign-target pointer. Same 5.1 host as above.
+      - name: Test sot-apply.ps1
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: .\scripts\tests\test-sot-apply.ps1
+        working-directory: .
+
       - name: Parse shell launchers
         if: matrix.os == 'ubuntu-latest'
         working-directory: scripts
