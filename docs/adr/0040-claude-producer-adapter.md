@@ -40,6 +40,24 @@ have replaced a close or a permission event, so continuing to accept work is
 forbidden. `producer_ready` derives from `hello` and means exactly "the
 helper imported and validated its pinned SDK and can accept a query".
 
+**Interrupt liveness (wiring-PR amendment, 2026-08-24).** The pinned SDK
+(0.3.241) hangs `interrupt()` forever when the query is mid-API-call: the
+CLI aborts the HTTP request, then neither settles the promise nor concludes
+the iterator (isolated repro; identical against a stalled and a flowing
+stream). An operator interrupt is a demand for prompt cession, so the
+HELPER bounds `interrupt()` (30 s) and goes terminal `fatal
+{reason: "interrupt_unanswered"}` on timeout — the adapter needs no new
+state-machine arc: helper-fatal is already terminal with the reason
+propagated, the abandoned turn closes `synthesized_death`, and the kill
+domain owns cleanup. On every terminal helper exit (`fatal`, `shutdown`,
+stdin EOF) the helper first reaps its CLI subprocess — the SDK's forceful
+`close()` as the portable best effort, then a `/proc`-walk SIGKILL of its
+direct children where available, because a wedged SDK's `close()`
+termination proved ignorable by the stuck CLI. The graceful abort route's
+~2 s grace window cannot run in a process that exits immediately
+afterwards, and the CLI orphans (observed). The e2e fixture pins this behavior; an SDK bump that fixes the
+hang must fail it and be re-pinned to the fixed semantics.
+
 ## One query per turn
 
 `resume` restores the transcript; it does NOT restore in-memory MCP/tool
@@ -84,7 +102,11 @@ session-scoped types are turn-free; (4) operator-echo user messages are
 turn-free, redacted, retained-transformed; (5) known mainline messages with
 no ids belong to the current query's turn — sound because each query is
 single-shot, and GATED: the adapter cannot ship against a pinned SDK until
-the no-replay resume fixture passes; (6) unknown types are recorded
+the no-replay resume fixture passes (satisfied for 0.3.241 by
+`e2e_two_turns_resume_no_replay` in the wiring PR — real helper, real SDK,
+real vendored CLI, offline against a fake Messages API; the resumed
+request provably carried the restored transcript while the SDK stream
+re-emitted nothing); (6) unknown types are recorded
 turn-free (whole-frame redacted under capture-off), then the adapter stops
 admitting turns, drains, and terminates.
 

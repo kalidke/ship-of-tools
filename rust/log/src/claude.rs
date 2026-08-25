@@ -24,7 +24,18 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const HELPER_PROTOCOL: u64 = 1;
-pub const FEATURES: [&str; 2] = ["sot.producer.json-f64-v1", "sot.capsule.cgroup-fence-v1"];
+/// Features this adapter's segments declare. `json-f64-v1` always (semantic
+/// JSON is the declared native representation); `cgroup-fence-v1` only when
+/// the fence actually bears authority — an unfenced test rig's spawn frame
+/// carries `{"scheme": "none"}` and its segments must verify WITHOUT the
+/// feature (ADR 0039 registry, locator-must-declare).
+pub fn features(fence: &Fence) -> Vec<String> {
+    let mut f = vec!["sot.producer.json-f64-v1".to_string()];
+    if matches!(fence, Fence::Cgroup(_)) {
+        f.push("sot.capsule.cgroup-fence-v1".to_string());
+    }
+    f
+}
 const LINE_CAP: usize = 8 * 1024 * 1024;
 const QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -76,10 +87,14 @@ impl Fence {
         Fence::Unfenced
     }
 
+    /// The discriminated kill-domain locator (ADR 0039 registry). Scheme
+    /// "cgroup" bears authority — successor epochs act on it destructively
+    /// and the verifier requires the segment to declare `cgroup-fence-v1`;
+    /// scheme "none" is the explicit no-authority record of a test rig.
     fn locator(&self) -> Value {
         match self {
-            Fence::Cgroup(p) => json!(p.to_string_lossy()),
-            Fence::Unfenced => json!("UNFENCED-TEST-RIG"),
+            Fence::Cgroup(p) => json!({"scheme": "cgroup", "path": p.to_string_lossy()}),
+            Fence::Unfenced => json!({"scheme": "none"}),
         }
     }
 
@@ -442,10 +457,7 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
         take_epoch: 0,
         attached: None,
     };
-    let mut w = store.open_segment_with_features(
-        wall_ms(),
-        FEATURES.iter().map(|s| s.to_string()).collect(),
-    )?;
+    let mut w = store.open_segment_with_features(wall_ms(), features(&config.fence))?;
     let mut frames: u64 = 0;
     macro_rules! put {
         ($e:expr) => {{

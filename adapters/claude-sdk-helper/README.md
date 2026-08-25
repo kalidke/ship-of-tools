@@ -40,14 +40,14 @@ NDJSON both directions, one JSON object per line.
 
 Fatal `reason` values: `protocol`, `no_result`, `multi_result`,
 `session_drift`, `query_error`, `busy`, `serializer`, `line_too_large`,
-`turn_too_large`.
+`turn_too_large`, `interrupt_unanswered`.
 
 ### In (capsule → helper)
 
 | Line | Effect |
 |---|---|
 | `{"op":"user_turn","query_id":<id>,"text":"<prompt>"}` | Runs one SDK `query()` for this turn. |
-| `{"op":"interrupt","id":<id>}` | Calls `interrupt()` on the in-flight query. |
+| `{"op":"interrupt","id":<id>}` | Calls `interrupt()` on the in-flight query, bounded by the interrupt-liveness timeout (below). |
 | `{"op":"shutdown"}` | Clean `exit(0)`. |
 
 An unknown `op` or a malformed input line ⇒ `{"ev":"fatal","reason":"protocol"}`
@@ -106,6 +106,27 @@ are each a distinct fatal (`multi_result` / `session_drift` / `query_error`).
 A second `user_turn` while one is still in flight is `busy` — the capsule is
 expected to enforce one-in-flight itself; this is the helper's own
 double-check.
+
+**Interrupt liveness.** The pinned SDK (0.3.241) can hang `interrupt()`
+forever when the query is mid-API-call: the CLI aborts the HTTP request and
+then neither settles the promise nor concludes the iterator (reproduced
+against both a stalled and a flowing SSE stream). An operator interrupt is
+a demand for prompt cession, so the helper races `interrupt()` against a
+30 s bound (`HELPER_TEST_INTERRUPT_TIMEOUT_MS` overrides it, tests only);
+on timeout it goes terminal with fatal `interrupt_unanswered`. The capsule
+handles that like any helper fatal — terminal state, synthesized close for
+the abandoned turn, kill-domain cleanup.
+
+**Subprocess reaping.** Every terminal exit path (`fatal`, `shutdown`,
+stdin EOF) reaps an in-flight query's CLI subprocess first: the SDK's
+`close()` as the portable best effort, then — where `/proc` exists — a
+SIGKILL of every direct child, because against a wedged SDK (the interrupt
+hang) `close()`'s termination proved ignorable by the stuck CLI. The
+helper's only children are SDK CLI subprocesses. The graceful
+`abortController` route is useless on these paths: its ~2 s grace window
+never runs in a process that exits immediately afterwards, and the CLI
+would orphan (observed). The kill domain remains the production backstop;
+the helper still must not leak on its own.
 
 **Zero results** is fatal `no_result` — *unless* `interrupt` was invoked for
 this turn's query at any point before the iterator exhausted, in which case

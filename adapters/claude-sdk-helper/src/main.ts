@@ -7,6 +7,7 @@
  */
 
 import { query as sdkQuery, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { project, type Json } from "./codec.js";
@@ -35,6 +36,9 @@ export interface SdkQueryOpts {
 
 export interface SdkQuery extends AsyncIterable<Record<string, unknown>> {
   interrupt(): Promise<unknown>;
+  /** Forceful disposal: terminates the CLI subprocess and all resources.
+   * Optional in the type only for test fakes; the real SDK always has it. */
+  close?(): void;
 }
 
 export interface SdkLike {
@@ -81,6 +85,7 @@ const SDK_VERSION = helperSdkVersion();
  * exercised with a handful of small messages instead.
  */
 const DEFAULT_TURN_SPOOL_CAP_BYTES = 64 * 1024 * 1024;
+const DEFAULT_INTERRUPT_TIMEOUT_MS = 30_000;
 export const TURN_SPOOL_CAP_BYTES = readTurnSpoolCap();
 
 function readTurnSpoolCap(): number {
@@ -108,6 +113,13 @@ export function run(
     let inFlight: { queryId: number; handle: SdkQuery; interrupted: boolean } | null = null;
     let exiting = false;
     const reader = new LineReader();
+    // How long interrupt() may take to settle before the helper declares
+    // the SDK hung and goes terminal (HELPER_TEST_* override: tests only,
+    // same convention as the turn cap; read per-run from the env param).
+    const interruptTimeoutMs = (() => {
+      const n = Number(env.HELPER_TEST_INTERRUPT_TIMEOUT_MS);
+      return Number.isFinite(n) && n > 0 ? n : DEFAULT_INTERRUPT_TIMEOUT_MS;
+    })();
 
     /**
      * Resolves on the write's own completion callback — the data has been
@@ -140,9 +152,51 @@ export function run(
       return true;
     }
 
+    /** Reap the CLI subprocess of an in-flight query on any terminal
+     * path. close() is the SDK's forceful disposal and the portable best
+     * effort — but against a WEDGED SDK (the interrupt hang) it proved
+     * unreliable: its termination is ignorable by a stuck CLI. Where /proc
+     * exists, SIGKILL every direct child outright — the helper's only
+     * children are SDK CLI subprocesses, and a process about to exit owes
+     * the system a clean tree. (The graceful abortController path is
+     * useless here: its ~2s grace window never runs in a process that
+     * exits immediately afterwards.) */
+    function reapInFlight(): void {
+      const f = inFlight;
+      inFlight = null; // take-and-clear: no terminal path can skip the reap
+      if (!f) return;
+      try {
+        f.handle.close?.();
+      } catch {
+        /* a wedged SDK must not block reaping */
+      }
+      try {
+        for (const pid of readdirSync("/proc")) {
+          if (!/^\d+$/.test(pid)) continue;
+          let ppid = -1;
+          try {
+            const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+            ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+          } catch {
+            continue;
+          }
+          if (ppid === process.pid) {
+            try {
+              process.kill(Number(pid), "SIGKILL");
+            } catch {
+              /* already gone */
+            }
+          }
+        }
+      } catch {
+        /* non-Linux: no /proc — close() was the best effort */
+      }
+    }
+
     async function fail(reason: FatalReason, detail?: string): Promise<void> {
       if (exiting) return;
       exiting = true;
+      reapInFlight();
       await writeLine(fatalLine(reason, detail));
       resolveRun();
       exit(1);
@@ -151,6 +205,7 @@ export function run(
     function shutdown(): void {
       if (exiting) return;
       exiting = true;
+      reapInFlight();
       resolveRun();
       exit(0);
     }
@@ -170,35 +225,28 @@ export function run(
       let spooledBytes = 0;
       try {
         for await (const raw of handle) {
-          if (exiting) {
-            inFlight = null;
-            return;
-          }
+          if (exiting) return;
           const m = raw as Record<string, unknown>;
           if (typeof m.session_id === "string") {
             if (pinnedSessionId === null) {
               if (m.type === "system" && m.subtype === "init") pinnedSessionId = m.session_id;
             } else if (m.session_id !== pinnedSessionId) {
-              inFlight = null;
               return fail("session_drift", "a message's session_id did not match the resumed session");
             }
           }
           if (m.type === "result" && ++resultCount > 1) {
-            inFlight = null;
             return fail("multi_result", "more than one result message was observed in a single turn");
           }
           let body: Json;
           try {
             body = project(raw);
           } catch {
-            inFlight = null;
             return fail("serializer", "an SDK message could not be projected to JSON");
           }
           let text: string;
           try {
             text = msgLine(body);
           } catch (err) {
-            inFlight = null;
             if (err instanceof LineTooLargeError) {
               return fail("line_too_large", "a projected message line exceeded the 8 MiB cap");
             }
@@ -206,15 +254,17 @@ export function run(
           }
           spooledBytes += Buffer.byteLength(text, "utf8");
           if (spooledBytes > TURN_SPOOL_CAP_BYTES) {
-            inFlight = null;
             return fail("turn_too_large", "the turn's cumulative msg output exceeded the per-turn spool cap");
           }
           await writeLine(text);
         }
       } catch (err) {
-        inFlight = null;
         return fail("query_error", err instanceof Error ? err.constructor.name : "unknown error");
       }
+      // Finding: a timeout fatal's close() can END the iterator normally —
+      // recheck before emitting, or a turn_end would follow the terminal
+      // fatal line (terminal ordering violation).
+      if (exiting || !inFlight) return;
       const wasInterrupted = inFlight.interrupted;
       inFlight = null;
       if (resultCount === 0) {
@@ -234,14 +284,34 @@ export function run(
       }
       inFlight.interrupted = true;
       const handle = inFlight.handle;
+      // The pinned SDK can hang interrupt() forever when the query is
+      // mid-API-call (observed against 0.3.241: the CLI aborts the HTTP
+      // request, then neither settles the promise nor concludes the
+      // iterator). An operator interrupt is a demand for prompt cession,
+      // so an unanswered one is TERMINAL — the capsule's kill domain, not
+      // this process, owns cleanup from there.
+      const TIMED_OUT = Symbol("interrupt-timeout");
+      let timer: NodeJS.Timeout | undefined;
+      const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
+        timer = setTimeout(() => resolve(TIMED_OUT), interruptTimeoutMs);
+      });
       let ok: boolean;
       let raw: unknown;
       try {
-        raw = await handle.interrupt();
+        const settled = await Promise.race([handle.interrupt(), deadline]);
+        if (settled === TIMED_OUT) {
+          return fail(
+            "interrupt_unanswered",
+            `interrupt() did not settle within ${interruptTimeoutMs} ms`,
+          );
+        }
+        raw = settled;
         ok = true;
       } catch {
         ok = false;
         raw = undefined;
+      } finally {
+        clearTimeout(timer);
       }
       let sdkReturn: Json | null = null;
       if (ok && raw !== undefined) {
@@ -290,7 +360,9 @@ export function run(
     stdin.on("end", () => {
       if (exiting) return;
       exiting = true;
-      if (inFlight) void inFlight.handle.interrupt().catch(() => {});
+      // The operator is gone; nobody is left to consume a graceful
+      // interrupt's outcome — reap the subprocess and go.
+      reapInFlight();
       resolveRun();
       exit(0);
     });

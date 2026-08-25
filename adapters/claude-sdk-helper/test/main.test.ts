@@ -317,6 +317,77 @@ test("interrupt: sdk_return carries the projected resolved value when not undefi
   assert.deepEqual(ev.sdk_return, { still_queued: [] });
 });
 
+test("interrupt_unanswered: a hung interrupt() is terminal, not an infinite wait (pinned-SDK reality)", async () => {
+  const sdk = new FakeSdk();
+  const q = neverEndingQuery(() => new Promise(() => {}));
+  let closed = false;
+  q.close = () => {
+    closed = true;
+  };
+  sdk.enqueue(q);
+  const { stdin, lines, exitCodes } = harness(sdk, { HELPER_TEST_INTERRUPT_TIMEOUT_MS: "1" });
+  send(stdin, { op: "user_turn", query_id: 1, text: "hold" }, { op: "interrupt", id: 7 });
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal"));
+  const fatal = lines.find((l) => (l as { ev?: string }).ev === "fatal") as { reason?: string };
+  assert.equal(fatal.reason, "interrupt_unanswered");
+  assert.equal(lines.some((l) => (l as { ev?: string }).ev === "interrupted"), false);
+  assert.equal(closed, true, "fatal must reap the subprocess via close()");
+  assert.deepEqual(exitCodes, [1]);
+});
+
+test("multi_result fatal reaps the subprocess (no terminal path may skip the reaper)", async () => {
+  const sdk = new FakeSdk();
+  const q = scriptedQuery([
+    { type: "system", subtype: "init", session_id: "s" },
+    { type: "result", session_id: "s" },
+    { type: "result", session_id: "s" },
+  ]);
+  let closed = false;
+  q.close = () => {
+    closed = true;
+  };
+  sdk.enqueue(q);
+  const { stdin, lines, exitCodes } = harness(sdk);
+  send(stdin, { op: "user_turn", query_id: 1, text: "hi" });
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal"));
+  const fatal = lines.find((l) => (l as { ev?: string }).ev === "fatal") as { reason?: string };
+  assert.equal(fatal.reason, "multi_result");
+  assert.equal(closed, true, "every terminal fatal must reap via close()");
+  assert.deepEqual(exitCodes, [1]);
+});
+
+test("no turn_end after a terminal fatal: a close()-ended iterator stays silent", async () => {
+  // The interrupt-timeout fatal reaps via close(); if close() ends the
+  // iterator NORMALLY, the turn loop must not then emit turn_end — the
+  // fatal line is terminal, nothing follows it.
+  const sdk = new FakeSdk();
+  let resolveNext: ((r: IteratorResult<Msg>) => void) | null = null;
+  const q: SdkQuery = {
+    [Symbol.asyncIterator]: () => ({
+      next: () =>
+        new Promise<IteratorResult<Msg>>((res) => {
+          resolveNext = res;
+        }),
+    }),
+    interrupt: () => new Promise(() => {}),
+  };
+  q.close = () => {
+    if (resolveNext) {
+      const r = resolveNext;
+      resolveNext = null;
+      r({ value: undefined, done: true });
+    }
+  };
+  sdk.enqueue(q);
+  const { stdin, lines, exitCodes } = harness(sdk, { HELPER_TEST_INTERRUPT_TIMEOUT_MS: "1" });
+  send(stdin, { op: "user_turn", query_id: 1, text: "hold" }, { op: "interrupt", id: 3 });
+  await waitFor(() => lines.some((l) => (l as { ev?: string }).ev === "fatal"));
+  for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(lines.some((l) => (l as { ev?: string }).ev === "turn_end"), false, "turn_end after fatal");
+  assert.equal((lines[lines.length - 1] as { ev?: string }).ev, "fatal", "fatal must be the last line");
+  assert.deepEqual(exitCodes, [1]);
+});
+
 test("interrupt: ok false when interrupt() rejects; never SDK confirmation", async () => {
   const sdk = new FakeSdk();
   sdk.enqueue(neverEndingQuery(() => Promise.reject(new Error("nope"))));
@@ -392,20 +463,22 @@ test("shutdown with nothing in flight exits 0 with no fatal", async () => {
 });
 
 test("stdin EOF aborts an in-flight query and exits 0 without a fatal", async () => {
-  let interruptCalled = false;
+  // Reaping is by AbortController (kills the CLI subprocess), not by a
+  // graceful interrupt() — the operator is gone, nobody would consume a
+  // graceful outcome, and against a hung SDK interrupt() never settles.
   const sdk = new FakeSdk();
-  sdk.enqueue(
-    neverEndingQuery(() => {
-      interruptCalled = true;
-      return Promise.resolve(undefined);
-    }),
-  );
+  const q = neverEndingQuery(() => new Promise(() => {}));
+  let closed = false;
+  q.close = () => {
+    closed = true;
+  };
+  sdk.enqueue(q);
   const { stdin, lines, exitCodes, donePromise } = harness(sdk);
   send(stdin, { op: "user_turn", query_id: 1, text: "hi" });
   await waitFor(() => sdk.calls.length === 1);
   stdin.end();
   await donePromise;
   assert.deepEqual(exitCodes, [0]);
-  assert.equal(interruptCalled, true);
+  assert.equal(closed, true, "EOF must reap the subprocess via close()");
   assert.equal(lines.some((l) => (l as { ev?: string }).ev === "fatal"), false);
 });

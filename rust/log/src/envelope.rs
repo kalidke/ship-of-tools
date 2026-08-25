@@ -267,6 +267,17 @@ impl Envelope {
             _ => return Err(schema("exactly one of payload/payload_ref".into())),
         }
         if let Some(pr) = &self.payload_ref {
+            // Producer bodies are the only payloads that spill (ADR 0039
+            // §Frame schema). A spilled control-plane frame would carry its
+            // cross-field obligations out of the verifier's inline walk —
+            // writer and verifier agree on this rule so the crate can never
+            // write a segment its own verifier rejects.
+            if self.class != Class::Producer {
+                return Err(schema(format!(
+                    "payload_ref is producer-class only; {:?} payloads are inline",
+                    self.class
+                )));
+            }
             validate_blob_ref(&pr.blob)?;
         }
         if let Some(te) = self.source.actor.take_epoch {

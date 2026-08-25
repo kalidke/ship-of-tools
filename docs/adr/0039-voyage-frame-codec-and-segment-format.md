@@ -108,7 +108,12 @@ Envelope = {
   payload?:     ClassPayload / ProducerPayload,
   payload_ref?: BlobRef & { encoding: "bytes"/"json-utf8" }
 }
-; Exactly ONE of payload / payload_ref per frame.
+; Exactly ONE of payload / payload_ref per frame. payload_ref is
+; PRODUCER-CLASS ONLY (amended with the wiring PR): control-plane payloads
+; carry cross-field obligations — the take matrix, the WAL lattice,
+; locator-must-declare — that a spilled body would move out of the
+; verifier's inline walk; producer bodies are the only payloads that grow.
+; Writer validation and the verifier enforce this identically.
 ; ProducerPayload (class="producer"): any JSON value conforming to the
 ; encoding atoms below (null allowed). A native body that cannot conform
 ; (integers > 2^53-1, non-UTF-8, ...) rides payload_ref: "json-utf8" when it
@@ -337,11 +342,13 @@ exists.
     (exponents permitted); control and envelope fields remain u53/i53.
     Without this feature, producer-payload numbers obey the integer atoms.
   - `sot.capsule.cgroup-fence-v1` — `producer_spawn.detail` carries an
-    authority-bearing kill-domain locator (a cgroup path) that successor
-    epochs act on destructively. Enforcement note: the verifier currently
-    ACCEPTS this feature; the reverse check — a locator-bearing spawn frame
-    must declare it — lands with the adapter PR that fixes the detail
-    schema, and is owed before any successor acts on a locator.
+    authority-bearing kill-domain locator that successor epochs act on
+    destructively. The locator is discriminated by scheme:
+    `{"scheme": "cgroup", "path": ...}` bears authority, and the verifier
+    REQUIRES its segment to declare this feature (locator-must-declare,
+    enforced since the wiring PR); `{"scheme": "none"}` (an explicitly
+    unfenced test rig) and an absent `kill_domain` (the P1 PTY capsule)
+    claim no authority and need no feature; any other scheme fails closed.
 - **Wrapper/header versions** cover everything else. Migration is only ever
   by derived copies or new linked segments — never in-place rewriting.
 
