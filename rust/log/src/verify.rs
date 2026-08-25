@@ -684,20 +684,12 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
                     check_blob_on_disk(root, &blob, env.seq)?;
                 }
             }
+            // payload_ref is producer-class only — enforced in
+            // Envelope::validate(), which runs on BOTH append and segment
+            // read, so a spilled control-plane frame (which would carry
+            // its cross-field obligations out of this walk's sight) can
+            // neither be written nor read. No duplicate check here.
             if let Some(pr) = &env.payload_ref {
-                // Producer bodies are the only payloads that spill. A
-                // spilled control-plane frame (lifecycle, input, turns…)
-                // would carry its cross-field obligations — the take
-                // matrix, the WAL lattice, locator-must-declare — out of
-                // the inline walk's sight, so it fails closed instead
-                // (review finding: a spilled producer_spawn evaded the
-                // locator check entirely).
-                if env.class != Class::Producer {
-                    return Err(Error::Schema(format!(
-                        "frame {:?}: payload_ref is producer-class only; {:?} payloads are inline",
-                        env.seq, env.class
-                    )));
-                }
                 check_blob_on_disk(root, &pr.blob, env.seq)?;
             }
 
@@ -960,8 +952,9 @@ mod tests {
     /// Review pin: payload_ref is producer-class only — a spilled
     /// control-plane frame would carry its cross-field obligations (the
     /// take matrix, the WAL lattice, locator-must-declare) out of the
-    /// inline walk's sight. A spilled producer_spawn evaded the locator
-    /// check before this rule existed.
+    /// verifier's inline walk. Enforced in Envelope::validate(), which
+    /// runs on BOTH append and segment read, so writer and verifier can
+    /// never disagree: the frame cannot even be written.
     #[test]
     fn spilled_control_frame_is_refused() {
         use crate::envelope::{PayloadEncoding, PayloadRef};
@@ -983,9 +976,7 @@ mod tests {
             },
             encoding: PayloadEncoding::JsonUtf8,
         });
-        w.append(&e, Commit::Immediate).unwrap();
-        w.seal(None).unwrap();
-        let err = verify_voyage(&dir.path().join("sp2"), "sp2").unwrap_err();
+        let err = w.append(&e, Commit::Immediate).unwrap_err();
         assert!(format!("{err}").contains("producer-class only"), "got: {err}");
     }
 

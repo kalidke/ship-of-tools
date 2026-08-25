@@ -108,7 +108,12 @@ Envelope = {
   payload?:     ClassPayload / ProducerPayload,
   payload_ref?: BlobRef & { encoding: "bytes"/"json-utf8" }
 }
-; Exactly ONE of payload / payload_ref per frame.
+; Exactly ONE of payload / payload_ref per frame. payload_ref is
+; PRODUCER-CLASS ONLY (amended with the wiring PR): control-plane payloads
+; carry cross-field obligations — the take matrix, the WAL lattice,
+; locator-must-declare — that a spilled body would move out of the
+; verifier's inline walk; producer bodies are the only payloads that grow.
+; Writer validation and the verifier enforce this identically.
 ; ProducerPayload (class="producer"): any JSON value conforming to the
 ; encoding atoms below (null allowed). A native body that cannot conform
 ; (integers > 2^53-1, non-UTF-8, ...) rides payload_ref: "json-utf8" when it

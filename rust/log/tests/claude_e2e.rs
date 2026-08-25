@@ -197,21 +197,36 @@ fn wait_for_count(root: &Path, needle: &[u8], n: usize, mut still: impl FnMut() 
 /// summary asserts the settle was enough, legibly.
 const TURN_END_SETTLE: Duration = Duration::from_millis(750);
 
-/// Close-wait with refusal triage: a turn sent into the close-to-turn_end
-/// gap is refused (bare input, no forward_intent) and would otherwise read
-/// as a 90-second "never closed" mystery — name it at the point of failure
-/// instead (review finding on settle legibility).
-fn expect_close(root: &Path, n: usize, still: impl FnMut() -> bool, what: &str) {
-    if wait_for_count(root, b"turn_close", n, still) {
-        return;
+/// Close-wait with in-loop refusal triage: a turn sent into the
+/// close-to-turn_end gap is refused (bare input, no forward_intent) and
+/// would otherwise burn the full 90s reading as "never closed" — instead
+/// it fails in ~1s, named. The 1s persistence window keeps the normal
+/// input→forward_intent commit gap (two consecutive fsync'd appends, ms)
+/// from reading as a refusal.
+fn expect_close(root: &Path, n: usize, mut still: impl FnMut() -> bool, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut refusal_since: Option<Instant> = None;
+    loop {
+        if count_in_voyage(root, b"turn_close") >= n {
+            return;
+        }
+        let inputs = count_in_voyage(root, b"\"class\":\"input\"");
+        let intents = count_in_voyage(root, b"forward_intent");
+        if inputs > intents {
+            let since = *refusal_since.get_or_insert_with(Instant::now);
+            assert!(
+                since.elapsed() < Duration::from_secs(1),
+                "{what}: turn REFUSED — a command landed in the close-to-turn_end gap ({inputs} inputs vs {intents} forward_intents; the settle starved)"
+            );
+        } else {
+            refusal_since = None;
+        }
+        assert!(
+            still() && Instant::now() < deadline,
+            "{what}: turn did not close"
+        );
+        std::thread::sleep(Duration::from_millis(50));
     }
-    let inputs = count_in_voyage(root, b"\"class\":\"input\"");
-    let intents = count_in_voyage(root, b"forward_intent");
-    assert!(
-        inputs <= intents,
-        "{what}: turn REFUSED — a command landed in the close-to-turn_end gap ({inputs} inputs vs {intents} forward_intents; the settle starved)"
-    );
-    panic!("{what}: turn did not close");
 }
 
 /// Successor-readiness gate: true when ONE `.open` segment contains every
