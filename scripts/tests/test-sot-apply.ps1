@@ -186,6 +186,26 @@ $out7 = & $apply -Prefix $p7 6>&1 2>&1
 Check 'skipped under lock' ((Get-Content (Join-Path $f7.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied while locked'
 Check 'said so' (($out7 -join ' ') -match 'lock held') "log was: $out7"
 
+Write-Host "`n=== 4b. rollback on a FIRST install (no repo\current junction) ===" -ForegroundColor Cyan
+# The commonest real layout, and the one test 4 masked by pre-creating a
+# junction: install-shortcut.ps1 does NOT create repo\current, so the apply
+# records an empty `checkout` in last-good. Rollback must still restore the
+# binaries -- that is the part that rescues a crash-looping machine. This
+# previously bailed before touching them and left the bad build in place.
+$p4b = Join-Path $root 'p4b'
+$f4b = New-Fixture $p4b 'v0.5.0' 'v0.6.0'
+& $apply -Prefix $p4b 6>&1 2>&1 | Out-Null
+Check 'first-install: applied' ((Get-Content (Join-Path $f4b.bin 'sot.exe') -Raw) -eq 'NEW-BINARY') 'apply did not happen'
+$lg4b = Get-Content (Join-Path $f4b.updates 'last-good-windows-x86_64.json') -Raw
+Check 'first-install: last-good has empty checkout' ($lg4b -match '"checkout":\s*""') "checkout was: $lg4b"
+$out4b = & $apply -Prefix $p4b -Rollback 6>&1 2>&1
+Write-Host ($out4b | ForEach-Object { "    $_" }) -ForegroundColor DarkGray
+Check 'first-install: binary ROLLED BACK' ((Get-Content (Join-Path $f4b.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'left on the crash-looping build'
+Check 'first-install: sotd rolled back' ((Get-Content (Join-Path $f4b.bin 'sotd.exe') -Raw) -eq 'OLD-DAEMON') 'not restored'
+Check 'first-install: bad marker written' (Test-Path (Join-Path $f4b.updates 'bad-v0.6.0-windows-x86_64')) 'no bad marker'
+$ij4b = Get-Content (Join-Path $p4b 'install.json') -Raw
+Check 'first-install: install.json rolled back' ($ij4b -match '"tag":\s*"v0\.5\.0"') 'tag not rolled back'
+
 Write-Host "`n=== 8. prefix given as an 8.3 short path still applies ===" -ForegroundColor Cyan
 # Regression: the post-flip check used to compare the junction target to the
 # wanted checkout as raw strings. Windows reports the same directory under both

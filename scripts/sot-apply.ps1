@@ -201,21 +201,40 @@ if ($Rollback) {
     if (-not $lg) { Write-ApplyLog 'rollback requested but no last-good state -- nothing to do'; Exit-Apply 0 }
     $lgTag = [string]$lg.tag
     $lgCheckout = [string]$lg.checkout
-    if (-not $lgCheckout -or -not (Test-Path -LiteralPath $lgCheckout)) {
-        Write-ApplyLog "last-good checkout '$lgCheckout' missing -- cannot roll back"; Exit-Apply 0
-    }
     if ($curTag -eq $lgTag) {
         Write-ApplyLog "install already at last-good $lgTag -- nothing to roll back"; Exit-Apply 0
     }
     Write-ApplyLog "ROLLING BACK to $lgTag (marking $curTag bad for $TARGET)"
+
+    # BINARIES FIRST, and NOT gated on having a previous checkout. A missing
+    # checkout used to abort the whole rollback here -- which broke exactly the
+    # commonest case: on a FIRST Windows release install there is no
+    # repo\current junction (install-shortcut.ps1 does not create one), so the
+    # apply recorded an empty `checkout` in last-good, and a crash-looping new
+    # build was then left in place instead of being reverted. Restoring the
+    # binaries is the part that actually rescues the machine; the checkout flip
+    # is a nicety that only some layouts have.
+    $restored = @()
     foreach ($b in @('sot.exe', 'sotd.exe')) {
         $prev = Join-Path $BinDir "$b.prev"
         if (Test-Path -LiteralPath $prev) {
             Copy-Item -LiteralPath $prev -Destination (Join-Path $BinDir $b) -Force -ErrorAction SilentlyContinue
+            $restored += $b
         }
     }
-    [void](Set-Junction (Join-Path $Prefix 'repo\current') $lgCheckout)
-    [void](Set-Junction (Join-Path $Prefix 'julia\current') $lgCheckout)
+    if ($restored.Count -gt 0) {
+        Write-ApplyLog "restored from .prev: $($restored -join ', ')"
+    } else {
+        Write-ApplyLog 'no .prev binaries to restore -- leaving binaries as they are'
+    }
+
+    # Checkout flip only when one was actually recorded and still exists.
+    if ($lgCheckout -and (Test-Path -LiteralPath $lgCheckout)) {
+        [void](Set-Junction (Join-Path $Prefix 'repo\current') $lgCheckout)
+        [void](Set-Junction (Join-Path $Prefix 'julia\current') $lgCheckout)
+    } else {
+        Write-ApplyLog "no previous checkout recorded ('$lgCheckout') -- binaries rolled back, junctions left alone"
+    }
     if ($curTag -match '^v[0-9]') {
         New-Item -ItemType File -Path (Join-Path $Updates "bad-$curTag-$TARGET") -Force | Out-Null
     }
