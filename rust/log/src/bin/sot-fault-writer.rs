@@ -80,10 +80,20 @@ fn main() -> sot_log::Result<()> {
     // kill always lands mid-write. Never sealed: the kill is what ends us.
     let mut n = 3u64;
     loop {
+        // Vary the record size (0..~4.7KB of filler): uniform small records
+        // always flush on record boundaries, so a kill could never land
+        // mid-record. Irregular sizes make records straddle buffer-flush
+        // boundaries, opening a (small) mid-record kill window. Empirically
+        // tears stay RARE even so — a kill lands between atomic write
+        // syscalls, and the true production source of torn tails is
+        // power-loss/storage reordering, which no process-kill harness
+        // simulates. Deterministic tear coverage is reconcile_matrix row 4;
+        // the sweep's tear count is reported, never asserted.
+        let filler = "x".repeat(((n * 131) % 4703) as usize);
         let mut e = mk(
             n,
             Class::Producer,
-            serde_json::json!({"native": {"text": format!("payload-line-{n}")}}),
+            serde_json::json!({"native": {"text": format!("payload-line-{n}-{filler}")}}),
             vec![FrameRef {
                 kind: RefKind::AttachedTo,
                 frame: attached_seq,

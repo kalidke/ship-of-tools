@@ -76,12 +76,29 @@ pub fn fsync_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Flush an existing file's contents by path (write-open + `sync_all`).
+/// Recovery's publish-as-is rows need this: a writer killed between
+/// `write_all(seal)` and its own fsync leaves a complete, cache-visible seal
+/// indistinguishable from crash-after-fsync — the pinned publication order
+/// (source flush BEFORE the publish rename) must be restated by whoever
+/// publishes, not assumed from the dead writer.
+pub fn fsync_file(path: &Path) -> Result<()> {
+    let f = std::fs::OpenOptions::new().write(true).open(path)?;
+    f.sync_all()?;
+    Ok(())
+}
+
 /// Windows dir flush: `FlushFileBuffers` on a directory handle. NTFS
 /// metadata journaling gives crash CONSISTENCY (old-or-new name, never
 /// corrupt), NOT durability-at-return — the log flushes lazily, so a
 /// completed publication can roll back on power cut without this. Strictly
 /// stronger than what SQLite/RocksDB/PostgreSQL ship on Windows (all no-op
-/// their dir fsync there); our contract needs the real flush.
+/// their dir fsync there). Honest scope: directory handles as
+/// `FlushFileBuffers` targets are DOC-IMPLIED + empirically verified (the
+/// P3 spike), not an explicit API contract — which is exactly why the
+/// pinned order also flushes the renamed file itself, and why real-machine
+/// power-cut testing stays on the acceptance list rather than being claimed
+/// here.
 ///
 /// Operational caveat (ADR 0041): the per-disk "turn off write-cache buffer
 /// flushing" checkbox makes `FlushFileBuffers` silently vacuous —
@@ -153,9 +170,11 @@ pub fn rename_noreplace(_from: &Path, _to: &Path) -> Result<()> {
 
 /// Windows arm (ADR 0041 §store port): `MoveFileExW` with flags 0 —
 /// kernel `FileRenameInformation` with ReplaceIfExists=FALSE, so the
-/// existence check and the rename are ONE kernel op (no TOCTOU) and a
-/// same-volume rename is one $LogFile transaction (old-or-new after crash).
-/// A collision fails with ERROR_ALREADY_EXISTS, which std maps to
+/// existence check and the rename are ONE kernel op (no TOCTOU). On NTFS a
+/// same-volume rename is journaled (old-or-new after crash) — an
+/// implementation property of NTFS, not a documented `MoveFileExW`
+/// contract; the preflight pinning us to NTFS is what makes relying on it
+/// honest. A collision fails with ERROR_ALREADY_EXISTS, which std maps to
 /// `ErrorKind::AlreadyExists` — the same loud condition callers match on.
 /// `std::fs::rename` is unusable here: it passes REPLACE_EXISTING and
 /// clobbers.
@@ -171,12 +190,8 @@ pub fn rename_noreplace(_from: &Path, _to: &Path) -> Result<()> {
 ///   (source flush → rename → renamed-file flush → dir flush).
 #[cfg(windows)]
 pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
-    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
-    fn wide(p: &Path) -> Vec<u16> {
-        p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
-    }
-    let (f, t) = (wide(from), wide(to));
+    let (f, t) = (wide_verbatim(from)?, wide_verbatim(to)?);
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
     loop {
         if unsafe { MoveFileExW(f.as_ptr(), t.as_ptr(), 0) } != 0 {
@@ -189,6 +204,31 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
     }
     flush_renamed(to)
+}
+
+/// NUL-terminated UTF-16 in extended-length (`\\?\`) form. std's own fs ops
+/// verbatim-normalize long paths internally, so a store std could create
+/// and write would then fail to PUBLISH through a raw `MoveFileExW` given
+/// the un-prefixed path (default MAX_PATH limit). `std::path::absolute` is
+/// `GetFullPathNameW`-backed on Windows (separators and dots normalized),
+/// which makes unconditional prefixing legal for drive paths; a path
+/// already starting `\\` (UNC/verbatim) passes through — non-local volumes
+/// were already refused by the preflight.
+#[cfg(windows)]
+fn wide_verbatim(p: &Path) -> Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let abs = std::path::absolute(p)?;
+    let raw: Vec<u16> = abs.as_os_str().encode_wide().collect();
+    let mut w: Vec<u16> = if raw.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+        raw
+    } else {
+        std::ffi::OsStr::new(r"\\?\")
+            .encode_wide()
+            .chain(raw.into_iter())
+            .collect()
+    };
+    w.push(0);
+    Ok(w)
 }
 
 /// AV/indexer transient hold codes worth absorbing (bounded).
@@ -243,13 +283,15 @@ pub struct WriterLock {
 pub fn lock_writer(lock_path: &Path) -> Result<WriterLock> {
     let file = open_lock_file(lock_path)?;
     // Bounded retry on WouldBlock: a just-dead writer's lock can outlive it
-    // by milliseconds — on unix through a forked-but-not-yet-exec'd producer
-    // child holding the open file description (the window closes at the
-    // child's close_range, but a SIGKILLed-and-reaped capsule doesn't wait
-    // for its child's schedule); on Windows through the kernel's own
-    // documented post-kill release lag. Those holds resolve in ms; a GENUINE
-    // live writer holds indefinitely and still fails here within the
-    // deadline — fail-closed is preserved, only the transient is absorbed.
+    // — on unix through a forked-but-not-yet-exec'd producer child holding
+    // the open file description (the window closes at the child's
+    // close_range, but a SIGKILLed-and-reaped capsule doesn't wait for its
+    // child's schedule); on Windows through post-termination release lag,
+    // which the API documents as resource-dependent with NO bound. The
+    // deadline absorbs the common fast case only: a slower release fails
+    // CLOSED ("lock held") — an availability error the caller retries, never
+    // a second writer. A GENUINE live writer holds indefinitely and still
+    // fails here within the deadline.
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
     loop {
         match file.try_lock() {
@@ -282,17 +324,32 @@ fn open_lock_file(lock_path: &Path) -> Result<File> {
 /// recreate a missing persistent fence (bootstrap created it; absence means
 /// a mutilated store). Opened WITHOUT `FILE_SHARE_DELETE` (std's default
 /// shares delete/rename) so the locked path cannot be replaced out from
-/// under the fence to mint a second one. Std never makes handles
-/// inheritable.
+/// under the fence to mint a second one — and with
+/// `FILE_FLAG_OPEN_REPARSE_POINT` + a post-open attribute check, because
+/// the share deny protects the OPENED object: without the flag CreateFileW
+/// follows a symlink/junction planted at the lock path and the fence would
+/// bind (and deny sharing on) the TARGET, leaving the link free to be
+/// re-pointed for a second fence. Std never makes handles inheritable.
 #[cfg(windows)]
 fn open_lock_file(lock_path: &Path) -> Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
     let f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(lock_path)
         .map_err(|e| io_ctx(e, format_args!("open writer.lock (open-existing) {lock_path:?}")))?;
+    // Handle-derived attributes (GetFileInformationByHandle) — checking the
+    // opened object itself, not a raced re-stat of the path.
+    if f.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(Error::State(format!(
+            "writer.lock at {lock_path:?} is a reparse point — refusing a redirected fence"
+        )));
+    }
     Ok(f)
 }

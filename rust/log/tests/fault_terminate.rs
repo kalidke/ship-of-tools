@@ -54,6 +54,15 @@ fn count_sealed_frames(root: &Path) -> u64 {
     n
 }
 
+/// The round's live `.open` tip, if any (rounds are sequential and every
+/// prior tip is sealed before the next spawn, so at most one exists).
+fn open_tip(root: &Path) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(root.join("seg"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|x| x == "open"))
+}
+
 #[test]
 fn terminate_sweep_recovers_green_every_round() {
     let dir = tempfile::tempdir().unwrap();
@@ -62,6 +71,7 @@ fn terminate_sweep_recovers_green_every_round() {
 
     let writer_bin = env!("CARGO_BIN_EXE_sot-fault-writer");
     let mut sealed_frames_before: u64 = 0;
+    let mut torn_rounds: usize = 0;
 
     for round in 0..ROUNDS {
         // A chatty writer that would run ~forever; the kill is what ends it.
@@ -73,19 +83,74 @@ fn terminate_sweep_recovers_green_every_round() {
             .spawn()
             .expect("spawn sot-fault-writer");
 
+        // Writer-ready handshake: the random delay must measure WRITING
+        // time, not process-startup time — without this, a slow spawn eats
+        // the whole window and the round silently proves nothing. Ready =
+        // the round's .open exists and has grown past the header (the
+        // stream is flowing).
+        let ready_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(tip) = open_tip(&root) {
+                if std::fs::metadata(&tip).map(|m| m.len() >= 4096).unwrap_or(false) {
+                    break;
+                }
+            }
+            if let Some(status) = writer.try_wait().unwrap() {
+                panic!("round {round}: writer died before ready ({status:?})");
+            }
+            assert!(
+                std::time::Instant::now() < ready_deadline,
+                "round {round}: writer never became ready"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
         std::thread::sleep(Duration::from_millis(delay_ms(round)));
         // Child::kill(): TerminateProcess on Windows, SIGKILL on unix — no
         // drop handlers, no seal, no flush — the crash the format exists to
         // survive. No PTY orphan to reap here (unlike fault_kill.rs): this
         // writer has no child of its own.
         writer.kill().unwrap();
-        writer.wait().unwrap();
+        let status = writer.wait().unwrap();
+        // The kill must be what ended it (a clean exit means the round
+        // tested nothing).
+        assert!(!status.success(), "round {round}: writer exited cleanly");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(status.signal(), Some(libc::SIGKILL));
+        }
+
+        // Observe (read-only) whether this round's tip is provably torn —
+        // deterministic tear coverage lives in reconcile_matrix; here we
+        // just report how often the randomized sweep hit one.
+        if let Some(tip) = open_tip(&root) {
+            if let Ok(r) = SegmentReader::read(&tip, false) {
+                if r.tail_tear.is_some() {
+                    torn_rounds += 1;
+                }
+            }
+        }
 
         // Reopen = reconcile + recover under the writer lock. The next
         // incarnation must (a) come up, (b) seal the previous run's tip,
         // (c) leave the voyage verify-green with nothing sealed lost.
-        let mut store = VoyageStore::open_for_writing(&root, VOYAGE)
-            .unwrap_or_else(|e| panic!("round {round}: reopen after kill failed: {e}"));
+        // Bounded retry on "lock held": Windows documents post-termination
+        // lock release as resource-dependent with no bound — a slow release
+        // fails closed, so retrying is correct (and what a real supervisor
+        // does).
+        let reopen_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut store = loop {
+            match VoyageStore::open_for_writing(&root, VOYAGE) {
+                Ok(s) => break s,
+                Err(sot_log::Error::State(m))
+                    if m.contains("lock held") && std::time::Instant::now() < reopen_deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(e) => panic!("round {round}: reopen after kill failed: {e}"),
+            }
+        };
         store.seal_survivor().unwrap_or_else(|e| {
             panic!("round {round}: survivor seal failed: {e}");
         });
@@ -94,22 +159,22 @@ fn terminate_sweep_recovers_green_every_round() {
         verify_voyage(&root, VOYAGE)
             .unwrap_or_else(|e| panic!("round {round}: verify failed after recovery: {e}"));
 
+        // EVERY round must land real history: the handshake guarantees the
+        // kill hit an actively writing process, so at least the preamble's
+        // 2 frames of that round's epoch survive recovery. (This per-round
+        // bound replaces a cumulative total, which one productive round
+        // could have satisfied alone.)
         let sealed_now = count_sealed_frames(&root);
         assert!(
-            sealed_now >= sealed_frames_before,
-            "round {round}: sealed history shrank ({sealed_frames_before} -> {sealed_now})"
+            sealed_now >= sealed_frames_before + 2,
+            "round {round}: no new sealed history ({sealed_frames_before} -> {sealed_now})"
         );
         sealed_frames_before = sealed_now;
     }
 
-    // The sweep must have actually recorded something across the rounds —
-    // a vacuous pass (writer killed before any frame every time) would
-    // prove nothing. The preamble alone (2 frames) guarantees frames per
-    // round, so demand evidence of at least half the rounds landing real
-    // history.
-    assert!(
-        sealed_frames_before >= (ROUNDS as u64 / 2) * 2,
-        "sweep too vacuous: only {sealed_frames_before} sealed frames after {ROUNDS} rounds"
+    eprintln!(
+        "terminate sweep: {torn_rounds}/{ROUNDS} rounds hit a provably torn tail \
+         ({sealed_frames_before} sealed frames total)"
     );
 
     // And no residue: quiescent state = only .sotseg files (each round's

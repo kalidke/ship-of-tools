@@ -55,10 +55,17 @@ impl VoyageStore {
         let parent = root
             .parent()
             .ok_or_else(|| Error::State("voyage root needs a parent dir".into()))?;
-        // Volume preflight BEFORE any `.creating` mutation (ADR 0041): the
-        // container dir may not exist yet — creating it claims no
-        // durability, so it may precede the check.
-        std::fs::create_dir_all(parent)?;
+        // The container must PREEXIST: bootstrap will not create ancestor
+        // levels, because it cannot durably anchor them (their entries in
+        // THEIR parents are never flushed here — a "successful" bootstrap
+        // into an implicitly created chain could vanish on power loss).
+        // The container's durability is its creator's responsibility.
+        if !parent.is_dir() {
+            return Err(Error::State(format!(
+                "voyage container {parent:?} does not exist (bootstrap will not create it)"
+            )));
+        }
+        // Volume preflight BEFORE any `.creating` mutation (ADR 0041).
         fsutil::preflight_volume(parent)?;
         let staging = parent.join(format!(
             "{}.creating",
@@ -68,6 +75,11 @@ impl VoyageStore {
         ));
         std::fs::create_dir_all(staging.join("seg"))?;
         std::fs::create_dir_all(staging.join("blobs").join(".tmp"))?;
+        // sha256/ exists (and is flushed) from birth so the first CAS
+        // publish only ever creates the SHARD level — whose entry its own
+        // fsync_dir(sha256) pins. Created lazily instead, the sha256 entry
+        // itself would never be anchored in blobs/.
+        std::fs::create_dir_all(staging.join("blobs").join("sha256"))?;
         // The lock inode is persistent and never unlinked.
         let mut lockf = std::fs::File::create(staging.join("writer.lock"))?;
         lockf.write_all(b"{}")?;
@@ -79,6 +91,7 @@ impl VoyageStore {
         // Persist the voyage identity + retention where the genesis header
         // will restate it (bootstrap happens before any segment exists).
         fsutil::fsync_dir(&staging.join("blobs").join(".tmp"))?;
+        fsutil::fsync_dir(&staging.join("blobs").join("sha256"))?;
         fsutil::fsync_dir(&staging.join("blobs"))?;
         fsutil::fsync_dir(&staging.join("seg"))?;
         fsutil::fsync_dir(&staging)?;

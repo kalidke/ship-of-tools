@@ -116,8 +116,13 @@ fn reconcile_open(seg_dir: &Path, id: &SegmentIdentity, recovering_epoch: u64) -
     // Full structural read; unsealed expectations (tears permitted at tail).
     let reader = SegmentReader::read(&open_path, false)?; // loud conditions propagate here
     if reader.seal_at_eof() {
-        // Crash between seal-fsync and rename: publish as-is.
+        // Seal at EOF: publish as-is. The dead writer may have been killed
+        // BETWEEN write_all(seal) and its fsync — a cache-visible seal is
+        // indistinguishable from a durable one, so the publisher restates
+        // the source flush before the rename (pinned publication order;
+        // P3 round-1 review blocker, reachable on Linux too).
         reader.verify_seal()?;
+        fsutil::fsync_file(&open_path)?;
         let to = id.path(seg_dir, SegmentState::Sealed);
         fsutil::rename_noreplace(&open_path, &to)?;
         fsutil::fsync_dir(seg_dir)?;
@@ -157,8 +162,11 @@ fn recover_from_quarantine(
     let reader = SegmentReader::read(&r_path, false)?;
     if reader.seal.is_some() {
         // Post-seal records are loud in the reader, so a sealed quarantine
-        // can only be a seal at EOF: publish it as-is.
+        // can only be a seal at EOF: publish it as-is — with the source
+        // flush restated first (same cache-visible-seal hazard as
+        // reconcile_open's publish-as-is row).
         reader.verify_seal()?;
+        fsutil::fsync_file(&r_path)?;
         fsutil::rename_noreplace(&r_path, &id.path(seg_dir, SegmentState::Sealed))?;
         fsutil::fsync_dir(seg_dir)?;
         return Ok(Reconciled::PublishedAsIs);
