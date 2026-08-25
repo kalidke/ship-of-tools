@@ -1,6 +1,8 @@
 # ADR 0017: Frontend self-relaunch — staged-copy supervisor, sentinel trigger, terminal resume
 
-**Status:** Accepted
+**Status:** Accepted. §4's resume ritual (`resume_command`, `--continue`,
+the session-start re-arm) is RETIRED by ADR 0041 (P3 FE-local capsules);
+§1–§3's relaunch mechanism remains current.
 **Date:** 2026-05-26
 
 ## Context

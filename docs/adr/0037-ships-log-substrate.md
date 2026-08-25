@@ -143,9 +143,11 @@ Defaults, the summary prompt, and pack layout are still open decisions.
   crash-injection tests — the file format is read forever, so it gets the care
   first.
 - **P2:** the first rich writer: Claude through its SDK.
-- **P3 / P4 (either order):** capsules on the frontend machines (macOS, then
-  Windows) so local sessions survive frontend restarts — this retires the ADR 0017
-  relaunch dance; and remote attach over SSH — this retires "quit and relaunch to
+- **P3 / P4 (either order):** capsules on the frontend machines — Windows
+  first per ADR 0041, which implements P3 (this note originally read
+  "macOS, then Windows"; the fleet has no macOS frontend) — so local
+  sessions survive frontend restarts, retiring the ADR 0017 §4 resume
+  ritual; and remote attach over SSH — this retires "quit and relaunch to
   switch hosts" (ADR 0015).
 - **P5:** the daemon's terminal plumbing moves onto capsules behind a switch; the
   tmux path is deleted only after a long soak with a tested way back. The machine
