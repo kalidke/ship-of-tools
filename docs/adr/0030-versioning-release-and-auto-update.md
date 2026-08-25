@@ -155,6 +155,25 @@ regenerate CHANGELOG, commit `release: vX.Y.Z`, tag, push. CI does the rest.
   (dev), else keep the current staged copy. That last branch is what makes the launcher
   work on machines **with no source tree** — the public install is just the staged dir
   plus config.
+
+  **Amendment (Windows applier).** The "pending binary" above was originally a literal
+  `updates\pending\sot.exe` that `launch-sot.ps1` moved into place. Phase C3 replaced
+  that contract with a per-target *pointer* (`updates/pending-<target>.json`) naming a
+  verified stage under `<tag>-<target>/`, consumed by `sot-apply`. The PowerShell
+  launcher was never migrated, so on Windows it kept testing a path nothing writes —
+  dead code — and there was no `sot-apply` for the platform (`sot-apply.sh` exits early
+  on any `uname` outside Linux/Darwin). Windows therefore had **no working apply step at
+  all**, compounded by `install.sh` — the sole writer of `install.json` — refusing to run
+  there, which meant the FE's `spawn_startup_selfcheck` never got past its
+  "not a release install" guard and never even checked.
+  Closed by `scripts/sot-apply.ps1` (the Windows applier: same verify → swap-with-`.prev`
+  → flip → rewrite-manifest → arm-marker transaction, using directory **junctions**
+  instead of symlinks so no Developer Mode or elevation is needed) and
+  `scripts/install-manifest.ps1` (writes `install.json`, called from
+  `install-shortcut.ps1`). `launch-sot.ps1` now invokes the applier before launch and
+  delegates crash-loop rollback to `sot-apply.ps1 -Rollback`, so a revert restores the
+  whole transaction and marks the bad tag, rather than only copying back the `.exe`.
+  Regression cover: `scripts/tests/test-sot-apply.ps1`, run on the CI Windows leg.
 - **Apply, BE** *(bundle mechanics retired — see Amendment 2026-07-04; the binary swap and restart survive)*: download `sotd` + the julia bundle; unpack the bundle to a versioned dir
   (`<data>/sot/julia/vX.Y.Z/`), `Pkg.instantiate` against the shipped Manifest, flip the
   `current` symlink, replace the binary, `systemctl --user restart sotd` (Linux) / restart

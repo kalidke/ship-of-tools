@@ -25,6 +25,24 @@ if (-not (Test-Path $hostsToml)) {
     Write-Warning "Copy .sot\hosts.toml.example to .sot\hosts.toml, set default_host, then rerun scripts\install-shortcut.ps1."
 }
 
+# Copy the icon to the install prefix and point shortcuts THERE, not into the
+# clone. A .lnk stores an absolute IconLocation, so a shortcut aimed at
+# <repo>\logo.ico silently falls back to a generic icon the moment the repo is
+# moved or renamed -- which is why this script's header has always said to
+# re-run it when the repo path changes. %LOCALAPPDATA%\sot is where the
+# binaries already live and does not move.
+$prefixDir = Join-Path $env:LOCALAPPDATA 'sot'
+New-Item -ItemType Directory -Force -Path $prefixDir | Out-Null
+$stableIcon = Join-Path $prefixDir 'logo.ico'
+if (Test-Path $logoIcon) {
+    Copy-Item -Path $logoIcon -Destination $stableIcon -Force
+    $logoIcon = $stableIcon
+} elseif (Test-Path $stableIcon) {
+    # Repo copy missing but a previous install left one behind - still better
+    # than falling through to the PowerShell icon.
+    $logoIcon = $stableIcon
+}
+
 $wsh = New-Object -ComObject WScript.Shell
 $sc = $wsh.CreateShortcut($shortcutPath)
 $sc.TargetPath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -49,6 +67,12 @@ $sc.Save()
 & (Join-Path $PSScriptRoot 'set-shortcut-aumid.ps1') -LnkPath $shortcutPath -Aumid 'ShipOfTools.Sot'
 
 Write-Host "Created: $shortcutPath"
+
+# Write <prefix>\install.json. Without it the frontend's startup self-check
+# bails at its "not a release install" guard and Windows never checks for
+# updates at all (install.sh, the only other writer, refuses to run here).
+# No-ops with an explanation on a -dev source build.
+& (Join-Path $PSScriptRoot 'install-manifest.ps1') -Prefix $prefixDir -Repo $repo.Path
 
 # --- Keep the taskbar pin in sync -------------------------------------------
 # The taskbar pin is a SEPARATE .lnk from the desktop shortcut, so it drifts
