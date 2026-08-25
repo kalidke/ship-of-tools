@@ -14,6 +14,15 @@ use std::path::Path;
 const RETRY_DEADLINE_MS: u64 = 250;
 const RETRY_STEP_MS: u64 = 10;
 
+/// Wrap an OS error with the failing op + path, preserving the `ErrorKind`
+/// (callers match on it — the CAS race needs `AlreadyExists`). A bare
+/// "Access is denied" from deep inside a publication sequence is
+/// undiagnosable; a loud failure must say where.
+#[cfg(windows)]
+fn io_ctx(e: std::io::Error, what: std::fmt::Arguments<'_>) -> Error {
+    Error::Io(std::io::Error::new(e.kind(), format!("{what}: {e}")))
+}
+
 /// Volume preflight (ADR 0041): the durability contract holds on local NTFS
 /// only — the Windows mirror of "requires renameat2". Runs BEFORE any
 /// `.creating` mutation in bootstrap and again on the resolved voyage dir at
@@ -47,7 +56,8 @@ pub fn preflight_volume(dir: &Path) -> Result<()> {
     if ok == 0 {
         // SMB and friends commonly fail this call outright — exactly the
         // fail-closed we want (voyages are local-FS pinned).
-        return Err(Error::Io(std::io::Error::last_os_error()));
+        let e = std::io::Error::last_os_error();
+        return Err(io_ctx(e, format_args!("GetVolumeInformationByHandleW {dir:?}")));
     }
     let len = fs_name.iter().position(|&c| c == 0).unwrap_or(fs_name.len());
     let name = String::from_utf16_lossy(&fs_name[..len]);
@@ -80,7 +90,9 @@ pub fn fsync_dir(dir: &Path) -> Result<()> {
 #[cfg(windows)]
 pub fn fsync_dir(dir: &Path) -> Result<()> {
     let f = open_dir_handle(dir)?;
-    f.sync_all()?; // FlushFileBuffers on the directory handle
+    // FlushFileBuffers on the directory handle
+    f.sync_all()
+        .map_err(|e| io_ctx(e, format_args!("FlushFileBuffers dir {dir:?}")))?;
     Ok(())
 }
 
@@ -97,7 +109,8 @@ fn open_dir_handle(dir: &Path) -> Result<File> {
         .read(true)
         .write(true)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(dir)?;
+        .open(dir)
+        .map_err(|e| io_ctx(e, format_args!("open dir handle {dir:?}")))?;
     Ok(f)
 }
 
@@ -171,7 +184,7 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
         }
         let e = std::io::Error::last_os_error();
         if !is_transient_hold(&e) || std::time::Instant::now() >= deadline {
-            return Err(Error::Io(e));
+            return Err(io_ctx(e, format_args!("MoveFileExW {from:?} -> {to:?}")));
         }
         std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
     }
@@ -192,19 +205,23 @@ fn is_transient_hold(e: &std::io::Error) -> bool {
 /// target (bootstrap's `.creating` publish) flushes via the dir handle.
 #[cfg(windows)]
 fn flush_renamed(to: &Path) -> Result<()> {
-    if std::fs::metadata(to)?.is_dir() {
+    if std::fs::metadata(to)
+        .map_err(|e| io_ctx(e, format_args!("stat renamed {to:?}")))?
+        .is_dir()
+    {
         return fsync_dir(to);
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
     loop {
         match std::fs::OpenOptions::new().write(true).open(to) {
             Ok(fh) => {
-                fh.sync_all()?;
+                fh.sync_all()
+                    .map_err(|e| io_ctx(e, format_args!("flush renamed {to:?}")))?;
                 return Ok(());
             }
             Err(e) => {
                 if !is_transient_hold(&e) || std::time::Instant::now() >= deadline {
-                    return Err(Error::Io(e));
+                    return Err(io_ctx(e, format_args!("open renamed for flush {to:?}")));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
             }
@@ -275,6 +292,7 @@ fn open_lock_file(lock_path: &Path) -> Result<File> {
         .read(true)
         .write(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .open(lock_path)?;
+        .open(lock_path)
+        .map_err(|e| io_ctx(e, format_args!("open writer.lock (open-existing) {lock_path:?}")))?;
     Ok(f)
 }
