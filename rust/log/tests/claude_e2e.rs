@@ -77,18 +77,23 @@ fn scratch() -> (PathBuf, Option<tempfile::TempDir>) {
     }
 }
 
-/// The fake Messages API, one per test. Killed on drop.
+/// The fake Messages API, one per test. Killed on drop. Logs every
+/// Messages request to a JSONL file so tests can assert what the stateless
+/// requests actually carried.
 struct FakeApi {
     child: Child,
     port: u16,
+    reqlog: PathBuf,
 }
 
 impl FakeApi {
-    fn start() -> FakeApi {
+    fn start(scratch: &Path) -> FakeApi {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_messages_api.mjs");
+        let reqlog = scratch.join("fake-api-requests.jsonl");
         let mut child = Command::new("node")
             .arg(&fixture)
             .arg("0")
+            .arg(&reqlog)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -98,7 +103,15 @@ impl FakeApi {
             .read_line(&mut line)
             .expect("fake api prints its port");
         let port: u16 = line.trim().parse().expect("fake api port line");
-        FakeApi { child, port }
+        FakeApi { child, port, reqlog }
+    }
+
+    fn requests(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(&self.reqlog)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("request log line"))
+            .collect()
     }
 }
 
@@ -183,6 +196,23 @@ fn wait_for_count(root: &Path, needle: &[u8], n: usize, mut still: impl FnMut() 
 /// post-close command waits out the gap first; `refused_turns == 0` in the
 /// summary asserts the settle was enough, legibly.
 const TURN_END_SETTLE: Duration = Duration::from_millis(750);
+
+/// Close-wait with refusal triage: a turn sent into the close-to-turn_end
+/// gap is refused (bare input, no forward_intent) and would otherwise read
+/// as a 90-second "never closed" mystery — name it at the point of failure
+/// instead (review finding on settle legibility).
+fn expect_close(root: &Path, n: usize, still: impl FnMut() -> bool, what: &str) {
+    if wait_for_count(root, b"turn_close", n, still) {
+        return;
+    }
+    let inputs = count_in_voyage(root, b"\"class\":\"input\"");
+    let intents = count_in_voyage(root, b"forward_intent");
+    assert!(
+        inputs <= intents,
+        "{what}: turn REFUSED — a command landed in the close-to-turn_end gap ({inputs} inputs vs {intents} forward_intents; the settle starved)"
+    );
+    panic!("{what}: turn did not close");
+}
 
 /// Successor-readiness gate: true when ONE `.open` segment contains every
 /// needle. The crashed epoch's `.open` lingers (with its own
@@ -293,19 +323,19 @@ fn e2e_two_turns_resume_no_replay() {
         return;
     }
     let _s = lock();
-    let api = FakeApi::start();
     let (base, _scratch) = scratch();
     let dir = base.as_path();
+    let api = FakeApi::start(dir);
     let cfg = e2e_config(dir, "e1", api.port);
     let root = cfg.voyage_root.clone();
     let (tx, rx) = mpsc::channel();
     let h = std::thread::spawn(move || run(cfg, rx).unwrap());
     assert!(wait_for_count(&root, b"producer_ready", 1, || !h.is_finished()), "helper never ready");
     tx.send(OperatorCmd::Turn("hello fixture".into())).unwrap();
-    assert!(wait_for_count(&root, b"turn_close", 1, || !h.is_finished()), "turn 1 did not close");
+    expect_close(&root, 1, || !h.is_finished(), "turn 1");
     std::thread::sleep(TURN_END_SETTLE);
     tx.send(OperatorCmd::Turn("second turn".into())).unwrap();
-    assert!(wait_for_count(&root, b"turn_close", 2, || !h.is_finished()), "turn 2 did not close");
+    expect_close(&root, 2, || !h.is_finished(), "turn 2");
     std::thread::sleep(TURN_END_SETTLE);
     tx.send(OperatorCmd::Shutdown).unwrap();
     drop(tx);
@@ -356,6 +386,20 @@ fn e2e_two_turns_resume_no_replay() {
     let sid = |f: &sot_log::Envelope| f.payload.as_ref().unwrap()["session_id"].clone();
     assert_eq!(sid(results[0]), sid(results[1]), "turn 2 did not resume turn 1's session");
     assert!(sid(results[0]).as_str().is_some_and(|s| !s.is_empty()));
+    // Session-id equality proves identifier reuse, NOT restoration. The
+    // fixture logs each stateless Messages request: turn 2's request must
+    // itself carry turn 1's reply — the transcript, restored — or the
+    // no-replay premise is vacuous (nothing was there to replay).
+    let reqs = api.requests();
+    assert_eq!(reqs.len(), 2, "exactly one Messages request per turn");
+    assert_eq!(
+        reqs[1]["has_prior_reply"], true,
+        "turn 2's request did not carry turn 1's reply — resume restored nothing"
+    );
+    assert!(
+        reqs[1]["n_messages"].as_u64() > reqs[0]["n_messages"].as_u64(),
+        "turn 2's request should carry a longer history than turn 1's"
+    );
     drop(api);
     assert_no_survivors(dir);
 }
@@ -375,9 +419,9 @@ fn e2e_interrupt_during_in_flight_query() {
         return;
     }
     let _s = lock();
-    let api = FakeApi::start();
     let (base, _scratch) = scratch();
     let dir = base.as_path();
+    let api = FakeApi::start(dir);
     let cfg = e2e_config(dir, "e2", api.port);
     let root = cfg.voyage_root.clone();
     let (tx, rx) = mpsc::channel();
@@ -445,9 +489,9 @@ fn e2e_kill_domain_sweep() {
             return;
         }
     }
-    let api = FakeApi::start();
     let (base, _scratch) = scratch();
     let dir = base.as_path();
+    let api = FakeApi::start(dir);
     let root = dir.join("e3");
     let mut capsule = Command::new(env!("CARGO_BIN_EXE_sot-capsule"));
     capsule.args([
@@ -548,7 +592,7 @@ fn e2e_kill_domain_sweep() {
         "successor never ready"
     );
     tx.send(OperatorCmd::Turn("hello fixture".into())).unwrap();
-    assert!(wait_for_count(&root, b"turn_close", 2, || !h.is_finished()), "successor turn did not close");
+    expect_close(&root, 2, || !h.is_finished(), "successor turn");
     std::thread::sleep(TURN_END_SETTLE);
     tx.send(OperatorCmd::Shutdown).unwrap();
     drop(tx);

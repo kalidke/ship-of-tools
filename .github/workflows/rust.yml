@@ -16,9 +16,11 @@ on:
     # scripts/** is here because this workflow carries the launcher parse steps:
     # without it, a script-only PR — exactly the class that needs parsing — never
     # triggers them. Proven by PR #82 (a ps1-only hotfix) running zero Rust checks.
-    paths: ["rust/**", "scripts/**", ".github/workflows/rust.yml"]
+    # adapters/** likewise: the p2-e2e job is the helper's only CI, so a
+    # helper-only PR must trigger this workflow (review finding on #119).
+    paths: ["rust/**", "scripts/**", "adapters/**", ".github/workflows/rust.yml"]
   pull_request:
-    paths: ["rust/**", "scripts/**", ".github/workflows/rust.yml"]
+    paths: ["rust/**", "scripts/**", "adapters/**", ".github/workflows/rust.yml"]
 
 concurrency:
   group: rust-${{ github.workflow }}-${{ github.ref }}

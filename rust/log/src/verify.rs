@@ -400,7 +400,11 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
                                         )));
                                     }
                                     if !fence_ok {
-                                        return Err(Error::State(format!(
+                                        // Schema, not State: an invalid
+                                        // cross-field encoding (like
+                                        // undeclared-f64), not an unknown
+                                        // feature the reader can't implement.
+                                        return Err(Error::Schema(format!(
                                             "lifecycle {:?}: locator-bearing producer_spawn in a segment that does not declare sot.capsule.cgroup-fence-v1",
                                             env.seq
                                         )));
@@ -681,6 +685,19 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
                 }
             }
             if let Some(pr) = &env.payload_ref {
+                // Producer bodies are the only payloads that spill. A
+                // spilled control-plane frame (lifecycle, input, turns…)
+                // would carry its cross-field obligations — the take
+                // matrix, the WAL lattice, locator-must-declare — out of
+                // the inline walk's sight, so it fails closed instead
+                // (review finding: a spilled producer_spawn evaded the
+                // locator check entirely).
+                if env.class != Class::Producer {
+                    return Err(Error::Schema(format!(
+                        "frame {:?}: payload_ref is producer-class only; {:?} payloads are inline",
+                        env.seq, env.class
+                    )));
+                }
                 check_blob_on_disk(root, &pr.blob, env.seq)?;
             }
 
@@ -938,6 +955,38 @@ mod tests {
         // Unknown scheme and empty path fail closed even when declared.
         assert!(run("l5", fence(), json!({"kill_domain": {"scheme": "jail"}})).is_err());
         assert!(run("l6", fence(), json!({"kill_domain": {"scheme": "cgroup", "path": ""}})).is_err());
+    }
+
+    /// Review pin: payload_ref is producer-class only — a spilled
+    /// control-plane frame would carry its cross-field obligations (the
+    /// take matrix, the WAL lattice, locator-must-declare) out of the
+    /// inline walk's sight. A spilled producer_spawn evaded the locator
+    /// check before this rule existed.
+    #[test]
+    fn spilled_control_frame_is_refused() {
+        use crate::envelope::{PayloadEncoding, PayloadRef};
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "sp2");
+        let content =
+            br#"{"kind":"producer_spawn","detail":{"kill_domain":{"scheme":"cgroup","path":"/x"}}}"#;
+        let digest = s.publish_blob(content).unwrap();
+        let mut w = s.open_segment(0).unwrap();
+        let mut e = test_env(1, 1);
+        e.class = Class::Lifecycle;
+        e.payload = None;
+        e.payload_ref = Some(PayloadRef {
+            blob: crate::envelope::BlobRef {
+                algo: "sha256".into(),
+                digest,
+                length: content.len() as u64,
+                media_type: "application/json".into(),
+            },
+            encoding: PayloadEncoding::JsonUtf8,
+        });
+        w.append(&e, Commit::Immediate).unwrap();
+        w.seal(None).unwrap();
+        let err = verify_voyage(&dir.path().join("sp2"), "sp2").unwrap_err();
+        assert!(format!("{err}").contains("producer-class only"), "got: {err}");
     }
 
     #[test]

@@ -162,9 +162,11 @@ export function run(
      * useless here: its ~2s grace window never runs in a process that
      * exits immediately afterwards.) */
     function reapInFlight(): void {
-      if (!inFlight) return;
+      const f = inFlight;
+      inFlight = null; // take-and-clear: no terminal path can skip the reap
+      if (!f) return;
       try {
-        inFlight.handle.close?.();
+        f.handle.close?.();
       } catch {
         /* a wedged SDK must not block reaping */
       }
@@ -223,35 +225,28 @@ export function run(
       let spooledBytes = 0;
       try {
         for await (const raw of handle) {
-          if (exiting) {
-            inFlight = null;
-            return;
-          }
+          if (exiting) return;
           const m = raw as Record<string, unknown>;
           if (typeof m.session_id === "string") {
             if (pinnedSessionId === null) {
               if (m.type === "system" && m.subtype === "init") pinnedSessionId = m.session_id;
             } else if (m.session_id !== pinnedSessionId) {
-              inFlight = null;
               return fail("session_drift", "a message's session_id did not match the resumed session");
             }
           }
           if (m.type === "result" && ++resultCount > 1) {
-            inFlight = null;
             return fail("multi_result", "more than one result message was observed in a single turn");
           }
           let body: Json;
           try {
             body = project(raw);
           } catch {
-            inFlight = null;
             return fail("serializer", "an SDK message could not be projected to JSON");
           }
           let text: string;
           try {
             text = msgLine(body);
           } catch (err) {
-            inFlight = null;
             if (err instanceof LineTooLargeError) {
               return fail("line_too_large", "a projected message line exceeded the 8 MiB cap");
             }
@@ -259,15 +254,17 @@ export function run(
           }
           spooledBytes += Buffer.byteLength(text, "utf8");
           if (spooledBytes > TURN_SPOOL_CAP_BYTES) {
-            inFlight = null;
             return fail("turn_too_large", "the turn's cumulative msg output exceeded the per-turn spool cap");
           }
           await writeLine(text);
         }
       } catch (err) {
-        inFlight = null;
         return fail("query_error", err instanceof Error ? err.constructor.name : "unknown error");
       }
+      // Finding: a timeout fatal's close() can END the iterator normally —
+      // recheck before emitting, or a turn_end would follow the terminal
+      // fatal line (terminal ordering violation).
+      if (exiting || !inFlight) return;
       const wasInterrupted = inFlight.interrupted;
       inFlight = null;
       if (resultCount === 0) {
@@ -301,9 +298,7 @@ export function run(
       let ok: boolean;
       let raw: unknown;
       try {
-        const settling = handle.interrupt();
-        settling.catch(() => {}); // a post-timeout rejection must not crash the drain
-        const settled = await Promise.race([settling, deadline]);
+        const settled = await Promise.race([handle.interrupt(), deadline]);
         if (settled === TIMED_OUT) {
           return fail(
             "interrupt_unanswered",

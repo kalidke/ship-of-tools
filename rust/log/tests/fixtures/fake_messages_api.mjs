@@ -18,9 +18,15 @@
 //   interrupt scenario (an abort against a live stream, not a dead one).
 // - Everything else answers 200 {} (the CLI probes e.g. HEAD /api/hello).
 // - Every request is logged to stderr for post-mortem.
+import { appendFileSync } from "node:fs";
 import http from "node:http";
 
 const PORT = Number(process.argv[2] ?? 0);
+// Optional request log (argv[3], JSONL): one line per Messages POST with
+// what the STATELESS request actually carried — the no-replay gate reads
+// it to prove turn 2's request restored turn 1's transcript, rather than
+// inferring restoration from session-id reuse.
+const REQLOG = process.argv[3] ?? null;
 let nmsg = 0;
 
 function event(res, name, data) {
@@ -42,6 +48,16 @@ const srv = http.createServer((req, res) => {
     try {
       parsed = JSON.parse(body);
     } catch {}
+    if (REQLOG) {
+      appendFileSync(
+        REQLOG,
+        JSON.stringify({
+          n: nmsg,
+          n_messages: (parsed.messages ?? []).length,
+          has_prior_reply: body.includes("fixture reply 1"),
+        }) + "\n",
+      );
+    }
     const id = `msg_fake_${nmsg}`;
     const model = parsed.model ?? "claude-fake";
     res.writeHead(200, { "content-type": "text/event-stream" });
@@ -51,19 +67,25 @@ const srv = http.createServer((req, res) => {
     });
     event(res, "content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
     event(res, "content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: `fixture reply ${nmsg}` } });
+    // Lifecycle note: cleanup keys on RES close, not req close — on Node
+    // a request's "close" follows the request BODY completing, while the
+    // response (and connection) stay open; keying the drip's clearInterval
+    // on req.close silently turned the flowing stream into a stalled one.
     if (body.includes("SOT-STALL")) {
       console.error(`[fake-api] turn=${nmsg} stalling (holding the stream open)`);
-      req.on("close", () => console.error(`[fake-api] turn=${nmsg} stalled client disconnected`));
+      res.on("close", () => console.error(`[fake-api] turn=${nmsg} stalled client disconnected`));
       return; // never finish: the in-flight window stays open
     }
     if (body.includes("SOT-DRIP")) {
       console.error(`[fake-api] turn=${nmsg} dripping (500ms deltas forever)`);
+      let sent = 0;
       const drip = setInterval(() => {
+        sent += 1;
         event(res, "content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " drip" } });
       }, 500);
-      req.on("close", () => {
+      res.on("close", () => {
         clearInterval(drip);
-        console.error(`[fake-api] turn=${nmsg} dripping client disconnected`);
+        console.error(`[fake-api] turn=${nmsg} dripping client disconnected after ${sent} deltas`);
       });
       return;
     }
