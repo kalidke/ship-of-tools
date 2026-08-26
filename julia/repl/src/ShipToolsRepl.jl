@@ -318,8 +318,16 @@ Frame kinds (mirroring ADR 0009), carried in the evt payload's `frame`:
 - `stdout` / `stderr` — `{kind, text}` (streamed incrementally as the eval prints)
 - `value` — `{kind, mime, text}` (text/plain via `show(::IO, ::MIME, ::Any)`)
 - `image` — `{kind, mime, data_base64, bytes}`
+- `browser` — `{kind, url, open}` (live loopback-served artifact, ADR 0032)
 - `error` — `{kind, message, stacktrace: [{file, line, fn}, ...]}`
 - `done` — `{kind, eval_id, elapsed_ms}` (always the last frame for an eval_id)
+
+Before any of those, serve's first act is the **ready sentinel** — an evt
+envelope `op="repl.ready"` (ADR 0009 update, 2026-08-24). It is emitted at the
+exact point dispatch begins (the next statement is the request loop), so the
+supervisor's `starting → ready` flip keys off a designed signal instead of
+whichever eval output happens to arrive first — and a booted-but-idle child
+reads `ready`, not `starting`, forever.
 
 Stderr-the-stream is for free-text logging; the Rust supervisor never reads
 it as data.
@@ -327,6 +335,9 @@ it as data.
 function serve(io_in::IO, io_out::IO)
     println(stderr, "sot-repl ready · julia=$(VERSION)")
     flush(stderr)
+
+    write_envelope(io_out, "evt", 0, "repl.ready",
+        Dict(:julia => string(VERSION), :protocol => PROTOCOL_VERSION))
 
     for line in eachline(io_in)
         isempty(strip(line)) && continue

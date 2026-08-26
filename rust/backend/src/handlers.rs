@@ -2065,10 +2065,34 @@ pub async fn handle_repl_interrupt(
         )]);
     };
     let repl = ws.repl(workspaces.repl_frame_tx());
-    let result = repl.request("repl.interrupt", payload_json).await;
+    // Daemon-side interrupt guard (P0.5 pre-work; twin of the #96 CLI
+    // pre-flight, now enforced for EVERY caller — FE Ctrl-C and raw-socket
+    // included): an interrupt must never be the thing that spawns a kernel.
+    // Only a `ready` child is forwarded to; `starting` is refused too (the
+    // serve loop isn't consuming yet — boot ≠ wedge, and a queued interrupt
+    // would land on the first legitimate eval instead). `request_if_running`
+    // closes the remaining race: even a stale `ready` reading cannot respawn.
+    let state = repl.state();
+    let result = match state {
+        crate::repl::ReplLifecycle::Ready => {
+            repl.request_if_running("repl.interrupt", payload_json).await
+        }
+        _ => Ok(None),
+    };
     let (_, rev) = session.snapshot().await;
     let payload = match result {
-        Ok(v) => v,
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            // `ready` reaching here means the state read raced a child death
+            // (request_if_running found the sender closed) — name that fact
+            // so the note isn't self-contradictory ("no child" + "ready").
+            let note = if state == crate::repl::ReplLifecycle::Ready {
+                "no running repl child (repl_state=ready but supervisor sender closed — child just exited)".to_string()
+            } else {
+                format!("no running repl child (repl_state={})", state.as_str())
+            };
+            json!({ "interrupted": false, "note": note })
+        }
         Err(e) => json!({
             "error": format!("{e:#}"),
             "code": "repl_interrupt_failed",

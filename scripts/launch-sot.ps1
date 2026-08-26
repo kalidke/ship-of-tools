@@ -167,17 +167,35 @@ Add-Type -AssemblyName System.Windows.Forms   # MessageBox for the fatal dialogs
 $frontendExe = Join-Path $repo 'rust\target\release\sot.exe'
 $backendExe = Join-Path $repo 'rust\target\release\sotd.exe'
 
-# Binary sources, in priority order (ADR 0030 §4): a staged pending UPDATE
-# (downloaded by the updater), the dev source build, or the already-staged
-# copy from a previous run. A machine with no source tree (public install
-# layout) runs entirely on the latter two.
-$pendingExe = Join-Path $env:LOCALAPPDATA 'sot\updates\pending\sot.exe'
-$alreadyStaged = Join-Path $env:LOCALAPPDATA 'sot\bin\sot.exe'
-if (-not (Test-Path $frontendExe) -and -not (Test-Path $pendingExe) -and -not (Test-Path $alreadyStaged)) {
+# Apply any armed pending update BEFORE deciding what to run (ADR 0030 §4).
+# This used to be an inline `Move-Item` of a literal
+# `updates\pending\sot.exe` — a path NOTHING in the tree has ever written.
+# The stager arms `updates\pending-<target>.json` (a pointer) with the bits
+# under `<tag>-<target>\`, and sot-apply.ps1 is the consumer that understands
+# that contract: it verifies digests + the prepared worktree, swaps binaries
+# keeping .prev, flips repo\current, and arms the crash-loop marker. It is
+# fail-open by contract, so a broken update path can never brick the launch.
+# -NoUpdate skips it, same as the git-pull prelude.
+$prefixDir = Join-Path $env:LOCALAPPDATA 'sot'
+$applyMarker = Join-Path $prefixDir 'updates\just-applied-windows-x86_64'
+$sotApply = Join-Path $PSScriptRoot 'sot-apply.ps1'
+if (-not $NoUpdate -and (Test-Path $sotApply)) {
+    Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
+    Set-LaunchStatus 'Applying update...'
+    $applyOut = & $sotApply 6>&1 2>&1
+    foreach ($l in @($applyOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+}
+
+# Binary sources, in priority order: an update just applied into the staged
+# bin dir, the dev source build, or the already-staged copy from a previous
+# run. A machine with no source tree (public install layout) runs on the
+# staged copy, which is exactly what sot-apply.ps1 writes.
+$alreadyStaged = Join-Path $prefixDir 'bin\sot.exe'
+if (-not (Test-Path $frontendExe) -and -not (Test-Path $alreadyStaged)) {
     Set-LaunchStatus 'ERROR: No sot.exe found - build it: cargo build --release -p sot-frontend'
     Stop-Splash
     [System.Windows.Forms.MessageBox]::Show(
-        "No sot.exe found (no pending update, no staged copy, no source build at $frontendExe)`n`nDev machines: cd $repo\rust; cargo build --release -p sot-frontend",
+        "No sot.exe found (no staged copy at $alreadyStaged, no source build at $frontendExe)`n`nDev machines: cd $repo\rust; cargo build --release -p sot-frontend`nRelease installs: re-extract the release zip into $prefixDir\bin",
         'Ship of Tools launcher',
         'OK', 'Error') | Out-Null
     exit 1
@@ -600,6 +618,20 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate) {
     $savedEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
+        # Probe for cargo FIRST. Without this the missing-toolchain case is
+        # reported as a SUCCESS: PowerShell raises CommandNotFoundException
+        # (which 2>&1 captures into $buildOut) but leaves $LASTEXITCODE at 0
+        # from the preceding successful `git` call, so the `-ne 0` test below
+        # takes the else-branch and logs "frontend rebuilt" having built
+        # nothing. That is the normal state on a release install (INSTALL-AGENT
+        # §2b needs no Rust toolchain), so it is not an error — just say so and
+        # run the staged binary.
+        $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
+        if (-not $cargoCmd) {
+            Write-SupLog "freshness: no cargo on PATH - release install, running the staged binary (this is normal)"
+            Set-LaunchStatus 'Starting Ship of Tools...'
+            $buildOut = $null
+        } else {
         Set-LaunchStatus 'Rebuilding frontend...'
         Write-SupLog "freshness: cargo build -p sot-frontend"
         $buildOut = cargo build --release -p sot-frontend --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
@@ -608,6 +640,7 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate) {
             Write-SupLog "freshness: BUILD FAILED - launching existing binary. tail: $($buildOut | Select-Object -Last 3)"
         } else {
             Write-SupLog "freshness: frontend rebuilt"
+        }
         }
     } finally {
         $ErrorActionPreference = $savedEAP
@@ -660,24 +693,23 @@ $tunnelPidLabel = if ($sshTunnel) { $sshTunnel.Id } else { 'none (external contr
 Write-SupLog "supervisor start (relaunched=$Relaunched, tcpPort=$tcpPort, tunnelPid=$tunnelPidLabel)"
 try {
     do {
-        # Stage the binary for this launch, priority order (ADR 0030 §4):
-        #   1. pending UPDATE (consumed by MOVE so it applies exactly once;
-        #      previous staged copy kept as .prev for crash-loop rollback)
-        #   2. dev source build (the classic path)
-        #   3. keep the already-staged copy (no-source public install layout)
-        $appliedUpdate = $false
-        if (Test-Path $pendingExe) {
-            if (Test-Path $stagedExe) {
-                Copy-Item -Path $stagedExe -Destination "$stagedExe.prev" -Force
-            }
-            Move-Item -Path $pendingExe -Destination $stagedExe -Force
-            $appliedUpdate = $true
-            Write-SupLog "APPLIED pending update -> $stagedExe (prev kept for rollback)"
-        } elseif (Test-Path $frontendExe) {
+        # Stage the binary for this launch, priority order:
+        #   1. dev source build (the classic path — takes precedence, and a
+        #      -dev build never self-updates so it cannot race an apply)
+        #   2. keep the already-staged copy, which is where sot-apply.ps1
+        #      installed any update it applied above (public install layout)
+        #
+        # `$appliedUpdate` gates the crash-loop rollback below. sot-apply.ps1
+        # drops the just-applied marker only on a SUCCESSFUL apply, and the
+        # marker was cleared immediately before we invoked it — so its
+        # presence means "this launch is the first boot of new bits".
+        $appliedUpdate = Test-Path $applyMarker
+        if ($appliedUpdate) { Write-SupLog "first boot after an applied update - rollback window armed" }
+        if (Test-Path $frontendExe) {
             Copy-Item -Path $frontendExe -Destination $stagedExe -Force
             Write-SupLog "staged $frontendExe -> $stagedExe (built $((Get-Item $stagedExe).LastWriteTime.ToString('o')))"
         } else {
-            Write-SupLog "no pending update, no source build - running existing staged copy"
+            Write-SupLog "no source build - running the staged copy at $stagedExe"
         }
 
         if ($splash -and -not $splashDismissed) { Set-LaunchStatus 'Starting Ship of Tools...' }
@@ -756,13 +788,25 @@ try {
         Write-SupLog "frontend pid=$($frontend.Id) exited code=$($frontend.ExitCode) uptime=$([int]$feUptime.TotalSeconds)s -> relaunchNext=$relaunchNext"
 
         # Crash-loop rollback (ADR 0030 §4): a just-applied update that dies
-        # abnormally within 10s gets rolled back to .prev and the FE respawns
-        # on the previous binary. One-shot by construction — the pending file
-        # was consumed at stage time, so nothing re-applies the bad update.
+        # abnormally within 10s is rolled back and the FE respawns on the
+        # previous binary. Delegated to sot-apply.ps1 -Rollback so the WHOLE
+        # transaction reverts — binaries, the repo\current junction, and
+        # install.json's version/tag — not just the exe. It also writes a
+        # bad-<tag> marker so the stager never re-arms that release, which is
+        # what makes this one-shot (the old inline .prev copy left install.json
+        # claiming the broken version, and nothing stopped a re-arm).
         if ($appliedUpdate -and -not $relaunchNext -and $frontend.ExitCode -ne 0 `
-            -and $feUptime.TotalSeconds -lt 10 -and (Test-Path "$stagedExe.prev")) {
-            Copy-Item -Path "$stagedExe.prev" -Destination $stagedExe -Force
-            Write-SupLog "UPDATE ROLLED BACK: exit=$($frontend.ExitCode) after $([int]$feUptime.TotalSeconds)s - restored previous binary, respawning"
+            -and $feUptime.TotalSeconds -lt 10) {
+            Write-SupLog "UPDATE CRASH-LOOP: exit=$($frontend.ExitCode) after $([int]$feUptime.TotalSeconds)s - rolling back"
+            if (Test-Path $sotApply) {
+                $rbOut = & $sotApply -Rollback 6>&1 2>&1
+                foreach ($l in @($rbOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+            } elseif (Test-Path "$stagedExe.prev") {
+                Copy-Item -Path "$stagedExe.prev" -Destination $stagedExe -Force
+                Write-SupLog "sot-apply.ps1 missing - restored $stagedExe from .prev only"
+            }
+            $appliedUpdate = $false
+            Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
             $relaunchNext = $true
         }
         if ($relaunchNext) {
