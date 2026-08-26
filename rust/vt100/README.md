@@ -16,21 +16,15 @@ terminal applications - programs like `screen` or `tmux` for example.
 ```rust
 let mut parser = vt100_ctt::Parser::new(24, 80, 0);
 
-let screen = parser.screen().clone();
 parser.process(b"this text is \x1b[31mRED\x1b[m");
 assert_eq!(
     parser.screen().cell(0, 13).unwrap().fgcolor(),
     vt100_ctt::Color::Idx(1),
 );
 
-let screen = parser.screen().clone();
-parser.process(b"\x1b[3D\x1b[32mGREEN");
-assert_eq!(
-    parser.screen().contents_formatted(),
-    &b"\x1b[?25h\x1b[m\x1b[H\x1b[Jthis text is \x1b[32mGREEN"[..],
-);
-assert_eq!(
-    parser.screen().contents_diff(&screen),
-    &b"\x1b[1;14H\x1b[32mGREEN"[..],
-);
+// Hand the parsed state to another process exactly, including the grid
+// that is not currently on screen.
+let bytes = parser.screen().checkpoint().unwrap();
+let mut elsewhere = vt100_ctt::Parser::default();
+elsewhere.restore_screen(&bytes).unwrap();
 ```

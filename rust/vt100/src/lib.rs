@@ -14,24 +14,24 @@
 //! ```
 //! let mut parser = vt100_ctt::Parser::new(24, 80, 0);
 //!
-//! let screen = parser.screen().clone();
 //! parser.process(b"this text is \x1b[31mRED\x1b[m");
 //! assert_eq!(
 //!     parser.screen().cell(0, 13).unwrap().fgcolor(),
 //!     vt100_ctt::Color::Idx(1),
 //! );
+//! assert!(parser.screen().contents().starts_with("this text is RED"));
 //!
-//! let screen = parser.screen().clone();
-//! parser.process(b"\x1b[3D\x1b[32mGREEN");
-//! assert_eq!(
-//!     parser.screen().contents_formatted(),
-//!     &b"\x1b[?25h\x1b[m\x1b[H\x1b[Jthis text is \x1b[32mGREEN"[..],
-//! );
-//! assert_eq!(
-//!     parser.screen().contents_diff(&screen),
-//!     &b"\x1b[1;14H\x1b[32mGREEN"[..],
-//! );
+//! // The parsed state can be handed to another process exactly, including
+//! // the grid that is not currently on screen (see `Screen::checkpoint`).
+//! let bytes = parser.screen().checkpoint().unwrap();
+//! let mut elsewhere = vt100_ctt::Parser::default();
+//! elsewhere.restore_screen(&bytes).unwrap();
+//! assert_eq!(elsewhere.screen().contents(), parser.screen().contents());
 //! ```
+//!
+//! This fork does not reconstruct terminal state as escape sequences.
+//! Consumers render from the parsed grid, or move it with
+//! [`Screen::checkpoint`] and [`Parser::restore_screen`].
 
 #![warn(missing_docs)]
 #![warn(clippy::pedantic)]
@@ -54,9 +54,6 @@ mod parser;
 mod perform;
 mod row;
 mod screen;
-mod term;
-#[cfg(feature = "tui-term")]
-mod tui_term;
 
 pub use attrs::Color;
 pub use callbacks::Callbacks;

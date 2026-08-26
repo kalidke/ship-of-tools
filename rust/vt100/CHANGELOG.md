@@ -1,5 +1,21 @@
 # Changelog
 
+> **Ship of Tools fork note.** The entries below are the upstream history of
+> `vt100-ctt`, kept verbatim. Two things in it no longer describe this copy:
+>
+> * The escape-sequence WRITING stack is gone — `Screen::contents_formatted`,
+>   `contents_diff`, `rows_formatted`, `rows_diff`, `state_formatted`,
+>   `state_diff`, `input_mode_formatted`, `input_mode_diff`,
+>   `attributes_formatted`, `cursor_state_formatted` and the `term` module
+>   behind them. ADR 0041 rejects reconstructing terminal state as escape
+>   sequences: it cannot express the inactive grid or alternate-screen
+>   identity. `Screen::checkpoint` / `Parser::restore_screen` carry state
+>   instead, exactly.
+> * The `tui-term` feature and its ratatui glue are gone; the only consumer
+>   renders from the parsed grid directly.
+>
+> Parsing behavior is otherwise unchanged from the release this vendors.
+
 ## [0.17.1] - 2026-02-06
 
 ### Fixed
