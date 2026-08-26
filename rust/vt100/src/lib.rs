@@ -48,6 +48,7 @@
 mod attrs;
 mod callbacks;
 mod cell;
+mod checkpoint;
 mod grid;
 mod parser;
 mod perform;
@@ -59,6 +60,7 @@ mod tui_term;
 
 pub use attrs::Color;
 pub use callbacks::Callbacks;
+pub use checkpoint::{CheckpointError, MAX_CHECKPOINT_LEN};
 pub use cell::Cell;
 pub use parser::Parser;
 pub use screen::{MouseProtocolEncoding, MouseProtocolMode, Screen};

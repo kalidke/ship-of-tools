@@ -96,3 +96,35 @@ impl std::io::Write for Parser {
         Ok(())
     }
 }
+
+impl<CB: crate::callbacks::Callbacks> Parser<CB> {
+    /// Replaces the terminal state with one restored from
+    /// [`Screen::checkpoint`](crate::Screen::checkpoint) bytes.
+    ///
+    /// The escape-sequence state machine is reset to ground at the same time.
+    /// A checkpoint describes a screen, never a half-consumed escape
+    /// sequence — the sequence parser's state is private to `vte` and cannot
+    /// be captured — so the producer of a checkpoint is responsible for
+    /// cutting the byte stream that follows it at a ground-state boundary.
+    /// Resetting here is what makes that contract hold on this side.
+    ///
+    /// The restored screen keeps this parser's own scrollback capacity; see
+    /// [`Screen::restore`](crate::Screen::restore).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError`](crate::CheckpointError) if the payload
+    /// cannot be decoded. The parser is left untouched in that case.
+    pub fn restore_screen(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<(), crate::CheckpointError> {
+        let screen = crate::Screen::restore(
+            bytes,
+            self.screen.screen.scrollback_len(),
+        )?;
+        self.screen.screen = screen;
+        self.parser = vte::Parser::new();
+        Ok(())
+    }
+}

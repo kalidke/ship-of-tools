@@ -1352,3 +1352,240 @@ fn u16_to_u8(i: u16) -> Option<u8> {
         Some(i.try_into().unwrap())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Checkpoint codec (ADR 0041 step 3). Format spec: `crate::checkpoint`.
+// ---------------------------------------------------------------------------
+
+/// Every screen-mode bit this version defines.
+const MODES_KNOWN: u8 = MODE_APPLICATION_KEYPAD
+    | MODE_APPLICATION_CURSOR
+    | MODE_HIDE_CURSOR
+    | MODE_ALTERNATE_SCREEN
+    | MODE_BRACKETED_PASTE;
+
+const MOUSE_MODE_TAG_NONE: u8 = 0;
+const MOUSE_MODE_TAG_PRESS: u8 = 1;
+const MOUSE_MODE_TAG_PRESS_RELEASE: u8 = 2;
+const MOUSE_MODE_TAG_BUTTON_MOTION: u8 = 3;
+const MOUSE_MODE_TAG_ANY_MOTION: u8 = 4;
+
+const MOUSE_ENCODING_TAG_DEFAULT: u8 = 0;
+const MOUSE_ENCODING_TAG_UTF8: u8 = 1;
+const MOUSE_ENCODING_TAG_SGR: u8 = 2;
+
+impl MouseProtocolMode {
+    /// Wire tag. The match is exhaustive on purpose: this enum has
+    /// commented-out variants upstream (`Highlight`, `DecLocator`), and
+    /// uncommenting one must break the build here rather than silently
+    /// renumber every tag after it.
+    fn checkpoint_tag(self) -> u8 {
+        match self {
+            Self::None => MOUSE_MODE_TAG_NONE,
+            Self::Press => MOUSE_MODE_TAG_PRESS,
+            Self::PressRelease => MOUSE_MODE_TAG_PRESS_RELEASE,
+            Self::ButtonMotion => MOUSE_MODE_TAG_BUTTON_MOTION,
+            Self::AnyMotion => MOUSE_MODE_TAG_ANY_MOTION,
+        }
+    }
+
+    fn from_checkpoint_tag(
+        tag: u8,
+    ) -> Result<Self, crate::checkpoint::CheckpointError> {
+        match tag {
+            MOUSE_MODE_TAG_NONE => Ok(Self::None),
+            MOUSE_MODE_TAG_PRESS => Ok(Self::Press),
+            MOUSE_MODE_TAG_PRESS_RELEASE => Ok(Self::PressRelease),
+            MOUSE_MODE_TAG_BUTTON_MOTION => Ok(Self::ButtonMotion),
+            MOUSE_MODE_TAG_ANY_MOTION => Ok(Self::AnyMotion),
+            tag => Err(crate::checkpoint::CheckpointError::UnknownTag {
+                field: "mouse protocol mode",
+                tag,
+            }),
+        }
+    }
+}
+
+impl MouseProtocolEncoding {
+    /// Wire tag; exhaustive for the same reason as
+    /// [`MouseProtocolMode::checkpoint_tag`].
+    fn checkpoint_tag(self) -> u8 {
+        match self {
+            Self::Default => MOUSE_ENCODING_TAG_DEFAULT,
+            Self::Utf8 => MOUSE_ENCODING_TAG_UTF8,
+            Self::Sgr => MOUSE_ENCODING_TAG_SGR,
+        }
+    }
+
+    fn from_checkpoint_tag(
+        tag: u8,
+    ) -> Result<Self, crate::checkpoint::CheckpointError> {
+        match tag {
+            MOUSE_ENCODING_TAG_DEFAULT => Ok(Self::Default),
+            MOUSE_ENCODING_TAG_UTF8 => Ok(Self::Utf8),
+            MOUSE_ENCODING_TAG_SGR => Ok(Self::Sgr),
+            tag => Err(crate::checkpoint::CheckpointError::UnknownTag {
+                field: "mouse protocol encoding",
+                tag,
+            }),
+        }
+    }
+}
+
+impl Screen {
+    /// Serializes the complete terminal state for hand-off to a client that
+    /// must reproduce this screen exactly.
+    ///
+    /// Both grids ride, along with alternate-screen identity, the current and
+    /// saved cursor, the current and saved attributes, the scroll region,
+    /// origin mode, per-row wrap flags, and the input modes. Scrollback does
+    /// not — see [`crate::checkpoint`] for the format and for what is
+    /// deliberately excluded.
+    ///
+    /// The result is at most [`MAX_CHECKPOINT_LEN`](crate::MAX_CHECKPOINT_LEN)
+    /// bytes — which is why this can fail. `Parser` and
+    /// [`set_size`](Self::set_size) accept dimensions beyond what the format
+    /// supports, and a screen past them would otherwise serialize into bytes
+    /// this crate's own decoder refuses: a bound that only looks proven.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::Unrepresentable`](crate::CheckpointError)
+    /// if the screen is larger than the supported dimensions, or if its
+    /// internal shape contradicts its own size.
+    pub fn checkpoint(
+        &self,
+    ) -> Result<Vec<u8>, crate::checkpoint::CheckpointError> {
+        let size = self.grid.size();
+        if size.rows == 0
+            || size.cols == 0
+            || size.rows > crate::checkpoint::MAX_ROWS
+            || size.cols > crate::checkpoint::MAX_COLS
+        {
+            return Err(crate::checkpoint::CheckpointError::Unrepresentable {
+                what: "terminal dimensions are outside the supported range",
+            });
+        }
+        if self.alternate_grid.size() != size {
+            return Err(crate::checkpoint::CheckpointError::Unrepresentable {
+                what: "the two grids disagree about the terminal size",
+            });
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(crate::checkpoint::MAGIC);
+        crate::checkpoint::write_u16(&mut out, crate::checkpoint::VERSION);
+        crate::checkpoint::write_u16(&mut out, size.rows);
+        crate::checkpoint::write_u16(&mut out, size.cols);
+        out.push(self.modes);
+        out.push(self.mouse_protocol_mode.checkpoint_tag());
+        out.push(self.mouse_protocol_encoding.checkpoint_tag());
+        self.attrs.write_checkpoint(&mut out);
+        self.saved_attrs.write_checkpoint(&mut out);
+        self.grid.write_checkpoint(&mut out)?;
+        self.alternate_grid.write_checkpoint(&mut out)?;
+        debug_assert!(out.len() <= crate::checkpoint::MAX_CHECKPOINT_LEN);
+        Ok(out)
+    }
+
+    /// Rebuilds a screen from [`checkpoint`](Self::checkpoint) bytes.
+    ///
+    /// Deliberately not public: restoring a screen without also returning the
+    /// escape-sequence parser to ground leaves a half-consumed sequence to
+    /// swallow the first bytes that arrive after the attach.
+    /// [`Parser::restore_screen`](crate::Parser::restore_screen) is the
+    /// public path because it does both, atomically.
+    ///
+    /// `scrollback_len` is the *restorer's* scrollback capacity, not the
+    /// checkpointing side's: a capsule keeps no scrollback, so its capacity
+    /// says nothing about how much the attaching client wants to retain.
+    pub(crate) fn restore(
+        bytes: &[u8],
+        scrollback_len: usize,
+    ) -> Result<Self, crate::checkpoint::CheckpointError> {
+        // Refuse an oversized payload before decoding any of it, so a valid
+        // header followed by megabytes of trailing bytes cannot make a caller
+        // buffer them all only to be told about the trailer at the end.
+        if bytes.len() > crate::checkpoint::MAX_CHECKPOINT_LEN {
+            return Err(crate::checkpoint::CheckpointError::TooLarge {
+                len: bytes.len(),
+            });
+        }
+        let mut r = crate::checkpoint::Reader::new(bytes);
+        if r.take(crate::checkpoint::MAGIC.len())?
+            != &crate::checkpoint::MAGIC[..]
+        {
+            return Err(crate::checkpoint::CheckpointError::BadMagic);
+        }
+        let version = r.u16()?;
+        if version != crate::checkpoint::VERSION {
+            return Err(
+                crate::checkpoint::CheckpointError::UnsupportedVersion(
+                    version,
+                ),
+            );
+        }
+        let rows = r.u16()?;
+        let cols = r.u16()?;
+        // Zero is not merely out of budget, it is unrepresentable: `Grid`
+        // computes `size.rows - 1` for its scroll region, so a zero-row
+        // payload would panic before any validation downstream could refuse
+        // it.
+        if rows == 0
+            || cols == 0
+            || rows > crate::checkpoint::MAX_ROWS
+            || cols > crate::checkpoint::MAX_COLS
+        {
+            return Err(crate::checkpoint::CheckpointError::InvalidSize {
+                rows,
+                cols,
+            });
+        }
+        let size = crate::grid::Size { rows, cols };
+
+        let modes = r.u8()?;
+        if modes & !MODES_KNOWN != 0 {
+            return Err(crate::checkpoint::CheckpointError::InvalidBits {
+                field: "screen modes",
+                value: modes,
+            });
+        }
+        let mouse_protocol_mode =
+            MouseProtocolMode::from_checkpoint_tag(r.u8()?)?;
+        let mouse_protocol_encoding =
+            MouseProtocolEncoding::from_checkpoint_tag(r.u8()?)?;
+        let attrs = crate::attrs::Attrs::read_checkpoint(&mut r, "attrs")?;
+        let saved_attrs =
+            crate::attrs::Attrs::read_checkpoint(&mut r, "saved attrs")?;
+
+        let grid = crate::grid::Grid::read_checkpoint(
+            &mut r,
+            size,
+            scrollback_len,
+            "cursor",
+        )?;
+        // The alternate grid never accumulates scrollback, matching how
+        // `Screen::new` constructs it.
+        let alternate_grid = crate::grid::Grid::read_checkpoint(
+            &mut r,
+            size,
+            0,
+            "alternate cursor",
+        )?;
+        r.finish()?;
+
+        Ok(Self {
+            grid,
+            alternate_grid,
+            attrs,
+            saved_attrs,
+            modes,
+            mouse_protocol_mode,
+            mouse_protocol_encoding,
+        })
+    }
+
+    /// The scrollback capacity the normal grid was configured with.
+    pub(crate) fn scrollback_len(&self) -> usize {
+        self.grid.scrollback_len()
+    }
+}

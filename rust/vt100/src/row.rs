@@ -14,6 +14,11 @@ impl Row {
         }
     }
 
+    /// The row's width in cells.
+    pub(crate) fn len(&self) -> u16 {
+        self.cols()
+    }
+
     fn cols(&self) -> u16 {
         self.cells
             .len()
@@ -64,15 +69,32 @@ impl Row {
     pub fn truncate(&mut self, len: u16) {
         self.cells.truncate(usize::from(len));
         self.wrapped = false;
-        let last_cell = &mut self.cells[usize::from(len) - 1];
-        if last_cell.is_wide() {
-            last_cell.clear(*last_cell.attrs());
-        }
+        self.clear_orphaned_wide_lead();
     }
 
     pub fn resize(&mut self, len: u16, cell: crate::Cell) {
         self.cells.resize(usize::from(len), cell);
         self.wrapped = false;
+        // Shrinking can cut a wide character in half, leaving its leading
+        // cell in the final column with no continuation after it. Drawing
+        // over such a cell reaches for a continuation that is not there and
+        // panics (`screen::text`), so the halves have to be kept paired here
+        // — the same repair `truncate` has always done.
+        self.clear_orphaned_wide_lead();
+    }
+
+    /// Clears a wide leading cell left in the last column, where its
+    /// continuation cannot be.
+    ///
+    /// Growing never produces one (the appended cells are blank) so this is
+    /// safe to call after either direction, and an empty row has nothing to
+    /// repair.
+    fn clear_orphaned_wide_lead(&mut self) {
+        if let Some(last_cell) = self.cells.last_mut() {
+            if last_cell.is_wide() {
+                last_cell.clear(*last_cell.attrs());
+            }
+        }
     }
 
     pub fn wrap(&mut self, wrap: bool) {
@@ -470,5 +492,71 @@ impl Row {
         }
 
         (prev_pos, prev_attrs)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoint codec (ADR 0041 step 3). Format spec: `crate::checkpoint`.
+// ---------------------------------------------------------------------------
+
+impl Row {
+    pub(crate) fn write_checkpoint(&self, out: &mut Vec<u8>) {
+        out.push(u8::from(self.wrapped));
+        for cell in &self.cells {
+            cell.write_checkpoint(out);
+        }
+    }
+
+    /// Reads one row of exactly `cols` cells.
+    ///
+    /// The column count comes from the checkpoint header rather than from a
+    /// per-row length, because every grid mutator that changes a row's length
+    /// restores it before returning (`insert_cells` truncates, `delete_cells`
+    /// resizes, `set_size` resizes every row). Taking `cols` from the header
+    /// makes that invariant explicit: a payload whose rows disagree with the
+    /// header runs out of bytes or trails them, and is refused either way.
+    pub(crate) fn read_checkpoint(
+        r: &mut crate::checkpoint::Reader<'_>,
+        cols: u16,
+    ) -> Result<Self, crate::checkpoint::CheckpointError> {
+        let wrapped = r.bool("row wrapped")?;
+        let mut cells = Vec::with_capacity(usize::from(cols));
+        for _ in 0..cols {
+            cells.push(crate::Cell::read_checkpoint(r)?);
+        }
+        Self::check_wide_pairing(&cells)?;
+        Ok(Self { cells, wrapped })
+    }
+
+    /// Refuses a row whose wide characters are not in matched pairs.
+    ///
+    /// `screen::text` treats the pairing as an invariant and indexes
+    /// `col - 1` / `col + 1` on the strength of it, so an orphaned half does
+    /// not render oddly — it panics on the next glyph written over it, far
+    /// from the restore that admitted it. The parser cannot produce an
+    /// orphan, so refusing one here rejects nothing legitimate.
+    fn check_wide_pairing(
+        cells: &[crate::Cell],
+    ) -> Result<(), crate::checkpoint::CheckpointError> {
+        let orphan = |col: usize| {
+            Err(crate::checkpoint::CheckpointError::OrphanedWideHalf { col })
+        };
+        for (col, cell) in cells.iter().enumerate() {
+            if cell.is_wide() {
+                if cell.is_wide_continuation() {
+                    return orphan(col);
+                }
+                match cells.get(col + 1) {
+                    Some(next) if next.is_wide_continuation() => {}
+                    _ => return orphan(col),
+                }
+            } else if cell.is_wide_continuation() {
+                match col.checked_sub(1).and_then(|prev| cells.get(prev)) {
+                    Some(prev) if prev.is_wide() => {}
+                    _ => return orphan(col),
+                }
+            }
+        }
+        Ok(())
     }
 }

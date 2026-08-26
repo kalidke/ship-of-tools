@@ -740,3 +740,136 @@ pub struct Pos {
     pub row: u16,
     pub col: u16,
 }
+
+// ---------------------------------------------------------------------------
+// Checkpoint codec (ADR 0041 step 3). Format spec: `crate::checkpoint`.
+// ---------------------------------------------------------------------------
+
+impl Grid {
+    pub(crate) fn write_checkpoint(
+        &self,
+        out: &mut Vec<u8>,
+    ) -> Result<(), crate::checkpoint::CheckpointError> {
+        crate::checkpoint::write_u16(out, self.pos.row);
+        crate::checkpoint::write_u16(out, self.pos.col);
+        crate::checkpoint::write_u16(out, self.saved_pos.row);
+        crate::checkpoint::write_u16(out, self.saved_pos.col);
+        crate::checkpoint::write_u16(out, self.scroll_top);
+        crate::checkpoint::write_u16(out, self.scroll_bottom);
+        out.push(u8::from(self.origin_mode));
+        out.push(u8::from(self.saved_origin_mode));
+        // Scrollback is deliberately absent: the capsule keeps none, and
+        // that deletion is what makes the ADR 0041 size budget provable.
+        // `scrollback_len` is the restorer's configuration and arrives as an
+        // argument; `scrollback_offset` cannot be anything but zero with no
+        // scrollback to offset into.
+        //
+        // Row storage is allocated lazily — an alternate grid nothing ever
+        // switched to has none — but that is an allocation optimization, not
+        // terminal state: no rendering path can tell it apart from a grid of
+        // blank rows, because reaching the alternate grid at all allocates
+        // it. Writing the blank rows instead of the distinction keeps the
+        // format from carrying a state that, if a mode byte were corrupted
+        // to select it, would leave the *active* grid with no rows for the
+        // next glyph to land in.
+        if self.rows.is_empty() {
+            let blank = crate::row::Row::new(self.size.cols);
+            for _ in 0..self.size.rows {
+                blank.write_checkpoint(out);
+            }
+            return Ok(());
+        }
+        // An allocated grid whose shape disagrees with its own size means an
+        // invariant broke upstream of here. Say so rather than emitting a
+        // payload whose rows and header contradict each other.
+        if self.rows.len() != usize::from(self.size.rows) {
+            return Err(crate::checkpoint::CheckpointError::Unrepresentable {
+                what: "grid row count does not match its size",
+            });
+        }
+        for row in &self.rows {
+            if row.len() != self.size.cols {
+                return Err(
+                    crate::checkpoint::CheckpointError::Unrepresentable {
+                        what: "grid row width does not match its size",
+                    },
+                );
+            }
+            row.write_checkpoint(out);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn read_checkpoint(
+        r: &mut crate::checkpoint::Reader<'_>,
+        size: Size,
+        scrollback_len: usize,
+        which: &'static str,
+    ) -> Result<Self, crate::checkpoint::CheckpointError> {
+        let pos = Pos {
+            row: r.u16()?,
+            col: r.u16()?,
+        };
+        let saved_pos = Pos {
+            row: r.u16()?,
+            col: r.u16()?,
+        };
+        let scroll_top = r.u16()?;
+        let scroll_bottom = r.u16()?;
+        let origin_mode = r.bool("origin mode")?;
+        let saved_origin_mode = r.bool("saved origin mode")?;
+
+        // The column bound is `<= cols`, not `< cols`. After a glyph lands in
+        // the last column the cursor sits one past the end — `col_inc` does
+        // not clamp — and stays there until the next glyph triggers
+        // `col_wrap`. Rejecting that position would refuse every screen whose
+        // cursor is pending a wrap, which is an ordinary state, not a corrupt
+        // one.
+        Self::check_pos(pos, size, which)?;
+        Self::check_pos(saved_pos, size, "saved cursor")?;
+        if scroll_top > scroll_bottom || scroll_bottom >= size.rows {
+            return Err(
+                crate::checkpoint::CheckpointError::InvalidScrollRegion {
+                    top: scroll_top,
+                    bottom: scroll_bottom,
+                },
+            );
+        }
+
+        let mut rows = Vec::with_capacity(usize::from(size.rows));
+        for _ in 0..size.rows {
+            rows.push(crate::row::Row::read_checkpoint(r, size.cols)?);
+        }
+
+        Ok(Self {
+            size,
+            pos,
+            saved_pos,
+            rows,
+            scroll_top,
+            scroll_bottom,
+            origin_mode,
+            saved_origin_mode,
+            scrollback: std::collections::VecDeque::new(),
+            scrollback_len,
+            scrollback_offset: 0,
+        })
+    }
+
+    fn check_pos(
+        pos: Pos,
+        size: Size,
+        field: &'static str,
+    ) -> Result<(), crate::checkpoint::CheckpointError> {
+        if pos.row >= size.rows || pos.col > size.cols {
+            return Err(
+                crate::checkpoint::CheckpointError::CursorOutOfBounds {
+                    field,
+                    row: pos.row,
+                    col: pos.col,
+                },
+            );
+        }
+        Ok(())
+    }
+}

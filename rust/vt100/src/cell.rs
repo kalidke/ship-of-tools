@@ -177,3 +177,87 @@ impl Cell {
         self.attrs.inverse()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Checkpoint codec (ADR 0041 step 3). Format spec: `crate::checkpoint`.
+// ---------------------------------------------------------------------------
+
+/// The cell record carries a packed length byte and the content bytes.
+const CELL_FLAG_LEN: u8 = 0b0000_0001;
+/// The cell record carries non-default attributes.
+const CELL_FLAG_ATTRS: u8 = 0b0000_0010;
+/// Every cell-record flag this version defines.
+const CELL_FLAGS_KNOWN: u8 = CELL_FLAG_LEN | CELL_FLAG_ATTRS;
+
+/// Bits of the packed `len` byte that this crate assigns. Bit 5 is
+/// deliberately unassigned upstream; refusing it on restore keeps the
+/// unassigned bit genuinely unassigned instead of letting a corrupt payload
+/// smuggle state through it.
+const LEN_BYTE_KNOWN: u8 = IS_WIDE | IS_WIDE_CONTINUATION | LEN_BITS;
+
+impl Cell {
+    pub(crate) fn write_checkpoint(&self, out: &mut Vec<u8>) {
+        let default_attrs = crate::attrs::Attrs::default();
+        let mut flags = 0;
+        // `len` is non-zero for a cell with contents *and* for an empty
+        // wide-continuation cell, so test the packed byte rather than the
+        // content length.
+        if self.len != 0 {
+            flags |= CELL_FLAG_LEN;
+        }
+        if self.attrs != default_attrs {
+            flags |= CELL_FLAG_ATTRS;
+        }
+        out.push(flags);
+        // An empty cell with default attributes — by far the most common
+        // cell on any screen — costs exactly this one zero byte.
+        if flags & CELL_FLAG_LEN != 0 {
+            out.push(self.len);
+            out.extend_from_slice(&self.contents[..self.len()]);
+        }
+        if flags & CELL_FLAG_ATTRS != 0 {
+            self.attrs.write_checkpoint(out);
+        }
+    }
+
+    pub(crate) fn read_checkpoint(
+        r: &mut crate::checkpoint::Reader<'_>,
+    ) -> Result<Self, crate::checkpoint::CheckpointError> {
+        let flags = r.u8()?;
+        if flags & !CELL_FLAGS_KNOWN != 0 {
+            return Err(crate::checkpoint::CheckpointError::InvalidBits {
+                field: "cell flags",
+                value: flags,
+            });
+        }
+        let mut cell = Self::new();
+        if flags & CELL_FLAG_LEN != 0 {
+            let len = r.u8()?;
+            if len & !LEN_BYTE_KNOWN != 0 {
+                return Err(
+                    crate::checkpoint::CheckpointError::InvalidCellLength(len),
+                );
+            }
+            // `LEN_BITS` allows 31 but the content field holds 22, so the
+            // length has to be checked against the array, not the mask.
+            let content_len = usize::from(len & LEN_BITS);
+            if content_len > CONTENT_BYTES {
+                return Err(
+                    crate::checkpoint::CheckpointError::InvalidCellLength(len),
+                );
+            }
+            let contents = r.take(content_len)?;
+            // `Cell::contents` hands out a `&str` via an unchecked-by-
+            // construction `from_utf8().unwrap()`. Validating here is what
+            // keeps that unwrap true for restored cells.
+            std::str::from_utf8(contents)
+                .map_err(|_| crate::checkpoint::CheckpointError::InvalidUtf8)?;
+            cell.contents[..content_len].copy_from_slice(contents);
+            cell.len = len;
+        }
+        if flags & CELL_FLAG_ATTRS != 0 {
+            cell.attrs = crate::attrs::Attrs::read_checkpoint(r, "cell attrs")?;
+        }
+        Ok(cell)
+    }
+}
