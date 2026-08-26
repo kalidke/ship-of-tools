@@ -22,6 +22,10 @@ getrandom = "0.3"
 gethostname = "0.5"
 portable-pty = "0.9"
 image = { workspace = true }
+# PNG `pHYs` CRC validation (ADR 0034 tier 2): corrupt embedded calibration
+# must not be trusted. Already in the lock as a transitive dep of `image`'s
+# png decoder, so direct use compiles nothing new.
+crc32fast = "1"
 # Half-open connection reaper (ADR 0027): set SO_KEEPALIVE + TCP_KEEPIDLE/
 # INTVL/CNT on accepted TCP sockets so the OS RSTs a vanished peer. Already in
 # the lock as a transitive tokio dep, so direct use compiles nothing new.

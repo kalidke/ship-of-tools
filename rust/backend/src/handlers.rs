@@ -636,7 +636,10 @@ async fn build_preview_payload(
         Err(e) => return Ok(Err(("bad_node_id".to_string(), format!("{e:#}")))),
     };
 
-    let (mime, bytes, extras) = if path.is_dir() {
+    // The 4th element is preview PROVENANCE: true only when `bytes` is the
+    // file itself. `merge_png_phys_scale` is gated on it — see its doc for
+    // why a plugin's generated blob must never be read for embedded scale.
+    let (mime, bytes, extras, raw_file_bytes) = if path.is_dir() {
         // Directory preview: short markdown stub naming the dir. Frontend
         // would otherwise render an empty pane on dir selection.
         let label = path
@@ -644,22 +647,22 @@ async fn build_preview_payload(
             .and_then(|s| s.to_str())
             .unwrap_or_else(|| path.to_str().unwrap_or("/"));
         let md = ROOT_PREVIEW_TEMPLATE.replace("{root}", label);
-        ("text/markdown".to_string(), md.into_bytes(), None)
-    } else if let Some(out) =
+        ("text/markdown".to_string(), md.into_bytes(), None, false)
+    } else if let Some((mime, bytes, extras)) =
         try_plugin_preview(&kernel, &path, &req.node_id, req.page, req.fit_w, req.fit_h).await
     {
         // Plugin-routed preview: a loaded FileType plugin claimed this
         // path. Use the plugin's mime + decoded blob — that's how
         // HDF5Preview, JuliaSource, MarkdownDoc, and any future plugin
         // surface their previews end-to-end.
-        out
+        (mime, bytes, extras, false)
     } else {
         // No plugin claim (or kernel unavailable / errored — logged in
         // `try_plugin_preview`). Fall back to the bytes-level reader so
         // files outside any plugin's coverage still get served, with
         // mime inferred from extension.
         match read_bytes_preview(&path, &req.node_id) {
-            Ok((mime, bytes)) => (mime, bytes, None),
+            Ok((mime, bytes)) => (mime, bytes, None, true),
             Err(e) => return Ok(Err(("io_error".to_string(), format!("read {path:?}: {e}")))),
         }
     };
@@ -668,6 +671,10 @@ async fn build_preview_payload(
     // `extras.physical_scale` so the FE can render a dynamic scalebar on raster
     // previews. Backend-side (rasters are served here, not via the kernel).
     let extras = merge_scale_sidecar(&path, &mime, extras);
+    // ADR 0034 tier 2 (embedded metadata, PNG half): a PNG that declares its
+    // own density via `pHYs` gets a scalebar with no sidecar on disk. Fills
+    // only when the sidecar tier produced nothing (resolution order, §1).
+    let extras = merge_png_phys_scale(&bytes, &mime, extras, raw_file_bytes);
 
     // Ship an oversize raster as a preview-sized PNG instead of the raw file.
     // Only oversize rasters take the spawn_blocking detour (decode is CPU-heavy
@@ -1281,6 +1288,151 @@ fn merge_scale_sidecar(
         _ => serde_json::Map::new(),
     };
     obj.insert("physical_scale".to_string(), scale);
+    Some(serde_json::Value::Object(obj))
+}
+
+/// ADR 0034 resolver tier 2 (embedded metadata), PNG half: read a `pHYs`
+/// chunk's pixels-per-metre as `nm_per_px`. Returns `(x_nm_per_px,
+/// y_nm_per_px)` when the PNG declares a metre-unit density (`unit == 1`)
+/// with nonzero counts; `None` for an absent/other-unit `pHYs` (unit 0 is
+/// aspect ratio only, dimensionless) or a malformed stream. Read-only: SoT
+/// never WRITES `pHYs` (u32 px/metre quantizes nm-scale values — the
+/// sidecar is the exact write channel; ADR 0034 §5).
+///
+/// A hand-rolled chunk walk, not an image decode: `pHYs` must precede
+/// `IDAT`, so this touches a handful of header chunks and never the pixel
+/// data. Bounds-checked throughout; any structural surprise returns `None`
+/// (best-effort tier).
+///
+/// This is CALIBRATION, so the spec is enforced rather than approximated
+/// (W3C PNG 3 §§5.3, 5.6, 11.3.4.3) — a scalebar that is confidently wrong
+/// is worse than no scalebar:
+///   * the chunk CRC is verified before the value is trusted, so bit-rot in
+///     the density can't silently relabel an image;
+///   * `pHYs` must be exactly 9 bytes, and a second one is a malformed
+///     stream (the spec permits at most one) — both reject outright rather
+///     than skipping to a later, more agreeable chunk;
+///   * the walk is bounded. A chunk header is 12 bytes, so a large file can
+///     declare tens of millions of empty chunks; this runs on the async
+///     reactor, so cap the header scan instead of letting a crafted PNG
+///     monopolize a worker. A conforming PNG has a handful before `IDAT`.
+fn png_phys_nm_per_px(bytes: &[u8]) -> Option<(f64, f64)> {
+    const SIG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    const MAX_HEADER_CHUNKS: usize = 4096;
+    if bytes.len() < SIG.len() || bytes[..SIG.len()] != SIG {
+        return None;
+    }
+    let mut off = SIG.len();
+    let mut scale = None;
+    let mut seen_phys = false;
+    // Chunk layout: len(4) + type(4) + data(len) + crc(4).
+    for _ in 0..MAX_HEADER_CHUNKS {
+        if off + 8 > bytes.len() {
+            return scale;
+        }
+        let len = u32::from_be_bytes(bytes[off..off + 4].try_into().ok()?) as usize;
+        let type_start = off + 4;
+        let data_start = off + 8;
+        let data_end = data_start.checked_add(len)?;
+        let crc_end = data_end.checked_add(4)?;
+        if crc_end > bytes.len() {
+            return None; // truncated chunk
+        }
+        match &bytes[type_start..data_start] {
+            b"pHYs" => {
+                // At most one, exactly 9 bytes — anything else is malformed.
+                if seen_phys || len != 9 {
+                    return None;
+                }
+                seen_phys = true;
+                // CRC covers the type field AND the data, not the data alone.
+                let declared = u32::from_be_bytes(bytes[data_end..crc_end].try_into().ok()?);
+                if crc32fast::hash(&bytes[type_start..data_end]) != declared {
+                    return None;
+                }
+                let d = &bytes[data_start..data_end];
+                let ppm_x = u32::from_be_bytes(d[0..4].try_into().ok()?);
+                let ppm_y = u32::from_be_bytes(d[4..8].try_into().ok()?);
+                // unit 0 is a legal chunk carrying only an aspect ratio, so
+                // it yields no scale but is not a malformed stream — keep
+                // walking so a duplicate after it is still caught.
+                if d[8] == 1 && ppm_x != 0 && ppm_y != 0 {
+                    scale = Some((1e9 / ppm_x as f64, 1e9 / ppm_y as f64));
+                }
+            }
+            b"IDAT" | b"IEND" => return scale, // pHYs must precede IDAT
+            _ => {}
+        }
+        off = crc_end;
+    }
+    None // header-chunk budget exhausted: not a shape we trust
+}
+
+/// ADR 0034 tier 2 merge: when no higher tier (the sidecar) produced a
+/// `physical_scale`, fall back to the PNG's own `pHYs` declaration — the
+/// in-file channel scale-producing pipelines prefer, since the PNG stays a
+/// single self-describing artifact. Emits the same `physical_scale` schema
+/// as the sidecar (named x/y axes, `nm`), so the FE and the downsample
+/// rescale can't tell tiers apart. The sidecar keeps priority: it carries
+/// exact floats and is what `preview.set_scale` writes, so a user-entered
+/// correction overrides a wrong in-file value.
+///
+/// `raw_file_bytes` gates the whole tier, and is NOT a formality. `bytes` at
+/// the call site is either the file itself or a FileType plugin's GENERATED
+/// blob, and for a plugin the two are not interchangeable: re-encoding can
+/// drop the source `pHYs` (tier lost), resizing can preserve a now-wrong one
+/// (bar wrong by the resize factor), and a rasterizer can emit its own render
+/// DPI that has nothing to do with the subject — `pdftoppm`, behind the
+/// shipped PDF plugin, stamps 144 DPI. No shipped plugin claims `.png` today
+/// and `.pdf` is excluded from image previews FE-side, so this is latent
+/// rather than live; the gate is what keeps it that way when someone writes a
+/// PNG plugin. A plugin that knows its own scale should put `physical_scale`
+/// in `extras`, which it can do exactly, instead of having it guessed from
+/// its output.
+fn merge_png_phys_scale(
+    bytes: &[u8],
+    mime: &str,
+    extras: Option<serde_json::Value>,
+    raw_file_bytes: bool,
+) -> Option<serde_json::Value> {
+    if !raw_file_bytes || mime != "image/png" {
+        return extras;
+    }
+    if matches!(&extras, Some(serde_json::Value::Object(m)) if m.contains_key("physical_scale")) {
+        return extras;
+    }
+    let Some((x_nm, y_nm)) = png_phys_nm_per_px(bytes) else {
+        return extras;
+    };
+    // The FE renders ONE bar from `axes[0]` by design (gpu.rs: "Isotropic
+    // sources ship two equal axes; Phase 1 renders one bar"). A sidecar is
+    // hand-authored, so unequal axes there are a deliberate act; `pHYs` is
+    // read automatically off any file that happens to have one, so emitting
+    // unequal axes here would silently label an anisotropic image with its x
+    // scale alone. Drop it instead — no bar beats a wrong bar — until the FE
+    // grows the two-axis renderer.
+    if x_nm != y_nm {
+        tracing::debug!(
+            x_nm_per_px = x_nm,
+            y_nm_per_px = y_nm,
+            "ignoring anisotropic PNG pHYs: the scalebar renders one axis"
+        );
+        return extras;
+    }
+    let mut obj = match extras {
+        Some(serde_json::Value::Object(m)) => m,
+        _ => serde_json::Map::new(),
+    };
+    obj.insert(
+        "physical_scale".to_string(),
+        json!({
+            "axes": [
+                { "name": "x", "nm_per_px": x_nm },
+                { "name": "y", "nm_per_px": y_nm },
+            ],
+            "unit": "nm",
+        }),
+    );
     Some(serde_json::Value::Object(obj))
 }
 
@@ -4829,6 +4981,220 @@ mod scalebar_sidecar_tests {
         std::fs::write(dir.join("b.png.scale.json"), b"not json{").unwrap();
         assert!(merge_scale_sidecar(&img, "image/png", None).is_none());
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod phys_scale_tests {
+    use super::{merge_png_phys_scale, png_phys_nm_per_px};
+
+    const SIG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+    /// A well-formed PNG chunk: len + type + data + the REAL CRC over
+    /// type+data. The walk validates CRCs now, so a dummy value would make
+    /// every fixture read as corrupt.
+    fn chunk(ty: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut covered = ty.to_vec();
+        covered.extend_from_slice(data);
+        let mut v = (data.len() as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(&covered);
+        v.extend_from_slice(&crc32fast::hash(&covered).to_be_bytes());
+        v
+    }
+
+    /// Same, with a deliberately wrong CRC.
+    fn chunk_bad_crc(ty: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut v = chunk(ty, data);
+        let n = v.len();
+        v[n - 1] ^= 0xFF;
+        v
+    }
+
+    fn phys_data(ppm_x: u32, ppm_y: u32, unit: u8) -> Vec<u8> {
+        let mut d = ppm_x.to_be_bytes().to_vec();
+        d.extend_from_slice(&ppm_y.to_be_bytes());
+        d.push(unit);
+        d
+    }
+
+    fn png_with(chunks: &[Vec<u8>]) -> Vec<u8> {
+        let mut v = SIG.to_vec();
+        for c in chunks {
+            v.extend_from_slice(c);
+        }
+        v
+    }
+
+    /// 100_000_000 px/m == 10 nm/px exactly.
+    fn isotropic_10nm() -> Vec<u8> {
+        png_with(&[
+            chunk(b"IHDR", &[0; 13]),
+            chunk(b"pHYs", &phys_data(100_000_000, 100_000_000, 1)),
+            chunk(b"IDAT", &[0; 4]),
+            chunk(b"IEND", &[]),
+        ])
+    }
+
+    #[test]
+    fn metre_unit_phys_resolves_exactly() {
+        assert_eq!(png_phys_nm_per_px(&isotropic_10nm()), Some((10.0, 10.0)));
+        // Anisotropic still READS as two axes — suppression is the merge
+        // layer's job, so the reader stays an honest report of the file.
+        let aniso = png_with(&[
+            chunk(b"pHYs", &phys_data(100_000_000, 200_000_000, 1)),
+            chunk(b"IEND", &[]),
+        ]);
+        assert_eq!(png_phys_nm_per_px(&aniso), Some((10.0, 5.0)));
+    }
+
+    #[test]
+    fn aspect_only_zero_density_and_missing_phys_resolve_none() {
+        // unit 0 = aspect ratio only (dimensionless).
+        let aspect = png_with(&[chunk(b"pHYs", &phys_data(2, 1, 0)), chunk(b"IEND", &[])]);
+        assert_eq!(png_phys_nm_per_px(&aspect), None);
+        // Unknown unit byte is not metres either.
+        let unknown = png_with(&[chunk(b"pHYs", &phys_data(1000, 1000, 7)), chunk(b"IEND", &[])]);
+        assert_eq!(png_phys_nm_per_px(&unknown), None);
+        // Either axis zero is a division we must not do.
+        for d in [phys_data(0, 5, 1), phys_data(5, 0, 1)] {
+            let zero = png_with(&[chunk(b"pHYs", &d), chunk(b"IEND", &[])]);
+            assert_eq!(png_phys_nm_per_px(&zero), None);
+        }
+        let none = png_with(&[chunk(b"IHDR", &[0; 13]), chunk(b"IEND", &[])]);
+        assert_eq!(png_phys_nm_per_px(&none), None);
+    }
+
+    #[test]
+    fn malformed_streams_resolve_none() {
+        assert_eq!(png_phys_nm_per_px(b"not a png"), None);
+        assert_eq!(png_phys_nm_per_px(b""), None);
+        // pHYs after IDAT violates the spec — the walk stops at IDAT.
+        let late = png_with(&[
+            chunk(b"IDAT", &[0; 4]),
+            chunk(b"pHYs", &phys_data(1_000_000, 1_000_000, 1)),
+        ]);
+        assert_eq!(png_phys_nm_per_px(&late), None);
+        // A declared length that overruns the buffer, at every truncation
+        // point of a valid file (never panics, never reads out of bounds).
+        let full = isotropic_10nm();
+        for cut in 1..full.len() {
+            let _ = png_phys_nm_per_px(&full[..cut]);
+        }
+        // u32::MAX length: `checked_add` must catch it, not wrap.
+        let mut huge = SIG.to_vec();
+        huge.extend_from_slice(&u32::MAX.to_be_bytes());
+        huge.extend_from_slice(b"pHYs");
+        huge.extend_from_slice(&[0; 16]);
+        assert_eq!(png_phys_nm_per_px(&huge), None);
+    }
+
+    #[test]
+    fn spec_violations_are_rejected_not_skipped() {
+        let good = chunk(b"pHYs", &phys_data(100_000_000, 100_000_000, 1));
+        // Corrupt CRC: never trust a calibration we can't verify.
+        let bad_crc = png_with(&[
+            chunk_bad_crc(b"pHYs", &phys_data(100_000_000, 100_000_000, 1)),
+            chunk(b"IEND", &[]),
+        ]);
+        assert_eq!(png_phys_nm_per_px(&bad_crc), None);
+        // Wrong length is malformed — and must NOT fall through to a later,
+        // well-formed pHYs, which is how a bad file could pick its own scale.
+        let short = png_with(&[
+            chunk(b"pHYs", &phys_data(1_000_000, 1_000_000, 1)[..8]),
+            good.clone(),
+            chunk(b"IEND", &[]),
+        ]);
+        assert_eq!(png_phys_nm_per_px(&short), None);
+        // At most one pHYs per the spec; a duplicate is malformed even when
+        // the first one was perfectly good.
+        let dup = png_with(&[good.clone(), good.clone(), chunk(b"IEND", &[])]);
+        assert_eq!(png_phys_nm_per_px(&dup), None);
+        // ...including a duplicate after a legal aspect-only first chunk.
+        let dup_after_aspect = png_with(&[
+            chunk(b"pHYs", &phys_data(2, 1, 0)),
+            good.clone(),
+            chunk(b"IEND", &[]),
+        ]);
+        assert_eq!(png_phys_nm_per_px(&dup_after_aspect), None);
+    }
+
+    #[test]
+    fn walk_is_bounded_and_skips_large_ancillary_chunks() {
+        // A big iCCP/eXIf before pHYs is skipped by declared length, never
+        // scanned byte-by-byte.
+        let big = png_with(&[
+            chunk(b"iCCP", &vec![0u8; 512 * 1024]),
+            chunk(b"pHYs", &phys_data(100_000_000, 100_000_000, 1)),
+            chunk(b"IEND", &[]),
+        ]);
+        assert_eq!(png_phys_nm_per_px(&big), Some((10.0, 10.0)));
+        // Zero-length chunks still advance (12 bytes each), so this
+        // terminates — on the budget, not on a scan of the whole file.
+        let mut flood = SIG.to_vec();
+        for _ in 0..20_000 {
+            flood.extend_from_slice(&chunk(b"tEXt", &[]));
+        }
+        flood.extend_from_slice(&chunk(b"pHYs", &phys_data(100_000_000, 100_000_000, 1)));
+        assert_eq!(png_phys_nm_per_px(&flood), None);
+    }
+
+    #[test]
+    fn merge_fills_only_when_sidecar_did_not() {
+        let png = isotropic_10nm();
+        // No prior extras → pHYs fills, sidecar schema shape.
+        let merged = merge_png_phys_scale(&png, "image/png", None, true).unwrap();
+        let axes = &merged["physical_scale"]["axes"];
+        assert_eq!(axes[0]["name"], "x");
+        assert_eq!(axes[0]["nm_per_px"], 10.0);
+        assert_eq!(axes[1]["name"], "y");
+        assert_eq!(axes[1]["nm_per_px"], 10.0);
+        assert_eq!(merged["physical_scale"]["unit"], "nm");
+        // Sidecar already resolved → untouched (exact floats win).
+        let sidecar = serde_json::json!({"physical_scale": {"axes": [], "unit": "nm"}});
+        let kept = merge_png_phys_scale(&png, "image/png", Some(sidecar.clone()), true);
+        assert_eq!(kept, Some(sidecar));
+        // A present-but-null sidecar value still counts as resolved.
+        let null_sidecar = serde_json::json!({ "physical_scale": null });
+        let kept_null = merge_png_phys_scale(&png, "image/png", Some(null_sidecar.clone()), true);
+        assert_eq!(kept_null, Some(null_sidecar));
+        // Non-PNG mime → untouched.
+        assert_eq!(merge_png_phys_scale(&png, "image/jpeg", None, true), None);
+        // Unrelated extras are preserved alongside the new key.
+        let other = serde_json::json!({ "page_count": 3 });
+        let both = merge_png_phys_scale(&png, "image/png", Some(other), true).unwrap();
+        assert_eq!(both["page_count"], 3);
+        assert_eq!(both["physical_scale"]["axes"][0]["nm_per_px"], 10.0);
+    }
+
+    #[test]
+    fn plugin_output_is_never_read_for_embedded_scale() {
+        // Same bytes, same mime — only provenance differs. A plugin's blob
+        // may be re-encoded, resized, or carry a rasterizer's own render DPI
+        // (pdftoppm stamps 144), so its pHYs is not the subject's scale.
+        let png = isotropic_10nm();
+        assert!(merge_png_phys_scale(&png, "image/png", None, true).is_some());
+        assert_eq!(merge_png_phys_scale(&png, "image/png", None, false), None);
+    }
+
+    #[test]
+    fn anisotropic_phys_is_suppressed_not_half_rendered() {
+        // The FE renders one bar from axes[0] by design, so unequal axes read
+        // automatically off a file would silently label the image with its x
+        // scale alone. Suppress rather than mislabel.
+        let aniso = png_with(&[
+            chunk(b"pHYs", &phys_data(100_000_000, 200_000_000, 1)),
+            chunk(b"IEND", &[]),
+        ]);
+        assert_eq!(png_phys_nm_per_px(&aniso), Some((10.0, 5.0)));
+        assert_eq!(merge_png_phys_scale(&aniso, "image/png", None, true), None);
+        // ...but an explicitly anisotropic SIDECAR is a deliberate human act
+        // and still passes through untouched.
+        let sidecar = serde_json::json!({"physical_scale": {
+            "axes": [{"name":"x","nm_per_px":10.0},{"name":"y","nm_per_px":5.0}], "unit":"nm"}});
+        assert_eq!(
+            merge_png_phys_scale(&aniso, "image/png", Some(sidecar.clone()), true),
+            Some(sidecar)
+        );
     }
 }
 

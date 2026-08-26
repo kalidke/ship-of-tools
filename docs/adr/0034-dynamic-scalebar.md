@@ -7,6 +7,21 @@ the live-entry→sidecar flow. One correction during build: the sidecar/`.concep
 tiers are read **backend-side** (raster previews are served by the backend byte
 fallback, not the kernel — see §1), not "kernel-side".
 
+**Update 2026-08-23 — tier 2, PNG half, implemented.** The embedded-metadata
+tier now reads PNG `pHYs` (metre-unit only; `unit 0` is aspect-ratio-only and
+ignored) backend-side in the preview assembly, filling `physical_scale` only
+when the sidecar tier produced nothing — so a pipeline-authored PNG is a
+single self-describing artifact with no sidecar on disk, while a sidecar
+(exact floats, `preview.set_scale`'s write target) still overrides a wrong
+in-file value. Implementation is a bounds-checked **chunk walk**
+(`png_phys_nm_per_px`, handlers.rs), not an image decode: `pHYs` precedes
+`IDAT`, so only header chunks are touched — consistent with §1's "Rust never
+parses image metadata" being about the heavyweight tag formats (TIFF/OME),
+which remain future and kernel-side. `pHYs` is still never *written* (§5).
+Scale-producing pipelines (e.g. SMLM renderers embedding `pHYs` at
+~1.6–10 nm/px) confirmed integer-ppm rounding is ≲1e-8 relative there —
+negligible for a display scalebar.
+
 ## Context
 
 Raster image previews — SMLM/DNA-PAINT/MINFLUX renders, camera frames, survey
