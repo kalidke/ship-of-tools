@@ -144,7 +144,7 @@ are recorded as non-authority spawn-detail diagnostics.
   | resource            | bound                                        |
   |---------------------|----------------------------------------------|
   | max cols × rows     | 512 × 256                                    |
-  | cell size (fork)    | 32 B → one grid ≤ 4 MiB, two ≤ 8 MiB         |
+  | cell size (fork)    | 32 B → one grid's CELLS ≤ 4 MiB (see note)   |
   | checkpoint bound    | ≤ 2 grids + fixed header < 12 MiB, proven    |
   | snapshot transport  | chunked in ≤ 1 MiB frames (per-op cap holds) |
   | per-op message cap  | 1 MiB                                        |
@@ -158,6 +158,37 @@ are recorded as non-authority spawn-detail diagnostics.
   |                     | keepalive → disconnect; the bytes remain in  |
   |                     | the voyage) — a hung driver cannot wedge the |
   |                     | writer loop                                  |
+
+### Step 3 as built (2026-08-26)
+
+Three clarifications the implementation forced, recorded so the table above
+is not read as more than it claims:
+
+- **"one grid ≤ 4 MiB" bounds the CELL PAYLOAD, not the allocation.**
+  512 × 256 × 32 B is exactly 4 MiB of cells; the `Row` and `Vec` headers and
+  the allocator's own overhead sit on top of that. The checkpoint bound below
+  it is a bound on ENCODED LENGTH, which is the number that matters for the
+  transport, and is unrelated to transient `Vec` capacity while encoding.
+
+- **"wrap modes" means the per-row wrap flags and the pending-wrap cursor.**
+  It cannot mean DEC autowrap (`?7`): the fork neither implements nor stores
+  it, and a codec cannot serialize state the parser does not have. What the
+  checkpoint carries is each row's `wrapped` flag plus the cursor's
+  one-past-the-last-column position, which is the state a resumed session
+  needs to decide whether the next glyph wraps or overwrites.
+
+- **The checkpoint's own version is a local decoder defense, not a second
+  negotiation axis.** Step 3 ships the version field, its rejection path, and
+  a pinned byte-level golden for version 1. Binding a checkpoint version to
+  an attach-lane `proto_version` — so an incompatible pair is refused during
+  hello, before several MiB are generated and transferred, with the capsule
+  left running and offered EndRun over the pinned v0 management lane — is
+  step 5's, alongside that lane. Falling back to `contents_formatted`, a
+  blank screen, or a silent replacement is excluded at every version.
+
+The proven encoded bound is **8,651,327 bytes**, computed from the format and
+asserted at compile time. A typical 200×50 screen encodes to about 22 KB,
+because an empty cell with default attributes costs one byte.
 
 ## The attach protocol
 

@@ -1,0 +1,651 @@
+#[derive(Clone, Debug)]
+pub struct Grid {
+    size: Size,
+    pos: Pos,
+    saved_pos: Pos,
+    rows: Vec<crate::row::Row>,
+    scroll_top: u16,
+    scroll_bottom: u16,
+    origin_mode: bool,
+    saved_origin_mode: bool,
+    scrollback: std::collections::VecDeque<crate::row::Row>,
+    scrollback_len: usize,
+    scrollback_offset: usize,
+}
+
+impl Grid {
+    pub fn new(size: Size, scrollback_len: usize) -> Self {
+        Self {
+            size,
+            pos: Pos::default(),
+            saved_pos: Pos::default(),
+            rows: vec![],
+            scroll_top: 0,
+            scroll_bottom: size.rows - 1,
+            origin_mode: false,
+            saved_origin_mode: false,
+            scrollback: std::collections::VecDeque::new(),
+            scrollback_len,
+            scrollback_offset: 0,
+        }
+    }
+
+    pub fn allocate_rows(&mut self) {
+        if self.rows.is_empty() {
+            self.rows.extend(
+                std::iter::repeat_with(|| {
+                    crate::row::Row::new(self.size.cols)
+                })
+                .take(usize::from(self.size.rows)),
+            );
+        }
+    }
+
+    fn new_row(&self) -> crate::row::Row {
+        crate::row::Row::new(self.size.cols)
+    }
+
+    pub fn clear(&mut self) {
+        self.pos = Pos::default();
+        self.saved_pos = Pos::default();
+        for row in self.drawing_rows_mut() {
+            row.clear(crate::attrs::Attrs::default());
+        }
+        self.scroll_top = 0;
+        self.scroll_bottom = self.size.rows - 1;
+        self.origin_mode = false;
+        self.saved_origin_mode = false;
+    }
+
+    pub fn size(&self) -> Size {
+        self.size
+    }
+
+    pub fn set_size(&mut self, size: Size) {
+        if size.cols != self.size.cols {
+            for row in &mut self.rows {
+                row.wrap(false);
+            }
+        }
+
+        if self.scroll_bottom == self.size.rows - 1 {
+            self.scroll_bottom = size.rows - 1;
+        }
+
+        self.size = size;
+        for row in &mut self.rows {
+            row.resize(size.cols, crate::Cell::new());
+        }
+        self.rows.resize(usize::from(size.rows), self.new_row());
+
+        if self.scroll_bottom >= size.rows {
+            self.scroll_bottom = size.rows - 1;
+        }
+        if self.scroll_bottom < self.scroll_top {
+            self.scroll_top = 0;
+        }
+
+        self.row_clamp_top(false);
+        self.row_clamp_bottom(false);
+        self.col_clamp();
+
+        if self.saved_pos.row > self.size.rows - 1 {
+            self.saved_pos.row = self.size.rows - 1;
+        }
+        if self.saved_pos.col > self.size.cols - 1 {
+            self.saved_pos.col = self.size.cols - 1;
+        }
+    }
+
+    pub fn pos(&self) -> Pos {
+        self.pos
+    }
+
+    pub fn set_pos(&mut self, mut pos: Pos) {
+        if self.origin_mode {
+            pos.row = pos.row.saturating_add(self.scroll_top);
+        }
+        self.pos = pos;
+        self.row_clamp_top(self.origin_mode);
+        self.row_clamp_bottom(self.origin_mode);
+        self.col_clamp();
+    }
+
+    pub fn save_cursor(&mut self) {
+        self.saved_pos = self.pos;
+        self.saved_origin_mode = self.origin_mode;
+    }
+
+    pub fn restore_cursor(&mut self) {
+        self.pos = self.saved_pos;
+        self.origin_mode = self.saved_origin_mode;
+    }
+
+    pub fn visible_rows(&self) -> impl Iterator<Item = &crate::row::Row> {
+        let scrollback_len = self.scrollback.len();
+        let rows_len = self.rows.len();
+        self.scrollback
+            .iter()
+            .skip(scrollback_len - self.scrollback_offset)
+            // when scrollback_offset > rows_len (e.g. rows = 3,
+            // scrollback_len = 10, offset = 9) the skip(10 - 9)
+            // will take 9 rows instead of 3. we need to set
+            // the upper bound to rows_len (e.g. 3)
+            .take(rows_len)
+            // same for rows_len - scrollback_offset (e.g. 3 - 9).
+            // it'll panic with overflow. we have to saturate the subtraction.
+            .chain(
+                self.rows
+                    .iter()
+                    .take(rows_len.saturating_sub(self.scrollback_offset)),
+            )
+    }
+
+    pub fn drawing_rows(&self) -> impl Iterator<Item = &crate::row::Row> {
+        self.rows.iter()
+    }
+
+    pub fn drawing_rows_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut crate::row::Row> {
+        self.rows.iter_mut()
+    }
+
+    pub fn visible_row(&self, row: u16) -> Option<&crate::row::Row> {
+        self.visible_rows().nth(usize::from(row))
+    }
+
+    pub fn drawing_row(&self, row: u16) -> Option<&crate::row::Row> {
+        self.drawing_rows().nth(usize::from(row))
+    }
+
+    pub fn drawing_row_mut(
+        &mut self,
+        row: u16,
+    ) -> Option<&mut crate::row::Row> {
+        self.drawing_rows_mut().nth(usize::from(row))
+    }
+
+    pub fn current_row_mut(&mut self) -> &mut crate::row::Row {
+        self.drawing_row_mut(self.pos.row)
+            // we assume self.pos.row is always valid
+            .unwrap()
+    }
+
+    pub fn visible_cell(&self, pos: Pos) -> Option<&crate::Cell> {
+        self.visible_row(pos.row).and_then(|r| r.get(pos.col))
+    }
+
+    pub fn drawing_cell(&self, pos: Pos) -> Option<&crate::Cell> {
+        self.drawing_row(pos.row).and_then(|r| r.get(pos.col))
+    }
+
+    pub fn drawing_cell_mut(&mut self, pos: Pos) -> Option<&mut crate::Cell> {
+        self.drawing_row_mut(pos.row)
+            .and_then(|r| r.get_mut(pos.col))
+    }
+
+    pub fn scrollback_len(&self) -> usize {
+        self.scrollback_len
+    }
+
+    pub fn scrollback(&self) -> usize {
+        self.scrollback_offset
+    }
+
+    pub fn set_scrollback(&mut self, rows: usize) {
+        self.scrollback_offset = rows.min(self.scrollback.len());
+    }
+
+    pub fn write_contents(&self, contents: &mut String) {
+        let mut wrapping = false;
+        for row in self.visible_rows() {
+            row.write_contents(contents, 0, self.size.cols, wrapping);
+            if !row.wrapped() {
+                contents.push('\n');
+            }
+            wrapping = row.wrapped();
+        }
+
+        while contents.ends_with('\n') {
+            contents.truncate(contents.len() - 1);
+        }
+    }
+
+    pub fn erase_all(&mut self, attrs: crate::attrs::Attrs) {
+        for row in self.drawing_rows_mut() {
+            row.clear(attrs);
+        }
+    }
+
+    pub fn erase_all_forward(&mut self, attrs: crate::attrs::Attrs) {
+        let pos = self.pos;
+        for row in self.drawing_rows_mut().skip(usize::from(pos.row) + 1) {
+            row.clear(attrs);
+        }
+
+        self.erase_row_forward(attrs);
+    }
+
+    pub fn erase_all_backward(&mut self, attrs: crate::attrs::Attrs) {
+        let pos = self.pos;
+        for row in self.drawing_rows_mut().take(usize::from(pos.row)) {
+            row.clear(attrs);
+        }
+
+        self.erase_row_backward(attrs);
+    }
+
+    pub fn erase_row(&mut self, attrs: crate::attrs::Attrs) {
+        self.current_row_mut().clear(attrs);
+    }
+
+    pub fn erase_row_forward(&mut self, attrs: crate::attrs::Attrs) {
+        let size = self.size;
+        let pos = self.pos;
+        let row = self.current_row_mut();
+        for col in pos.col..size.cols {
+            row.erase(col, attrs);
+        }
+    }
+
+    pub fn erase_row_backward(&mut self, attrs: crate::attrs::Attrs) {
+        let size = self.size;
+        let pos = self.pos;
+        let row = self.current_row_mut();
+        for col in 0..=pos.col.min(size.cols - 1) {
+            row.erase(col, attrs);
+        }
+    }
+
+    pub fn insert_cells(&mut self, count: u16) {
+        let size = self.size;
+        let pos = self.pos;
+        let wide = pos.col < size.cols
+            && self
+                .drawing_cell(pos)
+                // we assume self.pos.row is always valid, and we know we are
+                // not off the end of a row because we just checked pos.col <
+                // size.cols
+                .unwrap()
+                .is_wide_continuation();
+        let row = self.current_row_mut();
+        for _ in 0..count {
+            if wide {
+                row.get_mut(pos.col).unwrap().set_wide_continuation(false);
+            }
+            row.insert(pos.col, crate::Cell::new());
+            if wide {
+                row.get_mut(pos.col).unwrap().set_wide_continuation(true);
+            }
+        }
+        row.truncate(size.cols);
+    }
+
+    pub fn delete_cells(&mut self, count: u16) {
+        let size = self.size;
+        let pos = self.pos;
+        let row = self.current_row_mut();
+        for _ in 0..(count.min(size.cols - pos.col)) {
+            row.remove(pos.col);
+        }
+        row.resize(size.cols, crate::Cell::new());
+    }
+
+    pub fn erase_cells(&mut self, count: u16, attrs: crate::attrs::Attrs) {
+        let size = self.size;
+        let pos = self.pos;
+        let row = self.current_row_mut();
+        for col in pos.col..((pos.col.saturating_add(count)).min(size.cols)) {
+            row.erase(col, attrs);
+        }
+    }
+
+    pub fn insert_lines(&mut self, count: u16) {
+        for _ in 0..count {
+            self.rows.remove(usize::from(self.scroll_bottom));
+            self.rows.insert(usize::from(self.pos.row), self.new_row());
+            // self.scroll_bottom is maintained to always be a valid row
+            self.rows[usize::from(self.scroll_bottom)].wrap(false);
+        }
+    }
+
+    pub fn delete_lines(&mut self, count: u16) {
+        for _ in 0..(count.min(self.size.rows - self.pos.row)) {
+            self.rows
+                .insert(usize::from(self.scroll_bottom) + 1, self.new_row());
+            self.rows.remove(usize::from(self.pos.row));
+        }
+    }
+
+    pub fn scroll_up(&mut self, count: u16) {
+        for _ in 0..(count.min(self.size.rows - self.scroll_top)) {
+            self.rows
+                .insert(usize::from(self.scroll_bottom) + 1, self.new_row());
+            let removed = self.rows.remove(usize::from(self.scroll_top));
+            if self.scrollback_len > 0 && !self.scroll_region_active() {
+                self.scrollback.push_back(removed);
+                while self.scrollback.len() > self.scrollback_len {
+                    self.scrollback.pop_front();
+                }
+                if self.scrollback_offset > 0 {
+                    self.scrollback_offset =
+                        self.scrollback.len().min(self.scrollback_offset + 1);
+                }
+            }
+        }
+    }
+
+    pub fn scroll_down(&mut self, count: u16) {
+        for _ in 0..count {
+            self.rows.remove(usize::from(self.scroll_bottom));
+            self.rows
+                .insert(usize::from(self.scroll_top), self.new_row());
+            // self.scroll_bottom is maintained to always be a valid row
+            self.rows[usize::from(self.scroll_bottom)].wrap(false);
+        }
+    }
+
+    pub fn set_scroll_region(&mut self, top: u16, bottom: u16) {
+        let bottom = bottom.min(self.size().rows - 1);
+        if top < bottom {
+            self.scroll_top = top;
+            self.scroll_bottom = bottom;
+        } else {
+            self.scroll_top = 0;
+            self.scroll_bottom = self.size().rows - 1;
+        }
+        self.pos.row = self.scroll_top;
+        self.pos.col = 0;
+    }
+
+    fn in_scroll_region(&self) -> bool {
+        self.pos.row >= self.scroll_top && self.pos.row <= self.scroll_bottom
+    }
+
+    fn scroll_region_active(&self) -> bool {
+        self.scroll_top != 0 || self.scroll_bottom != self.size.rows - 1
+    }
+
+    pub fn set_origin_mode(&mut self, mode: bool) {
+        self.origin_mode = mode;
+        self.set_pos(Pos { row: 0, col: 0 });
+    }
+
+    pub fn row_inc_clamp(&mut self, count: u16) {
+        let in_scroll_region = self.in_scroll_region();
+        self.pos.row = self.pos.row.saturating_add(count);
+        self.row_clamp_bottom(in_scroll_region);
+    }
+
+    pub fn row_inc_scroll(&mut self, count: u16) -> u16 {
+        let in_scroll_region = self.in_scroll_region();
+        self.pos.row = self.pos.row.saturating_add(count);
+        let lines = self.row_clamp_bottom(in_scroll_region);
+        if in_scroll_region {
+            self.scroll_up(lines);
+            lines
+        } else {
+            0
+        }
+    }
+
+    pub fn row_dec_clamp(&mut self, count: u16) {
+        let in_scroll_region = self.in_scroll_region();
+        self.pos.row = self.pos.row.saturating_sub(count);
+        self.row_clamp_top(in_scroll_region);
+    }
+
+    pub fn row_dec_scroll(&mut self, count: u16) {
+        let in_scroll_region = self.in_scroll_region();
+        // need to account for clamping by both row_clamp_top and by
+        // saturating_sub
+        let extra_lines = count.saturating_sub(self.pos.row);
+        self.pos.row = self.pos.row.saturating_sub(count);
+        let lines = self.row_clamp_top(in_scroll_region);
+        self.scroll_down(lines + extra_lines);
+    }
+
+    pub fn row_set(&mut self, i: u16) {
+        self.pos.row = i;
+        self.row_clamp();
+    }
+
+    pub fn col_inc(&mut self, count: u16) {
+        self.pos.col = self.pos.col.saturating_add(count);
+    }
+
+    pub fn col_inc_clamp(&mut self, count: u16) {
+        self.pos.col = self.pos.col.saturating_add(count);
+        self.col_clamp();
+    }
+
+    pub fn col_dec(&mut self, count: u16) {
+        self.pos.col = self.pos.col.saturating_sub(count);
+    }
+
+    pub fn col_tab(&mut self) {
+        self.pos.col -= self.pos.col % 8;
+        self.pos.col += 8;
+        self.col_clamp();
+    }
+
+    pub fn col_set(&mut self, i: u16) {
+        self.pos.col = i;
+        self.col_clamp();
+    }
+
+    pub fn col_wrap(&mut self, width: u16, wrap: bool) {
+        if self.pos.col > self.size.cols - width {
+            let mut prev_pos = self.pos;
+            self.pos.col = 0;
+            let scrolled = self.row_inc_scroll(1);
+            prev_pos.row -= scrolled;
+            let new_pos = self.pos;
+            self.drawing_row_mut(prev_pos.row)
+                // we assume self.pos.row is always valid, and so prev_pos.row
+                // must be valid because it is always less than or equal to
+                // self.pos.row
+                .unwrap()
+                .wrap(wrap && prev_pos.row + 1 == new_pos.row);
+        }
+    }
+
+    fn row_clamp_top(&mut self, limit_to_scroll_region: bool) -> u16 {
+        if limit_to_scroll_region && self.pos.row < self.scroll_top {
+            let rows = self.scroll_top - self.pos.row;
+            self.pos.row = self.scroll_top;
+            rows
+        } else {
+            0
+        }
+    }
+
+    fn row_clamp_bottom(&mut self, limit_to_scroll_region: bool) -> u16 {
+        let bottom = if limit_to_scroll_region {
+            self.scroll_bottom
+        } else {
+            self.size.rows - 1
+        };
+        if self.pos.row > bottom {
+            let rows = self.pos.row - bottom;
+            self.pos.row = bottom;
+            rows
+        } else {
+            0
+        }
+    }
+
+    fn row_clamp(&mut self) {
+        if self.pos.row > self.size.rows - 1 {
+            self.pos.row = self.size.rows - 1;
+        }
+    }
+
+    fn col_clamp(&mut self) {
+        if self.pos.col > self.size.cols - 1 {
+            self.pos.col = self.size.cols - 1;
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct Size {
+    pub rows: u16,
+    pub cols: u16,
+}
+
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct Pos {
+    pub row: u16,
+    pub col: u16,
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoint codec (ADR 0041 step 3). Format spec: `crate::checkpoint`.
+// ---------------------------------------------------------------------------
+
+impl Grid {
+    pub(crate) fn write_checkpoint(
+        &self,
+        out: &mut Vec<u8>,
+    ) -> Result<(), crate::checkpoint::CheckpointError> {
+        crate::checkpoint::write_u16(out, self.pos.row);
+        crate::checkpoint::write_u16(out, self.pos.col);
+        crate::checkpoint::write_u16(out, self.saved_pos.row);
+        crate::checkpoint::write_u16(out, self.saved_pos.col);
+        crate::checkpoint::write_u16(out, self.scroll_top);
+        crate::checkpoint::write_u16(out, self.scroll_bottom);
+        out.push(u8::from(self.origin_mode));
+        out.push(u8::from(self.saved_origin_mode));
+        // Scrollback is deliberately absent: the capsule keeps none, and
+        // that deletion is what makes the ADR 0041 size budget provable.
+        // `scrollback_len` is the restorer's configuration and arrives as an
+        // argument; `scrollback_offset` cannot be anything but zero with no
+        // scrollback to offset into.
+        //
+        // Row storage is allocated lazily — an alternate grid nothing ever
+        // switched to has none — but that is an allocation optimization, not
+        // terminal state: no rendering path can tell it apart from a grid of
+        // blank rows, because reaching the alternate grid at all allocates
+        // it. Writing the blank rows instead of the distinction keeps the
+        // format from carrying a state that, if a mode byte were corrupted
+        // to select it, would leave the *active* grid with no rows for the
+        // next glyph to land in.
+        if self.rows.is_empty() {
+            let blank = crate::row::Row::new(self.size.cols);
+            for _ in 0..self.size.rows {
+                blank.write_checkpoint(out);
+            }
+            return Ok(());
+        }
+        // An allocated grid whose shape disagrees with its own size means an
+        // invariant broke upstream of here. Say so rather than emitting a
+        // payload whose rows and header contradict each other.
+        if self.rows.len() != usize::from(self.size.rows) {
+            return Err(crate::checkpoint::CheckpointError::Unrepresentable(
+                "grid row count does not match its size",
+            ));
+        }
+        for row in &self.rows {
+            if row.len() != self.size.cols {
+                return Err(
+                    crate::checkpoint::CheckpointError::Unrepresentable(
+                        "grid row width does not match its size",
+                    ),
+                );
+            }
+            row.write_checkpoint(out);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn read_checkpoint(
+        r: &mut crate::checkpoint::Reader<'_>,
+        size: Size,
+        scrollback_len: usize,
+        which: &'static str,
+        which_saved: &'static str,
+    ) -> Result<Self, crate::checkpoint::CheckpointError> {
+        let pos = Pos {
+            row: r.u16()?,
+            col: r.u16()?,
+        };
+        let saved_pos = Pos {
+            row: r.u16()?,
+            col: r.u16()?,
+        };
+        let scroll_top = r.u16()?;
+        let scroll_bottom = r.u16()?;
+        let origin_mode = r.bool("origin mode is not 0 or 1")?;
+        let saved_origin_mode = r.bool("saved origin mode is not 0 or 1")?;
+
+        // The column bound is `<= cols`, not `< cols`. After a glyph lands in
+        // the last column the cursor sits one past the end — `col_inc` does
+        // not clamp — and stays there until the next glyph triggers
+        // `col_wrap`. Rejecting that position would refuse every screen whose
+        // cursor is pending a wrap, which is an ordinary state, not a corrupt
+        // one.
+        Self::check_pos(pos, size, which)?;
+        Self::check_pos(saved_pos, size, which_saved)?;
+        // The reachable scroll regions are narrower than `top <= bottom`.
+        // `set_scroll_region` takes an explicit region only when
+        // `top < bottom`, and otherwise resets to the whole screen; the one
+        // way `top == bottom` arises is `set_size` clamping the bottom down,
+        // which leaves it at the last row. So a region of equal endpoints is
+        // legitimate only at the last row.
+        //
+        // The distinction is not pedantry. `col_wrap` subtracts the number
+        // of rows it scrolled from the pre-wrap row, and a region of
+        // `0..=0` on a screen with more than one row makes that subtraction
+        // underflow on the next glyph that wraps — a state no parse can
+        // produce, restored and then panicking somewhere else entirely.
+        // Range-check the field BEFORE doing arithmetic with it. Computing
+        // `scroll_bottom + 1` first overflows on a hostile `u16::MAX` — a
+        // panic in the very code that exists to prevent one.
+        if scroll_bottom >= size.rows {
+            return Err(crate::checkpoint::CheckpointError::Malformed(
+                "a scroll region reaching past the last row",
+            ));
+        }
+        // `size.rows` is non-zero (the header rejects zero) and
+        // `scroll_bottom` is now below it, so this subtraction is safe.
+        let equal_at_last_row =
+            scroll_top == scroll_bottom && scroll_bottom == size.rows - 1;
+        if !(scroll_top < scroll_bottom || equal_at_last_row) {
+            return Err(crate::checkpoint::CheckpointError::Malformed(
+                "a scroll region shape no parse can produce",
+            ));
+        }
+
+        let mut rows = Vec::with_capacity(usize::from(size.rows));
+        for _ in 0..size.rows {
+            rows.push(crate::row::Row::read_checkpoint(r, size.cols)?);
+        }
+
+        Ok(Self {
+            size,
+            pos,
+            saved_pos,
+            rows,
+            scroll_top,
+            scroll_bottom,
+            origin_mode,
+            saved_origin_mode,
+            scrollback: std::collections::VecDeque::new(),
+            scrollback_len,
+            scrollback_offset: 0,
+        })
+    }
+
+    fn check_pos(
+        pos: Pos,
+        size: Size,
+        field: &'static str,
+    ) -> Result<(), crate::checkpoint::CheckpointError> {
+        if pos.row >= size.rows || pos.col > size.cols {
+            return Err(crate::checkpoint::CheckpointError::Malformed(field));
+        }
+        Ok(())
+    }
+}

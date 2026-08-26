@@ -42,7 +42,9 @@ comrak = { workspace = true }
 pollster = { workspace = true }
 bytemuck = { workspace = true }
 bytemuck_derive = { workspace = true }
-vt100 = { package = "vt100-ctt", version = "0.17", default-features = false }
+# The workspace patches this to the in-tree fork (rust/vt100), which
+# declares no features.
+vt100 = { package = "vt100-ctt", version = "0.17" }
 base64 = "0.22"
 # OS-independent local wall-clock for the upper-right chrome clock. chrono's
 # `Local` reads the host timezone the same way on Windows/macOS/Linux (no
