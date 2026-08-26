@@ -308,9 +308,13 @@ impl TmuxClient {
             crate::paths::secure_private_dir(dir)
                 .with_context(|| format!("securing tmux socket dir {}", dir.display()))?;
         }
+        let readiness = ensure_server_present(&socket)?;
         let mut cmd = Command::new("tmux");
         cmd.arg("-S");
         cmd.arg(&socket);
+        if matches!(readiness, ServerReadiness::Present) && crate::pty::tmux_supports_dash_n() {
+            cmd.arg("-N");
+        }
         cmd.args(args);
         let out = cmd
             .output()
@@ -326,6 +330,106 @@ impl TmuxClient {
         }
         Ok(out.stdout)
     }
+}
+
+/// Whether a tmux server is (now) listening on the target socket, and
+/// therefore whether an invocation may safely pass `-N`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServerReadiness {
+    /// The socket exists — a keeper-owned (or pre-existing) server is up.
+    Present,
+    /// No server and no keeper available: fall back to tmux's implicit
+    /// server start (legacy behavior — the server becomes a child of THIS
+    /// process). Tolerated so non-systemd hosts (macOS, --no-service
+    /// installs) keep working; loudly warned once.
+    ImplicitFallback,
+}
+
+/// ADR 0038: the tmux server must not be an implicit child of sotd. Before any
+/// server-touching invocation, make sure a server is actually LISTENING on the
+/// socket — starting `sot-tmux.service` (the keeper unit, which owns the server
+/// in its OWN cgroup) if it isn't. Without this, the first tmux client to run
+/// after a server death forks the server inside the daemon's cgroup, and
+/// `KillMode=control-group` turns every daemon restart into a fleet-wide
+/// session massacre (root-caused 2026-08; see the ADR).
+///
+/// Liveness, not existence (PR #109 review): a socket FILE with no server
+/// behind it (SIGKILLed server never unlinks) must NOT count as Present —
+/// `-N` forbids exactly the unlink-and-restart self-heal tmux would do on a
+/// stale socket, so trusting `exists()` would wedge every invocation forever,
+/// with the keeper-start repair path unreachable. A connect probe
+/// distinguishes live from stale; stale falls through to the keeper start,
+/// whose own client never passes `-N` and therefore performs the unlink.
+///
+/// Fallback policy: if the keeper can't be STARTED (unit not installed, no
+/// systemd — macOS), warn ONCE and allow the legacy implicit start rather
+/// than bricking session creation. But if the keeper start SUCCEEDED and the
+/// socket still never went live, error out instead — an implicit server
+/// spawned now would race the (slow) keeper for the same socket path, which
+/// is worse than a clear failure.
+pub(crate) fn ensure_server_present(socket: &Path) -> Result<ServerReadiness> {
+    use std::sync::Once;
+    if socket_live(socket) {
+        return Ok(ServerReadiness::Present);
+    }
+    if socket.exists() {
+        tracing::info!(
+            socket = %socket.display(),
+            "stale tmux socket (file present, nothing listening) — starting the \
+             keeper to heal it"
+        );
+    }
+    let started = Command::new("systemctl")
+        .args(["--user", "start", "sot-tmux.service"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if started {
+        // The keeper's server daemonizes and binds promptly; poll briefly
+        // rather than racing it. (Callers run on blocking threads —
+        // spawn_blocking handlers, pty threads — so a short sleep is fine.)
+        for _ in 0..25 {
+            if socket_live(socket) {
+                tracing::info!(
+                    socket = %socket.display(),
+                    "tmux keeper started on demand (sot-tmux.service)"
+                );
+                return Ok(ServerReadiness::Present);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        anyhow::bail!(
+            "sot-tmux keeper reported started but its server never came live on {} \
+             within 5s — refusing the implicit-server fallback that would race it \
+             (ADR 0038); check `systemctl --user status sot-tmux`",
+            socket.display()
+        );
+    }
+    static WARNED: Once = Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            socket = %socket.display(),
+            "no tmux server on the private socket and the sot-tmux keeper unit is \
+             unavailable — falling back to tmux's implicit server start (the server \
+             will be a child of this daemon; on systemd hosts a daemon restart then \
+             kills every session). Install/enable sot-tmux.service (ADR 0038)."
+        );
+    });
+    Ok(ServerReadiness::ImplicitFallback)
+}
+
+/// Is something actually LISTENING on `socket`? A bare `exists()` cannot tell
+/// a live server from a stale socket file. Unix: a connect attempt answers
+/// authoritatively and cheaply. Non-unix builds (the crate compiles on
+/// Windows CI; tmux never runs there) keep the existence check.
+#[cfg(unix)]
+fn socket_live(socket: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(socket).is_ok()
+}
+
+#[cfg(not(unix))]
+fn socket_live(socket: &Path) -> bool {
+    socket.exists()
 }
 
 fn parse_session_line(line: &str) -> Result<SessionInfo> {
@@ -376,6 +480,40 @@ fn parse_pane_line(line: &str) -> Result<PaneInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stale-socket wedge (PR #109 review): a socket FILE with no server
+    /// behind it must read as NOT live — `exists()` cannot make that call,
+    /// a connect probe can. A bound listener reads as live; unlinking it
+    /// makes the leftover state not-live again.
+    #[test]
+    #[cfg(unix)]
+    fn socket_live_distinguishes_live_bound_and_stale() {
+        let dir = std::env::temp_dir().join(format!("sot-live-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("probe.sock");
+
+        // Nothing there at all: not live.
+        assert!(!socket_live(&sock));
+
+        // A plain FILE at the path (the stale-socket shape after a SIGKILL,
+        // as far as `exists()` can see): still not live.
+        std::fs::write(&sock, b"").unwrap();
+        assert!(sock.exists());
+        assert!(!socket_live(&sock));
+        std::fs::remove_file(&sock).unwrap();
+
+        // A real bound listener: live.
+        let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        assert!(socket_live(&sock));
+
+        // Listener dropped, socket file left behind (true stale socket):
+        // not live, even though the file exists.
+        drop(_listener);
+        assert!(sock.exists());
+        assert!(!socket_live(&sock));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn parse_session_line_basic() {

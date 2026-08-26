@@ -30,10 +30,19 @@ use sot_updater::{Fetcher, InstallManifest, UpdaterConfig};
 const DEFAULT_REPO: &str = "kalidke/ship-of-tools";
 
 /// Spawn the startup self-check. Never blocks; all failures are log lines.
+///
+/// **Every early return below logs at `info`, not `debug`.** The paths where
+/// this decides to do NOTHING are the ones a user reports ("it never
+/// updated"), and at the default `info` filter a `debug!` line is dropped —
+/// leaving a log with no self-update entry at all, indistinguishable from the
+/// check never having run. That makes a missing manifest, a wrong role, an
+/// already-current install, and a dev build all look identical in the one
+/// artifact available for diagnosis. One line per launch is a cheap price for
+/// a self-reporting updater; the acting/erroring paths were already visible.
 pub fn spawn_startup_selfcheck() {
     let current = app_version();
     if current.contains("-dev") {
-        tracing::debug!("fe self-update: dev build — hard guard, skipping");
+        tracing::info!(%current, "fe self-update: dev build — hard guard, skipping (update with git pull + cargo build)");
         return;
     }
     if matches!(
@@ -44,11 +53,17 @@ pub fn spawn_startup_selfcheck() {
         return;
     }
     let Some(install) = InstallManifest::for_current_exe() else {
-        tracing::debug!("fe self-update: no install manifest — not a release install, skipping");
+        // The single most likely reason a release install never updates, and
+        // the one that used to leave no trace at all. Name the file so the
+        // fix is obvious from the log line alone.
+        tracing::info!(
+            "fe self-update: no install manifest at <prefix>/install.json — not a release install, skipping \
+             (Windows: run scripts\\install-manifest.ps1; Linux/macOS: re-run install.sh)"
+        );
         return;
     };
     if install.role != "remote" {
-        tracing::debug!(role = %install.role, "fe self-update: backend owns updates on this machine");
+        tracing::info!(role = %install.role, "fe self-update: role is not 'remote' — the backend on this machine owns updates, skipping");
         return;
     }
     let spawned = std::thread::Builder::new()
@@ -89,7 +104,7 @@ async fn run(install: InstallManifest, current: String) {
     };
     let out = sot_updater::check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher).await;
     if !out.update_available {
-        tracing::debug!(status = %out.status, "fe self-update: nothing to do");
+        tracing::info!(status = %out.status, current = %cfg.current_version, "fe self-update: no newer release — nothing to do");
         return;
     }
     let Some(id) = out.identity else { return };

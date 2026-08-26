@@ -2348,7 +2348,8 @@ struct State {
     /// Natural dimensions (w, h) of the currently-loaded PNG, used as
     /// part of the cache key so flipping between same-size renders in
     /// the same directory (e.g. successive timesteps of a plot) keeps
-    /// the same zoom + pan. `None` until a PNG has loaded.
+    /// the same view (see `preview_png_cache`). `None` until a PNG has
+    /// loaded.
     preview_png_dims: Option<(u32, u32)>,
     /// Dimensions of the shown raster as SERVED, before the GPU-fit downsample
     /// that `decode_and_fit` applies to images exceeding
@@ -2370,11 +2371,35 @@ struct State {
     /// (see `RoiAim`). Deliberately NOT per-workspace snapshot state — a
     /// cross-workspace aim must survive the switch that consumes its badge.
     pending_roi_aim: Option<RoiAim>,
-    /// Per-directory + per-dimensions cache of `(zoom, pan_px)` so
-    /// switching among same-sized PNG renders in one directory restores
-    /// the previous view rather than snapping back to fit. Mixed-size
-    /// images miss the cache and start at default fit-to-pane.
-    preview_png_cache: HashMap<(String, (u32, u32)), (f32, (f32, f32))>,
+    /// Per-directory + per-dimensions cache of the last visible SOURCE-PX
+    /// ROI, so switching among same-sized image renders in one directory
+    /// restores the previous view rather than snapping back to fit.
+    /// Mixed-size images miss the cache and start at fit-to-pane.
+    ///
+    /// Source px, not `(zoom, pan_px)`: screen-px values are only valid
+    /// against the image rect they were measured in, and that rect moves —
+    /// the caption band resizes it per file (and the pane itself can resize
+    /// between save and restore). A screen-px carry between a captioned and
+    /// an uncaptioned same-size neighbor restored an offset, wrongly-
+    /// magnified view. An ROI re-solved against the live rect at consume
+    /// time (`pending_roi_restore`) is geometry-independent by construction.
+    /// Written through from the render pass each draw — a keystroke-time
+    /// save recorded the previous frame's view — and only for image node
+    /// ids (via `preview_roi`'s gate), which also stops PDF page turns
+    /// (same node id ⇒ same key) from restoring one page's view onto
+    /// another when a page turn is specified to reset to fit.
+    preview_png_cache: HashMap<(String, (u32, u32)), RoiRect>,
+    /// One-shot deferred view restore: a cache hit at preview install can't
+    /// solve immediately — there's no live geometry there, and
+    /// `caption_band_px` at install time still describes the PREVIOUS
+    /// node's band — so the hit is parked as `(node_id, roi)` and consumed
+    /// in the render pass next to the `--roi` aim solve, against the
+    /// current `image_rect`. An aim consumed for the same install wins over
+    /// the carry, and a carry restore never emits the ADR-0025
+    /// `preview_roi_applied` echo (that event is the CLI contract for
+    /// explicit aims). Node-guarded and overwritten on every raster
+    /// install, so a stale entry is inert.
+    pending_roi_restore: Option<(String, RoiRect)>,
     preview_svg: Option<Quad>,
     /// Tree-sitter-backed syntax highlighter for the markdown preview's
     /// fenced code blocks (and, later, the editor pane). Constructed
@@ -2661,6 +2686,14 @@ struct State {
     /// `files:<rel>` node id by `copy_navtree_path` so Ctrl+C in NavTree
     /// yields the absolute backend-side path (paste-into-shell utility).
     daemon_project_root: Option<String>,
+    /// The connected backend's product version (`HelloRes::app_version`),
+    /// painted beside the FE's own version on the bottom chrome edge.
+    /// `None` before the first hello, or when the daemon is old enough not
+    /// to send the field. Deliberately NOT cleared on disconnect — a stale
+    /// "what we last talked to" reads better than a blank half, and the
+    /// transport state is already called out in the nav status row, so the
+    /// stamp doesn't need to duplicate it.
+    backend_version: Option<String>,
     /// Absolute path of the most recent `project.scan`'s `project_root`.
     /// The chrome strips this prefix off the absolute file paths each
     /// Modules-mode entry carries to synthesize the `files:<relpath>`
@@ -3471,6 +3504,20 @@ fn png_cache_key_from_node_id(
     Some((parent.to_string(), dims))
 }
 
+/// True when two source-px ROI rects differ by at most one pixel on each
+/// EDGE (x0/y0/x1/y1) — the outward floor/ceil quantization width of
+/// `visible_roi_px`. The write-through view carry treats such rects as the
+/// same view; see its comment for the ratchet this prevents.
+fn roi_rects_within_quantization(a: RoiRect, b: RoiRect) -> bool {
+    fn close(p: u32, q: u32) -> bool {
+        p.abs_diff(q) <= 1
+    }
+    close(a.x, b.x)
+        && close(a.y, b.y)
+        && close(a.x + a.w, b.x + b.w)
+        && close(a.y + a.h, b.y + b.h)
+}
+
 /// Translate a "desired visible sRGB colour" into the `wgpu::Color` that
 /// `LoadOp::Clear` should carry, so the same painted bg appears the same
 /// across machines.
@@ -4199,6 +4246,7 @@ impl State {
             preview_roi: None,
             pending_roi_aim: None,
             preview_png_cache: HashMap::new(),
+            pending_roi_restore: None,
             preview_svg,
             highlight_service,
             preview_md,
@@ -4295,6 +4343,7 @@ impl State {
             host: None,
             daemon_root_basename: None,
             daemon_project_root: None,
+            backend_version: None,
             scan_project_root: None,
             last_revision: 0,
             workspace_labels: HashMap::new(),
@@ -8613,18 +8662,6 @@ impl State {
         self.preview_png_pan_px.1 *= ratio;
     }
 
-    fn save_png_view(&mut self) {
-        let Some(dims) = self.preview_png_dims else {
-            return;
-        };
-        let Some(key) = png_cache_key_from_node_id(self.preview_node_id_fired.as_deref(), dims)
-        else {
-            return;
-        };
-        self.preview_png_cache
-            .insert(key, (self.preview_png_zoom, self.preview_png_pan_px));
-    }
-
     fn render_preview_source(&mut self, mime: &str, bytes: &[u8]) {
         let scale = self.scale * self.text_scale_mult;
         if is_raster_preview_mime(mime) {
@@ -8656,26 +8693,30 @@ impl State {
                         // pane normalizes source resolution, so keeping zoom/pan
                         // leaves the on-screen view identical — only sharper.
                     } else {
-                        // Restore a cached view if we've seen another PNG
+                        // Restore a cached view if we've seen another image
                         // of the same size in the same directory (e.g. the
-                        // next render in a time-step series). Miss → fit
-                        // to pane, centred.
-                        let cache_key =
-                            png_cache_key_from_node_id(self.preview_node_id_fired.as_deref(), dims);
-                        let restored = cache_key
-                            .as_ref()
-                            .and_then(|k| self.preview_png_cache.get(k))
-                            .copied();
-                        match restored {
-                            Some((zoom, pan)) => {
-                                self.preview_png_zoom = zoom;
-                                self.preview_png_pan_px = pan;
-                            }
-                            None => {
-                                self.preview_png_zoom = 1.0;
-                                self.preview_png_pan_px = (0.0, 0.0);
-                            }
-                        }
+                        // next render in a time-step series). The cache
+                        // holds a source-px ROI whose solve needs the live
+                        // image rect — which doesn't exist here, and whose
+                        // caption band at this moment is still the previous
+                        // node's — so a hit only PARKS the restore for the
+                        // render pass (see `pending_roi_restore`). Either
+                        // way the view resets to fit now, so every miss and
+                        // any pre-consume frame paint the default. Image
+                        // nodes only: a PDF page turn shares (dir, dims)
+                        // across pages and must reset, not inherit another
+                        // page's view.
+                        self.pending_roi_restore = self
+                            .preview_node_id_fired
+                            .as_deref()
+                            .filter(|nid| Self::is_image_node_id(nid))
+                            .and_then(|nid| {
+                                let key = png_cache_key_from_node_id(Some(nid), dims)?;
+                                let roi = *self.preview_png_cache.get(&key)?;
+                                Some((nid.to_string(), roi))
+                            });
+                        self.preview_png_zoom = 1.0;
+                        self.preview_png_pan_px = (0.0, 0.0);
                     }
                 }
                 Err(e) => tracing::warn!(error = %e, "preview-png decode failed"),
@@ -9326,6 +9367,7 @@ impl State {
                     project_root,
                     proxy,
                     remote,
+                    backend_version,
                 } => {
                     // ADR 0035: arm the proxy only when the daemon can proxy
                     // (capability) AND this FE actually connected over the tcp
@@ -9362,6 +9404,10 @@ impl State {
                             .map(str::to_string)
                     });
                     self.daemon_project_root = project_root.clone();
+                    // Backend product version for the bottom-edge version
+                    // stamp. Empty (pre-versioning daemon) is kept as `None`
+                    // so the stamp renders `be ?` rather than a blank half.
+                    self.backend_version = Some(backend_version).filter(|v| !v.is_empty());
                     self.last_revision = revision;
                     let _ = session_id;
                     // ADR 0030 §2: a clean hello means the protocol skew (if
@@ -12362,6 +12408,11 @@ impl State {
         self.refresh_battery_label();
         let battery = self.battery_label.clone();
         let last_key = self.last_key.clone();
+        // FE/BE version stamp for the bottom chrome edge. Snapshotted here
+        // with the other draw locals because the draw closure can't borrow
+        // `self` again.
+        let (version_stamp, version_skew) =
+            version_label(&sot_protocol::app_version(), self.backend_version.as_deref());
         let mode = self.mode;
         let focus = self.focus;
         let maximized = self.maximized;
@@ -13390,6 +13441,39 @@ impl State {
                     }
                 }
 
+                // FE/BE version stamp, left-aligned on the BOTTOM outer edge
+                // — the mirror of the `nav · mode:` title on the top edge,
+                // same `write_title` treatment and the same two-cell inset
+                // from the corner glyph. Sits ON the border line; the session
+                // strip is a pixel overlay one row lower, so the two don't
+                // fight for the same cells.
+                //
+                // Dark gray when FE and BE agree, yellow when they don't:
+                // the halves drift independently (rebuild one, forget the
+                // other), and a skew you have to read character-by-character
+                // to notice isn't surfaced at all.
+                {
+                    let stamp_cells = version_stamp.chars().count() as u16;
+                    let bot_y = area.y + area.height - 1;
+                    // Same guard shape as the clock: skip entirely rather
+                    // than smear a truncated version across the corner when
+                    // the window is too narrow to hold it.
+                    if area.width > stamp_cells + 2 {
+                        write_title(
+                            buf,
+                            area.x + 2,
+                            bot_y,
+                            &version_stamp,
+                            stamp_cells,
+                            if version_skew {
+                                Style::default().fg(Color::Yellow)
+                            } else {
+                                idle_title_style
+                            },
+                        );
+                    }
+                }
+
                 // LLM pane: paint the vt100 terminal grid into the
                 // BL content rect. Walk every cell of the emulator
                 // screen at (row, col), look up its glyph + colour,
@@ -14285,6 +14369,44 @@ impl State {
                             "preview --roi: degenerate geometry — aim dropped"),
                     }
                 }
+                if roi_aim.is_some() {
+                    // An explicit `--roi` aim beats the view carry: both
+                    // target this install, and the aim is a user/CLI ask.
+                    self.pending_roi_restore = None;
+                } else if self.pending_roi_restore.as_ref().is_some_and(|(nid, _)| {
+                    Some(nid.as_str()) == self.preview_node_id_fired.as_deref()
+                }) {
+                    // Same-dir same-size view carry (`preview_png_cache`),
+                    // deferred from preview install to here — the first
+                    // frame with this node's OWN caption band in
+                    // `image_rect`. Solved exactly like an aim; the
+                    // ordinary clamps below still apply. Deliberately no
+                    // `preview_roi_applied` echo: that event is the
+                    // ADR-0025 contract for explicit aims only.
+                    let (nid, rect) = self.pending_roi_restore.take().expect("checked Some above");
+                    let (src_w, src_h) = self.preview_png_dims.unwrap_or(quad.size_px);
+                    match solve_roi_view(
+                        image_rect.w,
+                        image_rect.h,
+                        letterbox_rect.w,
+                        letterbox_rect.h,
+                        zoom_max,
+                        src_w,
+                        src_h,
+                        rect,
+                    ) {
+                        Some((z, pan)) => {
+                            self.preview_png_zoom = z;
+                            self.preview_png_pan_px = pan;
+                        }
+                        // Degraded, not broken — the view stays at fit. Logged
+                        // (debug, not the aim path's warn: no user asked for
+                        // this rect) so a mysteriously-not-carried view is
+                        // diagnosable.
+                        None => tracing::debug!(node_id = %nid,
+                            "view carry: degenerate geometry — restore dropped"),
+                    }
+                }
                 let zoom = self.preview_png_zoom.clamp(1.0, zoom_max);
                 self.preview_png_zoom = zoom;
                 let canvas_w = letterbox_rect.w * zoom;
@@ -14349,6 +14471,37 @@ impl State {
                         })
                     });
                 self.preview_roi = new_roi;
+                // Write-through view carry: persist the freshly computed
+                // visible ROI so same-dir same-size neighbors restore this
+                // view (`preview_png_cache`). Done here, not at keystroke
+                // time, because only this pass has the post-clamp geometry.
+                // The hysteresis matters: a restore's own readback lands
+                // within quantization (±1 px/edge) of the rect it restored,
+                // and overwriting with it would ratchet — each flip
+                // re-fitting a rect one pixel bigger, the view creeping out.
+                // Keeping the incumbent inside that window makes the carry a
+                // true fixed point; real zoom/pan input moves edges by far
+                // more than a pixel, so nothing a user does is swallowed.
+                // `preview_roi` is image-node-gated, so PDF pages never save.
+                if let Some(roi) = self.preview_roi.as_ref() {
+                    if let Some(key) = png_cache_key_from_node_id(
+                        Some(roi.node_id.as_str()),
+                        (roi.src_w, roi.src_h),
+                    ) {
+                        let rect = RoiRect {
+                            x: roi.x,
+                            y: roi.y,
+                            w: roi.w,
+                            h: roi.h,
+                        };
+                        match self.preview_png_cache.get(&key) {
+                            Some(prev) if roi_rects_within_quantization(*prev, rect) => {}
+                            _ => {
+                                self.preview_png_cache.insert(key, rect);
+                            }
+                        }
+                    }
+                }
                 // ADR 0025: echo the effective (post-clamp) rect for a just-
                 // applied `--roi` aim — `fe.command.send` is fire-and-forget,
                 // so the ack couldn't carry it (2026-07-21 ADR update).
@@ -18026,7 +18179,9 @@ impl ApplicationHandler for App {
                                 handled = false;
                             }
                             if handled {
-                                state.save_png_view();
+                                // View carry is written through from the
+                                // render pass (`preview_png_cache`) — a save
+                                // here would record LAST frame's ROI.
                                 // Paginated page (PDF): re-rasterize at the
                                 // new zoom so text stays crisp past 1×.
                                 state.maybe_reraster_page();
@@ -19168,6 +19323,22 @@ fn write_title(
     buf.set_string(x, y, &s, style);
 }
 
+/// Build the bottom-edge version stamp: `" fe <fe> · be <be> "`, plus a
+/// `skew` flag that is true when the two halves disagree.
+///
+/// Both halves are ALWAYS shown, even when they match. The point of the
+/// stamp is that FE and BE drift apart independently — one gets rebuilt, the
+/// other doesn't — so collapsing to a single version in the happy case would
+/// hide exactly the field you are watching. `None` (a pre-versioning daemon,
+/// or no hello yet) renders `be ?` and is NOT counted as skew: unknown is not
+/// the same as different, and colouring it as a mismatch would cry wolf on
+/// every launch before the first hello lands.
+fn version_label(fe: &str, be: Option<&str>) -> (String, bool) {
+    let be = be.unwrap_or("?");
+    let skew = be != "?" && be != fe;
+    (format!(" fe {fe} · be {be} "), skew)
+}
+
 /// Scale an RGB colour's brightness by `f` (saturating). `f > 1.0`
 /// brightens (toward white-ish, channel-clamped); `f < 1.0` dims. Used by
 /// the selected-session contrast levers so a single multiplier expresses
@@ -20038,6 +20209,124 @@ mod tests {
     }
 
     #[test]
+    fn view_carry_is_a_fixed_point_under_the_quantization_hysteresis() {
+        // The carry loops save (`visible_roi_px`, outward floor/ceil) into
+        // restore (`solve_roi_view`) on every A↔B flip. Quantization expands
+        // the rect by up to a pixel per edge per round trip, so a cache that
+        // rewrote every readback would zoom out by a creep — invisible per
+        // flip, obvious after dozens. Pin both halves of the defense:
+        // (1) a restore's readback stays within the ±1 px/edge window of the
+        //     rect it restored (the hysteresis premise), and
+        // (2) with the incumbent kept, repeated flips re-solve the SAME rect
+        //     to bit-identical zoom/pan — a true fixed point after the first
+        //     restore.
+        let pane = ScreenRect {
+            x: 7.0,
+            y: 11.0,
+            w: 1231.0,
+            h: 803.0,
+        };
+        let img = image_rect_for_caption(pane, 57.0);
+        let (src_w, src_h) = (12730_u32, 12826_u32);
+        let fit = (img.w / src_w as f32).min(img.h / src_h as f32);
+        let (lw, lh) = (src_w as f32 * fit, src_h as f32 * fit);
+        let zoom_max = png_zoom_max(img.w, img.h, (src_w, src_h));
+        // The render pass's clamp + canvas placement + ROI readback.
+        let readback = |z: f32, pan: (f32, f32)| -> RoiRect {
+            let z = z.clamp(1.0, zoom_max);
+            let (cw, ch) = (lw * z, lh * z);
+            let sx = (cw - img.w).max(0.0);
+            let sy = (ch - img.h).max(0.0);
+            let px = pan.0.clamp(-sx * 0.5, sx * 0.5);
+            let py = pan.1.clamp(-sy * 0.5, sy * 0.5);
+            let cx = img.x + img.w * 0.5 - cw * 0.5 + px;
+            let cy = img.y + img.h * 0.5 - ch * 0.5 + py;
+            let (x, y, w, h) = visible_roi_px(
+                cx, cy, cw, ch, img.x, img.y, img.w, img.h, src_w, src_h,
+            )
+            .expect("view visible");
+            RoiRect { x, y, w, h }
+        };
+        // A user view: zoomed well in, panned off-centre — then saved.
+        let saved = readback(9.7, (313.0, -211.0));
+        // First restore (the B→A flip) and its write-through readback.
+        let (z1, p1) =
+            solve_roi_view(img.w, img.h, lw, lh, zoom_max, src_w, src_h, saved).unwrap();
+        let echo = readback(z1, p1);
+        assert!(
+            roi_rects_within_quantization(saved, echo),
+            "readback escaped the hysteresis window: {saved:?} -> {echo:?}"
+        );
+        // Hysteresis keeps `saved` as the incumbent, so every later flip
+        // re-solves the identical rect: zoom/pan are exactly reproduced.
+        for _ in 0..8 {
+            let (z, p) =
+                solve_roi_view(img.w, img.h, lw, lh, zoom_max, src_w, src_h, saved).unwrap();
+            assert_eq!((z, p), (z1, p1), "flip drifted off the fixed point");
+        }
+    }
+
+    #[test]
+    fn caption_flip_restores_the_same_source_region() {
+        // The reported bug: same-size neighbors in one directory, one with a
+        // figure caption. The screen-px carry restored an offset (rect
+        // centre shifts by half the band) wrongly-magnified (fit changes)
+        // view. The ROI carry must land the SAME source region under either
+        // geometry — centred, and never showing less than what was saved
+        // (min-axis zoom may show more context on the shorter rect).
+        let pane = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            w: 1200.0,
+            h: 780.0,
+        };
+        let plain = image_rect_for_caption(pane, 0.0);
+        let banded = image_rect_for_caption(pane, 96.0); // 3-line caption
+        let (src_w, src_h) = (4096_u32, 4096_u32);
+        let saved = RoiRect {
+            x: 1500,
+            y: 2200,
+            w: 600,
+            h: 390,
+        };
+        for img in [plain, banded] {
+            let fit = (img.w / src_w as f32).min(img.h / src_h as f32);
+            let (lw, lh) = (src_w as f32 * fit, src_h as f32 * fit);
+            let zoom_max = png_zoom_max(img.w, img.h, (src_w, src_h));
+            let (z, pan) =
+                solve_roi_view(img.w, img.h, lw, lh, zoom_max, src_w, src_h, saved).unwrap();
+            let (cw, ch) = (lw * z, lh * z);
+            let sx = (cw - img.w).max(0.0);
+            let sy = (ch - img.h).max(0.0);
+            let px = pan.0.clamp(-sx * 0.5, sx * 0.5);
+            let py = pan.1.clamp(-sy * 0.5, sy * 0.5);
+            let cx = img.x + img.w * 0.5 - cw * 0.5 + px;
+            let cy = img.y + img.h * 0.5 - ch * 0.5 + py;
+            let (ex, ey, ew, eh) = visible_roi_px(
+                cx, cy, cw, ch, img.x, img.y, img.w, img.h, src_w, src_h,
+            )
+            .unwrap();
+            assert!(
+                ex <= saved.x + 1 && ey <= saved.y + 1,
+                "lost the region start: ({ex},{ey})"
+            );
+            assert!(
+                ex + ew + 1 >= saved.x + saved.w && ey + eh + 1 >= saved.y + saved.h,
+                "lost the region end: ({ex},{ey},{ew},{eh})"
+            );
+            let (scx, scy) = (
+                saved.x as f32 + saved.w as f32 / 2.0,
+                saved.y as f32 + saved.h as f32 / 2.0,
+            );
+            let (ecx, ecy) = (ex as f32 + ew as f32 / 2.0, ey as f32 + eh as f32 / 2.0);
+            assert!(
+                (ecx - scx).abs() <= 2.0 && (ecy - scy).abs() <= 2.0,
+                "restored centre drifted: ({ecx},{ecy}) vs ({scx},{scy})"
+            );
+        }
+    }
+
+    #[test]
     fn is_image_node_id_matches_rasters_not_pdf() {
         assert!(State::is_image_node_id("files:plots/a.png"));
         assert!(State::is_image_node_id("files:IMG.JPEG"));
@@ -20207,6 +20496,35 @@ mod tests {
         assert!((session_strip_target(&labels, 0, cell_w) - 10.0).abs() < 1e-3);
         assert!((session_strip_target(&labels, 1, cell_w) - (50.0 + 20.0)).abs() < 1e-3);
         let _ = gap;
+    }
+
+    #[test]
+    fn version_label_shows_both_halves_even_when_they_match() {
+        // Always-both: the matching case must still print `be`, otherwise
+        // the field you're watching is invisible exactly when it's healthy.
+        let (s, skew) = version_label("0.5.8", Some("0.5.8"));
+        assert_eq!(s, " fe 0.5.8 · be 0.5.8 ");
+        assert!(!skew);
+    }
+
+    #[test]
+    fn version_label_flags_skew() {
+        let (s, skew) = version_label("0.5.8", Some("0.5.7"));
+        assert_eq!(s, " fe 0.5.8 · be 0.5.7 ");
+        assert!(skew);
+        // Dev builds differ only in the sha — the common real-world skew,
+        // since both sides carry the same `0.5.8-dev` prefix.
+        let (_, skew) = version_label("0.5.8-dev+aaaaaaa", Some("0.5.8-dev+bbbbbbb"));
+        assert!(skew);
+    }
+
+    #[test]
+    fn version_label_unknown_backend_is_not_skew() {
+        // Pre-hello / pre-versioning daemon. Unknown != different: colouring
+        // this as a mismatch would cry wolf on every launch.
+        let (s, skew) = version_label("0.5.8", None);
+        assert_eq!(s, " fe 0.5.8 · be ? ");
+        assert!(!skew);
     }
 
     #[test]

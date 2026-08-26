@@ -435,11 +435,21 @@ if [ "$OS" = Darwin ] && [ "$ROLE" != remote ]; then
 fi
 if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
     mkdir -p "$HOME/.config/systemd/user"
+    # ADR 0038: the tmux keeper goes in FIRST (and enable --now BEFORE sotd),
+    # so the tmux server is never an implicit child of sotd's cgroup. Static
+    # unit, no tokens. Tolerate an older release stage that lacks the file.
+    if [ -f "$BINDIR/sot-tmux.service" ]; then
+        cp "$BINDIR/sot-tmux.service" "$HOME/.config/systemd/user/sot-tmux.service"
+    fi
     sed -e "s|@SOT_BIN@|$PREFIX/bin/sotd|" \
         -e "s|@SOT_APPLY@|$PREFIX/bin/sot-apply|" \
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
         "$BINDIR/sotd.service" > "$HOME/.config/systemd/user/sotd.service"
     systemctl --user daemon-reload
+    if [ -f "$HOME/.config/systemd/user/sot-tmux.service" ]; then
+        systemctl --user enable --now sot-tmux.service
+        say "sot-tmux keeper: $(systemctl --user is-active sot-tmux.service)"
+    fi
     systemctl --user enable --now sotd.service
     loginctl enable-linger "$USER" 2>/dev/null || true
     say "sotd running: $(systemctl --user is-active sotd.service) (socket $DEFAULT_SOCKET)"
@@ -672,15 +682,42 @@ EOF
         say "FE launcher: sot-launch + 'Ship of Tools' in ~/Applications (Launchpad/Spotlight)"
     else
     mkdir -p "$HOME/.local/share/applications"
+    # Icon parity with the other two platforms: Windows points its .lnk at
+    # logo.ico and macOS generates an .icns from logo.png, but this entry had
+    # no Icon= key at all, so Linux was the one platform whose launcher showed
+    # a generic placeholder. Install into the hicolor theme (the freedesktop
+    # lookup path) AND keep an absolute-path copy under $PREFIX as the
+    # fallback Icon= value, so the entry still resolves on a desktop with no
+    # icon theme cache. $PREFIX is stable across repo moves; the checkout is
+    # not — pointing Icon= into the clone would break the moment it is moved.
+    ICON_SRC="$CHECKOUT/logo.png"
+    ICON_VALUE="ship-of-tools"
+    if [ -f "$ICON_SRC" ]; then
+        cp -f "$ICON_SRC" "$PREFIX/logo.png" 2>/dev/null || true
+        if mkdir -p "$HOME/.local/share/icons/hicolor/256x256/apps" 2>/dev/null &&
+           cp -f "$ICON_SRC" "$HOME/.local/share/icons/hicolor/256x256/apps/ship-of-tools.png" 2>/dev/null; then
+            command -v gtk-update-icon-cache >/dev/null 2>&1 &&
+                gtk-update-icon-cache -q -t -f "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+        else
+            ICON_VALUE="$PREFIX/logo.png"
+        fi
+    else
+        ICON_VALUE="$PREFIX/logo.png"
+    fi
     cat > "$HOME/.local/share/applications/ship-of-tools.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Ship of Tools
+Comment=Agentic Julia development environment
 Exec=$HOME/.local/bin/sot-launch
+Icon=$ICON_VALUE
 Terminal=false
-Categories=Development;
+Categories=Development;IDE;
+StartupWMClass=sot
 EOF
-    say "FE launcher: sot-launch (+ desktop entry)"
+    command -v update-desktop-database >/dev/null 2>&1 &&
+        update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+    say "FE launcher: sot-launch (+ desktop entry, icon $ICON_VALUE)"
     fi
 fi
 

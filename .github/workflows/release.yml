@@ -98,7 +98,7 @@ jobs:
           else
             cp rust/target/release/sot rust/target/release/sotd "$stage/"
           fi
-          cp deploy/sotd.service "$stage/"
+          cp deploy/sotd.service deploy/sot-tmux.service "$stage/"
           # The offline apply/rollback script rides in the archive so a staged
           # update always carries its own applier (Phase C3).
           cp scripts/sot-apply.sh "$stage/sot-apply"
