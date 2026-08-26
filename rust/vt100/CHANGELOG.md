@@ -27,11 +27,70 @@ cannot express the inactive grid or alternate-screen identity. Also removed:
 the `tui-term` feature and its ratatui glue, which the only consumer had
 already switched off.
 
-**Changed — one parser behavior, and only one.** `Row::resize` now clears a
-wide character's leading cell when shrinking cuts off its continuation,
-which `Row::truncate` already did. Without it, shrinking a terminal through
-a wide glyph left a lead with no continuation, and drawing over that cell
-reached for the missing half and panicked. (`Row::truncate` also no longer
-indexes past the end when resized to zero.)
+**Changed — three parser behaviors, all to stop a panic.**
 
-Nothing else about parsing differs from the release this vendors.
+`Row::resize` now clears a wide character's leading cell when shrinking cuts
+off its continuation, which `Row::truncate` already did. Without it, shrinking
+a terminal through a wide glyph left a lead with no continuation, and drawing
+over that cell reached for the missing half and panicked. (`Row::truncate`
+also no longer indexes past the end when resized to zero.)
+
+A terminal now has a MINIMUM size of 2x2 (`grid::MIN_ROWS`). Below it, two
+inherited panics were reachable from ordinary traffic: a width-two glyph in a
+one-column terminal underflowed `size.cols - width` and, once that was fixed,
+still had nowhere to put its continuation half; and a wrap in a one-row
+terminal underflowed `prev_pos.row -= scrolled` at row 0. Neither geometry has
+a rendering worth inventing, so it is refused instead — constructors and
+`set_size` raise a smaller request, and `Parser::restore_screen` rejects a
+checkpoint announcing one rather than clamping it into a screen the payload
+does not describe. Reasoning at the constant; both former panics are pinned in
+`tests/geometry.rs`.
+
+A glyph's width is CLAMPED to two cells (`grid::MAX_GLYPH_WIDTH`). Upstream's
+`Screen::text` carried the comment "width() can only return 0, 1, or 2", which
+was true of the `unicode-width` table it was written against; 0.2 reports three
+for a handful of characters. This crate cannot represent a three-cell glyph —
+a wide character is a lead plus exactly one continuation — and `cols - width`
+underflowed for any terminal narrower than the glyph, so an ordinary
+two-character input panicked on a two-column screen. Such a character now draws
+as an ordinary wide glyph. `MIN_COLS >= MAX_GLYPH_WIDTH` is asserted at compile
+time, because that is the relationship the column arithmetic depends on and
+raising one without the other would restore the underflow in silence.
+
+Nothing else about parsing differs from the release this vendors — and that
+sentence is now checked rather than asserted; see below.
+
+## What this fork's tests are
+
+`src/` was vendored alone at first, so the 54 checkpoint tests were the whole
+suite and every parser behavior the fork inherited was untested here. Upstream's
+suite is now vendored too, because ADR 0041 steps 4-5 change parser behavior and
+a change wants something to regress against.
+
+**Vendored close to verbatim:** the fixture corpus — 34 recordings under
+`tests/data/fixtures/`, each a stream of input chunks with the exact screen it
+must produce — and the tests that drive it (`attr`, `control`, `csi`, `escape`,
+`mode`, `osc`, `processing`, `scroll`, `text`, `weird`), plus `basic`, `init`,
+`write`, and `split-escapes`. This is what turns "nothing else about parsing
+differs" from a claim into a check.
+
+**Vendored with the oracle swapped.** Upstream proved a screen's state was
+*complete* by re-emitting it as escape sequences and re-parsing them. That
+stack is gone, so the oracle is the checkpoint round trip — the same shape of
+proof over a strictly larger surface, since it also carries the grid that is
+not on screen. `tests/helpers/mod.rs` holds it and explains the one property
+that could not come along: restoring mid-stream and continuing. The corpus
+splits its input *inside* escape sequences and UTF-8 characters on purpose, and
+a checkpoint cannot carry a half-read sequence — the state machine lives in
+`vte`, private. That is precisely why the capsule cuts only at ground-state
+boundaries, and the property is tested where the cut can be placed on purpose
+(`checkpoint::a_restored_parser_continues_the_stream_identically`).
+
+**Not vendored, deliberately:** the tests of the removed writing stack
+(`window_contents`'s `formatted`/`diff_*`, `attr::attributes_formatted`) and
+their 31 MB crawl corpus; `linutil_integration.rs`, which tests the removed
+ratatui glue; the `regen-fixtures` tool, because a one-command way to rewrite
+the evidence from the behavior under test is the wrong thing to keep within
+reach; and `quickcheck`, whose property died with the stack it tested — its
+input generator survives in `tests/roundtrip_fuzz.rs` on a fixed-seed PRNG, so
+a CI failure reproduces exactly.

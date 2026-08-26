@@ -44,8 +44,8 @@
 //! header
 //!   magic        8  b"SOTVT100"
 //!   version      2  u16 = 1
-//!   rows         2  u16, 1..=256
-//!   cols         2  u16, 1..=512
+//!   rows         2  u16, 2..=256
+//!   cols         2  u16, 2..=512
 //!   modes        1  u8, the Screen mode bitfield
 //!   mouse_mode   1  u8, MouseProtocolMode tag
 //!   mouse_enc    1  u8, MouseProtocolEncoding tag
@@ -127,7 +127,8 @@ pub(crate) const MAGIC: &[u8; 8] = b"SOTVT100";
 /// The format version this build writes, and the only one it reads.
 pub(crate) const VERSION: u16 = 1;
 
-/// Maximum rows, from the ADR 0041 resource budget.
+/// Maximum rows, from the ADR 0041 resource budget. The matching lower
+/// bound is `grid::MIN_ROWS`, and it is a different kind of rule — see there.
 pub(crate) const MAX_ROWS: u16 = 256;
 
 /// Maximum columns, from the ADR 0041 resource budget.

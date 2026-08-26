@@ -11,105 +11,22 @@
 //! state through behavior — switching grids, restoring the saved cursor —
 //! which no amount of symmetric forgetting can fake.
 
+mod helpers;
+
+// The round-trip oracle is shared with the vendored upstream suite, which
+// drives it over the whole fixture corpus. It lives in `helpers` so both use
+// the same one.
+use helpers::{
+    assert_roundtrips, assert_visible_state_equal, checkpoint, restore,
+    roundtrip, ALT_ENTER, ALT_EXIT,
+};
 use vt100_ctt::{
     CheckpointError, Color, MouseProtocolEncoding, MouseProtocolMode, Parser,
-    Screen, MAX_CHECKPOINT_LEN,
+    MAX_CHECKPOINT_LEN,
 };
-
-/// Switch to the alternate grid without the cursor save/clear that `?1049`
-/// performs, so a test can look at the other grid without disturbing state.
-const ALT_ENTER: &[u8] = b"\x1b[?47h";
-const ALT_EXIT: &[u8] = b"\x1b[?47l";
 
 /// Offset of the screen-modes byte: magic 8, version 2, rows 2, cols 2.
 const MODES_OFFSET: usize = 14;
-
-/// A checkpoint of a screen the parser produced must always be writable.
-fn checkpoint(parser: &Parser) -> Vec<u8> {
-    parser.screen().checkpoint().expect("checkpoint")
-}
-
-fn roundtrip(parser: &Parser) -> Parser {
-    let bytes = checkpoint(parser);
-    let mut restored = Parser::new(1, 1, 0);
-    restored
-        .restore_screen(&bytes)
-        .expect("a freshly written checkpoint must restore");
-    restored
-}
-
-/// Restores into a throwaway parser, which is the only public restore path.
-fn restore(bytes: &[u8]) -> Result<Parser, CheckpointError> {
-    let mut parser = Parser::new(1, 1, 0);
-    parser.restore_screen(bytes)?;
-    Ok(parser)
-}
-
-/// Compares everything the public API exposes about the *visible* screen.
-fn assert_visible_state_equal(a: &Screen, b: &Screen) {
-    assert_eq!(a.size(), b.size(), "size");
-    let (rows, cols) = a.size();
-    assert_eq!(a.cursor_position(), b.cursor_position(), "cursor position");
-    assert_eq!(a.alternate_screen(), b.alternate_screen(), "alternate screen");
-    assert_eq!(a.application_keypad(), b.application_keypad(), "keypad");
-    assert_eq!(a.application_cursor(), b.application_cursor(), "cursor mode");
-    assert_eq!(a.hide_cursor(), b.hide_cursor(), "hide cursor");
-    assert_eq!(a.bracketed_paste(), b.bracketed_paste(), "bracketed paste");
-    assert_eq!(a.mouse_protocol_mode(), b.mouse_protocol_mode(), "mouse mode");
-    assert_eq!(
-        a.mouse_protocol_encoding(),
-        b.mouse_protocol_encoding(),
-        "mouse encoding"
-    );
-    assert_eq!(a.fgcolor(), b.fgcolor(), "fgcolor");
-    assert_eq!(a.bgcolor(), b.bgcolor(), "bgcolor");
-    assert_eq!(a.bold(), b.bold(), "bold");
-    assert_eq!(a.dim(), b.dim(), "dim");
-    assert_eq!(a.italic(), b.italic(), "italic");
-    assert_eq!(a.underline(), b.underline(), "underline");
-    assert_eq!(a.inverse(), b.inverse(), "inverse");
-    for row in 0..rows {
-        assert_eq!(a.row_wrapped(row), b.row_wrapped(row), "row {row} wrapped");
-        for col in 0..cols {
-            assert_eq!(
-                a.cell(row, col),
-                b.cell(row, col),
-                "cell ({row}, {col})"
-            );
-        }
-    }
-}
-
-/// The full check: the visible screen, the serialized structure, and — by
-/// switching grids on both — the grid that was *not* visible.
-///
-/// The caller's parser is switched to the other grid and back, so it is left
-/// showing what it showed on entry. The one lasting effect is that looking at
-/// the alternate grid allocates its row storage, which is inherent to looking
-/// at it; tests that care about that allocation compare checkpoints directly
-/// instead of coming through here.
-fn assert_roundtrips(original: &mut Parser) {
-    let mut restored = roundtrip(original);
-    assert_visible_state_equal(original.screen(), restored.screen());
-    assert_eq!(
-        checkpoint(original),
-        checkpoint(&restored),
-        "re-serialized structure"
-    );
-
-    let (away, back) = if original.screen().alternate_screen() {
-        (ALT_EXIT, ALT_ENTER)
-    } else {
-        (ALT_ENTER, ALT_EXIT)
-    };
-    original.process(away);
-    restored.process(away);
-    assert_visible_state_equal(original.screen(), restored.screen());
-
-    original.process(back);
-    restored.process(back);
-    assert_visible_state_equal(original.screen(), restored.screen());
-}
 
 #[test]
 fn empty_screen_roundtrips() {
@@ -303,8 +220,8 @@ fn scrollback_is_not_carried_and_capacity_comes_from_the_restorer() {
     // parsers configured differently restore the same bytes to the same
     // screen.
     let bytes = checkpoint(&parser);
-    let mut roomy = Parser::new(1, 1, 10_000);
-    let mut none = Parser::new(1, 1, 0);
+    let mut roomy = Parser::new(2, 2, 10_000);
+    let mut none = Parser::new(2, 2, 0);
     roomy.restore_screen(&bytes).unwrap();
     none.restore_screen(&bytes).unwrap();
     assert_eq!(checkpoint(&roomy), checkpoint(&none));
@@ -432,9 +349,17 @@ fn rejects_unsupported_version() {
 
 #[test]
 fn rejects_degenerate_and_oversize_dimensions() {
-    for (rows, cols) in
-        [(0_u16, 40_u16), (12, 0), (257, 40), (12, 513), (600, 600)]
-    {
+    for (rows, cols) in [
+        (0_u16, 40_u16),
+        (12, 0),
+        // Below `grid::MIN_ROWS` / `MIN_COLS`: refused, not clamped, because
+        // clamping would hand back a screen the payload does not describe.
+        (1, 40),
+        (12, 1),
+        (257, 40),
+        (12, 513),
+        (600, 600),
+    ] {
         let mut bytes = sample_checkpoint();
         bytes[10..12].copy_from_slice(&rows.to_le_bytes());
         bytes[12..14].copy_from_slice(&cols.to_le_bytes());
@@ -652,10 +577,9 @@ const GRID_HEADER_LEN: usize = 2 + 2 + 2 + 2 + 2 + 2 + 1 + 1;
 const FIRST_CELL: usize =
     HEADER_LEN + 2 * DEFAULT_ATTRS_LEN + GRID_HEADER_LEN + 1;
 
-/// A one-row screen whose first two columns hold a wide glyph and its
-/// continuation.
+/// A screen whose first two columns hold a wide glyph and its continuation.
 fn wide_glyph_checkpoint() -> Vec<u8> {
-    let mut parser = Parser::new(1, 6, 0);
+    let mut parser = Parser::new(2, 6, 0);
     parser.process("日abcd".as_bytes());
     let bytes = checkpoint(&parser);
     // lead: flags = length present, packed len = wide | 3 content bytes
@@ -789,14 +713,14 @@ fn rejects_an_oversized_payload_without_decoding_it() {
 /// what version 1 means; changing them means changing the version.
 #[test]
 fn version_1_bytes_are_pinned() {
-    let mut parser = Parser::new(1, 2, 0);
+    let mut parser = Parser::new(2, 2, 0);
     parser.process(b"\x1b[?1006h\x1b[38;5;9;4mZ");
 
     #[rustfmt::skip]
     let expected: &[u8] = &[
         b'S', b'O', b'T', b'V', b'T', b'1', b'0', b'0', // magic
         1, 0,          // version 1
-        1, 0,          // rows
+        2, 0,          // rows — grid::MIN_ROWS, the smallest a screen may be
         2, 0,          // cols
         0,             // modes: none set
         0,             // mouse protocol mode: None
@@ -808,7 +732,7 @@ fn version_1_bytes_are_pinned() {
         // normal grid
         0, 0, 1, 0,    // pos: row 0, col 1 — the next drawable column
         0, 0, 0, 0,    // saved pos
-        0, 0, 0, 0,    // scroll region rows 0..=0
+        0, 0, 1, 0,    // scroll region rows 0..=1
         0,             // origin mode
         0,             // saved origin mode
         0,             // row 0: not wrapped
@@ -817,15 +741,21 @@ fn version_1_bytes_are_pinned() {
         b'Z',
         1, 9, 0, 0b0000_1000, // its attrs: fg Idx(9), bg default, underline
         0,             // cell (0, 1): empty, default attrs
+        0,             // row 1: not wrapped
+        0,             // cell (1, 0)
+        0,             // cell (1, 1)
         // alternate grid: never entered, so blank rows at the same size
         0, 0, 0, 0,
         0, 0, 0, 0,
-        0, 0, 0, 0,
+        0, 0, 1, 0,
         0,
         0,
         0,             // row 0: not wrapped
         0,             // cell (0, 0)
         0,             // cell (0, 1)
+        0,             // row 1: not wrapped
+        0,             // cell (1, 0)
+        0,             // cell (1, 1)
     ];
     assert_eq!(checkpoint(&parser), expected);
 }
@@ -909,7 +839,7 @@ const SCROLL_BOTTOM: usize = GRID_START + 10;
 /// field out makes the payload longer.
 #[test]
 fn rejects_an_empty_cell_written_the_long_way() {
-    let mut parser = Parser::new(1, 1, 0);
+    let mut parser = Parser::new(2, 2, 0);
     parser.process(b"");
     let mut bytes = checkpoint(&parser);
     assert_eq!(bytes[FIRST_CELL], 0, "expected an empty default cell");
@@ -925,7 +855,7 @@ fn rejects_an_empty_cell_written_the_long_way() {
 
 #[test]
 fn rejects_default_attributes_written_the_long_way() {
-    let parser = Parser::new(1, 1, 0);
+    let parser = Parser::new(2, 2, 0);
     let mut bytes = checkpoint(&parser);
     bytes[FIRST_CELL] = 0b0000_0010; // claim an attributes field
     bytes.splice(FIRST_CELL + 1..FIRST_CELL + 1, [0, 0, 0]); // all default
@@ -982,11 +912,16 @@ fn accepts_the_equal_endpoint_region_a_resize_produces() {
     assert_roundtrips(&mut parser);
 }
 
-/// A one-row screen's region is `0..=0` by construction, which the rule above
-/// must not catch.
+/// The rule above must also not catch a whole-screen region on the smallest
+/// screen there is.
+///
+/// This test used to be about a ONE-row screen, whose region is `0..=0` — the
+/// equal-endpoint shape the rule has to admit. That screen is no longer
+/// constructible (`grid::MIN_ROWS`), and the equal-endpoint case is covered
+/// by the resize above, which is where it actually comes from.
 #[test]
-fn accepts_a_one_row_screens_whole_screen_region() {
-    let mut parser = Parser::new(1, 4, 0);
+fn accepts_the_smallest_screens_whole_screen_region() {
+    let mut parser = Parser::new(2, 4, 0);
     parser.process(b"hi");
     assert_roundtrips(&mut parser);
 }
@@ -1030,9 +965,9 @@ fn rejects_extreme_scroll_region_values_without_overflowing() {
 /// needs pinned.
 #[test]
 fn version_1_vocabulary_is_pinned() {
-    /// A 1x1 screen after `seq`, so the header sits at fixed offsets.
+    /// A minimal screen after `seq`, so the header sits at fixed offsets.
     fn after(seq: &[u8]) -> Vec<u8> {
-        let mut parser = Parser::new(1, 1, 0);
+        let mut parser = Parser::new(2, 2, 0);
         parser.process(seq);
         checkpoint(&parser)
     }
@@ -1083,14 +1018,14 @@ fn version_1_vocabulary_is_pinned() {
 
     // The two cell flags, separately — the layout golden only ever shows them
     // together as 3, so swapping their assignments would pass it.
-    let mut text_only = Parser::new(1, 1, 0);
+    let mut text_only = Parser::new(2, 2, 0);
     text_only.process(b"q");
     assert_eq!(
         checkpoint(&text_only)[FIRST_CELL],
         0b0000_0001,
         "cell flag: length present"
     );
-    let mut attrs_only = Parser::new(1, 1, 0);
+    let mut attrs_only = Parser::new(2, 2, 0);
     // Erase to a red background, then reset the CURRENT attributes so the
     // header keeps its default-attrs length and FIRST_CELL still lands.
     attrs_only.process(b"\x1b[41m\x1b[2J\x1b[m");
@@ -1101,7 +1036,7 @@ fn version_1_vocabulary_is_pinned() {
     );
 
     // The packed wide bits.
-    let mut wide = Parser::new(1, 2, 0);
+    let mut wide = Parser::new(2, 2, 0);
     wide.process("日".as_bytes());
     let bytes = checkpoint(&wide);
     assert_eq!(bytes[FIRST_CELL + 1], 0b1000_0000 | 3, "wide lead bit");
@@ -1113,7 +1048,7 @@ fn version_1_vocabulary_is_pinned() {
     origin.process(b"\x1b[2;4r\x1b[?6h");
     assert_eq!(checkpoint(&origin)[GRID + 12], 1, "origin mode");
 
-    let mut pending = Parser::new(1, 2, 0);
+    let mut pending = Parser::new(2, 2, 0);
     pending.process(b"ab");
     let bytes = checkpoint(&pending);
     assert_eq!(
@@ -1222,13 +1157,11 @@ fn no_rule_here_refuses_a_screen_the_parser_produces() {
     // Sizes that exercise the edges: smallest workable, odd widths that
     // split wide glyphs, and something ordinary.
     //
-    // One-row and one-column geometries are deliberately absent. Not
-    // because they never work — this suite checkpoints 1x1 screens
-    // elsewhere — but because SOME traffic panics the PARSER there before a
-    // checkpoint is ever taken (`Parser::new(1, 2, 0).process(b"abc")` is
-    // the whole repro), which would make this corpus fail for a reason that
-    // has nothing to do with over-rejection. Tracked as pre-existing
-    // degenerate-geometry bugs needing a policy decision.
+    // One-row and one-column geometries are absent because they no longer
+    // exist: `grid::MIN_ROWS` / `MIN_COLS` raise any smaller request to 2x2.
+    // They used to be absent for a worse reason — some traffic PANICKED the
+    // parser there before a checkpoint was ever taken — and that is what the
+    // minimum was introduced to settle. `geometry.rs` pins both halves.
     const SIZES: &[(u16, u16)] =
         &[(2, 2), (3, 5), (4, 7), (5, 9), (24, 80)];
 
@@ -1239,7 +1172,7 @@ fn no_rule_here_refuses_a_screen_the_parser_produces() {
             let bytes = parser.screen().checkpoint().unwrap_or_else(|e| {
                 panic!("{cols}x{rows} {chunk:?} would not checkpoint: {e}")
             });
-            let mut restored = Parser::new(1, 1, 0);
+            let mut restored = Parser::new(2, 2, 0);
             restored.restore_screen(&bytes).unwrap_or_else(|e| {
                 panic!("{cols}x{rows} {chunk:?} would not restore: {e}")
             });
@@ -1271,7 +1204,7 @@ fn no_rule_here_refuses_a_screen_the_parser_produces() {
                         resized.screen().checkpoint().unwrap_or_else(|e| {
                             panic!("{label} would not checkpoint: {e}")
                         });
-                    let mut restored = Parser::new(1, 1, 0);
+                    let mut restored = Parser::new(2, 2, 0);
                     restored.restore_screen(&bytes).unwrap_or_else(|e| {
                         panic!("{label} would not restore: {e}")
                     });

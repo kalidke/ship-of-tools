@@ -408,10 +408,14 @@ impl Screen {
             // don't even try to draw control characters
             return;
         }
-        let width = width
+        // Clamped, not trusted: `unicode-width` returns 3 for a few
+        // characters, which this crate cannot represent and whose arithmetic
+        // below would underflow `cols - width`. See `grid::MAX_GLYPH_WIDTH`.
+        let width: u16 = width
             .unwrap_or(1)
+            .min(usize::from(crate::grid::MAX_GLYPH_WIDTH))
             .try_into()
-            // width() can only return 0, 1, or 2
+            // clamped just above, so it fits
             .unwrap();
 
         // it doesn't make any sense to wrap if the last column in a row
@@ -1151,8 +1155,8 @@ impl Screen {
         &self,
     ) -> Result<Vec<u8>, crate::checkpoint::CheckpointError> {
         let size = self.grid.size();
-        if size.rows == 0
-            || size.cols == 0
+        if size.rows < crate::grid::MIN_ROWS
+            || size.cols < crate::grid::MIN_COLS
             || size.rows > crate::checkpoint::MAX_ROWS
             || size.cols > crate::checkpoint::MAX_COLS
         {
@@ -1224,12 +1228,12 @@ impl Screen {
         }
         let rows = r.u16()?;
         let cols = r.u16()?;
-        // Zero is not merely out of budget, it is unrepresentable: `Grid`
-        // computes `size.rows - 1` for its scroll region, so a zero-row
-        // payload would panic before any validation downstream could refuse
-        // it.
-        if rows == 0
-            || cols == 0
+        // A screen below `grid::MIN_ROWS` x `MIN_COLS` is not merely out of
+        // budget, it is unrepresentable — see that constant. It is refused
+        // here rather than clamped, because clamping would hand back a screen
+        // that is not the one the payload describes.
+        if rows < crate::grid::MIN_ROWS
+            || cols < crate::grid::MIN_COLS
             || rows > crate::checkpoint::MAX_ROWS
             || cols > crate::checkpoint::MAX_COLS
         {

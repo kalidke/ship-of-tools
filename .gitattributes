@@ -11,3 +11,9 @@
 # that drops the [sources]/[compat] rationale comments or reorders entries —
 # revert it with `git checkout -- <file>` and keep the hand-authored version.
 *.toml text eol=lf
+
+# The vendored vt100 fixture corpus is recorded terminal traffic: CR, LF and
+# raw escape bytes are DATA, not line endings. Left to git's own judgement a
+# Windows checkout would rewrite them and the parser tests would fail there
+# for a reason that looks nothing like the cause.
+rust/vt100/tests/data/** -text
