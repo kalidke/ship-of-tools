@@ -6,6 +6,7 @@
 #   ./scripts/install.sh --backend <ssh-alias>       # FE here → remote BE
 #   ./scripts/install.sh --be-only                   # headless backend/canary
 #   [--version vX.Y.Z] [--prefix <dir>] [--port <n>] [--no-service]
+#   [--force-role-change]  # consent to reconfiguring an install already here
 #                                                    # default: latest release
 #
 # What it does (idempotent; re-run to upgrade):
@@ -29,7 +30,7 @@ set -euo pipefail
 REPO="${SOT_INSTALL_REPO:-kalidke/ship-of-tools}"
 PREFIX="${SOT_PREFIX:-$HOME/.local/share/sot}"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sot"
-ROLE="" VERSION="" BE_ALIAS="" PORT=18743 NO_SERVICE=0
+ROLE="" VERSION="" BE_ALIAS="" PORT=18743 NO_SERVICE=0 FORCE_ROLE_CHANGE=0
 GLIBC_FLOOR_FE="2.35"
 
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
@@ -99,6 +100,81 @@ hosts_toml_apply_role() {  # <file> <want-host> <entry-block>
     say "updated $file: default_host = \"$want\"$added (other hosts, [monitor] and comments kept)"
 }
 
+# ---- what is already installed here ---------------------------------------------
+# $PREFIX/install.json has recorded the role of every completed install since
+# schema 1, and until now nothing ever read it back. So a re-run on a machine
+# with a working install had no idea: the role Q&A offered three equal choices,
+# and a role flag reconfigured silently. That is how a documented install on a
+# box with a live backend turned it into a different topology.
+#
+# Two honest limits on what the manifest proves, both of which shape the gate:
+# it means "this prefix completed a release install", NOT "a backend exists
+# here" — a source install owns the same sotd.service and writes no manifest —
+# and schema 1 records no ssh alias or port, so a `remote` install cannot be
+# reconstructed from it. Hence: no automatic reuse of a recorded role, only a
+# refusal to change one by accident.
+
+# "none" | "unknown:<why>" | "known:<role>". Fails CLOSED: anything present but
+# not understood is unknown, never "no install here" — turning uncertainty into
+# permission to reconfigure is the whole bug being fixed.
+installer_manifest_state() {  # <prefix>
+    local f="$1/install.json" schema role recorded
+    [ -f "$f" ] || { printf 'none'; return; }
+    # jq, not a regex: a truncated file still contains plausible-looking
+    # `"schema": 1` and `"role"` lines, so line matching would read a half
+    # written manifest as authoritative. The unauthenticated curl path already
+    # requires jq; when it is missing here, "unreadable" is the honest answer.
+    command -v jq >/dev/null 2>&1 || { printf 'unknown:jq is not installed, so %s cannot be read' "$f"; return; }
+    schema="$(jq -r '.schema // empty' "$f" 2>/dev/null || true)"
+    [ "$schema" = 1 ] || { printf 'unknown:%s is not a schema-1 manifest' "$f"; return; }
+    role="$(jq -r '.role // empty' "$f" 2>/dev/null || true)"
+    case "$role" in
+        local|remote|be-only) ;;
+        *) printf 'unknown:%s records no role this version understands' "$f"; return ;;
+    esac
+    recorded="$(jq -r '.prefix // empty' "$f" 2>/dev/null || true)"
+    if [ -n "$recorded" ] && [ "$recorded" != "$1" ]; then
+        printf 'unknown:%s records prefix %s, not %s' "$f" "$recorded" "$1"
+        return
+    fi
+    printf 'known:%s' "$role"
+}
+
+# The program an existing user-level sotd.service runs, if there is one. A
+# source install has no manifest but owns this same fixed unit name, so the
+# manifest alone would miss it.
+installer_unit_owner() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    systemctl --user cat sotd.service 2>/dev/null | sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' | head -1
+}
+
+# "allow" | "refuse:<why>". Pure, so the decision matrix is testable without
+# running an install.
+installer_role_decision() {  # <state> <prior-role> <requested-role> <force>
+    local state="$1" prior="$2" want="$3" force="$4"
+    [ "$force" = 1 ] && { printf 'allow'; return; }
+    case "$state" in
+        none) printf 'allow'; return ;;
+        unknown:*) printf 'refuse:%s' "${state#unknown:}"; return ;;
+    esac
+    # Empty means the interactive Q&A has not run yet. Picking a visibly
+    # non-current option there IS the explicit choice, so the gate does not
+    # second-guess it; this path only protects flags.
+    [ -z "$want" ] && { printf 'allow'; return; }
+    [ "$want" = "$prior" ] && { printf 'allow'; return; }
+    printf 'refuse:this machine is already installed as %s, and %s would change that' \
+        "$prior" "$(installer_role_flag "$want")"
+}
+
+installer_role_flag() {  # role -> the flag that asks for it, for messages
+    case "$1" in
+        local) printf -- '--local' ;;
+        be-only) printf -- '--be-only' ;;
+        remote) printf -- '--backend' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
 # scripts/tests/hosts-toml-role.sh sources this file to exercise the three
 # functions above in isolation. Nothing else sets it, `curl | bash` included.
 if [ "${SOT_INSTALL_SOURCE_ONLY:-}" = 1 ]; then return 0; fi
@@ -116,10 +192,55 @@ while [ $# -gt 0 ]; do
         # shared home they'd apply to EVERY machine). The caller supervises
         # sotd itself (e.g. systemd-run --user transient unit, per-machine).
         --no-service) NO_SERVICE=1 ;;
+        # Consent to reconfiguring an installation that is already here. See
+        # the role gate below for what it protects and why a role flag alone
+        # is not consent.
+        --force-role-change) FORCE_ROLE_CHANGE=1 ;;
         *) echo "unknown flag: $1" >&2; exit 2 ;;
     esac
     shift
 done
+# Canonicalize the prefix (a relative one produces a repo/current symlink
+# whose target resolves from repo/, i.e. a broken link) and refuse characters
+# the systemd-unit sed, JSON manifest, and launcher heredocs cannot carry
+# safely. Explicit rejection over silent corruption.
+case "$PREFIX" in
+    /*) ;;
+    *) PREFIX="$(pwd)/$PREFIX" ;;
+esac
+case "$PREFIX" in
+    *[\&\|\;\"\'\\\`]*|*' '*|*'	'*)
+        die "unsupported characters in prefix '$PREFIX' — no spaces, quotes, backslashes, or shell metacharacters" ;;
+esac
+
+# ---- the role gate -------------------------------------------------------------
+# Runs BEFORE the role is resolved, so it can refuse a flag, and after the
+# prefix is final, so it looks in the right place.
+PRIOR_STATE="$(installer_manifest_state "$PREFIX")"
+PRIOR_ROLE=""
+case "$PRIOR_STATE" in known:*) PRIOR_ROLE="${PRIOR_STATE#known:}" ;; esac
+
+# A unit that runs something outside this prefix belongs to another install —
+# a source checkout, or a second --prefix. Backend roles overwrite that unit
+# and the remote role disables it, so touching it uninvited is exactly the
+# class of accident this gate exists for, and the manifest cannot see it.
+UNIT_OWNER="$(installer_unit_owner)"
+if [ -n "$UNIT_OWNER" ] && [ "${UNIT_OWNER#"$PREFIX/"}" = "$UNIT_OWNER" ] && [ "$FORCE_ROLE_CHANGE" = 0 ]; then
+    printf '\033[1;31mERROR:\033[0m an existing sotd.service runs %s, which this install does not own.\n' "$UNIT_OWNER" >&2
+    printf '       Installing here would replace or disable it. Re-run with --force-role-change if that is what you want.\n' >&2
+    exit 2
+fi
+
+DECISION="$(installer_role_decision "$PRIOR_STATE" "$PRIOR_ROLE" "$ROLE" "$FORCE_ROLE_CHANGE")"
+case "$DECISION" in
+    refuse:*)
+        printf '\033[1;31mERROR:\033[0m %s\n' "${DECISION#refuse:}" >&2
+        printf '       Re-run with the matching role flag to upgrade in place, or add --force-role-change to reconfigure.\n' >&2
+        printf '       Reconfiguring replaces the service, the launcher, the config default, and update ownership.\n' >&2
+        exit 2 ;;
+esac
+[ -n "$PRIOR_ROLE" ] && say "existing install here: role $PRIOR_ROLE"
+
 # No role flag → interactive Q&A (matches the sot-setup experience; found
 # missing by the first real laptop install). Prompts read /dev/tty so this
 # also works under `curl | bash`. No TTY and no flags → the old hard error.
@@ -128,10 +249,14 @@ if [ -z "$ROLE" ]; then
     # contexts (cron, CI, piped bash) where opening it then fails.
     if (: < /dev/tty) 2>/dev/null && (: > /dev/tty) 2>/dev/null; then
         {
+            if [ -n "$PRIOR_ROLE" ]; then
+                echo "This machine is already installed as: $PRIOR_ROLE"
+                echo "Choosing a different layout below RECONFIGURES it."
+            fi
             echo "Where should Ship of Tools run?"
-            echo "  1) all on this machine        (frontend + backend here)"
-            echo "  2) frontend here, backend on another machine over SSH"
-            echo "  3) backend only on this machine (headless server)"
+            echo "  1) all on this machine        (frontend + backend here)$([ "$PRIOR_ROLE" = local ] && printf '   [current]')"
+            echo "  2) frontend here, backend on another machine over SSH$([ "$PRIOR_ROLE" = remote ] && printf '   [current]')"
+            echo "  3) backend only on this machine (headless server)$([ "$PRIOR_ROLE" = be-only ] && printf '   [current]')"
             printf "Choose [1-3]: "
         } > /dev/tty
         read -r choice < /dev/tty
@@ -156,19 +281,6 @@ if [ -z "$ROLE" ]; then
         exit 2
     fi
 fi
-
-# Canonicalize the prefix (a relative one produces a repo/current symlink
-# whose target resolves from repo/, i.e. a broken link) and refuse characters
-# the systemd-unit sed, JSON manifest, and launcher heredocs cannot carry
-# safely. Explicit rejection over silent corruption.
-case "$PREFIX" in
-    /*) ;;
-    *) PREFIX="$(pwd)/$PREFIX" ;;
-esac
-case "$PREFIX" in
-    *[\&\|\;\"\'\\\`]*|*' '*|*'	'*)
-        die "unsupported characters in prefix '$PREFIX' — no spaces, quotes, backslashes, or shell metacharacters" ;;
-esac
 
 # ---- 1. preflight ------------------------------------------------------------
 OS="$(uname -s)"
@@ -797,7 +909,10 @@ COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
 # an exotic prefix can't produce a manifest that parses wrong — a broken
 # manifest silently redirects the updater's staging root.
 json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-cat > "$PREFIX/install.json" <<EOF
+# Temp file plus rename: a heredoc straight onto the live path truncates it
+# first, so an interrupt would leave the machine with no readable manifest —
+# which the gate above now reads as "state unknown" and refuses to act on.
+cat > "$PREFIX/install.json.new" <<EOF
 {
   "schema": 1,
   "role": "$ROLE",
@@ -810,6 +925,7 @@ cat > "$PREFIX/install.json" <<EOF
   "installed_at": "$(date -u +%FT%TZ)"
 }
 EOF
+mv "$PREFIX/install.json.new" "$PREFIX/install.json"
 say "wrote $PREFIX/install.json (schema 1, role=$ROLE, service=$SERVICE)"
 
 say "DONE — Ship of Tools $VERSION installed ($ROLE)."

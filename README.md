@@ -107,7 +107,10 @@ backend (fatal if absent); Linux frontend roles need glibc ≥ 2.35, while
 Remote layouts require key-based SSH to the backend host. `--version vX.Y.Z`
 pins a specific release and `--prefix <dir>` relocates the install. Changing
 roles repoints `default_host` and adds the new host's entry, leaving the rest
-of `hosts.toml` — other hosts, `[monitor]`, comments — untouched. Details:
+of `hosts.toml` — other hosts, `[monitor]`, comments — untouched. Re-running
+with a role flag that differs from what is already installed is refused unless
+you pass `--force-role-change`, so a copied one-liner cannot silently
+reconfigure a working machine. Details:
 **[Install](https://kalidke.github.io/ship-of-tools/dev/start/install/)**.
 
 **Auto-update (all three platforms).** The backend checks the latest release

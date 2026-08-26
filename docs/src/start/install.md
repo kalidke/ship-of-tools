@@ -96,6 +96,37 @@ Connection behavior is role-specific:
   the `systemd --user` `sotd.service`; `--no-service` skips that unit so shared
   `$HOME` machines can supervise `sotd` themselves.
 
+### Re-running on a machine that already has an install
+
+Every completed install records its role in `$PREFIX/install.json`, and the
+installer reads it back before it does anything. A re-run with the **same**
+role is an upgrade and proceeds normally. A re-run with a **different** role
+is refused:
+
+```
+ERROR: this machine is already installed as be-only, and --local would change that
+       Re-run with the matching role flag to upgrade in place, or add
+       --force-role-change to reconfigure.
+```
+
+This exists because the documentation tells you to repeat a role flag on every
+non-TTY install and every manual update, so a copied one-liner is exactly how a
+working machine gets reconfigured by accident. A role flag asks for a role; it
+is not consent to *change* one. `--force-role-change` is that consent.
+
+Two related refusals, both fail-closed:
+
+- An existing `sotd.service` whose `ExecStart` is outside this prefix belongs
+  to another install — a source checkout, or a second `--prefix`. Installing
+  would replace or disable it, so it stops.
+- A manifest that is present but unreadable — truncated, an unknown schema, or
+  recording a different prefix — is treated as *unknown state*, never as "no
+  install here". Uncertainty is not permission to reconfigure.
+
+Note the installer never reuses a recorded role automatically. Schema 1 stores
+no ssh alias or port, so a recorded `--backend` install cannot be reconstructed
+from it; you always say what you want.
+
 Config is written under `~/.config/sot`:
 
 | File | Behavior |
