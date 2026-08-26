@@ -591,7 +591,23 @@ impl Grid {
         // one.
         Self::check_pos(pos, size, which)?;
         Self::check_pos(saved_pos, size, "saved cursor")?;
-        if scroll_top > scroll_bottom || scroll_bottom >= size.rows {
+        // The reachable scroll regions are narrower than `top <= bottom`.
+        // `set_scroll_region` takes an explicit region only when
+        // `top < bottom`, and otherwise resets to the whole screen; the one
+        // way `top == bottom` arises is `set_size` clamping the bottom down,
+        // which leaves it at the last row. So a region of equal endpoints is
+        // legitimate only at the last row.
+        //
+        // The distinction is not pedantry. `col_wrap` subtracts the number
+        // of rows it scrolled from the pre-wrap row, and a region of
+        // `0..=0` on a screen with more than one row makes that subtraction
+        // underflow on the next glyph that wraps — a state no parse can
+        // produce, restored and then panicking somewhere else entirely.
+        let equal_at_last_row =
+            scroll_top == scroll_bottom && scroll_bottom + 1 == size.rows;
+        if scroll_bottom >= size.rows
+            || !(scroll_top < scroll_bottom || equal_at_last_row)
+        {
             return Err(
                 crate::checkpoint::CheckpointError::InvalidScrollRegion {
                     top: scroll_top,

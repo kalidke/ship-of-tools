@@ -233,6 +233,18 @@ impl Cell {
         let mut cell = Self::new();
         if flags & CELL_FLAG_LEN != 0 {
             let len = r.u8()?;
+            // The encoder sets this flag only for a non-zero packed length,
+            // so a zero here is a second spelling of the empty cell. Two
+            // spellings of one screen would mean checkpoint bytes could
+            // differ for identical state, which the golden test and every
+            // byte-level comparison downstream rely on not happening.
+            if len == 0 {
+                return Err(
+                    crate::checkpoint::CheckpointError::NonCanonical {
+                        what: "empty cell written with an explicit length",
+                    },
+                );
+            }
             if len & !LEN_BYTE_KNOWN != 0 {
                 return Err(
                     crate::checkpoint::CheckpointError::InvalidCellLength(len),
@@ -256,7 +268,19 @@ impl Cell {
             cell.len = len;
         }
         if flags & CELL_FLAG_ATTRS != 0 {
-            cell.attrs = crate::attrs::Attrs::read_checkpoint(r, "cell attrs")?;
+            let attrs =
+                crate::attrs::Attrs::read_checkpoint(r, "cell attrs")?;
+            // Same reasoning as the length above: the encoder omits default
+            // attributes, so spelling them out is a second encoding of one
+            // cell.
+            if attrs == crate::attrs::Attrs::default() {
+                return Err(
+                    crate::checkpoint::CheckpointError::NonCanonical {
+                        what: "default attributes written explicitly",
+                    },
+                );
+            }
+            cell.attrs = attrs;
         }
         Ok(cell)
     }

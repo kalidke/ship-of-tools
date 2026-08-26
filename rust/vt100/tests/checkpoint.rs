@@ -862,3 +862,95 @@ fn saved_origin_mode_survives() {
         "saved origin mode did not survive"
     );
 }
+
+// -- one screen, one encoding ---------------------------------------------
+
+/// Offsets into the normal grid's header, for a checkpoint whose current and
+/// saved attributes are both default.
+const GRID_START: usize = HEADER_LEN + 2 * DEFAULT_ATTRS_LEN;
+const SCROLL_TOP: usize = GRID_START + 8;
+const SCROLL_BOTTOM: usize = GRID_START + 10;
+
+/// The format offers short forms — an omitted length for an empty cell,
+/// omitted default attributes. Accepting the long form as an alias would
+/// mean two byte strings describe one screen, so the golden below and every
+/// byte-level comparison downstream would be pinning one of several right
+/// answers. Single-byte corruption cannot find these, because spelling a
+/// field out makes the payload longer.
+#[test]
+fn rejects_an_empty_cell_written_the_long_way() {
+    let mut parser = Parser::new(1, 1, 0);
+    parser.process(b"");
+    let mut bytes = checkpoint(&parser);
+    assert_eq!(bytes[FIRST_CELL], 0, "expected an empty default cell");
+    bytes[FIRST_CELL] = 0b0000_0001; // claim a length field
+    bytes.insert(FIRST_CELL + 1, 0); // whose packed length is zero
+    assert!(matches!(
+        restore(&bytes),
+        Err(CheckpointError::NonCanonical { .. })
+    ));
+}
+
+#[test]
+fn rejects_default_attributes_written_the_long_way() {
+    let parser = Parser::new(1, 1, 0);
+    let mut bytes = checkpoint(&parser);
+    bytes[FIRST_CELL] = 0b0000_0010; // claim an attributes field
+    bytes.splice(FIRST_CELL + 1..FIRST_CELL + 1, [0, 0, 0]); // all default
+    assert!(matches!(
+        restore(&bytes),
+        Err(CheckpointError::NonCanonical { .. })
+    ));
+}
+
+// -- the scroll region must be one a parse can reach -----------------------
+
+/// `set_scroll_region` takes an explicit region only when `top < bottom`, so
+/// `0..=0` on a two-row screen is unreachable. It also panics: `col_wrap`
+/// subtracts the rows it scrolled from the pre-wrap row, which underflows at
+/// row zero on the next glyph that wraps.
+#[test]
+fn rejects_a_scroll_region_no_parse_can_produce() {
+    let mut parser = Parser::new(2, 2, 0);
+    parser.process(b"ab");
+    let mut bytes = checkpoint(&parser);
+    bytes[SCROLL_TOP..SCROLL_TOP + 2].copy_from_slice(&0_u16.to_le_bytes());
+    bytes[SCROLL_BOTTOM..SCROLL_BOTTOM + 2]
+        .copy_from_slice(&0_u16.to_le_bytes());
+    assert!(matches!(
+        restore(&bytes),
+        Err(CheckpointError::InvalidScrollRegion { top: 0, bottom: 0 })
+    ));
+}
+
+/// The mirror of the test above, and the reason its rule is not simply
+/// "reject equal endpoints": shrinking clamps a region's bottom down, which
+/// can leave it equal to the top at the last row. That screen is real and
+/// must still restore.
+#[test]
+fn accepts_the_equal_endpoint_region_a_resize_produces() {
+    let mut parser = Parser::new(10, 4, 0);
+    parser.process(b"\x1b[3;6r"); // rows 2..=5, a valid explicit region
+    parser.screen_mut().set_size(3, 4); // bottom clamps down onto the top
+
+    let bytes = checkpoint(&parser);
+    assert_eq!(
+        u16::from_le_bytes([bytes[SCROLL_TOP], bytes[SCROLL_TOP + 1]]),
+        2
+    );
+    assert_eq!(
+        u16::from_le_bytes([bytes[SCROLL_BOTTOM], bytes[SCROLL_BOTTOM + 1]]),
+        2,
+        "the resize was supposed to produce equal endpoints"
+    );
+    assert_roundtrips(&mut parser);
+}
+
+/// A one-row screen's region is `0..=0` by construction, which the rule above
+/// must not catch.
+#[test]
+fn accepts_a_one_row_screens_whole_screen_region() {
+    let mut parser = Parser::new(1, 4, 0);
+    parser.process(b"hi");
+    assert_roundtrips(&mut parser);
+}

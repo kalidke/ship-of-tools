@@ -88,6 +88,13 @@
 //!   payload   0..3  none / u8 index / u8 red, green, blue
 //! ```
 //!
+//! **Every screen has exactly one encoding.** Where the format offers a
+//! short form — an omitted length for an empty cell, omitted default
+//! attributes — the long form is refused on restore rather than accepted as
+//! an alias. Without that, two byte strings could describe one screen, and
+//! the pinned version-1 golden below would be pinning one of several right
+//! answers.
+//!
 //! There is no checksum, and no reserved or padding fields.
 //!
 //! A checksum would guard a payload that is never persisted: it is produced
@@ -242,6 +249,13 @@ pub enum CheckpointError {
     InvalidCellLength(u8),
     /// A cell's contents are not valid UTF-8.
     InvalidUtf8,
+    /// The payload is a second spelling of a screen that has exactly one
+    /// encoding, so accepting it would break the format's one-screen-
+    /// one-encoding property.
+    NonCanonical {
+        /// What was written the long way.
+        what: &'static str,
+    },
     /// One half of a wide character appears without its other half.
     OrphanedWideHalf {
         /// The column the unmatched half sits in.
@@ -294,6 +308,9 @@ impl std::fmt::Display for CheckpointError {
                 write!(f, "invalid packed cell length byte {len:#010b}")
             }
             Self::InvalidUtf8 => write!(f, "cell contents are not valid UTF-8"),
+            Self::NonCanonical { what } => {
+                write!(f, "non-canonical encoding: {what}")
+            }
             Self::OrphanedWideHalf { col } => write!(
                 f,
                 "column {col} holds one half of a wide character without the other"
