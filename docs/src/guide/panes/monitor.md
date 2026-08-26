@@ -21,13 +21,22 @@ monitored host it runs a small sampler:
 - CPU% from `/proc/stat`, RAM% from `/proc/meminfo`, GPU from `nvidia-smi`. All
   world-readable, so **no sudo and no privileges** are needed.
 
-Sampling is **reactive**: the sources spawn on first subscribe (drawer opened) and
-tear down when the last subscriber closes it. The backend keeps an in-memory
-tiered ring buffer per host, so the time axis can rescale to wider windows without
-a round-trip.
+Sampling is **always on** for the life of the backend, so the drawer shows real
+history the moment it opens rather than starting from a blank axis; what
+`monitor.subscribe` gates is per-connection *delivery* of ticks, not collection.
+(ADR 0020 originally specified reactive spawn-on-subscribe; the implementation
+went the other way and the ADR carries a note.) The backend keeps an in-memory
+tiered ring buffer per host, so the time axis can rescale to wider windows
+without a round-trip. Restarting the backend restarts that history.
 
-Which hosts appear comes from the `[monitor]` section of `.sot/hosts.toml`
-(defaults to all configured hosts) — see [Configuration Files](../../ref/config.md).
+Which hosts appear comes from the `[monitor]` section of `.sot/hosts.toml` — see
+[Configuration Files](../../ref/config.md). With no `[monitor]` section, only the
+backend's own host is sampled; the `[host.*]` entries are frontend connection
+targets and are not monitored implicitly.
+
+**The list binds when the daemon starts.** Editing `hosts.toml` while the backend
+is running changes nothing until it restarts — there is no reload and no file
+watch. If the drawer is missing a host you just added, restart the backend.
 
 ## On-philosophy rendering
 

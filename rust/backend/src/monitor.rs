@@ -686,15 +686,40 @@ async fn spawn_source(host: &MonitorHost) -> std::io::Result<tokio::process::Chi
 /// `project_root` is the daemon's `--project-root`: the repo-rooted config
 /// layer resolves against it, NOT `current_dir()`, because the daemon's cwd is
 /// the user's `$HOME`, not the repo.
+///
+/// Called ONCE, from `server::serve`, before any connection is accepted. The
+/// roster is fixed for the life of the daemon: editing `hosts.toml` while it
+/// runs changes nothing until a restart. That is a deliberate limit rather than
+/// an oversight — the samplers are spawned eagerly from this list and a live
+/// roster would need supervisor cancellation and ring-retention rules for a
+/// list that changes about once a year — but it has bitten, so say it here.
+///
+/// A candidate that exists but yields no hosts does NOT win: the search
+/// continues to the next one and only the first NON-EMPTY list is taken. Note
+/// this differs from the frontend's host registry, where the first readable
+/// file wins outright (`frontend/src/hosts.rs`).
 pub fn load_hosts(project_root: &std::path::Path) -> Vec<MonitorHost> {
     let local = local_host_name();
     for path in candidate_paths(project_root) {
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            let hosts = parse_monitor_section(&text, &local);
-            if !hosts.is_empty() {
-                tracing::info!(path = ?path, count = hosts.len(), "monitor: hosts loaded");
-                return hosts;
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let hosts = parse_monitor_section(&text, &local);
+                if !hosts.is_empty() {
+                    tracing::info!(path = ?path, count = hosts.len(), "monitor: hosts loaded");
+                    return hosts;
+                }
+                tracing::warn!(
+                    path = ?path,
+                    "monitor: config has no usable [monitor] entries; trying the next candidate"
+                );
             }
+            // Absent is the ordinary case and says nothing. Present but
+            // unreadable — bad permissions, invalid UTF-8 — used to be
+            // indistinguishable from absent, so a broken config reported
+            // itself as "no [monitor] config" and sent the reader looking in
+            // the wrong place.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(path = ?path, error = %e, "monitor: config unreadable"),
         }
     }
     tracing::info!(host = %local, "monitor: no [monitor] config; monitoring local host only");

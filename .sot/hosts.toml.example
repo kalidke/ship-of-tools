@@ -53,6 +53,11 @@ remote_home = "/home/me"
 # nvidia-smi + /proc are world-readable, so no sudo/privileges are needed on
 # any host. Remove a line to stop monitoring that host.
 #
+# READ ONCE, AT DAEMON START. Editing this section while the backend is running
+# has no effect until it restarts. Omit the section entirely and only this
+# machine is sampled — the [host.*] entries above are connection targets and are
+# not monitored implicitly.
+#
 # [monitor]
 # myserver = "myserver"
 # otherbox = "otherbox"

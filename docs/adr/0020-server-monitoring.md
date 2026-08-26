@@ -45,6 +45,30 @@ GPU utilization % + GPU memory % (per GPU), CPU % + RAM %, per host. Temperature
 
 A host whose SSH connection or sampler dies, or that returns stale/garbled data, renders an explicit gap/marker in its panel — never a silent flatline or a fallback to "looks fine." The `monitor.tick` / `HostSeries` types carry an explicit `stale` flag for this (project rule: no quiet fallback to a degraded path).
 
+## Notes from the implementation
+
+Two things the built system does differently from the decision above. Recorded
+here rather than edited into the text, so the change is visible.
+
+- **Sampling is always-on, not reactive.** Section 2 says the sampler sources
+  spawn on first `monitor.subscribe` and tear down when the last subscriber
+  closes the drawer. `MonitorHub::start` instead spawns every supervisor at
+  daemon startup and `monitor.subscribe` gates only per-connection tick
+  delivery. The reason is the ring buffer: a source that starts when the drawer
+  opens has no history to show, which defeats the point of keeping one.
+- **No `[monitor]` list means the LOCAL HOST ONLY, not "all configured
+  hosts".** Section 1's parenthetical says the latter. The `[host.*]` entries
+  are the frontend's connection targets — a remote backend, a local socket —
+  and are not necessarily machines worth sampling, so treating them as an
+  implicit monitor list would have surprising results. The user documentation
+  was corrected to match the code, not the other way round.
+
+Also worth naming, because it has cost a debugging session: the monitored host
+list is read ONCE, at daemon start. There is no reload path. A live roster would
+need supervisor cancellation and ring-retention rules for a list that changes
+about once a year, so this is a deliberate limit — but it is invisible from the
+outside, which is why it is written down here and in the user guide.
+
 ## Consequences
 
 - **Positive:** nothing to install and no sudo anywhere; zero persistent footprint on remote hosts (no daemon, script over stdin); uses SSH keys that already work; rendering is on-philosophy (real vector traces); collection is reactive; no shared-filesystem metrics transport; the log/multiscale axis is interactive without round-trips.
