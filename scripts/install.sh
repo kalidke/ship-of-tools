@@ -35,6 +35,74 @@ GLIBC_FLOOR_FE="2.35"
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# ---- hosts.toml editing --------------------------------------------------------
+# The installer owns exactly TWO things in hosts.toml: the value of
+# `default_host`, and the presence of an entry for the role's own host. Every
+# other line is the user's and survives verbatim — their other [host.*] entries
+# (docs/src/ref/config.md calls this a registry, and the frontend's Hosts mode
+# lists all of them), the [monitor] table (ADR 0020), comments, and sections a
+# future version adds that this one has never heard of.
+#
+# This used to back the file up and rewrite it from a stub whenever a one-line
+# grep for the expected `default_host` missed. That silently discarded the
+# user's [monitor] table — the drawer then monitored only the local host and
+# said nothing about why — along with every other host and every comment. It
+# also contradicted this script's own promise at the top of the file never to
+# clobber existing config. The grep was not even a role detector: --local and
+# --be-only both want "local", so a real change between them missed, while a
+# user who simply picked a different default_host tripped it.
+
+# Exact, trimmed line compare. Deliberately not a regex: an ssh alias may
+# contain regex metacharacters, and `[host.a.b]` must not match `[host.axb]`.
+hosts_toml_has_line() {  # <file> <exact-trimmed-line>
+    awk -v want="$2" '{ s = $0; gsub(/^[ \t]+|[ \t]+$/, "", s); if (s == want) { found = 1; exit } } END { exit !found }' "$1"
+}
+
+# Is there a `default_host` key ABOVE the first table header? A key below one
+# belongs to that table, not to the document.
+hosts_toml_has_default() {  # <file>
+    awk 'BEGIN { pro = 1 } { s = $0; gsub(/^[ \t]+|[ \t]+$/, "", s); if (substr(s, 1, 1) == "[") pro = 0; if (pro && s ~ /^default_host[ \t]*=/) { found = 1; exit } } END { exit !found }' "$1"
+}
+
+# Point default_host at this role's host and make sure that host has an entry.
+# Writes a sibling temp file and renames, so an interrupted run cannot leave a
+# truncated config where a working one was.
+hosts_toml_apply_role() {  # <file> <want-host> <entry-block>
+    local file="$1" want="$2" entry="$3" tmp="$1.new" added=""
+    if [ ! -f "$file" ]; then
+        printf 'default_host = "%s"\n\n%s\n' "$want" "$entry" > "$file"
+        say "wrote $file"
+        return
+    fi
+    if hosts_toml_has_default "$file"; then
+        awk -v want="$want" '
+            BEGIN { pro = 1; done = 0 }
+            {
+                s = $0; gsub(/^[ \t]+|[ \t]+$/, "", s)
+                if (substr(s, 1, 1) == "[") pro = 0
+                if (pro && !done && s ~ /^default_host[ \t]*=/) {
+                    print "default_host = \"" want "\""; done = 1; next
+                }
+                print
+            }' "$file" > "$tmp"
+    else
+        # Prepended, never appended: a top-level key after a table header would
+        # silently become a key OF that table.
+        { printf 'default_host = "%s"\n' "$want"; cat "$file"; } > "$tmp"
+    fi
+    if ! hosts_toml_has_line "$file" "[host.$want]"; then
+        printf '\n%s\n' "$entry" >> "$tmp"
+        added="; added [host.$want]"
+    fi
+    if cmp -s "$tmp" "$file"; then rm -f "$tmp"; return; fi
+    mv "$tmp" "$file"
+    say "updated $file: default_host = \"$want\"$added (other hosts, [monitor] and comments kept)"
+}
+
+# scripts/tests/hosts-toml-role.sh sources this file to exercise the three
+# functions above in isolation. Nothing else sets it, `curl | bash` included.
+if [ "${SOT_INSTALL_SOURCE_ONLY:-}" = 1 ]; then return 0; fi
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --local) ROLE=local ;;
@@ -380,45 +448,26 @@ if [ "$ROLE" != remote ]; then
 fi
 
 # ---- 6. config -----------------------------------------------------------------
-# Non-clobbering on a same-role re-run, but a ROLE CHANGE reconfigures: the
-# existing hosts.toml is backed up and rewritten (the first laptop install
-# picked the wrong topology and a re-run couldn't heal it — never again).
-if [ -f "$CONFIG/hosts.toml" ]; then
-    want="local"; [ "$ROLE" = remote ] && want="$BE_ALIAS"
-    if ! grep -q "^default_host = \"$want\"" "$CONFIG/hosts.toml"; then
-        cp "$CONFIG/hosts.toml" "$CONFIG/hosts.toml.bak"
-        rm "$CONFIG/hosts.toml"
-        say "role changed — existing hosts.toml backed up to hosts.toml.bak and rewritten"
-    fi
-fi
 # A remote-FE role must not leave a previously-installed LOCAL backend
 # running (the wrong-topology remnant): disable it, don't just orphan it.
 if [ "$ROLE" = remote ] && command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
     systemctl --user disable --now sotd.service || true
     say "disabled the local sotd.service from a previous all-in-one install"
 fi
-if [ ! -f "$CONFIG/hosts.toml" ]; then
-    case "$ROLE" in
-        local|be-only) cat > "$CONFIG/hosts.toml" <<EOF
-default_host = "local"
-
-# Local backend on the per-user socket — no SSH involved for the same-machine role.
-[host.local]
-socket = "$DEFAULT_SOCKET"
-EOF
+# Re-running with a role flag is how a wrong-topology install heals itself, so
+# the role's choice of default_host wins — but it is now the ONLY thing that
+# changes besides adding a missing host entry.
+case "$ROLE" in
+    local|be-only)
+        want="local"
+        entry="$(printf '# Local backend on the per-user socket — no SSH involved for the same-machine role.\n[host.local]\nsocket = "%s"' "$DEFAULT_SOCKET")"
         ;;
-        remote) cat > "$CONFIG/hosts.toml" <<EOF
-default_host = "$BE_ALIAS"
-
-[host.$BE_ALIAS]
-ssh_alias = "$BE_ALIAS"
-remote_repo = "\$HOME"
-tcp_port = $PORT
-EOF
+    remote)
+        want="$BE_ALIAS"
+        entry="$(printf '[host.%s]\nssh_alias = "%s"\nremote_repo = "$HOME"\ntcp_port = %s' "$BE_ALIAS" "$BE_ALIAS" "$PORT")"
         ;;
-    esac
-    say "wrote $CONFIG/hosts.toml"
-fi
+esac
+hosts_toml_apply_role "$CONFIG/hosts.toml" "$want" "$entry"
 [ -f "$CONFIG/settings.toml" ] || printf '# Ship of Tools settings — see .sot/settings.toml.example in the repo\n' > "$CONFIG/settings.toml"
 
 # ---- 7. backend service --------------------------------------------------------

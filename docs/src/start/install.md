@@ -100,7 +100,7 @@ Config is written under `~/.config/sot`:
 
 | File | Behavior |
 |------|----------|
-| `hosts.toml` | created for the selected role if missing; role changes back up the existing file to `hosts.toml.bak` before rewriting |
+| `hosts.toml` | created for the selected role if missing. On an existing file the installer changes exactly two things — the value of `default_host`, and adding an entry for the selected role's host if it has none. Your other `[host.*]` entries, the `[monitor]` table, and your comments are left alone. |
 | `settings.toml` | created only if missing |
 
 ## [Updating](@id updating)

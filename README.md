@@ -106,7 +106,8 @@ backend (fatal if absent); Linux frontend roles need glibc ≥ 2.35, while
 `--be-only` skips the frontend floor because the backend binary is static.
 Remote layouts require key-based SSH to the backend host. `--version vX.Y.Z`
 pins a specific release and `--prefix <dir>` relocates the install. Changing
-roles backs up and rewrites `hosts.toml`. Details:
+roles repoints `default_host` and adds the new host's entry, leaving the rest
+of `hosts.toml` — other hosts, `[monitor]`, comments — untouched. Details:
 **[Install](https://kalidke.github.io/ship-of-tools/dev/start/install/)**.
 
 **Auto-update (all three platforms).** The backend checks the latest release
