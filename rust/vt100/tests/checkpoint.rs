@@ -777,7 +777,7 @@ fn version_1_bytes_are_pinned() {
         0b0000_1000,   // attrs mode: underline
         0, 0, 0,       // saved attrs: default, default, no text mode
         // normal grid
-        0, 0, 1, 0,    // pos: row 0, col 1 — one past the glyph, pending wrap
+        0, 0, 1, 0,    // pos: row 0, col 1 — the next drawable column
         0, 0, 0, 0,    // saved pos
         0, 0, 0, 0,    // scroll region rows 0..=0
         0,             // origin mode
@@ -980,5 +980,243 @@ fn rejects_extreme_scroll_region_values_without_overflowing() {
             ),
             "scroll region {top}..={bottom} was not refused cleanly"
         );
+    }
+}
+
+/// The layout golden above pins field order, but it can only pin the tag
+/// values the one screen it encodes happens to use — which leaves `Color::Rgb`,
+/// four of five mouse modes, every screen-mode bit, most text-mode bits, the
+/// wide flags and the two cell flags individually unpinned. The exhaustive
+/// matches in the encoder make ADDING an enum variant a compile error; they do
+/// nothing against a RENUMBERING, which is exactly what a wire vocabulary
+/// needs pinned.
+#[test]
+fn version_1_vocabulary_is_pinned() {
+    /// A 1x1 screen after `seq`, so the header sits at fixed offsets.
+    fn after(seq: &[u8]) -> Vec<u8> {
+        let mut parser = Parser::new(1, 1, 0);
+        parser.process(seq);
+        checkpoint(&parser)
+    }
+    const MOUSE_MODE: usize = MODES_OFFSET + 1;
+    const MOUSE_ENC: usize = MODES_OFFSET + 2;
+    const ATTRS: usize = MODES_OFFSET + 3;
+
+    // Screen modes.
+    assert_eq!(after(b"\x1b=")[MODES_OFFSET], 0b0000_0001, "keypad");
+    assert_eq!(after(b"\x1b[?1h")[MODES_OFFSET], 0b0000_0010, "app cursor");
+    assert_eq!(after(b"\x1b[?25l")[MODES_OFFSET], 0b0000_0100, "hide cursor");
+    assert_eq!(after(b"\x1b[?47h")[MODES_OFFSET], 0b0000_1000, "alt screen");
+    assert_eq!(
+        after(b"\x1b[?2004h")[MODES_OFFSET],
+        0b0001_0000,
+        "bracketed paste"
+    );
+
+    // Mouse protocol mode tags.
+    assert_eq!(after(b"")[MOUSE_MODE], 0, "mouse None");
+    assert_eq!(after(b"\x1b[?9h")[MOUSE_MODE], 1, "mouse Press");
+    assert_eq!(after(b"\x1b[?1000h")[MOUSE_MODE], 2, "mouse PressRelease");
+    assert_eq!(after(b"\x1b[?1002h")[MOUSE_MODE], 3, "mouse ButtonMotion");
+    assert_eq!(after(b"\x1b[?1003h")[MOUSE_MODE], 4, "mouse AnyMotion");
+
+    // Mouse protocol encoding tags.
+    assert_eq!(after(b"")[MOUSE_ENC], 0, "encoding Default");
+    assert_eq!(after(b"\x1b[?1005h")[MOUSE_ENC], 1, "encoding Utf8");
+    assert_eq!(after(b"\x1b[?1006h")[MOUSE_ENC], 2, "encoding Sgr");
+
+    // Color tags, including RGB channel order.
+    assert_eq!(after(b"\x1b[39m")[ATTRS], 0, "Color::Default");
+    assert_eq!(&after(b"\x1b[31m")[ATTRS..ATTRS + 2], &[1, 1], "Color::Idx");
+    assert_eq!(
+        &after(b"\x1b[38;2;7;8;9m")[ATTRS..ATTRS + 4],
+        &[2, 7, 8, 9],
+        "Color::Rgb, and red-green-blue order"
+    );
+
+    // Text-mode bits. Both colors are default here, so each is one tag byte
+    // and the mode byte follows them.
+    const MODE_BYTE: usize = ATTRS + 2;
+    assert_eq!(after(b"\x1b[1m")[MODE_BYTE], 0b0000_0001, "bold");
+    assert_eq!(after(b"\x1b[2m")[MODE_BYTE], 0b0000_0010, "dim");
+    assert_eq!(after(b"\x1b[3m")[MODE_BYTE], 0b0000_0100, "italic");
+    assert_eq!(after(b"\x1b[4m")[MODE_BYTE], 0b0000_1000, "underline");
+    assert_eq!(after(b"\x1b[7m")[MODE_BYTE], 0b0001_0000, "inverse");
+
+    // The two cell flags, separately — the layout golden only ever shows them
+    // together as 3, so swapping their assignments would pass it.
+    let mut text_only = Parser::new(1, 1, 0);
+    text_only.process(b"q");
+    assert_eq!(
+        checkpoint(&text_only)[FIRST_CELL],
+        0b0000_0001,
+        "cell flag: length present"
+    );
+    let mut attrs_only = Parser::new(1, 1, 0);
+    // Erase to a red background, then reset the CURRENT attributes so the
+    // header keeps its default-attrs length and FIRST_CELL still lands.
+    attrs_only.process(b"\x1b[41m\x1b[2J\x1b[m");
+    assert_eq!(
+        checkpoint(&attrs_only)[FIRST_CELL],
+        0b0000_0010,
+        "cell flag: attributes present"
+    );
+
+    // The packed wide bits.
+    let mut wide = Parser::new(1, 2, 0);
+    wide.process("日".as_bytes());
+    let bytes = checkpoint(&wide);
+    assert_eq!(bytes[FIRST_CELL + 1], 0b1000_0000 | 3, "wide lead bit");
+    assert_eq!(bytes[FIRST_CELL + 6], 0b0100_0000, "wide continuation bit");
+
+    // Grid booleans, and the one-past-the-end cursor ADR 0041 turns on.
+    const GRID: usize = HEADER_LEN + 2 * DEFAULT_ATTRS_LEN;
+    let mut origin = Parser::new(4, 4, 0);
+    origin.process(b"\x1b[2;4r\x1b[?6h");
+    assert_eq!(checkpoint(&origin)[GRID + 12], 1, "origin mode");
+
+    let mut pending = Parser::new(1, 2, 0);
+    pending.process(b"ab");
+    let bytes = checkpoint(&pending);
+    assert_eq!(
+        u16::from_le_bytes([bytes[GRID + 2], bytes[GRID + 3]]),
+        2,
+        "the pending-wrap cursor sits one past the last column"
+    );
+
+    let mut wrapped = Parser::new(3, 2, 0);
+    wrapped.process(b"abc");
+    let bytes = checkpoint(&wrapped);
+    assert_eq!(bytes[GRID + 14], 1, "row 0 wrapped flag");
+}
+
+// -- rows the parser could not have produced -------------------------------
+
+#[test]
+fn rejects_a_wide_continuation_carrying_text() {
+    let mut bytes = wide_glyph_checkpoint();
+    // Give the continuation one byte of its own text. `Grid::write_contents`
+    // skips continuations, so this would be invisible in the row's string
+    // form while a cell renderer drew it.
+    bytes[FIRST_CELL + 6] = 0b0100_0000 | 1;
+    bytes.insert(FIRST_CELL + 7, b'x');
+    assert!(matches!(
+        restore(&bytes),
+        Err(CheckpointError::UnreachableCell { col: 1, .. })
+    ));
+}
+
+#[test]
+fn rejects_a_wide_continuation_with_its_own_attributes() {
+    let mut bytes = wide_glyph_checkpoint();
+    bytes[FIRST_CELL + 5] = 0b0000_0011; // length and attrs present
+    bytes.splice(FIRST_CELL + 7..FIRST_CELL + 7, [1, 4, 0, 0]); // fg Idx(4)
+    assert!(matches!(
+        restore(&bytes),
+        Err(CheckpointError::UnreachableCell { col: 1, .. })
+    ));
+}
+
+#[test]
+fn rejects_a_wide_lead_with_no_text() {
+    let mut bytes = wide_glyph_checkpoint();
+    bytes[FIRST_CELL + 1] = 0b1000_0000; // wide, but zero content bytes
+    bytes.drain(FIRST_CELL + 2..FIRST_CELL + 5);
+    assert!(matches!(
+        restore(&bytes),
+        Err(CheckpointError::UnreachableCell { col: 0, .. })
+    ));
+}
+
+/// `col_wrap` sets the wrap flag only when the last column held something to
+/// wrap from, and every mutator that blanks that edge clears it again.
+#[test]
+fn rejects_a_row_wrapped_from_nothing() {
+    let mut parser = Parser::new(2, 2, 0);
+    parser.process(b"ab");
+    let mut bytes = checkpoint(&parser);
+    const GRID: usize = HEADER_LEN + 2 * DEFAULT_ATTRS_LEN;
+    let row0_wrapped = GRID + 14;
+    assert_eq!(bytes[row0_wrapped], 0, "row 0 should start unwrapped");
+    bytes[row0_wrapped] = 1;
+    // Blank the last cell of row 0, leaving nothing to have wrapped from.
+    let last_cell_of_row0 = row0_wrapped + 1 + 3; // 'a' costs 3 bytes
+    bytes[last_cell_of_row0] = 0;
+    bytes.drain(last_cell_of_row0 + 1..last_cell_of_row0 + 3);
+    assert!(matches!(
+        restore(&bytes),
+        Err(CheckpointError::UnreachableRow { .. })
+    ));
+}
+
+/// The counterweight to every rule above: none of them may refuse a screen
+/// the parser actually produces. This drives a wide spread of real terminal
+/// traffic through a range of geometries and requires every resulting screen
+/// to checkpoint and restore.
+#[test]
+fn no_rule_here_refuses_a_screen_the_parser_produces() {
+    const TRAFFIC: &[&[u8]] = &[
+        b"plain text",
+        b"\x1b[1;3;4;7;31;44mevery attribute at once\x1b[m",
+        b"\x1b[38;2;1;2;3;48;2;4;5;6mtruecolor\x1b[m",
+        "wide 日本語 and combining a\u{301}e\u{302}".as_bytes(),
+        "trailing wide glyph at the very edge 日".as_bytes(),
+        b"long enough to wrap several times over a narrow terminal indeed",
+        b"\x1b[2;4r\x1b[?6hinside an origin-mode scroll region",
+        b"\x1b[?47halternate\x1b[?47lnormal",
+        b"\x1b[?1049hfull screen program\x1b[?1049l",
+        b"\x1b[2Jcleared\x1b[1;1Hoverwritten",
+        b"\x1b[41m\x1b[2Jerased to a background color",
+        b"\x1b[3;3H\x1b[1@inserted cell\x1b[2P deleted cells",
+        b"\x1b[1Linserted line\x1b[1Mdeleted line",
+        b"\x1b[5Sscrolled up\x1b[3Tscrolled down",
+        b"\x1b7saved\x1b[9;9H\x1b8restored",
+        b"tab\there\tand\there",
+        b"\x1b[?9h\x1b[?1005hmouse on",
+        b"\x1b[10Xerased cells",
+        "\u{1f600} emoji then text".as_bytes(),
+    ];
+    // Sizes that exercise the edges: smallest workable, odd widths that
+    // split wide glyphs, and something ordinary.
+    //
+    // One-row and one-column geometries are deliberately absent. The PARSER
+    // panics on those before a checkpoint is ever taken —
+    // `Parser::new(1, 2, 0).process(b"abc")` is the whole repro — so they
+    // cannot say anything about whether these rules over-reject. They are
+    // tracked as pre-existing degenerate-geometry bugs needing a policy
+    // decision, not as codec behavior.
+    const SIZES: &[(u16, u16)] =
+        &[(2, 2), (3, 5), (4, 7), (5, 9), (24, 80)];
+
+    for &(rows, cols) in SIZES {
+        for chunk in TRAFFIC {
+            let mut parser = Parser::new(rows, cols, 0);
+            parser.process(chunk);
+            let bytes = parser.screen().checkpoint().unwrap_or_else(|e| {
+                panic!("{cols}x{rows} {chunk:?} would not checkpoint: {e}")
+            });
+            let mut restored = Parser::new(1, 1, 0);
+            restored.restore_screen(&bytes).unwrap_or_else(|e| {
+                panic!("{cols}x{rows} {chunk:?} would not restore: {e}")
+            });
+            assert_eq!(checkpoint(&restored), bytes);
+
+            // And again after a resize in each direction, which is where the
+            // shape rules are most likely to be tripped.
+            for &(r2, c2) in
+                &[(rows.max(3) - 1, cols.max(3) - 1), (rows + 3, cols + 3)]
+            {
+                let mut resized = Parser::new(rows, cols, 0);
+                resized.process(chunk);
+                resized.screen_mut().set_size(r2, c2);
+                let bytes = resized.screen().checkpoint().unwrap_or_else(|e| {
+                    panic!("{cols}x{rows}->{c2}x{r2} {chunk:?} would not checkpoint: {e}")
+                });
+                let mut restored = Parser::new(1, 1, 0);
+                restored.restore_screen(&bytes).unwrap_or_else(|e| {
+                    panic!("{cols}x{rows}->{c2}x{r2} {chunk:?} would not restore: {e}")
+                });
+            }
+        }
     }
 }

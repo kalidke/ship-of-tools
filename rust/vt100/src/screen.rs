@@ -215,20 +215,6 @@ impl Screen {
         }
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     /// Returns the current cursor position of the terminal.
     ///
     /// The return value will be (row, col).
@@ -237,8 +223,6 @@ impl Screen {
         let pos = self.grid().pos();
         (pos.row, pos.col)
     }
-
-
 
     /// Returns the [`Cell`](crate::Cell) object at the given location in the
     /// terminal, if it exists.
@@ -1215,8 +1199,10 @@ impl Screen {
         scrollback_len: usize,
     ) -> Result<Self, crate::checkpoint::CheckpointError> {
         // Refuse an oversized payload before decoding any of it, so a valid
-        // header followed by megabytes of trailing bytes cannot make a caller
-        // buffer them all only to be told about the trailer at the end.
+        // header followed by megabytes of trailing bytes is rejected on
+        // sight rather than after the decode. This bounds the decode only:
+        // the slice is already buffered by the time it arrives, and capping
+        // the read belongs to the framing that delivers it.
         if bytes.len() > crate::checkpoint::MAX_CHECKPOINT_LEN {
             return Err(crate::checkpoint::CheckpointError::TooLarge {
                 len: bytes.len(),

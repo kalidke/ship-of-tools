@@ -1,4 +1,3 @@
-
 #[derive(Clone, Debug)]
 pub struct Row {
     cells: Vec<crate::Cell>,
@@ -155,7 +154,6 @@ impl Row {
         }
     }
 
-
 }
 
 // ---------------------------------------------------------------------------
@@ -187,22 +185,47 @@ impl Row {
         for _ in 0..cols {
             cells.push(crate::Cell::read_checkpoint(r)?);
         }
-        Self::check_wide_pairing(&cells)?;
+        Self::check_invariants(&cells, wrapped)?;
         Ok(Self { cells, wrapped })
     }
 
-    /// Refuses a row whose wide characters are not in matched pairs.
+    /// Refuses a row the parser could not have produced.
     ///
-    /// `screen::text` treats the pairing as an invariant and indexes
-    /// `col - 1` / `col + 1` on the strength of it, so an orphaned half does
-    /// not render oddly — it panics on the next glyph written over it, far
-    /// from the restore that admitted it. The parser cannot produce an
-    /// orphan, so refusing one here rejects nothing legitimate.
-    fn check_wide_pairing(
+    /// Pairing is the load-bearing one: `screen::text` indexes `col - 1` and
+    /// `col + 1` on the strength of every wide character having both halves,
+    /// so an orphan does not render oddly — it panics on the next glyph
+    /// written over it, far from the restore that admitted it.
+    ///
+    /// The rest are shape rules that keep restored rows renderable the same
+    /// way parsed ones are. A continuation carrying its own text is the clear
+    /// case: `Grid::write_contents` skips continuations, so that text would
+    /// be invisible in the row's string form while a cell-by-cell renderer
+    /// drew it — two views of one screen disagreeing.
+    ///
+    /// DELIBERATELY NOT CHECKED, and not an oversight: whether the wide bit
+    /// agrees with the character's Unicode display width, whether a cell's
+    /// trailing characters are zero-width, and whether its content is 22
+    /// bytes when the parser stops at 21. The first two would mean consulting
+    /// a width table during restore, and those tables change between
+    /// `unicode-width` releases — a screen checkpointed under one and
+    /// restored under another would be refused for having the wrong idea
+    /// about an emoji. The stored structural flags are authoritative
+    /// precisely so that cannot happen. The third is arithmetic internal to
+    /// `Cell::append` that would turn any upstream tweak into a false
+    /// rejection, and admitting one extra byte costs nothing: it cannot
+    /// overflow the array, and no renderer reads past the length.
+    fn check_invariants(
         cells: &[crate::Cell],
+        wrapped: bool,
     ) -> Result<(), crate::checkpoint::CheckpointError> {
         let orphan = |col: usize| {
             Err(crate::checkpoint::CheckpointError::OrphanedWideHalf { col })
+        };
+        let unreachable_cell = |col: usize, what: &'static str| {
+            Err(crate::checkpoint::CheckpointError::UnreachableCell {
+                col,
+                what,
+            })
         };
         for (col, cell) in cells.iter().enumerate() {
             if cell.is_wide() {
@@ -213,10 +236,46 @@ impl Row {
                     Some(next) if next.is_wide_continuation() => {}
                     _ => return orphan(col),
                 }
+                // A lead is only ever made by `Cell::set`, which writes the
+                // character before setting the bit.
+                if !cell.has_contents() {
+                    return unreachable_cell(col, "a wide lead with no text");
+                }
             } else if cell.is_wide_continuation() {
                 match col.checked_sub(1).and_then(|prev| cells.get(prev)) {
                     Some(prev) if prev.is_wide() => {}
                     _ => return orphan(col),
+                }
+                // Both sites that create a continuation clear the cell to
+                // default attributes first — `screen::text` explicitly, and
+                // `Grid::insert_cells` by inserting a fresh one.
+                if cell.has_contents() {
+                    return unreachable_cell(
+                        col,
+                        "a wide continuation carrying its own text",
+                    );
+                }
+                if cell.attrs() != &crate::attrs::Attrs::default() {
+                    return unreachable_cell(
+                        col,
+                        "a wide continuation with its own attributes",
+                    );
+                }
+            }
+        }
+        // `col_wrap` sets the flag only when the last cell held something to
+        // wrap from, and every mutator that blanks or resizes that edge
+        // clears it again.
+        if wrapped {
+            match cells.last() {
+                Some(last)
+                    if last.has_contents() || last.is_wide_continuation() => {}
+                _ => {
+                    return Err(
+                        crate::checkpoint::CheckpointError::UnreachableRow {
+                            what: "wrapped, but nothing in the last column to wrap from",
+                        },
+                    )
                 }
             }
         }

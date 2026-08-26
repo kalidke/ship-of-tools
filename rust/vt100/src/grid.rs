@@ -1,4 +1,3 @@
-
 #[derive(Clone, Debug)]
 pub struct Grid {
     size: Size,
@@ -212,9 +211,6 @@ impl Grid {
             contents.truncate(contents.len() - 1);
         }
     }
-
-
-
 
     pub fn erase_all(&mut self, attrs: crate::attrs::Attrs) {
         for row in self.drawing_rows_mut() {

@@ -1,4 +1,3 @@
-
 /// Represents a foreground or background color for cells.
 #[derive(Eq, PartialEq, Debug, Copy, Clone, Default)]
 pub enum Color {
