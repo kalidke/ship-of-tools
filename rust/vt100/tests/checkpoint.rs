@@ -1128,25 +1128,24 @@ fn rejects_a_wide_lead_with_no_text() {
     ));
 }
 
-/// `col_wrap` sets the wrap flag only when the last column held something to
-/// wrap from, and every mutator that blanks that edge clears it again.
+/// The rule this branch tried to add and had to withdraw, kept as the case
+/// that disproved it. A one-row scroll region makes `col_wrap` scroll the
+/// wrapping row away and mark the blank row above it instead — an odd flag on
+/// an odd row, but exactly what the parser produces, so refusing it refused a
+/// real session.
 #[test]
-fn rejects_a_row_wrapped_from_nothing() {
-    let mut parser = Parser::new(2, 2, 0);
-    parser.process(b"ab");
-    let mut bytes = checkpoint(&parser);
-    const GRID: usize = HEADER_LEN + 2 * DEFAULT_ATTRS_LEN;
-    let row0_wrapped = GRID + 14;
-    assert_eq!(bytes[row0_wrapped], 0, "row 0 should start unwrapped");
-    bytes[row0_wrapped] = 1;
-    // Blank the last cell of row 0, leaving nothing to have wrapped from.
-    let last_cell_of_row0 = row0_wrapped + 1 + 3; // 'a' costs 3 bytes
-    bytes[last_cell_of_row0] = 0;
-    bytes.drain(last_cell_of_row0 + 1..last_cell_of_row0 + 3);
-    assert!(matches!(
-        restore(&bytes),
-        Err(CheckpointError::UnreachableRow { .. })
-    ));
+fn a_row_wrapped_from_nothing_is_real_and_must_restore() {
+    let mut parser = Parser::new(10, 2, 0);
+    parser.process(b"\x1b[3;6r");       // scroll region rows 2..=5
+    parser.screen_mut().set_size(3, 2);  // clamps it to the equal-endpoint 2..=2
+    parser.process(b"abc");              // the third character wraps
+
+    assert!(parser.screen().row_wrapped(1), "expected the odd wrap flag");
+    assert!(
+        !parser.screen().cell(1, 1).unwrap().has_contents(),
+        "expected its last cell to be blank"
+    );
+    assert_roundtrips(&mut parser);
 }
 
 /// The counterweight to every rule above: none of them may refuse a screen
@@ -1179,12 +1178,13 @@ fn no_rule_here_refuses_a_screen_the_parser_produces() {
     // Sizes that exercise the edges: smallest workable, odd widths that
     // split wide glyphs, and something ordinary.
     //
-    // One-row and one-column geometries are deliberately absent. The PARSER
-    // panics on those before a checkpoint is ever taken —
-    // `Parser::new(1, 2, 0).process(b"abc")` is the whole repro — so they
-    // cannot say anything about whether these rules over-reject. They are
-    // tracked as pre-existing degenerate-geometry bugs needing a policy
-    // decision, not as codec behavior.
+    // One-row and one-column geometries are deliberately absent. Not
+    // because they never work — this suite checkpoints 1x1 screens
+    // elsewhere — but because SOME traffic panics the PARSER there before a
+    // checkpoint is ever taken (`Parser::new(1, 2, 0).process(b"abc")` is
+    // the whole repro), which would make this corpus fail for a reason that
+    // has nothing to do with over-rejection. Tracked as pre-existing
+    // degenerate-geometry bugs needing a policy decision.
     const SIZES: &[(u16, u16)] =
         &[(2, 2), (3, 5), (4, 7), (5, 9), (24, 80)];
 
@@ -1201,21 +1201,37 @@ fn no_rule_here_refuses_a_screen_the_parser_produces() {
             });
             assert_eq!(checkpoint(&restored), bytes);
 
-            // And again after a resize in each direction, which is where the
-            // shape rules are most likely to be tripped.
-            for &(r2, c2) in
-                &[(rows.max(3) - 1, cols.max(3) - 1), (rows + 3, cols + 3)]
-            {
-                let mut resized = Parser::new(rows, cols, 0);
-                resized.process(chunk);
-                resized.screen_mut().set_size(r2, c2);
-                let bytes = resized.screen().checkpoint().unwrap_or_else(|e| {
-                    panic!("{cols}x{rows}->{c2}x{r2} {chunk:?} would not checkpoint: {e}")
-                });
-                let mut restored = Parser::new(1, 1, 0);
-                restored.restore_screen(&bytes).unwrap_or_else(|e| {
-                    panic!("{cols}x{rows}->{c2}x{r2} {chunk:?} would not restore: {e}")
-                });
+            // And again around a resize in each direction. Both orders
+            // matter: resizing after the traffic reflows what is already
+            // there, while RESUMING traffic after a resize is what composes
+            // a clamped scroll region with a later wrap — the composition
+            // that produced this suite's one real false rejection, and that
+            // a resize-last corpus cannot reach.
+            //
+            // The shrink is `-2`, not `max(3) - 1`: the latter leaves the
+            // smallest sizes unchanged and quietly tests nothing.
+            for &(r2, c2) in &[
+                (rows.saturating_sub(2).max(2), cols.saturating_sub(2).max(2)),
+                (rows + 3, cols + 3),
+            ] {
+                for resume in [false, true] {
+                    let mut resized = Parser::new(rows, cols, 0);
+                    resized.process(chunk);
+                    resized.screen_mut().set_size(r2, c2);
+                    if resume {
+                        resized.process(chunk);
+                    }
+                    let label =
+                        format!("{cols}x{rows}->{c2}x{r2} resume={resume} {chunk:?}");
+                    let bytes =
+                        resized.screen().checkpoint().unwrap_or_else(|e| {
+                            panic!("{label} would not checkpoint: {e}")
+                        });
+                    let mut restored = Parser::new(1, 1, 0);
+                    restored.restore_screen(&bytes).unwrap_or_else(|e| {
+                        panic!("{label} would not restore: {e}")
+                    });
+                }
             }
         }
     }

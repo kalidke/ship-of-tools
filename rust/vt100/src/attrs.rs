@@ -165,9 +165,16 @@ impl Attrs {
         }
         // Bold and dim are mutually exclusive: every setter clears the
         // intensity bits before setting one, so both at once is a state no
-        // parse can reach. Refusing it is the same rule the rest of this
-        // codec follows — restore accepts only screens the parser could
-        // itself have produced.
+        // parse can reach.
+        //
+        // Refusing it follows this codec's rule, which is narrower than
+        // "only screens the parser could produce": restore refuses the
+        // unreachable shapes it can rule out CHEAPLY AND CERTAINLY, and
+        // accepts the rest. Some unreachable states are deliberately let
+        // through (see `Row::check_invariants`) because ruling them out
+        // would depend on a Unicode width table, or on arithmetic internal
+        // to the parser, and a rule that refuses a real screen is worse
+        // than one that admits a harmless odd one.
         if mode & TEXT_MODE_INTENSITY == TEXT_MODE_INTENSITY {
             return Err(crate::checkpoint::CheckpointError::InvalidBits {
                 field,

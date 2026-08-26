@@ -185,7 +185,7 @@ impl Row {
         for _ in 0..cols {
             cells.push(crate::Cell::read_checkpoint(r)?);
         }
-        Self::check_invariants(&cells, wrapped)?;
+        Self::check_invariants(&cells)?;
         Ok(Self { cells, wrapped })
     }
 
@@ -202,6 +202,19 @@ impl Row {
     /// be invisible in the row's string form while a cell-by-cell renderer
     /// drew it — two views of one screen disagreeing.
     ///
+    /// The wrap flag is NOT checked, and the attempt is instructive. It looks
+    /// like it should be: `col_wrap` sets it only when the last cell held
+    /// something to wrap from, and every mutator that blanks that edge clears
+    /// it. But a one-row scroll region breaks the reasoning — parse
+    /// `CSI 3;6r` at 10x2, resize to 3x2 (which clamps the region to
+    /// `2..=2`), then write three characters: the wrap scrolls the wrapping
+    /// row away and `col_wrap` marks the blank row above it instead. That is
+    /// an odd flag on an odd row, but it is what the parser produces, and a
+    /// rule that refuses it refuses a real session. Repairing `col_wrap`
+    /// instead would be a second change to upstream parsing behavior on a
+    /// fork carrying none of upstream's conformance tests, to keep a rule
+    /// whose only benefit is cosmetic.
+    ///
     /// DELIBERATELY NOT CHECKED, and not an oversight: whether the wide bit
     /// agrees with the character's Unicode display width, whether a cell's
     /// trailing characters are zero-width, and whether its content is 22
@@ -216,7 +229,6 @@ impl Row {
     /// overflow the array, and no renderer reads past the length.
     fn check_invariants(
         cells: &[crate::Cell],
-        wrapped: bool,
     ) -> Result<(), crate::checkpoint::CheckpointError> {
         let orphan = |col: usize| {
             Err(crate::checkpoint::CheckpointError::OrphanedWideHalf { col })
@@ -260,22 +272,6 @@ impl Row {
                         col,
                         "a wide continuation with its own attributes",
                     );
-                }
-            }
-        }
-        // `col_wrap` sets the flag only when the last cell held something to
-        // wrap from, and every mutator that blanks or resizes that edge
-        // clears it again.
-        if wrapped {
-            match cells.last() {
-                Some(last)
-                    if last.has_contents() || last.is_wide_continuation() => {}
-                _ => {
-                    return Err(
-                        crate::checkpoint::CheckpointError::UnreachableRow {
-                            what: "wrapped, but nothing in the last column to wrap from",
-                        },
-                    )
                 }
             }
         }

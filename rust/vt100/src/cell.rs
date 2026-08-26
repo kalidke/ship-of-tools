@@ -81,8 +81,10 @@ impl Cell {
     /// Returns the text contents of the cell.
     ///
     /// Can include multiple unicode characters if combining characters are
-    /// used, but will contain at most one character with a non-zero character
-    /// width.
+    /// used. Parsing puts at most one character of non-zero width here; a
+    /// cell restored from a checkpoint may hold more, because restore does
+    /// not consult a width table (see `Row::check_invariants` for why) and
+    /// width tables shift between `unicode-width` releases in any case.
     // Since contents has been constructed by appending chars encoded as UTF-8 it will be valid UTF-8
     #[allow(clippy::missing_panics_doc)]
     #[must_use]

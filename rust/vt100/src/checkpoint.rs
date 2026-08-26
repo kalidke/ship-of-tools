@@ -270,11 +270,6 @@ pub enum CheckpointError {
         /// What is wrong with it.
         what: &'static str,
     },
-    /// A row is shaped in a way no parse produces.
-    UnreachableRow {
-        /// What is wrong with it.
-        what: &'static str,
-    },
     /// The payload decoded successfully but bytes remained after it.
     TrailingBytes(usize),
     /// The screen cannot be expressed in this format.
@@ -331,9 +326,6 @@ impl std::fmt::Display for CheckpointError {
             ),
             Self::UnreachableCell { col, what } => {
                 write!(f, "column {col} holds {what}, which no parse produces")
-            }
-            Self::UnreachableRow { what } => {
-                write!(f, "row is {what}, which no parse produces")
             }
             Self::TrailingBytes(n) => {
                 write!(f, "{n} bytes remained after the checkpoint")
