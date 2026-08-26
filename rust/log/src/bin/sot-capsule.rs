@@ -6,7 +6,7 @@
 //! watermark), input is recorded redacted by default, and the voyage
 //! verifies with `sot-log verify` afterward.
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--no-echo] -- <cmd> [args...]\n       sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-version>";
@@ -54,15 +54,15 @@ fn main() {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "linux"))]
 fn main() {
-    eprintln!("sot-capsule requires unix in v1 (ADR 0039 — Windows lands with P3)");
+    eprintln!("sot-capsule requires Linux in v1 (ADR 0039 — Windows lands with P3; macOS has no capsule)");
     std::process::exit(2);
 }
 
 /// The ADR 0040 producer: operator commands ride stdin as JSON lines
 /// ({"turn": text} | {"interrupt": true} | {"shutdown": true}).
-#[cfg(all(unix, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn run_claude(args: &[String], usage: &str) {
     use sot_log::claude::{run, ClaudeConfig, Fence, OperatorCmd};
     if args.len() != 4 {
@@ -119,7 +119,7 @@ fn run_claude(args: &[String], usage: &str) {
     }
 }
 
-#[cfg(not(all(unix, target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 fn run_claude(_args: &[String], _usage: &str) {
     eprintln!("the claude adapter requires Linux in v1 (ADR 0040 kill domain)");
     std::process::exit(2);

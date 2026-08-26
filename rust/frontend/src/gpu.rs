@@ -2686,6 +2686,14 @@ struct State {
     /// `files:<rel>` node id by `copy_navtree_path` so Ctrl+C in NavTree
     /// yields the absolute backend-side path (paste-into-shell utility).
     daemon_project_root: Option<String>,
+    /// The connected backend's product version (`HelloRes::app_version`),
+    /// painted beside the FE's own version on the bottom chrome edge.
+    /// `None` before the first hello, or when the daemon is old enough not
+    /// to send the field. Deliberately NOT cleared on disconnect — a stale
+    /// "what we last talked to" reads better than a blank half, and the
+    /// transport state is already called out in the nav status row, so the
+    /// stamp doesn't need to duplicate it.
+    backend_version: Option<String>,
     /// Absolute path of the most recent `project.scan`'s `project_root`.
     /// The chrome strips this prefix off the absolute file paths each
     /// Modules-mode entry carries to synthesize the `files:<relpath>`
@@ -4335,6 +4343,7 @@ impl State {
             host: None,
             daemon_root_basename: None,
             daemon_project_root: None,
+            backend_version: None,
             scan_project_root: None,
             last_revision: 0,
             workspace_labels: HashMap::new(),
@@ -9358,6 +9367,7 @@ impl State {
                     project_root,
                     proxy,
                     remote,
+                    backend_version,
                 } => {
                     // ADR 0035: arm the proxy only when the daemon can proxy
                     // (capability) AND this FE actually connected over the tcp
@@ -9394,6 +9404,10 @@ impl State {
                             .map(str::to_string)
                     });
                     self.daemon_project_root = project_root.clone();
+                    // Backend product version for the bottom-edge version
+                    // stamp. Empty (pre-versioning daemon) is kept as `None`
+                    // so the stamp renders `be ?` rather than a blank half.
+                    self.backend_version = Some(backend_version).filter(|v| !v.is_empty());
                     self.last_revision = revision;
                     let _ = session_id;
                     // ADR 0030 §2: a clean hello means the protocol skew (if
@@ -12394,6 +12408,11 @@ impl State {
         self.refresh_battery_label();
         let battery = self.battery_label.clone();
         let last_key = self.last_key.clone();
+        // FE/BE version stamp for the bottom chrome edge. Snapshotted here
+        // with the other draw locals because the draw closure can't borrow
+        // `self` again.
+        let (version_stamp, version_skew) =
+            version_label(&sot_protocol::app_version(), self.backend_version.as_deref());
         let mode = self.mode;
         let focus = self.focus;
         let maximized = self.maximized;
@@ -13419,6 +13438,39 @@ impl State {
                                 );
                             }
                         }
+                    }
+                }
+
+                // FE/BE version stamp, left-aligned on the BOTTOM outer edge
+                // — the mirror of the `nav · mode:` title on the top edge,
+                // same `write_title` treatment and the same two-cell inset
+                // from the corner glyph. Sits ON the border line; the session
+                // strip is a pixel overlay one row lower, so the two don't
+                // fight for the same cells.
+                //
+                // Dark gray when FE and BE agree, yellow when they don't:
+                // the halves drift independently (rebuild one, forget the
+                // other), and a skew you have to read character-by-character
+                // to notice isn't surfaced at all.
+                {
+                    let stamp_cells = version_stamp.chars().count() as u16;
+                    let bot_y = area.y + area.height - 1;
+                    // Same guard shape as the clock: skip entirely rather
+                    // than smear a truncated version across the corner when
+                    // the window is too narrow to hold it.
+                    if area.width > stamp_cells + 2 {
+                        write_title(
+                            buf,
+                            area.x + 2,
+                            bot_y,
+                            &version_stamp,
+                            stamp_cells,
+                            if version_skew {
+                                Style::default().fg(Color::Yellow)
+                            } else {
+                                idle_title_style
+                            },
+                        );
                     }
                 }
 
@@ -19253,6 +19305,22 @@ fn write_title(
     buf.set_string(x, y, &s, style);
 }
 
+/// Build the bottom-edge version stamp: `" fe <fe> · be <be> "`, plus a
+/// `skew` flag that is true when the two halves disagree.
+///
+/// Both halves are ALWAYS shown, even when they match. The point of the
+/// stamp is that FE and BE drift apart independently — one gets rebuilt, the
+/// other doesn't — so collapsing to a single version in the happy case would
+/// hide exactly the field you are watching. `None` (a pre-versioning daemon,
+/// or no hello yet) renders `be ?` and is NOT counted as skew: unknown is not
+/// the same as different, and colouring it as a mismatch would cry wolf on
+/// every launch before the first hello lands.
+fn version_label(fe: &str, be: Option<&str>) -> (String, bool) {
+    let be = be.unwrap_or("?");
+    let skew = be != "?" && be != fe;
+    (format!(" fe {fe} · be {be} "), skew)
+}
+
 /// Scale an RGB colour's brightness by `f` (saturating). `f > 1.0`
 /// brightens (toward white-ish, channel-clamped); `f < 1.0` dims. Used by
 /// the selected-session contrast levers so a single multiplier expresses
@@ -20410,6 +20478,35 @@ mod tests {
         assert!((session_strip_target(&labels, 0, cell_w) - 10.0).abs() < 1e-3);
         assert!((session_strip_target(&labels, 1, cell_w) - (50.0 + 20.0)).abs() < 1e-3);
         let _ = gap;
+    }
+
+    #[test]
+    fn version_label_shows_both_halves_even_when_they_match() {
+        // Always-both: the matching case must still print `be`, otherwise
+        // the field you're watching is invisible exactly when it's healthy.
+        let (s, skew) = version_label("0.5.8", Some("0.5.8"));
+        assert_eq!(s, " fe 0.5.8 · be 0.5.8 ");
+        assert!(!skew);
+    }
+
+    #[test]
+    fn version_label_flags_skew() {
+        let (s, skew) = version_label("0.5.8", Some("0.5.7"));
+        assert_eq!(s, " fe 0.5.8 · be 0.5.7 ");
+        assert!(skew);
+        // Dev builds differ only in the sha — the common real-world skew,
+        // since both sides carry the same `0.5.8-dev` prefix.
+        let (_, skew) = version_label("0.5.8-dev+aaaaaaa", Some("0.5.8-dev+bbbbbbb"));
+        assert!(skew);
+    }
+
+    #[test]
+    fn version_label_unknown_backend_is_not_skew() {
+        // Pre-hello / pre-versioning daemon. Unknown != different: colouring
+        // this as a mismatch would cry wolf on every launch.
+        let (s, skew) = version_label("0.5.8", None);
+        assert_eq!(s, " fe 0.5.8 · be ? ");
+        assert!(!skew);
     }
 
     #[test]

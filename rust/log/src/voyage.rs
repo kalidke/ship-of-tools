@@ -359,7 +359,7 @@ impl VoyageStore {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", windows)))]
 mod tests {
     use super::*;
     use crate::envelope::Class;

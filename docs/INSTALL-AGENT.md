@@ -173,10 +173,18 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1
    ```
 
+   `install-shortcut.ps1` also writes `%LOCALAPPDATA%\sot\install.json` (via
+   `install-manifest.ps1`). **Do not skip it and hand-make a shortcut**: that
+   file is what tells the frontend it is a release install, and without it the
+   startup update check returns at its first guard and the machine can never
+   update itself. It no-ops with an explanation on a `-dev` source build.
+
    `install-shortcut.ps1` creates `Desktop\Ship of Tools.lnk` →
    `launch-sot.ps1` (opens the step-3 control forward, spawns/refreshes the
-   remote `sotd`, runs the frontend under the exit-75 respawn supervisor),
-   sets the SoT icon (`logo.ico`), and stamps the AppUserModelID
+   remote `sotd`, applies any staged update via `sot-apply.ps1`, runs the
+   frontend under the exit-75 respawn supervisor),
+   sets the SoT icon (`logo.ico`, copied to `%LOCALAPPDATA%\sot` so it
+   survives moving the clone), and stamps the AppUserModelID
    `ShipOfTools.Sot` on the `.lnk` so the running window merges into the
    shortcut's taskbar button with the right icon. Re-run it after pinning to
    the taskbar — it re-syncs the pin so it never drifts back to a naive
@@ -204,6 +212,10 @@ steps: download `sot-<ver>-macos-aarch64.tar.gz` + `SHA256SUMS`, verify
 the ports as in 2b, `./sot --tcp 127.0.0.1:18743`.
 
 ## 3. Install
+
+> **Windows: skip this section.** `install.sh` covers Linux and macOS only —
+> it exits with an error on MINGW/MSYS/Cygwin. Your install finished at the end
+> of §2b; go straight to §4 and use the **Windows** branch there.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/install.sh \
@@ -238,9 +250,55 @@ roles, unless `--no-service`).
 
 ## 4. Verify (do not skip; report results)
 
+### Windows (§2b installs)
+
+Every command below is PowerShell. Run them from the clone. All five must
+pass before you report success — the last two are the difference between a
+working install and one that can never update itself.
+
+```powershell
+# 1. The frontend runs and reports a release version (NOT "-dev+<sha>",
+#    which means a source build that will never self-update).
+& "$env:LOCALAPPDATA\sot\bin\sot.exe" --version
+
+# 2. The shortcut exists and carries the Ship of Tools icon, not PowerShell's.
+$sc = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:USERPROFILE\Desktop\Ship of Tools.lnk")
+$sc.TargetPath; $sc.Arguments; $sc.IconLocation   # IconLocation must end in logo.ico,0
+Test-Path ($sc.IconLocation -replace ',0$')       # must be True
+
+# 3. The install manifest exists — WITHOUT it the frontend never checks for
+#    updates (it bails at its "not a release install" guard).
+Get-Content "$env:LOCALAPPDATA\sot\install.json"  # role must be "remote"
+
+# 4. The update applier is present and loads under Windows PowerShell 5.1.
+$e = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile(
+    (Resolve-Path .\scripts\sot-apply.ps1), [ref]$null, [ref]$e)
+$e.Count   # must be 0
+
+# 5. The tunnel is up and the backend answers on it.
+Test-NetConnection 127.0.0.1 -Port 18743 | Select-Object TcpTestSucceeded
+```
+
+Then launch from the desktop shortcut (not `sot.exe` directly — that is a
+"naive" frontend with no tunnel and no self-relaunch). A native window should
+open and connect. Confirm the **bottom border line** shows
+`fe <version> · be <version>`: dark gray means the two halves agree, **yellow
+means the frontend and backend are on different builds** and the backend
+needs updating. Tell the human: **press `?` for help; the top line of the nav
+pane always shows the pane-switch keys.**
+
+If step 3 printed nothing, run `powershell -File scripts\install-manifest.ps1`
+and re-check. If it reports a `-dev` build, that is a source install: it
+updates via the launcher's git pull + cargo rebuild instead, which is correct
+and needs no manifest.
+
+### Linux / macOS
+
 ```bash
 ~/.local/share/sot/bin/sotd --version        # must print the release version
 git -C ~/.local/share/sot/repo/current describe --tags   # must equal the tag
+cat ~/.local/share/sot/install.json          # schema 1; role matches step 2
 ```
 
 For backend roles, prove the daemon answers a hello. Two branches:
@@ -307,16 +365,33 @@ top line of the nav pane always shows the pane-switch keys.**
 ## 6. After the install
 
 - The checkout **is the manual**: point yourself (and the human) at
-  `~/.local/share/sot/repo/current/docs/USING.md` — inside the app, the
-  terminal-drawer agent gets the same path via `$SOT_MANUAL`.
-- Updating later: re-run step 3 (the app also notifies about new releases and
-  stages fresh binaries itself; source builds are stamped `-dev` and never
-  self-update).
+  `~/.local/share/sot/repo/current/docs/USING.md` — on Windows that is
+  `docs\USING.md` in the clone made in §2b step 5. Inside the app, the
+  terminal-drawer agent gets the right path via `$SOT_MANUAL` on every
+  platform.
+- Updating later:
+  - **Linux / macOS** — re-run step 3. The app also notifies about new
+    releases and stages fresh binaries itself; `sot-launch` applies them at the
+    next start via `sot-apply`.
+  - **Windows** — step 3 does not run here. The frontend checks for releases
+    at startup and stages them; `launch-sot.ps1` calls `scripts\sot-apply.ps1`
+    on the next launch to verify and swap the binaries, keeping `.prev` and
+    rolling back automatically if the new build crash-loops within 10s. This
+    needs `install.json` to exist (§4 step 3) — without it the check never
+    runs. The launcher separately does a `git pull` of the clone each launch,
+    which is what refreshes the scripts and config.
+  - Source builds are stamped `-dev` and never self-update on any platform;
+    they update by pulling and rebuilding.
 - Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`;
   if a unit was installed, `systemctl --user disable --now sotd` and remove
   `~/.config/systemd/user/sotd.service`; also remove the desktop entry
-  (`~/.local/share/applications/ship-of-tools.desktop`) or the macOS app
-  (`~/Applications/Ship of Tools.app`). Agent comm resources written by
+  (`~/.local/share/applications/ship-of-tools.desktop`, plus
+  `~/.local/share/icons/hicolor/256x256/apps/ship-of-tools.png`) or the macOS
+  app (`~/Applications/Ship of Tools.app`).
+  On **Windows**: `Remove-Item -Recurse "$env:LOCALAPPDATA\sot"` (binaries,
+  install.json, updates, logs), delete `"$env:APPDATA\sot"` if you wrote a
+  config there, remove `"$env:USERPROFILE\Desktop\Ship of Tools.lnk"` and
+  unpin the taskbar shortcut, then delete the clone. Agent comm resources written by
   `ShipTools.update_comm()` (`~/.sot-comm`, skills under `~/.claude` /
   `$CODEX_HOME` (default `~/.codex`), launchers in `~/.local/bin`) are shared with other checkouts —
   remove them only if this was the machine's only Ship of Tools install.

@@ -843,7 +843,7 @@ fn check_intent_ref(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", windows)))]
 mod tests {
     use super::*;
     use crate::envelope::*;

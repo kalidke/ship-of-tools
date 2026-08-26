@@ -1,3 +1,4 @@
+#![cfg(any(target_os = "linux", windows))] // seals segments -> needs the store's rename arm (linux renameat2 / windows MoveFileExW)
 //! Randomized terminate sweep — the PORTABLE fault-harness half of ADR 0041's
 //! merge gates: a minimal cross-platform writer binary (`sot-fault-writer`,
 //! no PTY, no shell) is killed mid-write via `std::process::Child::kill()`,

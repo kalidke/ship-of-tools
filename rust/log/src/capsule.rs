@@ -20,7 +20,7 @@
 //! `producer_spawn` → producer/input frames → lifecycle `producer_dead`
 //! (exit status) → seal.
 
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 use crate::envelope::*;
 use crate::segment::{Commit, RetentionClass};
