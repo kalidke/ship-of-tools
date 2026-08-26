@@ -9,7 +9,8 @@
 #
 # Discover targets with (note -S: sot sessions live on the PRIVATE per-user
 # server — ADR 0038 keeper — not tmux's default socket):
-#   tmux -S "$(~/.local/bin/sotd tmux-socket-path 2>/dev/null || echo "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/sot/tmux.sock")" \
+#   source ~/.sot-comm/bin/comm-lib.sh   # for sot_tmux_socket
+#   tmux -S "$(sot_tmux_socket)" \
 #     list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}  #{pane_id}'
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

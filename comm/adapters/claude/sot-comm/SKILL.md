@@ -310,7 +310,11 @@ enroll it: find its tmux target and nudge it.
 # discover live panes (each is a candidate session). NOTE -S: sot sessions
 # live on the PRIVATE per-user tmux server (the ADR 0038 keeper socket), so a
 # bare `tmux` — the default server — shows none of them.
-SOCK="${SOT_TMUX_SOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/sot/tmux.sock}"   # or: sotd tmux-socket-path
+# Resolve the path with `sot_tmux_socket` — never hand-roll it. It asks
+# `sotd tmux-socket-path` (the single source of truth) and only mirrors its
+# tiers when sotd isn't on PATH, which is the common case in a human shell.
+source ~/.sot-comm/bin/comm-lib.sh
+SOCK="$(sot_tmux_socket)" || { echo "cannot resolve the sot tmux socket" >&2; exit 1; }
 tmux -S "$SOCK" list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}  #{pane_id}'
 # paste a join+reply instruction into it (resolves the same socket itself)
 ~/.sot-comm/bin/comm-bootstrap.sh sot-be-lab-guide:1.1 lab-guide
