@@ -165,10 +165,10 @@ impl Attrs {
             });
         }
         // Bold and dim are mutually exclusive: every setter clears the
-        // intensity bits before setting one. Both bits at once is a state the
-        // parser cannot reach, and `write_escape_code_diff` answers it with
-        // `unreachable!()` — so accepting it here would turn a corrupt
-        // checkpoint into a later panic.
+        // intensity bits before setting one, so both at once is a state no
+        // parse can reach. Refusing it is the same rule the rest of this
+        // codec follows — restore accepts only screens the parser could
+        // itself have produced.
         if mode & TEXT_MODE_INTENSITY == TEXT_MODE_INTENSITY {
             return Err(crate::checkpoint::CheckpointError::InvalidBits {
                 field,

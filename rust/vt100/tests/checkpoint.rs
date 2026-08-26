@@ -475,9 +475,10 @@ fn rejects_unknown_mouse_tags() {
     ));
 }
 
-/// Bold and dim together is a state the parser cannot reach, and one that
-/// `write_escape_code_diff` answers with `unreachable!()`. Accepting it would
-/// convert a corrupt checkpoint into a panic somewhere else entirely.
+/// Bold and dim together is a state the parser cannot reach — every setter
+/// clears the intensity bits before setting one — so restore refuses it under
+/// the same rule as everything else here: only screens the parser could
+/// itself have produced.
 #[test]
 fn rejects_simultaneous_bold_and_dim() {
     let mut bytes = sample_checkpoint();
@@ -953,4 +954,31 @@ fn accepts_a_one_row_screens_whole_screen_region() {
     let mut parser = Parser::new(1, 4, 0);
     parser.process(b"hi");
     assert_roundtrips(&mut parser);
+}
+
+/// The scroll-region rule compares against the row count, and doing that
+/// arithmetic before range-checking the field overflows on `u16::MAX` — a
+/// panic inside the check that exists to prevent one.
+#[test]
+fn rejects_extreme_scroll_region_values_without_overflowing() {
+    for (top, bottom) in [
+        (u16::MAX, u16::MAX),
+        (0, u16::MAX),
+        (u16::MAX, 0),
+        (u16::MAX - 1, u16::MAX),
+    ] {
+        let mut parser = Parser::new(2, 2, 0);
+        parser.process(b"ab");
+        let mut bytes = checkpoint(&parser);
+        bytes[SCROLL_TOP..SCROLL_TOP + 2].copy_from_slice(&top.to_le_bytes());
+        bytes[SCROLL_BOTTOM..SCROLL_BOTTOM + 2]
+            .copy_from_slice(&bottom.to_le_bytes());
+        assert!(
+            matches!(
+                restore(&bytes),
+                Err(CheckpointError::InvalidScrollRegion { .. })
+            ),
+            "scroll region {top}..={bottom} was not refused cleanly"
+        );
+    }
 }

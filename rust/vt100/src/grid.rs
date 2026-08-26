@@ -603,17 +603,24 @@ impl Grid {
         // `0..=0` on a screen with more than one row makes that subtraction
         // underflow on the next glyph that wraps — a state no parse can
         // produce, restored and then panicking somewhere else entirely.
+        let invalid = || {
+            Err(crate::checkpoint::CheckpointError::InvalidScrollRegion {
+                top: scroll_top,
+                bottom: scroll_bottom,
+            })
+        };
+        // Range-check the field BEFORE doing arithmetic with it. Computing
+        // `scroll_bottom + 1` first overflows on a hostile `u16::MAX` — a
+        // panic in the very code that exists to prevent one.
+        if scroll_bottom >= size.rows {
+            return invalid();
+        }
+        // `size.rows` is non-zero (the header rejects zero) and
+        // `scroll_bottom` is now below it, so this subtraction is safe.
         let equal_at_last_row =
-            scroll_top == scroll_bottom && scroll_bottom + 1 == size.rows;
-        if scroll_bottom >= size.rows
-            || !(scroll_top < scroll_bottom || equal_at_last_row)
-        {
-            return Err(
-                crate::checkpoint::CheckpointError::InvalidScrollRegion {
-                    top: scroll_top,
-                    bottom: scroll_bottom,
-                },
-            );
+            scroll_top == scroll_bottom && scroll_bottom == size.rows - 1;
+        if !(scroll_top < scroll_bottom || equal_at_last_row) {
+            return invalid();
         }
 
         let mut rows = Vec::with_capacity(usize::from(size.rows));
