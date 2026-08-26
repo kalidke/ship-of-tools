@@ -7,7 +7,11 @@
 #   <tmux-target>   e.g. sot-be-lab-guide:1.1  or  %13
 #   suggested-name  optional handle to propose for the target
 #
-# Discover targets with:  tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}  #{pane_id}  #{session_name}'
+# Discover targets with (note -S: sot sessions live on the PRIVATE per-user
+# server — ADR 0038 keeper — not tmux's default socket):
+#   source ~/.sot-comm/bin/comm-lib.sh   # for sot_tmux_socket
+#   tmux -S "$(sot_tmux_socket)" \
+#     list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}  #{pane_id}'
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
@@ -18,10 +22,14 @@ TGT="${1:-}"; SUGG="${2:-}"
 [ -z "$TGT" ] && { echo "usage: comm-bootstrap.sh <tmux-target> [suggested-name]" >&2; exit 1; }
 [ -z "$NAME" ] && NAME="unknown-$HOST"
 
-# Validate the target pane exists
-if ! tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_id}' 2>/dev/null \
+# Validate the target pane exists — on the sot server (ADR 0038 keeper
+# socket), same resolution comm-send uses for the paste itself. A bare
+# `tmux` here checked the DEFAULT server, where daemon-created sessions
+# never live (pre-existing gap, flagged in the PR #109 review round).
+SOT_SOCK="$(sot_tmux_socket)" || { echo "ERROR: cannot resolve the sot tmux socket" >&2; exit 1; }
+if ! tmux -S "$SOT_SOCK" list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_id}' 2>/dev/null \
      | grep -qE "(^| )${TGT}( |$)"; then
-    echo "ERROR: tmux target '$TGT' not found among live panes" >&2
+    echo "ERROR: tmux target '$TGT' not found among live panes on $SOT_SOCK" >&2
     exit 1
 fi
 

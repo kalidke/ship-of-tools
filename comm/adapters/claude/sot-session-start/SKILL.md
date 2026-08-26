@@ -226,7 +226,15 @@ A session can stand up new sessions on the network. Two flavors — pick by life
   receive path on start and on every `--continue` resume:
 
   ```bash
-  tmux new-session -s <tmux-name> -c <repo-path> ~/.local/bin/ccb   # no -d: create AND attach
+  # -S: sot sessions live on the private per-user tmux server (the ADR 0038
+  # keeper socket) — a bare `tmux` would create the session on the DEFAULT
+  # server, invisible to the daemon and the FE Sessions list.
+  # Resolve the path with `sot_tmux_socket` — never hand-roll it. It asks
+  # `sotd tmux-socket-path` (the single source of truth) and only mirrors its
+  # tiers when sotd isn't on PATH, which is the common case in a human shell.
+  source ~/.sot-comm/bin/comm-lib.sh
+  SOCK="$(sot_tmux_socket)" || { echo "cannot resolve the sot tmux socket" >&2; exit 1; }
+  tmux -S "$SOCK" new-session -s <tmux-name> -c <repo-path> ~/.local/bin/ccb   # no -d: create AND attach
   ```
 
   `ccb` is this skill's launcher: it runs `claude` with `/sot-session-start` as

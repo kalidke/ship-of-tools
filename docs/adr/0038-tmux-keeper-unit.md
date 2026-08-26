@@ -110,8 +110,20 @@ On a host with the keeper installed, with a throwaway session open:
   enabled on their own. They degrade to the loudly-warned legacy fallback until
   someone enables the unit (or `sot-apply` learns to install units — a candidate
   follow-up).
-- One comm script still checks panes against tmux's *default* socket rather than
-  ours (a pre-existing gap, unrelated to this change).
-- A few skill documents show bare-`tmux` one-liners that assume the default socket.
+- ~~One comm script still checks panes against tmux's *default* socket rather
+  than ours (a pre-existing gap, unrelated to this change).~~ **Closed:**
+  `comm-bootstrap.sh` validates the target pane against the keeper socket.
+- ~~A few skill documents show bare-`tmux` one-liners that assume the default
+  socket.~~ **Closed:** the `sot-comm` and `sot-session-start` snippets pass
+  `-S` and resolve the path through `sot_tmux_socket`.
+- The socket path now has three shell resolvers, not one: `comm-lib.sh`'s
+  `sot_tmux_socket` (authoritative — it queries `sotd tmux-socket-path` and
+  mirrors its tiers only as a fallback) plus a second copy of the same tier
+  logic in `codex-watch.sh`. They agree today; nothing enforces that they keep
+  agreeing. `sot_tmux_socket`'s `/run/user/<uid>` tier is also weaker than the
+  Rust side's: it tests only `-d`, where `is_private_dir` also checks owner and
+  mode. Tightening it would change which socket resolves on any host where that
+  directory is not `0700`, so it wants its own change with its own test, not a
+  drive-by.
 - macOS gets its keeper when the planned launchd wiring lands; until then macOS
   simply keeps today's behavior (it has no cgroup-kill hazard).
