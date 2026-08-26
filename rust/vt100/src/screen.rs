@@ -1094,10 +1094,9 @@ impl MouseProtocolMode {
             MOUSE_MODE_TAG_PRESS_RELEASE => Ok(Self::PressRelease),
             MOUSE_MODE_TAG_BUTTON_MOTION => Ok(Self::ButtonMotion),
             MOUSE_MODE_TAG_ANY_MOTION => Ok(Self::AnyMotion),
-            tag => Err(crate::checkpoint::CheckpointError::UnknownTag {
-                field: "mouse protocol mode",
-                tag,
-            }),
+            _ => Err(crate::checkpoint::CheckpointError::Malformed(
+                "undefined mouse protocol mode tag",
+            )),
         }
     }
 }
@@ -1120,10 +1119,9 @@ impl MouseProtocolEncoding {
             MOUSE_ENCODING_TAG_DEFAULT => Ok(Self::Default),
             MOUSE_ENCODING_TAG_UTF8 => Ok(Self::Utf8),
             MOUSE_ENCODING_TAG_SGR => Ok(Self::Sgr),
-            tag => Err(crate::checkpoint::CheckpointError::UnknownTag {
-                field: "mouse protocol encoding",
-                tag,
-            }),
+            _ => Err(crate::checkpoint::CheckpointError::Malformed(
+                "undefined mouse protocol encoding tag",
+            )),
         }
     }
 }
@@ -1158,14 +1156,14 @@ impl Screen {
             || size.rows > crate::checkpoint::MAX_ROWS
             || size.cols > crate::checkpoint::MAX_COLS
         {
-            return Err(crate::checkpoint::CheckpointError::Unrepresentable {
-                what: "terminal dimensions are outside the supported range",
-            });
+            return Err(crate::checkpoint::CheckpointError::Unrepresentable(
+                "terminal dimensions are outside the supported range",
+            ));
         }
         if self.alternate_grid.size() != size {
-            return Err(crate::checkpoint::CheckpointError::Unrepresentable {
-                what: "the two grids disagree about the terminal size",
-            });
+            return Err(crate::checkpoint::CheckpointError::Unrepresentable(
+                "the two grids disagree about the terminal size",
+            ));
         }
         let mut out = Vec::new();
         out.extend_from_slice(crate::checkpoint::MAGIC);
@@ -1204,15 +1202,17 @@ impl Screen {
         // the slice is already buffered by the time it arrives, and capping
         // the read belongs to the framing that delivers it.
         if bytes.len() > crate::checkpoint::MAX_CHECKPOINT_LEN {
-            return Err(crate::checkpoint::CheckpointError::TooLarge {
-                len: bytes.len(),
-            });
+            return Err(crate::checkpoint::CheckpointError::Malformed(
+                "larger than any checkpoint this format can produce",
+            ));
         }
         let mut r = crate::checkpoint::Reader::new(bytes);
         if r.take(crate::checkpoint::MAGIC.len())?
             != &crate::checkpoint::MAGIC[..]
         {
-            return Err(crate::checkpoint::CheckpointError::BadMagic);
+            return Err(crate::checkpoint::CheckpointError::Malformed(
+                "not a checkpoint: bad magic",
+            ));
         }
         let version = r.u16()?;
         if version != crate::checkpoint::VERSION {
@@ -1233,33 +1233,31 @@ impl Screen {
             || rows > crate::checkpoint::MAX_ROWS
             || cols > crate::checkpoint::MAX_COLS
         {
-            return Err(crate::checkpoint::CheckpointError::InvalidSize {
-                rows,
-                cols,
-            });
+            return Err(crate::checkpoint::CheckpointError::Malformed(
+                "terminal dimensions outside the supported range",
+            ));
         }
         let size = crate::grid::Size { rows, cols };
 
         let modes = r.u8()?;
         if modes & !MODES_KNOWN != 0 {
-            return Err(crate::checkpoint::CheckpointError::InvalidBits {
-                field: "screen modes",
-                value: modes,
-            });
+            return Err(crate::checkpoint::CheckpointError::Malformed(
+                "screen modes carry undefined bits",
+            ));
         }
         let mouse_protocol_mode =
             MouseProtocolMode::from_checkpoint_tag(r.u8()?)?;
         let mouse_protocol_encoding =
             MouseProtocolEncoding::from_checkpoint_tag(r.u8()?)?;
-        let attrs = crate::attrs::Attrs::read_checkpoint(&mut r, "attrs")?;
+        let attrs = crate::attrs::Attrs::read_checkpoint(&mut r, "current attributes")?;
         let saved_attrs =
-            crate::attrs::Attrs::read_checkpoint(&mut r, "saved attrs")?;
+            crate::attrs::Attrs::read_checkpoint(&mut r, "saved attributes")?;
 
         let grid = crate::grid::Grid::read_checkpoint(
             &mut r,
             size,
             scrollback_len,
-            "cursor",
+            "the cursor is outside the terminal",
         )?;
         // The alternate grid never accumulates scrollback, matching how
         // `Screen::new` constructs it.
@@ -1267,7 +1265,7 @@ impl Screen {
             &mut r,
             size,
             0,
-            "alternate cursor",
+            "the alternate grid's cursor is outside the terminal",
         )?;
         r.finish()?;
 

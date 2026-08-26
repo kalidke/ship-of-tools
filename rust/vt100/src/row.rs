@@ -180,7 +180,7 @@ impl Row {
         r: &mut crate::checkpoint::Reader<'_>,
         cols: u16,
     ) -> Result<Self, crate::checkpoint::CheckpointError> {
-        let wrapped = r.bool("row wrapped")?;
+        let wrapped = r.bool("row wrap flag is not 0 or 1")?;
         let mut cells = Vec::with_capacity(usize::from(cols));
         for _ in 0..cols {
             cells.push(crate::Cell::read_checkpoint(r)?);
@@ -230,14 +230,13 @@ impl Row {
     fn check_invariants(
         cells: &[crate::Cell],
     ) -> Result<(), crate::checkpoint::CheckpointError> {
-        let orphan = |col: usize| {
-            Err(crate::checkpoint::CheckpointError::OrphanedWideHalf { col })
+        let orphan = |_col: usize| {
+            Err(crate::checkpoint::CheckpointError::Malformed(
+                "a wide character with only one of its two halves",
+            ))
         };
-        let unreachable_cell = |col: usize, what: &'static str| {
-            Err(crate::checkpoint::CheckpointError::UnreachableCell {
-                col,
-                what,
-            })
+        let unreachable_cell = |_col: usize, what: &'static str| {
+            Err(crate::checkpoint::CheckpointError::Malformed(what))
         };
         for (col, cell) in cells.iter().enumerate() {
             if cell.is_wide() {

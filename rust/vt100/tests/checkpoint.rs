@@ -416,7 +416,7 @@ fn rejects_bad_magic() {
     bytes[0] = b'X';
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::BadMagic)
+        Err(CheckpointError::Malformed("not a checkpoint: bad magic"))
     ));
 }
 
@@ -441,7 +441,9 @@ fn rejects_degenerate_and_oversize_dimensions() {
         assert!(
             matches!(
                 restore(&bytes),
-                Err(CheckpointError::InvalidSize { .. })
+                Err(CheckpointError::Malformed(
+                    "terminal dimensions outside the supported range"
+                ))
             ),
             "{cols}x{rows} was not refused"
         );
@@ -454,7 +456,9 @@ fn rejects_undefined_mode_bits() {
     bytes[MODES_OFFSET] = 0b1000_0000;
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::InvalidBits { .. })
+        Err(CheckpointError::Malformed(
+            "screen modes carry undefined bits"
+        ))
     ));
 }
 
@@ -464,14 +468,18 @@ fn rejects_unknown_mouse_tags() {
     bytes[MODES_OFFSET + 1] = 42;
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::UnknownTag { .. })
+        Err(CheckpointError::Malformed(
+            "undefined mouse protocol mode tag"
+        ))
     ));
 
     let mut bytes = sample_checkpoint();
     bytes[MODES_OFFSET + 2] = 42;
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::UnknownTag { .. })
+        Err(CheckpointError::Malformed(
+            "undefined mouse protocol encoding tag"
+        ))
     ));
 }
 
@@ -487,7 +495,9 @@ fn rejects_simultaneous_bold_and_dim() {
     bytes[MODES_OFFSET + 5] = 0b0000_0011;
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::InvalidBits { .. })
+        Err(CheckpointError::Malformed(
+            "bold and dim set together"
+        ))
     ));
 }
 
@@ -497,7 +507,7 @@ fn rejects_trailing_bytes() {
     bytes.push(0);
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::TrailingBytes(1))
+        Err(CheckpointError::Malformed("bytes remained after the checkpoint"))
     ));
 }
 
@@ -658,7 +668,9 @@ fn rejects_wide_lead_without_its_continuation() {
     bytes.remove(FIRST_CELL + 6);
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::OrphanedWideHalf { col: 0 })
+        Err(CheckpointError::Malformed(
+            "a wide character with only one of its two halves"
+        ))
     ));
 }
 
@@ -671,7 +683,9 @@ fn rejects_continuation_without_its_lead() {
     bytes[FIRST_CELL + 1] = 3;
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::OrphanedWideHalf { col: 1 })
+        Err(CheckpointError::Malformed(
+            "a wide character with only one of its two halves"
+        ))
     ));
 }
 
@@ -681,7 +695,9 @@ fn rejects_a_cell_that_is_both_halves_at_once() {
     bytes[FIRST_CELL + 1] = 0b1100_0000 | 3;
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::OrphanedWideHalf { col: 0 })
+        Err(CheckpointError::Malformed(
+            "a wide character with only one of its two halves"
+        ))
     ));
 }
 
@@ -733,7 +749,7 @@ fn refuses_to_checkpoint_a_screen_beyond_the_supported_size() {
         assert!(
             matches!(
                 parser.screen().checkpoint(),
-                Err(CheckpointError::Unrepresentable { .. })
+                Err(CheckpointError::Unrepresentable(_))
             ),
             "{cols}x{rows} was serialized despite being unrestorable"
         );
@@ -749,7 +765,9 @@ fn rejects_an_oversized_payload_without_decoding_it() {
     bytes.resize(MAX_CHECKPOINT_LEN + 1, 0);
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::TooLarge { .. })
+        Err(CheckpointError::Malformed(
+            "larger than any checkpoint this format can produce"
+        ))
     ));
 }
 
@@ -888,7 +906,9 @@ fn rejects_an_empty_cell_written_the_long_way() {
     bytes.insert(FIRST_CELL + 1, 0); // whose packed length is zero
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::NonCanonical { .. })
+        Err(CheckpointError::Malformed(
+            "empty cell written with an explicit length"
+        ))
     ));
 }
 
@@ -900,7 +920,9 @@ fn rejects_default_attributes_written_the_long_way() {
     bytes.splice(FIRST_CELL + 1..FIRST_CELL + 1, [0, 0, 0]); // all default
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::NonCanonical { .. })
+        Err(CheckpointError::Malformed(
+            "default attributes written explicitly"
+        ))
     ));
 }
 
@@ -920,7 +942,7 @@ fn rejects_a_scroll_region_no_parse_can_produce() {
         .copy_from_slice(&0_u16.to_le_bytes());
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::InvalidScrollRegion { top: 0, bottom: 0 })
+        Err(CheckpointError::Malformed("a scroll region no parse can produce"))
     ));
 }
 
@@ -976,7 +998,7 @@ fn rejects_extreme_scroll_region_values_without_overflowing() {
         assert!(
             matches!(
                 restore(&bytes),
-                Err(CheckpointError::InvalidScrollRegion { .. })
+                Err(CheckpointError::Malformed("a scroll region no parse can produce"))
             ),
             "scroll region {top}..={bottom} was not refused cleanly"
         );
@@ -1102,7 +1124,9 @@ fn rejects_a_wide_continuation_carrying_text() {
     bytes.insert(FIRST_CELL + 7, b'x');
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::UnreachableCell { col: 1, .. })
+        Err(CheckpointError::Malformed(
+            "a wide continuation carrying its own text"
+        ))
     ));
 }
 
@@ -1113,7 +1137,9 @@ fn rejects_a_wide_continuation_with_its_own_attributes() {
     bytes.splice(FIRST_CELL + 7..FIRST_CELL + 7, [1, 4, 0, 0]); // fg Idx(4)
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::UnreachableCell { col: 1, .. })
+        Err(CheckpointError::Malformed(
+            "a wide continuation with its own attributes"
+        ))
     ));
 }
 
@@ -1124,7 +1150,9 @@ fn rejects_a_wide_lead_with_no_text() {
     bytes.drain(FIRST_CELL + 2..FIRST_CELL + 5);
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::UnreachableCell { col: 0, .. })
+        Err(CheckpointError::Malformed(
+            "a wide lead with no text"
+        ))
     ));
 }
 

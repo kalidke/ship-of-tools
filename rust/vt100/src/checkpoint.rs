@@ -172,165 +172,36 @@ const _: () = assert!(MAX_CHECKPOINT_LEN < 12 * 1024 * 1024);
 
 /// Why a checkpoint could not be written or restored.
 ///
-/// Restore is fail-closed: every variant here is a refusal to build a
+/// Three outcomes, because three is what a caller can act on. Only
+/// [`UnsupportedVersion`](Self::UnsupportedVersion) changes anyone's
+/// behavior — an attach negotiating versions refuses the connection rather
+/// than retrying — so it is the only one carrying data. Everything else is a
+/// payload that will not decode or a screen that will not encode, and the
+/// string says which so a log is still worth reading.
+///
+/// Restore is fail-closed: every rejection here is a refusal to build a
 /// `Screen`, never a partially-applied one, and no input — corrupt,
 /// truncated, or hostile — reaches a panic.
-///
-/// [`Unrepresentable`](Self::Unrepresentable) is the one variant the
-/// *encoder* raises. Without it a screen larger than the supported
-/// dimensions would serialize happily into bytes this crate's own decoder
-/// refuses, which is a bound that only looks proven.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CheckpointError {
-    /// The payload ended before the format said it should.
-    Truncated {
-        /// Bytes the decoder still needed.
-        needed: usize,
-        /// Bytes actually left.
-        available: usize,
-    },
-    /// The leading magic did not match; this is not a checkpoint.
-    BadMagic,
     /// The payload announces a format version this build cannot read.
     UnsupportedVersion(u16),
-    /// The payload is larger than any checkpoint this format can produce.
-    /// Refused before any of it is decoded — restore receives an already
-    /// buffered slice, so this bounds the decode, not the caller's read.
-    /// Capping the read itself belongs to the framing that delivers it.
-    TooLarge {
-        /// The payload's length.
-        len: usize,
-    },
-    /// Terminal dimensions outside the ADR 0041 budget, or degenerate.
-    InvalidSize {
-        /// Announced rows.
-        rows: u16,
-        /// Announced columns.
-        cols: u16,
-    },
-    /// A cursor position lies outside the announced dimensions.
-    CursorOutOfBounds {
-        /// Which cursor.
-        field: &'static str,
-        /// Announced row.
-        row: u16,
-        /// Announced column.
-        col: u16,
-    },
-    /// The scroll region is inverted or reaches past the last row.
-    InvalidScrollRegion {
-        /// Announced top.
-        top: u16,
-        /// Announced bottom.
-        bottom: u16,
-    },
-    /// A byte that encodes a boolean held a value other than 0 or 1.
-    NotABoolean {
-        /// Which field.
-        field: &'static str,
-        /// The offending value.
-        value: u8,
-    },
-    /// A tagged union carried a tag this version does not define.
-    UnknownTag {
-        /// Which field.
-        field: &'static str,
-        /// The offending tag.
-        tag: u8,
-    },
-    /// A bitfield carried bits this version does not define, or a
-    /// combination the parser can never produce.
-    InvalidBits {
-        /// Which field.
-        field: &'static str,
-        /// The offending value.
-        value: u8,
-    },
-    /// A cell's packed length byte is not one the parser can produce.
-    InvalidCellLength(u8),
-    /// A cell's contents are not valid UTF-8.
-    InvalidUtf8,
-    /// The payload is a second spelling of a screen that has exactly one
-    /// encoding, so accepting it would break the format's one-screen-
-    /// one-encoding property.
-    NonCanonical {
-        /// What was written the long way.
-        what: &'static str,
-    },
-    /// One half of a wide character appears without its other half.
-    OrphanedWideHalf {
-        /// The column the unmatched half sits in.
-        col: usize,
-    },
-    /// A cell is shaped in a way no parse produces.
-    UnreachableCell {
-        /// The column it sits in.
-        col: usize,
-        /// What is wrong with it.
-        what: &'static str,
-    },
-    /// The payload decoded successfully but bytes remained after it.
-    TrailingBytes(usize),
+    /// The payload is not a checkpoint this build can decode.
+    Malformed(&'static str),
     /// The screen cannot be expressed in this format.
-    Unrepresentable {
-        /// What about it.
-        what: &'static str,
-    },
+    Unrepresentable(&'static str),
 }
 
 impl std::fmt::Display for CheckpointError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Truncated { needed, available } => write!(
+            Self::UnsupportedVersion(v) => write!(
                 f,
-                "checkpoint truncated: needed {needed} more bytes, {available} available"
+                "unsupported checkpoint version {v}, this build reads {VERSION}"
             ),
-            Self::BadMagic => write!(f, "not a checkpoint: bad magic"),
-            Self::UnsupportedVersion(v) => {
-                write!(f, "unsupported checkpoint version {v}, this build reads {VERSION}")
-            }
-            Self::TooLarge { len } => write!(
-                f,
-                "payload of {len} bytes exceeds the largest possible checkpoint ({MAX_CHECKPOINT_LEN})"
-            ),
-            Self::InvalidSize { rows, cols } => write!(
-                f,
-                "invalid size {cols}x{rows}: must be within {MAX_COLS}x{MAX_ROWS} and non-empty"
-            ),
-            Self::CursorOutOfBounds { field, row, col } => {
-                write!(f, "{field} ({row}, {col}) is outside the announced size")
-            }
-            Self::InvalidScrollRegion { top, bottom } => {
-                write!(f, "invalid scroll region {top}..={bottom}")
-            }
-            Self::NotABoolean { field, value } => {
-                write!(f, "{field} is a boolean but held {value}")
-            }
-            Self::UnknownTag { field, tag } => {
-                write!(f, "{field} carried unknown tag {tag}")
-            }
-            Self::InvalidBits { field, value } => {
-                write!(f, "{field} carried invalid bits {value:#010b}")
-            }
-            Self::InvalidCellLength(len) => {
-                write!(f, "invalid packed cell length byte {len:#010b}")
-            }
-            Self::InvalidUtf8 => write!(f, "cell contents are not valid UTF-8"),
-            Self::NonCanonical { what } => {
-                write!(f, "non-canonical encoding: {what}")
-            }
-            Self::OrphanedWideHalf { col } => write!(
-                f,
-                "column {col} holds one half of a wide character without the other"
-            ),
-            Self::UnreachableCell { col, what } => {
-                write!(f, "column {col} holds {what}, which no parse produces")
-            }
-            Self::TrailingBytes(n) => {
-                write!(f, "{n} bytes remained after the checkpoint")
-            }
-            Self::Unrepresentable { what } => {
+            Self::Malformed(what) => write!(f, "malformed checkpoint: {what}"),
+            Self::Unrepresentable(what) => {
                 write!(f, "screen cannot be checkpointed: {what}")
             }
         }
@@ -357,16 +228,12 @@ impl<'a> Reader<'a> {
         &mut self,
         n: usize,
     ) -> Result<&'a [u8], CheckpointError> {
-        let end = self.pos.checked_add(n).ok_or(CheckpointError::Truncated {
-            needed: n,
-            available: self.remaining(),
-        })?;
-        let slice = self.buf.get(self.pos..end).ok_or(
-            CheckpointError::Truncated {
-                needed: n,
-                available: self.remaining(),
-            },
-        )?;
+        let end = self
+            .pos
+            .checked_add(n)
+            .filter(|end| *end <= self.buf.len())
+            .ok_or(CheckpointError::Malformed("payload ended mid-field"))?;
+        let slice = &self.buf[self.pos..end];
         self.pos = end;
         Ok(slice)
     }
@@ -390,7 +257,7 @@ impl<'a> Reader<'a> {
         match self.u8()? {
             0 => Ok(false),
             1 => Ok(true),
-            value => Err(CheckpointError::NotABoolean { field, value }),
+            _ => Err(CheckpointError::Malformed(field)),
         }
     }
 
@@ -402,7 +269,7 @@ impl<'a> Reader<'a> {
         if self.remaining() == 0 {
             Ok(())
         } else {
-            Err(CheckpointError::TrailingBytes(self.remaining()))
+            Err(CheckpointError::Malformed("bytes remained after the checkpoint"))
         }
     }
 }

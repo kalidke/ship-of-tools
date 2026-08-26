@@ -135,10 +135,7 @@ impl Color {
                 let bytes = r.take(3)?;
                 Ok(Self::Rgb(bytes[0], bytes[1], bytes[2]))
             }
-            tag => Err(crate::checkpoint::CheckpointError::UnknownTag {
-                field,
-                tag,
-            }),
+            _ => Err(crate::checkpoint::CheckpointError::Malformed(field)),
         }
     }
 }
@@ -154,14 +151,11 @@ impl Attrs {
         r: &mut crate::checkpoint::Reader<'_>,
         field: &'static str,
     ) -> Result<Self, crate::checkpoint::CheckpointError> {
-        let fgcolor = Color::read_checkpoint(r, "fgcolor")?;
-        let bgcolor = Color::read_checkpoint(r, "bgcolor")?;
+        let fgcolor = Color::read_checkpoint(r, "undefined foreground color tag")?;
+        let bgcolor = Color::read_checkpoint(r, "undefined background color tag")?;
         let mode = r.u8()?;
         if mode & !TEXT_MODE_KNOWN != 0 {
-            return Err(crate::checkpoint::CheckpointError::InvalidBits {
-                field,
-                value: mode,
-            });
+            return Err(crate::checkpoint::CheckpointError::Malformed(field));
         }
         // Bold and dim are mutually exclusive: every setter clears the
         // intensity bits before setting one, so both at once is a state no
@@ -176,10 +170,9 @@ impl Attrs {
         // to the parser, and a rule that refuses a real screen is worse
         // than one that admits a harmless odd one.
         if mode & TEXT_MODE_INTENSITY == TEXT_MODE_INTENSITY {
-            return Err(crate::checkpoint::CheckpointError::InvalidBits {
-                field,
-                value: mode,
-            });
+            return Err(crate::checkpoint::CheckpointError::Malformed(
+                "bold and dim set together",
+            ));
         }
         Ok(Self {
             fgcolor,

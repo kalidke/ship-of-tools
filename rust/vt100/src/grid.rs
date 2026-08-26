@@ -543,16 +543,16 @@ impl Grid {
         // invariant broke upstream of here. Say so rather than emitting a
         // payload whose rows and header contradict each other.
         if self.rows.len() != usize::from(self.size.rows) {
-            return Err(crate::checkpoint::CheckpointError::Unrepresentable {
-                what: "grid row count does not match its size",
-            });
+            return Err(crate::checkpoint::CheckpointError::Unrepresentable(
+                "grid row count does not match its size",
+            ));
         }
         for row in &self.rows {
             if row.len() != self.size.cols {
                 return Err(
-                    crate::checkpoint::CheckpointError::Unrepresentable {
-                        what: "grid row width does not match its size",
-                    },
+                    crate::checkpoint::CheckpointError::Unrepresentable(
+                        "grid row width does not match its size",
+                    ),
                 );
             }
             row.write_checkpoint(out);
@@ -576,8 +576,8 @@ impl Grid {
         };
         let scroll_top = r.u16()?;
         let scroll_bottom = r.u16()?;
-        let origin_mode = r.bool("origin mode")?;
-        let saved_origin_mode = r.bool("saved origin mode")?;
+        let origin_mode = r.bool("origin mode is not 0 or 1")?;
+        let saved_origin_mode = r.bool("saved origin mode is not 0 or 1")?;
 
         // The column bound is `<= cols`, not `< cols`. After a glyph lands in
         // the last column the cursor sits one past the end — `col_inc` does
@@ -586,7 +586,7 @@ impl Grid {
         // cursor is pending a wrap, which is an ordinary state, not a corrupt
         // one.
         Self::check_pos(pos, size, which)?;
-        Self::check_pos(saved_pos, size, "saved cursor")?;
+        Self::check_pos(saved_pos, size, "the saved cursor is outside the terminal")?;
         // The reachable scroll regions are narrower than `top <= bottom`.
         // `set_scroll_region` takes an explicit region only when
         // `top < bottom`, and otherwise resets to the whole screen; the one
@@ -600,10 +600,9 @@ impl Grid {
         // underflow on the next glyph that wraps — a state no parse can
         // produce, restored and then panicking somewhere else entirely.
         let invalid = || {
-            Err(crate::checkpoint::CheckpointError::InvalidScrollRegion {
-                top: scroll_top,
-                bottom: scroll_bottom,
-            })
+            Err(crate::checkpoint::CheckpointError::Malformed(
+                "a scroll region no parse can produce",
+            ))
         };
         // Range-check the field BEFORE doing arithmetic with it. Computing
         // `scroll_bottom + 1` first overflows on a hostile `u16::MAX` — a
@@ -645,13 +644,7 @@ impl Grid {
         field: &'static str,
     ) -> Result<(), crate::checkpoint::CheckpointError> {
         if pos.row >= size.rows || pos.col > size.cols {
-            return Err(
-                crate::checkpoint::CheckpointError::CursorOutOfBounds {
-                    field,
-                    row: pos.row,
-                    col: pos.col,
-                },
-            );
+            return Err(crate::checkpoint::CheckpointError::Malformed(field));
         }
         Ok(())
     }

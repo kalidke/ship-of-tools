@@ -227,10 +227,9 @@ impl Cell {
     ) -> Result<Self, crate::checkpoint::CheckpointError> {
         let flags = r.u8()?;
         if flags & !CELL_FLAGS_KNOWN != 0 {
-            return Err(crate::checkpoint::CheckpointError::InvalidBits {
-                field: "cell flags",
-                value: flags,
-            });
+            return Err(crate::checkpoint::CheckpointError::Malformed(
+                "cell flags carry undefined bits",
+            ));
         }
         let mut cell = Self::new();
         if flags & CELL_FLAG_LEN != 0 {
@@ -241,46 +240,45 @@ impl Cell {
             // differ for identical state, which the golden test and every
             // byte-level comparison downstream rely on not happening.
             if len == 0 {
-                return Err(
-                    crate::checkpoint::CheckpointError::NonCanonical {
-                        what: "empty cell written with an explicit length",
-                    },
-                );
+                return Err(crate::checkpoint::CheckpointError::Malformed(
+                    "empty cell written with an explicit length",
+                ));
             }
             if len & !LEN_BYTE_KNOWN != 0 {
-                return Err(
-                    crate::checkpoint::CheckpointError::InvalidCellLength(len),
-                );
+                return Err(crate::checkpoint::CheckpointError::Malformed(
+                    "cell length byte carries undefined bits",
+                ));
             }
             // `LEN_BITS` allows 31 but the content field holds 22, so the
             // length has to be checked against the array, not the mask.
             let content_len = usize::from(len & LEN_BITS);
             if content_len > CONTENT_BYTES {
-                return Err(
-                    crate::checkpoint::CheckpointError::InvalidCellLength(len),
-                );
+                return Err(crate::checkpoint::CheckpointError::Malformed(
+                    "cell length exceeds the content field",
+                ));
             }
             let contents = r.take(content_len)?;
             // `Cell::contents` hands out a `&str` via an unchecked-by-
             // construction `from_utf8().unwrap()`. Validating here is what
             // keeps that unwrap true for restored cells.
-            std::str::from_utf8(contents)
-                .map_err(|_| crate::checkpoint::CheckpointError::InvalidUtf8)?;
+            std::str::from_utf8(contents).map_err(|_| {
+                crate::checkpoint::CheckpointError::Malformed(
+                    "cell contents are not valid UTF-8",
+                )
+            })?;
             cell.contents[..content_len].copy_from_slice(contents);
             cell.len = len;
         }
         if flags & CELL_FLAG_ATTRS != 0 {
             let attrs =
-                crate::attrs::Attrs::read_checkpoint(r, "cell attrs")?;
+                crate::attrs::Attrs::read_checkpoint(r, "a cell's attributes are undefined")?;
             // Same reasoning as the length above: the encoder omits default
             // attributes, so spelling them out is a second encoding of one
             // cell.
             if attrs == crate::attrs::Attrs::default() {
-                return Err(
-                    crate::checkpoint::CheckpointError::NonCanonical {
-                        what: "default attributes written explicitly",
-                    },
-                );
+                return Err(crate::checkpoint::CheckpointError::Malformed(
+                    "default attributes written explicitly",
+                ));
             }
             cell.attrs = attrs;
         }
