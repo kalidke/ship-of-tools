@@ -1,10 +1,73 @@
-//! Durability primitives: dir fsync, no-clobber rename, exclusive lock.
-//! Unix-only where the OS must guarantee semantics; the pure codec compiles
-//! everywhere, but voyage stores refuse to open on non-unix (v1).
+//! Durability primitives: volume preflight, dir fsync, no-clobber rename,
+//! exclusive lock. Two real platform arms (Linux since P1, Windows since P3 —
+//! ADR 0041 §store port); the pure codec compiles everywhere, but voyage
+//! stores refuse to open where the OS can't guarantee these semantics
+//! (non-Linux unix fails closed in `rename_noreplace`).
 
 use crate::{Error, Result};
 use std::fs::File;
 use std::path::Path;
+
+/// Bounded-retry deadline shared by every transient-absorbing loop here:
+/// long enough to outlive an AV/indexer hold or a just-released kernel
+/// lock, short enough that a persistent condition still fails loudly.
+const RETRY_DEADLINE_MS: u64 = 250;
+const RETRY_STEP_MS: u64 = 10;
+
+/// Wrap an OS error with the failing op + path, preserving the `ErrorKind`
+/// (callers match on it — the CAS race needs `AlreadyExists`). A bare
+/// "Access is denied" from deep inside a publication sequence is
+/// undiagnosable; a loud failure must say where.
+#[cfg(windows)]
+fn io_ctx(e: std::io::Error, what: std::fmt::Arguments<'_>) -> Error {
+    Error::Io(std::io::Error::new(e.kind(), format!("{what}: {e}")))
+}
+
+/// Volume preflight (ADR 0041): the durability contract holds on local NTFS
+/// only — the Windows mirror of "requires renameat2". Runs BEFORE any
+/// `.creating` mutation in bootstrap and again on the resolved voyage dir at
+/// `open_for_writing`. SMB failing the handle-info call is usefully
+/// fail-closed; no fallback. ReFS stays refused until it passes the same
+/// suite (ADR 0041 scope). On unix this is a no-op: `renameat2` itself
+/// refusing (EINVAL on filesystems without RENAME_NOREPLACE) is the guard.
+#[cfg(unix)]
+pub fn preflight_volume(_dir: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn preflight_volume(dir: &Path) -> Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationByHandleW;
+    let f = open_dir_handle(dir)?;
+    let mut fs_name = [0u16; 64];
+    let ok = unsafe {
+        use std::os::windows::io::AsRawHandle;
+        GetVolumeInformationByHandleW(
+            f.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            fs_name.as_mut_ptr(),
+            fs_name.len() as u32,
+        )
+    };
+    if ok == 0 {
+        // SMB and friends commonly fail this call outright — exactly the
+        // fail-closed we want (voyages are local-FS pinned).
+        let e = std::io::Error::last_os_error();
+        return Err(io_ctx(e, format_args!("GetVolumeInformationByHandleW {dir:?}")));
+    }
+    let len = fs_name.iter().position(|&c| c == 0).unwrap_or(fs_name.len());
+    let name = String::from_utf16_lossy(&fs_name[..len]);
+    if !name.eq_ignore_ascii_case("NTFS") {
+        return Err(Error::State(format!(
+            "volume preflight: filesystem {name:?} at {dir:?} — voyage stores require local NTFS (ADR 0041)"
+        )));
+    }
+    Ok(())
+}
 
 #[cfg(unix)]
 pub fn fsync_dir(dir: &Path) -> Result<()> {
@@ -13,15 +76,103 @@ pub fn fsync_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Windows placeholder until the P3 implementation (`FlushFileBuffers` on a
-/// `FILE_FLAG_BACKUP_SEMANTICS` directory handle — std cannot open directory
-/// handles, so it needs windows-sys). The format is OS-neutral; only these
-/// durability ops are platform code, and the store FAILS CLOSED on Windows
-/// meanwhile (`lock_writer` refuses), so this no-op is reachable only by
-/// tests exercising the state-machine logic — never by a real store.
-#[cfg(not(unix))]
-pub fn fsync_dir(_dir: &Path) -> Result<()> {
+/// Resolve a caller-supplied voyage root ONCE, and make its container exist
+/// durably. Returns the absolute root that every later operation must use —
+/// re-resolving a relative config path at each step lets a concurrent
+/// `set_current_dir` point the existence check, the bootstrap, and the
+/// fenced open at different stores.
+///
+/// This crate creates AT MOST the container level (the root's parent). The
+/// container's own parent is the durability boundary: it must already exist,
+/// and flushing it is exactly what anchors the container's directory entry —
+/// nothing above it is ever created, walked, or flushed, since its
+/// durability is the installer's/operator's contract (and a standard user
+/// cannot open a volume root for write on Windows).
+///
+/// Idempotent, and deliberately unconditional: a container that is merely
+/// cache-visible is indistinguishable from a durable one, so a replay after
+/// a crash must redo the flush rather than trust the residue.
+pub fn ensure_container(root: &Path) -> Result<std::path::PathBuf> {
+    let abs = std::path::absolute(root)?;
+    let container = abs
+        .parent()
+        .ok_or_else(|| Error::State(format!("voyage root {abs:?} has no parent")))?;
+    let name = abs
+        .file_name()
+        .ok_or_else(|| Error::State(format!("voyage root {abs:?} has no final component")))?;
+    // No parent means the container IS a filesystem/volume root: it always
+    // exists, and its entry has no directory to be anchored in.
+    if let Some(base) = container.parent() {
+        // canonicalize (not `absolute`) so the boundary is fully resolved:
+        // `absolute` keeps `..` on POSIX, and a symlinked ancestor would put
+        // the container's entry in a different directory than the lexical
+        // parent names. It also fails loudly when the boundary is missing.
+        let base = std::fs::canonicalize(base).map_err(|e| {
+            Error::State(format!(
+                "voyage container's parent {base:?} must exist first: {e}"
+            ))
+        })?;
+        std::fs::create_dir_all(container)?;
+        fsync_dir(&base)?; // anchors the container's entry
+    }
+    // Resolve the container now that it exists, so the returned root is
+    // free of `..` and symlink aliases: ONE stable identity for the fence.
+    Ok(std::fs::canonicalize(container)?.join(name))
+}
+
+/// Flush an existing file's contents by path (write-open + `sync_all`).
+/// Recovery's publish-as-is rows need this: a writer killed between
+/// `write_all(seal)` and its own fsync leaves a complete, cache-visible seal
+/// indistinguishable from crash-after-fsync — the pinned publication order
+/// (source flush BEFORE the publish rename) must be restated by whoever
+/// publishes, not assumed from the dead writer.
+pub fn fsync_file(path: &Path) -> Result<()> {
+    let f = std::fs::OpenOptions::new().write(true).open(path)?;
+    f.sync_all()?;
     Ok(())
+}
+
+/// Windows dir flush: `FlushFileBuffers` on a directory handle. NTFS
+/// metadata journaling gives crash CONSISTENCY (old-or-new name, never
+/// corrupt), NOT durability-at-return — the log flushes lazily, so a
+/// completed publication can roll back on power cut without this. Strictly
+/// stronger than what SQLite/RocksDB/PostgreSQL ship on Windows (all no-op
+/// their dir fsync there). Honest scope: directory handles as
+/// `FlushFileBuffers` targets are DOC-IMPLIED + empirically verified (the
+/// P3 spike), not an explicit API contract — which is exactly why the
+/// pinned order also flushes the renamed file itself, and why real-machine
+/// power-cut testing stays on the acceptance list rather than being claimed
+/// here.
+///
+/// Operational caveat (ADR 0041): the per-disk "turn off write-cache buffer
+/// flushing" checkbox makes `FlushFileBuffers` silently vacuous —
+/// undetectable from here, the peer of Linux `barrier=off`, acceptable only
+/// on a UPS.
+#[cfg(windows)]
+pub fn fsync_dir(dir: &Path) -> Result<()> {
+    let f = open_dir_handle(dir)?;
+    // FlushFileBuffers on the directory handle
+    f.sync_all()
+        .map_err(|e| io_ctx(e, format_args!("FlushFileBuffers dir {dir:?}")))?;
+    Ok(())
+}
+
+/// Open a directory handle usable for `FlushFileBuffers` and volume info:
+/// `FILE_FLAG_BACKUP_SEMANTICS` is what makes `CreateFileW` open a
+/// directory at all; write access is required by `FlushFileBuffers` (on a
+/// directory it maps to FILE_ADD_FILE — grantable). Std's default share
+/// mode (read|write|delete) is right for a short-lived flush handle.
+#[cfg(windows)]
+fn open_dir_handle(dir: &Path) -> Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(dir)
+        .map_err(|e| io_ctx(e, format_args!("open dir handle {dir:?}")))?;
+    Ok(f)
 }
 
 /// RENAME_NOREPLACE: the commit point of every publication. Destination
@@ -52,8 +203,8 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
 /// hard_link + unlink here): that pair is not atomic, so a crash between the
 /// two syscalls leaves `.open` and `.sotseg` coexisting — a state the
 /// reconciliation table rightly treats as loud. Silently weaker atomicity is
-/// the thing this crate exists to refuse; macOS lands with P3 alongside
-/// Windows, each with a real atomic primitive (renamex_np / MoveFileExW).
+/// the thing this crate exists to refuse; macOS gets a real arm
+/// (renamex_np) when a macOS FE exists to dogfood it (ADR 0041 scope note).
 #[cfg(all(unix, not(target_os = "linux")))]
 pub fn rename_noreplace(_from: &Path, _to: &Path) -> Result<()> {
     Err(Error::Unsupported(
@@ -61,72 +212,242 @@ pub fn rename_noreplace(_from: &Path, _to: &Path) -> Result<()> {
     ))
 }
 
-/// Windows placeholder until the P3 implementation (`MoveFileExW` WITHOUT
-/// `MOVEFILE_REPLACE_EXISTING` — an atomic no-replace rename on NTFS; std's
-/// rename passes REPLACE_EXISTING and clobbers, hence not usable). This
-/// exists-check + rename is NOT atomic and is reachable only by tests — the
-/// store fails closed on Windows via `lock_writer` until P3.
-#[cfg(not(unix))]
+/// Windows arm (ADR 0041 §store port): `MoveFileExW` with flags 0 —
+/// kernel `FileRenameInformation` with ReplaceIfExists=FALSE, so the
+/// existence check and the rename are ONE kernel op (no TOCTOU). On NTFS a
+/// same-volume rename is journaled (old-or-new after crash) — an
+/// implementation property of NTFS, not a documented `MoveFileExW`
+/// contract; the preflight pinning us to NTFS is what makes relying on it
+/// honest. A collision fails with ERROR_ALREADY_EXISTS, which std maps to
+/// `ErrorKind::AlreadyExists` — the same loud condition callers match on.
+/// `std::fs::rename` is unusable here: it passes REPLACE_EXISTING and
+/// clobbers.
+///
+/// Two Windows-only extras, both pinned in the ADR:
+/// - Bounded retry on `ERROR_SHARING_VIOLATION` and spurious
+///   `ERROR_ACCESS_DENIED` from AV/indexer holders (rust-lang/rust#123985)
+///   — a transient with no Linux analog; a persistent holder still fails at
+///   the deadline.
+/// - Belt-and-braces flush of the RENAMED target after success (the
+///   doc-implied corner of the directory-flush contract); the caller's
+///   parent-dir flush then completes the pinned publication order
+///   (source flush → rename → renamed-file flush → dir flush).
+#[cfg(windows)]
 pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
-    if to.exists() {
-        return Err(Error::Io(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "destination exists",
-        )));
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+    let (f, t) = (wide_verbatim(from)?, wide_verbatim(to)?);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
+    loop {
+        if unsafe { MoveFileExW(f.as_ptr(), t.as_ptr(), 0) } != 0 {
+            break;
+        }
+        let e = std::io::Error::last_os_error();
+        if !is_transient_hold(&e) || std::time::Instant::now() >= deadline {
+            return Err(io_ctx(e, format_args!("MoveFileExW {from:?} -> {to:?}")));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
     }
-    std::fs::rename(from, to)?;
-    Ok(())
+    flush_renamed(to)
 }
 
-/// The writer fence: one kernel-held exclusive lock per platform, pinned
-/// (ADR 0039). Unix: `flock(LOCK_EX | LOCK_NB)` on a persistent inode,
-/// O_CLOEXEC so no child inherits it; held for the guard's lifetime.
-/// Windows: `LockFileEx` exclusive, non-inheritable handle — lands with P3
-/// (FE-local capsules); until then `lock_writer` FAILS CLOSED on non-unix so
-/// an undurable store can never silently run.
+/// NUL-terminated UTF-16 in extended-length form. std's own fs ops
+/// verbatim-normalize long paths internally, so a store std could create
+/// and write would then fail to PUBLISH through a raw `MoveFileExW` given
+/// the un-prefixed path (default MAX_PATH limit). `std::path::absolute` is
+/// `GetFullPathNameW`-backed on Windows (separators, dots, and
+/// drive-relative forms normalized), so the remaining prefix rules mirror
+/// std's own conversion: verbatim (`\\?\`) and device (`\\.\`) namespaces
+/// pass through untouched; UNC gets the extended `\\?\UNC\` form (mostly
+/// moot here — the preflight refuses non-local volumes); everything else
+/// (drive paths) gets the plain `\\?\` prefix.
+#[cfg(windows)]
+fn wide_verbatim(p: &Path) -> Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let abs = std::path::absolute(p)?;
+    let raw: Vec<u16> = abs.as_os_str().encode_wide().collect();
+    let bs = b'\\' as u16;
+    let starts = |pre: &str| {
+        let pw: Vec<u16> = std::ffi::OsStr::new(pre).encode_wide().collect();
+        raw.len() >= pw.len() && raw[..pw.len()] == pw[..]
+    };
+    let mut w: Vec<u16> = if starts(r"\\?\") || starts(r"\\.\") {
+        raw
+    } else if raw.starts_with(&[bs, bs]) {
+        std::ffi::OsStr::new(r"\\?\UNC\")
+            .encode_wide()
+            .chain(raw[2..].iter().copied())
+            .collect()
+    } else {
+        std::ffi::OsStr::new(r"\\?\")
+            .encode_wide()
+            .chain(raw.into_iter())
+            .collect()
+    };
+    w.push(0);
+    Ok(w)
+}
+
+/// AV/indexer transient hold codes worth absorbing (bounded).
+#[cfg(windows)]
+fn is_transient_hold(e: &std::io::Error) -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
+    matches!(e.raw_os_error(),
+        Some(c) if c == ERROR_SHARING_VIOLATION as i32 || c == ERROR_ACCESS_DENIED as i32)
+}
+
+/// Flush the just-renamed target. `FlushFileBuffers` needs write access, so
+/// files are briefly reopened for write (same bounded transient-hold retry
+/// as the rename — the fresh name is exactly what AV scans). A directory
+/// target (bootstrap's `.creating` publish) flushes via the dir handle.
+#[cfg(windows)]
+fn flush_renamed(to: &Path) -> Result<()> {
+    if std::fs::metadata(to)
+        .map_err(|e| io_ctx(e, format_args!("stat renamed {to:?}")))?
+        .is_dir()
+    {
+        return fsync_dir(to);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
+    loop {
+        match std::fs::OpenOptions::new().write(true).open(to) {
+            Ok(fh) => {
+                fh.sync_all()
+                    .map_err(|e| io_ctx(e, format_args!("flush renamed {to:?}")))?;
+                return Ok(());
+            }
+            Err(e) => {
+                if !is_transient_hold(&e) || std::time::Instant::now() >= deadline {
+                    return Err(io_ctx(e, format_args!("open renamed for flush {to:?}")));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
+            }
+        }
+    }
+}
+
+/// The writer fence: one kernel-held exclusive lock, pinned (ADR 0039).
+/// Both platform arms collapse into one std call (`File::try_lock`, Rust ≥
+/// 1.89): `flock(LOCK_EX | LOCK_NB)` on unix, `LockFileEx(EXCLUSIVE |
+/// FAIL_IMMEDIATELY)` on Windows. Released by the kernel when the guard's
+/// handle closes — including on hard kills, with a documented timing
+/// transient on both platforms that the bounded retry absorbs.
 pub struct WriterLock {
     #[allow(dead_code)] // held for its Drop (kernel releases the lock)
     file: File,
 }
 
-#[cfg(unix)]
 pub fn lock_writer(lock_path: &Path) -> Result<WriterLock> {
-    use std::os::fd::AsRawFd;
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .custom_flags(libc::O_CLOEXEC)
-        .open(lock_path)?;
-    // Bounded retry on WouldBlock: a flock lives on the open file
-    // description, and a just-dead writer's lock can outlive it by
-    // milliseconds through a forked-but-not-yet-exec'd producer child (the
-    // fork window closes at the child's close_range, but a SIGKILLed-and-
-    // reaped capsule doesn't wait for its child's schedule). Those holds
-    // resolve in ms; a GENUINE live writer holds indefinitely and still
-    // fails here within the deadline — fail-closed is preserved, only the
-    // transient artifact is absorbed.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+    let file = open_lock_file(lock_path)?;
+    // Bounded retry on WouldBlock: a just-dead writer's lock can outlive it
+    // — on unix through a forked-but-not-yet-exec'd producer child holding
+    // the open file description (the window closes at the child's
+    // close_range, but a SIGKILLed-and-reaped capsule doesn't wait for its
+    // child's schedule); on Windows through post-termination release lag,
+    // which the API documents as resource-dependent with NO bound. The
+    // deadline absorbs the common fast case only: a slower release fails
+    // CLOSED ("lock held") — an availability error the caller retries, never
+    // a second writer. A GENUINE live writer holds indefinitely and still
+    // fails here within the deadline.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
     loop {
-        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc == 0 {
-            return Ok(WriterLock { file });
-        }
-        let e = std::io::Error::last_os_error();
-        if e.kind() != std::io::ErrorKind::WouldBlock {
-            return Err(Error::Io(e));
+        match file.try_lock() {
+            Ok(()) => return Ok(WriterLock { file }),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io(e)),
         }
         if std::time::Instant::now() >= deadline {
             return Err(Error::State(
                 "voyage writer lock held by another process".into(),
             ));
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
     }
 }
 
-#[cfg(not(unix))]
-pub fn lock_writer(_lock_path: &Path) -> Result<WriterLock> {
-    Err(Error::Unsupported("voyage writer lock requires unix in v1"))
+/// Unix lock open: open-existing ONLY, matching the Windows arm — bootstrap
+/// created the fence, and absence means a mutilated store. With `create`,
+/// unlinking the held lock path would let the next writer mint a fresh
+/// inode and take an independent flock: two live fences.
+#[cfg(unix)]
+fn open_lock_file(lock_path: &Path) -> Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_CLOEXEC) // no child inherits the fence
+        .open(lock_path)?;
+    Ok(f)
+}
+
+/// Windows lock open (ADR 0041): open-existing ONLY — never silently
+/// recreate a missing persistent fence (bootstrap created it; absence means
+/// a mutilated store). Opened WITHOUT `FILE_SHARE_DELETE` (std's default
+/// shares delete/rename) so the locked path cannot be replaced out from
+/// under the fence to mint a second one — and with
+/// `FILE_FLAG_OPEN_REPARSE_POINT` + a post-open attribute check, because
+/// the share deny protects the OPENED object: without the flag CreateFileW
+/// follows a symlink/junction planted at the lock path and the fence would
+/// bind (and deny sharing on) the TARGET, leaving the link free to be
+/// re-pointed for a second fence. Std never makes handles inheritable.
+#[cfg(windows)]
+fn open_lock_file(lock_path: &Path) -> Result<File> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(lock_path)
+        .map_err(|e| io_ctx(e, format_args!("open writer.lock (open-existing) {lock_path:?}")))?;
+    // Handle-derived attributes (GetFileInformationByHandle) — checking the
+    // opened object itself, not a raced re-stat of the path.
+    if f.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(Error::State(format!(
+            "writer.lock at {lock_path:?} is a reparse point — refusing a redirected fence"
+        )));
+    }
+    Ok(f)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_container_creates_one_level_and_replays() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voyages").join("v1");
+        let got = ensure_container(&root).unwrap();
+        assert_eq!(got, std::fs::canonicalize(dir.path()).unwrap().join("voyages").join("v1"));
+        assert!(dir.path().join("voyages").is_dir());
+        // The ROOT is bootstrap's job, never this helper's.
+        assert!(!root.exists());
+        // Replay after a crash must redo the anchoring, not trust residue.
+        ensure_container(&root).unwrap();
+    }
+
+    #[test]
+    fn ensure_container_refuses_an_unanchorable_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        // The container's parent is missing too: creating BOTH levels would
+        // leave the outer one unanchored, so this is loud by design.
+        let root = dir.path().join("a").join("b").join("v1");
+        let e = ensure_container(&root).unwrap_err();
+        assert!(format!("{e}").contains("must exist first"), "{e}");
+    }
+
+    #[test]
+    fn ensure_container_resolves_dot_dot_without_escaping() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a").join("b")).unwrap();
+        let root = dir.path().join("a").join("b").join("..").join("c").join("v1");
+        let got = ensure_container(&root).unwrap();
+        assert!(dir.path().join("a").join("c").is_dir());
+        // The returned identity is fully resolved — no `..` left to alias.
+        assert_eq!(got, std::fs::canonicalize(dir.path()).unwrap().join("a").join("c").join("v1"));
+    }
 }

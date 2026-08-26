@@ -1,6 +1,6 @@
 //! Voyage store: bootstrap, writer lock + epoch allocation, rotation, blob
-//! CAS publication (ADR 0039). Unix-only for the parts that need kernel
-//! semantics; the codec itself is portable.
+//! CAS publication (ADR 0039). Kernel-semantics parts have Linux and
+//! Windows arms (ADR 0041 §store port); the codec itself is portable.
 
 use crate::envelope::Digest;
 use crate::fsutil::{self, WriterLock};
@@ -52,9 +52,26 @@ impl VoyageStore {
     /// Bootstrap a new voyage: build under `<root>.creating/`, fsync
     /// bottom-up, publish by no-clobber rename (ADR 0039 §lifecycle 1).
     pub fn bootstrap(root: &Path, voyage_id: &str, retention: RetentionClass) -> Result<()> {
+        // Absolutize first: a relative root would (a) make the parent of a
+        // bare name the empty path and (b) leave every later operation
+        // raceable against set_current_dir elsewhere in the process.
+        let root = std::path::absolute(root)?;
+        let root = root.as_path();
         let parent = root
             .parent()
             .ok_or_else(|| Error::State("voyage root needs a parent dir".into()))?;
+        // The container must PREEXIST: bootstrap will not create ancestor
+        // levels, because it cannot durably anchor them (their entries in
+        // THEIR parents are never flushed here — a "successful" bootstrap
+        // into an implicitly created chain could vanish on power loss).
+        // The container's durability is its creator's responsibility.
+        if !parent.is_dir() {
+            return Err(Error::State(format!(
+                "voyage container {parent:?} does not exist (bootstrap will not create it)"
+            )));
+        }
+        // Volume preflight BEFORE any `.creating` mutation (ADR 0041).
+        fsutil::preflight_volume(parent)?;
         let staging = parent.join(format!(
             "{}.creating",
             root.file_name()
@@ -63,13 +80,23 @@ impl VoyageStore {
         ));
         std::fs::create_dir_all(staging.join("seg"))?;
         std::fs::create_dir_all(staging.join("blobs").join(".tmp"))?;
+        // sha256/ exists (and is flushed) from birth so the first CAS
+        // publish only ever creates the SHARD level — whose entry its own
+        // fsync_dir(sha256) pins. Created lazily instead, the sha256 entry
+        // itself would never be anchored in blobs/.
+        std::fs::create_dir_all(staging.join("blobs").join("sha256"))?;
         // The lock inode is persistent and never unlinked.
         let mut lockf = std::fs::File::create(staging.join("writer.lock"))?;
         lockf.write_all(b"{}")?;
         lockf.sync_all()?;
+        // Windows refuses to rename a directory while any handle is open
+        // beneath it (ERROR_ACCESS_DENIED) — the lock handle must close
+        // before the publish rename below.
+        drop(lockf);
         // Persist the voyage identity + retention where the genesis header
         // will restate it (bootstrap happens before any segment exists).
         fsutil::fsync_dir(&staging.join("blobs").join(".tmp"))?;
+        fsutil::fsync_dir(&staging.join("blobs").join("sha256"))?;
         fsutil::fsync_dir(&staging.join("blobs"))?;
         fsutil::fsync_dir(&staging.join("seg"))?;
         fsutil::fsync_dir(&staging)?;
@@ -83,6 +110,26 @@ impl VoyageStore {
     /// identity found, allocate this writer's epoch (max durable + 1), and
     /// compute the chain tip.
     pub fn open_for_writing(root: &Path, voyage_id: &str) -> Result<Self> {
+        // Absolutize for the same reasons as bootstrap: the stored root must
+        // not be re-resolvable against a moved CWD while the lock is held.
+        // (Ancestor-junction retargeting by another PRINCIPAL is out of the
+        // fence's threat model: the voyage container's ancestors are
+        // owner-controlled, and the ADR's DACL step protects the subtree.)
+        let root = std::path::absolute(root)?;
+        let root = root.as_path();
+        // Re-run the volume preflight on the resolved voyage dir (ADR 0041):
+        // a store bootstrapped elsewhere and moved to an unsuitable volume
+        // must refuse before the fence is even touched.
+        fsutil::preflight_volume(root)?;
+        // Restate the root's anchoring: bootstrap's publish rename may have
+        // become visible while its container flush was lost to a crash — the
+        // callers' bootstrap-if-absent check would then skip bootstrap
+        // forever, leaving a store that acknowledges records from a root the
+        // next power loss can remove. Idempotent, so every open re-anchors.
+        fsutil::fsync_dir(root)?;
+        if let Some(parent) = root.parent() {
+            fsutil::fsync_dir(parent)?;
+        }
         let lock = fsutil::lock_writer(&root.join("writer.lock"))?;
         let seg_dir = root.join("seg");
 
@@ -259,7 +306,14 @@ impl VoyageStore {
         let blobs = self.root.join("blobs");
         let shard = blobs.join("sha256").join(&digest[0..2]);
         std::fs::create_dir_all(&shard)?;
-        fsutil::fsync_dir(&blobs.join("sha256"))?;
+        // Anchor bottom-up. `sha256/` is created at bootstrap in stores made
+        // since ADR 0041, but voyages bootstrapped by earlier builds lack it
+        // (and it can be deleted) — then `create_dir_all` just made it here,
+        // and ITS entry lives in `blobs/`. Flushing only `sha256` would let a
+        // blob reference become durable while its namespace parent stays
+        // losable (round-3 finding; also the migration path for old stores).
+        fsutil::fsync_dir(&blobs.join("sha256"))?; // anchors the shard entry
+        fsutil::fsync_dir(&blobs)?; // anchors the sha256 entry
         let dest = shard.join(&digest);
         if dest.exists() {
             let existing = std::fs::read(&dest)?;
@@ -275,9 +329,8 @@ impl VoyageStore {
         // Random suffix (not pid+digest): two same-process publishes of
         // identical content must not race each other's temp file.
         let nonce: u64 = {
-            use std::io::Read as _;
             let mut b = [0u8; 8];
-            std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+            getrandom::fill(&mut b).map_err(std::io::Error::from)?;
             u64::from_le_bytes(b)
         };
         let tmp = blobs.join(".tmp").join(format!("{:016x}-{}", nonce, &digest[0..16]));
@@ -306,7 +359,7 @@ impl VoyageStore {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", windows)))]
 mod tests {
     use super::*;
     use crate::envelope::Class;

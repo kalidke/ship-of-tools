@@ -516,7 +516,7 @@ impl SegmentReader {
 // `any(target_os = "linux", windows)`. Read this as "where the store
 // works today", never as a settled contract — macOS joins when it gets a
 // renamex_np arm, which ADR 0039 already anticipates.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", windows)))]
 pub(crate) mod tests {
     use super::*;
     use crate::envelope::*;

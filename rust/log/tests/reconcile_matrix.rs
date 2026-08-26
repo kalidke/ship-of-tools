@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", windows))] // seals segments -> needs the store's rename arm (linux renameat2 / windows MoveFileExW)
 //! ADR 0039 §"Segment lifecycle" step 4 — reconciliation-table conformance
 //! suite. Enters EVERY row of the startup-reconciliation table by explicit
 //! file surgery on freshly built segment files, then asserts the exact

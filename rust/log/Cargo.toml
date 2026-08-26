@@ -13,9 +13,19 @@ sha2 = { workspace = true }
 crc32c = { workspace = true }
 uuid = { workspace = true }
 thiserror = "2"
+getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From impl
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# Raw Win32 for the durability arms (ADR 0041 §store port): MoveFileExW,
+# GetVolumeInformationByHandleW, FILE_FLAG_BACKUP_SEMANTICS. Same version
+# the frontend pins.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

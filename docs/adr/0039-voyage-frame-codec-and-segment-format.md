@@ -242,8 +242,14 @@ and header identity must agree. Record order per segment:
 `header frame* seal?` (seal absent only while unsealed).
 
 1. **Voyage bootstrap**: build `<voyage>.creating/` containing `seg/`,
-   `blobs/`, `blobs/.tmp/`, `writer.lock`; fsync created dirs bottom-up;
-   RENAME_NOREPLACE to `<voyage>/`; fsync parent.
+   `blobs/`, `blobs/.tmp/`, `blobs/sha256/`, `writer.lock`; fsync created
+   dirs bottom-up; RENAME_NOREPLACE to `<voyage>/`; fsync parent. The
+   container must already exist — bootstrap never creates ancestor levels it
+   cannot anchor. `blobs/sha256/` is created HERE so the first blob publish
+   only ever creates the shard level (whose entry its own `sha256` flush
+   pins); created lazily, the `sha256` entry itself would go unanchored in
+   `blobs/`. Publication re-flushes `blobs/` anyway, which is also the
+   migration path for voyages bootstrapped before this rule.
 2. **Open**: O_EXCL-create `.open` → write header record → fsync file → fsync
    dir → only then may frames append or acks fire. A headerless or
    header-partial `.open` found under the lock is reinitialized in place.
@@ -316,9 +322,10 @@ voyage written on one OS reads on any other. The three platform touchpoints
 and their Windows equivalents: directory flush (`FlushFileBuffers` on a
 `FILE_FLAG_BACKUP_SEMANTICS` directory handle), no-clobber rename
 (`MoveFileExW` WITHOUT `MOVEFILE_REPLACE_EXISTING` — std's rename clobbers),
-and the lock above. Until the P3 implementations land, the store **fails
-closed** off Linux: on Windows the writer lock refuses to open, and on
-non-Linux unix the no-clobber rename refuses (it requires `renameat2` —
+and the lock above — all three implemented for Windows in P3 (ADR 0041
+§store port), where a volume preflight additionally pins voyages to local
+NTFS. The store still **fails closed** on the platforms without real arms:
+non-Linux unix refuses the no-clobber rename (it requires `renameat2` —
 hard-link-plus-unlink is not atomic, and a crash between the two syscalls
 would manufacture exactly the invalid file-state combinations reconciliation
 treats as loud). Silently weaker atomicity is the thing this store exists to

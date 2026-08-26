@@ -15351,44 +15351,26 @@ fn finish_capture(
     Ok(())
 }
 
-/// Per-machine Ship of Tools state directory: `%LOCALAPPDATA%\sot\` on Windows,
-/// `$XDG_STATE_HOME/sot` (or `$HOME/.local/state/sot`) elsewhere. Home for the
-/// staged binary + logs (ADR 0017), the relaunch sentinel, and the FE control
-/// channel (ADR 0019).
-fn sot_state_dir() -> Option<std::path::PathBuf> {
-    let dir = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)
-    } else {
-        std::env::var_os("XDG_STATE_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|h| std::path::PathBuf::from(h).join(".local").join("state"))
-            })
-    }?;
-    Some(dir.join("sot"))
-}
-
 /// Path of the self-relaunch sentinel file (ADR 0017). The build-and-relaunch
 /// helper (`scripts/relaunch-sot.ps1`) creates this after a successful
 /// `cargo build`; the watcher thread notices it and triggers an exit-75
 /// respawn.
 fn relaunch_sentinel_path() -> Option<std::path::PathBuf> {
-    sot_state_dir().map(|d| d.join("relaunch.request"))
+    crate::paths::sot_state_dir().map(|d| d.join("relaunch.request"))
 }
 
 /// Directory of pending FE-control command files (ADR 0019). An in-terminal
 /// agent (or the user) drops one JSON object per file here; the FE's command
 /// watcher reads, deletes, and enqueues each for main-thread dispatch.
 fn fe_commands_dir() -> Option<std::path::PathBuf> {
-    sot_state_dir().map(|d| d.join("fe-commands"))
+    crate::paths::sot_state_dir().map(|d| d.join("fe-commands"))
 }
 
 /// Path of the FE state-readback file (ADR 0019). The FE rewrites it
 /// (atomic temp+rename) whenever the observable state changes, so an
 /// in-terminal agent can poll it instead of screenshotting.
 fn fe_state_path() -> Option<std::path::PathBuf> {
-    sot_state_dir().map(|d| d.join("fe-state.json"))
+    crate::paths::sot_state_dir().map(|d| d.join("fe-state.json"))
 }
 
 /// Path of the agent-relay inbox (`<state-dir>/fe-inbox.jsonl`). The daemon
@@ -15397,7 +15379,7 @@ fn fe_state_path() -> Option<std::path::PathBuf> {
 /// machine receives cross-machine messages instantly instead of polling the
 /// git bus. One object per line: `{"from":..,"to":..,"text":..,"ts":..}`.
 fn fe_inbox_path() -> Option<std::path::PathBuf> {
-    sot_state_dir().map(|d| d.join("fe-inbox.jsonl"))
+    crate::paths::sot_state_dir().map(|d| d.join("fe-inbox.jsonl"))
 }
 
 /// A parsed `sot_ui` nav command (Item 2 — a session driving this FE's

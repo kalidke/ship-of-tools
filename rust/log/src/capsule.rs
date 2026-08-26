@@ -65,9 +65,8 @@ enum Event {
 
 /// 16 random bytes from the OS, as lowercase hex32 (the ADR idem_key shape).
 fn random_idem_key() -> Result<String> {
-    let mut f = std::fs::File::open("/dev/urandom")?;
     let mut b = [0u8; 16];
-    f.read_exact(&mut b)?;
+    getrandom::fill(&mut b).map_err(std::io::Error::from)?;
     Ok(b.iter().map(|x| format!("{:02x}", x)).collect())
 }
 
@@ -213,10 +212,14 @@ impl FrameCtx {
 // expansion (after the loop); the reset is load-bearing at every other site.
 #[allow(unused_assignments)]
 pub fn run(config: CapsuleConfig) -> Result<ExitSummary> {
-    if !config.voyage_root.exists() {
-        VoyageStore::bootstrap(&config.voyage_root, &config.voyage_id, config.retention)?;
+    // Resolve ONCE: every later use must name the same directory. Resolving
+    // a relative config path repeatedly lets a concurrent `set_current_dir`
+    // send the existence check, bootstrap, and open to different stores.
+    let voyage_root = crate::fsutil::ensure_container(&config.voyage_root)?;
+    if !voyage_root.exists() {
+        VoyageStore::bootstrap(&voyage_root, &config.voyage_id, config.retention)?;
     }
-    let mut store = VoyageStore::open_for_writing(&config.voyage_root, &config.voyage_id)?;
+    let mut store = VoyageStore::open_for_writing(&voyage_root, &config.voyage_id)?;
     store.seal_survivor()?;
 
     let mut ctx = FrameCtx {

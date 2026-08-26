@@ -42,7 +42,8 @@ pub enum Error {
     Schema(String),
     #[error("state: {0}")]
     State(String),
-    /// The voyage store requires a unix host in v1 (kernel flock fence).
+    /// The voyage store requires OS durability primitives this platform
+    /// lacks (Linux and Windows have real arms; others fail closed).
     #[error("unsupported on this platform: {0}")]
     Unsupported(&'static str),
 }

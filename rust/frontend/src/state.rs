@@ -5,10 +5,11 @@
 // fresh process — after a kill, an SSH drop, a host reboot — can hand them
 // back to the backend in the next `hello` and pick up where it left off.
 //
-// Tiny JSON blob under a platform-appropriate per-user state dir
-// (`$XDG_STATE_HOME` if set, else `%LOCALAPPDATA%` on Windows, else
-// `$HOME/.local/state` on Unix, else cwd). Atomic write through a temp file +
-// rename so a crashing frontend never leaves half-written state.
+// Tiny JSON blob under a platform-appropriate per-user state dir:
+// `%LOCALAPPDATA%\sot` on Windows; `$XDG_STATE_HOME/sot` else
+// `$HOME/.local/state/sot` on Unix; cwd as last resort. Atomic write through
+// a temp file + rename so a crashing frontend never leaves half-written
+// state.
 
 use std::path::PathBuf;
 
@@ -40,29 +41,14 @@ impl SessionMemory {
 }
 
 pub fn state_path() -> PathBuf {
-    // Precedence:
-    //   1. $XDG_STATE_HOME — explicit user override on either OS.
-    //   2. %LOCALAPPDATA%  — Windows per-user app-data root. Only set on
-    //                        Windows, so adding it before HOME is harmless on
-    //                        Unix (the var doesn't exist there).
-    //   3. $HOME/.local/state — XDG default on Unix.
-    //   4. "."             — last resort; previously state landed in cwd on
-    //                        Windows because neither XDG_STATE_HOME nor HOME
-    //                        was set.
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".local/state");
-                p
-            })
-        })
-        .unwrap_or_else(|| PathBuf::from("."));
-    let mut p = base.join("sot");
-    p.push("session.json");
-    p
+    // One shared rule, via `crate::paths` (ADR 0041 step 1). This copy used
+    // to resolve `$XDG_STATE_HOME` ahead of `%LOCALAPPDATA%`, which split
+    // session state away from the relaunch sentinel on Windows whenever
+    // XDG_STATE_HOME was set. The "." fallback is the pre-existing last
+    // resort for when no env var resolves.
+    crate::paths::sot_state_dir()
+        .unwrap_or_else(|| PathBuf::from(".").join("sot"))
+        .join("session.json")
 }
 
 pub fn load() -> SessionMemory {
