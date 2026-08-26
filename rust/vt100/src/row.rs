@@ -230,47 +230,48 @@ impl Row {
     fn check_invariants(
         cells: &[crate::Cell],
     ) -> Result<(), crate::checkpoint::CheckpointError> {
-        let orphan = |_col: usize| {
-            Err(crate::checkpoint::CheckpointError::Malformed(
-                "a wide character with only one of its two halves",
-            ))
-        };
-        let unreachable_cell = |_col: usize, what: &'static str| {
+        // Every refusal below names a different predicate. Sharing one
+        // message between them would let a test pass through a branch it was
+        // not written for, and would leave a reader of the log unable to tell
+        // which shape actually arrived.
+        let reject = |what: &'static str| {
             Err(crate::checkpoint::CheckpointError::Malformed(what))
         };
         for (col, cell) in cells.iter().enumerate() {
             if cell.is_wide() {
                 if cell.is_wide_continuation() {
-                    return orphan(col);
+                    return reject("a cell marked as both halves of a wide character");
                 }
                 match cells.get(col + 1) {
                     Some(next) if next.is_wide_continuation() => {}
-                    _ => return orphan(col),
+                    _ => {
+                        return reject(
+                            "a wide character's lead without its continuation",
+                        )
+                    }
                 }
                 // A lead is only ever made by `Cell::set`, which writes the
                 // character before setting the bit.
                 if !cell.has_contents() {
-                    return unreachable_cell(col, "a wide lead with no text");
+                    return reject("a wide lead with no text");
                 }
             } else if cell.is_wide_continuation() {
                 match col.checked_sub(1).and_then(|prev| cells.get(prev)) {
                     Some(prev) if prev.is_wide() => {}
-                    _ => return orphan(col),
+                    _ => {
+                        return reject(
+                            "a wide character's continuation without its lead",
+                        )
+                    }
                 }
                 // Both sites that create a continuation clear the cell to
                 // default attributes first — `screen::text` explicitly, and
                 // `Grid::insert_cells` by inserting a fresh one.
                 if cell.has_contents() {
-                    return unreachable_cell(
-                        col,
-                        "a wide continuation carrying its own text",
-                    );
+                    return reject("a wide continuation carrying its own text");
                 }
                 if cell.attrs() != &crate::attrs::Attrs::default() {
-                    return unreachable_cell(
-                        col,
-                        "a wide continuation with its own attributes",
-                    );
+                    return reject("a wide continuation with its own attributes");
                 }
             }
         }

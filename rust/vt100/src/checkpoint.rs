@@ -232,7 +232,9 @@ impl<'a> Reader<'a> {
             .pos
             .checked_add(n)
             .filter(|end| *end <= self.buf.len())
-            .ok_or(CheckpointError::Malformed("payload ended mid-field"))?;
+            .ok_or(CheckpointError::Malformed(
+                "payload ended before the checkpoint was complete",
+            ))?;
         let slice = &self.buf[self.pos..end];
         self.pos = end;
         Ok(slice)

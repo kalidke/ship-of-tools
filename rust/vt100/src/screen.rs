@@ -1234,7 +1234,8 @@ impl Screen {
             || cols > crate::checkpoint::MAX_COLS
         {
             return Err(crate::checkpoint::CheckpointError::Malformed(
-                "terminal dimensions outside the supported range",
+                "the payload announces terminal dimensions outside the \
+                 supported range",
             ));
         }
         let size = crate::grid::Size { rows, cols };
@@ -1249,15 +1250,22 @@ impl Screen {
             MouseProtocolMode::from_checkpoint_tag(r.u8()?)?;
         let mouse_protocol_encoding =
             MouseProtocolEncoding::from_checkpoint_tag(r.u8()?)?;
-        let attrs = crate::attrs::Attrs::read_checkpoint(&mut r, "current attributes")?;
+        let attrs = crate::attrs::Attrs::read_checkpoint(
+            &mut r,
+            "undefined bits in the current text mode",
+        )?;
         let saved_attrs =
-            crate::attrs::Attrs::read_checkpoint(&mut r, "saved attributes")?;
+            crate::attrs::Attrs::read_checkpoint(
+            &mut r,
+            "undefined bits in the saved text mode",
+        )?;
 
         let grid = crate::grid::Grid::read_checkpoint(
             &mut r,
             size,
             scrollback_len,
             "the cursor is outside the terminal",
+            "the saved cursor is outside the terminal",
         )?;
         // The alternate grid never accumulates scrollback, matching how
         // `Screen::new` constructs it.
@@ -1266,6 +1274,7 @@ impl Screen {
             size,
             0,
             "the alternate grid's cursor is outside the terminal",
+            "the alternate grid's saved cursor is outside the terminal",
         )?;
         r.finish()?;
 

@@ -565,6 +565,7 @@ impl Grid {
         size: Size,
         scrollback_len: usize,
         which: &'static str,
+        which_saved: &'static str,
     ) -> Result<Self, crate::checkpoint::CheckpointError> {
         let pos = Pos {
             row: r.u16()?,
@@ -586,7 +587,7 @@ impl Grid {
         // cursor is pending a wrap, which is an ordinary state, not a corrupt
         // one.
         Self::check_pos(pos, size, which)?;
-        Self::check_pos(saved_pos, size, "the saved cursor is outside the terminal")?;
+        Self::check_pos(saved_pos, size, which_saved)?;
         // The reachable scroll regions are narrower than `top <= bottom`.
         // `set_scroll_region` takes an explicit region only when
         // `top < bottom`, and otherwise resets to the whole screen; the one
@@ -599,23 +600,22 @@ impl Grid {
         // `0..=0` on a screen with more than one row makes that subtraction
         // underflow on the next glyph that wraps — a state no parse can
         // produce, restored and then panicking somewhere else entirely.
-        let invalid = || {
-            Err(crate::checkpoint::CheckpointError::Malformed(
-                "a scroll region no parse can produce",
-            ))
-        };
         // Range-check the field BEFORE doing arithmetic with it. Computing
         // `scroll_bottom + 1` first overflows on a hostile `u16::MAX` — a
         // panic in the very code that exists to prevent one.
         if scroll_bottom >= size.rows {
-            return invalid();
+            return Err(crate::checkpoint::CheckpointError::Malformed(
+                "a scroll region reaching past the last row",
+            ));
         }
         // `size.rows` is non-zero (the header rejects zero) and
         // `scroll_bottom` is now below it, so this subtraction is safe.
         let equal_at_last_row =
             scroll_top == scroll_bottom && scroll_bottom == size.rows - 1;
         if !(scroll_top < scroll_bottom || equal_at_last_row) {
-            return invalid();
+            return Err(crate::checkpoint::CheckpointError::Malformed(
+                "a scroll region shape no parse can produce",
+            ));
         }
 
         let mut rows = Vec::with_capacity(usize::from(size.rows));

@@ -442,7 +442,8 @@ fn rejects_degenerate_and_oversize_dimensions() {
             matches!(
                 restore(&bytes),
                 Err(CheckpointError::Malformed(
-                    "terminal dimensions outside the supported range"
+                    "the payload announces terminal dimensions outside the \
+                     supported range"
                 ))
             ),
             "{cols}x{rows} was not refused"
@@ -484,9 +485,10 @@ fn rejects_unknown_mouse_tags() {
 }
 
 /// Bold and dim together is a state the parser cannot reach — every setter
-/// clears the intensity bits before setting one — so restore refuses it under
-/// the same rule as everything else here: only screens the parser could
-/// itself have produced.
+/// clears the intensity bits before setting one. Restore refuses it because
+/// the check is cheap and certain, which is the actual rule here; the
+/// contract is not "only screens the parser could produce", since three
+/// unreachable shapes are knowingly accepted (see `Row::check_invariants`).
 #[test]
 fn rejects_simultaneous_bold_and_dim() {
     let mut bytes = sample_checkpoint();
@@ -515,17 +517,23 @@ fn rejects_trailing_bytes() {
 fn rejects_every_truncation() {
     let bytes = sample_checkpoint();
     for len in 0..bytes.len() {
-        assert!(
-            restore(&bytes[..len]).is_err(),
-            "a {len}-byte prefix of a {}-byte checkpoint was accepted",
+        // Every prefix must fail for the SAME reason — it ran out of bytes —
+        // and not because a shorter payload happened to trip some other
+        // rule on the way.
+        assert_eq!(
+            restore(&bytes[..len]).err(),
+            Some(CheckpointError::Malformed(
+                "payload ended before the checkpoint was complete"
+            )),
+            "a {len}-byte prefix of a {}-byte checkpoint",
             bytes.len()
         );
     }
 }
 
-/// Restore takes bytes off a transport. It must refuse anything it cannot
-/// decode into a screen it could itself have produced — never panic, and
-/// never round-trip to something different.
+/// Restore takes bytes off a transport. Whatever it accepts it must accept
+/// consistently — never panic, and never round-trip to something different
+/// from what it was handed.
 #[test]
 fn restore_never_panics_on_corrupt_bytes() {
     let bytes = sample_checkpoint();
@@ -574,6 +582,9 @@ fn failed_restore_leaves_the_parser_untouched() {
     parser.process(b"do not disturb");
     let before = checkpoint(&parser);
 
+    // `is_err` on purpose, and the only one left in this file: the property
+    // under test is that ANY failure leaves the parser untouched, so pinning
+    // which error would narrow the test rather than strengthen it.
     assert!(parser.restore_screen(b"garbage").is_err());
     assert_eq!(checkpoint(&parser), before);
 }
@@ -666,12 +677,12 @@ fn rejects_wide_lead_without_its_continuation() {
     // Turn the continuation into an ordinary empty cell: flags 0, no length.
     bytes[FIRST_CELL + 5] = 0;
     bytes.remove(FIRST_CELL + 6);
-    assert!(matches!(
-        restore(&bytes),
-        Err(CheckpointError::Malformed(
-            "a wide character with only one of its two halves"
+    assert_eq!(
+        restore(&bytes).err(),
+        Some(CheckpointError::Malformed(
+            "a wide character's lead without its continuation"
         ))
-    ));
+    );
 }
 
 /// The mirror case, and the worse one: `screen::text` indexes `col - 1` for a
@@ -681,24 +692,24 @@ fn rejects_continuation_without_its_lead() {
     let mut bytes = wide_glyph_checkpoint();
     // Clear the wide bit on the lead, leaving the continuation unmatched.
     bytes[FIRST_CELL + 1] = 3;
-    assert!(matches!(
-        restore(&bytes),
-        Err(CheckpointError::Malformed(
-            "a wide character with only one of its two halves"
+    assert_eq!(
+        restore(&bytes).err(),
+        Some(CheckpointError::Malformed(
+            "a wide character's continuation without its lead"
         ))
-    ));
+    );
 }
 
 #[test]
 fn rejects_a_cell_that_is_both_halves_at_once() {
     let mut bytes = wide_glyph_checkpoint();
     bytes[FIRST_CELL + 1] = 0b1100_0000 | 3;
-    assert!(matches!(
-        restore(&bytes),
-        Err(CheckpointError::Malformed(
-            "a wide character with only one of its two halves"
+    assert_eq!(
+        restore(&bytes).err(),
+        Some(CheckpointError::Malformed(
+            "a cell marked as both halves of a wide character"
         ))
-    ));
+    );
 }
 
 /// Validation must not refuse a screen the parser itself produces. Shrinking
@@ -746,11 +757,11 @@ fn a_selected_grid_always_has_rows() {
 fn refuses_to_checkpoint_a_screen_beyond_the_supported_size() {
     for (rows, cols) in [(257_u16, 80_u16), (24, 513), (300, 600)] {
         let parser = Parser::new(rows, cols, 0);
-        assert!(
-            matches!(
-                parser.screen().checkpoint(),
-                Err(CheckpointError::Unrepresentable(_))
-            ),
+        assert_eq!(
+            parser.screen().checkpoint().err(),
+            Some(CheckpointError::Unrepresentable(
+                "terminal dimensions are outside the supported range"
+            )),
             "{cols}x{rows} was serialized despite being unrestorable"
         );
     }
@@ -942,7 +953,9 @@ fn rejects_a_scroll_region_no_parse_can_produce() {
         .copy_from_slice(&0_u16.to_le_bytes());
     assert!(matches!(
         restore(&bytes),
-        Err(CheckpointError::Malformed("a scroll region no parse can produce"))
+        Err(CheckpointError::Malformed(
+            "a scroll region shape no parse can produce"
+        ))
     ));
 }
 
@@ -998,7 +1011,10 @@ fn rejects_extreme_scroll_region_values_without_overflowing() {
         assert!(
             matches!(
                 restore(&bytes),
-                Err(CheckpointError::Malformed("a scroll region no parse can produce"))
+                Err(CheckpointError::Malformed(
+                    "a scroll region reaching past the last row"
+                        | "a scroll region shape no parse can produce"
+                ))
             ),
             "scroll region {top}..={bottom} was not refused cleanly"
         );

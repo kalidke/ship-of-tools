@@ -147,15 +147,23 @@ impl Attrs {
         out.push(self.mode);
     }
 
+    /// `undefined_bits` is the diagnostic for a text-mode byte carrying bits
+    /// this version does not define. It is a whole message, not a field
+    /// label: with three error variants the string is the entire report, so
+    /// a caller reading a log gets only what is written here.
     pub(crate) fn read_checkpoint(
         r: &mut crate::checkpoint::Reader<'_>,
-        field: &'static str,
+        undefined_bits: &'static str,
     ) -> Result<Self, crate::checkpoint::CheckpointError> {
-        let fgcolor = Color::read_checkpoint(r, "undefined foreground color tag")?;
-        let bgcolor = Color::read_checkpoint(r, "undefined background color tag")?;
+        let fgcolor =
+            Color::read_checkpoint(r, "undefined foreground color tag")?;
+        let bgcolor =
+            Color::read_checkpoint(r, "undefined background color tag")?;
         let mode = r.u8()?;
         if mode & !TEXT_MODE_KNOWN != 0 {
-            return Err(crate::checkpoint::CheckpointError::Malformed(field));
+            return Err(crate::checkpoint::CheckpointError::Malformed(
+                undefined_bits,
+            ));
         }
         // Bold and dim are mutually exclusive: every setter clears the
         // intensity bits before setting one, so both at once is a state no

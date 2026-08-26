@@ -271,7 +271,10 @@ impl Cell {
         }
         if flags & CELL_FLAG_ATTRS != 0 {
             let attrs =
-                crate::attrs::Attrs::read_checkpoint(r, "a cell's attributes are undefined")?;
+                crate::attrs::Attrs::read_checkpoint(
+                    r,
+                    "undefined bits in a cell's text mode",
+                )?;
             // Same reasoning as the length above: the encoder omits default
             // attributes, so spelling them out is a second encoding of one
             // cell.
