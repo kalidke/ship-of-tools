@@ -38,7 +38,7 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess, InitializeProcThreadAttributeList,
+    CreateProcessW, STARTF_USESTDHANDLES, DeleteProcThreadAttributeList, GetCurrentProcess, InitializeProcThreadAttributeList,
     UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
     PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTUPINFOEXW,
 };
@@ -558,6 +558,19 @@ impl ConptySpawn {
         let mut cmdline_wide = wide_null(&cmdline);
         let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
         startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        // STARTF_USESTDHANDLES with all three std handles NULL — the
+        // opposite of a leak, it BLOCKS one. Without this flag, Windows
+        // std-handle CLONING duplicates the PARENT'S std handles into a
+        // console child even with bInheritHandles=FALSE; when the parent's
+        // stdout is a pipe (a test harness, CI, any redirected context),
+        // the child then writes to THAT pipe while its console — the
+        // pseudoconsole — renders nothing. Diagnosed live: the child's
+        // TITLE reached our pty (it attached) while its OUTPUT landed in
+        // the CI step log (its stdout was the runner's pipe). Explicit
+        // null std handles make the child's runtime bind stdio to its own
+        // console, which is the pty. Windows Terminal's own ConPTY spawn
+        // does exactly this, for exactly this reason.
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         startup.lpAttributeList = list_ptr;
         let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
         let ok = unsafe {
@@ -619,6 +632,19 @@ impl ConptySpawn {
 
         let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
         startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        // STARTF_USESTDHANDLES with all three std handles NULL — the
+        // opposite of a leak, it BLOCKS one. Without this flag, Windows
+        // std-handle CLONING duplicates the PARENT'S std handles into a
+        // console child even with bInheritHandles=FALSE; when the parent's
+        // stdout is a pipe (a test harness, CI, any redirected context),
+        // the child then writes to THAT pipe while its console — the
+        // pseudoconsole — renders nothing. Diagnosed live: the child's
+        // TITLE reached our pty (it attached) while its OUTPUT landed in
+        // the CI step log (its stdout was the runner's pipe). Explicit
+        // null std handles make the child's runtime bind stdio to its own
+        // console, which is the pty. Windows Terminal's own ConPTY spawn
+        // does exactly this, for exactly this reason.
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         startup.lpAttributeList = attrs.as_ptr();
 
         let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
