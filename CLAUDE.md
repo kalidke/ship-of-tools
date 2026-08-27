@@ -152,6 +152,17 @@ The smallest useful working slice:
 
 When working in this repo:
 
+- **THE design principle, senior to any process — elegance: simple and
+  elegant leads to performance and security. As simple as possible, but no
+  simpler.** It applies at every design and iteration stage, not only the
+  final artifact: a small design surface is simultaneously the function
+  argument (fewer states, fewer interactions, fewer bugs) and the security
+  argument (complexity is where corruption and attack hide). Every review
+  round asks BOTH questions — "what's missing?" AND "what can be deleted?" —
+  a round that only adds has done half its job. The "no simpler" edge:
+  stripping past the invariants (durability, identity, honesty of the
+  record) buys false elegance. A field, type, or knob must name the
+  invariant it serves; if it cannot, it is a deletion candidate.
 - **Julia is the canonical language** for plugin code, ABI definitions, and Julia-aware logic. Use it expressively — leverage multiple dispatch, the type system, and idiomatic patterns.
 - **Rust is for plumbing** — TUI, IPC, file watching, process supervision. Keep it boring and predictable.
 - **Plotting is CairoMakie** when generating plots in Julia.
