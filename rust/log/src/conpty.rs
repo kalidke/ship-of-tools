@@ -27,7 +27,7 @@ use std::fs::File;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, BOOL, HANDLE, STILL_ACTIVE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, BOOL, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
@@ -341,28 +341,30 @@ impl PrimaryProcess {
         }
     }
 
-    /// `GetExitCodeProcess`. `None` means `STILL_ACTIVE` (259) was
-    /// returned, i.e. the process has not exited YET as far as this call
-    /// can tell.
+    /// `GetExitCodeProcess`, returned RAW, with a PRECONDITION this method
+    /// does not itself check: the caller must have already independently
+    /// confirmed the process is no longer running — via `wait()` returning
+    /// `true`, or `AnonymousJob::active_processes() == 0` — before calling
+    /// this.
     ///
     /// HONESTY BOUND, documented by Microsoft: `STILL_ACTIVE` (259) is also
     /// a value a process can legitimately exit WITH — `GetExitCodeProcess`
     /// alone cannot distinguish "still running" from "exited with code
-    /// 259". The caller that has already observed `wait()` return `true`
-    /// (or `AnonymousJob::active_processes() == 0`) has independently
-    /// established that the process is not running, so THIS method's
-    /// `None` cannot be reached in that caller's own sequence — calling it
-    /// beforehand, unconditionally, would not carry the same guarantee.
-    pub fn exit_code(&self) -> Result<Option<u32>> {
+    /// 259" from the return value alone. Given the precondition above,
+    /// that ambiguity is already resolved by the CALLER's own prior
+    /// observation, not by this method — so it makes no attempt to
+    /// disambiguate and returns whatever the OS reports, unconditionally.
+    /// (Review finding: an earlier version mapped raw 259 to `None` even
+    /// when called after a confirmed exit, silently turning a legitimate
+    /// exit code into an absent one. The name is the fix: calling this
+    /// method IS the caller asserting the precondition, so there is no
+    /// "maybe still running" case left for a return type to encode.)
+    pub fn exit_code_after_confirmed_exit(&self) -> Result<u32> {
         let mut code: u32 = 0;
         if unsafe { GetExitCodeProcess(self.raw(), &mut code) } == 0 {
             return Err(conpty_err("GetExitCodeProcess", std::io::Error::last_os_error()));
         }
-        if code == STILL_ACTIVE as u32 {
-            Ok(None)
-        } else {
-            Ok(Some(code))
-        }
+        Ok(code)
     }
 }
 

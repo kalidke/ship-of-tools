@@ -6,14 +6,25 @@
 //! binaries, and the rest are kept here too for one home and one
 //! `cargo test -p sot-log --test capsule_win` filter.
 //!
-//! The host-handshake byte state machine's own unit tests (`host_handshake.rs`) are
-//! pure and run everywhere already; what these tests add is proof the
-//! WIRING is correct on a real ConPTY — that a real DA1 answer becomes a
-//! well-formed `request`/`response` pair, that a real resize commits a real
-//! `outcome`, that a real spawn failure and a real requested kill both seal
-//! a verifiable voyage.
+//! The host-handshake byte state machine's own unit tests
+//! (`host_handshake.rs`) are pure and run everywhere already; what these
+//! tests add is proof the WIRING is correct on a real ConPTY — that a real
+//! DA1 answer becomes a well-formed, exactly-once `request`/`response`/
+//! `outcome` triple, that a real resize commits a real `outcome` and calls
+//! `ResizePseudoConsole` exactly when it should, and that a real spawn
+//! failure and a real requested kill both seal a verifiable voyage with
+//! `producer_dead` as the last frame in it.
+//!
+//! Discharge round (Codex review, finding 7): the previous version's flood
+//! test asserted byte-count equality across a lossy transform boundary
+//! (`hOutput` is conhost's own rendered VT stream, not raw child stdout)
+//! and ran `run` on the test's own thread, so a teardown deadlock consumed
+//! the whole CI job's timeout instead of failing locally; the handshake
+//! test checked membership, not a bijection; the resize test could pass
+//! even if every outcome targeted the same request or `ResizePseudoConsole`
+//! were never actually gated. All four are fixed below.
 
-use sot_log::capsule_win::{self, CapsuleWinConfig, ControlCmd, ExitKind};
+use sot_log::capsule_win::{self, CapsuleWinConfig, Command, ExitKind};
 use sot_log::segment::{RetentionClass, SegmentReader};
 use sot_log::verify::verify_voyage;
 use sot_log::{Class, Envelope, RefKind};
@@ -88,7 +99,8 @@ fn decode_b64(s: &str) -> Vec<u8> {
 /// Bounded join: `run` blocks until the run ends, and a bug in the
 /// teardown sequence's own ordering is exactly the class of bug that would
 /// hang it forever — a test must fail loud within a bounded wait, never
-/// hang the suite.
+/// hang the suite (or, worse, the whole CI job's own timeout — review
+/// finding on the flood test specifically).
 fn wait_for_join<T: Send + 'static>(handle: std::thread::JoinHandle<T>, timeout: Duration) -> Option<T> {
     let deadline = Instant::now() + timeout;
     while !handle.is_finished() {
@@ -100,13 +112,27 @@ fn wait_for_join<T: Send + 'static>(handle: std::thread::JoinHandle<T>, timeout:
     Some(handle.join().unwrap())
 }
 
+/// `producer_dead` must be the LAST frame ever appended to the last
+/// segment before it was sealed — the order the verifier itself does not
+/// enforce (review finding). Returns its `detail` payload for further
+/// assertions.
+fn assert_producer_dead_is_last(frames: &[Envelope]) -> serde_json::Value {
+    let last = frames.last().expect("no frames at all");
+    assert_eq!(last.class, Class::Lifecycle, "producer_dead is not the last frame in the segment");
+    let payload = last.payload.as_ref().unwrap();
+    assert_eq!(payload["kind"], "producer_dead", "last frame is not producer_dead: {payload:?}");
+    payload["detail"].clone()
+}
+
 /// Test 1: E2E. `cmd.exe /d /c echo <marker>` runs to completion (a
 /// natural producer exit — no `Kill` ever sent); the resulting voyage
-/// verifies, carries the marker in its producer frames, and never carries
-/// a turn frame (raw terminal). DSR presence is LOGGED, not asserted (host/
-/// build-version-dependent — same reasoning as `tests/conpty.rs`'s own
-/// DA1-presence finding) — but IF a request/response pair shows up, its
-/// shape must be correct.
+/// verifies, carries the marker in its producer frames, never carries a
+/// turn frame (raw terminal), and ends with `producer_dead`. The
+/// host-handshake exchange is a BIJECTION, not membership (review
+/// finding): at most one request, matched by exactly one response and
+/// exactly one outcome, linked correctly — but tolerating zero, since DA1
+/// presence is host/build-version-dependent (same reasoning as
+/// `tests/conpty.rs`'s own DA1-presence finding).
 #[test]
 fn e2e_records_and_verifies() {
     let dir = tempfile::tempdir().unwrap();
@@ -132,51 +158,49 @@ fn e2e_records_and_verifies() {
     let text = String::from_utf8_lossy(&all);
     assert!(text.contains(marker), "got: {text:?}");
     assert!(frames.iter().all(|f| f.class != Class::TurnOpen && f.class != Class::TurnClose));
-    let dead = frames
-        .iter()
-        .find(|f| f.class == Class::Lifecycle && f.payload.as_ref().unwrap()["kind"] == "producer_dead")
-        .unwrap();
-    assert_eq!(dead.payload.as_ref().unwrap()["detail"]["exit_code"], 0);
+    let dead = assert_producer_dead_is_last(&frames);
+    assert_eq!(dead["exit_code"], 0);
 
-    let hh_reqs: Vec<&Envelope> = frames
-        .iter()
-        .filter(|f| {
-            f.class == Class::ControlExchange
-                && f.payload.as_ref().unwrap()["kind_ns"] == "conpty/host-handshake"
-                && f.payload.as_ref().unwrap()["phase"] == "request"
-        })
-        .collect();
-    let hh_resps: Vec<&Envelope> = frames
-        .iter()
-        .filter(|f| {
-            f.class == Class::ControlExchange
-                && f.payload.as_ref().unwrap()["kind_ns"] == "conpty/host-handshake"
-                && f.payload.as_ref().unwrap()["phase"] == "response"
-        })
-        .collect();
+    let phase_is = |f: &&Envelope, kind_ns: &str, phase: &str| {
+        f.class == Class::ControlExchange
+            && f.payload.as_ref().unwrap()["kind_ns"] == kind_ns
+            && f.payload.as_ref().unwrap()["phase"] == phase
+    };
+    let hh_reqs: Vec<&Envelope> =
+        frames.iter().filter(|f| phase_is(f, "conpty/host-handshake", "request")).collect();
+    let hh_resps: Vec<&Envelope> =
+        frames.iter().filter(|f| phase_is(f, "conpty/host-handshake", "response")).collect();
+    let hh_outcomes: Vec<&Envelope> =
+        frames.iter().filter(|f| phase_is(f, "conpty/host-handshake", "outcome")).collect();
     eprintln!(
-        "capsule_win e2e finding: host-handshake requests={}, responses={}",
+        "capsule_win e2e finding: host-handshake requests={}, responses={}, outcomes={}",
         hh_reqs.len(),
-        hh_resps.len()
+        hh_resps.len(),
+        hh_outcomes.len()
     );
-    assert_eq!(hh_reqs.len(), hh_resps.len(), "every host-handshake request must have exactly one response");
-    for resp in &hh_resps {
-        let target = resp
+    assert!(hh_reqs.len() <= 1, "ADR 0041's model answers the handshake at most once per run");
+    assert_eq!(hh_reqs.len(), hh_resps.len(), "bijection: every request has exactly one response");
+    assert_eq!(hh_resps.len(), hh_outcomes.len(), "bijection: every response has exactly one outcome");
+    assert_eq!(summary.handshake_answered, !hh_reqs.is_empty());
+    if let Some(&req) = hh_reqs.first() {
+        let resp = hh_resps[0];
+        let outcome = hh_outcomes[0];
+        let responds_to = resp
             .refs
             .iter()
             .find(|r| r.kind == RefKind::RespondsTo)
             .map(|r| r.frame)
-            .expect("dsr response missing responds_to");
-        assert!(
-            hh_reqs.iter().any(|r| r.seq == target),
-            "dsr response responds_to an unknown request seq"
-        );
+            .expect("host-handshake response missing responds_to");
+        assert_eq!(responds_to, req.seq, "response must respond to ITS OWN request");
+        let target = outcome.payload.as_ref().unwrap()["target"].as_str().unwrap().to_string();
+        assert_eq!(target, format!("{}:{}", req.seq.epoch, req.seq.n), "outcome must target ITS OWN request");
+        assert_eq!(outcome.payload.as_ref().unwrap()["body"]["disposition"], "ok");
     }
 }
 
 /// Test 2: spawn failure (a nonexistent executable) is compensated, not
 /// escaped unsealed (the Linux capsule's own known gap, deliberately not
-/// inherited here).
+/// inherited here), and `producer_dead` is still the last frame recorded.
 #[test]
 fn spawn_failure_is_compensated() {
     let dir = tempfile::tempdir().unwrap();
@@ -191,12 +215,9 @@ fn spawn_failure_is_compensated() {
     verify_voyage(&root, "fail1").unwrap();
 
     let frames = sealed_frames(&root, "fail1");
-    let dead = frames
-        .iter()
-        .find(|f| f.class == Class::Lifecycle && f.payload.as_ref().unwrap()["kind"] == "producer_dead")
-        .unwrap();
-    assert_eq!(dead.payload.as_ref().unwrap()["detail"]["spawn_failed"], true);
-    assert!(dead.payload.as_ref().unwrap()["detail"]["exit_code"].is_null());
+    let dead = assert_producer_dead_is_last(&frames);
+    assert_eq!(dead["spawn_failed"], true);
+    assert!(dead["exit_code"].is_null());
 }
 
 /// Test 2b: an out-of-budget INITIAL geometry is treated the same way —
@@ -211,11 +232,14 @@ fn spawn_failure_from_out_of_budget_initial_geometry() {
     let summary = capsule_win::run(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
     verify_voyage(&root, "fail2").unwrap();
+    let frames = sealed_frames(&root, "fail2");
+    let dead = assert_producer_dead_is_last(&frames);
+    assert_eq!(dead["spawn_failed"], true);
 }
 
-/// Test 3: a requested kill (`ControlCmd::Kill`) tears down a still-running
+/// Test 3: a requested kill (`Command::Kill`) tears down a still-running
 /// producer through the ONE orchestrator and still seals a verifiable
-/// voyage, with a real (job-imposed) exit code recorded.
+/// voyage, with a real (job-imposed) exit code recorded as the last frame.
 #[test]
 fn requested_kill_tears_down_and_seals() {
     let dir = tempfile::tempdir().unwrap();
@@ -225,19 +249,26 @@ fn requested_kill_tears_down_and_seals() {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || capsule_win::run(cfg, rx));
     std::thread::sleep(Duration::from_millis(500));
-    tx.send(ControlCmd::Kill).unwrap();
+    tx.send(Command::Kill).unwrap();
     let summary = wait_for_join(handle, Duration::from_secs(30))
         .expect("run did not return within the teardown bound")
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
     assert!(summary.exit_code.is_some());
     verify_voyage(&root, "kill1").unwrap();
+
+    let frames = sealed_frames(&root, "kill1");
+    let dead = assert_producer_dead_is_last(&frames);
+    assert_eq!(dead["exit_code"], summary.exit_code.unwrap());
 }
 
 /// Test 4: resize is an ordered request+outcome exchange (no response
 /// phase — ADR 0041), rejecting out-of-budget requests rather than
-/// clamping them, with the outcome's `target` naming the request it
-/// resolves.
+/// clamping them, with the outcome's `target` naming ITS OWN request (not
+/// just some real request — review finding), and `ResizePseudoConsole`
+/// actually invoked exactly once (the in-budget request only — review
+/// finding: the disposition string alone doesn't prove the OS call was
+/// really gated).
 #[test]
 fn resize_ordered_exchange_commits_and_rejects() {
     let dir = tempfile::tempdir().unwrap();
@@ -247,55 +278,55 @@ fn resize_ordered_exchange_commits_and_rejects() {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || capsule_win::run(cfg, rx));
     std::thread::sleep(Duration::from_millis(500));
-    tx.send(ControlCmd::Resize { cols: 100, rows: 40 }).unwrap(); // in budget
+    tx.send(Command::Resize { cols: 100, rows: 40 }).unwrap(); // in budget
     std::thread::sleep(Duration::from_millis(300));
-    tx.send(ControlCmd::Resize { cols: 9999, rows: 40 }).unwrap(); // > 512 cols
+    tx.send(Command::Resize { cols: 9999, rows: 40 }).unwrap(); // > 512 cols
     std::thread::sleep(Duration::from_millis(300));
-    tx.send(ControlCmd::Resize { cols: 40, rows: 1 }).unwrap(); // < 2 rows
+    tx.send(Command::Resize { cols: 40, rows: 1 }).unwrap(); // < 2 rows
     std::thread::sleep(Duration::from_millis(300));
-    tx.send(ControlCmd::Kill).unwrap();
+    tx.send(Command::Kill).unwrap();
     let summary = wait_for_join(handle, Duration::from_secs(30))
         .expect("run did not return within the teardown bound")
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
+    assert_eq!(summary.resize_os_calls, 1, "expected exactly one ResizePseudoConsole call (the valid request only)");
     verify_voyage(&root, "resize1").unwrap();
 
     let frames = sealed_frames(&root, "resize1");
-    let is_resize_outcome = |f: &&Envelope| {
+    let phase_is = |f: &&Envelope, phase: &str| {
         f.class == Class::ControlExchange
             && f.payload.as_ref().unwrap()["kind_ns"] == "conpty/resize"
-            && f.payload.as_ref().unwrap()["phase"] == "outcome"
+            && f.payload.as_ref().unwrap()["phase"] == phase
     };
-    let outcomes: Vec<&Envelope> = frames.iter().filter(is_resize_outcome).collect();
+    let requests: Vec<&Envelope> = frames.iter().filter(|f| phase_is(f, "request")).collect();
+    let outcomes: Vec<&Envelope> = frames.iter().filter(|f| phase_is(f, "outcome")).collect();
+    assert_eq!(requests.len(), 3, "expected 3 resize requests, got {}", requests.len());
     assert_eq!(outcomes.len(), 3, "expected 3 resize outcomes, got {}", outcomes.len());
     assert_eq!(outcomes[0].payload.as_ref().unwrap()["body"]["disposition"], "ok");
     assert_eq!(outcomes[1].payload.as_ref().unwrap()["body"]["disposition"], "failed");
     assert_eq!(outcomes[2].payload.as_ref().unwrap()["body"]["disposition"], "failed");
 
-    let requests: Vec<&Envelope> = frames
-        .iter()
-        .filter(|f| {
-            f.class == Class::ControlExchange
-                && f.payload.as_ref().unwrap()["kind_ns"] == "conpty/resize"
-                && f.payload.as_ref().unwrap()["phase"] == "request"
-        })
-        .collect();
-    assert_eq!(requests.len(), 3);
-    for outcome in &outcomes {
+    // Each outcome must target its OWN request (by emission order, since
+    // request[i] and outcome[i] commit as one uninterrupted pair) — not
+    // just "some" real request, which the previous version's `.any(...)`
+    // would have let a misattribution bug slip through undetected.
+    for (req, outcome) in requests.iter().zip(outcomes.iter()) {
         let target = outcome.payload.as_ref().unwrap()["target"].as_str().unwrap().to_string();
-        assert!(
-            requests.iter().any(|r| format!("{}:{}", r.seq.epoch, r.seq.n) == target),
-            "outcome target {target} does not name a real request seq"
-        );
+        let expected = format!("{}:{}", req.seq.epoch, req.seq.n);
+        assert_eq!(target, expected, "outcome does not target its own request");
     }
 }
 
 /// Test 5: backpressure. A flood producer emits well beyond the 8 MiB
-/// output budget; the run must still capture every byte exactly once (no
-/// loss, no duplication — the byte-accounting proof the budget's condvar
-/// gating exists to make safe) and seal a verifiable voyage.
+/// output budget; the run must engage the budget's backpressure (proven by
+/// its own high-water/blocked-count seam, not a byte-count comparison
+/// across the wrong transform boundary — review finding) without
+/// deadlocking, and seal a verifiable voyage. Run on a background thread
+/// with a LOCAL bounded wait: a teardown regression here is exactly a
+/// deadlock, and this test must fail loud within its own bound rather than
+/// consume the whole CI job's timeout.
 #[test]
-fn flood_survives_backpressure_without_loss() {
+fn flood_engages_backpressure_without_deadlock() {
     let dir = tempfile::tempdir().unwrap();
     let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
     let total: usize = 20 * 1024 * 1024; // > the 8 MiB producer-channel budget
@@ -304,11 +335,30 @@ fn flood_survives_backpressure_without_loss() {
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
     let start = Instant::now();
-    let summary = capsule_win::run(cfg, rx).unwrap();
+    let handle = std::thread::spawn(move || capsule_win::run(cfg, rx));
+    let summary = wait_for_join(handle, Duration::from_secs(60))
+        .expect("run did not return within the local deadline (deadlock?)")
+        .unwrap();
     eprintln!("capsule_win flood finding: {total} bytes in {:?}", start.elapsed());
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
     assert_eq!(summary.exit_code, Some(0));
     verify_voyage(&root, "flood1").unwrap();
+
+    // The right side of the transform boundary (review finding): hOutput
+    // is conhost's own rendered VT stream, not a byte-for-byte copy of
+    // what the child wrote to its own stdout — startup sequences and
+    // line-wrap/scroll handling can legitimately change the total length,
+    // so exact equality against `total` proves nothing. What IS meaningful:
+    // the budget's own high-water mark actually reached a substantial
+    // fraction of the cap (proving backpressure really ran, not merely
+    // that 20 MiB happened to fit through uncontested), the reader
+    // actually blocked at least once, and a substantial amount of output
+    // was captured at all.
+    assert!(summary.output_high_water_bytes > 0, "output budget never recorded any outstanding bytes");
+    assert!(
+        summary.output_reserve_blocks > 0,
+        "reader never blocked in OutputBudget::reserve — the flood did not exceed the budget in practice"
+    );
 
     let frames = sealed_frames(&root, "flood1");
     let mut total_decoded = 0usize;
@@ -318,5 +368,30 @@ fn flood_survives_backpressure_without_loss() {
             total_decoded += decode_b64(b64).len();
         }
     }
-    assert_eq!(total_decoded, total, "byte count mismatch: the flood was lost or duplicated");
+    assert!(
+        total_decoded > total / 2,
+        "captured far less output than the flood emitted: {total_decoded} of {total}"
+    );
+}
+
+/// Test 6: a high-bit (NTSTATUS-shaped) exit code is preserved raw and
+/// unsigned all the way through `ExitSummary` AND the sealed
+/// `producer_dead` frame's JSON — the review finding that a `u32`-to-`i32`
+/// cast anywhere in this path would turn it negative for no reason. Same
+/// value `tests/conpty.rs` pins at the primitives layer; this proves the
+/// capsule runtime doesn't reintroduce the cast above it.
+#[test]
+fn exit_code_high_bit_status_preserved_through_producer_dead() {
+    let dir = tempfile::tempdir().unwrap();
+    let argv =
+        vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit -1073741819".to_string()];
+    let cfg = config(dir.path(), "exitcode1", argv, 80, 25);
+    let root = cfg.voyage_root.clone();
+    let (_tx, rx) = mpsc::channel();
+    let summary = capsule_win::run(cfg, rx).unwrap();
+    assert_eq!(summary.exit_code, Some(0xC000_0005));
+    verify_voyage(&root, "exitcode1").unwrap();
+    let frames = sealed_frames(&root, "exitcode1");
+    let dead = assert_producer_dead_is_last(&frames);
+    assert_eq!(dead["exit_code"], 0xC000_0005u32);
 }

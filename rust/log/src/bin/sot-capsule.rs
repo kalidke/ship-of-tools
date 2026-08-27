@@ -55,13 +55,14 @@ fn main() {
 }
 
 /// Temporary harness for the Windows capsule runtime (ADR 0041 step 4). No
-/// interactive command source yet — the real named-pipe attach lane is
-/// step 5's job — so this is `run`/`echo` only: `run` already spawns its
-/// own stdin-forwarding thread (mirroring the Linux capsule), so stdin
-/// typed at this process reaches the producer, but there is no way yet to
-/// send it a resize or a requested kill (Ctrl+C simply kills this whole
-/// process, which is exactly FE-loss, not EndRun — ADR 0041 Lifecycle:
-/// nothing in this bin can express EndRun yet).
+/// interactive resize/kill command source yet — the real named-pipe
+/// attach lane is step 5's job — so this bin owns its OWN stdin-forwarding
+/// thread (per the library's own discharge-round change: `run` no longer
+/// reads stdin itself, so a caller must) and forwards every byte as
+/// `Command::Input`; there is no way yet to send a resize or a requested
+/// kill (Ctrl+C simply kills this whole process, which is exactly
+/// FE-loss, not EndRun — ADR 0041 Lifecycle: nothing in this bin can
+/// express EndRun yet).
 #[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -117,16 +118,41 @@ fn main() {
         cols,
         rows,
     };
-    // The control channel's sender is kept alive only so `run` never sees
-    // an immediate disconnect — nothing sends on it yet in this harness.
-    let (_ctrl_tx, ctrl_rx) = std::sync::mpsc::channel();
-    match sot_log::capsule_win::run(config, ctrl_rx) {
+    // This bin's own stdin-forwarding thread (the library no longer owns
+    // one — discharge-round change): every byte typed here becomes a
+    // `Command::Input`, exactly the same bytes the Linux capsule's
+    // internal stdin thread would have forwarded.
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut stdin = std::io::stdin();
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = stdin.read(&mut buf) {
+            if n == 0 || cmd_tx.send(sot_log::capsule_win::Command::Input(buf[..n].to_vec())).is_err() {
+                break;
+            }
+        }
+    });
+    match sot_log::capsule_win::run(config, cmd_rx) {
         Ok(s) => {
             eprintln!(
-                "sot-capsule: producer exited {:?} ({:?}); {} frames, {} segments sealed",
-                s.exit_code, s.exit_kind, s.frames_written, s.segments_sealed
+                "sot-capsule: producer exited {:?} ({:?}); {} frames, {} segments sealed \
+                 (handshake_answered={}, handshake_suppressed={}, resize_os_calls={})",
+                s.exit_code,
+                s.exit_kind,
+                s.frames_written,
+                s.segments_sealed,
+                s.handshake_answered,
+                s.handshake_suppressed_matches,
+                s.resize_os_calls
             );
-            std::process::exit(s.exit_code.unwrap_or(1));
+            // Reinterpretation to a process exit code happens ONLY here,
+            // at the actual OS process-exit boundary — everywhere else in
+            // this crate the value stays a raw, unsigned DWORD (review
+            // finding: an earlier version cast it to i32 well before this
+            // point, which would have turned a high-bit NTSTATUS-shaped
+            // code negative for no reason).
+            std::process::exit(s.exit_code.map(|c| c as i32).unwrap_or(1));
         }
         Err(e) => {
             eprintln!("sot-capsule: {e}");

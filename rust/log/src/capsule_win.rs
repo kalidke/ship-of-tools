@@ -11,56 +11,121 @@
 //! fd). Even the parts that read identically (the base64 encoder, the
 //! frame-context helper) are duplicated here, not shared: `capsule.rs` is
 //! `#![cfg(target_os = "linux")]`-gated, so there is no common home for a
-//! shared module without inventing one, which is out of this unit's scope.
+//! shared module without inventing one, which is out of this unit's scope
+//! (Codex review: not a blocker, don't refactor the proven Linux path to
+//! chase a Windows hazard).
 //!
 //! Three properties this module adds over the Linux capsule, all pinned by
 //! ADR 0041 "Step 4 as specified":
 //! - a live `vt100_ctt` parser tracks the producer's screen for a later
 //!   attach (step 5) to checkpoint from — this unit only keeps it current
 //!   and resizes it, it never serializes it (no attach lane exists yet);
-//! - the ConPTY host-facing DA1 handshake (`host_handshake.rs`) is answered on every
-//!   output chunk, including through the teardown drain, so the pre-24H2
-//!   blocking close this sequence exists to survive can never deadlock on
-//!   an unanswered query;
+//! - the ConPTY host-facing DA1 handshake (`host_handshake.rs`) is
+//!   answered THROUGH the teardown drain — the writer loop keeps servicing
+//!   it while the pseudoconsole closes, never pausing to make the close
+//!   call, so the pre-24H2 blocking close this sequence exists to survive
+//!   can never deadlock on an unanswered query (see "Teardown" below);
 //! - spawn failure and BOTH teardown entry points (an externally requested
 //!   kill, or the producer exiting on its own) are handled by ONE
-//!   compensation path / ONE orchestrator, so a segment is always sealed,
-//!   never abandoned — the Linux capsule's own known gap (a bare `?` on
-//!   `spawn_on_pty` that escapes unsealed) is deliberately NOT inherited.
+//!   compensation path / ONE orchestrator, so a segment is always sealed
+//!   whenever the producer ever actually ran or a spawn was attempted —
+//!   the Linux capsule's own known gap (a bare `?` on `spawn_on_pty` that
+//!   escapes unsealed) is deliberately NOT inherited. An unexpected PRE-close
+//!   reader failure is the one case that still bails unsealed on purpose
+//!   (see "Reader errors" below) — that is ADR 0039's crash shape, not a
+//!   gap.
 //!
-//! Judgment calls made without an explicit ruling in the spec gate,
-//! flagged here (and again in the unit's report) rather than treated as
-//! settled:
-//! - **DSR recorded as `control_exchange`.** The ADR states plainly that
-//!   "the DSR reply frame `responds_to` its request" — so a request +
-//!   response pair is emitted every time [`crate::host_handshake::HostHandshake::feed`]
-//!   produces a reply. What is NOT pinned: which `source.actor` records
-//!   it (this module uses [`FrameCtx::capsule_frame`], reasoning that
-//!   answering a host query is autonomous capsule machinery — the same
-//!   category as `producer_spawn`/`producer_dead` — never a driver
-//!   action, so `controller_frame` would misattribute it), whether a
-//!   third `outcome` phase belongs alongside request/response (not
-//!   implemented — the reply IS the completion of a purely local decision
-//!   already made, with nothing external left to report; resize NEEDS a
-//!   later outcome only because acting on it can fail after the request
-//!   is written, which has no analogue here), and what `to.kind` names
-//!   (this module writes `{"kind": "producer"}`, reusing resize's own
-//!   choice to mean "concerns the pty/producer channel", since no
-//!   `ActorKind` names "the ConPTY host itself").
-//! - **`ExitKind`** (below) has no ADR-pinned vocabulary — it exists only
-//!   for the Rust caller (the ADR itself: "exit codes play no role in run
-//!   lifetime", and the same is true of this signal, which never reaches
-//!   the wire).
-//! - **Resize's outcome `target`** names the resize REQUEST's own `seq`
-//!   (`"{epoch}:{n}"`) — the closest analogue to claude.rs's interrupt
-//!   precedent (which targets the TURN being closed), since a resize has
-//!   no turn-like entity of its own to target.
+//! ## Discharge round (Codex adversarial review, capsule_win.rs unit)
+//!
+//! The first version of this file shipped a real teardown deadlock and six
+//! other findings; this is the corrected version. What changed, and why:
+//!
+//! - **Teardown is now a PHASE of the ordered loop, not a pause in it.**
+//!   The first version polled `ActiveProcesses` and called `close_pty()`
+//!   WITHOUT draining the output channel, so a reader already blocked in
+//!   `OutputBudget::reserve` (or a DA1 only the writer loop could answer)
+//!   could leave `hOutput` undrained right when `ClosePseudoConsole` needed
+//!   it drained — Microsoft documents that pre-24H2 build's close as
+//!   capable of waiting indefinitely under exactly that condition, and the
+//!   old `TEARDOWN_DRAIN_TIMEOUT` couldn't detect it because its clock
+//!   started AFTER the (blocking) close call returned. Now: the reap-poll
+//!   keeps servicing the output channel (committing frames, answering the
+//!   handshake) WHILE it polls; `close_pty()` runs on a dedicated CLOSER
+//!   thread so the writer loop keeps draining concurrently with the call
+//!   itself, never pausing for it; the drain timeout's clock starts the
+//!   moment the closer thread is spawned, not after it returns.
+//! - **The output budget is reserve-before-read and cancellable.** The
+//!   reader now reserves a full `READ_CHUNK` BEFORE calling `read()` (and
+//!   gives back the unused remainder), so `outstanding` can never exceed
+//!   the budget even momentarily; a `BudgetCancelGuard` cancels it — waking
+//!   every blocked/future `reserve` — on ANY exit from `run` (normal
+//!   return, an early `?`, or a panic unwind), so a reader can never
+//!   outlive the loop that is the only thing that ever releases it back.
+//!   `release` is checked, not saturating: a mismatch is this module's own
+//!   bookkeeping bug and must panic loudly, never absorb silently.
+//! - **The handshake exchange is now request → response → outcome** (ADR
+//!   0041's own phrase for a "query exchange"), and a write failure commits
+//!   a FAILURE outcome instead of silently leaving the exchange looking
+//!   like "never delivered, cause unknown". Per the ADR's own model — one
+//!   host handshake, asked once, at startup — this module now answers and
+//!   records only the FIRST match ever observed for a run; every later
+//!   match (a hostile or broken producer's repeat queries) is counted, not
+//!   re-answered and not re-recorded, closing the unbounded-frame-spam
+//!   amplification the first version had no defense against.
+//! - **Exit status is raw and unsigned end-to-end.** `conpty.rs`'s
+//!   `exit_code` had a real bug — even after a caller had *already*
+//!   confirmed the process exited, it still mapped a genuine raw exit code
+//!   of 259 to `None`, the exact `STILL_ACTIVE` value it was trying to
+//!   avoid confusing with "still running". It is now
+//!   `exit_code_after_confirmed_exit`, which trusts the caller's own prior
+//!   observation and returns the DWORD unconditionally. This module carries
+//!   that value as `u32` throughout (`ExitSummary`, `producer_dead`'s
+//!   `detail.exit_code`) instead of casting to `i32`, which would turn a
+//!   high-bit NTSTATUS-shaped code (an access violation, say) negative for
+//!   no reason — reinterpretation to a process's own exit code happens only
+//!   at the actual OS process-exit boundary, in the bin harness.
+//! - **A read error is never silently folded into a sealed success.** The
+//!   reader thread now sends one explicit terminal event carrying a real
+//!   `Result` (not an undifferentiated "EOF" that swallowed both a clean
+//!   close and a genuine I/O error). Whether that's expected depends
+//!   entirely on WHEN it arrives: before this loop has ever called
+//!   `close_pty()`, it is exactly the anomaly `conpty.rs`'s own contract
+//!   says shouldn't happen (ConPTY keeps `hOutput` open regardless of
+//!   child lifetime until explicitly closed) — capsule-fatal, `run`
+//!   returns an `Err` with nothing further written (ADR 0039's crash
+//!   shape: recovery seals whatever valid prefix already committed). After
+//!   `close_pty()` has been called, both a graceful EOF and a broken pipe
+//!   are the ordinary, expected end of the drain. The `ReaderClosedUnexpectedly`
+//!   `ExitKind` variant is gone — it named a failure as if it were a
+//!   legitimate way for a run to end successfully, which it never was.
+//! - **`run` no longer owns stdin.** The first version read the real
+//!   process stdin internally, which (a) is process-global state a
+//!   reusable library function has no business owning, and (b) meant
+//!   "teardown revokes admission" was really just "teardown discards what
+//!   it already accepted" — the thread kept enqueueing regardless. `run`
+//!   now takes exactly ONE caller-owned command channel
+//!   (`mpsc::Receiver<Command>`, `Command` now including `Input` alongside
+//!   `Resize`/`Kill`); the bin harness owns its own stdin-reading thread
+//!   and forwards `Command::Input` into it. Admission revocation is now
+//!   real: once the main loop is left for teardown, this channel is never
+//!   read from again — not received-then-discarded, simply never polled.
+//!
+//! Judgment calls the review looked at and left standing (not litigated
+//! further here): `FrameCtx::capsule_frame` (not `controller_frame`) as the
+//! handshake exchange's source, and `to.kind = "producer"` on both the
+//! handshake and resize requests, reusing that value to mean "concerns the
+//! pty/producer channel" since no `ActorKind` names "the ConPTY host
+//! itself"; `controller_frame` for resize (it IS the future driver-facing
+//! command); resize's outcome `target` naming the resize request's own
+//! `seq`; `ExitKind`'s remaining vocabulary (`ProducerExited`/`Requested`/
+//! `SpawnFailed`) having no ADR-pinned name, existing purely for the Rust
+//! caller and never reaching a frame.
 
 #![cfg(windows)]
 
 use crate::conpty::{observe_spawning_process_jobbed, ConptySpawn};
-use crate::host_handshake::HostHandshake;
 use crate::envelope::*;
+use crate::host_handshake::{self, HostHandshake};
 use crate::segment::{Commit, RetentionClass};
 use crate::voyage::VoyageStore;
 use crate::{Error, Result};
@@ -93,24 +158,26 @@ const MAX_ROWS: u16 = 256;
 
 /// The output channel's byte budget (ADR 0041 budget table: "producer
 /// channel 8 MiB bounded"). Bounds OUTSTANDING bytes only — chunks the
-/// reader thread has read from ConPTY but the writer loop has not yet
-/// committed — never a second buffer of its own; see [`OutputBudget`].
+/// reader thread has reserved (in `READ_CHUNK`-sized units, before it ever
+/// calls `read()`) but the writer loop has not yet committed — never a
+/// second buffer of its own; see [`OutputBudget`].
 const OUTPUT_QUEUE_BUDGET_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Bounded wait for the containment job to reap every in-job process after
-/// `TerminateJobObject` (teardown step 2). Generous because it covers an
+/// `TerminateJobObject` (teardown Phase A). Generous because it covers an
 /// entire process TREE under load, not a single wait; a real failure to
 /// reap is a genuine bug or an unkillable hang, and either way deserves a
 /// loud, diagnosable error rather than an indefinite one.
 const TEARDOWN_REAP_TIMEOUT: Duration = Duration::from_secs(10);
 const TEARDOWN_REAP_POLL: Duration = Duration::from_millis(20);
 
-/// Bounded wait, during teardown, for the reader thread's own terminal
-/// sentinel (`Event::ReaderEof`) after `close_pty()` — pre-24H2's
-/// documented blocking close is exactly what this waits through (the
-/// reader is already draining concurrently, satisfying the documented call
-/// pattern); a timeout here means the close itself never returned, which
-/// is a real, diagnosable failure (see `Pseudoconsole::close_pty`'s doc).
+/// Bounded wait, during teardown Phase B, for the reader thread's own
+/// terminal event after the closer thread's `close_pty()` call is spawned.
+/// Starts the moment that thread is spawned — CONCURRENTLY with the
+/// (possibly blocking, pre-24H2) close, not after it returns, which is
+/// exactly what the previous version got wrong (review finding, the
+/// blocker) and why this bound can now actually do its job: a hang in
+/// `ClosePseudoConsole` itself no longer prevents this deadline from firing.
 const TEARDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const TEARDOWN_DRAIN_POLL: Duration = Duration::from_millis(200);
 
@@ -133,13 +200,21 @@ pub struct CapsuleWinConfig {
     pub rows: u16,
 }
 
-/// The driver-facing command surface this unit exposes. ADR 0041's attach
-/// lane's `resize` op and the mgmt lane's `shutdown` (which drives
-/// `EndRun`) are both step 5's job to WIRE onto a real named pipe — this is
+/// The caller-owned command surface `run` services. ADR 0041's attach
+/// lane's `resize`/`input` ops and the mgmt lane's `shutdown` (which drives
+/// `EndRun`) are all step 5's job to wire onto a real named pipe — this is
 /// the internal Rust channel step 5 forwards into, not the wire protocol
 /// itself, and this unit does not implement admission (who may call it).
-#[derive(Debug, Clone, Copy)]
-pub enum ControlCmd {
+/// `run` owns none of the sources that feed this channel — not stdin, not
+/// a pipe — a caller (the bin harness, later a real attach lane) does, and
+/// is responsible for keeping the `Sender` alive for as long as it wants
+/// commands serviced (review finding: a previous version read stdin
+/// itself, which made "teardown revokes admission" not really true).
+#[derive(Debug, Clone)]
+pub enum Command {
+    /// Raw producer input bytes to forward, redacted by default per the
+    /// raw-terminal profile (ADR 0037/0039).
+    Input(Vec<u8>),
     /// "resize {cols, rows} — driver-only" (ADR 0041 attach protocol);
     /// this unit only implements the ordered exchange once a command
     /// arrives.
@@ -160,15 +235,8 @@ pub enum ExitKind {
     /// The producer exited on its own; this run's own program ending is
     /// what closed it — never treated as a request.
     ProducerExited,
-    /// `ControlCmd::Kill` was received.
+    /// `Command::Kill` was received.
     Requested,
-    /// The producer's ConPTY output pipe reached EOF before this loop ever
-    /// called `close_pty()`. Believed unreachable in normal operation
-    /// (`conpty.rs`'s own contract: ConPTY keeps `hOutput` open regardless
-    /// of child lifetime until explicitly closed) — handled defensively
-    /// rather than assumed impossible, matching this codebase's own
-    /// observation-not-assumption stance elsewhere.
-    ReaderClosedUnexpectedly,
     /// `ConptySpawn::spawn` failed, or the initial geometry was outside
     /// the budget — nothing ever ran. `producer_dead {spawn_failed:true}`
     /// was still committed and the segment still sealed.
@@ -177,25 +245,53 @@ pub enum ExitKind {
 
 #[derive(Debug)]
 pub struct ExitSummary {
-    pub exit_code: Option<i32>,
+    pub exit_code: Option<u32>,
     pub exit_kind: ExitKind,
     pub frames_written: u64,
     pub segments_sealed: u64,
+    /// Whether the host-facing DA1 handshake was answered and recorded
+    /// (ADR 0041's model: conhost asks once, at startup) — `false` if it
+    /// never arrived at all in this run.
+    pub handshake_answered: bool,
+    /// How many DA1 matches arrived AFTER the first was already answered
+    /// (including extras within the very same chunk as the first) — a
+    /// hostile or broken producer's repeat queries, counted but never
+    /// re-answered and never re-recorded (the amplification fix).
+    pub handshake_suppressed_matches: u64,
+    /// How many times `ResizePseudoConsole` was actually invoked. An
+    /// out-of-budget resize command never reaches this call at all — the
+    /// seam a test needs to prove rejection is a real short-circuit, not
+    /// just a recorded disposition string.
+    pub resize_os_calls: u64,
+    /// The output budget's peak outstanding-bytes high-water mark over the
+    /// whole run — the seam a backpressure test needs to prove the bound
+    /// actually engaged. (Exact byte-count equality against what the
+    /// producer wrote is not a meaningful assertion: `hOutput` carries
+    /// conhost's own rendered VT stream, not raw stdout, and can legitimately
+    /// differ in length.)
+    pub output_high_water_bytes: u64,
+    /// How many times the reader thread actually blocked in
+    /// `OutputBudget::reserve` waiting for room. `0` means the budget
+    /// never bound anything even if `output_high_water_bytes` looks large.
+    pub output_reserve_blocks: u64,
 }
 
-/// One event the writer loop services. Mirrors `capsule.rs`'s `Event`
-/// (`Output`/`Input`/`ProducerEof`), extended with the driver command
-/// surface: `Control` bridges the public `control` parameter in, and
-/// `ReaderEof` is the reader thread's own terminal sentinel — needed for
-/// exactly the reason `capsule.rs`'s `ProducerEof` is: this channel ALSO
-/// carries input and control, so the channel's own aggregate disconnect
-/// can't be relied on to mean "the producer is gone"; an explicit last
-/// message can.
-enum Event {
+/// The reader thread's own event stream: producer output, or its ONE
+/// terminal event. `Done` carries a real `Result` rather than an
+/// undifferentiated EOF (review finding: the previous version collapsed
+/// every read error into the same signal a graceful close produces, so an
+/// unexpected pre-close failure could silently become a normal, sealed
+/// success). Kept SEPARATE from the caller's `Command` channel — see the
+/// module doc's stdin-ownership point — so during teardown this loop can
+/// keep servicing this channel while never touching that one again, which
+/// is what makes "teardown revokes admission" literally true rather than
+/// "teardown discards what it still received".
+enum ReaderEvent {
     Output(Vec<u8>),
-    Input(Vec<u8>),
-    Control(ControlCmd),
-    ReaderEof,
+    /// `Ok(())` is a graceful `read() == Ok(0)`; `Err(e)` is a real I/O
+    /// error. Sent EXACTLY once, always, as the last thing this thread
+    /// ever sends.
+    Done(std::result::Result<(), std::io::Error>),
 }
 
 /// 16 random bytes from the OS, as lowercase hex32 (the ADR idem_key
@@ -214,48 +310,98 @@ fn wall_ms() -> i64 {
         .unwrap_or(0)
 }
 
+struct BudgetState {
+    outstanding: u64,
+    closed: bool,
+    high_water: u64,
+    blocked_count: u64,
+}
+
 /// The bounded output budget (ADR 0041: "producer channel 8 MiB bounded —
 /// when full the writer loop stops POLLING output... control/liveness
 /// always serviced"). Implemented as a shared OUTSTANDING-byte counter
-/// rather than a second queue structure: `Event::Output` chunks still ride
-/// the one shared channel every other event does, but the READER THREAD
-/// blocks (via this condvar) before enqueueing more once the budget is
-/// exhausted — so Input/Control, sent by different threads, are never
-/// gated by it, and the writer loop never has two structures to poll. The
-/// reader thread stalling before its next `read()` is exactly how
-/// backpressure "lands in ConPTY": nothing drains `hOutput`, so ConPTY's
-/// own internal buffer is what fills next.
+/// rather than a second queue structure: `ReaderEvent::Output` chunks still
+/// ride the same channel the reader thread always used, but that thread
+/// blocks (via this condvar) BEFORE its next `read()` once the budget is
+/// exhausted — so `Command`, read by the writer loop from a completely
+/// separate channel, is never gated by it at all.
 struct OutputBudget {
-    outstanding: Mutex<u64>,
+    state: Mutex<BudgetState>,
     space_available: Condvar,
 }
 
 impl OutputBudget {
     fn new() -> Self {
         Self {
-            outstanding: Mutex::new(0),
+            state: Mutex::new(BudgetState { outstanding: 0, closed: false, high_water: 0, blocked_count: 0 }),
             space_available: Condvar::new(),
         }
     }
 
-    /// Reader-thread-only: blocks while the budget is exhausted, then
-    /// reserves `n` bytes against it.
-    fn reserve(&self, n: u64) {
-        let mut outstanding = self.outstanding.lock().unwrap();
-        while *outstanding >= OUTPUT_QUEUE_BUDGET_BYTES {
-            outstanding = self.space_available.wait(outstanding).unwrap();
+    /// Reader-thread-only: reserves `n` bytes BEFORE the read that will
+    /// produce them, blocking while `outstanding + n` would exceed the
+    /// budget — never after the read, and never against `outstanding`
+    /// alone (review finding: the previous version reserved AFTER
+    /// reading and checked only the current total, so one over-budget
+    /// chunk plus one already-in-flight chunk could both slip past the
+    /// nominal bound). Returns `false` if the budget was (or became, while
+    /// waiting) cancelled — the reader must stop immediately, WITHOUT
+    /// reserving, and never call `read()` again.
+    fn reserve(&self, n: u64) -> bool {
+        let mut g = self.state.lock().unwrap();
+        let mut waited = false;
+        loop {
+            if g.closed {
+                return false;
+            }
+            if g.outstanding + n <= OUTPUT_QUEUE_BUDGET_BYTES {
+                g.outstanding += n;
+                g.high_water = g.high_water.max(g.outstanding);
+                if waited {
+                    g.blocked_count += 1;
+                }
+                return true;
+            }
+            waited = true;
+            g = self.space_available.wait(g).unwrap();
         }
-        *outstanding += n;
     }
 
-    /// Writer-loop-only: releases `n` bytes once the frame that carried
-    /// them has been appended (accounted for — not necessarily fsynced;
-    /// this budget bounds OUTSTANDING work, not durability), waking any
-    /// reader thread blocked in `reserve`.
+    /// Writer-loop-only: releases exactly `n` bytes once they have been
+    /// accounted for (a frame appended, or reservation given back unused).
+    /// Checked, not saturating (review finding): a mismatch here is this
+    /// module's own bookkeeping bug and must panic loudly, never silently
+    /// absorb the discrepancy.
     fn release(&self, n: u64) {
-        let mut outstanding = self.outstanding.lock().unwrap();
-        *outstanding = outstanding.saturating_sub(n);
-        self.space_available.notify_one();
+        let mut g = self.state.lock().unwrap();
+        g.outstanding =
+            g.outstanding.checked_sub(n).expect("OutputBudget::release: released more than was reserved");
+        self.space_available.notify_all();
+    }
+
+    /// Cancels the budget — every future and currently-blocked `reserve`
+    /// call returns `false` immediately. Called from `BudgetCancelGuard`'s
+    /// `Drop` on every exit from `run` (review finding: a reader blocked in
+    /// `reserve` must never be able to outlive the writer loop that is the
+    /// only thing that would otherwise ever release it).
+    fn cancel(&self) {
+        let mut g = self.state.lock().unwrap();
+        g.closed = true;
+        self.space_available.notify_all();
+    }
+
+    fn snapshot(&self) -> (u64, u64) {
+        let g = self.state.lock().unwrap();
+        (g.high_water, g.blocked_count)
+    }
+}
+
+/// RAII: cancels the shared output budget on ANY exit from `run` — a
+/// normal return, an early `?`, or a panic unwind. See `OutputBudget::cancel`.
+struct BudgetCancelGuard(Arc<OutputBudget>);
+impl Drop for BudgetCancelGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
     }
 }
 
@@ -328,16 +474,17 @@ impl FrameCtx {
 }
 
 /// Run one producer under a Windows capsule. Blocks until the run ends —
-/// either the producer exits on its own, or `control` delivers
-/// [`ControlCmd::Kill`] (ADR 0041 Lifecycle: an externally requested end).
-/// `control` mirrors `claude.rs`'s `operator: mpsc::Receiver<OperatorCmd>`
+/// either the producer exits on its own, or `commands` delivers
+/// [`Command::Kill`] (ADR 0041 Lifecycle: an externally requested end).
+/// `commands` mirrors `claude.rs`'s `operator: mpsc::Receiver<OperatorCmd>`
 /// parameter — the raw command surface a future attach lane (step 5)
-/// forwards into.
+/// forwards into; the caller owns its `Sender` and everything that feeds
+/// it (stdin included — see the module doc).
 // unused_assignments: `flush_output!`'s state reset is dead only at its
 // FINAL expansion (after the loop) — load-bearing at every other site,
 // same allow capsule.rs carries for the identical reason.
 #[allow(unused_assignments)]
-pub fn run(config: CapsuleWinConfig, control: mpsc::Receiver<ControlCmd>) -> Result<ExitSummary> {
+pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Result<ExitSummary> {
     // Resolve ONCE — see capsule.rs's identical comment on the same call.
     let voyage_root = crate::fsutil::ensure_container(&config.voyage_root)?;
     if !voyage_root.exists() {
@@ -454,6 +601,11 @@ pub fn run(config: CapsuleWinConfig, control: mpsc::Receiver<ControlCmd>) -> Res
                 exit_kind: ExitKind::SpawnFailed,
                 frames_written,
                 segments_sealed,
+                handshake_answered: false,
+                handshake_suppressed_matches: 0,
+                resize_os_calls: 0,
+                output_high_water_bytes: 0,
+                output_reserve_blocks: 0,
             });
         }
     };
@@ -480,59 +632,59 @@ pub fn run(config: CapsuleWinConfig, control: mpsc::Receiver<ControlCmd>) -> Res
     // it. NO scrollback (the capsule keeps none by design).
     let mut parser = vt100_ctt::Parser::new(config.rows, config.cols, 0);
     let mut handshake = HostHandshake::new();
+    // ADR 0041's model is ONE host handshake, at startup — answer and
+    // record only the first match ever observed; count the rest (the
+    // amplification fix, review finding).
+    let mut dsr_answered = false;
+    let mut handshake_suppressed_matches: u64 = 0;
+    let mut resize_os_calls: u64 = 0;
 
-    // Reader thread + stdin thread + control-bridge thread, all funneling
-    // into one channel (mirrors capsule.rs's own reader+stdin-thread
-    // design, extended with the control bridge).
-    let (tx, rx) = mpsc::channel::<Event>();
+    // The output budget, and the guard that cancels it on ANY exit from
+    // this function from this point on — declared as early as the budget
+    // itself so an early `?` anywhere below unwinds through it.
     let output_budget = Arc::new(OutputBudget::new());
+    let _budget_guard = BudgetCancelGuard(Arc::clone(&output_budget));
+
+    // The reader thread is the ONLY sender on this channel — no bridging
+    // threads for input/control any more (see the module doc): `commands`
+    // is serviced directly, by this loop, from its own separate receiver.
+    let (tx, output_rx) = mpsc::channel::<ReaderEvent>();
     let reader_handle = {
-        let tx = tx.clone();
         let budget = Arc::clone(&output_budget);
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = [0u8; READ_CHUNK];
             loop {
+                if !budget.reserve(READ_CHUNK as u64) {
+                    // Cancelled: `run` is already exiting some other way.
+                    // Nothing left to report; just stop.
+                    return;
+                }
                 match reader.read(&mut buf) {
-                    // Believed unreachable before `close_pty()` runs (see
-                    // `ExitKind::ReaderClosedUnexpectedly`'s doc) — handled
-                    // as ordinary loop termination regardless, never a
-                    // panic, since "should never happen" is not "cannot".
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => {
+                        budget.release(READ_CHUNK as u64);
+                        let _ = tx.send(ReaderEvent::Done(Ok(())));
+                        return;
+                    }
+                    Err(e) => {
+                        budget.release(READ_CHUNK as u64);
+                        let _ = tx.send(ReaderEvent::Done(Err(e)));
+                        return;
+                    }
                     Ok(n) => {
-                        budget.reserve(n as u64);
-                        if tx.send(Event::Output(buf[..n].to_vec())).is_err() {
-                            break;
+                        let n = n as u64;
+                        if n < READ_CHUNK as u64 {
+                            budget.release(READ_CHUNK as u64 - n);
+                        }
+                        if tx.send(ReaderEvent::Output(buf[..n as usize].to_vec())).is_err() {
+                            budget.release(n);
+                            return;
                         }
                     }
                 }
             }
-            let _ = tx.send(Event::ReaderEof);
         })
     };
-    {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            let mut stdin = std::io::stdin();
-            let mut buf = [0u8; READ_CHUNK];
-            while let Ok(n) = stdin.read(&mut buf) {
-                if n == 0 || tx.send(Event::Input(buf[..n].to_vec())).is_err() {
-                    break;
-                }
-            }
-        });
-    }
-    {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            while let Ok(cmd) = control.recv() {
-                if tx.send(Event::Control(cmd)).is_err() {
-                    break;
-                }
-            }
-        });
-    }
-    drop(tx);
 
     let mut stdout = std::io::stdout();
     let mut pending_echo: Vec<u8> = Vec::new();
@@ -568,11 +720,11 @@ pub fn run(config: CapsuleWinConfig, control: mpsc::Receiver<ControlCmd>) -> Res
     }
 
     // One producer-output handler, used identically pre-teardown AND
-    // during the teardown drain — so "the handshake keeps answering
+    // during BOTH teardown phases — so "the handshake keeps answering
     // through the drain" (ADR 0041) can't be missed by one call site and
-    // not the other. Feeds the live parser, answers any DA1 query,
-    // records the raw producer frame, and tracks the group-commit/echo
-    // state.
+    // not the other. Feeds the live parser, answers the FIRST DA1 query
+    // ever seen (recording request -> response -> outcome), records the
+    // raw producer frame, and tracks the group-commit/echo state.
     macro_rules! handle_output {
         ($bytes:expr) => {{
             let bytes = $bytes;
@@ -590,56 +742,67 @@ pub fn run(config: CapsuleWinConfig, control: mpsc::Receiver<ControlCmd>) -> Res
                 flush_output!(w);
             }
 
-            // The host-facing handshake (see this module's doc for the
-            // recording judgment call): reply written to the pty's input
-            // regardless of admission state, request+response recorded as
-            // a control_exchange pair.
-            let reply = handshake.feed(&bytes);
-            if !reply.is_empty() {
-                let req = ctx.capsule_frame(
-                    Class::ControlExchange,
-                    json!({"phase": "request", "kind_ns": "conpty/host-handshake",
-                           "to": {"kind": "producer"}, "body": {"query": "da1"}}),
-                );
-                let req_seq = req.seq;
-                w.append(&req, Commit::Immediate)?;
-                frames_written += 1;
-                // Requested-then-performed, honestly: the response frame
-                // commits ONLY when the reply bytes actually reached the
-                // pty's input. A failed write — likely during the teardown
-                // drain, when the pty is closing under us — leaves the
-                // request standing alone, which the record reads correctly
-                // as "query observed, never answered". Committing the
-                // response on a discarded write result would be the exact
-                // requested-vs-performed drift the resize exchange exists
-                // to prevent.
-                if writer.write_all(&reply).is_ok() {
-                    let mut resp = ctx.capsule_frame(
+            let matches = handshake.feed(&bytes);
+            if matches > 0 {
+                if !dsr_answered {
+                    dsr_answered = true;
+                    // Query exchange, ADR 0041's own phrase and shape:
+                    // request -> response (only on a successful write) ->
+                    // outcome (always, reflecting whether it was).
+                    let req = ctx.capsule_frame(
                         Class::ControlExchange,
-                        json!({"phase": "response", "kind_ns": "conpty/host-handshake",
-                               "body": {"query": "da1", "reply": String::from_utf8_lossy(&reply).into_owned()}}),
+                        json!({"phase": "request", "kind_ns": "conpty/host-handshake",
+                               "to": {"kind": "producer"}, "body": {"query": "da1"}}),
                     );
-                    resp.refs = vec![FrameRef { kind: RefKind::RespondsTo, frame: req_seq }];
-                    w.append(&resp, Commit::Immediate)?;
+                    let req_seq = req.seq;
+                    w.append(&req, Commit::Immediate)?;
                     frames_written += 1;
+
+                    let write_result = writer.write_all(host_handshake::DA1_REPLY);
+                    if write_result.is_ok() {
+                        let mut resp = ctx.capsule_frame(
+                            Class::ControlExchange,
+                            json!({"phase": "response", "kind_ns": "conpty/host-handshake",
+                                   "body": {"query": "da1"}}),
+                        );
+                        resp.refs = vec![FrameRef { kind: RefKind::RespondsTo, frame: req_seq }];
+                        w.append(&resp, Commit::Immediate)?;
+                        frames_written += 1;
+                    }
+                    let outcome_body = match &write_result {
+                        Ok(()) => json!({"disposition": "ok"}),
+                        Err(e) => json!({"disposition": "failed", "reason": e.to_string()}),
+                    };
+                    let out = ctx.capsule_frame(
+                        Class::ControlExchange,
+                        json!({"phase": "outcome", "kind_ns": "conpty/host-handshake", "scope": "pty",
+                               "target": format!("{}:{}", req_seq.epoch, req_seq.n), "body": outcome_body}),
+                    );
+                    w.append(&out, Commit::Immediate)?;
+                    frames_written += 1;
+
+                    // Any FURTHER matches in this SAME chunk are already
+                    // "later" than the one just answered.
+                    handshake_suppressed_matches += (matches - 1) as u64;
+                } else {
+                    handshake_suppressed_matches += matches as u64;
                 }
             }
         }};
     }
 
     // Main loop: natural-exit polled every iteration (bounded to one
-    // GROUP_COMMIT_WINDOW of latency, regardless of event volume), then
-    // one event serviced per iteration.
+    // GROUP_COMMIT_WINDOW of latency, regardless of event volume); the
+    // caller's command channel is polled NON-BLOCKINGLY (rare traffic, and
+    // this is the last point it is EVER polled — teardown never touches it
+    // again, which is what makes admission revocation real).
     let exit_kind = 'main: loop {
         if process.wait(Duration::ZERO)? {
             break 'main ExitKind::ProducerExited;
         }
-        match rx.recv_timeout(GROUP_COMMIT_WINDOW) {
-            Ok(Event::Output(bytes)) => {
-                handle_output!(bytes);
-                maybe_rotate!(w);
-            }
-            Ok(Event::Input(bytes)) => {
+        match commands.try_recv() {
+            Ok(Command::Kill) => break 'main ExitKind::Requested,
+            Ok(Command::Input(bytes)) => {
                 // WAL order identical to capsule.rs: input -> intent ->
                 // syscall -> forwarded.
                 flush_output!(w);
@@ -671,7 +834,7 @@ pub fn run(config: CapsuleWinConfig, control: mpsc::Receiver<ControlCmd>) -> Res
                 frames_written += 3;
                 maybe_rotate!(w);
             }
-            Ok(Event::Control(ControlCmd::Resize { cols, rows })) => {
+            Ok(Command::Resize { cols, rows }) => {
                 // ADR 0041: "Resize rejects, never clamps" — an
                 // ordered-writer-loop command: request committed -> one
                 // ResizePseudoConsole call (skipped entirely if
@@ -695,6 +858,7 @@ pub fn run(config: CapsuleWinConfig, control: mpsc::Receiver<ControlCmd>) -> Res
                     json!({"disposition": "failed", "cols": cols, "rows": rows,
                            "reason": "outside the 2x2..512x256 budget"})
                 } else {
+                    resize_os_calls += 1;
                     match pty.resize(cols, rows) {
                         Ok(()) => {
                             // vt100_ctt's own argument order is (rows,
@@ -719,37 +883,70 @@ pub fn run(config: CapsuleWinConfig, control: mpsc::Receiver<ControlCmd>) -> Res
                 frames_written += 1;
                 maybe_rotate!(w);
             }
-            Ok(Event::Control(ControlCmd::Kill)) => break 'main ExitKind::Requested,
-            Ok(Event::ReaderEof) => break 'main ExitKind::ReaderClosedUnexpectedly,
+            Err(mpsc::TryRecvError::Empty) => {}
+            // The caller dropped its `Sender` — NOT a kill (ADR: no
+            // channel-disconnect-as-kill, "no exit code, no FE event, no
+            // supervisor inference may request one"). Just means no
+            // FUTURE commands will arrive; keep running on natural-exit
+            // polling alone. `try_recv` on an already-disconnected channel
+            // returns immediately, so there is no cost to leaving this
+            // arm empty rather than tracking "stop trying".
+            Err(mpsc::TryRecvError::Disconnected) => {}
+        }
+        match output_rx.recv_timeout(GROUP_COMMIT_WINDOW) {
+            Ok(ReaderEvent::Output(bytes)) => {
+                handle_output!(bytes);
+                maybe_rotate!(w);
+            }
+            Ok(ReaderEvent::Done(result)) => {
+                // Reached only if the reader's read loop ended BEFORE this
+                // loop ever called `close_pty()` — exactly the anomaly
+                // `conpty.rs`'s own contract says shouldn't happen (ConPTY
+                // keeps `hOutput` open regardless of child lifetime until
+                // explicitly closed), whether that end was a graceful EOF
+                // or a real error. Capsule-fatal either way (review
+                // finding): bail unsealed, matching ADR 0039's crash shape
+                // — recovery seals whatever valid prefix already committed.
+                return Err(Error::State(format!(
+                    "capsule_win: reader reached its terminal state before close_pty was ever called: {result:?}"
+                )));
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if last_commit.elapsed() >= GROUP_COMMIT_WINDOW {
                     flush_output!(w);
                 }
             }
-            // Only reachable if every sender is gone, which (since the
-            // stdin/control threads' sends never themselves fail while
-            // their own upstream is live) means the reader thread ended —
-            // the same anomaly `Event::ReaderEof` names explicitly. Folded
-            // into the same teardown rather than left to spin: recv_timeout
-            // returns Disconnected immediately, not after the timeout, so
-            // ignoring it here would busy-loop.
-            Err(mpsc::RecvTimeoutError::Disconnected) => break 'main ExitKind::ReaderClosedUnexpectedly,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // The reader thread always sends exactly one `Done` before
+                // its sender drops — reaching a bare disconnect without
+                // one is an internal bug in this module, not a producer
+                // condition. Loud, not a panic: nothing external caused
+                // this.
+                return Err(Error::State(
+                    "capsule_win: reader thread's channel disconnected without a terminal Done event"
+                        .into(),
+                ));
+            }
         }
     };
     flush_output!(w);
 
     // ONE teardown orchestrator (ADR 0041: "Teardown has ONE orchestrator")
-    // for every exit_kind above — natural exit and a requested kill both
-    // land here, and every step is unconditional: terminating an already-
-    // empty job, or closing an already-idle pty, is harmless.
+    // for both exit_kind::ProducerExited and exit_kind::Requested — every
+    // step below is unconditional: terminating an already-empty job is a
+    // harmless no-op. `commands` is never read again from this point on —
+    // real admission revocation (module doc), not receive-then-discard.
     //
-    // Step 1: terminate the job. Forces a still-running tree down for a
-    // requested kill; a harmless no-op if the producer already exited on
-    // its own (nothing left in the job to terminate).
+    // Phase A: terminate the job, then REAP-POLL `ActiveProcesses` WHILE
+    // STILL SERVICING `output_rx` (committing frames, answering the
+    // handshake) — review finding, the blocker: the previous version
+    // polled the job with nobody draining the channel, so a reader already
+    // blocked in `OutputBudget::reserve` (or a DA1 only this loop could
+    // answer) could leave `hOutput` undrained right when
+    // `ClosePseudoConsole` needed it drained, and Microsoft's own docs say
+    // a pre-24H2 build's close can wait indefinitely under exactly that
+    // condition.
     job.terminate()?;
-
-    // Step 2: bounded reap poll — "reaps the tree" (containment covers
-    // every in-job descendant, not just the primary).
     let reap_deadline = Instant::now() + TEARDOWN_REAP_TIMEOUT;
     loop {
         if job.active_processes()? == 0 {
@@ -760,72 +957,79 @@ pub fn run(config: CapsuleWinConfig, control: mpsc::Receiver<ControlCmd>) -> Res
                 "capsule_win: job did not reap within the teardown timeout".into(),
             ));
         }
-        std::thread::sleep(TEARDOWN_REAP_POLL);
-    }
-
-    // Step 3: close the pseudoconsole. May block pre-24H2 — the reader
-    // thread is ALREADY running and draining concurrently (spawned back
-    // at producer_spawn time and never stopped), which is exactly the
-    // documented call pattern this depends on.
-    pty.close_pty();
-
-    // Step 4: keep committing output (and answering the handshake) through
-    // the close, until the reader's own terminal sentinel arrives — this
-    // is where "producer_dead + seal happen only after reader EOF" (ADR
-    // 0041) is satisfied. Admission is revoked here (Input/Control are
-    // still received on the shared channel but simply dropped, never
-    // processed) — this unit has no epoch/admission model to make a
-    // richer refusal fact meaningful; that belongs to step 5's attach
-    // lane, layered above this channel.
-    // If the reader's EOF sentinel was ALREADY consumed (the
-    // ReaderClosedUnexpectedly path), waiting for a second one would wedge
-    // this loop until the timeout errors — a defensive branch that ends in
-    // a guaranteed stall defeats its purpose. Drain whatever is queued and
-    // let the first empty poll end the drain instead.
-    let reader_already_eof = matches!(exit_kind, ExitKind::ReaderClosedUnexpectedly);
-    let drain_deadline = Instant::now() + TEARDOWN_DRAIN_TIMEOUT;
-    loop {
-        match rx.recv_timeout(TEARDOWN_DRAIN_POLL) {
-            Ok(Event::Output(bytes)) => {
+        match output_rx.recv_timeout(TEARDOWN_REAP_POLL) {
+            Ok(ReaderEvent::Output(bytes)) => {
                 handle_output!(bytes);
                 maybe_rotate!(w);
             }
-            Ok(Event::Input(_)) | Ok(Event::Control(_)) => {} // admission revoked
-            Ok(Event::ReaderEof) => break,
+            Ok(ReaderEvent::Done(result)) => {
+                // Same anomaly as the main loop's identical check: nothing
+                // has called close_pty() yet, so this cannot be an
+                // ordinary end of the drain.
+                return Err(Error::State(format!(
+                    "capsule_win: reader reached its terminal state before close_pty was ever called: {result:?}"
+                )));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {} // just recheck active_processes
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(Error::State(
+                    "capsule_win: reader thread's channel disconnected without a terminal Done event during reap"
+                        .into(),
+                ));
+            }
+        }
+    }
+    flush_output!(w);
+
+    // Phase B: close the pseudoconsole on a DEDICATED thread so THIS loop
+    // can keep draining `output_rx` (feeding `handle_output!`, answering
+    // the handshake) CONCURRENTLY with the close — the documented call
+    // pattern ("reader already draining, THEN call this") applied
+    // literally: draining must never itself pause to make the call. Both a
+    // graceful EOF and a broken-pipe error are the ORDINARY, expected end
+    // of this drain (the close is what produces them) — unlike Phase A's
+    // identical-looking check, neither is an anomaly here.
+    let closer_handle = std::thread::spawn(move || pty.close_pty());
+    let drain_deadline = Instant::now() + TEARDOWN_DRAIN_TIMEOUT;
+    loop {
+        match output_rx.recv_timeout(TEARDOWN_DRAIN_POLL) {
+            Ok(ReaderEvent::Output(bytes)) => {
+                handle_output!(bytes);
+                maybe_rotate!(w);
+            }
+            Ok(ReaderEvent::Done(_)) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if reader_already_eof {
-                    break; // nothing further can arrive; queue drained
-                }
                 if Instant::now() >= drain_deadline {
                     return Err(Error::State(
                         "capsule_win: reader did not reach EOF within the teardown drain timeout".into(),
                     ));
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(Error::State(
+                    "capsule_win: reader thread's channel disconnected without a terminal Done event during drain"
+                        .into(),
+                ));
+            }
         }
     }
     flush_output!(w);
+    let _ = closer_handle.join();
     let _ = reader_handle.join();
 
-    // Step 5: the primary's own exit status. `wait()` first establishes
-    // the honesty-bound precondition `PrimaryProcess::exit_code`'s own doc
-    // requires (STILL_ACTIVE disambiguation) — ActiveProcesses==0 above
-    // already proved the process isn't running, but this satisfies the
-    // bound by the letter of its doc, not just by inference.
+    // Step 5: the primary's own exit status, raw and unsigned end-to-end
+    // (review finding: a Unix-style `i32` cast would turn a high-bit
+    // NTSTATUS-shaped code negative for no reason). `wait()` first
+    // establishes the honesty-bound precondition
+    // `exit_code_after_confirmed_exit`'s own doc requires — ActiveProcesses
+    // == 0 above already proved the process isn't running, but this
+    // satisfies the bound by the letter of its doc, not just by inference.
     if !process.wait(Duration::from_secs(5))? {
         return Err(Error::State(
             "capsule_win: process handle did not signal after the job reaped to zero".into(),
         ));
     }
-    let exit_code = match process.exit_code()? {
-        Some(c) => Some(c as i32),
-        None => {
-            return Err(Error::State(
-                "capsule_win: process reported STILL_ACTIVE after the job was fully reaped".into(),
-            ));
-        }
-    };
+    let exit_code = process.exit_code_after_confirmed_exit()?;
 
     let f = ctx.capsule_frame(
         Class::Lifecycle,
@@ -838,11 +1042,17 @@ pub fn run(config: CapsuleWinConfig, control: mpsc::Receiver<ControlCmd>) -> Res
     store.advance_chain(digest);
     segments_sealed += 1;
 
+    let (output_high_water_bytes, output_reserve_blocks) = output_budget.snapshot();
     Ok(ExitSummary {
-        exit_code,
+        exit_code: Some(exit_code),
         exit_kind,
         frames_written,
         segments_sealed,
+        handshake_answered: dsr_answered,
+        handshake_suppressed_matches,
+        resize_os_calls,
+        output_high_water_bytes,
+        output_reserve_blocks,
     })
 }
 
