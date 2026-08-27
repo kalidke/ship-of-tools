@@ -113,6 +113,11 @@ jobs:
   conpty-windows-2022:
     name: conpty owned-ConPTY tests (windows-2022)
     runs-on: windows-2022
+    # A close-ordering bug here is exactly a HANG (pre-24H2's
+    # ClosePseudoConsole blocking forever with nothing draining hOutput) —
+    # bounded so that failure mode fails the job in minutes, not by waiting
+    # out the platform-wide default.
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: rust
@@ -124,10 +129,11 @@ jobs:
           workspaces: rust
       # --test conpty: the one test BINARY (tests/conpty.rs), not a name
       # substring filter — nothing else in the workspace needs this image.
-      # --nocapture: test 4's DA1-presence finding and test 5's jobbed-probe
-      # are deliberately only logged (see conpty.rs), never asserted; captured
-      # output would hide them from CI, the same reasoning the fault sweeps
-      # above already establish for this workspace.
+      # --nocapture: test 4's DA1-presence finding and the jobbed-probe
+      # logged in test 1 are deliberately only logged (see conpty.rs), never
+      # asserted; captured output would hide them from CI, the same
+      # reasoning the fault sweeps above already establish for this
+      # workspace.
       - name: Test conpty (owned ConPTY + job containment)
         run: cargo test -p sot-log --test conpty -- --nocapture
 

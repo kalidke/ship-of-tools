@@ -26,7 +26,9 @@ use std::ffi::c_void;
 use std::fs::File;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 
-use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HANDLE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, BOOL, HANDLE, STILL_ACTIVE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
 use windows_sys::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
 };
@@ -38,26 +40,31 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, STARTF_USESTDHANDLES, DeleteProcThreadAttributeList, GetCurrentProcess, InitializeProcThreadAttributeList,
+    CreateProcessW, GetExitCodeProcess, WaitForSingleObject, STARTF_USESTDHANDLES,
+    DeleteProcThreadAttributeList, GetCurrentProcess, InitializeProcThreadAttributeList,
     UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
     PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTUPINFOEXW,
 };
 
-/// One spawn stage that failed, with the raw Win32/HRESULT error underneath
-/// — folded into [`Error::Spawn`] so a caller can commit `producer_dead
-/// {spawn_failed}` with a real diagnostic (which call, what error) instead
-/// of a bare string. `stage` names match the actual API being called
-/// (`"CreatePipe(in)"`, `"CreateProcessW"`, ...).
+/// One ConPTY/job operation that failed — a spawn STAGE (`"CreatePipe(in)"`,
+/// `"CreateProcessW"`, ...) or a later RUNTIME call (`"TerminateJobObject"`,
+/// `"ResizePseudoConsole"`, ...) — with the raw Win32/HRESULT error
+/// underneath. Folded into [`Error::Conpty`] so a caller can commit
+/// `producer_dead {spawn_failed}` for a creation-time failure, or read a
+/// resize/teardown failure as exactly that, with a real diagnostic (which
+/// call, what error) instead of a bare string. One struct covers both
+/// phases deliberately: the operation NAME already says which phase it's
+/// from, so a phase-tagging enum would only duplicate that.
 #[derive(Debug, thiserror::Error)]
-#[error("stage {stage}: {source}")]
-pub struct SpawnError {
-    pub stage: &'static str,
+#[error("{op}: {source}")]
+pub struct ConptyError {
+    pub op: &'static str,
     #[source]
     pub source: std::io::Error,
 }
 
-fn spawn_err(stage: &'static str, source: std::io::Error) -> Error {
-    Error::Spawn(SpawnError { stage, source })
+fn conpty_err(op: &'static str, source: std::io::Error) -> Error {
+    Error::Conpty(ConptyError { op, source })
 }
 
 /// `CreatePseudoConsole`/`ResizePseudoConsole` report failure as
@@ -84,15 +91,24 @@ fn wide_null(s: &str) -> Vec<u16> {
     std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
-/// Windows has no execv: `CreateProcessW` takes ONE command-line string,
-/// and the child's C runtime re-splits it with the standard MSVCRT rule
-/// (well-documented: an even run of backslashes before a `"` is halved and
-/// the quote is a delimiter; an odd run is halved-and-one-more, and that
-/// remaining backslash escapes the quote into a literal). This function is
-/// the inverse: verbatim if the argument needs no protection (non-empty,
-/// no space/tab/quote); otherwise wrapped in `"..."` with backslashes
-/// doubled immediately before a literal quote or the closing quote, so the
-/// receiving parser reconstructs exactly the original bytes.
+/// Windows has no execv: `CreateProcessW` takes ONE command-line string, and
+/// it is up to whatever the child links against to re-split it. This
+/// function targets the standard MSVCRT rule specifically (well-documented:
+/// an even run of backslashes before a `"` is halved and the quote is a
+/// delimiter; an odd run is halved-and-one-more, and that remaining
+/// backslash escapes the quote into a literal) — it is the inverse of THAT
+/// rule: verbatim if the argument needs no protection (non-empty, no
+/// space/tab/quote); otherwise wrapped in `"..."` with backslashes doubled
+/// immediately before a literal quote or the closing quote, so an
+/// MSVCRT-rule parser reconstructs exactly the original bytes.
+///
+/// SCOPE: this is not a universal Windows quoting law — it is the rule
+/// MSVCRT-linked programs (and most native Win32 executables) use to
+/// recover `argv`. `cmd.exe` layers its OWN parser (`%`-expansion, `&|<>^`
+/// as metacharacters, its own quote handling) on top of whatever
+/// `CreateProcessW` line it receives; a caller invoking `cmd.exe /c` with
+/// an argument this function would need to quote is passing it through TWO
+/// parsers, and this function only speaks for the first one.
 fn quote_arg(arg: &str, out: &mut String) {
     let needs_quotes = arg.is_empty() || arg.contains([' ', '\t', '"']);
     if !needs_quotes {
@@ -205,6 +221,7 @@ pub struct SpawnDetail {
 /// "Reaps the tree" is scoped to in-job descendants — broker-mediated
 /// spawning (WMI, COM activation, schtasks, services) is outside the
 /// domain, the exact analog of the Linux external-supervisor carve-out.
+#[derive(Debug)]
 pub struct AnonymousJob(OwnedHandle);
 
 impl AnonymousJob {
@@ -213,7 +230,7 @@ impl AnonymousJob {
         // by construction (same default as `CreatePipe`'s NULL arm).
         let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if handle.is_null() {
-            return Err(spawn_err("CreateJobObjectW", std::io::Error::last_os_error()));
+            return Err(conpty_err("CreateJobObjectW", std::io::Error::last_os_error()));
         }
         let owned = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
 
@@ -232,7 +249,7 @@ impl AnonymousJob {
             )
         };
         if ok == 0 {
-            return Err(spawn_err("SetInformationJobObject", std::io::Error::last_os_error()));
+            return Err(conpty_err("SetInformationJobObject", std::io::Error::last_os_error()));
         }
         Ok(Self(owned))
     }
@@ -241,19 +258,13 @@ impl AnonymousJob {
         self.0.as_raw_handle() as HANDLE
     }
 
-    /// TEMPORARY diagnostic accessor (attribute-application mystery on the
-    /// first real Windows runs) — removed with the diag test that uses it.
-    pub fn raw_for_tests(&self) -> HANDLE {
-        self.raw()
-    }
-
     /// `TerminateJobObject`: the writer loop's termination sequence calls
     /// this BEFORE polling `active_processes` down to zero and only then
     /// closing the pseudoconsole (ADR 0041's pinned order) — this method is
     /// the raw call only, sequencing is the caller's.
     pub fn terminate(&self) -> Result<()> {
         if unsafe { TerminateJobObject(self.raw(), 1) } == 0 {
-            return Err(spawn_err("TerminateJobObject", std::io::Error::last_os_error()));
+            return Err(conpty_err("TerminateJobObject", std::io::Error::last_os_error()));
         }
         Ok(())
     }
@@ -274,9 +285,73 @@ impl AnonymousJob {
             )
         };
         if ok == 0 {
-            return Err(spawn_err("QueryInformationJobObject", std::io::Error::last_os_error()));
+            return Err(conpty_err("QueryInformationJobObject", std::io::Error::last_os_error()));
         }
         Ok(info.ActiveProcesses)
+    }
+}
+
+/// The owned handle to the process `CreateProcessW` created (`pi.hProcess`).
+/// Kept — NOT closed immediately like `pi.hThread` — because ADR 0041
+/// requires a natural producer exit to be recorded WITH its exit status,
+/// and `AnonymousJob::active_processes` cannot recover one: `ActiveProcesses`
+/// only ever answers "how many", never "which code did the root process
+/// exit with". Re-opening a process by PID later, once this handle is
+/// closed, is also unsound on its own — Windows reuses PIDs once the
+/// process object is fully released, so "open it later" can silently name
+/// a DIFFERENT process. A held handle keeps the object (and its exit
+/// status) alive and addressable regardless of PID reuse elsewhere.
+/// (Review finding: an earlier version of this module closed both
+/// `pi.hThread` and `pi.hProcess` immediately, since neither `terminate`
+/// nor `active_processes` needs a process handle — true, but exit-STATUS
+/// recording does.)
+#[derive(Debug)]
+pub struct PrimaryProcess(OwnedHandle);
+
+impl PrimaryProcess {
+    fn raw(&self) -> HANDLE {
+        self.0.as_raw_handle() as HANDLE
+    }
+
+    /// `WaitForSingleObject`, bounded by `timeout` (never `INFINITE` — an
+    /// unresponsive child must not be able to hang whoever calls this).
+    /// `Ok(true)`: the process signaled (exited) within `timeout`.
+    /// `Ok(false)`: the timeout elapsed; still running.
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<bool> {
+        let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+        match unsafe { WaitForSingleObject(self.raw(), ms) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            WAIT_FAILED => Err(conpty_err("WaitForSingleObject", std::io::Error::last_os_error())),
+            other => Err(conpty_err(
+                "WaitForSingleObject",
+                std::io::Error::other(format!("unexpected wait result {other:#x}")),
+            )),
+        }
+    }
+
+    /// `GetExitCodeProcess`. `None` means `STILL_ACTIVE` (259) was
+    /// returned, i.e. the process has not exited YET as far as this call
+    /// can tell.
+    ///
+    /// HONESTY BOUND, documented by Microsoft: `STILL_ACTIVE` (259) is also
+    /// a value a process can legitimately exit WITH — `GetExitCodeProcess`
+    /// alone cannot distinguish "still running" from "exited with code
+    /// 259". The caller that has already observed `wait()` return `true`
+    /// (or `AnonymousJob::active_processes() == 0`) has independently
+    /// established that the process is not running, so THIS method's
+    /// `None` cannot be reached in that caller's own sequence — calling it
+    /// beforehand, unconditionally, would not carry the same guarantee.
+    pub fn exit_code(&self) -> Result<Option<u32>> {
+        let mut code: u32 = 0;
+        if unsafe { GetExitCodeProcess(self.raw(), &mut code) } == 0 {
+            return Err(conpty_err("GetExitCodeProcess", std::io::Error::last_os_error()));
+        }
+        if code == STILL_ACTIVE as u32 {
+            Ok(None)
+        } else {
+            Ok(Some(code))
+        }
     }
 }
 
@@ -287,6 +362,8 @@ impl AnonymousJob {
 /// obligates the caller to answer an asynchronous cursor-position query on
 /// `hInput`/`hOutput`, which a plain owned-primitives layer has no writer
 /// loop to do yet.
+#[derive(Debug)]
+#[must_use]
 pub struct Pseudoconsole(Option<HPCON>);
 
 impl Pseudoconsole {
@@ -295,7 +372,7 @@ impl Pseudoconsole {
         let mut hpc: HPCON = 0;
         let hr = unsafe { CreatePseudoConsole(size, pty_in_read, pty_out_write, 0, &mut hpc) };
         if hr < 0 {
-            return Err(spawn_err("CreatePseudoConsole", hresult_to_io_error(hr)));
+            return Err(conpty_err("CreatePseudoConsole", hresult_to_io_error(hr)));
         }
         Ok(Self(Some(hpc)))
     }
@@ -310,7 +387,7 @@ impl Pseudoconsole {
         let size = COORD { X: cols as i16, Y: rows as i16 };
         let hr = unsafe { ResizePseudoConsole(self.raw(), size) };
         if hr < 0 {
-            return Err(spawn_err("ResizePseudoConsole", hresult_to_io_error(hr)));
+            return Err(conpty_err("ResizePseudoConsole", hresult_to_io_error(hr)));
         }
         Ok(())
     }
@@ -392,7 +469,7 @@ impl AttributeList {
         let mut buf: Vec<u64> = vec![0u64; words];
         let list_ptr = buf.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
         if unsafe { InitializeProcThreadAttributeList(list_ptr, ATTRIBUTE_COUNT, 0, &mut size) } == 0 {
-            return Err(spawn_err(
+            return Err(conpty_err(
                 "InitializeProcThreadAttributeList",
                 std::io::Error::last_os_error(),
             ));
@@ -411,14 +488,13 @@ impl AttributeList {
         // the handle IS the pointer-sized payload); JOB_LIST passes a
         // *pointer to* a handle array. Passing `&hpc` here made Windows
         // treat a stack address as a console handle: ERROR_INVALID_HANDLE
-        // from CreateProcessW, instantly, on every image.
-        // ORDER UNDER TEST (A/B diagnostic, round 3 on real Windows): job
-        // list FIRST, pseudoconsole SECOND. Round 2 showed the documented
-        // shapes with pseudoconsole-first produced a spawn where the JOB
-        // applied and the PSEUDOCONSOLE silently did not (child output on
-        // the parent console) — a two-attribute composition no sample or
-        // known codebase exercises. This swap tests the order axis; the
-        // no-job diagnostic spawn below tests the composition axis.
+        // from CreateProcessW, instantly, on every image. Order between the
+        // two `UpdateProcThreadAttribute` calls was tested on real Windows
+        // and is PROVEN irrelevant (neither Microsoft's docs nor the
+        // observed behavior make either attribute depend on the other's
+        // prior registration) — job list stays first here only because it
+        // matches the ADR's own stage narrative (job before pseudoconsole),
+        // not because order matters.
         let job_list_ok = unsafe {
             UpdateProcThreadAttribute(
                 list_ptr,
@@ -440,7 +516,7 @@ impl AttributeList {
             // manual call here would DOUBLE-delete (Microsoft: exactly one
             // delete per initialized list), and would also violate this
             // module's own rule that error branches never clean up.
-            return Err(spawn_err(
+            return Err(conpty_err(
                 "UpdateProcThreadAttribute(job_list)",
                 std::io::Error::last_os_error(),
             ));
@@ -459,7 +535,7 @@ impl AttributeList {
         };
         if pseudoconsole_ok == 0 {
             // Same as above: `me`'s Drop owns the one delete.
-            return Err(spawn_err(
+            return Err(conpty_err(
                 "UpdateProcThreadAttribute(pseudoconsole)",
                 std::io::Error::last_os_error(),
             ));
@@ -480,18 +556,29 @@ impl Drop for AttributeList {
     }
 }
 
-/// The result of one owned spawn: the containment job, the pseudoconsole,
-/// the pipe ends this process communicates through, and non-authoritative
-/// diagnostics. Deliberately no `Drop` impl of its own — that would be
-/// ORCHESTRATION (deciding a teardown SEQUENCE), which is explicitly the
-/// next unit's writer loop's job, not this primitives layer's. Dropping a
-/// `ConptySpawn` without calling `job.terminate()` / `pty.close_pty()`
-/// explicitly still safely releases every OS resource (each field's own
-/// Drop — `OwnedHandle`'s `CloseHandle`, `Pseudoconsole`'s throwaway-thread
-/// fallback — sees to that) but NOT in the ADR's pinned order; production
-/// teardown must call the primitives explicitly.
+/// The result of one owned spawn: the containment job, the primary process
+/// handle, the pseudoconsole, the pipe ends this process communicates
+/// through, and non-authoritative diagnostics. Deliberately no `Drop` impl
+/// of its own — that would be ORCHESTRATION (deciding a teardown SEQUENCE),
+/// which is explicitly the next unit's writer loop's job, not this
+/// primitives layer's.
+///
+/// HONESTY BOUND (review finding: an earlier version of this doc overclaimed
+/// here): dropping a `ConptySpawn` without calling `job.terminate()` /
+/// `pty.close_pty()` explicitly is BEST-EFFORT, not a safety guarantee.
+/// `OwnedHandle`'s `CloseHandle` (for `job` and `process`) is unconditional
+/// and fine. `Pseudoconsole`'s Drop is NOT unconditionally fine: on
+/// pre-24H2 Windows, `ClosePseudoConsole` can block forever with nothing
+/// draining `hOutput`, so its fallback detaches the close onto its own
+/// thread rather than block the dropping thread — but that thread, and the
+/// OS resources behind it, can then be retained forever if the close truly
+/// never returns. `#[must_use]` below is the nudge: production code must
+/// run the ADR's explicit pinned sequence, not rely on an implicit drop.
+#[derive(Debug)]
+#[must_use]
 pub struct ConptySpawn {
     pub job: AnonymousJob,
+    pub process: PrimaryProcess,
     pub pty: Pseudoconsole,
     /// Read the child's output (the pty's `hOutput`, our end of that pipe).
     pub reader: File,
@@ -502,101 +589,6 @@ pub struct ConptySpawn {
 }
 
 impl ConptySpawn {
-    /// TEMPORARY diagnostic (composition axis of the attach mystery): the
-    /// same spawn WITHOUT the job — pseudoconsole attribute only, count 1 —
-    /// which is exactly the shape Microsoft's sample and every known
-    /// codebase run successfully. If output arrives through THIS spawn but
-    /// not the two-attribute one, the composition is the bug and the design
-    /// falls back to CREATE_SUSPENDED + AssignProcessToJobObject +
-    /// ResumeThread (atomicity preserved: the initial thread has not run
-    /// while suspended). Removed with the diagnostic tests once the
-    /// mechanism is named.
-    pub fn spawn_diag_no_job(argv: &[String], cols: u16, rows: u16) -> Result<(Pseudoconsole, File, File, u32)> {
-        if argv.is_empty() {
-            return Err(Error::State("conpty spawn: empty argv".into()));
-        }
-        let (pty_in_read, writer) = create_pipe_pair().map_err(|e| spawn_err("CreatePipe(in)", e))?;
-        let (reader, pty_out_write) = create_pipe_pair().map_err(|e| spawn_err("CreatePipe(out)", e))?;
-        let pty = Pseudoconsole::create(
-            cols,
-            rows,
-            pty_in_read.as_raw_handle() as HANDLE,
-            pty_out_write.as_raw_handle() as HANDLE,
-        )?;
-
-        const ONE: u32 = 1;
-        let mut size: usize = 0;
-        unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), ONE, 0, &mut size) };
-        let mut buf: Vec<u64> = vec![0u64; size.div_ceil(8)];
-        let list_ptr = buf.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
-        if unsafe { InitializeProcThreadAttributeList(list_ptr, ONE, 0, &mut size) } == 0 {
-            return Err(spawn_err("InitializeProcThreadAttributeList", std::io::Error::last_os_error()));
-        }
-        struct ListGuard(*mut c_void);
-        impl Drop for ListGuard {
-            fn drop(&mut self) {
-                unsafe { DeleteProcThreadAttributeList(self.0 as LPPROC_THREAD_ATTRIBUTE_LIST) };
-            }
-        }
-        let _guard = ListGuard(list_ptr as *mut c_void);
-        if unsafe {
-            UpdateProcThreadAttribute(
-                list_ptr,
-                0,
-                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
-                pty.raw() as *const c_void,
-                std::mem::size_of::<HPCON>(),
-                std::ptr::null_mut(),
-                std::ptr::null(),
-            )
-        } == 0
-        {
-            return Err(spawn_err("UpdateProcThreadAttribute(pseudoconsole)", std::io::Error::last_os_error()));
-        }
-
-        let cmdline = build_command_line(argv);
-        let mut cmdline_wide = wide_null(&cmdline);
-        let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
-        startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-        // STARTF_USESTDHANDLES with all three std handles NULL — the
-        // opposite of a leak, it BLOCKS one. Without this flag, Windows
-        // std-handle CLONING duplicates the PARENT'S std handles into a
-        // console child even with bInheritHandles=FALSE; when the parent's
-        // stdout is a pipe (a test harness, CI, any redirected context),
-        // the child then writes to THAT pipe while its console — the
-        // pseudoconsole — renders nothing. Diagnosed live: the child's
-        // TITLE reached our pty (it attached) while its OUTPUT landed in
-        // the CI step log (its stdout was the runner's pipe). Explicit
-        // null std handles make the child's runtime bind stdio to its own
-        // console, which is the pty. Windows Terminal's own ConPTY spawn
-        // does exactly this, for exactly this reason.
-        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        startup.lpAttributeList = list_ptr;
-        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-        let ok = unsafe {
-            CreateProcessW(
-                std::ptr::null(),
-                cmdline_wide.as_mut_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                0,
-                EXTENDED_STARTUPINFO_PRESENT,
-                std::ptr::null(),
-                std::ptr::null(),
-                &startup.StartupInfo,
-                &mut pi,
-            )
-        };
-        if ok == 0 {
-            return Err(spawn_err("CreateProcessW", std::io::Error::last_os_error()));
-        }
-        drop(pty_in_read);
-        drop(pty_out_write);
-        unsafe { CloseHandle(pi.hThread) };
-        unsafe { CloseHandle(pi.hProcess) };
-        Ok((pty, reader, writer, pi.dwProcessId))
-    }
-
     /// Spawn `argv[0]` with `argv[1..]` as arguments inside an owned
     /// pseudoconsole of `cols` x `rows`, contained by a fresh anonymous job.
     ///
@@ -611,10 +603,19 @@ impl ConptySpawn {
         if argv.is_empty() {
             return Err(Error::State("conpty spawn: empty argv".into()));
         }
+        // A UTF-16 NUL-terminated string has no way to represent an
+        // embedded NUL — `wide_null` would silently truncate the command
+        // line at the first one, changing what actually runs with no error
+        // at all. Reject it here, loud, before any resource is acquired.
+        if let Some(arg) = argv.iter().find(|a| a.contains('\0')) {
+            return Err(Error::State(format!(
+                "conpty spawn: argument contains an embedded NUL: {arg:?}"
+            )));
+        }
         let spawning_process_was_jobbed = is_current_process_in_a_job();
 
-        let (pty_in_read, writer) = create_pipe_pair().map_err(|e| spawn_err("CreatePipe(in)", e))?;
-        let (reader, pty_out_write) = create_pipe_pair().map_err(|e| spawn_err("CreatePipe(out)", e))?;
+        let (pty_in_read, writer) = create_pipe_pair().map_err(|e| conpty_err("CreatePipe(in)", e))?;
+        let (reader, pty_out_write) = create_pipe_pair().map_err(|e| conpty_err("CreatePipe(out)", e))?;
 
         let pty = Pseudoconsole::create(
             cols,
@@ -665,7 +666,7 @@ impl ConptySpawn {
             )
         };
         if ok == 0 {
-            return Err(spawn_err("CreateProcessW", std::io::Error::last_os_error()));
+            return Err(conpty_err("CreateProcessW", std::io::Error::last_os_error()));
         }
 
         // Success: free the attribute list now (its job is done) and close
@@ -679,15 +680,15 @@ impl ConptySpawn {
         drop(pty_in_read);
         drop(pty_out_write);
         unsafe { CloseHandle(pi.hThread) };
-        // No `hProcess` field is kept: every primitive this layer exposes
-        // (terminate, active_processes) goes through the JOB, not a
-        // process handle, so holding one open here would be a resource
-        // this module never uses — a caller that needs one can `OpenProcess`
-        // by `pid` itself.
-        unsafe { CloseHandle(pi.hProcess) };
+        // `pi.hProcess` is KEPT (see `PrimaryProcess`'s doc): `ActiveProcesses`
+        // can observe the tree is gone, but only a held process handle can
+        // recover the root process's own exit STATUS, which ADR 0041
+        // requires recording alongside a natural producer exit.
+        let process = PrimaryProcess(unsafe { OwnedHandle::from_raw_handle(pi.hProcess as RawHandle) });
 
         Ok(Self {
             job,
+            process,
             pty,
             reader,
             writer,

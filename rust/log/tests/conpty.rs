@@ -72,16 +72,26 @@ fn extract_pids(text: &str) -> Vec<u32> {
     pids
 }
 
-/// Test 1: E2E spawn. `cmd.exe /c echo <marker>` runs to completion under
-/// the owned pseudoconsole; the marker must appear in what comes out
+/// Test 1: E2E spawn. `cmd.exe /d /c echo <marker>` runs to completion
+/// under the owned pseudoconsole (`/d`: skip any machine/user AutoRun
+/// registry hook — a runner with one configured would otherwise corrupt
+/// every capture in this file); the marker must appear in what comes out
 /// `reader`, and the job's `ActiveProcesses` must reach 0 once the shell
 /// exits — proving both the data path and the containment accounting work
-/// end to end.
+/// end to end. Also carries the `IsProcessInJob` probe on THIS test process
+/// (formerly its own spawn — folded in here, one fewer spawn): informational
+/// only, never asserted on, since hosted CI runners have historically been
+/// jobbed themselves by the runner's own supervision, a fact about the
+/// environment, not a defect.
 #[test]
 fn e2e_spawn_echoes_marker_and_job_reaches_zero_active() {
     let marker = "SOT_CONPTY_MARKER_9f3a";
-    let argv = vec!["cmd.exe".to_string(), "/c".to_string(), format!("echo {marker}")];
+    let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), format!("echo {marker}")];
     let spawn = ConptySpawn::spawn(&argv, 80, 25).unwrap();
+    eprintln!(
+        "conpty probe: this test process is jobbed = {:?}",
+        spawn.detail.spawning_process_was_jobbed
+    );
     let (rx, reader_thread) = spawn_reader_thread(spawn.reader);
 
     // Wait for the CONTENT while the session is live — never close first
@@ -133,7 +143,7 @@ fn e2e_spawn_echoes_marker_and_job_reaches_zero_active() {
 /// within the bound.
 #[test]
 fn containment_kills_child_and_grandchild() {
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0};
     use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
     use windows_sys::Win32::System::Threading::{
         OpenProcess, WaitForMultipleObjects, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -180,10 +190,19 @@ fn containment_kills_child_and_grandchild() {
 
     let wait_ms = 10_000u32;
     let result = unsafe { WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 1, wait_ms) };
-    assert_eq!(
-        result, WAIT_OBJECT_0,
-        "expected BOTH process handles to signal (die) within {wait_ms}ms; result={result}"
-    );
+    // Microsoft's documented contract for bWaitAll=TRUE: success is the
+    // RANGE WAIT_OBJECT_0..WAIT_OBJECT_0+nCount, not only the exact value
+    // WAIT_OBJECT_0 — asserting equality alone is stricter than the API
+    // actually promises.
+    let n = handles.len() as u32;
+    match result {
+        WAIT_FAILED => panic!(
+            "WaitForMultipleObjects failed: {}",
+            std::io::Error::last_os_error()
+        ),
+        r if (WAIT_OBJECT_0..WAIT_OBJECT_0 + n).contains(&r) => {}
+        r => panic!("expected BOTH process handles to signal (die) within {wait_ms}ms; result={r}"),
+    }
     for h in handles {
         unsafe { CloseHandle(h) };
     }
@@ -202,8 +221,8 @@ fn unwind_repeated_failed_spawns_then_one_real_spawn_succeeds() {
     let bogus = vec![r"Z:\this\path\definitely\does\not\exist.exe".to_string()];
     for i in 0..50 {
         match ConptySpawn::spawn(&bogus, 80, 25) {
-            Err(Error::Spawn(e)) => {
-                assert_eq!(e.stage, "CreateProcessW", "attempt {i}: {e}");
+            Err(Error::Conpty(e)) => {
+                assert_eq!(e.op, "CreateProcessW", "attempt {i}: {e}");
                 // The CLASS matters, not just the stage: the first real
                 // Windows run failed here with ERROR_INVALID_HANDLE (a
                 // broken attribute list) and this assert's stage-only
@@ -216,12 +235,12 @@ fn unwind_repeated_failed_spawns_then_one_real_spawn_succeeds() {
                     "attempt {i}: expected FILE/PATH_NOT_FOUND, got {e}"
                 );
             }
-            Err(other) => panic!("attempt {i}: expected Error::Spawn, got {other:?}"),
+            Err(other) => panic!("attempt {i}: expected Error::Conpty, got {other:?}"),
             Ok(_) => panic!("attempt {i}: nonexistent executable unexpectedly spawned"),
         }
     }
 
-    let argv = vec!["cmd.exe".to_string(), "/c".to_string(), "exit 0".to_string()];
+    let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
     let spawn = ConptySpawn::spawn(&argv, 80, 25).unwrap();
     let (_rx, reader_thread) = spawn_reader_thread(spawn.reader);
     wait_for_zero_active(&spawn.job, Duration::from_secs(10));
@@ -239,16 +258,28 @@ fn unwind_repeated_failed_spawns_then_one_real_spawn_succeeds() {
 #[test]
 fn contract_first_output_bytes_and_da1_presence() {
     let marker = "SOT_CONPTY_CONTRACT_7e21";
-    let argv = vec!["cmd.exe".to_string(), "/c".to_string(), format!("echo {marker}")];
+    let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), format!("echo {marker}")];
     let spawn = ConptySpawn::spawn(&argv, 80, 25).unwrap();
     let (rx, reader_thread) = spawn_reader_thread(spawn.reader);
 
+    // Read until the MARKER itself, bounded by a deadline — not a fixed
+    // collection window. A fixed window can under-collect on a loaded
+    // runner and log a false-negative DA1 finding even though the marker
+    // assertion at the end would still have passed; reading until the
+    // marker arrives means the accumulated prefix inspected below is
+    // whatever actually preceded it, not an arbitrary time slice.
     let mut all = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !String::from_utf8_lossy(&all).contains(marker) {
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(chunk) => all.extend(chunk),
-            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "marker never arrived; captured so far: {:?}",
+                    String::from_utf8_lossy(&all)
+                );
+            }
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
@@ -276,103 +307,54 @@ fn contract_first_output_bytes_and_da1_presence() {
     assert!(text.contains(marker), "expected marker in output, got: {text:?}");
 }
 
-/// Diagnostic (temporary, for the attribute-application mystery): the raw
-/// CI log proved child output lands on the TEST HOST's console, not our
-/// pseudoconsole — so the PSEUDOCONSOLE attribute is not applying. This
-/// splits the remaining hypothesis space: is the child in OUR JOB (job-list
-/// attribute applied, pseudoconsole alone ignored), or in no job of ours
-/// (the whole attribute list ignored)? Logs, then kills via the job — if
-/// the job never applied, the helper outlives `terminate()` and
-/// `active_processes` stays 0 from the start, which is ALSO logged.
+/// Test: the ADR's actual pinned termination sequence — nothing else in
+/// this file exercises it (every other test lets the child exit on its
+/// own and never calls `terminate` at all). Spawns the HELPER, a live,
+/// long-sleeping tree, so termination is doing real work rather than
+/// racing a child that was about to exit anyway: `job.terminate()` ->
+/// poll `active_processes() == 0` while the reader keeps draining ->
+/// `close_pty()` with that same reader still running -> reader EOF/join.
+/// Also the only place `resize()` and the `PrimaryProcess` primitives
+/// (`wait`, `exit_code`) get exercised at all.
 #[test]
-fn diag_which_attributes_actually_applied() {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::JobObjects::IsProcessInJob;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-
+fn pinned_termination_sequence_terminate_drain_close() {
     let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
     let spawn = ConptySpawn::spawn(&[helper], 80, 25).unwrap();
-    let (_rx, _reader) = spawn_reader_thread(spawn.reader);
+    let (rx, reader_thread) = spawn_reader_thread(spawn.reader);
 
-    // The DIRECT child pid comes from CreateProcessW, not from pty output —
-    // immune to the console-attachment failure under diagnosis.
-    let pid = spawn.pid;
-    std::thread::sleep(Duration::from_millis(500));
-    eprintln!("diag: active_processes right after spawn = {:?}", spawn.job.active_processes());
+    // A valid resize while the session is live — no other test calls this.
+    spawn.pty.resize(100, 30).unwrap();
 
-    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if h.is_null() {
-        eprintln!("diag: OpenProcess({pid}) failed: {}", std::io::Error::last_os_error());
-    } else {
-        let mut in_our_job: windows_sys::Win32::Foundation::BOOL = 0;
-        let ok = unsafe { IsProcessInJob(h, spawn.job.raw_for_tests(), &mut in_our_job) };
-        eprintln!("diag: IsProcessInJob(child, OUR job) ok={ok} result={in_our_job}");
-        let mut in_any_job: windows_sys::Win32::Foundation::BOOL = 0;
-        let ok2 = unsafe { IsProcessInJob(h, std::ptr::null_mut(), &mut in_any_job) };
-        eprintln!("diag: IsProcessInJob(child, ANY job) ok={ok2} result={in_any_job}");
-        unsafe { CloseHandle(h) };
-    }
-
-    let _ = spawn.job.terminate();
-    std::thread::sleep(Duration::from_millis(500));
-    eprintln!("diag: active_processes after terminate = {:?}", spawn.job.active_processes());
-    spawn.pty.close_pty();
-}
-
-/// Diagnostic (temporary): the COMPOSITION axis — the same spawn with the
-/// pseudoconsole attribute ALONE (no job), the exact shape Microsoft's
-/// sample runs. Output arriving here but not through the two-attribute
-/// spawn names the composition as the bug.
-#[test]
-fn diag_no_job_spawn_output_arrives() {
-    let marker = "SOT_CONPTY_NOJOB_5c44";
-    let argv = vec!["cmd.exe".to_string(), "/c".to_string(), format!("echo {marker}")];
-    let (pty, reader, _writer, pid) =
-        sot_log::conpty::ConptySpawn::spawn_diag_no_job(&argv, 80, 25).unwrap();
-    eprintln!("diag-nojob: spawned pid {pid}");
-    let (rx, reader_thread) = spawn_reader_thread(reader);
-    let mut all = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut seen = false;
-    while Instant::now() < deadline && !seen {
-        match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(chunk) => {
-                all.extend(chunk);
-                seen = String::from_utf8_lossy(&all).contains(marker);
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-    eprintln!("diag-nojob: marker seen LIVE = {seen}");
-    pty.close_pty();
-    reader_thread.join().unwrap();
-    while let Ok(chunk) = rx.recv() {
-        all.extend(chunk);
-    }
-    eprintln!(
-        "diag-nojob: marker seen TOTAL = {}",
-        String::from_utf8_lossy(&all).contains(marker)
-    );
-}
-
-/// Test 5: `IsProcessInJob` probe on THIS test process, surfaced through
-/// `SpawnDetail` from an ordinary spawn (`spawn`'s own diagnostic, checked
-/// at spawn time — not a separate private probe this test would otherwise
-/// have no access to). Informational only, never an assert: hosted CI
-/// runners have historically been jobbed themselves by the runner's own
-/// supervision, which is a fact about the environment, not a defect.
-#[test]
-fn probe_is_this_test_process_jobbed() {
-    let argv = vec!["cmd.exe".to_string(), "/c".to_string(), "exit 0".to_string()];
-    let spawn = ConptySpawn::spawn(&argv, 80, 25).unwrap();
-    eprintln!(
-        "conpty probe: this test process is jobbed = {:?}",
-        spawn.detail.spawning_process_was_jobbed
-    );
-
-    let (_rx, reader_thread) = spawn_reader_thread(spawn.reader);
+    spawn.job.terminate().unwrap();
     wait_for_zero_active(&spawn.job, Duration::from_secs(10));
+
+    // The primary-process handle survives termination (Windows: a process
+    // handle stays valid after its process exits) — `wait` must see it
+    // already signaled, and `exit_code` must report the code
+    // `TerminateJobObject` used.
+    assert!(
+        spawn.process.wait(Duration::from_secs(5)).unwrap(),
+        "process handle never signaled after job termination"
+    );
+    assert_eq!(
+        spawn.process.exit_code().unwrap(),
+        Some(1),
+        "expected TerminateJobObject's own exit code"
+    );
+
     spawn.pty.close_pty();
     reader_thread.join().unwrap();
+    while rx.recv().is_ok() {} // drain to EOF; content is incidental to a kill-based end
 }
+
+/// Test: an embedded NUL in an argument has no representation in a
+/// NUL-terminated UTF-16 command line — `spawn` must refuse it loudly
+/// before building one, rather than let it silently truncate the command
+/// line at the first NUL and run something other than what was asked for.
+#[test]
+fn spawn_rejects_embedded_nul_in_argv() {
+    let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "echo\0evil".to_string()];
+    let err = ConptySpawn::spawn(&argv, 80, 25).unwrap_err();
+    assert!(matches!(err, Error::State(_)), "expected Error::State, got {err:?}");
+}
+

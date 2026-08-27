@@ -47,13 +47,18 @@ pub enum Error {
     /// lacks (Linux and Windows have real arms; others fail closed).
     #[error("unsupported on this platform: {0}")]
     Unsupported(&'static str),
-    /// A ConPTY/job spawn stage failed (Windows-only: `conpty` module).
-    /// Carries WHICH stage and the underlying Win32 error, so a capsule can
-    /// commit `producer_dead {spawn_failed}` with a real diagnostic instead
-    /// of a bare string.
+    /// A ConPTY/job OPERATION failed (Windows-only: `conpty` module) — a
+    /// spawn stage, or a later runtime call (`terminate`, `active_processes`,
+    /// `resize`, ...). Carries WHICH operation and the underlying Win32
+    /// error, so a caller can commit `producer_dead {spawn_failed}` for a
+    /// creation-time failure, or a resize/teardown outcome for a later one,
+    /// with a real diagnostic instead of a bare string. This variant is
+    /// deliberately not named/worded "spawn" — an earlier version was, and a
+    /// `resize()` failure read as a spawn failure it never was (review
+    /// finding on the conpty unit).
     #[cfg(windows)]
-    #[error("conpty spawn failed: {0}")]
-    Spawn(#[from] conpty::SpawnError),
+    #[error("conpty: {0}")]
+    Conpty(#[from] conpty::ConptyError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
