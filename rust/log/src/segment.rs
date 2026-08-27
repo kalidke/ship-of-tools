@@ -328,8 +328,7 @@ impl SegmentWriter {
         self.file.sync_all()?;
         let from = self.identity.path(&self.seg_dir, SegmentState::Open);
         let to = self.identity.path(&self.seg_dir, SegmentState::Sealed);
-        fsutil::rename_noreplace(&from, &to)?;
-        fsutil::fsync_dir(&self.seg_dir)?;
+        fsutil::publish_noreplace(&from, &to)?;
         self.sealed = true;
         Ok(digest)
     }

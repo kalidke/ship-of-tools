@@ -52,30 +52,40 @@ impl VoyageStore {
     /// Bootstrap a new voyage: build under `<root>.creating/`, fsync
     /// bottom-up, publish by no-clobber rename (ADR 0039 §lifecycle 1).
     pub fn bootstrap(root: &Path, voyage_id: &str, retention: RetentionClass) -> Result<()> {
-        // Absolutize first: a relative root would (a) make the parent of a
-        // bare name the empty path and (b) leave every later operation
-        // raceable against set_current_dir elsewhere in the process.
-        let root = std::path::absolute(root)?;
-        let root = root.as_path();
-        let parent = root
+        // Resolve here rather than trust the caller went through
+        // `ensure_container` first: `bootstrap` is a public entry point in
+        // its own right (this module's own tests call it directly with a
+        // raw path). Canonicalize the parent — which must already exist —
+        // and reconstruct the not-yet-existing root by appending its raw
+        // final component, the same pattern `ensure_container` uses and for
+        // the same reason: a lexical-only `absolute` can leave `root` naming
+        // its container through a symlink or a `..` alias, a different
+        // identity than the one every operation below must agree on.
+        let root_abs = std::path::absolute(root)?;
+        let lexical_parent = root_abs
             .parent()
             .ok_or_else(|| Error::State("voyage root needs a parent dir".into()))?;
+        let name = root_abs
+            .file_name()
+            .ok_or_else(|| Error::State("bad voyage root name".into()))?;
         // The container must PREEXIST: bootstrap will not create ancestor
         // levels, because it cannot durably anchor them (their entries in
         // THEIR parents are never flushed here — a "successful" bootstrap
         // into an implicitly created chain could vanish on power loss).
         // The container's durability is its creator's responsibility.
-        if !parent.is_dir() {
-            return Err(Error::State(format!(
-                "voyage container {parent:?} does not exist (bootstrap will not create it)"
-            )));
-        }
+        let parent = std::fs::canonicalize(lexical_parent).map_err(|e| {
+            Error::State(format!(
+                "voyage container {lexical_parent:?} does not exist (bootstrap will not create it): {e}"
+            ))
+        })?;
+        let root = parent.join(name);
+        let root = root.as_path();
+        let parent = parent.as_path();
         // Volume preflight BEFORE any `.creating` mutation (ADR 0041).
         fsutil::preflight_volume(parent)?;
         let staging = parent.join(format!(
             "{}.creating",
-            root.file_name()
-                .and_then(|s| s.to_str())
+            name.to_str()
                 .ok_or_else(|| Error::State("bad voyage root name".into()))?
         ));
         std::fs::create_dir_all(staging.join("seg"))?;
@@ -100,8 +110,7 @@ impl VoyageStore {
         fsutil::fsync_dir(&staging.join("blobs"))?;
         fsutil::fsync_dir(&staging.join("seg"))?;
         fsutil::fsync_dir(&staging)?;
-        fsutil::rename_noreplace(&staging, root)?;
-        fsutil::fsync_dir(parent)?;
+        fsutil::publish_noreplace(&staging, root)?;
         let _ = (voyage_id, retention); // identity/retention live in the genesis header
         Ok(())
     }
@@ -110,12 +119,33 @@ impl VoyageStore {
     /// identity found, allocate this writer's epoch (max durable + 1), and
     /// compute the chain tip.
     pub fn open_for_writing(root: &Path, voyage_id: &str) -> Result<Self> {
-        // Absolutize for the same reasons as bootstrap: the stored root must
-        // not be re-resolvable against a moved CWD while the lock is held.
-        // (Ancestor-junction retargeting by another PRINCIPAL is out of the
-        // fence's threat model: the voyage container's ancestors are
-        // owner-controlled, and the ADR's DACL step protects the subtree.)
-        let root = std::path::absolute(root)?;
+        // Canonicalize FIRST — before preflight, before anchoring, before
+        // the lock — and use the resolved path for everything after,
+        // including what `self.root` stores. The order is load-bearing:
+        // preflighting or fsyncing the UNRESOLVED path and canonicalizing
+        // only afterward leaves exactly the window a demonstrated escape
+        // used — bootstrap A and B, point a symlink `alias` at A, open via
+        // `alias` (the lock and the reconciliation below land on A), then
+        // retarget `alias` -> B: a writer that kept re-resolving the
+        // unresolved `alias` STRING at each later syscall would still hold
+        // A's lock but write `open_segment`'s next segment into B, because
+        // the OS re-follows the symlink fresh on every call. Canonicalizing
+        // once, here, and storing the result closes it — `self.root` is
+        // never a symlink afterward, so a later retarget has nothing left
+        // in this store to redirect.
+        //
+        // No in-tree caller passes a nonexistent root (every call follows
+        // `bootstrap`, or the caller's own exists-check already ran), so
+        // requiring existence here is safe.
+        //
+        // (This is the OWNER'S OWN root symlink, retargeted after this
+        // writer already opened it — not the ancestor-junction-retargeted-
+        // by-another-PRINCIPAL case the note below excludes: the voyage
+        // container's ancestors are owner-controlled and the ADR's DACL
+        // step protects that subtree, but that scope was never meant to
+        // cover the root's own alias, which is what canonicalizing here
+        // closes.)
+        let root = std::fs::canonicalize(root)?;
         let root = root.as_path();
         // Re-run the volume preflight on the resolved voyage dir (ADR 0041):
         // a store bootstrapped elsewhere and moved to an unsuitable volume
@@ -126,6 +156,9 @@ impl VoyageStore {
         // callers' bootstrap-if-absent check would then skip bootstrap
         // forever, leaving a store that acknowledges records from a root the
         // next power loss can remove. Idempotent, so every open re-anchors.
+        // (This is also the Part 3 restatement for bootstrap's own publish:
+        // no separate call is needed there — every open already re-flushes
+        // root plus its parent, unconditionally, before anything else.)
         fsutil::fsync_dir(root)?;
         if let Some(parent) = root.parent() {
             fsutil::fsync_dir(parent)?;
@@ -220,6 +253,19 @@ impl VoyageStore {
         })
     }
 
+    /// The canonicalized root this store actually operates on — resolved
+    /// ONCE at `open_for_writing` and never re-derived from a caller's
+    /// possibly-symlinked path afterward. Crate-private: callers that need
+    /// to scan the store's own files after opening it (ADR 0040's successor-
+    /// closure scan, for one) must use THIS, not whatever path they
+    /// originally passed to `open_for_writing` — that path can be a symlink
+    /// retargeted after the lock was taken, in which case re-deriving from
+    /// it scans whatever it points at NOW, not the store this writer is
+    /// fenced to.
+    pub(crate) fn resolved_root(&self) -> &Path {
+        &self.root
+    }
+
     /// A prior incarnation's clean `.open` tip: seal it under this writer's
     /// authority before opening a fresh segment (one open segment, only at
     /// the tip). Returns its digest for the chain.
@@ -244,8 +290,7 @@ impl VoyageStore {
         }
         // Rebuild-and-seal via the recovery staging path with zero
         // truncation (the survivor is clean; this writer stamps the seal).
-        fsutil::rename_noreplace(&open_path, &id.path(&seg_dir, SegmentState::Recovering))?;
-        fsutil::fsync_dir(&seg_dir)?;
+        fsutil::publish_noreplace(&open_path, &id.path(&seg_dir, SegmentState::Recovering))?;
         recovery::reconcile(&seg_dir, &id, self.epoch)?;
         let sealed = SegmentReader::read(&id.path(&seg_dir, SegmentState::Sealed), true)?;
         sealed.verify_seal()?;
@@ -323,7 +368,13 @@ impl VoyageStore {
                     what: format!("CAS collision at {digest}: existing bytes differ"),
                 });
             }
-            fsutil::fsync_dir(&shard)?;
+            // Found, not published by US: restate the SAME barrier a fresh
+            // publish completes (Part 3 finding). A prior incarnation could
+            // have renamed this blob into place and crashed before its own
+            // renamed-file/parent flush ran, leaving it cache-visible but
+            // not durable — `finish_publication` covers both halves; a bare
+            // `fsync_dir(&shard)` covered only the parent.
+            fsutil::finish_publication(&dest)?;
             return Ok(digest);
         }
         // Random suffix (not pid+digest): two same-process publishes of
@@ -342,7 +393,11 @@ impl VoyageStore {
         match fsutil::rename_noreplace(&tmp, &dest) {
             Ok(()) => {}
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                // Raced an identical publish: verify + clean the temp.
+                // Raced an identical publish: verify + clean the temp. Same
+                // reasoning as the `dest.exists()` branch above applies to
+                // the flush below — this process didn't do the winning
+                // rename, so it must not assume the winner finished
+                // flushing before it crashed (if it did).
                 let existing = std::fs::read(&dest)?;
                 std::fs::remove_file(&tmp)?;
                 if existing != content {
@@ -354,7 +409,7 @@ impl VoyageStore {
             }
             Err(e) => return Err(e),
         }
-        fsutil::fsync_dir(&shard)?;
+        fsutil::finish_publication(&dest)?;
         Ok(digest)
     }
 }
@@ -436,5 +491,77 @@ mod tests {
         // Forged content under the same name: loud on the next publish.
         std::fs::write(&path, b"evil!").unwrap();
         assert!(store.publish_blob(b"hello").is_err());
+    }
+
+    /// Part 2 finding, reproduced: bootstrap two real stores A and B, open
+    /// via a symlink pointed at A, retarget the symlink to B AFTER the fence
+    /// is taken, then keep writing. A writer that re-resolved the unresolved
+    /// alias at each later syscall would hold A's lock but write segments
+    /// into B; canonicalizing once in `open_for_writing` and storing the
+    /// result must keep every later operation on A regardless of where the
+    /// alias points now.
+    #[test]
+    #[cfg(unix)]
+    fn root_alias_cannot_escape_fence_after_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        VoyageStore::bootstrap(&a, "voy", RetentionClass::Discard).unwrap();
+        VoyageStore::bootstrap(&b, "voy", RetentionClass::Discard).unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&a, &alias).unwrap();
+
+        let mut store = VoyageStore::open_for_writing(&alias, "voy").unwrap();
+
+        // Retarget AFTER the fence is taken.
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&b, &alias).unwrap();
+
+        let mut w = store.open_segment(0).unwrap();
+        w.append(&lc(1, 1), Commit::Immediate).unwrap();
+        w.seal(None).unwrap();
+
+        let has_sealed = |dir: &std::path::Path| {
+            std::fs::read_dir(dir.join("seg"))
+                .unwrap()
+                .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".sotseg"))
+        };
+        assert!(has_sealed(&a), "writer must operate on A, resolved at open time");
+        assert!(!has_sealed(&b), "writer must NOT follow a post-open retarget into B");
+    }
+
+    /// Part 3 finding: the CAS `dest.exists()` replay path must restate the
+    /// publication barrier over a blob this process didn't itself publish,
+    /// not merely fsync its shard directory. Holding the existing blob open
+    /// write-denied fails the renamed-target flush `finish_publication`
+    /// performs — while the CAS byte-compare read, which the old code also
+    /// performed, still succeeds — proving the flush is actually attempted.
+    #[test]
+    #[cfg(windows)]
+    fn cas_replay_reflushes_existing_blob_on_windows() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voy4");
+        VoyageStore::bootstrap(&root, "voy4", RetentionClass::Discard).unwrap();
+        let store = VoyageStore::open_for_writing(&root, "voy4").unwrap();
+        let d1 = store.publish_blob(b"hello").unwrap();
+        let path = root.join("blobs").join("sha256").join(&d1[0..2]).join(&d1);
+
+        let _held = std::fs::OpenOptions::new()
+            .read(true)
+            // FILE_SHARE_READ, deny write: reads (verify_seal, the CAS
+            // byte-compare, SegmentReader::read) must SUCCEED — the old code
+            // performed them too, and a hold that blocks them makes the old
+            // code error as well, so the test would pass unchanged against
+            // it. Only `finish_publication`'s write-reopen inside
+            // `flush_renamed` may fail; that is the one thing the old code
+            // never did.
+            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+            .open(&path)
+            .unwrap();
+
+        let e = store.publish_blob(b"hello").unwrap_err();
+        assert!(matches!(e, Error::Io(_)), "{e}");
     }
 }

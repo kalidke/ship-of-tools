@@ -92,6 +92,44 @@ pub fn fsync_dir(dir: &Path) -> Result<()> {
 /// Idempotent, and deliberately unconditional: a container that is merely
 /// cache-visible is indistinguishable from a durable one, so a replay after
 /// a crash must redo the flush rather than trust the residue.
+///
+/// Two cases, split on the LEXICAL container's `file_name()` — which is
+/// `None` exactly when a path terminates in `..`, or IS itself a root or
+/// prefix (`Path`'s own definition; reused here as the discriminator rather
+/// than inventing a second one):
+///
+/// - **Normal final component**: this is the one level we're allowed to
+///   create. Canonicalize the container's own PARENT and rebuild the
+///   container by appending that final component — never canonicalize the
+///   lexical container directly to decide what to fsync. A container like
+///   `a/b/..` (root `a/b/../v1`) lexically parents, under naive
+///   `Path::parent()`, to `a/b` — a DIFFERENT directory than the semantic
+///   parent of the real container `a`, which is one level further up. That
+///   was the bug: fsyncing `a/b` instead of the real parent is silently
+///   wrong when `b` is readable, and loudly wrong (EACCES) the moment `b` is
+///   traversable-but-not-openable (execute-only, no read bit — a directory
+///   you can resolve THROUGH but not open). Rebuilding from a canonicalized
+///   parent sidesteps this: `canonicalize` only needs search permission on
+///   ancestors, never open permission on the final one, so it resolves fine
+///   through such a `b` — only ever opening it (to fsync it) was the bug.
+/// - **Container ends in `..`, or is itself a volume/filesystem root**:
+///   there is no level here for THIS crate to create — `..` names an
+///   ancestor that must already exist, and a root always exists. Canonicalize
+///   the WHOLE container (it must already exist) and anchor its entry in
+///   its own resolved parent, if it has one.
+///
+/// REJECTED alternative: refuse a root whose container ends in `..`. This
+/// was considered and dropped — the container above doesn't have to end in
+/// `..` for naive `Path::parent()` to land on the wrong directory (see
+/// `a/b/../c/v1`, whose container ends in the ordinary `c`), so refusing `..`
+/// would not even close the bug it was proposed for; it would also break an
+/// accepted CLI shape, since both callers here take arbitrary caller-supplied
+/// `PathBuf`s and an existing test establishes `..` is supported.
+///
+/// HONESTY BOUND: this is path-bound, not object-bound. An ancestor can
+/// still be swapped between the create below and the fsync that follows it;
+/// strict binding would need handle-relative creation or identity checks,
+/// which this does not do.
 pub fn ensure_container(root: &Path) -> Result<std::path::PathBuf> {
     let abs = std::path::absolute(root)?;
     let container = abs
@@ -100,24 +138,56 @@ pub fn ensure_container(root: &Path) -> Result<std::path::PathBuf> {
     let name = abs
         .file_name()
         .ok_or_else(|| Error::State(format!("voyage root {abs:?} has no final component")))?;
-    // No parent means the container IS a filesystem/volume root: it always
-    // exists, and its entry has no directory to be anchored in.
-    if let Some(base) = container.parent() {
-        // canonicalize (not `absolute`) so the boundary is fully resolved:
-        // `absolute` keeps `..` on POSIX, and a symlinked ancestor would put
-        // the container's entry in a different directory than the lexical
-        // parent names. It also fails loudly when the boundary is missing.
-        let base = std::fs::canonicalize(base).map_err(|e| {
-            Error::State(format!(
-                "voyage container's parent {base:?} must exist first: {e}"
-            ))
-        })?;
-        std::fs::create_dir_all(container)?;
-        fsync_dir(&base)?; // anchors the container's entry
+
+    match container.file_name() {
+        // `..` or a volume/filesystem root: nothing to create, only
+        // something to resolve (it must already exist) and anchor.
+        None => {
+            let resolved = std::fs::canonicalize(container).map_err(|e| {
+                Error::State(format!("voyage container {container:?} must exist first: {e}"))
+            })?;
+            if let Some(base) = resolved.parent() {
+                fsync_dir(base)?; // anchors the container's own entry
+            }
+            Ok(resolved.join(name))
+        }
+        // Normal final component: the one level this crate may create.
+        Some(final_component) => {
+            let lexical_parent = container.parent().ok_or_else(|| {
+                Error::State(format!("voyage container {container:?} has no parent"))
+            })?;
+            let base = std::fs::canonicalize(lexical_parent).map_err(|e| {
+                Error::State(format!(
+                    "voyage container's parent {lexical_parent:?} must exist first: {e}"
+                ))
+            })?;
+            let reconstructed = base.join(final_component);
+            match std::fs::create_dir(&reconstructed) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // AlreadyExists names SOME entity, often a file — not a
+                    // sufficient idempotence discriminator by itself.
+                    // `create_dir_all` as a fallback was rejected: if `base`
+                    // vanished concurrently, `create_dir_all` could recreate
+                    // more than the one permitted level (ADR 0039's bootstrap
+                    // step: one level is the explicit contract, and no
+                    // caller here needs a missing grandparent).
+                    if !std::fs::metadata(&reconstructed)?.is_dir() {
+                        return Err(Error::State(format!(
+                            "voyage container path {reconstructed:?} exists and is not a directory"
+                        )));
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
+            fsync_dir(&base)?; // anchors the container's entry
+            // Canonicalize the RECONSTRUCTED path, never the original
+            // lexical container: re-resolving the lexical alias here would
+            // re-walk through the same intermediate and reopen the race
+            // this function exists to close.
+            Ok(std::fs::canonicalize(&reconstructed)?.join(name))
+        }
     }
-    // Resolve the container now that it exists, so the returned root is
-    // free of `..` and symlink aliases: ONE stable identity for the fence.
-    Ok(std::fs::canonicalize(container)?.join(name))
 }
 
 /// Flush an existing file's contents by path (write-open + `sync_all`).
@@ -223,15 +293,16 @@ pub fn rename_noreplace(_from: &Path, _to: &Path) -> Result<()> {
 /// `std::fs::rename` is unusable here: it passes REPLACE_EXISTING and
 /// clobbers.
 ///
-/// Two Windows-only extras, both pinned in the ADR:
-/// - Bounded retry on `ERROR_SHARING_VIOLATION` and spurious
-///   `ERROR_ACCESS_DENIED` from AV/indexer holders (rust-lang/rust#123985)
-///   — a transient with no Linux analog; a persistent holder still fails at
-///   the deadline.
-/// - Belt-and-braces flush of the RENAMED target after success (the
-///   doc-implied corner of the directory-flush contract); the caller's
-///   parent-dir flush then completes the pinned publication order
-///   (source flush → rename → renamed-file flush → dir flush).
+/// Windows-only extra, pinned in the ADR: bounded retry on
+/// `ERROR_SHARING_VIOLATION` and spurious `ERROR_ACCESS_DENIED` from
+/// AV/indexer holders (rust-lang/rust#123985) — a transient with no Linux
+/// analog; a persistent holder still fails at the deadline.
+///
+/// This is the raw rename ONLY. The renamed-target flush that used to run
+/// here on success moved out to `finish_publication`, so the reconciliation
+/// rows can invoke the SAME flush over a target this process never itself
+/// renamed — residue a prior incarnation renamed into place before crashing.
+/// Every ordinary caller gets both steps via `publish_noreplace`.
 #[cfg(windows)]
 pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
@@ -239,7 +310,7 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
     loop {
         if unsafe { MoveFileExW(f.as_ptr(), t.as_ptr(), 0) } != 0 {
-            break;
+            return Ok(());
         }
         let e = std::io::Error::last_os_error();
         if !is_transient_hold(&e) || std::time::Instant::now() >= deadline {
@@ -247,7 +318,39 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
         }
         std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
     }
-    flush_renamed(to)
+}
+
+/// Complete the publication barrier for `target`, independent of whether
+/// THIS call is what just renamed it there. On Windows: flush the renamed
+/// target itself (belt-and-braces — the doc-implied corner of the
+/// directory-flush contract). On every platform: fsync `target`'s parent,
+/// which anchors its directory entry (ADR 0039/0041's publication order —
+/// source flush → rename → renamed-file flush → parent-directory flush; the
+/// first is per-source and stays at each call site, the last two are
+/// exactly this function).
+///
+/// Reconciliation rows call this DIRECTLY, with no rename alongside it, on
+/// content that arrived some other way: a `.sotseg` a prior incarnation
+/// renamed into place but crashed before flushing, an already-published CAS
+/// blob this process only verified matches. The barrier is what makes a
+/// publication durable, not the rename syscall by itself — finding the
+/// target already there is exactly the case that needs restating, not
+/// skipping.
+pub fn finish_publication(target: &Path) -> Result<()> {
+    #[cfg(windows)]
+    flush_renamed(target)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| Error::State(format!("publication target {target:?} has no parent")))?;
+    fsync_dir(parent)
+}
+
+/// The common case: atomic no-clobber rename, then complete the barrier.
+/// Every ordinary publish site uses this instead of pairing the raw rename
+/// with its own `fsync_dir(parent)` call.
+pub fn publish_noreplace(source: &Path, target: &Path) -> Result<()> {
+    rename_noreplace(source, target)?;
+    finish_publication(target)
 }
 
 /// NUL-terminated UTF-16 in extended-length form. std's own fs ops
@@ -295,10 +398,12 @@ fn is_transient_hold(e: &std::io::Error) -> bool {
         Some(c) if c == ERROR_SHARING_VIOLATION as i32 || c == ERROR_ACCESS_DENIED as i32)
 }
 
-/// Flush the just-renamed target. `FlushFileBuffers` needs write access, so
-/// files are briefly reopened for write (same bounded transient-hold retry
-/// as the rename — the fresh name is exactly what AV scans). A directory
-/// target (bootstrap's `.creating` publish) flushes via the dir handle.
+/// Flush a target `finish_publication` is restating the barrier over — the
+/// name may be freshly renamed by this process or residue from an earlier
+/// one; either way `FlushFileBuffers` needs write access, so files are
+/// briefly reopened for write (same bounded transient-hold retry as the
+/// rename — the fresh name is exactly what AV scans). A directory target
+/// (bootstrap's `.creating` publish) flushes via the dir handle.
 #[cfg(windows)]
 fn flush_renamed(to: &Path) -> Result<()> {
     if std::fs::metadata(to)
@@ -449,5 +554,46 @@ mod tests {
         assert!(dir.path().join("a").join("c").is_dir());
         // The returned identity is fully resolved — no `..` left to alias.
         assert_eq!(got, std::fs::canonicalize(dir.path()).unwrap().join("a").join("c").join("v1"));
+    }
+
+    /// The real repro (round-5 finding): a container whose lexical parent
+    /// (under naive `Path::parent()`, which just strips the raw `..`
+    /// component) is NOT its semantic parent must never be opened for
+    /// fsync. `a/b` is execute-only here — traversable (canonicalize can
+    /// walk THROUGH it) but not openable (`File::open` needs the read bit
+    /// `b` doesn't have) — so this fails loudly on the old code, which
+    /// fsyncs `a/b` instead of the real container `a`'s parent (this
+    /// tempdir). Permissions are restored by a guard that runs before the
+    /// tempdir's own cleanup, even if an assertion below panics — otherwise
+    /// a failing run leaves an undeletable directory behind.
+    #[test]
+    #[cfg(unix)]
+    fn trailing_dotdot_flushes_semantic_parent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct RestorePerms(std::path::PathBuf, std::fs::Permissions);
+        impl Drop for RestorePerms {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, self.1.clone());
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a").join("b")).unwrap();
+        let b = dir.path().join("a").join("b");
+        let original_perms = std::fs::metadata(&b).unwrap().permissions();
+        // Declared AFTER `dir`, so it drops (and restores permissions)
+        // BEFORE `dir`'s own `Drop` tries to `remove_dir_all` it.
+        let _restore = RestorePerms(b.clone(), original_perms);
+        std::fs::set_permissions(&b, std::fs::Permissions::from_mode(0o111)).unwrap();
+
+        // Semantic container of `a/b/../v1` is `a`, whose entry lives in
+        // this tempdir — never `b`.
+        let root = dir.path().join("a").join("b").join("..").join("v1");
+        let got = ensure_container(&root).unwrap();
+        assert_eq!(
+            got,
+            std::fs::canonicalize(dir.path()).unwrap().join("a").join("v1")
+        );
     }
 }

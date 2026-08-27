@@ -450,7 +450,12 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
     let mut store = VoyageStore::open_for_writing(&voyage_root, &config.voyage_id)?;
     store.seal_survivor()?;
     let prior_take = store.last_take_epoch;
-    let stale_opens = unmatched_opens(&voyage_root, &config.voyage_id)?;
+    // Scan the STORE's resolved root, not the local `voyage_root` above: if
+    // it names a symlink, that alias can be retargeted after `store` locked
+    // the real directory it resolved to, and re-deriving from the alias
+    // here would scan whatever it points at NOW — synthesizing successor
+    // closures into a different store than the one this writer holds.
+    let stale_opens = unmatched_opens(store.resolved_root(), &config.voyage_id)?;
 
     let mut fx = Fx {
         epoch: store.epoch,
