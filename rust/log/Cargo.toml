@@ -19,6 +19,13 @@ getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From im
 libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+# The live vt100 parser the capsule runtime keeps across the run (ADR 0041
+# "Terminal state"): windows-gated because capsule_win.rs is its only
+# consumer — the fork builds everywhere, but a dependency should live where
+# the thing that needs it lives. Unaliased, matching the workspace patch
+# (`[patch.crates-io] vt100-ctt = { path = "vt100" }`); this crate has no
+# existing `vt100` name to collide with, so no `package =` rename either.
+vt100-ctt = "0.17"
 # Raw Win32 for the durability arms (ADR 0041 §store port): MoveFileExW,
 # GetVolumeInformationByHandleW, FILE_FLAG_BACKUP_SEMANTICS. Plus the
 # atomic-DACL-at-birth arm (ADR 0041 "attach protocol" §Security split):

@@ -3922,6 +3922,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "uuid",
+ "vt100-ctt",
  "windows-sys 0.59.0",
 ]
 

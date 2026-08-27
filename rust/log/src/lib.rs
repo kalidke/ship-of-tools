@@ -8,8 +8,21 @@
 //! `codec_id` / `required_features` / version seams).
 
 pub mod capsule;
+pub mod capsule_win;
 pub mod claude;
 pub mod conpty;
+// Crate-private (Codex review finding, capsule_win.rs round): ADR 0041's
+// "one private machine" ruling means this module's items are not part of
+// the crate's public API — `capsule_win.rs` is the only real caller and
+// reaches it via `crate::host_handshake::...`, which needs no `pub` beyond
+// the crate boundary. Not `#[cfg(windows)]`: its own tests are pure bytes
+// and run on every platform (see the module doc) — which is exactly why a
+// plain (non-test) build on a non-Windows target now has NO caller at all
+// for these now-private items (the only real caller, capsule_win.rs, is
+// windows-only): `cfg_attr` suppresses the resulting dead_code warning
+// there specifically, rather than losing it crate-wide or windows-only.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod host_handshake;
 pub mod envelope;
 pub mod record;
 pub mod recovery;

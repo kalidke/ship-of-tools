@@ -330,15 +330,15 @@ fn pinned_termination_sequence_terminate_drain_close() {
 
     // The primary-process handle survives termination (Windows: a process
     // handle stays valid after its process exits) — `wait` must see it
-    // already signaled, and `exit_code` must report the code
-    // `TerminateJobObject` used.
+    // already signaled, and `exit_code_after_confirmed_exit` must report
+    // the code `TerminateJobObject` used.
     assert!(
         spawn.process.wait(Duration::from_secs(5)).unwrap(),
         "process handle never signaled after job termination"
     );
     assert_eq!(
-        spawn.process.exit_code().unwrap(),
-        Some(1),
+        spawn.process.exit_code_after_confirmed_exit().unwrap(),
+        1,
         "expected TerminateJobObject's own exit code"
     );
 
@@ -358,3 +358,50 @@ fn spawn_rejects_embedded_nul_in_argv() {
     assert!(matches!(err, Error::State(_)), "expected Error::State, got {err:?}");
 }
 
+
+/// Test: `GetExitCodeProcess`'s 259/STILL_ACTIVE ambiguity, resolved
+/// honestly. cmd.exe's own `exit <n>` calls `ExitProcess(n)` with the raw
+/// value — 259 is a legitimate (if Microsoft-discouraged) exit code, and
+/// `exit_code_after_confirmed_exit` must report it as exactly that, never
+/// silently lost to the STILL_ACTIVE ambiguity (review finding: an earlier
+/// version's `exit_code()` mapped raw 259 to `None` unconditionally, even
+/// after a confirmed exit).
+#[test]
+fn exit_code_259_is_reported_raw_not_lost_to_still_active() {
+    let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit 259".to_string()];
+    let spawn = ConptySpawn::spawn(&argv, 80, 25).unwrap();
+    let (_rx, reader_thread) = spawn_reader_thread(spawn.reader);
+    wait_for_zero_active(&spawn.job, Duration::from_secs(15));
+    assert!(
+        spawn.process.wait(Duration::from_secs(5)).unwrap(),
+        "process never signaled"
+    );
+    assert_eq!(spawn.process.exit_code_after_confirmed_exit().unwrap(), 259);
+    spawn.pty.close_pty();
+    reader_thread.join().unwrap();
+}
+
+/// Test: a high-bit (NTSTATUS-shaped) exit code round-trips as the exact
+/// unsigned 32-bit value `GetExitCodeProcess` returns — this is the value
+/// an access-violation crash would report, and this crate must preserve
+/// its bit pattern rather than reinterpreting it as a Unix-style signed
+/// status anywhere below the process-exit boundary (review finding).
+/// `-1073741819` is `0xC0000005` (`STATUS_ACCESS_VIOLATION`) reinterpreted
+/// as a signed 32-bit literal — `ExitProcess` takes the raw bits, not a
+/// signed value, so this is the standard way to make a process exit with
+/// that code deliberately.
+#[test]
+fn exit_code_high_bit_status_round_trips_unsigned() {
+    let argv =
+        vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit -1073741819".to_string()];
+    let spawn = ConptySpawn::spawn(&argv, 80, 25).unwrap();
+    let (_rx, reader_thread) = spawn_reader_thread(spawn.reader);
+    wait_for_zero_active(&spawn.job, Duration::from_secs(15));
+    assert!(
+        spawn.process.wait(Duration::from_secs(5)).unwrap(),
+        "process never signaled"
+    );
+    assert_eq!(spawn.process.exit_code_after_confirmed_exit().unwrap(), 0xC000_0005);
+    spawn.pty.close_pty();
+    reader_thread.join().unwrap();
+}
