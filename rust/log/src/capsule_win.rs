@@ -263,17 +263,6 @@ pub struct ExitSummary {
     /// seam a test needs to prove rejection is a real short-circuit, not
     /// just a recorded disposition string.
     pub resize_os_calls: u64,
-    /// The output budget's peak outstanding-bytes high-water mark over the
-    /// whole run — proof the budget's bookkeeping was live during a real
-    /// run. (Exact byte-count equality against what the producer wrote is
-    /// not a meaningful assertion: `hOutput` carries conhost's own rendered
-    /// VT stream, not raw stdout, and can legitimately differ in length.
-    /// Whether the bound BLOCKS when exceeded is not provable here either —
-    /// engagement depends on conhost's burst pacing on the host, which no
-    /// e2e assertion controls; runner-pool pacing changes turned exactly
-    /// that assertion red on unchanged code. The blocking property is
-    /// proven deterministically by `OutputBudget`'s own unit tests.)
-    pub output_high_water_bytes: u64,
 }
 
 /// The reader thread's own event stream: producer output, or its ONE
@@ -313,7 +302,14 @@ fn wall_ms() -> i64 {
 struct BudgetState {
     outstanding: u64,
     closed: bool,
-    high_water: u64,
+    /// Test-only waiter-entry witness: incremented under the mutex
+    /// immediately before `Condvar::wait`, decremented on wake. Lets a
+    /// unit test PROVE a reserve entered the wait before releasing or
+    /// cancelling — without it, a test's release can win the race to the
+    /// first bound check and pass without ever exercising the wake path,
+    /// so a missing `notify_all` could escape (review finding).
+    #[cfg(test)]
+    waiters: u32,
 }
 
 /// The bounded output budget (ADR 0041: "producer channel 8 MiB bounded —
@@ -332,7 +328,12 @@ struct OutputBudget {
 impl OutputBudget {
     fn new() -> Self {
         Self {
-            state: Mutex::new(BudgetState { outstanding: 0, closed: false, high_water: 0 }),
+            state: Mutex::new(BudgetState {
+                outstanding: 0,
+                closed: false,
+                #[cfg(test)]
+                waiters: 0,
+            }),
             space_available: Condvar::new(),
         }
     }
@@ -354,10 +355,17 @@ impl OutputBudget {
             }
             if g.outstanding + n <= OUTPUT_QUEUE_BUDGET_BYTES {
                 g.outstanding += n;
-                g.high_water = g.high_water.max(g.outstanding);
                 return true;
             }
+            #[cfg(test)]
+            {
+                g.waiters += 1;
+            }
             g = self.space_available.wait(g).unwrap();
+            #[cfg(test)]
+            {
+                g.waiters -= 1;
+            }
         }
     }
 
@@ -382,14 +390,6 @@ impl OutputBudget {
         let mut g = self.state.lock().unwrap();
         g.closed = true;
         self.space_available.notify_all();
-    }
-
-    /// The peak outstanding-bytes mark for `ExitSummary`. (Whether the
-    /// bound BLOCKS when exceeded is proven by this module's own unit
-    /// tests, deterministically — an e2e assertion on it races conhost's
-    /// burst pacing; see `ExitSummary::output_high_water_bytes`.)
-    fn snapshot(&self) -> u64 {
-        self.state.lock().unwrap().high_water
     }
 }
 
@@ -601,7 +601,6 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
                 handshake_answered: false,
                 handshake_suppressed_matches: 0,
                 resize_os_calls: 0,
-                output_high_water_bytes: 0,
             });
         }
     };
@@ -1038,7 +1037,6 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
     store.advance_chain(digest);
     segments_sealed += 1;
 
-    let output_high_water_bytes = output_budget.snapshot();
     Ok(ExitSummary {
         exit_code: Some(exit_code),
         exit_kind,
@@ -1047,7 +1045,6 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
         handshake_answered: dsr_answered,
         handshake_suppressed_matches,
         resize_os_calls,
-        output_high_water_bytes,
     })
 }
 
@@ -1081,12 +1078,24 @@ mod tests {
     use super::*;
     use std::thread;
 
-    /// A reserve that would exceed the budget cannot complete before room
-    /// is released, and completes once it is. Deterministic without any
-    /// timing assumption: while the budget is full and not cancelled,
-    /// `reserve`'s loop has no path to return — a return would have pushed
-    /// `outstanding` past the bound, and the invariant assertion below
-    /// would catch it — so the recv can only succeed via the release.
+    /// Spins until exactly one reserve is parked in `Condvar::wait`,
+    /// observed via the test-only `waiters` witness under the same mutex
+    /// the wait releases atomically — the deterministic guarantee that the
+    /// wake path (not a lucky early bound-check) is what the test then
+    /// exercises.
+    fn await_one_waiter(budget: &OutputBudget) {
+        loop {
+            if budget.state.lock().unwrap().waiters == 1 {
+                return;
+            }
+            thread::yield_now();
+        }
+    }
+
+    /// A reserve that finds the budget full parks in the condvar wait
+    /// (proven by the waiter witness, not scheduling luck) and completes
+    /// exactly when room is released — so a lost `notify_all` cannot
+    /// escape this test on any interleaving.
     #[test]
     fn output_budget_blocks_at_the_bound_and_unblocks_on_release() {
         let budget = Arc::new(OutputBudget::new());
@@ -1094,37 +1103,39 @@ mod tests {
 
         let (done_tx, done_rx) = mpsc::channel();
         let b = Arc::clone(&budget);
-        thread::spawn(move || {
+        let worker = thread::spawn(move || {
             done_tx.send(b.reserve(1)).unwrap();
         });
 
+        await_one_waiter(&budget);
         budget.release(1);
         assert!(done_rx
             .recv_timeout(Duration::from_secs(30))
-            .expect("blocked reserve never completed after release"));
-
-        let g = budget.state.lock().unwrap();
-        assert_eq!(g.outstanding, OUTPUT_QUEUE_BUDGET_BYTES);
-        assert_eq!(g.high_water, OUTPUT_QUEUE_BUDGET_BYTES);
+            .expect("parked reserve never completed after release"));
+        worker.join().unwrap();
+        assert_eq!(budget.state.lock().unwrap().outstanding, OUTPUT_QUEUE_BUDGET_BYTES);
     }
 
-    /// `cancel` wakes a blocked reserve and makes it return `false` — the
-    /// reader-must-stop signal — without any release ever happening.
+    /// `cancel` wakes a PARKED reserve (same witness) and makes it return
+    /// `false` — the reader-must-stop signal — without any release ever
+    /// happening; and a cancelled budget refuses every future reserve.
     #[test]
-    fn output_budget_cancel_unblocks_a_blocked_reserve_with_false() {
+    fn output_budget_cancel_unblocks_a_parked_reserve_with_false() {
         let budget = Arc::new(OutputBudget::new());
         assert!(budget.reserve(OUTPUT_QUEUE_BUDGET_BYTES));
 
         let (done_tx, done_rx) = mpsc::channel();
         let b = Arc::clone(&budget);
-        thread::spawn(move || {
+        let worker = thread::spawn(move || {
             done_tx.send(b.reserve(1)).unwrap();
         });
 
+        await_one_waiter(&budget);
         budget.cancel();
         assert!(!done_rx
             .recv_timeout(Duration::from_secs(30))
-            .expect("blocked reserve never returned after cancel"));
+            .expect("parked reserve never returned after cancel"));
+        worker.join().unwrap();
         assert!(!budget.reserve(1), "a cancelled budget must refuse every future reserve");
     }
 }
