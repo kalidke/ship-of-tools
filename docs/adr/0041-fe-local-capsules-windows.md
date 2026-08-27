@@ -367,6 +367,119 @@ in `write_all` (narrow; unmitigated by choice, not oversight), and a
 test timeout detaches a genuinely hung OS thread because safe Rust
 cannot kill one.
 
+### Step 5 as specified (2026-08-28, pre-implementation review)
+
+The build-order line for step 5 compresses the whole §attach-protocol
+section plus four budget rows that only exist once clients exist. The
+pre-code adversarial review of the work split overturned eight of its
+first-draft decisions; the rulings, so implementation cannot re-litigate
+them:
+
+- **Connections are lane-typed, not frame-multiplexed.** The first
+  frame's magic binds the connection (mgmt or attach); every later frame
+  must match; violation closes it. Mgmt is lockstep — one request
+  outstanding, no request IDs. A refused attach `hello` closes that
+  connection; the ADR's "mgmt remains available" is satisfied by a fresh
+  mgmt connection, and step 6's adoption challenge runs on a mgmt-typed
+  connection whose pipe handle is exactly what
+  `GetNamedPipeServerProcessId` verifies.
+- **Both lanes carry fixed BINARY bodies; no JSON on the wire.** Outer
+  framing `magic(4) + len:u32-LE + body`, 1 MiB cap enforced before
+  parse. The pinned mgmt v0 shapes: request opcode byte (`probe`,
+  `status`, `shutdown {reason: len u8 + UTF-8 ≤128 B}`), reply opcode
+  meaning success, `status` carrying `pid:u32-LE`, `created:u64-LE` (raw
+  FILETIME bits — exact `u64` bits cannot ride permanently-pinned JSON;
+  above 2^53 exactness is parser-dependent, and the adoption challenge
+  compares exact bits), and `survival:u8`. No version field anywhere in
+  the lane, and no attach-version advertisement in it either — that
+  would couple the permanent lane to the versioned one. Input, output,
+  and checkpoint bytes ride raw (no base64), so the chunk arithmetic is
+  exact. Every frame layout — requests, replies, refusals — is specified
+  with byte-level goldens; attach proto v1 binds checkpoint format v1,
+  decided before the goldens exist.
+- **Attach is GROUND-GATED.** Checkpoint v1's contract (stated in the
+  fork's `checkpoint.rs`) requires the post-checkpoint stream to start
+  at a VTE ground-state boundary; ConPTY reads can end mid-CSI/OSC/DCS/
+  UTF-8, so attaching at an arbitrary commit boundary is wrong. An
+  attach PENDS — output keeps draining and committing — until the first
+  commit boundary where the parser reports ground; then, in one writer-
+  loop step: force the group-commit, publish those bytes to existing
+  subscribers, encode the checkpoint, subscribe the new connection at
+  that watermark. A bounded pend (ground recurs constantly in any sane
+  stream) ends in a loud typed refusal, retryable. This requires
+  `is_ground()` from the vt100 fork — VT state AND the UTF-8 decoder —
+  which requires owning the state machine: no released `vte` (through
+  0.15.0) exposes parser state, so the fork vendors vte's core, the same
+  provenance move the fork itself is. Attach-fidelity tests must cut the
+  stream inside CSI, OSC, DCS, and multibyte UTF-8.
+- **The checkpoint never rides the live queue.** The maximum checkpoint
+  (8,651,327 B) exceeds the 4 MiB per-watcher queue; enqueuing it there
+  would evict every maximum-size attach. One global snapshot-transfer
+  slot (a second attach waits — preserving the budget's single ~8.26 MiB
+  transient term); the checkpoint is a writer work item outside the
+  queue; live post-watermark output queues behind it; overflow before
+  completion evicts.
+- **The pen: capability-only EOF, demote-on-take, no local grant.** The
+  capsule preamble stops at the null-holder state — the step-4 `"local"`
+  grant is deleted; the first driver ever is a pipe `take`. `take`
+  commits the strict-increment `take_state`, fsyncs, then acks, and
+  DEMOTES the previous driver connection's capability (load-bearing for
+  `resize`, which carries no identity fields). Connection EOF clears the
+  ephemeral capability ONLY — no durable `{holder:null}` transition on
+  EOF (a stale durable holder cannot type without a capability, and the
+  EOF-vs-newer-take race disappears). The stale-epoch recheck stays
+  immediately before the PTY write.
+- **Dedupe is seeded, exactly once, in the walk that already exists.**
+  Keys never expire and the corpus is the whole retained voyage: a
+  successor capsule starting with an empty index would let a pre-crash
+  `forwarded` key re-forward into the replacement shell — the exact
+  double-forward dedupe exists to prevent. The index (16-byte key →
+  input Seq, lattice state, intent Seq) is folded into
+  `open_for_writing`'s existing full-frame walk, never a second scan;
+  its memory is O(retained inputs), unbounded in v1, stated here rather
+  than hidden. Retry folds are exact: `{input}` → new intent for the
+  ORIGINAL input; `{input, intent}` → wire reply `delivery_unknown`,
+  append NOTHING (the lattice has no intent→refused edge); later chains
+  → replay the recorded outcome. The client supplies the idem_key; no
+  content hash (an equality oracle over redacted input). Wire inputs are
+  capped small (8 KiB) so step 4's accepted blocking-`write_all`
+  residual stays narrow. `producer_observed` is not emitted — echo
+  confirmation is the adapter's (ADR 0040); raw-terminal chains end at
+  `forwarded`.
+- **Liveness deadlines run on physical writes, driver-only.** One
+  `keepalive {nonce}` echo frame (no ping/pong pair); its deadline clock
+  starts when the transport reports the frame physically written (an
+  enqueued ping behind a backlog must not kill a healthy reader);
+  suspended during that connection's checkpoint transfer; `take` is
+  refused until the taker's final checkpoint chunk is physically
+  written; independently, a nonempty writer queue must make write
+  progress within its deadline. Watchers get no keepalive — eviction
+  bounds them. Transport cancellation is overlapped I/O + `CancelIoEx`,
+  pinned (dedicated threads alone do not make blocked I/O cancellable);
+  `ERROR_PIPE_CONNECTED` is success; `FIRST_PIPE_INSTANCE` on the first
+  instance only — a rival create WITH the flag failing is the squat
+  detection. The budget closes over a TOTAL subscriber cap (driver
+  included) plus separately bounded pre-hello/mgmt connections, a
+  pre-hello timeout, and lockstep inbound (one outstanding request per
+  connection).
+- **The pipe is never live while the writer lock is free.** Created only
+  after `open_for_writing` holds the lock, closed before release —
+  step 6's probe table depends on that implication. The pipe DACL is a
+  variant of the store descriptor WITHOUT directory inheritance flags
+  (pipe DACLs gate both ends; OI/CI is directory semantics). The voyage
+  id is validated as a UUID before pipe-name interpolation. The shutdown
+  ack is physically written before teardown closes its connection.
+- **Survival is supplied, never inferred.** The capsule config gains a
+  typed `Survival` the SPAWNER provides (step 6's breakaway attempt is
+  the real source); mgmt `status` transports it. Deriving it from
+  `IsProcessInJob` observation would cross the ADR's
+  observation-is-not-authority line; the observation stays diagnostics.
+- **Deleted from the production path** once the pipe lane is live: the
+  local take grant, the raw internal input command and Windows stdin
+  harness, Windows echo/stdout mirroring, capsule-generated idem keys,
+  and every proposed protocol counter on the exit summary — tests
+  observe checkpoint receipt, EOF, and voyage facts directly.
+
 ## The attach protocol
 
 One local socket per voyage (a named pipe on Windows), created
