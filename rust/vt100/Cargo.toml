@@ -9,6 +9,13 @@
 # version equal to the upstream release it vendors; local changes ride the
 # workspace, not crates.io. CHANGELOG.md records the provenance and the
 # three differences from upstream, including the one parser behavior change.
+#
+# `src/vte/` additionally vendors vte 0.13.1's core (minus the `ansi`
+# feature module) plus utf8parse 0.2.2, both MIT/Apache-2.0 with their
+# license files copied in alongside — see `src/vte/LICENSE-*` and
+# `src/vte/utf8/LICENSE-*`. Reason: no released `vte` (checked through
+# 0.15.0) exposes its parser state, and `Parser::is_ground` needs it to cut
+# a capsule's attach stream at a VTE ground-state boundary (ADR 0041 step 5).
 
 [package]
 name = "vt100-ctt"
@@ -28,7 +35,6 @@ path = "src/lib.rs"
 
 [dependencies]
 unicode-width = "0.2.0"
-vte = "0.13.0"
 
 # Test-only: the vendored upstream fixture corpus stores each expected screen
 # as JSON (`tests/data/fixtures/`). Nothing in the library serializes.

@@ -60,6 +60,34 @@ raising one without the other would restore the underflow in silence.
 Nothing else about parsing differs from the release this vendors — and that
 sentence is now checked rather than asserted; see below.
 
+**Added, ADR 0041 step 5 — `Parser::is_ground`.** `src/vte/` vendors vte
+0.13.1's core (minus the `ansi` feature module) and utf8parse 0.2.2 in full,
+both MIT/Apache-2.0 with their license files copied in alongside. No
+released `vte`, checked through 0.15.0, exposes the escape-sequence state
+machine's state — it is a private field — and the capsule can only cut an
+attach stream at a boundary where that state is `Ground` and no partial
+UTF-8 codepoint is buffered (see `src/checkpoint.rs`). Vendoring is what
+makes the accessor possible: `Parser::is_ground` reads both the vendored
+vte state and the vendored utf8parse state directly, rather than inferring
+ground-ness from which `Perform` callback last fired — unreliable, since DEL
+is `Action::Print` from `Ground` and `Action::Ignore` elsewhere, so the
+shape of the callback traffic alone does not say which state produced it
+(see `tests/ground.rs::del_in_ground_is_still_ground`). One divergence from
+straight vendoring: `src/vte/table.rs`'s state-transition table is normally
+generated at compile time by the `vte_generate_state_changes` proc macro;
+vendoring that macro too would add a dependency for a single generated
+constant, so its expansion is precomputed once and pinned as a literal
+instead, with the transition list that produced it kept alongside as a
+comment so the literal stays auditable against it. `tests/ground.rs` pins
+the ground/not-ground boundary across escape, CSI, OSC, DCS, UTF-8, and
+cancel-byte (CAN/SUB) cases. A second divergence: upstream caps the OSC
+accumulation buffer at 1024 bytes only on its `no_std`/arrayvec arm — which
+is the arm vte's DEFAULT features select, so it was the behavior actually
+shipping before the vendoring. The vendored copy keeps `Vec` storage (no
+arrayvec dependency) but keeps the cap unconditionally: the parser sits in
+front of an untrusted producer, and an unterminated OSC must not grow
+memory without bound (`tests/osc_cap.rs`).
+
 ## What this fork's tests are
 
 `src/` was vendored alone at first, so the 54 checkpoint tests were the whole
