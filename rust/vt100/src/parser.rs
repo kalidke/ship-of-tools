@@ -112,9 +112,10 @@ impl<CB: crate::callbacks::Callbacks> Parser<CB> {
     ///
     /// The escape-sequence state machine is reset to ground at the same time.
     /// A checkpoint describes a screen, never a half-consumed escape
-    /// sequence — the sequence parser's state is private to `vte` and cannot
-    /// be captured — so the producer of a checkpoint is responsible for
-    /// cutting the byte stream that follows it at a ground-state boundary.
+    /// sequence — the sequence parser's state is deliberately not part of
+    /// the checkpoint format — so the producer of a checkpoint is
+    /// responsible for cutting the byte stream that follows it at a
+    /// ground-state boundary, which [`is_ground`](Self::is_ground) reports.
     /// Resetting here is what makes that contract hold on this side.
     ///
     /// The restored screen keeps this parser's own scrollback capacity; see

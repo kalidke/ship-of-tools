@@ -86,7 +86,11 @@ is the arm vte's DEFAULT features select, so it was the behavior actually
 shipping before the vendoring. The vendored copy keeps `Vec` storage (no
 arrayvec dependency) but keeps the cap unconditionally: the parser sits in
 front of an untrusted producer, and an unterminated OSC must not grow
-memory without bound (`tests/osc_cap.rs`).
+memory without bound (`tests/osc_cap.rs`). A third divergence: upstream's
+`pub use params::{Params, ParamsIter};` also re-exports `ParamsIter`, which
+this crate never names — pruned rather than kept as a dead re-export,
+since nothing outside the crate can reach it through the `pub(crate) mod
+vte` boundary anyway.
 
 ## What this fork's tests are
 
