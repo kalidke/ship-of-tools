@@ -83,7 +83,36 @@ command -v tmux && tmux -V # REQUIRED on any host that RUNS the backend (local /
   local-role launcher starts `sotd` on demand instead. Intel Macs:
   from-source only.
 
-## 2. Choose the topology (ask the human, one question)
+## 2. Choose the topology
+
+### 2.0 First: is there already an install here?
+
+**Look before you ask.** A machine with a working install has already answered
+this question, and re-answering it differently reconfigures a live system —
+that is a real incident, not a hypothetical: a documented install run on a box
+with a live backend re-roled it, and the first anyone noticed was a monitoring
+pane quietly showing one host.
+
+```bash
+cat ~/.local/share/sot/install.json 2>/dev/null        # the recorded role
+systemctl --user cat sotd.service 2>/dev/null | grep ExecStart   # who owns the unit
+```
+
+- **A schema-1 manifest with a role** → this is an UPGRADE. Report it, and use
+  that same role's flag. The installer refuses a different one.
+- **A unit whose `ExecStart` is outside `~/.local/share/sot/`** → something
+  else owns the backend here (a source checkout, or another `--prefix`).
+  Installing would replace or disable it. Stop and tell the human.
+- **A manifest you cannot read** — truncated, unknown schema, recording a
+  different prefix — is NOT the same as no install. Treat it as unknown state
+  and stop; the installer does the same.
+- **Neither** → a fresh install; carry on below.
+
+Only when you must change an existing role, and the human has explicitly
+authorized that specific change, add `--force-role-change` to the install
+command. Never add it to get past an error you did not understand.
+
+### 2.1 Ask the human (one question, fresh installs)
 
 > "Where should Ship of Tools run? (a) everything on this machine,
 > (b) the UI here but the backend on a server you SSH to,
