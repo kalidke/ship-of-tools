@@ -83,26 +83,45 @@ impl VoyageStore {
         let parent = parent.as_path();
         // Volume preflight BEFORE any `.creating` mutation (ADR 0041).
         fsutil::preflight_volume(parent)?;
-        let staging = parent.join(format!(
-            "{}.creating",
-            name.to_str()
-                .ok_or_else(|| Error::State("bad voyage root name".into()))?
-        ));
-        // Staging is born FRESH and PROTECTED, unconditionally. Removing
-        // residue first (a crashed prior attempt's partial staging) closes
-        // two holes at once: files from that attempt can no longer ride
-        // into the published voyage, and a `.creating` made by any earlier
-        // build can no longer carry its unprotected descriptor forward —
-        // which would quietly defeat "never create-then-repair" (ADR 0041
-        // "attach protocol" §Security split) by shipping the one tree that
-        // was never repaired OR protected. Everything BELOW the staging
-        // root (seg/, blobs/, writer.lock, ...) stays plain creation and
-        // INHERITS the protection.
-        match std::fs::remove_dir_all(&staging) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+        let name_str = name
+            .to_str()
+            .ok_or_else(|| Error::State("bad voyage root name".into()))?;
+        // Staging is ATTEMPT-OWNED: `<name>.creating-<random>`, one fresh
+        // directory per bootstrap attempt, protected from birth
+        // (`create_dir_protected` — ADR 0041 §Security split, never
+        // create-then-repair). A SHARED staging pathname — with or without a
+        // remove-residue step — cannot be made safe: with removal, a
+        // concurrent bootstrap can delete this attempt's populated staging
+        // and substitute an empty one between our flushes and our rename
+        // (publishing a directory nobody flushed, defeating
+        // source-flush-before-rename); without removal, two attempts
+        // interleave writes into one tree. A name nobody else knows
+        // dissolves both — the same reasoning as `publish_blob`'s random
+        // temp suffix — and `publish_noreplace` below already arbitrates
+        // the winner. Everything under the staging root (seg/, blobs/,
+        // writer.lock, ...) stays plain creation and INHERITS the
+        // protection.
+        let staging = {
+            let mut r = [0u8; 4];
+            getrandom::fill(&mut r).map_err(std::io::Error::from)?;
+            parent.join(format!(
+                "{name_str}.creating-{:02x}{:02x}{:02x}{:02x}",
+                r[0], r[1], r[2], r[3]
+            ))
+        };
+        // Any exit before the publish defuses this — error return or panic —
+        // removes the attempt's staging: a loser or a failure never leaves
+        // residue behind by any path that runs destructors. (A hard kill
+        // does; the post-publish sweep below is what retires that.)
+        struct StagingGuard(std::path::PathBuf, bool);
+        impl Drop for StagingGuard {
+            fn drop(&mut self) {
+                if self.1 {
+                    let _ = std::fs::remove_dir_all(&self.0);
+                }
+            }
         }
+        let mut guard = StagingGuard(staging.clone(), true);
         fsutil::create_dir_protected(&staging)?;
         std::fs::create_dir_all(staging.join("seg"))?;
         std::fs::create_dir_all(staging.join("blobs").join(".tmp"))?;
@@ -127,6 +146,21 @@ impl VoyageStore {
         fsutil::fsync_dir(&staging.join("seg"))?;
         fsutil::fsync_dir(&staging)?;
         fsutil::publish_noreplace(&staging, root)?;
+        guard.1 = false; // published: the staging path IS the root now
+        // Retire crash residue from attempts that never ran their guard (a
+        // hard kill mid-bootstrap). Only after WINNING: the voyage exists,
+        // so every `<name>.creating-*` sibling is either a dead attempt's
+        // leavings or a live loser about to fail its own publish — removal
+        // is correct for the first and merely hastens the second. Best
+        // effort: a sweep failure is not a bootstrap failure.
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            let residue_prefix = format!("{name_str}.creating-");
+            for e in entries.flatten() {
+                if e.file_name().to_string_lossy().starts_with(&residue_prefix) {
+                    let _ = std::fs::remove_dir_all(e.path());
+                }
+            }
+        }
         let _ = (voyage_id, retention); // identity/retention live in the genesis header
         Ok(())
     }
@@ -444,6 +478,51 @@ mod tests {
         e
     }
 
+    /// The concurrent-bootstrap race a shared staging pathname allowed
+    /// (review finding on the DACL unit): with one `.creating` path, attempt
+    /// B could delete attempt A's populated, flushed staging and substitute
+    /// an empty directory between A's flushes and A's rename — A then
+    /// publishes a voyage NOBODY flushed. Attempt-owned random staging names
+    /// dissolve the shared path entirely; `publish_noreplace` arbitrates.
+    /// This drives both attempts through a start barrier and requires:
+    /// exactly one winner, a verify-green published voyage (never an empty
+    /// or hybrid one), and zero staging residue once both attempts and the
+    /// winner's sweep are done.
+    #[test]
+    fn concurrent_bootstraps_publish_exactly_one_verifiable_voyage() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voyr");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let results: Vec<_> = (0..2)
+            .map(|_| {
+                let root = root.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    VoyageStore::bootstrap(&root, "voyr", RetentionClass::Discard)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+
+        let winners = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(winners, 1, "exactly one bootstrap must win: {results:?}");
+        // The published voyage is complete and internally consistent — the
+        // race's failure mode was an EMPTY root published as success.
+        crate::verify::verify_voyage(&root, "voyr").unwrap();
+        let store = VoyageStore::open_for_writing(&root, "voyr").unwrap();
+        drop(store);
+        // Loser's guard plus winner's sweep leave no attempt residue.
+        let residue: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("voyr.creating"))
+            .collect();
+        assert!(residue.is_empty(), "staging residue: {residue:?}");
+    }
+
     #[test]
     fn bootstrap_open_write_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -451,7 +530,13 @@ mod tests {
         VoyageStore::bootstrap(&root, "voy1", RetentionClass::Discard).unwrap();
         assert!(root.join("seg").is_dir());
         assert!(root.join("blobs").join(".tmp").is_dir());
-        assert!(!dir.path().join("voy1.creating").exists());
+        // No staging residue of any attempt survives a successful bootstrap.
+        let residue: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("voy1.creating"))
+            .collect();
+        assert!(residue.is_empty(), "staging residue left behind: {residue:?}");
 
         // Incarnation 1: epoch 1, write + seal one segment.
         {
@@ -630,9 +715,11 @@ mod tests {
             ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1,
             SE_FILE_OBJECT,
         };
-        use windows_sys::Win32::Security::{
-            DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        };
+        // DACL_SECURITY_INFORMATION alone: the PROTECTED_ flag is SET-ONLY
+        // (Microsoft's SECURITY_INFORMATION table marks its query right
+        // "not available") — the P in the returned SDDL comes from the
+        // descriptor's own control field, not from asking for it.
+        use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
 
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
         unsafe {
@@ -640,7 +727,7 @@ mod tests {
             let rc = GetNamedSecurityInfoW(
                 wide.as_ptr(),
                 SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                DACL_SECURITY_INFORMATION,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -653,7 +740,7 @@ mod tests {
             let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
                 psd,
                 SDDL_REVISION_1,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                DACL_SECURITY_INFORMATION,
                 &mut sddl_ptr,
                 &mut sddl_len,
             );
@@ -684,9 +771,7 @@ mod tests {
             ConvertSecurityDescriptorToStringSecurityDescriptorW,
             ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
         };
-        use windows_sys::Win32::Security::{
-            DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        };
+        use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
 
         let wide: Vec<u16> = std::ffi::OsStr::new(sddl)
             .encode_wide()
@@ -709,7 +794,7 @@ mod tests {
             let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
                 psd,
                 SDDL_REVISION_1,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                DACL_SECURITY_INFORMATION,
                 &mut out_ptr,
                 &mut out_len,
             );
@@ -784,9 +869,10 @@ mod tests {
         );
     }
 
-    // Unix behavior is unchanged by `create_dir_protected` (it is a plain
-    // `create_dir` there, AlreadyExists-tolerant exactly as the
-    // `create_dir_all` it replaced was) — `bootstrap_open_write_reopen`
-    // above is that proof: it bootstraps, writes, reopens, and verifies the
-    // whole voyage on every unix/linux CI run, unchanged by this unit.
+    // Unix is functionally unchanged by `create_dir_protected` — a plain
+    // `create_dir`, strict about AlreadyExists, which the attempt-owned
+    // random staging name makes unreachable in practice —
+    // `bootstrap_open_write_reopen` above is the proof that the whole
+    // bootstrap/write/reopen/verify path still holds on every unix/linux
+    // CI run.
 }

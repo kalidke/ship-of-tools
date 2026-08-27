@@ -307,10 +307,14 @@ fn owner_protected_descriptor() -> Result<OwnerProtectedDescriptor> {
     // struct holding a pointer field — so the buffer is `u64`-backed.
     let mut needed: u32 = 0;
     unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed) };
-    if needed == 0 {
-        return Err(Error::State(
-            "GetTokenInformation: sizing call returned zero length".into(),
-        ));
+    // The sizing call FAILS by contract; the only healthy failure is
+    // insufficient-buffer with the needed length filled in.
+    let sizing = std::io::Error::last_os_error();
+    if sizing.raw_os_error()
+        != Some(windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER as i32)
+        || needed == 0
+    {
+        return Err(io_ctx(sizing, format_args!("GetTokenInformation sizing")));
     }
     let words = (needed as usize).div_ceil(8);
     let mut buf: Vec<u64> = vec![0u64; words];
