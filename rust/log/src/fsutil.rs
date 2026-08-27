@@ -190,6 +190,187 @@ pub fn ensure_container(root: &Path) -> Result<std::path::PathBuf> {
     }
 }
 
+/// Create `path` as a directory that is born with its final protection —
+/// ADR 0041's "attach protocol" §Security split: "never create-then-repair".
+/// Used ONLY for the voyage staging root (bootstrap's `.creating`); every
+/// interior directory and file created inside it afterward (`seg/`,
+/// `blobs/`, `writer.lock`, ...) uses plain creation and INHERITS the
+/// protection — Windows ACE inheritance cascades through arbitrary depth
+/// on its own, so nothing else needs per-file work, and unix has no
+/// equivalent step at all (see the Windows arm's doc for why).
+///
+/// Deliberately NOT tolerant of an existing directory: the caller
+/// (bootstrap) removes crashed-attempt residue first, so the path being
+/// present here means a CONCURRENT bootstrap of the same root — and failing
+/// loudly now is strictly better than the alternative this replaced, two
+/// bootstraps interleaving writes into one shared staging directory.
+#[cfg(unix)]
+pub fn create_dir_protected(path: &Path) -> Result<()> {
+    // Unix's protection is the existing owner-only file modes (umask +
+    // ownership) — not in scope here; ADR 0041's DACL work is Windows-only,
+    // so this arm is a plain create.
+    std::fs::create_dir(path)?;
+    Ok(())
+}
+
+/// Windows arm: `CreateDirectoryW` with `SECURITY_ATTRIBUTES` carrying a
+/// descriptor for the STABLE ACCOUNT SID (the token user — explicitly NOT
+/// the logon SID, which differs per logon session and would strand voyages
+/// at reboot), `SE_DACL_PROTECTED` (a permissive parent directory can never
+/// inject ACEs into this tree), one ACE granting the trustee full access
+/// with OBJECT_INHERIT + CONTAINER_INHERIT (the whole tree inherits without
+/// per-file work). Threat model: other local users and anonymous access,
+/// not the owner. The subsequent staging→root publish is a same-volume
+/// rename (`publish_noreplace`), which preserves the security descriptor —
+/// so protecting `.creating` at birth protects the voyage forever.
+#[cfg(windows)]
+pub fn create_dir_protected(path: &Path) -> Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+
+    let descriptor = owner_protected_descriptor()?;
+    let sa = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.sd,
+        bInheritHandle: 0,
+    };
+    let wide = wide_verbatim(path)?;
+    if unsafe { CreateDirectoryW(wide.as_ptr(), &sa) } != 0 {
+        return Ok(());
+    }
+    // AlreadyExists included: see the unix arm's doc — residue is the
+    // caller's to remove, so presence here means a concurrent bootstrap.
+    Err(io_ctx(
+        std::io::Error::last_os_error(),
+        format_args!("CreateDirectoryW {path:?}"),
+    ))
+    // `descriptor` drops here (after the call, whichever path returns),
+    // freeing the LocalAlloc'd security descriptor: CreateDirectoryW copies
+    // what it needs into the new object's own security descriptor at
+    // creation time, so nothing above retains a live reference into it.
+}
+
+/// Owns a security descriptor built by `ConvertStringSecurityDescriptorToSecurityDescriptorW`
+/// (`LocalAlloc`'d by that API) for exactly as long as `create_dir_protected`
+/// needs it live; freed on drop.
+#[cfg(windows)]
+struct OwnerProtectedDescriptor {
+    sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+}
+
+#[cfg(windows)]
+impl Drop for OwnerProtectedDescriptor {
+    fn drop(&mut self) {
+        if !self.sd.is_null() {
+            unsafe {
+                windows_sys::Win32::Foundation::LocalFree(self.sd as windows_sys::Win32::Foundation::HLOCAL);
+            }
+        }
+    }
+}
+
+/// Build the descriptor from an SDDL string — `D:P(A;OICI;FA;;;<sid>)` — via
+/// `ConvertStringSecurityDescriptorToSecurityDescriptorW` rather than a
+/// hand-assembled ACL: far less code, and the SDDL string doubles as
+/// documentation of exactly what is granted. `<sid>` is this process's own
+/// token-user SID, read via `OpenProcessToken` + `GetTokenInformation
+/// (TokenUser)` and stringified via `ConvertSidToStringSidW` — every
+/// `LocalAlloc`'d intermediate (the token handle via `CloseHandle`, the SID
+/// string) is freed before returning; only the final descriptor survives,
+/// owned by the caller's `OwnerProtectedDescriptor`.
+#[cfg(windows)]
+fn owner_protected_descriptor() -> Result<OwnerProtectedDescriptor> {
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    // This process's own token, query-only access.
+    let mut token: HANDLE = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io_ctx(std::io::Error::last_os_error(), format_args!("OpenProcessToken")));
+    }
+    struct TokenGuard(HANDLE);
+    impl Drop for TokenGuard {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+    let _token_guard = TokenGuard(token);
+
+    // TOKEN_USER is variable-length: the SID is appended after the fixed
+    // struct, so the documented idiom is size-query-then-fetch. A plain
+    // `Vec<u8>` buffer only guarantees 1-byte alignment — not enough for a
+    // struct holding a pointer field — so the buffer is `u64`-backed.
+    let mut needed: u32 = 0;
+    unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed) };
+    if needed == 0 {
+        return Err(Error::State(
+            "GetTokenInformation: sizing call returned zero length".into(),
+        ));
+    }
+    let words = (needed as usize).div_ceil(8);
+    let mut buf: Vec<u64> = vec![0u64; words];
+    let buf_ptr = buf.as_mut_ptr().cast::<u8>();
+    if unsafe { GetTokenInformation(token, TokenUser, buf_ptr.cast(), needed, &mut needed) } == 0 {
+        return Err(io_ctx(std::io::Error::last_os_error(), format_args!("GetTokenInformation")));
+    }
+    let sid = unsafe { (*buf_ptr.cast::<TOKEN_USER>()).User.Sid };
+
+    // SID -> string (LocalAlloc'd by the API; copied out and freed here).
+    let mut sid_str: *mut u16 = std::ptr::null_mut();
+    if unsafe { ConvertSidToStringSidW(sid, &mut sid_str) } == 0 {
+        return Err(io_ctx(std::io::Error::last_os_error(), format_args!("ConvertSidToStringSidW")));
+    }
+    let sid_string = unsafe { pwstr_to_string(sid_str) };
+    unsafe {
+        LocalFree(sid_str as windows_sys::Win32::Foundation::HLOCAL);
+    }
+
+    // D: (DACL) P (protected), one ACE: (A)llow, (OICI) object+container
+    // inherit, (FA) full access, for the token-user SID.
+    let sddl = format!("D:P(A;OICI;FA;;;{sid_string})");
+    let sddl_wide = wide_null(&sddl);
+    let mut sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl_wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io_ctx(
+            std::io::Error::last_os_error(),
+            format_args!("ConvertStringSecurityDescriptorToSecurityDescriptorW {sddl:?}"),
+        ));
+    }
+    Ok(OwnerProtectedDescriptor { sd })
+}
+
+/// Read a NUL-terminated wide string produced by a Win32 API into an owned
+/// `String` (lossy: these are SIDs/SDDL text, never user-facing content
+/// where lossy conversion would matter).
+#[cfg(windows)]
+unsafe fn pwstr_to_string(p: *const u16) -> String {
+    let len = (0..).take_while(|&i| *p.add(i) != 0).count();
+    let slice = std::slice::from_raw_parts(p, len);
+    String::from_utf16_lossy(slice)
+}
+
+/// NUL-terminated UTF-16 for an arbitrary Rust string (the SDDL text) —
+/// distinct from `wide_verbatim`, which additionally applies path-specific
+/// `\\?\` prefixing that would corrupt a non-path string like this one.
+#[cfg(windows)]
+fn wide_null(s: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+}
+
 /// Flush an existing file's contents by path (write-open + `sync_all`).
 /// Recovery's publish-as-is rows need this: a writer killed between
 /// `write_all(seal)` and its own fsync leaves a complete, cache-visible seal

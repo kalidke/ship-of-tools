@@ -20,11 +20,17 @@ libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 # Raw Win32 for the durability arms (ADR 0041 §store port): MoveFileExW,
-# GetVolumeInformationByHandleW, FILE_FLAG_BACKUP_SEMANTICS. Same version
-# the frontend pins.
+# GetVolumeInformationByHandleW, FILE_FLAG_BACKUP_SEMANTICS. Plus the
+# atomic-DACL-at-birth arm (ADR 0041 "attach protocol" §Security split):
+# Win32_Security for SECURITY_ATTRIBUTES/GetTokenInformation/TokenUser,
+# Win32_Security_Authorization for the SDDL conversions, Win32_System_Threading
+# for OpenProcessToken/GetCurrentProcess. Same version the frontend pins.
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

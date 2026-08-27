@@ -88,6 +88,22 @@ impl VoyageStore {
             name.to_str()
                 .ok_or_else(|| Error::State("bad voyage root name".into()))?
         ));
+        // Staging is born FRESH and PROTECTED, unconditionally. Removing
+        // residue first (a crashed prior attempt's partial staging) closes
+        // two holes at once: files from that attempt can no longer ride
+        // into the published voyage, and a `.creating` made by any earlier
+        // build can no longer carry its unprotected descriptor forward —
+        // which would quietly defeat "never create-then-repair" (ADR 0041
+        // "attach protocol" §Security split) by shipping the one tree that
+        // was never repaired OR protected. Everything BELOW the staging
+        // root (seg/, blobs/, writer.lock, ...) stays plain creation and
+        // INHERITS the protection.
+        match std::fs::remove_dir_all(&staging) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        fsutil::create_dir_protected(&staging)?;
         std::fs::create_dir_all(staging.join("seg"))?;
         std::fs::create_dir_all(staging.join("blobs").join(".tmp"))?;
         // sha256/ exists (and is flushed) from birth so the first CAS
@@ -562,4 +578,158 @@ mod tests {
         let e = store.publish_blob(b"hello").unwrap_err();
         assert!(matches!(e, Error::Io(_)), "{e}");
     }
+
+    /// Independently derive this process's own token-user SID as a string —
+    /// deliberately NOT calling into `fsutil`'s private
+    /// `owner_protected_descriptor`, so a bug in THAT helper's SID lookup
+    /// could not also hide from these tests.
+    #[cfg(windows)]
+    fn current_user_sid_string() -> String {
+        use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+        use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+        use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        unsafe {
+            let mut token: HANDLE = std::ptr::null_mut();
+            assert_ne!(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token), 0);
+            let mut needed: u32 = 0;
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
+            assert!(needed > 0, "GetTokenInformation sizing call returned zero length");
+            let words = (needed as usize).div_ceil(8); // u64-backed: TOKEN_USER holds a pointer field
+            let mut buf: Vec<u64> = vec![0u64; words];
+            let buf_ptr = buf.as_mut_ptr().cast::<u8>();
+            assert_ne!(
+                GetTokenInformation(token, TokenUser, buf_ptr.cast(), needed, &mut needed),
+                0
+            );
+            let sid = (*buf_ptr.cast::<TOKEN_USER>()).User.Sid;
+            let mut sid_str: *mut u16 = std::ptr::null_mut();
+            assert_ne!(ConvertSidToStringSidW(sid, &mut sid_str), 0);
+            let len = (0..).take_while(|&i| *sid_str.add(i) != 0).count();
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(sid_str, len));
+            LocalFree(sid_str as _);
+            CloseHandle(token);
+            s
+        }
+    }
+
+    /// Round-trip `path`'s security descriptor to SDDL text via
+    /// `GetNamedSecurityInfoW` + `ConvertSecurityDescriptorToStringSecurityDescriptorW`
+    /// — far simpler and less error-prone in a test that cannot be compiled
+    /// here than manually walking `ACL`/`ACE` binary structures with
+    /// `GetAce`. Requests DACL + PROTECTED_DACL info only (no owner/group/
+    /// sacl): the SDDL comes back as `D:P(...)` when protected, `D:(...)`
+    /// when not, with each ACE's inherit/inherited flags spelled out as
+    /// letters (`OICI` = object+container inherit, `ID` = inherited).
+    #[cfg(windows)]
+    fn security_descriptor_sddl(path: &std::path::Path) -> String {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1,
+            SE_FILE_OBJECT,
+        };
+        use windows_sys::Win32::Security::{
+            DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        };
+
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        unsafe {
+            let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            let rc = GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut psd,
+            );
+            assert_eq!(rc, 0, "GetNamedSecurityInfoW failed: {rc}");
+            let mut sddl_ptr: *mut u16 = std::ptr::null_mut();
+            let mut sddl_len: u32 = 0;
+            let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                psd,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                &mut sddl_ptr,
+                &mut sddl_len,
+            );
+            assert_ne!(ok, 0, "ConvertSecurityDescriptorToStringSecurityDescriptorW failed");
+            let len = (0..).take_while(|&i| *sddl_ptr.add(i) != 0).count();
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(sddl_ptr, len));
+            LocalFree(sddl_ptr as _);
+            LocalFree(psd as _);
+            s
+        }
+    }
+
+    /// ADR 0041 DACL requirement, points 1 and 3 together: the published
+    /// root (this IS the post-rename state — bootstrap exposes no way to
+    /// inspect `.creating` before the rename, so this is simultaneously the
+    /// proof that the rename preserved the descriptor) carries a DACL that
+    /// is PRESENT and PROTECTED, with exactly one ACE granting the LIVE
+    /// token-user SID full access, marked object+container inheritable.
+    /// Fails against today's main: an un-DACL'd `create_dir_all` produces
+    /// an unprotected, inherited-from-parent descriptor with no such ACE.
+    #[test]
+    #[cfg(windows)]
+    fn bootstrap_voyage_root_gets_protected_dacl_for_token_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voy5");
+        VoyageStore::bootstrap(&root, "voy5", RetentionClass::Discard).unwrap();
+
+        let sddl = security_descriptor_sddl(&root);
+        assert!(sddl.starts_with("D:P("), "DACL must be present and PROTECTED: {sddl}");
+        let sid = current_user_sid_string();
+        let ace = format!("(A;OICI;FA;;;{sid})");
+        assert!(
+            sddl.contains(&ace),
+            "expected an Allow/ObjectInherit/ContainerInherit/FullAccess ACE for the live \
+             token-user SID {sid}, got: {sddl}"
+        );
+        // Exactly ONE ACE: containing ours proves the grant; counting proves
+        // nothing ELSE was granted — the protected bit already blocks parent
+        // injection, so a second ACE could only come from our own SDDL.
+        assert_eq!(sddl.matches("(").count(), 1, "expected exactly one ACE: {sddl}");
+    }
+
+    /// ADR 0041 DACL requirement, point 2: `seg/` — created inside the
+    /// staging root by `bootstrap`'s plain `create_dir_all`, with NO
+    /// security attributes of its own — carries an INHERITED ACE (`ID` =
+    /// INHERITED_ACE) for the same trustee, proving the tree propagates the
+    /// protection without any per-file work. A DIRECTORY child specifically
+    /// (rather than a leaf file the segment writer creates): Windows clears
+    /// the OI/CI propagation flags when materializing an inherited ACE onto
+    /// a FILE (they would have no meaning for something that can't have
+    /// children of its own), but a CONTAINER child keeps them — asserting
+    /// the exact `OICIID` flag combination is only reliable against another
+    /// container, so this checks `seg/` rather than the `.open` file inside
+    /// it. Fails against today's main for the same reason as the bootstrap
+    /// test above: there is no protected, inheritable ACE anywhere in the
+    /// tree to inherit FROM.
+    #[test]
+    #[cfg(windows)]
+    fn seg_dir_inherits_the_protected_dacl() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voy6");
+        VoyageStore::bootstrap(&root, "voy6", RetentionClass::Discard).unwrap();
+
+        let sddl = security_descriptor_sddl(&root.join("seg"));
+        let sid = current_user_sid_string();
+        let ace = format!("(A;OICIID;FA;;;{sid})");
+        assert!(
+            sddl.contains(&ace),
+            "expected an INHERITED Allow/ObjectInherit/ContainerInherit/FullAccess ACE for {sid}, \
+             got: {sddl}"
+        );
+    }
+
+    // Unix behavior is unchanged by `create_dir_protected` (it is a plain
+    // `create_dir` there, AlreadyExists-tolerant exactly as the
+    // `create_dir_all` it replaced was) — `bootstrap_open_write_reopen`
+    // above is that proof: it bootstraps, writes, reopens, and verifies the
+    // whole voyage on every unix/linux CI run, unchanged by this unit.
 }
