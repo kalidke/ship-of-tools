@@ -299,6 +299,74 @@ rulings, so implementation cannot re-litigate them:
   jobs are the supported mechanism either way — an assignment failure is
   a loud spawn failure, never an unfenced fallback.
 
+### Step 4 as built (2026-08-27, PRs #130 and #132)
+
+Every spec-gate ruling shipped as specified. What the paper design could
+not know, learned by running it — recorded because steps 5-7 build on
+these facts, not on the citations that predicted otherwise:
+
+- **The two spawn attributes use OPPOSITE `lpValue` conventions.**
+  `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` takes the HPCON *value itself*
+  (Microsoft's sample passes `hPC`, not `&hPC`); `JOB_LIST` stores a
+  *pointer* to a handle array that must live at a move-stable (heap)
+  address until the attribute list is destroyed. Passing the wrong shape
+  fails `CreateProcessW` with `ERROR_INVALID_HANDLE` — instantly, on
+  every image.
+- **Std-handle cloning is the trap the walkthrough cannot see.** Windows
+  copies the parent's std handles into a console child even with
+  `bInheritHandles = FALSE` when `STARTF_USESTDHANDLES` is absent. From
+  any redirected context — a test harness, CI, a supervisor — the child
+  then writes to the parent's pipe while its console (the pty it DID
+  attach to; its title propagates) renders nothing. Microsoft's sample
+  only works from a real console, where the cloned handles are console
+  handles that remap. The fix is Windows Terminal's own:
+  `STARTF_USESTDHANDLES` with all three std handles null. Every capsule
+  spawn context is redirected; this is load-bearing, not defensive.
+- **The close must never pause the drain.** A teardown that stops
+  consuming output to make the (pre-24H2, possibly-blocking)
+  `ClosePseudoConsole` call deadlocks precisely when the reader is
+  blocked in the output budget — with the drain timeout's clock unable
+  to start. As built, teardown is a PHASE of the ordered writer loop:
+  the reap-poll services output every iteration, the close runs on a
+  dedicated closer thread, and the drain-timeout clock starts at
+  closer-spawn. The windows-2022 CI leg (the image that still blocks)
+  is the standing referee.
+- **The contract recording, flags 0:** neither image emits a DA1 query
+  on `hOutput` (windows-latest opens with `?9001h ?1004h`;
+  windows-2022 goes straight to the first paint). The handshake answer
+  machine ships anyway — pure bytes, once-per-run answer policy so a
+  hostile producer gets no frame-amplification channel, an addition ON
+  TOP of the gate's ruling — but step 5's design should treat "conhost
+  asks at startup" as NOT OBSERVED under these flags.
+- **Exit codes are raw `u32` end-to-end.** The Unix-style `i32` cast
+  turned NTSTATUS values negative, and `GetExitCodeProcess`'s 259 is a
+  real exit value once `wait()` has proven termination — the primitive
+  is `exit_code_after_confirmed_exit`, precondition in the name.
+- **The command lane is the step-5 seam.** `run(config, commands)` with
+  one cancellable Input/Resize/Kill lane and no stdin ownership: the
+  attach lane plugs into it; teardown revokes admission by ceasing to
+  poll it.
+
+Step-7 acceptance rows ALREADY PROVEN by CI on both windows images:
+owned spawn; tree containment via kill-on-job-close (child + plainly
+spawned grandchild); the pinned termination sequence
+terminate → drain-to-zero → close-with-reader-running → EOF; repeated
+partial-spawn unwind; spawn-failure compensation sealing verify-green;
+natural exit recording the true exit code (259 and high-bit NTSTATUS
+pinned); resize request/outcome with reject-never-clamp and exactly one
+OS call per accepted request; the 8 MiB budget engaging under a 20 MiB
+flood; DACL descriptor structure, protection, and inheritance. Remaining
+for the real machine (step 7 unchanged): multi-user ACL denial,
+logout/reboot ACL access, AV rename-retry, disk-full visibility,
+forced-reboot recovery, and every FE-facing row — those need steps 5-6
+first.
+
+Accepted residuals, named in the landing commits rather than here being
+resold as fixed: a full pty input pipe can still block the writer thread
+in `write_all` (narrow; unmitigated by choice, not oversight), and a
+test timeout detaches a genuinely hung OS thread because safe Rust
+cannot kill one.
+
 ## The attach protocol
 
 One local socket per voyage (a named pipe on Windows), created
