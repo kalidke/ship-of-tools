@@ -226,6 +226,79 @@ apart. The lesson for steps 4-5: the inherited parser's stated invariants were
 written against older dependencies, and the corpus is what finds where they
 stopped being true.
 
+### Step 4 as specified (2026-08-27, pre-implementation review)
+
+The build-order line for step 4 compresses six mechanisms; a pre-code
+adversarial review of the work split resolved the ambiguities it hid. The
+rulings, so implementation cannot re-litigate them:
+
+- **The host-side terminal-query model.** Child-emitted DSR/DA never
+  reaches the hosting application — conhost's own output-side dispatcher
+  answers those into the console input stream itself. What the capsule
+  must answer is ConPTY's HOST-FACING handshake on `hOutput`: DA1
+  (`ESC[c`), which current conhost emits at startup, and CPR (`ESC[6n`)
+  only under `PSEUDOCONSOLE_INHERIT_CURSOR`. Step 4 creates the
+  pseudoconsole with FLAGS 0 (no cursor inheritance — the supervisor
+  context has no parent console worth inheriting from), answers DA1 with
+  a fixed conservative VT identity (`ESC [ ? 1 ; 0 c`, subject only to
+  the unit's ConPTY contract test), and keeps CPR support present but
+  exercised only where inherit-cursor is enabled. There is NO scanning of
+  producer output for child queries and no separate reusable DSR module —
+  one consumer, one private carry-state machine, byte-ordered so a CPR
+  sample reflects the cursor AT the query boundary, not after the chunk.
+- **Resize rejects, never clamps.** An out-of-budget request (beyond
+  512x256, below the vt100 fork's 2x2 floor) commits a FAILURE outcome;
+  silently clamping would report a geometry nobody asked for. The
+  exchange is an ordered-writer-loop command (request committed → one
+  `ResizePseudoConsole` call → parser and persisted geometry updated only
+  on success → outcome committed); step 5's attach lane becomes its first
+  external caller and routes into the same command. Initial geometry is
+  validated by the same rule. Frame legality follows ADR 0039's matrix
+  exactly: query exchanges are request (`to`) / response (exactly one
+  `responds_to`) / outcome (`scope` + `target`); resize is request +
+  outcome only.
+- **"Revoke input" means closing controller/driver ADMISSION** — the
+  writer loop stops accepting new input and resize commands — never
+  closing the ConPTY input handle: the host-facing handshake replies must
+  stay writable through the drain (an unanswered handshake can deadlock
+  the pre-24H2 close this sequence exists to survive).
+- **Teardown has ONE orchestrator.** The capsule runtime (writer loop)
+  owns the sequence; the ConPTY backend supplies primitives (terminate
+  job, poll `ActiveProcesses`, close pty) but never buffers "final
+  output" itself — output keeps committing through termination, and
+  `producer_dead` + seal happen only after reader EOF.
+- **The DEGRADED handoff is split across steps and pinned now.** Step 6's
+  supervisor is what ATTEMPTS breakaway for the capsule and detects
+  denial; it passes a typed diagnostic into the capsule's spawn config;
+  step 4 RECORDS it in spawn detail; step 5 transports it (the mgmt
+  `status` survival field above); step 6 renders the warning. A step-4
+  capsule can also observe `IsProcessInJob` for diagnostics, but
+  observation is not authority (the #119 locator-must-declare rule: no
+  `kill_domain` is recorded either way).
+- **Cumulative memory, stated honestly.** The budget table bounds parts;
+  the whole is: two live grids at max geometry ~8 MiB cell payload + the
+  8 MiB bounded output queue + step 5's ≤8.26 MiB transient encoded
+  checkpoint ≈ 24.3 MiB lower-bound peak before allocator and transport
+  overhead. Acceptable, and now a stated number rather than an implied
+  one.
+- **The store must be DACL-remediated BEFORE any real Windows voyage
+  exists.** Bootstrap currently creates `.creating` without creation-time
+  security attributes; the atomic `SE_DACL_PROTECTED` descriptor is
+  store-side work (the step-2 column, not the capsule), and "never
+  create-then-repair" makes it a prerequisite: step-4 tests use tempdirs,
+  but no production voyage may be born un-DACLed. Default voyage-path
+  selection (`%LOCALAPPDATA%\sot\voyages`) belongs to the step-6 spawn
+  owner, not the store.
+- **CI reality.** `windows-latest` now runs a build whose
+  `ClosePseudoConsole` returns immediately — it cannot exercise the
+  pre-24H2 blocking close this ADR pins the drain ordering against. The
+  capsule's spawn/termination/drain tests get a focused `windows-2022`
+  leg (an older build with the blocking behavior) alongside the full
+  suite on `windows-latest`. Hosted runners may themselves run jobbed:
+  tests probe and log `IsProcessInJob` rather than assuming, and nested
+  jobs are the supported mechanism either way — an assignment failure is
+  a loud spawn failure, never an unfenced fallback.
+
 ## The attach protocol
 
 One local socket per voyage (a named pipe on Windows), created
@@ -249,7 +322,10 @@ There is no `detach` op — ordered pipe EOF is detach, clean or crash.
 
 - **mgmt lane** (PERMANENTLY PINNED v0 framing, never versioned):
   `probe` / `status` / `shutdown`. `status` replies carry the capsule's
-  self-reported pid and process creation time.
+  self-reported pid, process creation time, and its SURVIVAL state
+  (`normal` | `degraded` — the breakaway-denied startup marker; pinned
+  here 2026-08-27, before v0 ships, because a field the permanent lane
+  lacks can never be added to it).
 - **attach lane** (versioned via hello):
   - `hello {proto_version}` — both directions.
   - `attach {controller_id}` — arrives as a WATCHER, always (a frontend
@@ -279,8 +355,15 @@ snapshot can never show bytes the voyage could still lose.
 ONE spawn owner — the supervisor (the launcher loop that already
 outlives FE respawns and keeps the ssh tunnel). The FE is attach-only.
 
-**The rule: a run ends ONLY by an explicit `EndRun` issued over the
-mgmt lane.** Quit intent travels IN-BAND — the FE's real-quit path
+**The rule: a run is ENDED BY REQUEST only through an explicit
+`EndRun` over the mgmt lane.** (Amended 2026-08-27 — the original
+wording said a run ends ONLY by EndRun, which contradicted both the
+shipped P1 capsule and step 7's own "run ended — new leg" row: a
+producer that EXITS ends its run intrinsically — `producer_dead` with
+the exit status, seal, verify-green — because the run's program ending
+is not a teardown anyone requested. EndRun governs every EXTERNALLY
+REQUESTED end; nothing else — no exit code, no FE event, no supervisor
+inference — may request one.) Quit intent travels IN-BAND — the FE's real-quit path
 issues EndRun itself before exiting, never leaving the supervisor to
 infer intent from an exit code it may not even be alive to observe
 (review from the target hardware found today's quit path produces only

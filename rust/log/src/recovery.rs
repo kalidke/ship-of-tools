@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 /// What reconciliation did for one segment identity.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Reconciled {
-    /// Published `.sotseg` present; nothing else to do.
+    /// Published `.sotseg` present — nothing NEW to build, but its
+    /// publication barrier is restated on every call (Part 3 finding).
     Sealed,
     /// `.open` had a durable header and no defect — still the live segment.
     StillOpen,
@@ -52,26 +53,47 @@ pub fn reconcile(seg_dir: &Path, id: &SegmentIdentity, recovering_epoch: u64) ->
     use SegmentState::*;
 
     match exists.as_slice() {
-        [Sealed] => Ok(Reconciled::Sealed),
+        [Sealed] => {
+            // Restate the publication barrier: a `.sotseg` found already in
+            // place was published by SOME incarnation, not necessarily one
+            // whose renamed-file/parent flush completed before it crashed —
+            // finding it here is exactly the case that needs restating, not
+            // skipping (Part 3 finding: an after-loop, once-only flush
+            // cannot stand in for this, and reconciliation runs it per
+            // segment, which costs nothing — `open_for_writing` already
+            // reads and verifies every sealed segment).
+            fsutil::finish_publication(&id.path(seg_dir, Sealed))?;
+            Ok(Reconciled::Sealed)
+        }
 
         // R + P: the publish landed; the quarantined original is scratch.
         [Recovering, Sealed] => {
             let p = id.path(seg_dir, Sealed);
             SegmentReader::read(&p, true)?.verify_seal()?;
+            // Complete the barrier BEFORE retiring the quarantine copy:
+            // `.recovering` is our only fallback if `.sotseg`'s publication
+            // never finished flushing before a prior incarnation crashed,
+            // so it must survive until AFTER we've restated that flush
+            // ourselves, never before.
+            fsutil::finish_publication(&p)?;
             std::fs::remove_file(id.path(seg_dir, Recovering))?;
             fsutil::fsync_dir(seg_dir)?;
             Ok(Reconciled::Recovered)
         }
 
         // R + S: staging may be partial — rebuild it from the original.
-        [Recovering, RecoveringOut] => {
-            std::fs::remove_file(id.path(seg_dir, RecoveringOut))?;
-            fsutil::fsync_dir(seg_dir)?;
+        // Deleting it here, before `recover_from_quarantine`, would mutate
+        // BEFORE that function's own `.recovering` barrier restatement runs
+        // (a failure there would then return after destructive progress).
+        // `.recovering-out` is disposable staging either way — the same
+        // function already removes a pre-existing one itself, AFTER the
+        // barrier — so there is nothing left for this arm to do but share
+        // the R-alone path.
+        //
+        // R alone: resume forward.
+        [Recovering, RecoveringOut] | [Recovering] => {
             recover_from_quarantine(seg_dir, id, recovering_epoch)
         }
-
-        // R alone: resume forward.
-        [Recovering] => recover_from_quarantine(seg_dir, id, recovering_epoch),
 
         // S alone is unreachable by the transaction order (R is durable
         // before S can exist) — loud.
@@ -124,8 +146,7 @@ fn reconcile_open(seg_dir: &Path, id: &SegmentIdentity, recovering_epoch: u64) -
         reader.verify_seal()?;
         fsutil::fsync_file(&open_path)?;
         let to = id.path(seg_dir, SegmentState::Sealed);
-        fsutil::rename_noreplace(&open_path, &to)?;
-        fsutil::fsync_dir(seg_dir)?;
+        fsutil::publish_noreplace(&open_path, &to)?;
         return Ok(Reconciled::PublishedAsIs);
     }
     if reader.tail_tear.is_none() {
@@ -133,8 +154,7 @@ fn reconcile_open(seg_dir: &Path, id: &SegmentIdentity, recovering_epoch: u64) -
     }
 
     // Provable tear: quarantine, then rebuild.
-    fsutil::rename_noreplace(&open_path, &id.path(seg_dir, SegmentState::Recovering))?;
-    fsutil::fsync_dir(seg_dir)?;
+    fsutil::publish_noreplace(&open_path, &id.path(seg_dir, SegmentState::Recovering))?;
     recover_from_quarantine(seg_dir, id, recovering_epoch)
 }
 
@@ -159,6 +179,16 @@ fn recover_from_quarantine(
 ) -> Result<Reconciled> {
     use sha2::Digest as _;
     let r_path = id.path(seg_dir, SegmentState::Recovering);
+    // `.recovering` can itself be crash residue: the rename that quarantined
+    // it — by this very call a few lines up in `reconcile_open`/`reconcile`,
+    // or by a prior incarnation that crashed before restating ITS barrier —
+    // is a publication like any other. This function is reached both right
+    // after a fresh quarantine and on a `.recovering` resumed from a prior
+    // crash (the `[Recovering]` and `[Recovering, RecoveringOut]` rows), so
+    // restating unconditionally here covers both; the fresh case is simply
+    // a harmless repeat (Part 3 finding — before building anything ON TOP
+    // of this file, its own publication must be durable, not just visible).
+    fsutil::finish_publication(&r_path)?;
     let reader = SegmentReader::read(&r_path, false)?;
     if reader.seal.is_some() {
         // Post-seal records are loud in the reader, so a sealed quarantine
@@ -167,8 +197,7 @@ fn recover_from_quarantine(
         // reconcile_open's publish-as-is row).
         reader.verify_seal()?;
         fsutil::fsync_file(&r_path)?;
-        fsutil::rename_noreplace(&r_path, &id.path(seg_dir, SegmentState::Sealed))?;
-        fsutil::fsync_dir(seg_dir)?;
+        fsutil::publish_noreplace(&r_path, &id.path(seg_dir, SegmentState::Sealed))?;
         return Ok(Reconciled::PublishedAsIs);
     }
     let recovery = reader.tail_tear.map(|(_, dropped)| RecoveryMeta {
@@ -203,8 +232,7 @@ fn recover_from_quarantine(
         f.write_all(&seal_wire)?;
         f.sync_all()?;
     }
-    fsutil::rename_noreplace(&staging, &id.path(seg_dir, SegmentState::Sealed))?;
-    fsutil::fsync_dir(seg_dir)?;
+    fsutil::publish_noreplace(&staging, &id.path(seg_dir, SegmentState::Sealed))?;
     // Verify the published result, then retire the original (transaction
     // scratch — every retained byte lives verbatim in the published file,
     // the recovery seal is the audit).
@@ -216,7 +244,7 @@ fn recover_from_quarantine(
 }
 
 // The STORE (not the codec) is Linux-only AS OF THIS COMMIT: publication
-// needs an atomic no-clobber rename, and `rename_noreplace` fails closed
+// needs an atomic no-clobber rename, and `rename_noreplace_raw` fails closed
 // off Linux (ADR 0039). These tests therefore run where the store runs;
 // the pure-codec tests in record.rs/envelope.rs stay on every platform.
 //
@@ -433,7 +461,149 @@ mod tests {
             reconcile(dir.path(), &id(0, 1), 5).unwrap(),
             Reconciled::Recovered
         );
-        // Running reconciliation AGAIN on the final state is a no-op Sealed.
+        // Running reconciliation AGAIN on the final state builds nothing
+        // new — still reports Sealed — but still restates the barrier.
         assert_eq!(reconcile(dir.path(), &id(0, 1), 5).unwrap(), Reconciled::Sealed);
+    }
+
+    /// Part 3 finding: the `[Sealed]` row must restate the publication
+    /// barrier on EVERY call, not just skip straight to `Ok`. Proved by
+    /// making `seg_dir` execute-only AFTER a first, ordinary call already
+    /// succeeded: traversable (the initial per-state `.exists()` stats still
+    /// resolve by name) but not openable, so `fsync_dir(seg_dir)` — reached
+    /// only if this call actually attempts the flush — fails loudly. The
+    /// OLD `[Sealed] => Ok(Reconciled::Sealed)` row never touched `seg_dir`
+    /// at all and would pass this unchanged.
+    #[test]
+    #[cfg(unix)]
+    fn sealed_reconcile_reflushes_on_every_call() {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct RestorePerms(std::path::PathBuf, std::fs::Permissions);
+        impl Drop for RestorePerms {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, self.1.clone());
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let w = write_open_with_frames(dir.path(), 1);
+        w.seal(None).unwrap();
+
+        assert_eq!(reconcile(dir.path(), &id(0, 1), 2).unwrap(), Reconciled::Sealed);
+
+        let original = std::fs::metadata(dir.path()).unwrap().permissions();
+        // Declared AFTER `dir`, so it drops (and restores permissions)
+        // BEFORE `dir`'s own cleanup tries to `remove_dir_all` it.
+        let _restore = RestorePerms(dir.path().to_path_buf(), original);
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o111)).unwrap();
+
+        let e = reconcile(dir.path(), &id(0, 1), 2).unwrap_err();
+        assert!(matches!(e, Error::Io(_)), "{e}");
+    }
+
+    /// Shared by every Windows-only test below: open `path` read-only,
+    /// sharing exactly `share` with any other handle. Each test uses this to
+    /// force `finish_publication`'s write-reopen (inside `flush_renamed`) to
+    /// fail with a sharing violation — but the hold must NOT also block
+    /// anything the OLD code path does to the same file, or old code fails
+    /// for an unrelated reason and the test "passes" against it for free,
+    /// worthless as a regression proof. `FILE_SHARE_READ` alone covers the
+    /// common case (old code only reads this file); `recovering_alone_...`
+    /// below additionally needs `FILE_SHARE_DELETE`, because old code's last
+    /// step deletes this exact file — see that test for why.
+    #[cfg(windows)]
+    fn hold_with_share(path: &std::path::Path, share: u32) -> std::fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(share)
+            .open(path)
+            .unwrap()
+    }
+
+    /// Windows variant of the `[Sealed]` restatement above: hold the
+    /// `.sotseg` file write-denied, so `finish_publication`'s renamed-target
+    /// flush fails with a sharing violation. Old code never reopens the
+    /// target at all, so this hold cannot affect it — the OLD `[Sealed] =>
+    /// Ok(Reconciled::Sealed)` row would pass this unchanged.
+    #[test]
+    #[cfg(windows)]
+    fn sealed_reconcile_reflushes_target_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = write_open_with_frames(dir.path(), 1);
+        w.seal(None).unwrap();
+        let sealed = dir.path().join("00000000-00000000000001.sotseg");
+
+        let _held = hold_with_share(&sealed, windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
+
+        let e = reconcile(dir.path(), &id(0, 1), 2).unwrap_err();
+        assert!(matches!(e, Error::Io(_)), "{e}");
+    }
+
+    /// Part 3 finding: `[Recovering, Sealed]` must complete the barrier on
+    /// `.sotseg` BEFORE retiring `.recovering` — `.recovering` is the only
+    /// fallback if a prior incarnation's publish never finished flushing, so
+    /// it must survive a failure injected at that flush. Old code's ONLY
+    /// touch of `.sotseg` here is a read (`verify_seal`), so `FILE_SHARE_READ`
+    /// alone can't affect it — old code deletes `.recovering`, not `.sotseg`.
+    #[test]
+    #[cfg(windows)]
+    fn recovering_sealed_survives_barrier_failure_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = write_open_with_frames(dir.path(), 1);
+        w.seal(None).unwrap();
+        let sealed = dir.path().join("00000000-00000000000001.sotseg");
+        let recovering = dir.path().join("00000000-00000000000001.recovering");
+        // Presence is all this row needs from `.recovering` — it is never
+        // read, only deleted after the barrier completes.
+        std::fs::write(&recovering, b"quarantine residue").unwrap();
+
+        let _held = hold_with_share(&sealed, windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
+
+        let e = reconcile(dir.path(), &id(0, 1), 2).unwrap_err();
+        assert!(matches!(e, Error::Io(_)), "{e}");
+        assert!(recovering.exists(), ".recovering must survive a barrier failure");
+    }
+
+    /// Part 3 finding: `recover_from_quarantine` must restate `.recovering`'s
+    /// OWN publication before building `.recovering-out` from it —
+    /// `.recovering` can itself be crash residue.
+    ///
+    /// DELETION-DENIAL TRAP (fooled two reviewers before this comment
+    /// existed): a hold with `FILE_SHARE_READ` alone ALSO denies delete —
+    /// and old code's LAST step in this path is `remove_file(&r_path)`,
+    /// deleting this exact file, AFTER it has already built and published
+    /// `.recovering-out` -> `.sotseg`. With read-only sharing, old code
+    /// reads fine, publishes fine, and only fails at that final delete —
+    /// by which point `.recovering-out` no longer exists either (it was
+    /// already renamed away). Both of this test's assertions would then
+    /// hold against OLD code too, making it worthless as a regression proof.
+    /// Adding `FILE_SHARE_DELETE` lets old code's delete succeed (so old
+    /// code returns `Ok`, and the test correctly fails against it), while
+    /// `finish_publication`'s write-reopen is still denied under NEW code,
+    /// failing before `.recovering-out` is ever created.
+    #[test]
+    #[cfg(windows)]
+    fn recovering_alone_reflushes_before_building_output_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = write_open_with_frames(dir.path(), 2);
+        drop(w);
+        let open = dir.path().join("00000000-00000000000001.open");
+        let recovering = dir.path().join("00000000-00000000000001.recovering");
+        std::fs::rename(&open, &recovering).unwrap();
+
+        let _held = hold_with_share(
+            &recovering,
+            windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ
+                | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE,
+        );
+
+        let e = reconcile(dir.path(), &id(0, 1), 5).unwrap_err();
+        assert!(matches!(e, Error::Io(_)), "{e}");
+        assert!(
+            !dir.path().join("00000000-00000000000001.recovering-out").exists(),
+            "must restate .recovering's own barrier before building .recovering-out"
+        );
     }
 }

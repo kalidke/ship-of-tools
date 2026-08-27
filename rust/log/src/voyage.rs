@@ -52,32 +52,77 @@ impl VoyageStore {
     /// Bootstrap a new voyage: build under `<root>.creating/`, fsync
     /// bottom-up, publish by no-clobber rename (ADR 0039 §lifecycle 1).
     pub fn bootstrap(root: &Path, voyage_id: &str, retention: RetentionClass) -> Result<()> {
-        // Absolutize first: a relative root would (a) make the parent of a
-        // bare name the empty path and (b) leave every later operation
-        // raceable against set_current_dir elsewhere in the process.
-        let root = std::path::absolute(root)?;
-        let root = root.as_path();
-        let parent = root
+        // Resolve here rather than trust the caller went through
+        // `ensure_container` first: `bootstrap` is a public entry point in
+        // its own right (this module's own tests call it directly with a
+        // raw path). Canonicalize the parent — which must already exist —
+        // and reconstruct the not-yet-existing root by appending its raw
+        // final component, the same pattern `ensure_container` uses and for
+        // the same reason: a lexical-only `absolute` can leave `root` naming
+        // its container through a symlink or a `..` alias, a different
+        // identity than the one every operation below must agree on.
+        let root_abs = std::path::absolute(root)?;
+        let lexical_parent = root_abs
             .parent()
             .ok_or_else(|| Error::State("voyage root needs a parent dir".into()))?;
+        let name = root_abs
+            .file_name()
+            .ok_or_else(|| Error::State("bad voyage root name".into()))?;
         // The container must PREEXIST: bootstrap will not create ancestor
         // levels, because it cannot durably anchor them (their entries in
         // THEIR parents are never flushed here — a "successful" bootstrap
         // into an implicitly created chain could vanish on power loss).
         // The container's durability is its creator's responsibility.
-        if !parent.is_dir() {
-            return Err(Error::State(format!(
-                "voyage container {parent:?} does not exist (bootstrap will not create it)"
-            )));
-        }
+        let parent = std::fs::canonicalize(lexical_parent).map_err(|e| {
+            Error::State(format!(
+                "voyage container {lexical_parent:?} does not exist (bootstrap will not create it): {e}"
+            ))
+        })?;
+        let root = parent.join(name);
+        let root = root.as_path();
+        let parent = parent.as_path();
         // Volume preflight BEFORE any `.creating` mutation (ADR 0041).
         fsutil::preflight_volume(parent)?;
-        let staging = parent.join(format!(
-            "{}.creating",
-            root.file_name()
-                .and_then(|s| s.to_str())
-                .ok_or_else(|| Error::State("bad voyage root name".into()))?
-        ));
+        let name_str = name
+            .to_str()
+            .ok_or_else(|| Error::State("bad voyage root name".into()))?;
+        // Staging is ATTEMPT-OWNED: `<name>.creating-<random>`, one fresh
+        // directory per bootstrap attempt, protected from birth
+        // (`create_dir_protected` — ADR 0041 §Security split, never
+        // create-then-repair). A SHARED staging pathname — with or without a
+        // remove-residue step — cannot be made safe: with removal, a
+        // concurrent bootstrap can delete this attempt's populated staging
+        // and substitute an empty one between our flushes and our rename
+        // (publishing a directory nobody flushed, defeating
+        // source-flush-before-rename); without removal, two attempts
+        // interleave writes into one tree. A name nobody else knows
+        // dissolves both — the same reasoning as `publish_blob`'s random
+        // temp suffix — and `publish_noreplace` below already arbitrates
+        // the winner. Everything under the staging root (seg/, blobs/,
+        // writer.lock, ...) stays plain creation and INHERITS the
+        // protection.
+        let staging = {
+            let mut r = [0u8; 4];
+            getrandom::fill(&mut r).map_err(std::io::Error::from)?;
+            parent.join(format!(
+                "{name_str}.creating-{:02x}{:02x}{:02x}{:02x}",
+                r[0], r[1], r[2], r[3]
+            ))
+        };
+        // Any exit before the publish defuses this — error return or panic —
+        // removes the attempt's staging: a loser or a failure never leaves
+        // residue behind by any path that runs destructors. (A hard kill
+        // does; the post-publish sweep below is what retires that.)
+        struct StagingGuard(std::path::PathBuf, bool);
+        impl Drop for StagingGuard {
+            fn drop(&mut self) {
+                if self.1 {
+                    let _ = std::fs::remove_dir_all(&self.0);
+                }
+            }
+        }
+        let mut guard = StagingGuard(staging.clone(), true);
+        fsutil::create_dir_protected(&staging)?;
         std::fs::create_dir_all(staging.join("seg"))?;
         std::fs::create_dir_all(staging.join("blobs").join(".tmp"))?;
         // sha256/ exists (and is flushed) from birth so the first CAS
@@ -100,8 +145,22 @@ impl VoyageStore {
         fsutil::fsync_dir(&staging.join("blobs"))?;
         fsutil::fsync_dir(&staging.join("seg"))?;
         fsutil::fsync_dir(&staging)?;
-        fsutil::rename_noreplace(&staging, root)?;
-        fsutil::fsync_dir(parent)?;
+        fsutil::publish_noreplace(&staging, root)?;
+        guard.1 = false; // published: the staging path IS the root now
+        // Retire crash residue from attempts that never ran their guard (a
+        // hard kill mid-bootstrap). Only after WINNING: the voyage exists,
+        // so every `<name>.creating-*` sibling is either a dead attempt's
+        // leavings or a live loser about to fail its own publish — removal
+        // is correct for the first and merely hastens the second. Best
+        // effort: a sweep failure is not a bootstrap failure.
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            let residue_prefix = format!("{name_str}.creating-");
+            for e in entries.flatten() {
+                if e.file_name().to_string_lossy().starts_with(&residue_prefix) {
+                    let _ = std::fs::remove_dir_all(e.path());
+                }
+            }
+        }
         let _ = (voyage_id, retention); // identity/retention live in the genesis header
         Ok(())
     }
@@ -110,12 +169,33 @@ impl VoyageStore {
     /// identity found, allocate this writer's epoch (max durable + 1), and
     /// compute the chain tip.
     pub fn open_for_writing(root: &Path, voyage_id: &str) -> Result<Self> {
-        // Absolutize for the same reasons as bootstrap: the stored root must
-        // not be re-resolvable against a moved CWD while the lock is held.
-        // (Ancestor-junction retargeting by another PRINCIPAL is out of the
-        // fence's threat model: the voyage container's ancestors are
-        // owner-controlled, and the ADR's DACL step protects the subtree.)
-        let root = std::path::absolute(root)?;
+        // Canonicalize FIRST — before preflight, before anchoring, before
+        // the lock — and use the resolved path for everything after,
+        // including what `self.root` stores. The order is load-bearing:
+        // preflighting or fsyncing the UNRESOLVED path and canonicalizing
+        // only afterward leaves exactly the window a demonstrated escape
+        // used — bootstrap A and B, point a symlink `alias` at A, open via
+        // `alias` (the lock and the reconciliation below land on A), then
+        // retarget `alias` -> B: a writer that kept re-resolving the
+        // unresolved `alias` STRING at each later syscall would still hold
+        // A's lock but write `open_segment`'s next segment into B, because
+        // the OS re-follows the symlink fresh on every call. Canonicalizing
+        // once, here, and storing the result closes it — `self.root` is
+        // never a symlink afterward, so a later retarget has nothing left
+        // in this store to redirect.
+        //
+        // No in-tree caller passes a nonexistent root (every call follows
+        // `bootstrap`, or the caller's own exists-check already ran), so
+        // requiring existence here is safe.
+        //
+        // (This is the OWNER'S OWN root symlink, retargeted after this
+        // writer already opened it — not the ancestor-junction-retargeted-
+        // by-another-PRINCIPAL case the note below excludes: the voyage
+        // container's ancestors are owner-controlled and the ADR's DACL
+        // step protects that subtree, but that scope was never meant to
+        // cover the root's own alias, which is what canonicalizing here
+        // closes.)
+        let root = std::fs::canonicalize(root)?;
         let root = root.as_path();
         // Re-run the volume preflight on the resolved voyage dir (ADR 0041):
         // a store bootstrapped elsewhere and moved to an unsuitable volume
@@ -126,6 +206,9 @@ impl VoyageStore {
         // callers' bootstrap-if-absent check would then skip bootstrap
         // forever, leaving a store that acknowledges records from a root the
         // next power loss can remove. Idempotent, so every open re-anchors.
+        // (This is also the Part 3 restatement for bootstrap's own publish:
+        // no separate call is needed there — every open already re-flushes
+        // root plus its parent, unconditionally, before anything else.)
         fsutil::fsync_dir(root)?;
         if let Some(parent) = root.parent() {
             fsutil::fsync_dir(parent)?;
@@ -220,6 +303,19 @@ impl VoyageStore {
         })
     }
 
+    /// The canonicalized root this store actually operates on — resolved
+    /// ONCE at `open_for_writing` and never re-derived from a caller's
+    /// possibly-symlinked path afterward. Crate-private: callers that need
+    /// to scan the store's own files after opening it (ADR 0040's successor-
+    /// closure scan, for one) must use THIS, not whatever path they
+    /// originally passed to `open_for_writing` — that path can be a symlink
+    /// retargeted after the lock was taken, in which case re-deriving from
+    /// it scans whatever it points at NOW, not the store this writer is
+    /// fenced to.
+    pub(crate) fn resolved_root(&self) -> &Path {
+        &self.root
+    }
+
     /// A prior incarnation's clean `.open` tip: seal it under this writer's
     /// authority before opening a fresh segment (one open segment, only at
     /// the tip). Returns its digest for the chain.
@@ -244,8 +340,7 @@ impl VoyageStore {
         }
         // Rebuild-and-seal via the recovery staging path with zero
         // truncation (the survivor is clean; this writer stamps the seal).
-        fsutil::rename_noreplace(&open_path, &id.path(&seg_dir, SegmentState::Recovering))?;
-        fsutil::fsync_dir(&seg_dir)?;
+        fsutil::publish_noreplace(&open_path, &id.path(&seg_dir, SegmentState::Recovering))?;
         recovery::reconcile(&seg_dir, &id, self.epoch)?;
         let sealed = SegmentReader::read(&id.path(&seg_dir, SegmentState::Sealed), true)?;
         sealed.verify_seal()?;
@@ -323,7 +418,13 @@ impl VoyageStore {
                     what: format!("CAS collision at {digest}: existing bytes differ"),
                 });
             }
-            fsutil::fsync_dir(&shard)?;
+            // Found, not published by US: restate the SAME barrier a fresh
+            // publish completes (Part 3 finding). A prior incarnation could
+            // have renamed this blob into place and crashed before its own
+            // renamed-file/parent flush ran, leaving it cache-visible but
+            // not durable — `finish_publication` covers both halves; a bare
+            // `fsync_dir(&shard)` covered only the parent.
+            fsutil::finish_publication(&dest)?;
             return Ok(digest);
         }
         // Random suffix (not pid+digest): two same-process publishes of
@@ -339,10 +440,14 @@ impl VoyageStore {
             f.write_all(content)?;
             f.sync_all()?;
         }
-        match fsutil::rename_noreplace(&tmp, &dest) {
+        match fsutil::rename_noreplace_raw(&tmp, &dest) {
             Ok(()) => {}
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                // Raced an identical publish: verify + clean the temp.
+                // Raced an identical publish: verify + clean the temp. Same
+                // reasoning as the `dest.exists()` branch above applies to
+                // the flush below — this process didn't do the winning
+                // rename, so it must not assume the winner finished
+                // flushing before it crashed (if it did).
                 let existing = std::fs::read(&dest)?;
                 std::fs::remove_file(&tmp)?;
                 if existing != content {
@@ -354,7 +459,7 @@ impl VoyageStore {
             }
             Err(e) => return Err(e),
         }
-        fsutil::fsync_dir(&shard)?;
+        fsutil::finish_publication(&dest)?;
         Ok(digest)
     }
 }
@@ -373,6 +478,51 @@ mod tests {
         e
     }
 
+    /// The concurrent-bootstrap race a shared staging pathname allowed
+    /// (review finding on the DACL unit): with one `.creating` path, attempt
+    /// B could delete attempt A's populated, flushed staging and substitute
+    /// an empty directory between A's flushes and A's rename — A then
+    /// publishes a voyage NOBODY flushed. Attempt-owned random staging names
+    /// dissolve the shared path entirely; `publish_noreplace` arbitrates.
+    /// This drives both attempts through a start barrier and requires:
+    /// exactly one winner, a verify-green published voyage (never an empty
+    /// or hybrid one), and zero staging residue once both attempts and the
+    /// winner's sweep are done.
+    #[test]
+    fn concurrent_bootstraps_publish_exactly_one_verifiable_voyage() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voyr");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let results: Vec<_> = (0..2)
+            .map(|_| {
+                let root = root.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    VoyageStore::bootstrap(&root, "voyr", RetentionClass::Discard)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+
+        let winners = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(winners, 1, "exactly one bootstrap must win: {results:?}");
+        // The published voyage is complete and internally consistent — the
+        // race's failure mode was an EMPTY root published as success.
+        crate::verify::verify_voyage(&root, "voyr").unwrap();
+        let store = VoyageStore::open_for_writing(&root, "voyr").unwrap();
+        drop(store);
+        // Loser's guard plus winner's sweep leave no attempt residue.
+        let residue: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("voyr.creating"))
+            .collect();
+        assert!(residue.is_empty(), "staging residue: {residue:?}");
+    }
+
     #[test]
     fn bootstrap_open_write_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -380,7 +530,13 @@ mod tests {
         VoyageStore::bootstrap(&root, "voy1", RetentionClass::Discard).unwrap();
         assert!(root.join("seg").is_dir());
         assert!(root.join("blobs").join(".tmp").is_dir());
-        assert!(!dir.path().join("voy1.creating").exists());
+        // No staging residue of any attempt survives a successful bootstrap.
+        let residue: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("voy1.creating"))
+            .collect();
+        assert!(residue.is_empty(), "staging residue left behind: {residue:?}");
 
         // Incarnation 1: epoch 1, write + seal one segment.
         {
@@ -437,4 +593,286 @@ mod tests {
         std::fs::write(&path, b"evil!").unwrap();
         assert!(store.publish_blob(b"hello").is_err());
     }
+
+    /// Part 2 finding, reproduced: bootstrap two real stores A and B, open
+    /// via a symlink pointed at A, retarget the symlink to B AFTER the fence
+    /// is taken, then keep writing. A writer that re-resolved the unresolved
+    /// alias at each later syscall would hold A's lock but write segments
+    /// into B; canonicalizing once in `open_for_writing` and storing the
+    /// result must keep every later operation on A regardless of where the
+    /// alias points now.
+    #[test]
+    #[cfg(unix)]
+    fn root_alias_cannot_escape_fence_after_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        VoyageStore::bootstrap(&a, "voy", RetentionClass::Discard).unwrap();
+        VoyageStore::bootstrap(&b, "voy", RetentionClass::Discard).unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&a, &alias).unwrap();
+
+        let mut store = VoyageStore::open_for_writing(&alias, "voy").unwrap();
+
+        // Retarget AFTER the fence is taken.
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&b, &alias).unwrap();
+
+        let mut w = store.open_segment(0).unwrap();
+        w.append(&lc(1, 1), Commit::Immediate).unwrap();
+        w.seal(None).unwrap();
+
+        let has_sealed = |dir: &std::path::Path| {
+            std::fs::read_dir(dir.join("seg"))
+                .unwrap()
+                .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".sotseg"))
+        };
+        assert!(has_sealed(&a), "writer must operate on A, resolved at open time");
+        assert!(!has_sealed(&b), "writer must NOT follow a post-open retarget into B");
+    }
+
+    /// Part 3 finding: the CAS `dest.exists()` replay path must restate the
+    /// publication barrier over a blob this process didn't itself publish,
+    /// not merely fsync its shard directory. Holding the existing blob open
+    /// write-denied fails the renamed-target flush `finish_publication`
+    /// performs — while the CAS byte-compare read, which the old code also
+    /// performed, still succeeds — proving the flush is actually attempted.
+    #[test]
+    #[cfg(windows)]
+    fn cas_replay_reflushes_existing_blob_on_windows() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voy4");
+        VoyageStore::bootstrap(&root, "voy4", RetentionClass::Discard).unwrap();
+        let store = VoyageStore::open_for_writing(&root, "voy4").unwrap();
+        let d1 = store.publish_blob(b"hello").unwrap();
+        let path = root.join("blobs").join("sha256").join(&d1[0..2]).join(&d1);
+
+        // FILE_SHARE_READ, deny write: see `recovery.rs`'s `hold_with_share`
+        // doc for why the hold must not block anything old code also does —
+        // here that's only the CAS byte-compare read, so read-only sharing
+        // is enough (unlike `recovering_alone_...` there, this path never
+        // deletes `path`, so there is no deletion-denial trap to avoid).
+        let _held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+            .open(&path)
+            .unwrap();
+
+        let e = store.publish_blob(b"hello").unwrap_err();
+        assert!(matches!(e, Error::Io(_)), "{e}");
+    }
+
+    /// Independently derive this process's own token-user SID as a string —
+    /// deliberately NOT calling into `fsutil`'s private
+    /// `owner_protected_descriptor`, so a bug in THAT helper's SID lookup
+    /// could not also hide from these tests.
+    #[cfg(windows)]
+    fn current_user_sid_string() -> String {
+        use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+        use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+        use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        unsafe {
+            let mut token: HANDLE = std::ptr::null_mut();
+            assert_ne!(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token), 0);
+            let mut needed: u32 = 0;
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
+            assert!(needed > 0, "GetTokenInformation sizing call returned zero length");
+            let words = (needed as usize).div_ceil(8); // u64-backed: TOKEN_USER holds a pointer field
+            let mut buf: Vec<u64> = vec![0u64; words];
+            let buf_ptr = buf.as_mut_ptr().cast::<u8>();
+            assert_ne!(
+                GetTokenInformation(token, TokenUser, buf_ptr.cast(), needed, &mut needed),
+                0
+            );
+            let sid = (*buf_ptr.cast::<TOKEN_USER>()).User.Sid;
+            let mut sid_str: *mut u16 = std::ptr::null_mut();
+            assert_ne!(ConvertSidToStringSidW(sid, &mut sid_str), 0);
+            let len = (0..).take_while(|&i| *sid_str.add(i) != 0).count();
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(sid_str, len));
+            LocalFree(sid_str as _);
+            CloseHandle(token);
+            s
+        }
+    }
+
+    /// Round-trip `path`'s security descriptor to SDDL text via
+    /// `GetNamedSecurityInfoW` + `ConvertSecurityDescriptorToStringSecurityDescriptorW`
+    /// — far simpler and less error-prone in a test that cannot be compiled
+    /// here than manually walking `ACL`/`ACE` binary structures with
+    /// `GetAce`. Requests DACL + PROTECTED_DACL info only (no owner/group/
+    /// sacl): the SDDL comes back as `D:P(...)` when protected, `D:(...)`
+    /// when not, with each ACE's inherit/inherited flags spelled out as
+    /// letters (`OICI` = object+container inherit, `ID` = inherited).
+    #[cfg(windows)]
+    fn security_descriptor_sddl(path: &std::path::Path) -> String {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1,
+            SE_FILE_OBJECT,
+        };
+        // DACL_SECURITY_INFORMATION alone: the PROTECTED_ flag is SET-ONLY
+        // (Microsoft's SECURITY_INFORMATION table marks its query right
+        // "not available") — the P in the returned SDDL comes from the
+        // descriptor's own control field, not from asking for it.
+        use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        unsafe {
+            let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            let rc = GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut psd,
+            );
+            assert_eq!(rc, 0, "GetNamedSecurityInfoW failed: {rc}");
+            let mut sddl_ptr: *mut u16 = std::ptr::null_mut();
+            let mut sddl_len: u32 = 0;
+            let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                psd,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut sddl_ptr,
+                &mut sddl_len,
+            );
+            assert_ne!(ok, 0, "ConvertSecurityDescriptorToStringSecurityDescriptorW failed");
+            let len = (0..).take_while(|&i| *sddl_ptr.add(i) != 0).count();
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(sddl_ptr, len));
+            LocalFree(sddl_ptr as _);
+            LocalFree(psd as _);
+            s
+        }
+    }
+
+    /// Round-trip an SDDL STRING through the converter pair (string -> SD ->
+    /// string) to the converter's own canonical form. The first CI run on a
+    /// real Windows machine taught why comparing raw SID strings to
+    /// converter output is wrong: `ConvertSecurityDescriptorToString...`
+    /// compresses well-known SIDs to their two-letter SDDL aliases — the
+    /// runner's built-in Administrator account (RID 500) came back as `LA`,
+    /// not `S-1-5-21-...-500` — while `ConvertSidToStringSidW` always emits
+    /// the raw form. Pushing the EXPECTED string through the same converter
+    /// makes both sides speak the converter's dialect, whatever account CI
+    /// happens to run as.
+    #[cfg(windows)]
+    fn canonical_sddl(sddl: &str) -> String {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW,
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+
+        let wide: Vec<u16> = std::ffi::OsStr::new(sddl)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            assert_ne!(
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    wide.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut psd,
+                    std::ptr::null_mut(),
+                ),
+                0,
+                "string->SD failed for {sddl}"
+            );
+            let mut out_ptr: *mut u16 = std::ptr::null_mut();
+            let mut out_len: u32 = 0;
+            let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                psd,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut out_ptr,
+                &mut out_len,
+            );
+            assert_ne!(ok, 0, "SD->string failed for {sddl}");
+            let len = (0..).take_while(|&i| *out_ptr.add(i) != 0).count();
+            let out = String::from_utf16_lossy(std::slice::from_raw_parts(out_ptr, len));
+            LocalFree(out_ptr as _);
+            LocalFree(psd as _);
+            out
+        }
+    }
+
+    /// ADR 0041 DACL requirement, points 1 and 3 together: the published
+    /// root (this IS the post-rename state — bootstrap exposes no way to
+    /// inspect `.creating` before the rename, so this is simultaneously the
+    /// proof that the rename preserved the descriptor) carries a DACL that
+    /// is PRESENT and PROTECTED, with exactly one ACE granting the LIVE
+    /// token-user SID full access, marked object+container inheritable.
+    /// Fails against today's main: an un-DACL'd `create_dir_all` produces
+    /// an unprotected, inherited-from-parent descriptor with no such ACE.
+    #[test]
+    #[cfg(windows)]
+    fn bootstrap_voyage_root_gets_protected_dacl_for_token_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voy5");
+        VoyageStore::bootstrap(&root, "voy5", RetentionClass::Discard).unwrap();
+
+        // FULL equality against the canonicalized expected form — presence,
+        // protected bit, exactly one ACE, flags, access, and trustee in a
+        // single assertion, robust to the converter's well-known-SID
+        // aliasing (see `canonical_sddl`).
+        let sid = current_user_sid_string();
+        let expected = canonical_sddl(&format!("D:P(A;OICI;FA;;;{sid})"));
+        assert_eq!(security_descriptor_sddl(&root), expected);
+    }
+
+    /// ADR 0041 DACL requirement, point 2: `seg/` — created inside the
+    /// staging root by `bootstrap`'s plain `create_dir_all`, with NO
+    /// security attributes of its own — carries an INHERITED ACE (`ID` =
+    /// INHERITED_ACE) for the same trustee, proving the tree propagates the
+    /// protection without any per-file work. A DIRECTORY child specifically
+    /// (rather than a leaf file the segment writer creates): Windows clears
+    /// the OI/CI propagation flags when materializing an inherited ACE onto
+    /// a FILE (they would have no meaning for something that can't have
+    /// children of its own), but a CONTAINER child keeps them — asserting
+    /// the exact `OICIID` flag combination is only reliable against another
+    /// container, so this checks `seg/` rather than the `.open` file inside
+    /// it. Fails against today's main for the same reason as the bootstrap
+    /// test above: there is no protected, inheritable ACE anywhere in the
+    /// tree to inherit FROM.
+    #[test]
+    #[cfg(windows)]
+    fn seg_dir_inherits_the_protected_dacl() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voy6");
+        VoyageStore::bootstrap(&root, "voy6", RetentionClass::Discard).unwrap();
+
+        let sddl = security_descriptor_sddl(&root.join("seg"));
+        // The expected inherited ACE is the ROOT's canonical ACE with the
+        // INHERITED_ACE flag added: take the converter-canonical trustee
+        // spelling (alias or raw, whatever this account canonicalizes to)
+        // and splice ID into the flags we set — the flags are ours to know,
+        // the trustee spelling is the converter's.
+        let sid = current_user_sid_string();
+        let canonical_root = canonical_sddl(&format!("D:P(A;OICI;FA;;;{sid})"));
+        let ace = canonical_root
+            .trim_start_matches("D:P")
+            .replace("(A;OICI;", "(A;OICIID;");
+        assert!(
+            sddl.contains(&ace),
+            "expected the inherited form {ace} of the root's ACE, got: {sddl}"
+        );
+    }
+
+    // Unix is functionally unchanged by `create_dir_protected` — a plain
+    // `create_dir`, strict about AlreadyExists, which the attempt-owned
+    // random staging name makes unreachable in practice —
+    // `bootstrap_open_write_reopen` above is the proof that the whole
+    // bootstrap/write/reopen/verify path still holds on every unix/linux
+    // CI run.
 }
