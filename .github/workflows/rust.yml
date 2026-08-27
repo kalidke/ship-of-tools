@@ -110,8 +110,14 @@ jobs:
   # still blocks there. Deliberately its own tiny job rather than added to
   # the main matrix above: it exists ONLY to catch that one behavioral gap,
   # not to duplicate the full workspace build+test on a second Windows image.
+  #
+  # `tests/capsule_win.rs` (the capsule runtime, step 4 unit 2) joined this
+  # job rather than getting a third one: its teardown ALSO calls
+  # `close_pty()` and depends on the exact same blocking-close/concurrent-
+  # drain ordering, so `windows-latest` alone could pass it there too
+  # without ever exercising the hang risk this job exists to catch.
   conpty-windows-2022:
-    name: conpty owned-ConPTY tests (windows-2022)
+    name: conpty + capsule owned-ConPTY tests (windows-2022)
     runs-on: windows-2022
     # A close-ordering bug here is exactly a HANG (pre-24H2's
     # ClosePseudoConsole blocking forever with nothing draining hOutput) —
@@ -136,6 +142,11 @@ jobs:
       # workspace.
       - name: Test conpty (owned ConPTY + job containment)
         run: cargo test -p sot-log --test conpty -- --nocapture
+      # --test capsule_win: same reasoning, one test BINARY
+      # (tests/capsule_win.rs) — the DSR-presence finding in the e2e test
+      # is likewise logged, not asserted (host/build-version-dependent).
+      - name: Test capsule_win (Windows capsule runtime)
+        run: cargo test -p sot-log --test capsule_win -- --nocapture
 
   p2-e2e:
     name: P2 e2e (real helper, offline)

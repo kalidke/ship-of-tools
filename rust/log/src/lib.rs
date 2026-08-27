@@ -8,8 +8,10 @@
 //! `codec_id` / `required_features` / version seams).
 
 pub mod capsule;
+pub mod capsule_win;
 pub mod claude;
 pub mod conpty;
+pub mod host_handshake;
 pub mod envelope;
 pub mod record;
 pub mod recovery;

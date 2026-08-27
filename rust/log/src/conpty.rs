@@ -197,6 +197,17 @@ fn is_current_process_in_a_job() -> Option<bool> {
     Some(result != 0)
 }
 
+/// `pub(crate)` mirror of [`is_current_process_in_a_job`] for the capsule
+/// runtime: it needs this SAME observation recorded in `producer_spawn`,
+/// committed BEFORE `ConptySpawn::spawn` is even called (the spawn-failure
+/// compensation path needs `producer_spawn` on the wire first) — so it
+/// cannot wait for `SpawnDetail`, which only exists after a spawn succeeds.
+/// The value is identical either way: this observes the SPAWNING process
+/// (this one), never the child, so it does not depend on spawn's outcome.
+pub(crate) fn observe_spawning_process_jobbed() -> Option<bool> {
+    is_current_process_in_a_job()
+}
+
 /// Non-authoritative spawn diagnostics (ADR 0041 / #119 locator-must-declare:
 /// observation, never authority — nothing here is named `kill_domain`). A
 /// capsule folds this into its own spawn-detail record.
