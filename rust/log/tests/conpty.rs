@@ -319,6 +319,43 @@ fn diag_which_attributes_actually_applied() {
     spawn.pty.close_pty();
 }
 
+/// Diagnostic (temporary): the COMPOSITION axis — the same spawn with the
+/// pseudoconsole attribute ALONE (no job), the exact shape Microsoft's
+/// sample runs. Output arriving here but not through the two-attribute
+/// spawn names the composition as the bug.
+#[test]
+fn diag_no_job_spawn_output_arrives() {
+    let marker = "SOT_CONPTY_NOJOB_5c44";
+    let argv = vec!["cmd.exe".to_string(), "/c".to_string(), format!("echo {marker}")];
+    let (pty, reader, _writer, pid) =
+        sot_log::conpty::ConptySpawn::spawn_diag_no_job(&argv, 80, 25).unwrap();
+    eprintln!("diag-nojob: spawned pid {pid}");
+    let (rx, reader_thread) = spawn_reader_thread(reader);
+    let mut all = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = false;
+    while Instant::now() < deadline && !seen {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(chunk) => {
+                all.extend(chunk);
+                seen = String::from_utf8_lossy(&all).contains(marker);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    eprintln!("diag-nojob: marker seen LIVE = {seen}");
+    pty.close_pty();
+    reader_thread.join().unwrap();
+    while let Ok(chunk) = rx.recv() {
+        all.extend(chunk);
+    }
+    eprintln!(
+        "diag-nojob: marker seen TOTAL = {}",
+        String::from_utf8_lossy(&all).contains(marker)
+    );
+}
+
 /// Test 5: `IsProcessInJob` probe on THIS test process, surfaced through
 /// `SpawnDetail` from an ordinary spawn (`spawn`'s own diagnostic, checked
 /// at spawn time — not a separate private probe this test would otherwise

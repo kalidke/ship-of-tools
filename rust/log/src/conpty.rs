@@ -412,6 +412,40 @@ impl AttributeList {
         // *pointer to* a handle array. Passing `&hpc` here made Windows
         // treat a stack address as a console handle: ERROR_INVALID_HANDLE
         // from CreateProcessW, instantly, on every image.
+        // ORDER UNDER TEST (A/B diagnostic, round 3 on real Windows): job
+        // list FIRST, pseudoconsole SECOND. Round 2 showed the documented
+        // shapes with pseudoconsole-first produced a spawn where the JOB
+        // applied and the PSEUDOCONSOLE silently did not (child output on
+        // the parent console) — a two-attribute composition no sample or
+        // known codebase exercises. This swap tests the order axis; the
+        // no-job diagnostic spawn below tests the composition axis.
+        let job_list_ok = unsafe {
+            UpdateProcThreadAttribute(
+                list_ptr,
+                0,
+                PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+                me.job_handles.as_ptr() as *const c_void,
+                // The ARRAY's size (one HANDLE), spelled on the deref so it
+                // cannot silently become the Box pointer's size — the two
+                // are both 8 today, which is the only reason the earlier
+                // spelling wasn't a bug.
+                std::mem::size_of_val(&*me.job_handles),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        };
+        if job_list_ok == 0 {
+            // No manual delete: `me` is already constructed, so its Drop
+            // runs `DeleteProcThreadAttributeList` on this return — a
+            // manual call here would DOUBLE-delete (Microsoft: exactly one
+            // delete per initialized list), and would also violate this
+            // module's own rule that error branches never clean up.
+            return Err(spawn_err(
+                "UpdateProcThreadAttribute(job_list)",
+                std::io::Error::last_os_error(),
+            ));
+        }
+
         let pseudoconsole_ok = unsafe {
             UpdateProcThreadAttribute(
                 list_ptr,
@@ -424,32 +458,9 @@ impl AttributeList {
             )
         };
         if pseudoconsole_ok == 0 {
-            // No manual delete: `me` is already constructed, so its Drop
-            // runs `DeleteProcThreadAttributeList` on this return — a
-            // manual call here would DOUBLE-delete (Microsoft: exactly one
-            // delete per initialized list), and would also violate this
-            // module's own rule that error branches never clean up.
-            return Err(spawn_err(
-                "UpdateProcThreadAttribute(pseudoconsole)",
-                std::io::Error::last_os_error(),
-            ));
-        }
-
-        let job_list_ok = unsafe {
-            UpdateProcThreadAttribute(
-                list_ptr,
-                0,
-                PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
-                me.job_handles.as_ptr() as *const c_void,
-                std::mem::size_of_val(&me.job_handles),
-                std::ptr::null_mut(),
-                std::ptr::null(),
-            )
-        };
-        if job_list_ok == 0 {
             // Same as above: `me`'s Drop owns the one delete.
             return Err(spawn_err(
-                "UpdateProcThreadAttribute(job_list)",
+                "UpdateProcThreadAttribute(pseudoconsole)",
                 std::io::Error::last_os_error(),
             ));
         }
@@ -491,6 +502,88 @@ pub struct ConptySpawn {
 }
 
 impl ConptySpawn {
+    /// TEMPORARY diagnostic (composition axis of the attach mystery): the
+    /// same spawn WITHOUT the job — pseudoconsole attribute only, count 1 —
+    /// which is exactly the shape Microsoft's sample and every known
+    /// codebase run successfully. If output arrives through THIS spawn but
+    /// not the two-attribute one, the composition is the bug and the design
+    /// falls back to CREATE_SUSPENDED + AssignProcessToJobObject +
+    /// ResumeThread (atomicity preserved: the initial thread has not run
+    /// while suspended). Removed with the diagnostic tests once the
+    /// mechanism is named.
+    pub fn spawn_diag_no_job(argv: &[String], cols: u16, rows: u16) -> Result<(Pseudoconsole, File, File, u32)> {
+        if argv.is_empty() {
+            return Err(Error::State("conpty spawn: empty argv".into()));
+        }
+        let (pty_in_read, writer) = create_pipe_pair().map_err(|e| spawn_err("CreatePipe(in)", e))?;
+        let (reader, pty_out_write) = create_pipe_pair().map_err(|e| spawn_err("CreatePipe(out)", e))?;
+        let pty = Pseudoconsole::create(
+            cols,
+            rows,
+            pty_in_read.as_raw_handle() as HANDLE,
+            pty_out_write.as_raw_handle() as HANDLE,
+        )?;
+
+        const ONE: u32 = 1;
+        let mut size: usize = 0;
+        unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), ONE, 0, &mut size) };
+        let mut buf: Vec<u64> = vec![0u64; size.div_ceil(8)];
+        let list_ptr = buf.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
+        if unsafe { InitializeProcThreadAttributeList(list_ptr, ONE, 0, &mut size) } == 0 {
+            return Err(spawn_err("InitializeProcThreadAttributeList", std::io::Error::last_os_error()));
+        }
+        struct ListGuard(*mut c_void);
+        impl Drop for ListGuard {
+            fn drop(&mut self) {
+                unsafe { DeleteProcThreadAttributeList(self.0 as LPPROC_THREAD_ATTRIBUTE_LIST) };
+            }
+        }
+        let _guard = ListGuard(list_ptr as *mut c_void);
+        if unsafe {
+            UpdateProcThreadAttribute(
+                list_ptr,
+                0,
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+                pty.raw() as *const c_void,
+                std::mem::size_of::<HPCON>(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        } == 0
+        {
+            return Err(spawn_err("UpdateProcThreadAttribute(pseudoconsole)", std::io::Error::last_os_error()));
+        }
+
+        let cmdline = build_command_line(argv);
+        let mut cmdline_wide = wide_null(&cmdline);
+        let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+        startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        startup.lpAttributeList = list_ptr;
+        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+        let ok = unsafe {
+            CreateProcessW(
+                std::ptr::null(),
+                cmdline_wide.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                EXTENDED_STARTUPINFO_PRESENT,
+                std::ptr::null(),
+                std::ptr::null(),
+                &startup.StartupInfo,
+                &mut pi,
+            )
+        };
+        if ok == 0 {
+            return Err(spawn_err("CreateProcessW", std::io::Error::last_os_error()));
+        }
+        drop(pty_in_read);
+        drop(pty_out_write);
+        unsafe { CloseHandle(pi.hThread) };
+        unsafe { CloseHandle(pi.hProcess) };
+        Ok((pty, reader, writer, pi.dwProcessId))
+    }
+
     /// Spawn `argv[0]` with `argv[1..]` as arguments inside an owned
     /// pseudoconsole of `cols` x `rows`, contained by a fresh anonymous job.
     ///
