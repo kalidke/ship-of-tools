@@ -179,7 +179,20 @@ fn unwind_repeated_failed_spawns_then_one_real_spawn_succeeds() {
     let bogus = vec![r"Z:\this\path\definitely\does\not\exist.exe".to_string()];
     for i in 0..50 {
         match ConptySpawn::spawn(&bogus, 80, 25) {
-            Err(Error::Spawn(e)) => assert_eq!(e.stage, "CreateProcessW", "attempt {i}: {e}"),
+            Err(Error::Spawn(e)) => {
+                assert_eq!(e.stage, "CreateProcessW", "attempt {i}: {e}");
+                // The CLASS matters, not just the stage: the first real
+                // Windows run failed here with ERROR_INVALID_HANDLE (a
+                // broken attribute list) and this assert's stage-only
+                // predecessor PASSED on it — a wrong-reason pass. A
+                // nonexistent path must fail as not-found (2) or
+                // path-not-found (3), nothing else.
+                let code = e.source.raw_os_error();
+                assert!(
+                    matches!(code, Some(2) | Some(3)),
+                    "attempt {i}: expected FILE/PATH_NOT_FOUND, got {e}"
+                );
+            }
             Err(other) => panic!("attempt {i}: expected Error::Spawn, got {other:?}"),
             Ok(_) => panic!("attempt {i}: nonexistent executable unexpectedly spawned"),
         }

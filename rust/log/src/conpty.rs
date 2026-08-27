@@ -362,17 +362,20 @@ struct AttributeList {
     // unit's `TOKEN_USER` buffer, applied here because the OS does not
     // document this structure's actual alignment requirement either.
     buf: Vec<u64>,
-    // Stable backing storage for the `lpValue` pointers `UpdateProcThreadAttribute`
-    // requires to remain valid until `DeleteProcThreadAttributeList` — a
-    // COPY of the raw resource VALUES, not the resources themselves (those
-    // are owned by `Pseudoconsole`/`AnonymousJob` in the caller's stack
-    // frame for the whole call, which is what actually keeps them alive).
-    hpc_value: HPCON,
-    job_handles: [HANDLE; 1],
+    // BOXED, and the box is load-bearing: `UpdateProcThreadAttribute`
+    // STORES the `lpValue` pointer (it does not copy the pointed-at array),
+    // and `CreateProcessW` reads through it later — so the array must sit
+    // at an address that survives this struct being returned BY VALUE from
+    // `new`. An inline field's stack address dies at that move; a heap
+    // address does not. This was found the honest way: the first real
+    // Windows run failed every spawn with ERROR_INVALID_HANDLE.
+    job_handles: Box<[HANDLE; 1]>,
 }
 
 impl AttributeList {
     fn new(hpc: HPCON, job: HANDLE) -> Result<Self> {
+        // `hpc` is consumed by value into the attribute slot below; only
+        // the job-handle ARRAY needs owned, move-stable storage.
         const ATTRIBUTE_COUNT: u32 = 2;
         let mut size: usize = 0;
         // Sizing call: always "fails" by design (NULL list) — only `size`
@@ -389,18 +392,26 @@ impl AttributeList {
             ));
         }
 
-        let mut me = Self { buf, hpc_value: hpc, job_handles: [job] };
+        let mut me = Self { buf, job_handles: Box::new([job]) };
         // Recomputed from `me.buf` (not the pre-move `buf`): moving a `Vec`
         // never relocates its heap allocation, but re-deriving the pointer
         // from its final resting place is one less thing to have to trust.
         let list_ptr = me.buf.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
 
+        // THE TWO ATTRIBUTES USE OPPOSITE CONVENTIONS — the trap that
+        // failed every spawn on the first real Windows run:
+        // PSEUDOCONSOLE passes the HPCON *value itself* as `lpValue`
+        // (Microsoft's own walkthrough sample passes `hPC`, not `&hPC` —
+        // the handle IS the pointer-sized payload); JOB_LIST passes a
+        // *pointer to* a handle array. Passing `&hpc` here made Windows
+        // treat a stack address as a console handle: ERROR_INVALID_HANDLE
+        // from CreateProcessW, instantly, on every image.
         let pseudoconsole_ok = unsafe {
             UpdateProcThreadAttribute(
                 list_ptr,
                 0,
                 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
-                &me.hpc_value as *const HPCON as *const c_void,
+                hpc as *const c_void,
                 std::mem::size_of::<HPCON>(),
                 std::ptr::null_mut(),
                 std::ptr::null(),
