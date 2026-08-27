@@ -9,6 +9,7 @@
 
 pub mod capsule;
 pub mod claude;
+pub mod conpty;
 pub mod envelope;
 pub mod record;
 pub mod recovery;
@@ -46,6 +47,13 @@ pub enum Error {
     /// lacks (Linux and Windows have real arms; others fail closed).
     #[error("unsupported on this platform: {0}")]
     Unsupported(&'static str),
+    /// A ConPTY/job spawn stage failed (Windows-only: `conpty` module).
+    /// Carries WHICH stage and the underlying Win32 error, so a capsule can
+    /// commit `producer_dead {spawn_failed}` with a real diagnostic instead
+    /// of a bare string.
+    #[cfg(windows)]
+    #[error("conpty spawn failed: {0}")]
+    Spawn(#[from] conpty::SpawnError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

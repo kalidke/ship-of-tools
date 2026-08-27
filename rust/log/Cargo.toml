@@ -24,13 +24,20 @@ libc = { workspace = true }
 # atomic-DACL-at-birth arm (ADR 0041 "attach protocol" §Security split):
 # Win32_Security for SECURITY_ATTRIBUTES/GetTokenInformation/TokenUser,
 # Win32_Security_Authorization for the SDDL conversions, Win32_System_Threading
-# for OpenProcessToken/GetCurrentProcess. Same version the frontend pins.
+# for OpenProcessToken/GetCurrentProcess/CreateProcessW/the attribute-list
+# calls. Plus the owned-ConPTY layer (ADR 0041 "Containment and the owned
+# ConPTY layer"): Win32_System_Console for CreatePseudoConsole/Resize/Close,
+# Win32_System_JobObjects for the anonymous containment job, Win32_System_Pipes
+# for CreatePipe. Same version the frontend pins.
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_System_Threading",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
 ] }
 
 [dev-dependencies]
