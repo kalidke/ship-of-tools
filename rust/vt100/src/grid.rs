@@ -15,6 +15,7 @@ pub struct Grid {
 
 impl Grid {
     pub fn new(size: Size, scrollback_len: usize) -> Self {
+        let size = size.clamped();
         Self {
             size,
             pos: Pos::default(),
@@ -62,6 +63,7 @@ impl Grid {
     }
 
     pub fn set_size(&mut self, size: Size) {
+        let size = size.clamped();
         if size.cols != self.size.cols {
             for row in &mut self.rows {
                 row.wrap(false);
@@ -489,10 +491,61 @@ impl Grid {
     }
 }
 
+/// The smallest terminal this parser has correct behavior for.
+///
+/// Below it there are inputs with no right answer and nowhere to put one: a
+/// width-two glyph in a one-column terminal has no cell for its continuation
+/// half, and a one-row terminal has nothing to scroll into when a line wraps.
+/// Both cases were reachable and both PANICKED — `size.cols - width` and
+/// `prev_pos.row -= scrolled` underflowed — and neither has a rendering a
+/// reader could make sense of anyway.
+///
+/// So the geometry is refused rather than rendered, at every entrance:
+/// [`Grid::new`] and [`Grid::set_size`] raise anything smaller, and a
+/// checkpoint announcing a smaller screen does not restore. Note the
+/// asymmetry with `checkpoint::MAX_ROWS` / `MAX_COLS`, which are a *format*
+/// budget that the parser itself does not enforce — a 300-row screen parses
+/// fine and simply cannot be checkpointed. This bound is the other kind: a
+/// parser invariant, which the format then also enforces.
+pub(crate) const MIN_ROWS: u16 = 2;
+
+/// See [`MIN_ROWS`].
+pub(crate) const MIN_COLS: u16 = 2;
+
+/// The widest a single glyph may be, in cells.
+///
+/// This is not a policy choice, it is what the data structure can hold: a
+/// wide character is a lead cell plus exactly one continuation, and there is
+/// no third state. `unicode-width` reports a handful of characters (some
+/// Khmer and Tibetan signs) as THREE cells since 0.2, which upstream's model
+/// predates — `Screen::text` still carried the comment "width() can only
+/// return 0, 1, or 2". Such a character is clamped into the model rather
+/// than propagated into it.
+pub(crate) const MAX_GLYPH_WIDTH: u16 = 2;
+
+/// The bound above and [`MIN_COLS`] are related, and the relationship is what
+/// makes the column arithmetic in `Screen::text` and [`Grid::col_wrap`] safe:
+/// a glyph can never be wider than the terminal it is drawn into, so
+/// `cols - width` cannot go below zero. Asserted rather than assumed, because
+/// raising one without the other reintroduces the underflow silently.
+const _: () = assert!(MIN_COLS >= MAX_GLYPH_WIDTH);
+
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct Size {
     pub rows: u16,
     pub cols: u16,
+}
+
+impl Size {
+    /// Raises a size to [`MIN_ROWS`] x [`MIN_COLS`]. Applied by `Grid`, which
+    /// every construction and resize goes through, so no caller can route
+    /// around it.
+    fn clamped(self) -> Self {
+        Self {
+            rows: self.rows.max(MIN_ROWS),
+            cols: self.cols.max(MIN_COLS),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]

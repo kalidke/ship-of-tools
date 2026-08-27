@@ -162,7 +162,8 @@ are recorded as non-authority spawn-detail diagnostics.
 ### Step 3 as built (2026-08-26)
 
 Three clarifications the implementation forced, recorded so the table above
-is not read as more than it claims:
+is not read as more than it claims (a fourth decision, the geometry MINIMUM,
+follows them):
 
 - **"one grid ≤ 4 MiB" bounds the CELL PAYLOAD, not the allocation.**
   512 × 256 × 32 B is exactly 4 MiB of cells; the `Row` and `Vec` headers and
@@ -189,6 +190,41 @@ is not read as more than it claims:
 The proven encoded bound is **8,651,327 bytes**, computed from the format and
 asserted at compile time. A typical 200×50 screen encodes to about 22 KB,
 because an empty cell with default attributes costs one byte.
+
+**The budget table gains a floor: 2 × 2 (decided 2026-08-26).** The table
+above caps geometry because a checkpoint has to fit a message. The opposite
+end needed a rule for a different reason: below two rows or two columns the
+parser had inputs with no correct answer and nowhere to put one — a
+width-two glyph with no cell for its continuation half, a wrap with nothing
+to scroll into — and both PANICKED. Two pre-existing crashes, inherited from
+upstream, reachable from ordinary traffic (`Parser::new(1, 2, 0)
+.process(b"abc")` was one repro in full), and neither fixable by patching the
+underflow alone: the glyph still had nowhere to go one unwrap later.
+
+So the geometry is refused rather than rendered. Constructors and `set_size`
+raise anything smaller; a checkpoint announcing a smaller screen is REFUSED,
+not clamped, because clamping would return a screen the payload does not
+describe. Note the two bounds are different KINDS of rule and the asymmetry
+is deliberate: the maximum is a format budget the parser does not enforce (a
+300-row screen parses fine and simply cannot be checkpointed), while the
+minimum is a parser invariant that the format then also enforces. Nothing
+outside the fork lost a capability — both frontend paths that size a terminal
+already guarded at 2 — and the two former panics are now pinned as tests.
+
+**A minimum alone turned out not to be sufficient, which is worth recording.**
+Fuzzing the checkpoint round trip across small geometries immediately produced
+a THIRD panic at 2 x 2, and it was not a geometry bug: `unicode-width` reports
+a few characters as three cells wide since 0.2, upstream's parser was written
+against a table where "width() can only return 0, 1, or 2", and `cols - width`
+underflows whenever a glyph is wider than the terminal. No geometry floor fixes
+that in general — the floor would have to track a Unicode table, which is
+exactly the dependency this project already refuses to take at restore time.
+The fix is at the other end: a glyph's width is clamped to what the data
+structure can hold (a lead plus one continuation), and `MIN_COLS >=
+MAX_GLYPH_WIDTH` is asserted at compile time so the two rules cannot drift
+apart. The lesson for steps 4-5: the inherited parser's stated invariants were
+written against older dependencies, and the corpus is what finds where they
+stopped being true.
 
 ## The attach protocol
 

@@ -207,8 +207,11 @@ impl LocalTerminal {
         initial_command: Option<&str>,
         wake: Box<dyn Fn() + Send + 'static>,
     ) -> Result<Self> {
-        let rows = rows.max(1);
-        let cols = cols.max(1);
+        // 2, not 1: the vt100 fork refuses anything smaller (its
+        // `grid::MIN_ROWS`), and flooring lower here would tell the PTY a
+        // size the emulator does not hold. Both callers already guard at 2.
+        let rows = rows.max(2);
+        let cols = cols.max(2);
 
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -395,8 +398,9 @@ impl LocalTerminal {
     /// parser so their grids stay in sync.
     #[allow(dead_code)]
     pub fn resize(&mut self, cols: u16, rows: u16) {
-        let rows = rows.max(1);
-        let cols = cols.max(1);
+        // See `spawn`: the PTY and the emulator must be told the same size.
+        let rows = rows.max(2);
+        let cols = cols.max(2);
         if let Err(e) = self.master.resize(PtySize {
             rows,
             cols,
