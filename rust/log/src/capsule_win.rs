@@ -264,16 +264,16 @@ pub struct ExitSummary {
     /// just a recorded disposition string.
     pub resize_os_calls: u64,
     /// The output budget's peak outstanding-bytes high-water mark over the
-    /// whole run — the seam a backpressure test needs to prove the bound
-    /// actually engaged. (Exact byte-count equality against what the
-    /// producer wrote is not a meaningful assertion: `hOutput` carries
-    /// conhost's own rendered VT stream, not raw stdout, and can legitimately
-    /// differ in length.)
+    /// whole run — proof the budget's bookkeeping was live during a real
+    /// run. (Exact byte-count equality against what the producer wrote is
+    /// not a meaningful assertion: `hOutput` carries conhost's own rendered
+    /// VT stream, not raw stdout, and can legitimately differ in length.
+    /// Whether the bound BLOCKS when exceeded is not provable here either —
+    /// engagement depends on conhost's burst pacing on the host, which no
+    /// e2e assertion controls; runner-pool pacing changes turned exactly
+    /// that assertion red on unchanged code. The blocking property is
+    /// proven deterministically by `OutputBudget`'s own unit tests.)
     pub output_high_water_bytes: u64,
-    /// How many times the reader thread actually blocked in
-    /// `OutputBudget::reserve` waiting for room. `0` means the budget
-    /// never bound anything even if `output_high_water_bytes` looks large.
-    pub output_reserve_blocks: u64,
 }
 
 /// The reader thread's own event stream: producer output, or its ONE
@@ -314,7 +314,6 @@ struct BudgetState {
     outstanding: u64,
     closed: bool,
     high_water: u64,
-    blocked_count: u64,
 }
 
 /// The bounded output budget (ADR 0041: "producer channel 8 MiB bounded —
@@ -333,7 +332,7 @@ struct OutputBudget {
 impl OutputBudget {
     fn new() -> Self {
         Self {
-            state: Mutex::new(BudgetState { outstanding: 0, closed: false, high_water: 0, blocked_count: 0 }),
+            state: Mutex::new(BudgetState { outstanding: 0, closed: false, high_water: 0 }),
             space_available: Condvar::new(),
         }
     }
@@ -349,7 +348,6 @@ impl OutputBudget {
     /// reserving, and never call `read()` again.
     fn reserve(&self, n: u64) -> bool {
         let mut g = self.state.lock().unwrap();
-        let mut waited = false;
         loop {
             if g.closed {
                 return false;
@@ -357,12 +355,8 @@ impl OutputBudget {
             if g.outstanding + n <= OUTPUT_QUEUE_BUDGET_BYTES {
                 g.outstanding += n;
                 g.high_water = g.high_water.max(g.outstanding);
-                if waited {
-                    g.blocked_count += 1;
-                }
                 return true;
             }
-            waited = true;
             g = self.space_available.wait(g).unwrap();
         }
     }
@@ -390,9 +384,12 @@ impl OutputBudget {
         self.space_available.notify_all();
     }
 
-    fn snapshot(&self) -> (u64, u64) {
-        let g = self.state.lock().unwrap();
-        (g.high_water, g.blocked_count)
+    /// The peak outstanding-bytes mark for `ExitSummary`. (Whether the
+    /// bound BLOCKS when exceeded is proven by this module's own unit
+    /// tests, deterministically — an e2e assertion on it races conhost's
+    /// burst pacing; see `ExitSummary::output_high_water_bytes`.)
+    fn snapshot(&self) -> u64 {
+        self.state.lock().unwrap().high_water
     }
 }
 
@@ -605,7 +602,6 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
                 handshake_suppressed_matches: 0,
                 resize_os_calls: 0,
                 output_high_water_bytes: 0,
-                output_reserve_blocks: 0,
             });
         }
     };
@@ -1042,7 +1038,7 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
     store.advance_chain(digest);
     segments_sealed += 1;
 
-    let (output_high_water_bytes, output_reserve_blocks) = output_budget.snapshot();
+    let output_high_water_bytes = output_budget.snapshot();
     Ok(ExitSummary {
         exit_code: Some(exit_code),
         exit_kind,
@@ -1052,7 +1048,6 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
         handshake_suppressed_matches,
         resize_os_calls,
         output_high_water_bytes,
-        output_reserve_blocks,
     })
 }
 
@@ -1071,5 +1066,65 @@ mod base64_engine {
             out.push(if chunk.len() > 2 { TABLE[n as usize & 63] as char } else { '=' });
         }
         out
+    }
+}
+
+/// `OutputBudget`'s blocking is proven HERE, deterministically, because it
+/// cannot be proven end-to-end: whether the e2e flood ever fills the budget
+/// depends on conhost's burst pacing on the host machine, which no test
+/// controls — a runner-image change turned exactly that e2e assertion red
+/// on unchanged code. The flood test keeps the properties that are always
+/// true (no deadlock, verify-green, bookkeeping live); the bound itself is
+/// a plain condvar protocol, provable right at the primitive.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+
+    /// A reserve that would exceed the budget cannot complete before room
+    /// is released, and completes once it is. Deterministic without any
+    /// timing assumption: while the budget is full and not cancelled,
+    /// `reserve`'s loop has no path to return — a return would have pushed
+    /// `outstanding` past the bound, and the invariant assertion below
+    /// would catch it — so the recv can only succeed via the release.
+    #[test]
+    fn output_budget_blocks_at_the_bound_and_unblocks_on_release() {
+        let budget = Arc::new(OutputBudget::new());
+        assert!(budget.reserve(OUTPUT_QUEUE_BUDGET_BYTES));
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let b = Arc::clone(&budget);
+        thread::spawn(move || {
+            done_tx.send(b.reserve(1)).unwrap();
+        });
+
+        budget.release(1);
+        assert!(done_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("blocked reserve never completed after release"));
+
+        let g = budget.state.lock().unwrap();
+        assert_eq!(g.outstanding, OUTPUT_QUEUE_BUDGET_BYTES);
+        assert_eq!(g.high_water, OUTPUT_QUEUE_BUDGET_BYTES);
+    }
+
+    /// `cancel` wakes a blocked reserve and makes it return `false` — the
+    /// reader-must-stop signal — without any release ever happening.
+    #[test]
+    fn output_budget_cancel_unblocks_a_blocked_reserve_with_false() {
+        let budget = Arc::new(OutputBudget::new());
+        assert!(budget.reserve(OUTPUT_QUEUE_BUDGET_BYTES));
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let b = Arc::clone(&budget);
+        thread::spawn(move || {
+            done_tx.send(b.reserve(1)).unwrap();
+        });
+
+        budget.cancel();
+        assert!(!done_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("blocked reserve never returned after cancel"));
+        assert!(!budget.reserve(1), "a cancelled budget must refuse every future reserve");
     }
 }
