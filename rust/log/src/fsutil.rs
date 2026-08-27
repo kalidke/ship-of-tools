@@ -2,7 +2,7 @@
 //! exclusive lock. Two real platform arms (Linux since P1, Windows since P3 —
 //! ADR 0041 §store port); the pure codec compiles everywhere, but voyage
 //! stores refuse to open where the OS can't guarantee these semantics
-//! (non-Linux unix fails closed in `rename_noreplace`).
+//! (non-Linux unix fails closed in `rename_noreplace_raw`).
 
 use crate::{Error, Result};
 use std::fs::File;
@@ -248,7 +248,7 @@ fn open_dir_handle(dir: &Path) -> Result<File> {
 /// RENAME_NOREPLACE: the commit point of every publication. Destination
 /// existing is the caller's loud condition, surfaced as AlreadyExists.
 #[cfg(target_os = "linux")]
-pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
+pub fn rename_noreplace_raw(from: &Path, to: &Path) -> Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     let f = CString::new(from.as_os_str().as_bytes()).map_err(|_| Error::State("nul in path".into()))?;
@@ -276,7 +276,7 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
 /// the thing this crate exists to refuse; macOS gets a real arm
 /// (renamex_np) when a macOS FE exists to dogfood it (ADR 0041 scope note).
 #[cfg(all(unix, not(target_os = "linux")))]
-pub fn rename_noreplace(_from: &Path, _to: &Path) -> Result<()> {
+pub fn rename_noreplace_raw(_from: &Path, _to: &Path) -> Result<()> {
     Err(Error::Unsupported(
         "atomic no-clobber rename requires Linux renameat2 in v1",
     ))
@@ -304,7 +304,7 @@ pub fn rename_noreplace(_from: &Path, _to: &Path) -> Result<()> {
 /// renamed — residue a prior incarnation renamed into place before crashing.
 /// Every ordinary caller gets both steps via `publish_noreplace`.
 #[cfg(windows)]
-pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
+pub fn rename_noreplace_raw(from: &Path, to: &Path) -> Result<()> {
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
     let (f, t) = (wide_verbatim(from)?, wide_verbatim(to)?);
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
@@ -349,7 +349,7 @@ pub fn finish_publication(target: &Path) -> Result<()> {
 /// Every ordinary publish site uses this instead of pairing the raw rename
 /// with its own `fsync_dir(parent)` call.
 pub fn publish_noreplace(source: &Path, target: &Path) -> Result<()> {
-    rename_noreplace(source, target)?;
+    rename_noreplace_raw(source, target)?;
     finish_publication(target)
 }
 

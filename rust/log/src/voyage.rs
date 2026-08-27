@@ -390,7 +390,7 @@ impl VoyageStore {
             f.write_all(content)?;
             f.sync_all()?;
         }
-        match fsutil::rename_noreplace(&tmp, &dest) {
+        match fsutil::rename_noreplace_raw(&tmp, &dest) {
             Ok(()) => {}
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Raced an identical publish: verify + clean the temp. Same
@@ -548,15 +548,13 @@ mod tests {
         let d1 = store.publish_blob(b"hello").unwrap();
         let path = root.join("blobs").join("sha256").join(&d1[0..2]).join(&d1);
 
+        // FILE_SHARE_READ, deny write: see `recovery.rs`'s `hold_with_share`
+        // doc for why the hold must not block anything old code also does —
+        // here that's only the CAS byte-compare read, so read-only sharing
+        // is enough (unlike `recovering_alone_...` there, this path never
+        // deletes `path`, so there is no deletion-denial trap to avoid).
         let _held = std::fs::OpenOptions::new()
             .read(true)
-            // FILE_SHARE_READ, deny write: reads (verify_seal, the CAS
-            // byte-compare, SegmentReader::read) must SUCCEED — the old code
-            // performed them too, and a hold that blocks them makes the old
-            // code error as well, so the test would pass unchanged against
-            // it. Only `finish_publication`'s write-reopen inside
-            // `flush_renamed` may fail; that is the one thing the old code
-            // never did.
             .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
             .open(&path)
             .unwrap();

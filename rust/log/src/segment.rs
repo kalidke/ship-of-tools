@@ -506,7 +506,7 @@ impl SegmentReader {
 }
 
 // The STORE (not the codec) is Linux-only AS OF THIS COMMIT: publication
-// needs an atomic no-clobber rename, and `rename_noreplace` fails closed
+// needs an atomic no-clobber rename, and `rename_noreplace_raw` fails closed
 // off Linux (ADR 0039). These tests therefore run where the store runs;
 // the pure-codec tests in record.rs/envelope.rs stay on every platform.
 //
