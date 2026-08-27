@@ -241,6 +241,12 @@ impl AnonymousJob {
         self.0.as_raw_handle() as HANDLE
     }
 
+    /// TEMPORARY diagnostic accessor (attribute-application mystery on the
+    /// first real Windows runs) — removed with the diag test that uses it.
+    pub fn raw_for_tests(&self) -> HANDLE {
+        self.raw()
+    }
+
     /// `TerminateJobObject`: the writer loop's termination sequence calls
     /// this BEFORE polling `active_processes` down to zero and only then
     /// closing the pseudoconsole (ADR 0041's pinned order) — this method is

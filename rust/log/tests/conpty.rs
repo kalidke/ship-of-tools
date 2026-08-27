@@ -276,6 +276,49 @@ fn contract_first_output_bytes_and_da1_presence() {
     assert!(text.contains(marker), "expected marker in output, got: {text:?}");
 }
 
+/// Diagnostic (temporary, for the attribute-application mystery): the raw
+/// CI log proved child output lands on the TEST HOST's console, not our
+/// pseudoconsole — so the PSEUDOCONSOLE attribute is not applying. This
+/// splits the remaining hypothesis space: is the child in OUR JOB (job-list
+/// attribute applied, pseudoconsole alone ignored), or in no job of ours
+/// (the whole attribute list ignored)? Logs, then kills via the job — if
+/// the job never applied, the helper outlives `terminate()` and
+/// `active_processes` stays 0 from the start, which is ALSO logged.
+#[test]
+fn diag_which_attributes_actually_applied() {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
+    let spawn = ConptySpawn::spawn(&[helper], 80, 25).unwrap();
+    let (_rx, _reader) = spawn_reader_thread(spawn.reader);
+
+    // The DIRECT child pid comes from CreateProcessW, not from pty output —
+    // immune to the console-attachment failure under diagnosis.
+    let pid = spawn.pid;
+    std::thread::sleep(Duration::from_millis(500));
+    eprintln!("diag: active_processes right after spawn = {:?}", spawn.job.active_processes());
+
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h.is_null() {
+        eprintln!("diag: OpenProcess({pid}) failed: {}", std::io::Error::last_os_error());
+    } else {
+        let mut in_our_job: windows_sys::Win32::Foundation::BOOL = 0;
+        let ok = unsafe { IsProcessInJob(h, spawn.job.raw_for_tests(), &mut in_our_job) };
+        eprintln!("diag: IsProcessInJob(child, OUR job) ok={ok} result={in_our_job}");
+        let mut in_any_job: windows_sys::Win32::Foundation::BOOL = 0;
+        let ok2 = unsafe { IsProcessInJob(h, std::ptr::null_mut(), &mut in_any_job) };
+        eprintln!("diag: IsProcessInJob(child, ANY job) ok={ok2} result={in_any_job}");
+        unsafe { CloseHandle(h) };
+    }
+
+    let _ = spawn.job.terminate();
+    std::thread::sleep(Duration::from_millis(500));
+    eprintln!("diag: active_processes after terminate = {:?}", spawn.job.active_processes());
+    spawn.pty.close_pty();
+}
+
 /// Test 5: `IsProcessInJob` probe on THIS test process, surfaced through
 /// `SpawnDetail` from an ordinary spawn (`spawn`'s own diagnostic, checked
 /// at spawn time — not a separate private probe this test would otherwise
