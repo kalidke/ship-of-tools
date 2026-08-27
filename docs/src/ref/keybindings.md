@@ -135,6 +135,26 @@ Spatial focus is kept disjoint from plain arrows (per-pane navigation) and
 | `font.scale_down` | `Ctrl+-`, `Ctrl+_` | Zoom out. `-` and `_` both zoom out. |
 | `font.scale_reset` | `Ctrl+0` | Reset font scale. |
 
+### Files mode (fixed)
+
+File operations and openers in the Files nav tree. These are **not yet
+rebindable** (hardcoded, pending the keymap migration) — the in-app `?` help
+overlay is their other reference.
+
+| Key | What it does |
+|-----|--------------|
+| `Ctrl+N` | New file — type the name into the status-line prompt, `Enter` to create in the cursored directory (bare names only; no `/`). There is no new-*folder* action yet — use the Terminal drawer (`mkdir`). |
+| `Ctrl+D` | Delete the cursored file (refuses directories). |
+| `u` | Upload local file(s) via the OS picker into the cursored folder. |
+| `d` | Download the cursored file to your machine. |
+| `o` | Open (html→browser · `.jl`→Pluto · video→browser · `.qmd`→quick render). |
+| `O` | Open + run code chunks (`.qmd` execute). |
+| `W` | Open the built docs site in the browser (deep-links a built docs page). |
+| `r` / `R` | Run `.jl` in a fresh REPL / in the current REPL. |
+| `p` | Pin preview. |
+| `Ctrl+C` | Copy the cursored file's path. |
+| `.` | Show / hide dotfiles in the tree. |
+
 ### In-pane context (fixed)
 
 These single-key actions feed context to the in-pane agent. They are **not yet
