@@ -666,6 +666,62 @@ mod tests {
         }
     }
 
+    /// Round-trip an SDDL STRING through the converter pair (string -> SD ->
+    /// string) to the converter's own canonical form. The first CI run on a
+    /// real Windows machine taught why comparing raw SID strings to
+    /// converter output is wrong: `ConvertSecurityDescriptorToString...`
+    /// compresses well-known SIDs to their two-letter SDDL aliases — the
+    /// runner's built-in Administrator account (RID 500) came back as `LA`,
+    /// not `S-1-5-21-...-500` — while `ConvertSidToStringSidW` always emits
+    /// the raw form. Pushing the EXPECTED string through the same converter
+    /// makes both sides speak the converter's dialect, whatever account CI
+    /// happens to run as.
+    #[cfg(windows)]
+    fn canonical_sddl(sddl: &str) -> String {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW,
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::{
+            DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        };
+
+        let wide: Vec<u16> = std::ffi::OsStr::new(sddl)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            assert_ne!(
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    wide.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut psd,
+                    std::ptr::null_mut(),
+                ),
+                0,
+                "string->SD failed for {sddl}"
+            );
+            let mut out_ptr: *mut u16 = std::ptr::null_mut();
+            let mut out_len: u32 = 0;
+            let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                psd,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                &mut out_ptr,
+                &mut out_len,
+            );
+            assert_ne!(ok, 0, "SD->string failed for {sddl}");
+            let len = (0..).take_while(|&i| *out_ptr.add(i) != 0).count();
+            let out = String::from_utf16_lossy(std::slice::from_raw_parts(out_ptr, len));
+            LocalFree(out_ptr as _);
+            LocalFree(psd as _);
+            out
+        }
+    }
+
     /// ADR 0041 DACL requirement, points 1 and 3 together: the published
     /// root (this IS the post-rename state — bootstrap exposes no way to
     /// inspect `.creating` before the rename, so this is simultaneously the
@@ -681,19 +737,13 @@ mod tests {
         let root = dir.path().join("voy5");
         VoyageStore::bootstrap(&root, "voy5", RetentionClass::Discard).unwrap();
 
-        let sddl = security_descriptor_sddl(&root);
-        assert!(sddl.starts_with("D:P("), "DACL must be present and PROTECTED: {sddl}");
+        // FULL equality against the canonicalized expected form — presence,
+        // protected bit, exactly one ACE, flags, access, and trustee in a
+        // single assertion, robust to the converter's well-known-SID
+        // aliasing (see `canonical_sddl`).
         let sid = current_user_sid_string();
-        let ace = format!("(A;OICI;FA;;;{sid})");
-        assert!(
-            sddl.contains(&ace),
-            "expected an Allow/ObjectInherit/ContainerInherit/FullAccess ACE for the live \
-             token-user SID {sid}, got: {sddl}"
-        );
-        // Exactly ONE ACE: containing ours proves the grant; counting proves
-        // nothing ELSE was granted — the protected bit already blocks parent
-        // injection, so a second ACE could only come from our own SDDL.
-        assert_eq!(sddl.matches("(").count(), 1, "expected exactly one ACE: {sddl}");
+        let expected = canonical_sddl(&format!("D:P(A;OICI;FA;;;{sid})"));
+        assert_eq!(security_descriptor_sddl(&root), expected);
     }
 
     /// ADR 0041 DACL requirement, point 2: `seg/` — created inside the
@@ -718,12 +768,19 @@ mod tests {
         VoyageStore::bootstrap(&root, "voy6", RetentionClass::Discard).unwrap();
 
         let sddl = security_descriptor_sddl(&root.join("seg"));
+        // The expected inherited ACE is the ROOT's canonical ACE with the
+        // INHERITED_ACE flag added: take the converter-canonical trustee
+        // spelling (alias or raw, whatever this account canonicalizes to)
+        // and splice ID into the flags we set — the flags are ours to know,
+        // the trustee spelling is the converter's.
         let sid = current_user_sid_string();
-        let ace = format!("(A;OICIID;FA;;;{sid})");
+        let canonical_root = canonical_sddl(&format!("D:P(A;OICI;FA;;;{sid})"));
+        let ace = canonical_root
+            .trim_start_matches("D:P")
+            .replace("(A;OICI;", "(A;OICIID;");
         assert!(
             sddl.contains(&ace),
-            "expected an INHERITED Allow/ObjectInherit/ContainerInherit/FullAccess ACE for {sid}, \
-             got: {sddl}"
+            "expected the inherited form {ace} of the root's ACE, got: {sddl}"
         );
     }
 
