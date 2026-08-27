@@ -74,6 +74,43 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
         @test f("{\"hooks\": \"x\", \"y\": 1}") == ["hooks", "y"]
     end
 
+    @testset "codex marketplace payload registry" begin
+        # The overwrite guard for ~/.agents/plugins/marketplace.json is a
+        # byte-compare against CODEX_MARKETPLACE_PAYLOADS. It used to be
+        # `occursin("sot-local", ...)`, which rewrote WHOLESALE any file that
+        # merely mentioned the string — including one carrying entries other
+        # tools had added. These checks pin the registry the compare relies on.
+        payloads = ShipTools.CODEX_MARKETPLACE_PAYLOADS
+        @test !isempty(payloads)
+
+        # Every entry is real JSON with the marketplace's top-level shape, and
+        # the CURRENT one (what the writer emits) names our marketplace and
+        # plugin. jq is the honest parser where available; the scanner check
+        # runs everywhere.
+        for txt in payloads
+            @test sort(ShipTools._json_toplevel_keys(txt)) ==
+                  ["interface", "name", "plugins"]
+        end
+        @test occursin("\"sot-local\"", first(payloads))
+        @test occursin("\"sot-comm\"", first(payloads))
+        if !isnothing(Sys.which("jq"))
+            for txt in payloads
+                @test success(pipeline(pipeline(IOBuffer(txt), `jq empty`); stderr = devnull))
+            end
+        end
+
+        # The same-commit convention: a modified file must NOT match the
+        # registry, or the guard would overwrite user additions. A plugin
+        # appended to our own payload is the exact shape the old guard
+        # destroyed.
+        modified = replace(
+            first(payloads),
+            "  ]" => """    ,{ "name": "someone-elses-plugin" }\n  ]""",
+        )
+        @test modified != first(payloads)   # the replace really landed
+        @test !(modified in payloads)
+    end
+
     @testset "env-dir resolution" begin
         # A set-but-empty override must read as unset: taking "" literally
         # yields a relative path that scatters the install into the CWD.

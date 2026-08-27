@@ -97,6 +97,32 @@ end
 # OLD name here IN THE SAME COMMIT that renames/removes a managed bin file.
 const COMM_DEPRECATED_BIN = String[]
 
+# Every byte-exact version of ~/.agents/plugins/marketplace.json this package
+# has ever written, CURRENT FIRST — the writer emits `first()`, and a file
+# matching ANY entry is ours-unmodified and safe to replace. Anything else in
+# that file is content we did not put there (another marketplace, or ours with
+# entries someone added), and the install must not delete it: the old guard
+# overwrote on a mere `occursin("sot-local", ...)`, so a file that MENTIONED
+# sot-local anywhere — including one carrying other marketplaces' plugins —
+# was rewritten wholesale. Same same-commit convention as COMM_DEPRECATED_BIN:
+# change the payload -> append the outgoing version here in that commit, or
+# every machine that took the old payload starts warning instead of upgrading.
+const CODEX_MARKETPLACE_PAYLOADS = [
+    """
+{
+  "name": "sot-local",
+  "interface": { "displayName": "Ship of Tools local" },
+  "plugins": [
+    {
+      "name": "sot-comm",
+      "source": { "source": "local", "path": "./.agents/plugins/sot-comm" },
+      "policy": { "installation": "AVAILABLE" }
+    }
+  ]
+}
+""",
+]
+
 """
     install_comm(; clis = [:claude])
 
@@ -268,22 +294,18 @@ function _install_adapter(cli::Symbol)
                 comm/adapters/codex/hooks.README.md instead.""")
             write(joinpath(pdir, "hooks", "hooks.json"), txt)
             mp = joinpath(homedir(), ".agents", "plugins", "marketplace.json")
-            if !isfile(mp) || occursin("sot-local", read(mp, String))
-                write(mp, """
-{
-  "name": "sot-local",
-  "interface": { "displayName": "Ship of Tools local" },
-  "plugins": [
-    {
-      "name": "sot-comm",
-      "source": { "source": "local", "path": "./.agents/plugins/sot-comm" },
-      "policy": { "installation": "AVAILABLE" }
-    }
-  ]
-}
-""")
+            # Replace the file only when it is absent or byte-identical to a
+            # version we wrote (see CODEX_MARKETPLACE_PAYLOADS). Fail closed on
+            # anything else — a modified file may hold entries other tools or
+            # the user added, and uncertainty is not permission to delete them.
+            if !isfile(mp) || read(mp, String) in CODEX_MARKETPLACE_PAYLOADS
+                write(mp, first(CODEX_MARKETPLACE_PAYLOADS))
             else
-                @warn "~/.agents/plugins/marketplace.json exists and is not ours — add the sot-comm plugin manually" file = mp
+                @warn """
+                    ~/.agents/plugins/marketplace.json exists with content this installer
+                    did not write, so it was left alone. Ensure it carries the sot-comm
+                    plugin entry (source path ./.agents/plugins/sot-comm) — or delete the
+                    file and re-run update_comm() to regenerate it.""" file = mp
             end
             if isnothing(Sys.which("codex"))
                 # Codex is OPTIONAL (maintainer, 2026-07-11): a machine
