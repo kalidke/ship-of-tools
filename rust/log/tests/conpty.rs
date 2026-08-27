@@ -84,14 +84,37 @@ fn e2e_spawn_echoes_marker_and_job_reaches_zero_active() {
     let spawn = ConptySpawn::spawn(&argv, 80, 25).unwrap();
     let (rx, reader_thread) = spawn_reader_thread(spawn.reader);
 
-    wait_for_zero_active(&spawn.job, Duration::from_secs(15));
+    // Wait for the CONTENT while the session is live — never close first
+    // and hope the final frame carried it. Timed chunk log so a timeout
+    // failure records WHEN each frame arrived, not just what.
+    let start = Instant::now();
+    let mut all = Vec::new();
+    let mut seen = false;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline && !seen {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(chunk) => {
+                eprintln!(
+                    "e2e chunk @{}ms: {:?}",
+                    start.elapsed().as_millis(),
+                    String::from_utf8_lossy(&chunk)
+                );
+                all.extend(chunk);
+                seen = String::from_utf8_lossy(&all).contains(marker);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                eprintln!("e2e reader DISCONNECTED @{}ms", start.elapsed().as_millis());
+                break;
+            }
+        }
+    }
 
-    // Close with the reader already draining — the documented call
-    // pattern — then join it and collect everything it saw.
+    wait_for_zero_active(&spawn.job, Duration::from_secs(15));
     spawn.pty.close_pty();
     reader_thread.join().unwrap();
-    let mut all = Vec::new();
     while let Ok(chunk) = rx.recv() {
+        eprintln!("e2e post-close chunk: {:?}", String::from_utf8_lossy(&chunk));
         all.extend(chunk);
     }
     let text = String::from_utf8_lossy(&all);
