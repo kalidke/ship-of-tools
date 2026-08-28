@@ -646,6 +646,18 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
                             Error::Schema(format!("input {:?}: missing idem_key", env.seq))
                         })?
                         .to_string();
+                    // Finding 8: a JSON-string check alone lets an
+                    // uppercase or malformed key through, which could
+                    // verify green yet let the store's OWN dedupe fold
+                    // (`voyage::parse_idem_key`, the shared implementation
+                    // — one format check, not two) omit the identity from
+                    // its index and re-forward it after a crash.
+                    if crate::voyage::parse_idem_key(&idem_key).is_none() {
+                        return Err(Error::Schema(format!(
+                            "input {:?}: idem_key {idem_key:?} is not lowercase hex32",
+                            env.seq
+                        )));
+                    }
                     match idem_owner.get(&idem_key) {
                         Some(owner) if *owner != (env.seq.epoch, env.seq.n) => {
                             return Err(Error::Schema(format!(
@@ -1513,6 +1525,22 @@ mod tests {
         w.append(&input_env(1, 2, &key), Commit::Immediate).unwrap(); // reused key
         w.seal(None).unwrap();
         assert!(verify_voyage(&dir.path().join("fact-bad-reuse"), "fact-bad-reuse").is_err());
+    }
+
+    /// Finding 8: a `idem_key` that is a JSON string but not lowercase
+    /// hex32 (here, uppercase) must fail the verifier too, not only the
+    /// store's own dedupe fold (`voyage.rs`'s
+    /// `dedupe_fold_rejects_a_malformed_idem_key`) -- both sides share the
+    /// SAME format check (`voyage::parse_idem_key`).
+    #[test]
+    fn input_idem_key_must_be_lowercase_hex32() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "A".repeat(32); // uppercase: a string, not lowercase hex32
+        let mut s = store(dir.path(), "fact-bad-hex");
+        let mut w = s.open_segment(0).unwrap();
+        w.append(&input_env(1, 1, &key), Commit::Immediate).unwrap();
+        w.seal(None).unwrap();
+        assert!(verify_voyage(&dir.path().join("fact-bad-hex"), "fact-bad-hex").is_err());
     }
 
     #[test]
