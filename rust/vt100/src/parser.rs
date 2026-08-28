@@ -1,7 +1,7 @@
 /// A parser for terminal output which produces an in-memory representation of
 /// the terminal contents.
 pub struct Parser<CB: crate::callbacks::Callbacks = ()> {
-    parser: vte::Parser,
+    parser: crate::vte::Parser,
     screen: crate::perform::WrappedScreen<CB>,
 }
 
@@ -11,7 +11,7 @@ impl Parser {
     #[must_use]
     pub fn new(rows: u16, cols: u16, scrollback_len: usize) -> Self {
         Self {
-            parser: vte::Parser::new(),
+            parser: crate::vte::Parser::new(),
             screen: crate::perform::WrappedScreen::new(
                 rows,
                 cols,
@@ -33,7 +33,7 @@ impl<CB: crate::callbacks::Callbacks> Parser<CB> {
         callbacks: CB,
     ) -> Self {
         Self {
-            parser: vte::Parser::new(),
+            parser: crate::vte::Parser::new(),
             screen: crate::perform::WrappedScreen::new_with_callbacks(
                 rows,
                 cols,
@@ -49,6 +49,15 @@ impl<CB: crate::callbacks::Callbacks> Parser<CB> {
         for byte in bytes {
             self.parser.advance(&mut self.screen, *byte);
         }
+    }
+
+    /// True iff the escape-sequence state machine is at its ground state and
+    /// no partial UTF-8 codepoint is buffered — the only positions where a
+    /// checkpoint's post-cut stream may legally begin (see
+    /// [`Screen::checkpoint`](crate::Screen::checkpoint)).
+    #[must_use]
+    pub fn is_ground(&self) -> bool {
+        self.parser.is_ground()
     }
 
     /// Returns a reference to a [`Screen`](crate::Screen) object containing
@@ -103,9 +112,10 @@ impl<CB: crate::callbacks::Callbacks> Parser<CB> {
     ///
     /// The escape-sequence state machine is reset to ground at the same time.
     /// A checkpoint describes a screen, never a half-consumed escape
-    /// sequence — the sequence parser's state is private to `vte` and cannot
-    /// be captured — so the producer of a checkpoint is responsible for
-    /// cutting the byte stream that follows it at a ground-state boundary.
+    /// sequence — the sequence parser's state is deliberately not part of
+    /// the checkpoint format — so the producer of a checkpoint is
+    /// responsible for cutting the byte stream that follows it at a
+    /// ground-state boundary, which [`is_ground`](Self::is_ground) reports.
     /// Resetting here is what makes that contract hold on this side.
     ///
     /// The restored screen keeps this parser's own scrollback capacity; see
@@ -124,7 +134,7 @@ impl<CB: crate::callbacks::Callbacks> Parser<CB> {
             self.screen.screen.scrollback_len(),
         )?;
         self.screen.screen = screen;
-        self.parser = vte::Parser::new();
+        self.parser = crate::vte::Parser::new();
         Ok(())
     }
 }

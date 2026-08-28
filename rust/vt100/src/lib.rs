@@ -54,6 +54,7 @@ mod parser;
 mod perform;
 mod row;
 mod screen;
+pub(crate) mod vte;
 
 pub use attrs::Color;
 pub use callbacks::Callbacks;

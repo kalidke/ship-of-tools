@@ -32,11 +32,12 @@
 //!   configuration, not the capsule's — so [`crate::Screen::restore`] takes
 //!   it as an argument instead of reading it off the wire. The offset is
 //!   necessarily zero when there is no scrollback to be offset into.
-//! * **`vte` parser state.** The escape-sequence state machine lives in the
-//!   separate `vte` crate with private state, so a checkpoint cannot express
-//!   "mid-escape-sequence". The capsule instead cuts the attach stream at a
-//!   parser ground-state boundary, so the fresh parser replays any partial
-//!   sequence from its start.
+//! * **vte parser state.** The escape-sequence state machine is now an
+//!   owned vendored module (`src/vte`), not an external crate, but its
+//!   state is still deliberately not part of the checkpoint format. The
+//!   cut contract is enforced by [`crate::Parser::is_ground`] instead: the
+//!   producer only ever cuts the attach stream at a ground-state boundary,
+//!   so no partial escape sequence or codepoint ever crosses a cut.
 //!
 //! # Format (version 1, little-endian)
 //!

@@ -30,7 +30,7 @@ impl<CB: crate::callbacks::Callbacks> WrappedScreen<CB> {
     }
 }
 
-impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
+impl<CB: crate::callbacks::Callbacks> crate::vte::Perform for WrappedScreen<CB> {
     fn print(&mut self, c: char) {
         if c == '\u{fffd}' || ('\u{80}'..'\u{a0}').contains(&c) {
             self.callbacks.unhandled_char(&mut self.screen, c);
@@ -86,7 +86,7 @@ impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
 
     fn csi_dispatch(
         &mut self,
-        params: &vte::Params,
+        params: &crate::vte::Params,
         intermediates: &[u8],
         _ignore: bool,
         c: char,
@@ -238,7 +238,7 @@ impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
     }
 }
 
-fn canonicalize_params_1(params: &vte::Params, default: u16) -> u16 {
+fn canonicalize_params_1(params: &crate::vte::Params, default: u16) -> u16 {
     let first = params.iter().next().map_or(0, |x| *x.first().unwrap_or(&0));
     if first == 0 {
         default
@@ -248,7 +248,7 @@ fn canonicalize_params_1(params: &vte::Params, default: u16) -> u16 {
 }
 
 fn canonicalize_params_2(
-    params: &vte::Params,
+    params: &crate::vte::Params,
     default1: u16,
     default2: u16,
 ) -> (u16, u16) {
@@ -263,7 +263,7 @@ fn canonicalize_params_2(
 }
 
 fn canonicalize_params_decstbm(
-    params: &vte::Params,
+    params: &crate::vte::Params,
     size: crate::grid::Size,
 ) -> (u16, u16) {
     let mut iter = params.iter();
