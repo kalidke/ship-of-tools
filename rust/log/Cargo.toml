@@ -49,12 +49,3 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
-
-# No separate `[target.'cfg(windows)'.dev-dependencies]` entry for
-# vt100-ctt: finding 15 (Codex review, U2 rework) — Cargo already exposes a
-# package's own normal `[target.'cfg(windows)'.dependencies]` to its
-# integration tests (they're additional units in the same package's build,
-# not a separate consumer), so `tests/capsule_win.rs`'s independent
-# `vt100_ctt::Parser` for its reference-parser fidelity check already
-# resolves against the entry above. A second entry here would just be two
-# names for the one dependency.

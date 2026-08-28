@@ -734,16 +734,26 @@ fn exit_code_high_bit_status_preserved_through_producer_dead() {
 /// console rendering the test could not predict or control. One-byte
 /// pacing across 1000 repeats of a block containing a CSI pair, a
 /// BEL-terminated OSC, an ST-terminated DCS, and a 3-byte codepoint
-/// immediately followed by a 4-byte one (no ASCII separator) makes it all
-/// but certain some ConPTY read lands inside every one of those sequence
-/// classes across the run — "forced" by sheer repetition, not engineered to
-/// land at one exact byte. The vt100 fork's own unit tests already prove
-/// `is_ground` is safe to cut any of them at any byte boundary (U0); what
-/// THIS test proves is the WIRING.
+/// immediately followed by a 4-byte one (no ASCII separator) makes it
+/// likely some ConPTY read lands inside one of those sequence classes
+/// somewhere across the run — but likely is not proof, and round-2 review
+/// correctly called out that this test used to just assert probability in
+/// prose and stop there. It no longer does: below, replaying the sealed
+/// voyage's own `Class::Producer` frames one at a time (each one IS a real
+/// reader-chunk boundary — see that assertion's own comment) and checking
+/// `Parser::is_ground()` after each PROVES at least one interior cut
+/// actually happened this run, failing loudly if it somehow didn't rather
+/// than silently passing a run that exercised less than it claims to. The
+/// vt100 fork's own unit tests already prove `is_ground` is safe to cut
+/// any of these classes at any byte boundary (U0); what THIS test proves
+/// is the WIRING.
 ///
-/// Two things get proved, both stronger than the prior version's:
+/// Three things get proved, all stronger than the prior version's:
 ///
-/// 1. Finding 3 (queuing, not dropping): this connection's sends are held
+/// 1. Finding 8: an interior CSI/OSC/DCS/UTF-8 cut is observed to have
+///    actually happened somewhere in this run — not merely asserted
+///    likely — via the reader-chunk-boundary `is_ground()` replay below.
+/// 2. Finding 3 (queuing, not dropping): this connection's sends are held
 ///    from before `attach` through a window where the producer keeps
 ///    emitting, so whichever chunk is last never completes yet — proving
 ///    newly committed output queues behind an in-flight checkpoint transfer
@@ -752,7 +762,7 @@ fn exit_code_high_bit_status_preserved_through_producer_dead() {
 ///    then delivers the transfer followed immediately by every queued
 ///    frame, in order — the FIFO contract documented on `TestTransport`
 ///    above.
-/// 2. Finding 13 (the U0 oracle): rather than compare rendered
+/// 3. Finding 13 (the U0 oracle): rather than compare rendered
 ///    `Screen::contents()` strings — which cannot see cursor position,
 ///    attributes, or mode bits that aren't in the current viewport — this
 ///    compares raw bytes twice: the exact tail-byte-equality of what this
@@ -866,6 +876,41 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
             total.extend(decode_b64(b64));
         }
     }
+
+    // Round-2 review, finding 8: PROVE an interior CSI/OSC/DCS/UTF-8 cut
+    // actually occurred, rather than asserting repetition makes one "all
+    // but certain". Each `Class::Producer` frame in the sealed voyage IS
+    // exactly one real ConPTY-read chunk (`handle_output!` appends one
+    // frame per `ReaderEvent::Output`, unmodified) -- so replaying those
+    // frames one at a time into a fresh parser and checking
+    // `Parser::is_ground()` after each one finds every point a REAL read
+    // boundary fell in this run. `is_ground() == false` right after a
+    // frame means that frame's own end sits strictly inside an
+    // unterminated CSI/OSC/DCS/UTF-8 sequence -- the escape/multibyte
+    // parser has consumed a partial sequence and is still waiting for the
+    // rest, which only an interior cut produces. This does not touch the
+    // checkpoint's own cut point (which `ground_reached` guarantees is
+    // ALWAYS ground-safe, by design, so it can never itself be mid-
+    // sequence) -- it is an independent, run-wide proof that at least one
+    // real reader-chunk boundary landed inside one of these classes
+    // somewhere in the run.
+    let mut fragmentation_probe = vt100_ctt::Parser::new(rows, cols, 0);
+    let mut interior_cut_found = false;
+    for f in &frames {
+        if f.class != Class::Producer {
+            continue;
+        }
+        let b64 = f.payload.as_ref().unwrap()["bytes_b64"].as_str().unwrap();
+        fragmentation_probe.process(&decode_b64(b64));
+        if !fragmentation_probe.is_ground() {
+            interior_cut_found = true;
+            break;
+        }
+    }
+    assert!(
+        interior_cut_found,
+        "no reader-chunk boundary in this run landed inside a CSI/OSC/DCS/UTF-8 sequence --          fragmentation coverage this test exists to exercise did not actually happen this run          (the fidelity assertions below remain valid regardless, but this run tested less than          it is meant to)"
+    );
 
     // Finding 13, part 1: the post-watermark stream this connection
     // received must be the EXACT byte-for-byte tail of the voyage's total

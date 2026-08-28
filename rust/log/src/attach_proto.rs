@@ -29,7 +29,9 @@
 //!   reply had already cleared) — request correlation closes both holes.
 //! - **Finding 3 + 10 (checkpoint transfer loses output; doubles the
 //!   transient).** A `Watcher`'s checkpoint now streams ONE chunk at a
-//!   time ([`CheckpointProgress::Sending`] holds a shared `Arc<[u8]>` plus
+//!   time ([`CheckpointProgress::Sending`] holds a shared `Arc<Vec<u8>>`
+//!   (round-2 review, finding 9: `Arc<[u8]>` always copies on conversion
+//!   from an owned `Vec`; `Arc<Vec<u8>>` moves it) plus
 //!   a cursor; [`AttachProto::sent`]'s `CheckpointChunk` arm requests the
 //!   NEXT chunk on every non-final completion) instead of materializing
 //!   every chunk up front — the peak transient is the one shared buffer
@@ -52,24 +54,30 @@
 //!   unconfirmed shutdown ack are now ALL bounded by the same 30 s rule,
 //!   which is what actually frees the checkpoint slot / admission-cap slot
 //!   a stalled connection was holding.
-//! - **Finding 6 (keepalive suspension: wrong scope, frozen deadline
-//!   dropped).** `tick_keepalive` now scopes suspension to the DRIVER
+//! - **Finding 6 (keepalive suspension: wrong scope) / round-2 finding 3
+//!   (nonce retirement lost across a same-connection retake).**
+//!   `tick_keepalive`'s original fix scoped suspension to the DRIVER
 //!   CONNECTION'S OWN in-flight transfer only — never to an unrelated
-//!   connection merely occupying the global slot — and, while suspended,
-//!   EXTENDS an already-armed reply deadline by the observed tick-to-tick
-//!   gap (freezing progress toward it) rather than leaving an absolute
-//!   instant that could already be in the past once suspension lifts. (In
-//!   practice this scope is rarely if ever exercised: `take` already
-//!   refuses `CheckpointInFlight` until a connection's OWN transfer is
-//!   `Done`, so a driver's own transfer is Done by construction the moment
-//!   it becomes driver — the logic is kept for fidelity to the ADR's literal
-//!   "suspended during THAT connection's checkpoint transfer" wording, not
-//!   because today's reachable states exercise it.) Separately,
-//!   [`AttachProto::frame`]'s `Keepalive` handling now treats an echo from
-//!   a connection that is NOT the current driver as ignorable (a demoted
-//!   former driver's late reply to a nonce that was already discarded when
-//!   it was demoted) rather than `UnexpectedKeepalive` — only a WRONG nonce
-//!   from the CURRENT driver is still treated as a protocol violation.
+//!   connection merely occupying the global slot. Round-2 review deleted
+//!   that whole suspend/freeze branch outright (with `DriverState.
+//!   last_tick`, which existed only to compute it): `take` already refuses
+//!   `CheckpointInFlight` until a connection's OWN transfer is `Done`, and
+//!   nothing ever moves a watcher's checkpoint backward out of `Done`, so
+//!   the branch was unreachable in every real path, not merely rare — kept
+//!   "for fidelity" is not a reason once deletion pressure is applied to
+//!   it. Separately, [`AttachProto::handle_keepalive_reply`] now retires a
+//!   nonce by CONNECTION, via `Conn::last_keepalive_nonce`, not by "is this
+//!   still the current `DriverState`": a same-connection retake used to
+//!   discard the outstanding nonce along with the rest of `DriverState`,
+//!   so that connection's own later late echo of it looked identical to a
+//!   fabricated one and was closed as `UnexpectedKeepalive` — a real
+//!   round-2 finding, reproduced by the reviewer's own state-machine probe.
+//!   Now: a nonce this connection was NEVER issued is a protocol violation
+//!   regardless of role (a watcher that was never driver echoing anything
+//!   is closed, not silently waved through); a nonce it WAS issued, echoed
+//!   after it stopped being the actionable one (demoted, retaken, or
+//!   already answered), is a recognized but no longer actionable late echo
+//!   — ignorable, not fatal.
 //! - **Finding 12 (ground-timeout demotion could exceed the non-watcher
 //!   cap).** `ground_timeout` now checks `non_watcher_count` against
 //!   [`NON_WATCHER_CAP`] before demoting a timed-out attach back to
@@ -193,7 +201,8 @@
 //! [`Action::BeginCheckpoint`] for the current slot holder if it is waiting;
 //! the loop encodes (`Screen::checkpoint()`, which this module cannot call)
 //! and hands the bytes back via [`AttachProto::checkpoint_ready`], which
-//! wraps them in an `Arc<[u8]>` ONCE and streams them ONE CHUNK AT A TIME —
+//! wraps them in an `Arc<Vec<u8>>` ONCE (moving the buffer, never copying
+//! it a second time -- finding 9) and streams them ONE CHUNK AT A TIME —
 //! each chunk's `sent`-completion requests the next
 //! (`advance_checkpoint_stream`) — at
 //! [`crate::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD`] per chunk, marking the
@@ -254,17 +263,17 @@
 //!
 //! Driver-only. `tick` starts ONE `keepalive` after 30 s since the driver
 //! connection's `last_activity` (any inbound frame, or any `sent`
-//! completion) with none currently outstanding — suspended only while the
-//! DRIVER'S OWN checkpoint transfer (not some unrelated connection's) is in
-//! flight, in which case an already-armed reply deadline is EXTENDED by the
-//! elapsed tick gap rather than left as a fixed instant that could already
-//! be past once suspension lifts (finding 6). The reply deadline (30 s) is
-//! armed at [`SentMarker::Keepalive`]'s sent-completion, not at enqueue —
-//! a ping stuck behind a real backlog must not kill a healthy reader before
-//! its bytes even left. A WRONG nonce from the CURRENT driver is
-//! `UnexpectedKeepalive` — closed; an echo from a connection that is NOT
-//! the current driver (a demoted former driver's late reply) is silently
-//! ignored. Independently, ANY connection with `outstanding_sends > 0`
+//! completion) with none currently outstanding. The reply deadline (30 s)
+//! is armed at [`SentMarker::Keepalive`]'s sent-completion, not at enqueue
+//! — a ping stuck behind a real backlog must not kill a healthy reader
+//! before its bytes even left. Nonces retire by CONNECTION
+//! (`Conn::last_keepalive_nonce`), not by "is this the current driver"
+//! (round-2 review, finding 3): a nonce this connection was NEVER issued
+//! is `UnexpectedKeepalive` regardless of role; a nonce it WAS issued,
+//! echoed after it stopped being the actionable one (demoted, retaken by
+//! the SAME connection, or already answered), is a recognized late echo —
+//! ignorable, not fatal. Independently, ANY connection with
+//! `outstanding_sends > 0`
 //! whose `last_send_progress` is more than 30 s old is `ProgressStall` —
 //! closed (finding 5: this is the queue-liveness bound, distinct from
 //! keepalive, and it covers EVERY kind of outstanding send — checkpoint
@@ -363,7 +372,18 @@ enum CheckpointProgress {
     AwaitingGround { deadline: Instant },
     /// Streaming; `offset` names the start of the chunk currently in
     /// flight (sent, awaiting its own completion).
-    Sending { bytes: Arc<[u8]>, offset: usize },
+    /// `Arc<Vec<u8>>`, not `Arc<[u8]>` (round-2 review, finding 9):
+    /// converting an owned `Vec<u8>` into an `Arc<[u8]>` always
+    /// allocates a fresh, differently-shaped buffer and copies into it
+    /// (an unsized `Arc<[T]>`'s allocation has to combine the refcount
+    /// header with the slice data in one block, which a `Vec`'s own
+    /// allocation was never laid out for) -- confirmed by the
+    /// reviewer's own pointer probe. `Arc<Vec<u8>>` wraps the `Vec`
+    /// struct itself (ptr/len/cap) in a new, SEPARATE, small Arc
+    /// allocation without ever touching the multi-MiB buffer it
+    /// points at, so the checkpoint's bytes are moved into the Arc
+    /// exactly once, never briefly duplicated.
+    Sending { bytes: Arc<Vec<u8>>, offset: usize },
     /// The final chunk was reported physically written.
     Done,
 }
@@ -402,6 +422,16 @@ struct Conn {
     /// long-idle period, which is exactly finding 5's "queue first
     /// becoming nonempty after 30 idle seconds closes immediately" bug).
     last_send_progress: Instant,
+    /// The last keepalive nonce ever issued to THIS connection while it
+    /// was the driver, whether or not it still is (round-2 review, finding
+    /// 3) — survives a same-connection retake (`take_committed` preserves
+    /// it rather than discarding it with a fresh `DriverState`), so a late
+    /// echo of it is recognizable and ignorable regardless of whether the
+    /// nonce is still the CURRENTLY outstanding one. A connection this is
+    /// `None` for was never issued anything: any keepalive from it is a
+    /// genuine protocol violation, not a routine "some other connection's
+    /// late echo" to wave through.
+    last_keepalive_nonce: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -409,12 +439,8 @@ struct DriverState {
     conn: ConnId,
     keepalive_outstanding: Option<u64>,
     /// Armed only once the ping's sent-completion is reported (ADR 0041:
-    /// "not at enqueue"); extended (never left absolute) while suspended.
+    /// "not at enqueue").
     keepalive_deadline: Option<Instant>,
-    /// The last `tick` timestamp observed, so suspension can EXTEND an
-    /// armed deadline by the real elapsed gap (finding 6) instead of
-    /// leaving it as a fixed instant suspension might already have passed.
-    last_tick: Option<Instant>,
 }
 
 /// What a physically-completed [`Action::Send`] means beyond "one fewer
@@ -471,6 +497,13 @@ pub enum RefusalReason {
     LockstepViolation,
     LaneSequenceViolation,
     QueueOverflow,
+    /// Same mechanism as `QueueOverflow` (the connection is closed; no
+    /// wire frame exists for either, by design), distinct label only so
+    /// step 6's adoption UX and any operator-facing log can tell "a
+    /// passive watcher never drained" apart from "the driver itself
+    /// could not keep up with its own producer" (round-2 review, finding
+    /// 2 — see `bytes_queued`'s doc for the ADR reading this restores).
+    DriverQueueOverflow,
     ProgressStall,
     KeepaliveDeath,
     UnexpectedKeepalive,
@@ -646,6 +679,7 @@ impl AttachProto {
                 last_activity: now,
                 outstanding_sends: 0,
                 last_send_progress: now,
+                last_keepalive_nonce: None,
             },
         );
         self.non_watcher_count += 1;
@@ -780,34 +814,37 @@ impl AttachProto {
     /// whether the watcher is `Done` yet (finding 3: pre-`Done` output
     /// still counts against the budget even though it is not sent yet).
     ///
-    /// Real CI failure (windows-2022, PR #139 discharge round): the
-    /// current DRIVER connection is ALSO, underneath, a `Watcher` (the
-    /// take capability layers on top of it, never replaces it — module
-    /// doc, "the pen"), so a flood large enough to outrun this loop's own
-    /// confirm-drain cadence tripped the SAME 4 MiB ceiling on the driver
-    /// as on an actually-slow watcher, evicting it mid-flood
-    /// (`slow_watcher_overflow_closes_while_driver_stays_live`'s own name
-    /// is the assertion this violated). The ADR's budget table gives the
-    /// driver row a DIFFERENT consequence: "committed driver-visible bytes
-    /// are never dropped while the connection is live... a hung driver
-    /// cannot wedge the writer loop" — liveness for a truly-stuck driver is
-    /// the keepalive and the generic progress-stall deadline (finding 5),
-    /// never this byte-count heuristic, which exists to bound a passive
-    /// subscriber that might never read at all. `queued_live_bytes` still
-    /// accrues and drains normally for the driver (`sent`'s `OutputBytes`
-    /// arm doesn't distinguish roles either) — only the EVICTION
-    /// consequence is skipped for it.
+    /// Round-2 review, finding 2 (an EARLIER exemption here was
+    /// INCOMPLETE): the ADR's driver row is TWO clauses, not one —
+    /// "driver queue 4 MiB; committed driver-visible bytes are never
+    /// dropped while the connection is live, but transport liveness is
+    /// bounded... a hung driver cannot wedge the writer loop". The 4 MiB
+    /// BOUND STAYS for the driver exactly as for a watcher; what the ADR
+    /// actually promises is HOW overflow resolves — by CLOSING the
+    /// connection (never by silently dropping bytes while it stays live).
+    /// The bytes themselves are never lost either way: they are already
+    /// durable in the voyage before this call ever runs (the watermark
+    /// barrier commits before it publishes), so a reconnect after this
+    /// close replays them via a fresh `attach`'s checkpoint. This is the
+    /// SAME mechanism as an ordinary watcher's eviction, just labeled
+    /// `DriverQueueOverflow` instead of `QueueOverflow` — distinct enough
+    /// for step 6's adoption UX to tell "a passive subscriber never
+    /// drained" apart from "the driver itself could not keep up with its
+    /// own producer" — because unlike a watcher, losing the driver ALSO
+    /// clears the pen (`take`'s null-holder state), which a client is
+    /// meant to notice and re-`attach`/`take` for.
     pub fn bytes_queued(&mut self, conn: ConnId, n: u64, now: Instant) -> Vec<Action> {
         let is_driver = self.driver.as_ref().is_some_and(|d| d.conn == conn);
         let overflowed = match self.conns.get_mut(&conn).map(|c| &mut c.role) {
             Some(Role::Watcher(w)) => {
                 w.queued_live_bytes += n;
-                !is_driver && w.queued_live_bytes > WATCHER_LIVE_QUEUE_BUDGET_BYTES
+                w.queued_live_bytes > WATCHER_LIVE_QUEUE_BUDGET_BYTES
             }
             _ => false,
         };
         if overflowed {
-            self.close_with_refusal(conn, RefusalReason::QueueOverflow, now)
+            let reason = if is_driver { RefusalReason::DriverQueueOverflow } else { RefusalReason::QueueOverflow };
+            self.close_with_refusal(conn, reason, now)
         } else {
             vec![]
         }
@@ -919,10 +956,22 @@ impl AttachProto {
         if !awaiting || self.checkpoint_slot != Some(conn) {
             return vec![];
         }
-        let shared: Arc<[u8]> = Arc::from(bytes);
+        let shared: Arc<Vec<u8>> = Arc::new(bytes);
         if let Some(Role::Watcher(w)) = self.conns.get_mut(&conn).map(|c| &mut c.role) {
             w.checkpoint = CheckpointProgress::Sending { bytes: shared.clone(), offset: 0 };
+            // Round-2 review, finding 1: clearing the backlog without also
+            // releasing its OWN queued_live_bytes charge left that charge
+            // permanently stuck (only an `OutputBytes` `Sent` ever
+            // decrements it, and these cleared vectors will never produce
+            // one) — a scratch probe reproduced a FALSE eviction one byte
+            // after capture, from a charge belonging to bytes that no
+            // longer exist anywhere but the checkpoint. Release it
+            // atomically with the same clear that retires the bytes.
+            let cleared_bytes: u64 = w.pending_post_watermark.iter().map(|b| b.len() as u64).sum();
             w.pending_post_watermark.clear();
+            w.queued_live_bytes = w.queued_live_bytes.checked_sub(cleared_bytes).expect(
+                "pending_post_watermark's own contribution cannot exceed the connection's total queued_live_bytes",
+            );
         }
         self.emit_next_checkpoint_chunk(conn, shared, 0, now)
     }
@@ -935,12 +984,7 @@ impl AttachProto {
     /// section for why a late echo for it is then ignored rather than
     /// fatal).
     pub fn take_committed(&mut self, conn: ConnId, new_take_epoch: u64, request_id: RequestId, now: Instant) -> Vec<Action> {
-        self.driver = Some(DriverState {
-            conn,
-            keepalive_outstanding: None,
-            keepalive_deadline: None,
-            last_tick: None,
-        });
+        self.driver = Some(DriverState { conn, keepalive_outstanding: None, keepalive_deadline: None });
         if let Some(c) = self.conns.get_mut(&conn) {
             c.last_activity = now;
         }
@@ -1200,20 +1244,31 @@ impl AttachProto {
         vec![Action::ApplyResize { conn, cols, rows, request_id }]
     }
 
+    /// Round-2 review, finding 3: nonces now retire by CONNECTION, not by
+    /// "is this the current `DriverState`" — a same-connection retake
+    /// (`take_committed`, same `conn`) preserves the prior nonce instead of
+    /// discarding it, so this method no longer needs to special-case that
+    /// path itself. Two questions, asked in this order:
+    ///
+    /// 1. Was `nonce` EVER issued to `conn`, at all? If not — a watcher
+    ///    that was never driver, or any other fabricated value — this is a
+    ///    genuine protocol violation, never silently accepted.
+    /// 2. Is `conn` the driver RIGHT NOW, with THIS nonce still the one
+    ///    outstanding? If so, the reply is answered for real (clear the
+    ///    gate, refresh activity). Otherwise it is a recognized but no
+    ///    longer actionable echo — a demoted former driver's late reply, or
+    ///    a duplicate of one already cleared — ignorable, not fatal.
     fn handle_keepalive_reply(&mut self, conn: ConnId, nonce: u64, now: Instant) -> Vec<Action> {
-        let is_driver = self.driver.as_ref().map(|d| d.conn) == Some(conn);
-        if !is_driver {
-            // A demoted former driver's late echo (or a watcher that was
-            // never driver at all): its nonce was already discarded when
-            // `DriverState` was replaced -- ignorable, not fatal (finding
-            // 6).
-            return vec![];
-        }
-        let matches = self.driver.as_ref().is_some_and(|d| d.keepalive_outstanding == Some(nonce));
-        if !matches {
-            // Still the current driver, but a WRONG/bogus nonce: genuinely
-            // unexpected.
+        let ever_issued = self.conns.get(&conn).and_then(|c| c.last_keepalive_nonce);
+        if ever_issued != Some(nonce) {
             return self.close_with_refusal(conn, RefusalReason::UnexpectedKeepalive, now);
+        }
+        let is_current_and_outstanding = self
+            .driver
+            .as_ref()
+            .is_some_and(|d| d.conn == conn && d.keepalive_outstanding == Some(nonce));
+        if !is_current_and_outstanding {
+            return vec![];
         }
         if let Some(d) = &mut self.driver {
             d.keepalive_outstanding = None;
@@ -1225,37 +1280,23 @@ impl AttachProto {
         vec![]
     }
 
+    /// Round-2 review deletion residue: this used to also FREEZE the
+    /// reply deadline while the driver's OWN checkpoint transfer was still
+    /// in flight (finding 6, original discharge round) -- but `take`
+    /// itself refuses admission (`CheckpointInFlight`) until a
+    /// connection's own checkpoint is already `Done`, and nothing ever
+    /// moves a watcher's checkpoint backward out of `Done` once reached.
+    /// A connection can therefore never actually BECOME the driver while
+    /// its own transfer is in flight, which made that whole branch (and
+    /// `DriverState.last_tick`, which existed only to compute it) dead in
+    /// every real path -- deleted rather than kept "in case", per this
+    /// round's own deletion pressure. If a future design lets `take`
+    /// admit a connection before its checkpoint finishes, this suspension
+    /// needs reintroducing deliberately, not resurrecting from here.
     fn tick_keepalive(&mut self, now: Instant) -> Vec<Action> {
         let Some(conn) = self.driver.as_ref().map(|d| d.conn) else {
             return vec![];
         };
-
-        let last_tick = self.driver.as_ref().and_then(|d| d.last_tick).unwrap_or(now);
-        let elapsed_since_tick = now.saturating_duration_since(last_tick);
-        if let Some(d) = &mut self.driver {
-            d.last_tick = Some(now);
-        }
-
-        // Scoped to THIS connection's OWN in-flight transfer only (finding
-        // 6) -- see the module doc for why this is rarely if ever true in
-        // practice, and kept anyway.
-        let own_transfer_in_flight = matches!(
-            self.conns.get(&conn).and_then(watcher_checkpoint),
-            Some(CheckpointProgress::QueuedForSlot)
-                | Some(CheckpointProgress::AwaitingGround { .. })
-                | Some(CheckpointProgress::Sending { .. })
-        );
-        if own_transfer_in_flight {
-            // Freeze: extend an already-armed deadline by exactly how much
-            // real time just passed, so suspension never counts against it
-            // (finding 6).
-            if let Some(d) = &mut self.driver {
-                if let Some(deadline) = &mut d.keepalive_deadline {
-                    *deadline += elapsed_since_tick;
-                }
-            }
-            return vec![];
-        }
 
         let (outstanding, deadline) = {
             let d = self.driver.as_ref().expect("checked above");
@@ -1283,6 +1324,9 @@ impl AttachProto {
         if let Some(d) = &mut self.driver {
             d.keepalive_outstanding = Some(nonce);
         }
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.last_keepalive_nonce = Some(nonce);
+        }
         let bytes = wire::encode_keepalive(nonce);
         vec![self.make_send(conn, bytes, Some(SentMarker::Keepalive { nonce }), now)]
     }
@@ -1298,7 +1342,7 @@ impl AttachProto {
         self.emit_next_checkpoint_chunk(conn, bytes, offset, now)
     }
 
-    fn emit_next_checkpoint_chunk(&mut self, conn: ConnId, bytes: Arc<[u8]>, offset: usize, now: Instant) -> Vec<Action> {
+    fn emit_next_checkpoint_chunk(&mut self, conn: ConnId, bytes: Arc<Vec<u8>>, offset: usize, now: Instant) -> Vec<Action> {
         let max = wire::MAX_CHECKPOINT_CHUNK_PAYLOAD;
         let end = (offset + max).min(bytes.len());
         let is_last = end == bytes.len();
@@ -1561,16 +1605,6 @@ mod tests {
         let a = p.take_committed(conn, epoch, request_id, now);
         assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
         p.sent(conn, a[0].send_marker(), now);
-    }
-
-    /// Reaches directly into a watcher's checkpoint state (tests are a
-    /// descendant module of `attach_proto` and may see its private fields)
-    /// to exercise a transition the normal admission rules never actually
-    /// reach in production — see the keepalive-freeze test for why.
-    fn force_checkpoint_state(p: &mut AttachProto, conn: ConnId, state: CheckpointProgress) {
-        if let Some(Role::Watcher(w)) = p.conns.get_mut(&conn).map(|c| &mut c.role) {
-            w.checkpoint = state;
-        }
     }
 
     // -- lockstep ---------------------------------------------------------
@@ -2115,6 +2149,46 @@ mod tests {
         );
     }
 
+    /// Round-2 review, finding 1 (reproduced by the reviewer's own scratch
+    /// probe): clearing `pending_post_watermark` at capture retired the
+    /// BYTES but not the `queued_live_bytes` CHARGE those same bytes had
+    /// already added -- only an `OutputBytes` `Sent` completion ever
+    /// decremented it, and the cleared vectors will never produce one.
+    /// Queue right up to the 4 MiB ceiling pre-capture, capture (which
+    /// must release that exact charge), then commit one more byte: it
+    /// must NOT overflow, because nothing is actually outstanding anymore.
+    #[test]
+    fn checkpoint_capture_releases_the_cleared_backlogs_own_queue_charge() {
+        let mut p = proto();
+        let now = t0();
+        p.connection_opened(1, now);
+        let a = p.frame(1, hello_frame(), now);
+        p.sent(1, a[0].send_marker(), now);
+        p.frame(1, attach_frame("alice"), now);
+
+        // Queue EXACTLY the budget ceiling while still AwaitingGround.
+        let chunk = vec![0xAAu8; WATCHER_LIVE_QUEUE_BUDGET_BYTES as usize];
+        let a = p.output_committed(&chunk, now);
+        assert!(a.is_empty(), "at the ceiling, not over it: {a:?}");
+
+        let a = p.ground_reached(now);
+        assert!(matches!(a.as_slice(), [Action::BeginCheckpoint { conn: c }] if *c == 1));
+        let a = p.checkpoint_ready(1, b"checkpoint-bytes".to_vec(), now);
+        assert!(matches!(
+            a.as_slice(),
+            [Action::Send { marker: Some(SentMarker::CheckpointChunk { is_last: true, .. }), .. }]
+        ));
+
+        // One more byte, post-capture: must not overflow -- the pre-
+        // capture backlog's charge was released atomically with the
+        // capture that cleared its bytes.
+        let a = p.output_committed(b"x", now);
+        assert!(
+            !a.iter().any(|x| matches!(x, Action::Close(_) | Action::RecordRefusal { .. })),
+            "a false eviction one byte after capture: {a:?}"
+        );
+    }
+
     // -- keepalive --------------------------------------------------------
 
     /// The keepalive's OWN send is also subject to the generic
@@ -2163,89 +2237,6 @@ mod tests {
         assert!(a.iter().any(|x| matches!(x, Action::Close(1))), "expected keepalive death: {a:?}");
     }
 
-    /// Finding 6: suspension scopes to the DRIVER connection's OWN
-    /// in-flight transfer only -- an unrelated connection's transfer must
-    /// never suspend it.
-    #[test]
-    fn keepalive_not_suspended_by_an_unrelated_connections_checkpoint_transfer() {
-        let mut p = proto();
-        let now = t0();
-        attach_to_done(&mut p, 1, now);
-        drive_take(&mut p, 1, "alice", 1, now);
-
-        // A second connection's attach occupies the global slot, actually
-        // IN FLIGHT (Sending, not merely AwaitingGround -- which would
-        // itself ground-timeout well before the 30s mark below and
-        // confound the assertion) -- must NOT affect connection 1's
-        // keepalive at all.
-        p.connection_opened(2, now);
-        let a = p.frame(2, hello_frame(), now);
-        p.sent(2, a[0].send_marker(), now);
-        p.frame(2, attach_frame("bob"), now);
-        p.ground_reached(now);
-        let big = vec![0u8; wire::MAX_CHECKPOINT_CHUNK_PAYLOAD + 1]; // 2 chunks
-        p.checkpoint_ready(2, big, now); // conn 2 now Sending; never confirmed
-
-        // (Conn 2's own never-confirmed chunk send will ALSO trip the
-        // generic progress-stall bound at this same 30s mark -- that is
-        // correct and unrelated; this test only cares whether conn 1's
-        // keepalive fired.)
-        let idle = now + KEEPALIVE_IDLE_TRIGGER;
-        let a = p.tick(idle);
-        assert!(
-            a.iter().any(|x| matches!(x, Action::Send { conn: 1, marker: Some(SentMarker::Keepalive { .. }), .. })),
-            "an unrelated connection's transfer must not suspend this driver's keepalive: {a:?}"
-        );
-    }
-
-    /// Exercises the FREEZE mechanism in isolation, by directly installing
-    /// the driver capability on a connection whose own checkpoint is still
-    /// mid-transfer -- a state the normal `take` gate (`CheckpointInFlight`)
-    /// never actually permits in practice (see the module doc), but the
-    /// suspend/freeze logic itself should still behave correctly if this
-    /// invariant were ever relaxed.
-    #[test]
-    fn keepalive_reply_deadline_is_frozen_while_the_drivers_own_checkpoint_is_in_flight() {
-        let mut p = proto();
-        let now = t0();
-        attach_to_done(&mut p, 1, now);
-        drive_take(&mut p, 1, "alice", 1, now);
-
-        let idle = now + KEEPALIVE_IDLE_TRIGGER;
-        let a = p.tick(idle);
-        let nonce = match &a[0] {
-            Action::Send {
-                marker: Some(SentMarker::Keepalive { nonce }),
-                ..
-            } => *nonce,
-            other => panic!("expected a Keepalive send: {other:?}"),
-        };
-        p.sent(1, Some(SentMarker::Keepalive { nonce }), idle); // reply deadline armed: idle + 30s
-
-        force_checkpoint_state(
-            &mut p,
-            1,
-            CheckpointProgress::Sending { bytes: Arc::from(vec![0u8; 4]), offset: 0 },
-        );
-
-        // 40s of real time passes while suspended -- past the UN-frozen
-        // deadline (idle+30s).
-        let mid_suspend = idle + Duration::from_secs(20);
-        assert!(p.tick(mid_suspend).is_empty(), "must not fire while suspended");
-        let end_suspend = idle + Duration::from_secs(40);
-        assert!(
-            p.tick(end_suspend).is_empty(),
-            "still suspended -- must not fire even past the original deadline"
-        );
-
-        // End suspension; the deadline was pushed forward by the suspended
-        // span, so it must NOT fire immediately.
-        force_checkpoint_state(&mut p, 1, CheckpointProgress::Done);
-        assert!(p.tick(end_suspend).is_empty(), "must not fire the instant suspension ends");
-        let past_extended_deadline = end_suspend + Duration::from_secs(31);
-        assert!(p.tick(past_extended_deadline).iter().any(|a| matches!(a, Action::Close(1))));
-    }
-
     #[test]
     fn keepalive_reply_wrong_nonce_is_unexpected_and_closes() {
         let mut p = proto();
@@ -2266,10 +2257,10 @@ mod tests {
             .any(|x| matches!(x, Action::RecordRefusal { reason: RefusalReason::UnexpectedKeepalive, .. })));
     }
 
-    /// Finding 6, fix 2: a demoted former driver's late keepalive echo
-    /// (for a nonce that was discarded the moment it was demoted) is
-    /// ignorable, not fatal -- it must not close the connection, which is
-    /// still a legitimate subscriber.
+    /// Finding 6 / round-2 finding 3: a demoted former driver's late
+    /// keepalive echo, for a nonce `Conn::last_keepalive_nonce` still
+    /// remembers issuing to it, is ignorable, not fatal -- it must not
+    /// close the connection, which is still a legitimate subscriber.
     #[test]
     fn demoted_drivers_late_keepalive_echo_is_ignored_not_fatal() {
         let mut p = proto();
@@ -2285,7 +2276,8 @@ mod tests {
             other => panic!("{other:?}"),
         };
 
-        // conn 2 takes next, demoting conn 1 -- conn 1's nonce is discarded.
+        // conn 2 takes next, demoting conn 1 -- conn 1 is no longer the
+        // driver, but its OWN Conn record still remembers issuing this nonce.
         drive_take(&mut p, 2, "bob", 2, now);
 
         let echo = decode_one(&encode_keepalive(nonce));
@@ -2293,6 +2285,57 @@ mod tests {
         assert!(a.is_empty(), "a demoted driver's late echo must be ignored, not closed: {a:?}");
         let out = p.output_committed(b"hi", now);
         assert!(out.iter().any(|a| matches!(a, Action::Send { conn: 1, .. })));
+    }
+
+    /// Round-2 review, finding 3 (reproduced by the reviewer's own
+    /// state-machine probe): a SAME-connection retake used to discard the
+    /// outstanding nonce along with the rest of `DriverState`, so that
+    /// connection's own later late echo of it looked identical to a
+    /// fabricated one and was wrongly closed as `UnexpectedKeepalive`.
+    #[test]
+    fn same_connection_retake_still_treats_its_old_nonce_as_a_legitimate_late_echo() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done(&mut p, 1, now);
+        drive_take(&mut p, 1, "alice", 1, now);
+
+        let idle = now + KEEPALIVE_IDLE_TRIGGER;
+        let a = p.tick(idle);
+        let nonce = match &a[0] {
+            Action::Send { marker: Some(SentMarker::Keepalive { nonce }), .. } => *nonce,
+            other => panic!("{other:?}"),
+        };
+        p.sent(1, Some(SentMarker::Keepalive { nonce }), idle); // reply deadline armed
+
+        // Conn 1 retakes -- SAME connection, a fresh `DriverState`.
+        drive_take(&mut p, 1, "alice", 2, idle);
+
+        // The old ping, echoed after the retake: must be ignored, not
+        // closed as `UnexpectedKeepalive`.
+        let echo = decode_one(&encode_keepalive(nonce));
+        let a = p.frame(1, echo, idle);
+        assert!(a.is_empty(), "a same-connection retake's own prior nonce must still echo as legitimate: {a:?}");
+    }
+
+    /// The other side of finding 3: a connection that was NEVER issued a
+    /// keepalive nonce at all (a watcher, never driver) is a genuine
+    /// protocol violation if it echoes one anyway -- not silently waved
+    /// through the way a legitimate former driver's late echo is.
+    #[test]
+    fn a_never_issued_keepalive_nonce_from_any_connection_is_a_protocol_violation() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done(&mut p, 1, now);
+        attach_to_done(&mut p, 2, now);
+        drive_take(&mut p, 1, "alice", 1, now);
+
+        // Conn 2 was never driver and was never issued anything.
+        let echo = decode_one(&encode_keepalive(42));
+        let a = p.frame(2, echo, now);
+        assert!(a.iter().any(|x| matches!(x, Action::Close(2))));
+        assert!(a
+            .iter()
+            .any(|x| matches!(x, Action::RecordRefusal { reason: RefusalReason::UnexpectedKeepalive, .. })));
     }
 
     // -- progress deadline (finding 5) ------------------------------------
@@ -2353,28 +2396,34 @@ mod tests {
         );
     }
 
-    /// Real CI failure (windows-2022, PR #139 discharge round): a 6 MiB
-    /// flood evicted BOTH the deliberately-never-draining watcher AND the
-    /// driver under the SAME flood, timing out the test's own post-eviction
-    /// resize on the driver. Root cause — the current driver connection is,
-    /// underneath, still a `Watcher` (module doc, "the pen": the take
-    /// capability layers on top, never replaces the role), so it was
-    /// subject to the SAME 4 MiB per-watcher eviction ceiling as an
-    /// actually-slow subscriber. The ADR's budget table gives the driver
-    /// row a different consequence ("committed driver-visible bytes are
-    /// never dropped while the connection is live... a hung driver cannot
-    /// wedge the writer loop") — this proves `bytes_queued` now honors
-    /// that: the SAME over-budget call that closes an ordinary watcher
-    /// (`queue_overflow_closes_with_no_wire_frame`, just above) produces no
-    /// action at all once that connection holds the driver capability.
+    /// Round-2 review, finding 2: an EARLIER exemption here (a real CI
+    /// fix at the time, for a real bug -- the driver getting caught by the
+    /// SAME eviction as an actually-slow watcher during
+    /// `slow_watcher_overflow_closes_while_driver_stays_live`) removed the
+    /// ADR's 4 MiB memory bound for the driver entirely, which is NOT what
+    /// the budget table says: "driver queue 4 MiB; committed driver-
+    /// visible bytes are never dropped while the connection is live, but
+    /// transport liveness is bounded... a hung driver cannot wedge the
+    /// writer loop" is TWO clauses together -- the bound stays, and
+    /// overflow resolves by closing the connection (never by silently
+    /// dropping bytes while it stays live). The bytes are never actually
+    /// lost either way (durable in the voyage before this call ever runs;
+    /// a reconnect replays them via a fresh checkpoint) -- what changes is
+    /// the LABEL, `DriverQueueOverflow` instead of `QueueOverflow`, so
+    /// step 6's UX can tell the two situations apart.
     #[test]
-    fn the_driver_is_exempt_from_the_per_watcher_queue_overflow_eviction() {
+    fn the_driver_is_closed_on_overflow_same_as_a_watcher_but_labeled_distinctly() {
         let mut p = proto();
         let now = t0();
         attach_to_done(&mut p, 1, now);
         drive_take(&mut p, 1, "alice", 1, now);
         let a = p.bytes_queued(1, WATCHER_LIVE_QUEUE_BUDGET_BYTES + 1, now);
-        assert!(a.is_empty(), "the driver must never be evicted by the per-watcher live-queue budget: {a:?}");
+        assert!(a.iter().any(|x| matches!(x, Action::Close(1))), "the driver must still be closed on overflow: {a:?}");
+        assert!(
+            a.iter()
+                .any(|x| matches!(x, Action::RecordRefusal { reason: RefusalReason::DriverQueueOverflow, .. })),
+            "a driver's overflow must be labeled distinctly from an ordinary watcher's: {a:?}"
+        );
     }
 
     /// Reconstructs, event-for-event, what

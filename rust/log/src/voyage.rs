@@ -2,7 +2,7 @@
 //! CAS publication (ADR 0039). Kernel-semantics parts have Linux and
 //! Windows arms (ADR 0041 §store port); the codec itself is portable.
 
-use crate::envelope::{Digest, Seq};
+use crate::envelope::{Digest, InputFactKind, Seq};
 use crate::fsutil::{self, WriterLock};
 use crate::recovery::{self, Reconciled};
 use crate::segment::{
@@ -64,13 +64,6 @@ pub(crate) fn parse_idem_key(s: &str) -> Option<IdemKey> {
     Some(out)
 }
 
-fn parse_seq(v: &serde_json::Value) -> Option<Seq> {
-    Some(Seq {
-        epoch: v.get("epoch")?.as_u64()?,
-        n: v.get("n")?.as_u64()?,
-    })
-}
-
 /// Walks one segment's frames EXACTLY ONCE (finding 9: the previous version
 /// traversed `reader.frames` a second time for this, even though there was
 /// only ever one disk read/decode; `open_for_writing`'s max-take-epoch
@@ -110,9 +103,9 @@ fn walk_segment(
         }
 
         if f.class == crate::envelope::Class::Input {
-            let Some(key_str) = p.get("idem_key").and_then(|v| v.as_str()) else {
-                continue;
-            };
+            let key_str = p.get("idem_key").and_then(|v| v.as_str()).ok_or_else(|| {
+                Error::Schema(format!("frame {:?}: idem_key is missing or not a string", f.seq))
+            })?;
             let key = parse_idem_key(key_str).ok_or_else(|| {
                 Error::Schema(format!("frame {:?}: idem_key {key_str:?} is not lowercase hex32", f.seq))
             })?;
@@ -139,20 +132,39 @@ fn walk_segment(
         {
             continue;
         }
-        let Some(fact) = p.get("fact") else { continue };
-        let Some(fact_kind) = fact.get("fact").and_then(|v| v.as_str()) else { continue };
-        let Some(input_seq) = fact.get("input").and_then(parse_seq) else { continue };
-        let key = *by_seq.get(&input_seq).ok_or_else(|| {
+        // Round-2 review, finding 6: the fold goes fully TYPED and
+        // fallible here -- `serde_json::from_value` into the same shape
+        // `verify.rs`'s own `FactObj` deserializes (`input: Seq, fact:
+        // InputFactKind, intent: Option<Seq>`), so a missing/malformed
+        // `fact` object, a missing/non-object `input` seq, or an unknown
+        // fact-kind string are ALL a single `Err` instead of three
+        // separate silent `continue`s. `InputFactKind` is serde's closed
+        // enum (`#[serde(rename_all = "snake_case")]`), so an
+        // unrecognized string fails the deserialize itself -- no separate
+        // catch-all arm needed anymore.
+        #[derive(serde::Deserialize)]
+        struct FactObj {
+            input: Seq,
+            fact: InputFactKind,
+            #[serde(default)]
+            intent: Option<Seq>,
+        }
+        let fact_value = p.get("fact").ok_or_else(|| {
+            Error::Schema(format!("frame {:?}: input_fact is missing its fact object", f.seq))
+        })?;
+        let fact: FactObj = serde_json::from_value(fact_value.clone())
+            .map_err(|e| Error::Schema(format!("frame {:?}: fact malformed: {e}", f.seq)))?;
+        let key = *by_seq.get(&fact.input).ok_or_else(|| {
             Error::Schema(format!(
-                "frame {:?}: input_fact names {input_seq:?}, which is not a committed input frame",
-                f.seq
+                "frame {:?}: input_fact names {:?}, which is not a committed input frame",
+                f.seq, fact.input
             ))
         })?;
         let entry = index
             .get_mut(&key)
             .expect("by_seq and index are populated together, in the same branch above");
-        match fact_kind {
-            "forward_intent" => {
+        match fact.fact {
+            InputFactKind::ForwardIntent => {
                 if entry.state != DedupeState::Input {
                     return Err(Error::Schema(format!(
                         "frame {:?}: forward_intent illegal from the current chain state for idem_key {key:02x?}",
@@ -166,26 +178,43 @@ fn walk_segment(
                 entry.state = DedupeState::Intent;
                 entry.intent = Some(f.seq);
             }
-            "forwarded" => {
+            InputFactKind::Forwarded => {
                 if entry.state != DedupeState::Intent {
                     return Err(Error::Schema(format!(
                         "frame {:?}: forwarded illegal from the current chain state for idem_key {key:02x?}",
                         f.seq
                     )));
                 }
+                // Round-2 review, finding 6: `forwarded.intent` must name
+                // the SAME `forward_intent` frame this idem_key's chain
+                // actually recorded -- `entry.intent` is exactly that
+                // (set, `Some`, the moment `ForwardIntent` fired above; a
+                // mismatch or a missing `intent` field are equally wrong).
+                if fact.intent != entry.intent {
+                    return Err(Error::Schema(format!(
+                        "frame {:?}: forwarded.intent {:?} does not match the recorded forward_intent {:?} for idem_key {key:02x?}",
+                        f.seq, fact.intent, entry.intent
+                    )));
+                }
                 entry.state = DedupeState::Forwarded;
             }
-            "producer_observed" => {
+            InputFactKind::ProducerObserved => {
                 if entry.state != DedupeState::Forwarded {
                     return Err(Error::Schema(format!(
                         "frame {:?}: producer_observed illegal from the current chain state for idem_key {key:02x?}",
                         f.seq
                     )));
                 }
+                if fact.intent != entry.intent {
+                    return Err(Error::Schema(format!(
+                        "frame {:?}: producer_observed.intent {:?} does not match the recorded forward_intent {:?} for idem_key {key:02x?}",
+                        f.seq, fact.intent, entry.intent
+                    )));
+                }
                 // Already the terminal `Forwarded` bucket (see
                 // `DedupeState`'s doc) -- no state change.
             }
-            "refused_stale_epoch" => {
+            InputFactKind::RefusedStaleEpoch => {
                 if entry.state != DedupeState::Input {
                     return Err(Error::Schema(format!(
                         "frame {:?}: refused_stale_epoch illegal from the current chain state for idem_key {key:02x?}",
@@ -193,14 +222,6 @@ fn walk_segment(
                     )));
                 }
                 entry.state = DedupeState::Refused;
-            }
-            other => {
-                // `InputFactKind` is a closed serde enum, but `payload` is
-                // raw JSON at this layer (schema enforcement for a
-                // TYPED read happens only in `verify.rs`'s own pass) --
-                // fail closed here too rather than silently ignoring an
-                // unrecognized fact-kind string.
-                return Err(Error::Schema(format!("frame {:?}: unknown input_fact kind {other:?}", f.seq)));
             }
         }
     }
@@ -920,6 +941,78 @@ mod tests {
             w.seal(None).unwrap();
         }
         let Err(err) = VoyageStore::open_for_writing(&root, "voybadkey") else { panic!("expected open_for_writing to fail") };
+        assert!(matches!(err, Error::Schema(_)), "expected a Schema error, got: {err}");
+    }
+
+    /// Round-2 review, finding 6: an `input` frame whose `idem_key` field
+    /// is entirely ABSENT (not merely malformed) must fail closed too --
+    /// previously a silent `continue` that dropped the frame out of the
+    /// index without a trace.
+    #[test]
+    fn dedupe_fold_rejects_an_input_frame_missing_idem_key_entirely() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voynokey");
+        VoyageStore::bootstrap(&root, "voynokey", RetentionClass::Discard).unwrap();
+        {
+            let mut store = VoyageStore::open_for_writing(&root, "voynokey").unwrap();
+            let mut w = store.open_segment(0).unwrap();
+            w.append(&lc_take(1, 1, 1, None), Commit::Immediate).unwrap();
+            w.append(&lc_take(1, 2, 2, Some("ctrl")), Commit::Immediate).unwrap();
+            let no_key = ctrl_env(1, 3, Class::Input, serde_json::json!({"content": "redacted", "length": 3}), vec![]);
+            w.append(&no_key, Commit::Immediate).unwrap();
+            w.seal(None).unwrap();
+        }
+        let Err(err) = VoyageStore::open_for_writing(&root, "voynokey") else { panic!("expected open_for_writing to fail") };
+        assert!(matches!(err, Error::Schema(_)), "expected a Schema error, got: {err}");
+    }
+
+    /// Round-2 review, finding 6: an `input_fact` lifecycle frame with no
+    /// `fact` object at all must fail closed -- previously a silent
+    /// `continue`.
+    #[test]
+    fn dedupe_fold_rejects_an_input_fact_missing_its_fact_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voynofact");
+        VoyageStore::bootstrap(&root, "voynofact", RetentionClass::Discard).unwrap();
+        {
+            let mut store = VoyageStore::open_for_writing(&root, "voynofact").unwrap();
+            let mut w = store.open_segment(0).unwrap();
+            w.append(&lc_take(1, 1, 1, None), Commit::Immediate).unwrap();
+            w.append(&lc_take(1, 2, 2, Some("ctrl")), Commit::Immediate).unwrap();
+            let key = "7".repeat(32);
+            w.append(&input_env(1, 3, &key), Commit::Immediate).unwrap();
+            let no_fact = ctrl_env(1, 4, Class::Lifecycle, serde_json::json!({"kind": "input_fact"}), vec![]);
+            w.append(&no_fact, Commit::Immediate).unwrap();
+            w.seal(None).unwrap();
+        }
+        let Err(err) = VoyageStore::open_for_writing(&root, "voynofact") else { panic!("expected open_for_writing to fail") };
+        assert!(matches!(err, Error::Schema(_)), "expected a Schema error, got: {err}");
+    }
+
+    /// Round-2 review, finding 6 (last clause): a `forwarded` fact whose
+    /// `intent` does not name the SAME `forward_intent` frame this
+    /// idem_key's own chain recorded must fail closed -- previously
+    /// unchecked entirely (the fold never even read `intent`).
+    #[test]
+    fn dedupe_fold_rejects_a_forwarded_intent_that_does_not_match_the_recorded_intent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voybadintent");
+        VoyageStore::bootstrap(&root, "voybadintent", RetentionClass::Discard).unwrap();
+        {
+            let mut store = VoyageStore::open_for_writing(&root, "voybadintent").unwrap();
+            let mut w = store.open_segment(0).unwrap();
+            w.append(&lc_take(1, 1, 1, None), Commit::Immediate).unwrap();
+            w.append(&lc_take(1, 2, 2, Some("ctrl")), Commit::Immediate).unwrap();
+            let key = "8".repeat(32);
+            let input_seq = Seq { epoch: 1, n: 3 };
+            w.append(&input_env(1, 3, &key), Commit::Immediate).unwrap();
+            w.append(&intent_env(1, 4, input_seq), Commit::Immediate).unwrap(); // the REAL forward_intent is seq (1,4)
+            // `forwarded.intent` claims the INPUT frame's own seq instead
+            // of the real forward_intent frame's seq -- wrong reference.
+            w.append(&forwarded_env(1, 5, input_seq, input_seq), Commit::Immediate).unwrap();
+            w.seal(None).unwrap();
+        }
+        let Err(err) = VoyageStore::open_for_writing(&root, "voybadintent") else { panic!("expected open_for_writing to fail") };
         assert!(matches!(err, Error::Schema(_)), "expected a Schema error, got: {err}");
     }
 

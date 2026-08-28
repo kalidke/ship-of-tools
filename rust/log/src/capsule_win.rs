@@ -207,6 +207,38 @@ pub enum TransportEvent {
 /// What the writer loop needs from a transport to deliver bytes and sever
 /// connections. U3 implements this over a real named pipe; this unit's
 /// tests implement it as an in-memory sink.
+///
+/// # Contract (round-2 review, finding 7)
+///
+/// The protocol machine's own correctness depends on THREE properties this
+/// trait's prior docs implied but never actually required of an
+/// implementation:
+///
+/// 1. **`send` enqueues without blocking.** It queues the write and
+///    returns; it never waits for the write to complete before returning
+///    control to the loop (a real overlapped-I/O transport issues the
+///    write and returns immediately; a synchronous test transport may
+///    report completion inline, but still returns before doing so from
+///    inside `send` itself — see `send`'s own doc).
+/// 2. **Every `(conn, id)` pair `send` ever returns is unique while
+///    outstanding.** The loop keys `pending_sends` by exactly that pair
+///    (finding 11); a reused id before its predecessor's completion is
+///    reported makes the wrong marker resolve for a later `Sent`. The loop
+///    asserts this at the `send` call site — an implementation that
+///    violates it is a bug in the TRANSPORT, not something the protocol
+///    machine can route around.
+/// 3. **Per-connection FIFO byte delivery.** Bytes queued for `conn` via
+///    `send` must arrive at the peer, and be reported [`TransportEvent::
+///    Sent`], in the SAME order they were enqueued — the protocol's own
+///    ordering guarantees (checkpoint chunks before the post-watermark
+///    output queued behind them, one reply before the next request on the
+///    same connection) assume this, not just document it as convenient.
+///
+/// A [`TransportEvent::Sent`] for an id the loop has no record of is
+/// tolerated ONLY for a connection already closed (a late completion
+/// racing the close, purged already — finding 11); for a connection still
+/// considered active it is a contract violation and the loop fails loudly
+/// rather than silently dropping it.
 pub trait Transport {
     /// Queue `bytes` for `conn`. Returns an opaque send id; the transport
     /// reports physical completion via [`TransportEvent::Sent`]`(conn, id)`
@@ -214,7 +246,9 @@ pub trait Transport {
     /// transport (real overlapped pipe I/O) reports it whenever the write
     /// actually finishes; a synchronous test transport may push it
     /// immediately, since that is an ordinary channel send picked up on
-    /// this loop's NEXT poll, not a same-stack callback into it.
+    /// this loop's NEXT poll, not a same-stack callback into it. Must
+    /// return before the completion it eventually reports, never after —
+    /// see the trait's own contract doc above.
     fn send(&mut self, conn: ConnId, bytes: Vec<u8>) -> u64;
     /// Sever `conn` at the transport level. Idempotent: closing an
     /// already-closed or unknown connection is a no-op.
@@ -583,10 +617,17 @@ impl FrameCtx {
         }
     }
     /// A controller-actor frame declaring EXACTLY `(controller_id,
-    /// take_epoch)` — the identity being RECORDED, not necessarily this
-    /// ctx's own current durable state: a stale wire `input` is still
-    /// honestly attributed to whatever it claimed (the verifier, not this
-    /// frame, is what later judges staleness — ADR 0039's take predicate).
+    /// take_epoch)` — a thin constructor, not itself the source of which
+    /// epoch is honest. Round-2 review deletion residue: this doc used to
+    /// say a stale `input` is "honestly attributed to whatever it
+    /// claimed", describing behavior finding 1 already replaced. Every
+    /// real call site (`run_input_wal`) now passes the COMMITTED
+    /// `ctx.take_epoch`, never the wire-claimed one — a stale input's
+    /// CLAIMED epoch is recorded only inside the `refused_stale_epoch`
+    /// fact's own diagnostic body, never on this envelope's actor
+    /// identity (ADR 0039's take predicate judges staleness from the
+    /// fact, not from a claimed-epoch envelope this module no longer
+    /// writes).
     fn controller_frame(
         &mut self,
         class: Class,
@@ -809,14 +850,21 @@ pub fn run(
         VoyageStore::bootstrap(&voyage_root, &config.voyage_id, config.retention)?;
     }
     let mut store = VoyageStore::open_for_writing(&voyage_root, &config.voyage_id)?;
-    store.seal_survivor()?;
 
-    // Finding 7: `shutdown_all` must run before the writer lock releases
-    // (`store`'s own drop) on EVERY exit path from this point on, not only
-    // the success one -- an RAII guard is the only way to guarantee that
-    // regardless of which `?` returns early below. Declared AFTER `store`:
-    // Rust drops locals in REVERSE declaration order, so this guard's
-    // `Drop` (closing the pipe) runs BEFORE `store`'s (releasing the lock).
+    // Finding 7 (round-1) / round-2 finding 4: `shutdown_all` must run
+    // before the writer lock releases (`store`'s own drop) on EVERY exit
+    // path from this point on, not only the success one -- an RAII guard
+    // is the only way to guarantee that regardless of which `?` returns
+    // early below. Declared AFTER `store`: Rust drops locals in REVERSE
+    // declaration order, so this guard's `Drop` (closing the pipe) runs
+    // BEFORE `store`'s (releasing the lock). Constructed HERE, immediately
+    // after `store` itself and BEFORE `seal_survivor()?` -- round-2 review
+    // caught the guard originally sitting AFTER that call: a failure
+    // there would have returned early with the lock already held (via
+    // `store`) but the guard never built, releasing the lock with the
+    // pipe still live. Every fallible operation from this point on that
+    // runs while the lock is held must stay AFTER the guard, not before
+    // it.
     struct ShutdownGuard<'a>(&'a mut dyn Transport);
     impl Drop for ShutdownGuard<'_> {
         fn drop(&mut self) {
@@ -824,6 +872,8 @@ pub fn run(
         }
     }
     let transport = ShutdownGuard(transport);
+
+    store.seal_survivor()?;
 
     let mut ctx = FrameCtx {
         epoch: store.epoch,
@@ -1030,41 +1080,45 @@ pub fn run(
     let mut pending_output: Vec<u8> = Vec::new();
     let mut pending_bytes: usize = 0;
     let mut last_commit = Instant::now();
-    // Loop fairness (real CI failure, windows-latest only:
-    // `attach_mid_stream_checkpoint_reproduces_reference_screen` timed out
-    // waiting on a connection the capsule itself closed with
-    // `PreAdmissionTimeout`, even though the test's `hello` had already
-    // arrived on the wire). `output_rx.recv_timeout` below never actually
-    // blocks -- and so never yields this thread -- for as long as output
-    // keeps arriving faster than the timeout; on a CPU-constrained runner
-    // with a fast enough producer (windows-latest's conhost measured ~2x
-    // windows-2022's), that starves whatever OS thread delivers transport
-    // bytes for this connection, long enough for the unrelated
-    // `PRE_ADMISSION_TIMEOUT` deadline to fire on a `hello` the loop never
-    // got a chance to even see. ADR 0041's own "control/liveness always
-    // serviced" backpressure rule for the 8 MiB producer-channel budget is
-    // the same principle applied here to CPU scheduling: bound how much
-    // output work runs before this thread explicitly yields, so a thread
-    // starved of CPU time gets a scheduling window every group-commit's
-    // worth of output rather than only whenever this loop happens to run
-    // dry. `service_transport_events!`/`tick` themselves are untouched --
-    // they already run once per iteration regardless -- this only adds a
-    // yield the CURRENT structure never gave the scheduler.
+    // Loop-fairness MITIGATION, not a guarantee (real CI failure, windows-
+    // latest only: `attach_mid_stream_checkpoint_reproduces_reference_
+    // screen` timed out waiting on a connection the capsule itself closed
+    // with `PreAdmissionTimeout`, even though the test's `hello` had
+    // already arrived on the wire). Root cause: `output_rx.recv_timeout`
+    // below never actually blocks -- and so never yields this thread --
+    // for as long as output keeps arriving faster than the timeout; on a
+    // CPU-constrained runner with a fast enough producer (windows-latest's
+    // conhost measured ~2x windows-2022's), that starves whatever OS
+    // thread delivers transport bytes for this connection, long enough for
+    // the unrelated `PRE_ADMISSION_TIMEOUT` deadline to fire on a `hello`
+    // the loop never got a chance to even see.
+    //
+    // Round-2 review, finding 10 (the fairness claim below was overstated):
+    // `pace_output!` calls `std::thread::yield_now()`, which on Windows
+    // imports `SwitchToThread` -- it offers another READY thread on the
+    // CURRENT processor a chance to run, and MAY RETURN WITHOUT SWITCHING
+    // AT ALL. This is a scheduler HINT that empirically cured the observed
+    // starvation on the CI images actually seen failing, not a fairness
+    // BOUND with a proof behind it. Nothing about protocol ordering or
+    // durability depends on it: `service_transport_events!`/`tick` already
+    // run once per iteration regardless, every write is fsynced before
+    // it's published (the watermark barrier), and `attach_proto`'s own
+    // tests prove the PROTOCOL correct independent of timing (its
+    // `replay_slow_watcher_flood_*` tests). If yielding does nothing on
+    // some future runner, the WORST case is that this specific starvation
+    // mitigation stops working and `PreAdmissionTimeout` recurs there --
+    // which is exactly the signal to escalate to a mechanism with an
+    // actual fairness bound (e.g. a real blocking wait with a wake source
+    // transport activity can signal), not evidence of a correctness bug.
     //
     // No deterministic unit test pins this one: `output_rx` (and the
     // reader thread feeding it) is constructed a few lines below, entirely
     // INSIDE this function, over a real spawned ConPTY -- unlike
     // `commands`/`transport_events`/`transport`, it is not a parameter a
-    // test can substitute a synthetic, saturated source for. The bug
-    // itself is an OS CPU-scheduling race (a fast enough producer thread
-    // starving a sibling thread on a core-constrained runner), not a
-    // logical invariant this module's state machine can violate on its
-    // own -- `attach_proto`'s own tests already prove the PROTOCOL is
-    // correct regardless of timing (see its `replay_slow_watcher_flood_*`
-    // tests from the prior discharge round). The two real Windows CI legs
-    // (windows-2022, windows-latest) are the pin for this specific
-    // behavior until `run` grows an injectable output source worth the
-    // refactor.
+    // test can substitute a synthetic, saturated source for. The two real
+    // Windows CI legs (windows-2022, windows-latest) are the pin for this
+    // specific behavior until `run` grows an injectable output source
+    // worth the refactor.
     let mut bytes_since_yield: usize = 0;
 
     // THIS module decides nothing; `attach_proto::AttachProto` does (see
@@ -1093,7 +1147,19 @@ pub fn run(
                 match action {
                     AttachAction::Send { conn, frame_bytes, marker } => {
                         let id = transport.0.send(conn, frame_bytes);
-                        pending_sends.insert((conn, id), marker);
+                        // Round-2 review, finding 7: the Transport contract
+                        // (this trait's own doc) requires every outstanding
+                        // (conn, id) to be unique -- a reused id before its
+                        // predecessor's completion is reported would
+                        // silently resolve the WRONG marker for a later
+                        // `Sent`. A transport that violates this has a bug
+                        // in it, not something this loop can route around.
+                        let prior = pending_sends.insert((conn, id), marker);
+                        assert!(
+                            prior.is_none(),
+                            "Transport::send returned (conn={conn:?}, id={id}) while a previous send with the \
+                             SAME id was still outstanding -- violates the unique-outstanding-id contract"
+                        );
                     }
                     AttachAction::Close(conn) => {
                         transport.0.close(conn);
@@ -1165,6 +1231,9 @@ pub fn run(
     /// `bytes` itself (not a pre-computed length) so every call site reads
     /// as "handle this chunk, paced" in one line: `.len()` borrows before
     /// `handle_output!` moves it.
+    /// Offers a scheduling window to another ready thread every
+    /// `GROUP_COMMIT_BYTES` worth of output -- a hint (`yield_now`, see
+    /// the doc above `bytes_since_yield`), not a bound: it may do nothing.
     macro_rules! pace_output {
         ($bytes:ident) => {
             bytes_since_yield += $bytes.len();
@@ -1317,8 +1386,22 @@ pub fn run(
                         execute_actions!(attach_proto.connection_closed(conn, Instant::now()));
                     }
                     TransportEvent::Sent(conn, id) => {
-                        if let Some(marker) = pending_sends.remove(&(conn, id)) {
-                            execute_actions!(attach_proto.sent(conn, marker, Instant::now()));
+                        match pending_sends.remove(&(conn, id)) {
+                            Some(marker) => execute_actions!(attach_proto.sent(conn, marker, Instant::now())),
+                            // Round-2 review, finding 7: legitimate ONLY
+                            // for a connection this loop already forgot
+                            // (closed, `pending_sends` purged by finding
+                            // 11's own retain) -- a late completion racing
+                            // the close. For a connection STILL active
+                            // (still in `splitters`), an unmatched `Sent`
+                            // is a transport contract violation: a
+                            // duplicate completion, or one for an id never
+                            // actually issued.
+                            None => assert!(
+                                !splitters.contains_key(&conn),
+                                "Transport reported Sent({conn:?}, {id}) for an ACTIVE connection with no \
+                                 matching outstanding send"
+                            ),
                         }
                     }
                 }
@@ -1354,7 +1437,15 @@ pub fn run(
                         execute_light_actions!(vec![light]);
                     }
                     AttachAction::Shutdown { reason } => {
-                        shutdown_requested = true;
+                        // Round-2 review deletion residue: `shutdown_requested`
+                        // is only ever READ inside the main `'main: loop`
+                        // (the `if shutdown_requested { break 'main ... }`
+                        // check) -- which has already exited by the time
+                        // `execute_teardown_actions!` ever runs. Setting it
+                        // here was dead. `shutdown_reason` still matters: a
+                        // second, teardown-time `Shutdown` (a racing EndRun
+                        // request) still gets its own reason string folded
+                        // into `producer_dead`'s eventual detail.
                         shutdown_reason = Some(reason);
                     }
                     other @ (AttachAction::CommitTake { .. }
@@ -1398,8 +1489,16 @@ pub fn run(
                         execute_teardown_actions!(attach_proto.connection_closed(conn, Instant::now()));
                     }
                     TransportEvent::Sent(conn, id) => {
-                        if let Some(marker) = pending_sends.remove(&(conn, id)) {
-                            execute_teardown_actions!(attach_proto.sent(conn, marker, Instant::now()));
+                        match pending_sends.remove(&(conn, id)) {
+                            Some(marker) => execute_teardown_actions!(attach_proto.sent(conn, marker, Instant::now())),
+                            // Finding 7, same reasoning as the main loop's
+                            // identical arm: tolerated only for a
+                            // connection already closed.
+                            None => assert!(
+                                !splitters.contains_key(&conn),
+                                "Transport reported Sent({conn:?}, {id}) for an ACTIVE connection with no \
+                                 matching outstanding send"
+                            ),
                         }
                     }
                 }
@@ -1623,7 +1722,19 @@ pub fn run(
                 pace_output!(bytes);
                 maybe_rotate!(w);
             }
-            Ok(ReaderEvent::Done(_)) => break,
+            Ok(ReaderEvent::Done(_)) => {
+                // Round-2 review, finding 5: service transport ONE more
+                // time at the exact instant EOF ends this drain, so a
+                // status/mgmt request that arrived just after the last
+                // loop-top poll still gets answered while the pipe is
+                // provably still live -- without this, everything from
+                // here to `shutdown_all`'s eventual close (the flush and
+                // joins below, the exit-status wait, writing lifecycle
+                // state, sealing) is a live-but-unserviced pipe tail.
+                service_transport_events_teardown!();
+                execute_teardown_actions!(attach_proto.tick(Instant::now()));
+                break;
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if Instant::now() >= drain_deadline {
                     return Err(Error::State(

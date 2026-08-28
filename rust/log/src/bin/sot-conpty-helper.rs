@@ -134,10 +134,19 @@ fn flood(total: usize) {
 /// The fixed byte sequence `--script` emits, repeated: plain text; a CSI
 /// SGR pair (color on, "red", color off); an OSC title set, BEL-terminated;
 /// a 3-byte UTF-8 codepoint (★ U+2605) immediately followed by a 4-byte one
-/// (😀 U+1F600); a DCS payload, ST-terminated; a trailing newline. Exposed
-/// so the integration test can build its OWN reference byte stream from the
-/// identical literal, rather than guessing at what this binary emits.
-pub const SCRIPT_BLOCK: &[u8] =
+/// (😀 U+1F600); a DCS payload, ST-terminated; a trailing newline.
+/// Round-2 review deletion residue: this used to be `pub` with a doc
+/// claiming the integration test imports it to build its own reference
+/// byte stream -- no such consumer exists (a `src/bin/*.rs` binary has no
+/// library target another crate file could `use` regardless), and the
+/// test proves fidelity from what the CAPSULE actually recorded, not from
+/// re-deriving an expected stream out-of-band. Private; this binary is its
+/// only user. `#[cfg(windows)]`, matching `script()` (its only reader):
+/// without it, a non-Windows build (this file's own `#[cfg(not(windows))]`
+/// `main` never calls `script`) sees a private const nothing in that build
+/// ever reads.
+#[cfg(windows)]
+const SCRIPT_BLOCK: &[u8] =
     b"plain text\x1b[31mred\x1b[0m\x1b]0;title\x07\xe2\x98\x85\xf0\x9f\x98\x80\x1bPdcs-payload\x1b\\done\n";
 
 /// Writes [`SCRIPT_BLOCK`] `repeats` times, one byte at a time with a short
