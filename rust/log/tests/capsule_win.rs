@@ -242,12 +242,21 @@ mod frame {
 /// flood/resize tests already use for `run`'s own completion.
 struct FrameWatcher<'a> {
     transport: &'a TestTransport,
-    next_idx: usize,
+    /// One cursor PER CONNECTION into the shared send log. A single
+    /// shared cursor was the first version of this fix and regressed
+    /// both windows legs deterministically: a wait for conn B that
+    /// matches at log position N would advance the shared cursor past
+    /// conn A's frames interleaved before N, so a later wait for A
+    /// could never see them — the pre-fix full-rescan was
+    /// order-tolerant, a single cursor is not. Per-connection cursors
+    /// keep the O(new bytes) poll cost while preserving the rescan's
+    /// semantics for interleaved streams.
+    next_idx: std::collections::HashMap<ConnId, usize>,
 }
 
 impl<'a> FrameWatcher<'a> {
     fn new(transport: &'a TestTransport) -> Self {
-        Self { transport, next_idx: 0 }
+        Self { transport, next_idx: std::collections::HashMap::new() }
     }
 
     fn wait_for<T>(
@@ -266,9 +275,11 @@ impl<'a> FrameWatcher<'a> {
             // exactly what turned this wait into a real CI timeout despite
             // the underlying protocol machine being correct (PR #139
             // discharge round; see `sent_frames_from`'s own doc).
-            let new_frames = self.transport.sent_frames_from(self.next_idx);
+            let start = *self.next_idx.get(&conn).unwrap_or(&0);
+            let new_frames = self.transport.sent_frames_from(start);
+            let mut pos = start;
             for (c, bytes) in &new_frames {
-                self.next_idx += 1;
+                pos += 1;
                 if *c != conn {
                     continue;
                 }
@@ -277,10 +288,16 @@ impl<'a> FrameWatcher<'a> {
                 assert_eq!(err, None, "unexpected wire error in a self-encoded frame");
                 for f in &decoded {
                     if let Some(v) = pred(f) {
+                        // Consume up to and including the matched entry
+                        // for THIS connection only; other connections'
+                        // cursors are untouched, so their interleaved
+                        // earlier frames stay findable.
+                        self.next_idx.insert(conn, pos);
                         return v;
                     }
                 }
             }
+            self.next_idx.insert(conn, pos);
             if Instant::now() >= deadline {
                 panic!("timed out waiting for an expected frame on conn {conn}");
             }
