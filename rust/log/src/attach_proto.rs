@@ -800,19 +800,25 @@ impl AttachProto {
                 vec![Action::Shutdown { reason }, Action::Close(conn)]
             }
             SentMarker::CheckpointChunk { clears_request, is_last } => {
-                // Finding 1: only `Reply`/`CheckpointChunk`'s first-chunk
-                // completion can ever have a frame held behind it (see
-                // `frame`'s own doc) -- `ReplyThenClose`/`ShutdownAck`
-                // close the connection instead, so they never go through
+                // Only `Reply`/`CheckpointChunk`'s first-chunk completion
+                // can ever have a frame held behind it (see `frame`'s own
+                // doc) -- `ReplyThenClose`/`ShutdownAck` close the
+                // connection instead, so they never go through
                 // `clear_outstanding_and_replay`.
-                let mut actions = match clears_request {
-                    Some(rid) => self.clear_outstanding_and_replay(conn, rid, now),
-                    None => Vec::new(),
-                };
                 if !is_last {
+                    let mut actions = match clears_request {
+                        Some(rid) => self.clear_outstanding_and_replay(conn, rid, now),
+                        None => Vec::new(),
+                    };
                     actions.extend(self.advance_checkpoint_stream(conn, now));
                     return actions;
                 }
+                // Final chunk: the transfer's terminal state must be
+                // committed BEFORE any held frame replays -- a one-chunk
+                // transfer's first chunk IS its last, and a compliant
+                // client that read it can have a `take` already held; a
+                // replay against still-in-flight state falsely refuses it
+                // with CheckpointInFlight (review-reproduced race).
                 let pending = match self.conns.get_mut(&conn).map(|c| &mut c.role) {
                     Some(Role::Watcher(w)) => {
                         w.checkpoint = CheckpointProgress::Done;
@@ -824,6 +830,11 @@ impl AttachProto {
                     self.checkpoint_slot = None;
                     self.advance_checkpoint_queue(now);
                 }
+                // Replay only now, against the fully-completed state.
+                let mut actions = match clears_request {
+                    Some(rid) => self.clear_outstanding_and_replay(conn, rid, now),
+                    None => Vec::new(),
+                };
                 for bytes in pending {
                     let n = bytes.len() as u64;
                     let encoded = wire::encode_attach_server(&AttachServer::Output { bytes })
@@ -1778,6 +1789,45 @@ mod tests {
         // The first reply's own completion is still exactly as queued --
         // proving the violation didn't also corrupt the race path.
         let _ = a1;
+    }
+
+    /// Final-verification round: a ONE-chunk checkpoint's first chunk IS
+    /// its last, and a compliant client that reads it can have a `take`
+    /// already held behind that chunk's pending completion. The replay
+    /// must run against the transfer's COMPLETED state -- Done marked and
+    /// the snapshot slot freed before the held frame re-enters -- or the
+    /// take is falsely refused CheckpointInFlight (review-reproduced).
+    #[test]
+    fn a_take_held_behind_a_one_chunk_checkpoint_replays_against_done_state() {
+        let mut p = proto();
+        let now = t0();
+        assert_eq!(p.connection_opened(1, now), vec![]);
+        let a = p.frame(1, hello_frame(), now);
+        p.sent(1, a[0].send_marker(), now);
+        let a = p.frame(1, attach_frame("ctrl"), now);
+        assert!(a.is_empty());
+        let a = p.ground_reached(now);
+        assert!(matches!(a.as_slice(), [Action::BeginCheckpoint { conn: 1 }]));
+        let chunk = p.checkpoint_ready(1, vec![0xAB], now);
+        let marker = chunk[0].send_marker();
+        assert!(
+            matches!(marker, Some(SentMarker::CheckpointChunk { is_last: true, .. })),
+            "a one-byte checkpoint must be a single, final chunk: {marker:?}"
+        );
+        // The take races in while that final chunk's completion is pending.
+        let held = p.frame(1, take_frame("ctrl"), now);
+        assert_eq!(held, vec![], "expected the racing take to be held: {held:?}");
+        // Completion: the replay must see Done + a free slot and commit
+        // the take -- never TakeRefused::CheckpointInFlight.
+        let a = p.sent(1, marker, now);
+        assert!(
+            a.iter().any(|x| matches!(x, Action::CommitTake { .. })),
+            "expected the held take to replay into CommitTake against Done state: {a:?}"
+        );
+        assert!(
+            !a.iter().any(|x| matches!(x, Action::RecordRefusal { .. })),
+            "the held take must not be refused: {a:?}"
+        );
     }
 
     /// A frame arriving while `outstanding_request` is set but NO reply

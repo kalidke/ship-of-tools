@@ -140,6 +140,9 @@ impl PipeTransport {
 impl Transport for PipeTransport {
     fn bind(&mut self, voyage_id: &str) -> Result<()> {
         self.server = Some(PipeServer::bind(voyage_id, self.max_instances)?);
+        // A fresh server restarts conn ids; no latch entry may outlive the
+        // server whose connections it described (see shutdown_all).
+        self.closing.clear();
         Ok(())
     }
 
@@ -185,8 +188,13 @@ impl Transport for PipeTransport {
     fn shutdown_all(&mut self) {
         // Dropping `PipeServer` closes every connection and stops
         // accepting new ones (its own `Drop` impl) -- no actor thread to
-        // signal or join any more.
+        // signal or join any more. The closing latch is cleared with it:
+        // shutdown emits no Closed events to clear entries, and a later
+        // bind's fresh PipeServer restarts conn ids at zero -- a stale
+        // latch would silently drop the new server's sends (review
+        // finding).
         self.server = None;
+        self.closing.clear();
     }
 }
 

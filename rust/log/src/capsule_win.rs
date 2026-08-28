@@ -1454,9 +1454,19 @@ pub fn run(
     // the SAME boundary `commands` already is (`pty` is also moved into the
     // Phase-B closer thread by then, so a wire-triggered resize could not
     // run even if admitted).
+    // Per-pass event quota: a client flood can refill the bounded transport
+    // channel as fast as this loop drains it, and an UNBOUNDED while-let
+    // would then starve output commits, tick, and the exit checks
+    // indefinitely (review finding). The quota bounds one pass; the next
+    // loop iteration resumes immediately, so nothing is dropped -- only
+    // interleaved.
+    const TRANSPORT_EVENTS_PER_PASS: usize = 64;
     macro_rules! service_transport_events {
         () => {
-            while let Some(ev) = transport.0.try_recv_event() {
+            let mut quota = TRANSPORT_EVENTS_PER_PASS;
+            while quota > 0 {
+                quota -= 1;
+                let Some(ev) = transport.0.try_recv_event() else { break };
                 match ev {
                     TransportEvent::ConnectionOpened(conn) => {
                         splitters.insert(conn, wire::FrameSplitter::new());
@@ -1571,7 +1581,13 @@ pub fn run(
     /// is closed (finding 7).
     macro_rules! service_transport_events_teardown {
         () => {
-            while let Some(ev) = transport.0.try_recv_event() {
+            // Same per-pass quota as the main loop's macro, same reason --
+            // teardown's own deadlines must not be defeatable by a client
+            // flood refilling the channel mid-drain (review finding).
+            let mut quota = TRANSPORT_EVENTS_PER_PASS;
+            while quota > 0 {
+                quota -= 1;
+                let Some(ev) = transport.0.try_recv_event() else { break };
                 match ev {
                     TransportEvent::ConnectionOpened(conn) => {
                         splitters.insert(conn, wire::FrameSplitter::new());
