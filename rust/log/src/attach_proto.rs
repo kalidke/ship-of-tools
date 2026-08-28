@@ -2377,6 +2377,127 @@ mod tests {
         assert!(a.is_empty(), "the driver must never be evicted by the per-watcher live-queue budget: {a:?}");
     }
 
+    /// Reconstructs, event-for-event, what
+    /// `tests/capsule_win.rs::slow_watcher_overflow_closes_while_driver_stays_live`
+    /// drives through the wire (PR #139 discharge round CI failure: "timed
+    /// out waiting for an expected frame on conn 1"): conn 1 (DRIVER)
+    /// attaches and takes; conn 2 (WATCHER) attaches to a `Done` checkpoint
+    /// -- exactly like the integration test's `collect_checkpoint`
+    /// completing BEFORE `set_hold_for` -- then is held forever (its
+    /// `Output` sends are never confirmed here, matching a client that
+    /// stopped reading its pipe); a 6 MiB flood, in the capsule's own
+    /// `GROUP_COMMIT_BYTES`-sized (256 KiB) increments, is published to
+    /// both, with the driver's own sends confirmed immediately every round
+    /// (an unheld synthetic transport). Once the watcher is evicted, the
+    /// driver must still answer a `resize`.
+    ///
+    /// `now` never advances past `t0()`: this isolates the state machine's
+    /// own LOGIC from real wall-clock throughput. If this passes, the bug
+    /// is not in `AttachProto` and must be sought in `capsule_win.rs`'s
+    /// wiring or the integration test's own synthetic transport.
+    #[test]
+    fn replay_slow_watcher_flood_the_driver_still_answers_a_resize() {
+        let mut p = proto();
+        let now = t0();
+        const DRIVER: ConnId = 1;
+        const WATCHER: ConnId = 2;
+
+        attach_to_done(&mut p, DRIVER, now);
+        drive_take(&mut p, DRIVER, "driver", 1, now);
+        attach_to_done(&mut p, WATCHER, now);
+
+        const CHUNK: usize = 256 * 1024;
+        const TOTAL: usize = 6 * 1024 * 1024;
+        let chunk = vec![0xAAu8; CHUNK];
+        let mut sent_so_far = 0usize;
+        let mut watcher_closed = false;
+        while sent_so_far < TOTAL {
+            let actions = p.output_committed(&chunk, now);
+            for a in &actions {
+                match a {
+                    Action::Send { conn, .. } if *conn == DRIVER => {
+                        p.sent(DRIVER, a.send_marker(), now);
+                    }
+                    Action::Send { conn, .. } if *conn == WATCHER => {
+                        // Held forever -- never confirmed, exactly like
+                        // `set_hold_for(WATCHER, true)`.
+                    }
+                    Action::Close(c) if *c == WATCHER => watcher_closed = true,
+                    Action::RecordRefusal { conn: Some(c), reason: RefusalReason::QueueOverflow } if *c == WATCHER => {}
+                    other => panic!("unexpected action mid-flood: {other:?}"),
+                }
+            }
+            sent_so_far += CHUNK;
+            if watcher_closed {
+                break;
+            }
+        }
+        assert!(
+            watcher_closed,
+            "the watcher must be evicted well before 6 MiB, exactly like the integration test"
+        );
+
+        let resize = decode_one(&encode_attach_client(&AttachClient::Resize { cols: 100, rows: 40 }).unwrap());
+        let a = p.frame(DRIVER, resize, now);
+        let request_id = match a.as_slice() {
+            [Action::ApplyResize { request_id, conn, .. }] if *conn == DRIVER => *request_id,
+            other => panic!("expected ApplyResize for the driver, got: {other:?}"),
+        };
+        let a = p.resize_outcome(DRIVER, true, request_id, now);
+        assert!(
+            matches!(
+                a.as_slice(),
+                [Action::Send { conn, marker: Some(SentMarker::Reply { .. }), .. }] if *conn == DRIVER
+            ),
+            "expected a ResizeOk reply Send for the driver: {a:?}"
+        );
+    }
+
+    /// Directly answers the coordinator's "double-check the timeout
+    /// arithmetic" ask: does the resize this scenario needs answered
+    /// legitimately require a keepalive/progress interval to elapse first
+    /// (making the integration test's 10s wait too short BY DESIGN), or is
+    /// the reply available immediately regardless? Advances `now` well
+    /// past `KEEPALIVE_IDLE_TRIGGER` (30s) since the take -- long enough
+    /// for `tick` to actually arm a keepalive on the driver, exactly what
+    /// a slow-draining flood (during which the driver sends no wire
+    /// traffic of its own) would do -- then leaves it UNANSWERED (the
+    /// integration test's harness implements no keepalive-reply logic at
+    /// all) and confirms the SAME resize still gets an immediate
+    /// `ResizeOk`, at that SAME `now`. No deadline in this module gates a
+    /// resize behind a keepalive; the ten-second wait is not too short by
+    /// protocol design.
+    #[test]
+    fn resize_answers_immediately_even_with_a_keepalive_outstanding_on_the_driver() {
+        let mut p = proto();
+        let now = t0();
+        const DRIVER: ConnId = 1;
+        attach_to_done(&mut p, DRIVER, now);
+        drive_take(&mut p, DRIVER, "driver", 1, now);
+
+        let later = now + KEEPALIVE_IDLE_TRIGGER + Duration::from_secs(1);
+        let a = p.tick(later);
+        assert!(
+            matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Keepalive { .. }), .. }]),
+            "expected tick to arm a keepalive after the idle trigger: {a:?}"
+        );
+
+        let resize = decode_one(&encode_attach_client(&AttachClient::Resize { cols: 100, rows: 40 }).unwrap());
+        let a = p.frame(DRIVER, resize, later);
+        let request_id = match a.as_slice() {
+            [Action::ApplyResize { request_id, conn, .. }] if *conn == DRIVER => *request_id,
+            other => panic!("expected ApplyResize for the driver: {other:?}"),
+        };
+        let a = p.resize_outcome(DRIVER, true, request_id, later);
+        assert!(
+            matches!(
+                a.as_slice(),
+                [Action::Send { conn, marker: Some(SentMarker::Reply { .. }), .. }] if *conn == DRIVER
+            ),
+            "an outstanding, unanswered keepalive must not delay or block a resize reply: {a:?}"
+        );
+    }
+
     #[test]
     fn output_committed_reaches_a_done_watcher_and_is_gated_by_the_budget() {
         let mut p = proto();

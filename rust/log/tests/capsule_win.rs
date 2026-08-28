@@ -137,6 +137,35 @@ impl TestTransport {
     fn sent_frames(&self) -> Vec<(ConnId, Vec<u8>)> {
         self.inner.lock().unwrap().sent.clone()
     }
+    /// PR #139 discharge round (second CI failure, `slow_watcher_overflow_
+    /// closes_while_driver_stays_live`): once the driver is correctly
+    /// exempt from the per-watcher queue-overflow eviction (the fix for
+    /// the FIRST failure), it stays subscribed for the entire flood
+    /// instead of being evicted early alongside the watcher, so `sent`
+    /// grows to the flood's full size (here, several MiB across dozens of
+    /// entries). `FrameWatcher::wait_for` polls every 10ms; cloning the
+    /// WHOLE vector on every single poll -- most of which is already-seen
+    /// history the caller is about to skip via its own cursor -- turns an
+    /// O(1)-per-poll wait into an O(total accumulated bytes)-per-poll one,
+    /// for every poll across the whole wait. Slicing from `start` (the
+    /// caller's own cursor) makes each poll's cost track only what is
+    /// actually NEW since the last one, which is what made the driver's
+    /// post-flood `resize` reply wait (the exact one that timed out in CI)
+    /// newly expensive purely as a side effect of the driver eviction fix
+    /// being correct -- a WIRING/harness bug, not an `AttachProto` one
+    /// (confirmed by `attach_proto::tests::
+    /// replay_slow_watcher_flood_the_driver_still_answers_a_resize`, which
+    /// replays the identical sequence at the state-machine level with no
+    /// wall-clock cost and proves the machine's own action stream is
+    /// already correct).
+    fn sent_frames_from(&self, start: usize) -> Vec<(ConnId, Vec<u8>)> {
+        let inner = self.inner.lock().unwrap();
+        if start >= inner.sent.len() {
+            Vec::new()
+        } else {
+            inner.sent[start..].to_vec()
+        }
+    }
     fn closed_conns(&self) -> Vec<ConnId> {
         self.inner.lock().unwrap().closed.clone()
     }
@@ -229,9 +258,16 @@ impl<'a> FrameWatcher<'a> {
     ) -> T {
         let deadline = Instant::now() + timeout;
         loop {
-            let frames = self.transport.sent_frames();
-            while self.next_idx < frames.len() {
-                let (c, bytes) = &frames[self.next_idx];
+            // `sent_frames_from`, not `sent_frames`: this is a hot 10ms
+            // poll loop, and a full clone on every iteration turns into
+            // O(total accumulated bytes) PER POLL once a connection stays
+            // subscribed through a large volume (a flood's own driver,
+            // once correctly exempt from queue-overflow eviction) --
+            // exactly what turned this wait into a real CI timeout despite
+            // the underlying protocol machine being correct (PR #139
+            // discharge round; see `sent_frames_from`'s own doc).
+            let new_frames = self.transport.sent_frames_from(self.next_idx);
+            for (c, bytes) in &new_frames {
                 self.next_idx += 1;
                 if *c != conn {
                     continue;
