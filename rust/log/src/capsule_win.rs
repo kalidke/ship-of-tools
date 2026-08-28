@@ -1094,22 +1094,24 @@ pub fn run(
     // the loop never got a chance to even see.
     //
     // Round-2 review, finding 10 (the fairness claim below was overstated):
-    // `pace_output!` calls `std::thread::yield_now()`, which on Windows
-    // imports `SwitchToThread` -- it offers another READY thread on the
-    // CURRENT processor a chance to run, and MAY RETURN WITHOUT SWITCHING
-    // AT ALL. This is a scheduler HINT that empirically cured the observed
-    // starvation on the CI images actually seen failing, not a fairness
-    // BOUND with a proof behind it. Nothing about protocol ordering or
-    // durability depends on it: `service_transport_events!`/`tick` already
-    // run once per iteration regardless, every write is fsynced before
-    // it's published (the watermark barrier), and `attach_proto`'s own
-    // tests prove the PROTOCOL correct independent of timing (its
-    // `replay_slow_watcher_flood_*` tests). If yielding does nothing on
-    // some future runner, the WORST case is that this specific starvation
-    // mitigation stops working and `PreAdmissionTimeout` recurs there --
-    // which is exactly the signal to escalate to a mechanism with an
-    // actual fairness bound (e.g. a real blocking wait with a wake source
-    // transport activity can signal), not evidence of a correctness bug.
+    // `pace_output!` sleeps 1 ms per `GROUP_COMMIT_BYTES` of output
+    // processed. The first version used `yield_now` (`SwitchToThread`),
+    // which offers a ready thread ON THE CURRENT PROCESSOR a chance and
+    // may return without switching -- and the starvation it was meant to
+    // cure RECURRED on the faster CI image: with two hot threads (this
+    // loop + the ConPTY reader) on a two-core runner, the thread that
+    // must run to DELIVER a transport event never got a core, and
+    // `PreAdmissionTimeout` fired on a hello that had already been sent.
+    // A timed sleep is a real scheduling point on every Windows build:
+    // the OS will run other ready threads for the duration. The cost is
+    // bounded and named: 1 ms per 256 KiB caps output throughput near
+    // 250 MiB/s -- two orders of magnitude above anything conhost
+    // delivers -- and at real delivery rates the pacer fires rarely.
+    // Nothing about protocol ordering or durability depends on this:
+    // `service_transport_events!`/`tick` already run once per iteration,
+    // every write is fsynced before it's published (the watermark
+    // barrier), and `attach_proto`'s replay tests prove the protocol
+    // correct independent of timing.
     //
     // No deterministic unit test pins this one: `output_rx` (and the
     // reader thread feeding it) is constructed a few lines below, entirely
@@ -1232,14 +1234,14 @@ pub fn run(
     /// as "handle this chunk, paced" in one line: `.len()` borrows before
     /// `handle_output!` moves it.
     /// Offers a scheduling window to another ready thread every
-    /// `GROUP_COMMIT_BYTES` worth of output -- a hint (`yield_now`, see
+    /// `GROUP_COMMIT_BYTES` worth of output -- a timed sleep (see
     /// the doc above `bytes_since_yield`), not a bound: it may do nothing.
     macro_rules! pace_output {
         ($bytes:ident) => {
             bytes_since_yield += $bytes.len();
             handle_output!($bytes);
             if bytes_since_yield >= GROUP_COMMIT_BYTES {
-                std::thread::yield_now();
+                std::thread::sleep(Duration::from_millis(1));
                 bytes_since_yield = 0;
             }
         };
