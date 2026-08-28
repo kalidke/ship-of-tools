@@ -29,6 +29,7 @@ pub mod recovery;
 pub mod segment;
 pub mod verify;
 pub mod voyage;
+pub mod wire;
 
 mod fsutil;
 
