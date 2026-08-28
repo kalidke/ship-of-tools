@@ -20,100 +20,104 @@
 //! none is needed: "stable and unique," the only property `attach_proto`
 //! ever relies on, already holds for the id as pipe_win minted it.
 //!
-//! # One actor thread owns the `PipeServer` — not `Arc`-shared
+//! # This bridge OWNS the `PipeServer` directly — no actor thread
 //!
-//! `PipeServer` is `Send` but NOT `Sync` (it holds an `mpsc::Receiver`
-//! internally, which is never `Sync`), so it cannot be wrapped in `Arc`
-//! and handed to a second thread while this one keeps calling `&self`
-//! methods on it — `Arc<T>: Send` itself requires `T: Sync`. So instead of
-//! sharing it, exactly ONE thread (spawned by
-//! [`Transport::bind`](crate::capsule_win::Transport::bind), as
-//! implemented here) OWNS the `PipeServer` for its entire life: created at
-//! the top of [`actor_loop`], used there, and dropped there too, at the
-//! bottom, when told to stop. `capsule_win::run`'s OWN thread never
-//! touches the `PipeServer` value directly — [`PipeTransport::send`]/
-//! [`PipeTransport::close`] instead post a [`PipeCmd`] over an (unbounded,
-//! so posting never blocks — satisfying `Transport::send`'s own contract)
-//! channel the actor thread drains every iteration.
+//! Round-2 e2e review's own deletion pressure: an earlier version of this
+//! module could not let `capsule_win::run`'s thread touch `PipeServer`
+//! directly, because it wrongly assumed sharing was necessary and
+//! `PipeServer` is `Send` but not `Sync` (it holds an `mpsc::Receiver`
+//! internally). But nothing here ever needs to SHARE it — `run`'s thread
+//! is the ONLY thread that ever touches a `PipeTransport`, and
+//! `PipeServer::send`/`close`/`events()` are already `&self`, synchronous,
+//! non-blocking methods (their own async work happens on `PipeServer`'s
+//! OWN internal accept/reader/writer/reaper threads, invisible from out
+//! here). So `PipeTransport` just OWNS a `PipeServer` (`Option`, empty
+//! until [`Transport::bind`]) and calls straight through: `send`/`close`
+//! forward directly, and [`Transport::try_recv_event`] polls
+//! `PipeServer::events()` with a single non-blocking `try_recv()`. This
+//! deletes the actor thread, its command channel, its unbounded forwarding
+//! channel, and the join `shutdown_all` used to need — `shutdown_all` is
+//! now just dropping the `PipeServer` (its own `Drop` already closes
+//! every connection and the listener).
 //!
-//! `capsule_win::run`'s own `transport_events: mpsc::Receiver<capsule_win::
-//! TransportEvent>` parameter is a DIFFERENT channel of a DIFFERENT type
-//! from `PipeServer::events()` — `run`'s signature is fixed (a concrete
-//! `Receiver<T>`, not something a custom adapter can stand in for), so
-//! direct channel reuse is not on the table; [`PipeTransport::new`] hands
-//! back the `Receiver` half of a channel it owns the `Sender` half of, and
-//! the actor thread is what pushes translated events into it (see
-//! [`actor_loop`] for the direct field-for-field event mapping).
+//! Deleting the forwarding channel also discharges a real correctness gap
+//! the old shape had: `PipeServer::events()` is deliberately BOUNDED (it
+//! force-closes a connection whose `Bytes` cannot be delivered within its
+//! own timeout, see that module's doc) — draining it into a second,
+//! UNBOUNDED channel defeated that bound, letting a slow consumer
+//! accumulate unlimited buffered bytes regardless of what `pipe_win`
+//! itself was willing to hold. Polling the bounded channel directly, with
+//! nothing standing between it and `run`'s own loop, means `pipe_win`'s
+//! bound is the ONLY bound — exactly as intended.
 //!
-//! The actor loop polls `PipeServer::events()` with `recv_timeout` rather
-//! than blocking on `recv()`, specifically so it can also drain `PipeCmd`s
-//! promptly and notice its own shutdown signal — a blocking `recv()` would
-//! leave `send`/`close` commands (and shutdown) waiting arbitrarily long
-//! behind pipe traffic that may never arrive.
+//! `Transport::try_recv_event` is on `run`'s own critical per-iteration
+//! path (see that method's doc in `capsule_win.rs`): it must never block
+//! or add its own wait, since `run`'s ONE latency budget per iteration is
+//! its `output_rx.recv_timeout(GROUP_COMMIT_WINDOW)`. A plain
+//! `Receiver::try_recv()` (never `recv_timeout`) is what makes that true
+//! here.
 //!
-//! # `AcceptError` has no home here yet
+//! # `AcceptError` maps to `TransportEvent::TransportFatal`
 //!
-//! `pipe_win::TransportEvent::AcceptError` (the accept loop's own
-//! persistent-failure signal) has no corresponding
-//! `capsule_win::TransportEvent` variant — adding one would be a change to
-//! `capsule_win`'s or `attach_proto`'s own protocol surface, out of this
-//! bridge's scope. [`actor_loop`] logs it (`eprintln!`) and continues:
-//! existing connections are unaffected either way, and the capsule's own
-//! `run` loop has no mechanism today to observe "no more connections will
-//! ever be accepted." A future round that wants this visible in the
-//! voyage record needs to extend `capsule_win::TransportEvent`, not this
-//! module.
+//! `pipe_win::TransportEvent::AcceptError` means no future connection can
+//! ever be accepted while this capsule holds the pipe's name — an
+//! unreachable-forever session if `run` just kept going regardless
+//! (round-2 e2e review, finding 4). This bridge translates it to
+//! [`capsule_win::TransportEvent::TransportFatal`], which `run` maps to an
+//! orderly self-end on the SAME path as an externally requested `EndRun`
+//! — see that variant's own doc for the full policy.
 //!
-//! # A queue-full send force-closes its connection
+//! # A queue-full or otherwise-failed send LATCHES the connection
 //!
 //! `PipeServer::send` can refuse a send outright (`Err`) if that
 //! connection's own outbound BYTE budget is exhausted — a case
 //! `attach_proto`'s own admission control is tuned to make vanishingly
-//! rare, but not impossible to hit under a genuine mismatch or a
-//! misbehaving peer. `Transport::send` has no `Result` to report that
-//! through (it always returns a bare id, and by the time the actor thread
-//! actually attempts it the caller is long gone), and silently swallowing
-//! it would leave `attach_proto`'s own `outstanding_sends` bookkeeping for
-//! that connection permanently non-zero — nothing would ever clear it.
-//! Closing the connection right there instead guarantees the loop
-//! eventually sees a `ConnectionClosed` for it, which `attach_proto`
-//! already knows how to clean up.
+//! rare, but not impossible under a genuine mismatch or a misbehaving
+//! peer. `Transport::send` has no `Result` to report that through, and
+//! silently swallowing it would leave `attach_proto`'s own
+//! `outstanding_sends` bookkeeping for that connection permanently
+//! non-zero. Closing the connection right there (as before) guarantees
+//! the loop eventually sees a `ConnectionClosed` for it — but round-2 e2e
+//! review, finding 3, caught that this alone is not enough: nothing
+//! stopped a LATER, smaller `send` for that same connection from
+//! reaching `PipeServer` (and the peer) successfully, landing AFTER a gap
+//! left by the failed one — a broken per-connection stream-prefix
+//! property. `closing` (a `HashSet<ConnId>`) latches the instant a
+//! connection is closed OR a send to it fails: every later `send` for a
+//! latched connection is dropped without ever reaching `PipeServer`,
+//! never just delayed or reordered. Entries are removed once that
+//! connection's `Closed` event is actually observed — pure memory
+//! tidiness, not a correctness requirement, since `pipe_win::ConnId`s are
+//! never reused.
+//!
+//! One more asymmetry worth naming (review's own observation): the loop's
+//! `attach_proto` budgets LIVE output in raw, undecoded bytes
+//! (`WATCHER_LIVE_QUEUE_BUDGET_BYTES`), while `PipeServer` budgets
+//! outbound bytes AFTER wire framing (magic + length prefix + the encoded
+//! body, per connection). The two are close but not identical — framing
+//! overhead means `PipeServer`'s own budget can theoretically bind first
+//! on a connection with many small frames. That is fine: `PipeServer`'s
+//! own budget is the transport's ENFORCEMENT of last resort (it never
+//! silently drops what it accepted), and the latch above is what keeps
+//! delivery FIFO-honest whichever budget actually trips.
 
 #![cfg(windows)]
 
 use crate::capsule_win::{Transport, TransportEvent as CapsuleEvent};
 use crate::pipe_win::{ConnId, PipeServer, TransportEvent as PipeEvent};
-use crate::{Error, Result};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
-
-/// How often the actor thread's `PipeServer::events()` poll wakes to check
-/// for a queued [`PipeCmd`] (including its own shutdown signal) — short
-/// enough that `shutdown_all`'s join, and `send`/`close`'s own effective
-/// latency, stay small, long enough not to spin.
-const ACTOR_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
-/// A command posted to the actor thread — see the module doc's "One actor
-/// thread owns the `PipeServer`" section for why these exist instead of
-/// `PipeTransport::send`/`close` calling `PipeServer` directly.
-enum PipeCmd {
-    Send(ConnId, Vec<u8>, u64),
-    Close(ConnId),
-    /// Stop, drop the `PipeServer` (closing every connection and the
-    /// listener), and return.
-    Shutdown,
-}
+use crate::Result;
+use std::collections::HashSet;
 
 /// A `Transport` over a real `PipeServer`. Constructed UNBOUND (see
 /// [`PipeTransport::new`]); `Transport::bind` is what `capsule_win::run`
 /// calls, at the exact point ADR 0041's pipe-lifetime invariant requires,
-/// to actually create the pipe and start the actor thread.
+/// to actually create the pipe.
 pub struct PipeTransport {
     max_instances: u32,
-    forward_tx: Sender<CapsuleEvent>,
-    cmd_tx: Option<Sender<PipeCmd>>,
-    actor_jh: Option<JoinHandle<()>>,
+    server: Option<PipeServer>,
+    /// See the module doc's "A queue-full or otherwise-failed send
+    /// LATCHES the connection" section.
+    closing: HashSet<ConnId>,
     next_send_id: u64,
 }
 
@@ -122,123 +126,80 @@ impl PipeTransport {
     /// `max_instances` is the RAW total simultaneous pipe-instance ceiling
     /// `PipeServer::bind`'s own doc requires (subscribers plus separately
     /// bounded pre-hello/mgmt connections; computing that combination is
-    /// the CALLER's job, not this bridge's). Returns the `Receiver` half
-    /// of the translated event stream — hand that straight to `run`'s
-    /// `transport_events` parameter, and `&mut` this value as `run`'s
-    /// `transport` parameter.
-    pub fn new(max_instances: u32) -> (Self, Receiver<CapsuleEvent>) {
-        let (forward_tx, rx) = mpsc::channel();
-        (
-            Self {
-                max_instances,
-                forward_tx,
-                cmd_tx: None,
-                actor_jh: None,
-                next_send_id: 0,
-            },
-            rx,
-        )
+    /// the CALLER's job, not this bridge's).
+    pub fn new(max_instances: u32) -> Self {
+        Self {
+            max_instances,
+            server: None,
+            closing: HashSet::new(),
+            next_send_id: 0,
+        }
     }
 }
 
 impl Transport for PipeTransport {
     fn bind(&mut self, voyage_id: &str) -> Result<()> {
-        let server = PipeServer::bind(voyage_id, self.max_instances).map_err(Error::from)?;
-        let (cmd_tx, cmd_rx) = mpsc::channel();
-        let forward_tx = self.forward_tx.clone();
-        let jh = thread::Builder::new()
-            .name("sot-pipe-transport-actor".into())
-            .spawn(move || actor_loop(server, cmd_rx, forward_tx))
-            .map_err(|e| Error::State(format!("spawn pipe-transport actor thread: {e}")))?;
-        self.cmd_tx = Some(cmd_tx);
-        self.actor_jh = Some(jh);
+        self.server = Some(PipeServer::bind(voyage_id, self.max_instances)?);
         Ok(())
+    }
+
+    fn try_recv_event(&mut self) -> Option<CapsuleEvent> {
+        let evt = self.server.as_ref()?.events().try_recv().ok()?;
+        if let PipeEvent::Closed(conn, _reason) = &evt {
+            self.closing.remove(conn);
+        }
+        Some(translate(evt))
     }
 
     fn send(&mut self, conn: ConnId, bytes: Vec<u8>) -> u64 {
         self.next_send_id += 1;
         let id = self.next_send_id;
-        if let Some(tx) = &self.cmd_tx {
-            // An unbounded `mpsc` post never blocks — satisfies
-            // `Transport::send`'s own "enqueues without blocking"
-            // contract trivially.
-            let _ = tx.send(PipeCmd::Send(conn, bytes, id));
+        if self.closing.contains(&conn) {
+            // Latched: this connection's stream is already broken (a
+            // prior close or send failure), so forwarding this send could
+            // let it overtake the gap and reach the peer out of order.
+            // Dropped, never queued -- `ConnectionClosed` (already under
+            // way, or already delivered) is what clears the loop's own
+            // `pending_sends`/`outstanding_sends` bookkeeping for it, not
+            // a completion for this id, which will never arrive.
+            return id;
+        }
+        if let Some(server) = &self.server {
+            if server.send(conn, bytes, Some(id)).is_err() {
+                // See the module doc's "A queue-full or otherwise-failed
+                // send LATCHES the connection" section.
+                self.closing.insert(conn);
+                server.close(conn);
+            }
         }
         id
     }
 
     fn close(&mut self, conn: ConnId) {
-        if let Some(tx) = &self.cmd_tx {
-            let _ = tx.send(PipeCmd::Close(conn));
+        self.closing.insert(conn);
+        if let Some(server) = &self.server {
+            server.close(conn);
         }
     }
 
     fn shutdown_all(&mut self) {
-        if let Some(tx) = self.cmd_tx.take() {
-            let _ = tx.send(PipeCmd::Shutdown);
-        }
-        if let Some(jh) = self.actor_jh.take() {
-            jh.join().ok();
-        }
+        // Dropping `PipeServer` closes every connection and stops
+        // accepting new ones (its own `Drop` impl) -- no actor thread to
+        // signal or join any more.
+        self.server = None;
     }
 }
 
-/// The actor thread's body: OWNS `server` for its whole life (see the
-/// module doc). Each iteration drains every currently-queued `PipeCmd`
-/// (so `send`/`close`/`shutdown` are serviced promptly rather than
-/// waiting behind an idle events poll), then polls for one `pipe_win`
-/// event and translates it. Returns (dropping `server`, closing
-/// everything) on `PipeCmd::Shutdown`, or if `cmd_rx` disconnects (the
-/// `PipeTransport` itself was dropped without an explicit `shutdown_all`
-/// — treated the same as a shutdown request).
-fn actor_loop(server: PipeServer, cmd_rx: Receiver<PipeCmd>, forward_tx: Sender<CapsuleEvent>) {
-    'outer: loop {
-        loop {
-            match cmd_rx.try_recv() {
-                Ok(PipeCmd::Send(conn, bytes, marker)) => {
-                    if server.send(conn, bytes, Some(marker)).is_err() {
-                        // See the module doc's "A queue-full send
-                        // force-closes its connection" section.
-                        server.close(conn);
-                    }
-                }
-                Ok(PipeCmd::Close(conn)) => server.close(conn),
-                Ok(PipeCmd::Shutdown) => break 'outer,
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => break 'outer,
-            }
-        }
-        match server.events().recv_timeout(ACTOR_POLL_INTERVAL) {
-            Ok(evt) => {
-                if let Some(mapped) = translate(evt) {
-                    // If `run` has already stopped reading (mid-teardown),
-                    // there is nothing left to forward to — keep servicing
-                    // commands/shutdown regardless rather than exiting
-                    // early, since `shutdown_all` (below) is what this
-                    // loop's OWN termination is gated on, not the
-                    // consumer's.
-                    let _ = forward_tx.send(mapped);
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break 'outer,
-        }
-    }
-    drop(server);
-}
-
-/// Direct field-for-field translation — see the module doc's "`AcceptError`
-/// has no home here yet" section for the one event kind this returns
-/// `None` for instead.
-fn translate(evt: PipeEvent) -> Option<CapsuleEvent> {
+/// Direct field-for-field translation — total (every `pipe_win` event has
+/// a home on the capsule side now; see the module doc's `AcceptError`
+/// section for the one variant that maps to something other than a
+/// per-connection event).
+fn translate(evt: PipeEvent) -> CapsuleEvent {
     match evt {
-        PipeEvent::Accepted(id) => Some(CapsuleEvent::ConnectionOpened(id)),
-        PipeEvent::Bytes(id, bytes) => Some(CapsuleEvent::Bytes(id, bytes)),
-        PipeEvent::Sent(id, marker) => Some(CapsuleEvent::Sent(id, marker)),
-        PipeEvent::Closed(id, _reason) => Some(CapsuleEvent::ConnectionClosed(id)),
-        PipeEvent::AcceptError(message) => {
-            eprintln!("sot-capsule: pipe accept loop stopped accepting connections: {message}");
-            None
-        }
+        PipeEvent::Accepted(conn) => CapsuleEvent::ConnectionOpened(conn),
+        PipeEvent::Bytes(conn, bytes) => CapsuleEvent::Bytes(conn, bytes),
+        PipeEvent::Sent(conn, marker) => CapsuleEvent::Sent(conn, marker),
+        PipeEvent::Closed(conn, _reason) => CapsuleEvent::ConnectionClosed(conn),
+        PipeEvent::AcceptError(message) => CapsuleEvent::TransportFatal(message),
     }
 }

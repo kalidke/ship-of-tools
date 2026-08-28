@@ -88,11 +88,16 @@ pub enum Error {
     #[error("conpty: {0}")]
     Conpty(#[from] conpty::ConptyError),
     /// A named-pipe transport OPERATION failed (Windows-only: `pipe_win`
-    /// module) — binding the pipe is the only place `pipe_transport.rs`
-    /// converts one of these into this crate's own `Error`; a background
-    /// pipe thread's later failure surfaces as
-    /// `capsule_win::TransportEvent`/`AcceptError`, never through this
-    /// type.
+    /// module) — binding the pipe (`PipeServer::bind`, inside
+    /// `PipeTransport::bind`) is the ONLY place `pipe_transport.rs`
+    /// converts one of these into this crate's own `Error`. A LATER,
+    /// background failure on an already-bound pipe (`pipe_win`'s own
+    /// `TransportEvent::AcceptError`, its accept loop's persistent-failure
+    /// signal) never reaches this type at all — `pipe_transport.rs`
+    /// translates it to `capsule_win::TransportEvent::TransportFatal`
+    /// instead, delivered through `Transport::try_recv_event` like any
+    /// other transport event, since by then `run` is already past `bind`
+    /// and mid-loop, not somewhere a `Result` could propagate to.
     #[cfg(windows)]
     #[error("pipe transport: {0}")]
     Pipe(#[from] pipe_win::PipeError),

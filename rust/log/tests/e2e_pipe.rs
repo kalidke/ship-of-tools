@@ -23,7 +23,7 @@ use sot_log::pipe_win::{connect_voyage_pipe, PipeClient};
 use sot_log::segment::{RetentionClass, SegmentReader};
 use sot_log::verify::verify_voyage;
 use sot_log::wire::{self, Survival};
-use sot_log::{Class, Envelope};
+use sot_log::{Class, Envelope, RefKind};
 use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -226,26 +226,61 @@ impl RealFrames {
         }
     }
 
-    fn collect_checkpoint(&mut self, label: &'static str, timeout: Duration) -> Vec<u8> {
+    /// Collects a checkpoint transfer end-to-end and proves the properties
+    /// finding 7 (round-2 e2e review) asked for -- "some nonempty bytes
+    /// ended with `last=true`" is NOT enough, since a truncated but
+    /// syntactically well-framed checkpoint would still pass that:
+    ///
+    /// - the cumulative reassembled length never exceeds
+    ///   `wire::MAX_CHECKPOINT_LEN`, the wire's own hard cap;
+    /// - no live `Output` frame is observed for this connection before
+    ///   the checkpoint's own final chunk -- ADR 0041: "the checkpoint
+    ///   never rides the live queue... post-watermark output queues
+    ///   BEHIND it", so one arriving here would mean that ordering
+    ///   guarantee itself is broken, not merely late;
+    /// - the reassembled bytes actually RESTORE into a valid vt100
+    ///   screen (`vt100_ctt::Parser::restore_screen` succeeding is the
+    ///   oracle, the same idiom `tests/capsule_win.rs`'s own mid-stream
+    ///   checkpoint test uses) -- proving the bytes are a real, complete
+    ///   checkpoint, not merely nonempty and well-framed. `cols`/`rows`
+    ///   must match the capsule's own configured geometry, or a
+    ///   perfectly valid checkpoint would fail to restore for a reason
+    ///   that has nothing to do with the property under test.
+    fn collect_checkpoint(
+        &mut self,
+        label: &'static str,
+        timeout: Duration,
+        cols: u16,
+        rows: u16,
+    ) -> Vec<u8> {
         let deadline = Instant::now() + timeout;
         let mut out = Vec::new();
         loop {
             let remaining = deadline
                 .saturating_duration_since(Instant::now())
                 .max(Duration::from_millis(1));
-            let (last, bytes) = self.wait_for(label, remaining, |f| {
-                if let wire::DecodedFrame::AttachServer(wire::AttachServer::CheckpointChunk {
+            let (last, bytes) = self.wait_for(label, remaining, |f| match f {
+                wire::DecodedFrame::AttachServer(wire::AttachServer::CheckpointChunk {
                     last,
                     bytes,
-                }) = f
-                {
-                    Some((*last, bytes.clone()))
-                } else {
-                    None
-                }
+                }) => Some((*last, bytes.clone())),
+                wire::DecodedFrame::AttachServer(wire::AttachServer::Output { .. }) => panic!(
+                    "{label}: a live Output frame arrived before the checkpoint transfer completed"
+                ),
+                _ => None,
             });
             out.extend(bytes);
+            assert!(
+                out.len() <= wire::MAX_CHECKPOINT_LEN,
+                "{label}: reassembled checkpoint exceeds MAX_CHECKPOINT_LEN ({} > {})",
+                out.len(),
+                wire::MAX_CHECKPOINT_LEN
+            );
             if last {
+                let mut probe = vt100_ctt::Parser::new(rows, cols, 0);
+                probe.restore_screen(&out).unwrap_or_else(|e| {
+                    panic!("{label}: checkpoint bytes did not restore into a valid screen: {e:?}")
+                });
                 return out;
             }
         }
@@ -269,12 +304,54 @@ impl RealFrames {
     }
 }
 
+/// One bounded, cancellable `PipeClient::read` (finding 6, round-2 e2e
+/// review): the mgmt lane's `read` calls used to block with NO local
+/// deadline, so a missing reply or EOF would hang this whole CI job until
+/// some OUTER timeout (if any) killed it, rather than failing this test
+/// with a clear message. Spawns a worker thread that owns the actual
+/// blocking read -- the exact cancel-from-another-thread idiom
+/// `tests/pipe_win.rs`'s own `client_read_cancel_unblocks_from_another_
+/// thread` proves sound: `PipeClient::cancel`, called from THIS thread,
+/// unblocks a read in flight on the WORKER thread. `Ok(0)`/an empty
+/// `Vec` means ordered EOF (a valid outcome for the post-shutdown EOF
+/// check below); anything else not completing within `timeout` cancels
+/// the read and panics with a clear local message instead of hanging.
+fn read_bounded(client: &Arc<PipeClient>, label: &'static str, timeout: Duration) -> Vec<u8> {
+    let (tx, rx) = mpsc::channel();
+    let worker_client = Arc::clone(client);
+    let jh = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        let result = worker_client.read(&mut buf).map(|n| buf[..n].to_vec());
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(bytes)) => {
+            jh.join().ok();
+            bytes
+        }
+        Ok(Err(e)) => {
+            jh.join().ok();
+            panic!("{label}: read failed: {e:?}");
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            client.cancel();
+            let _ = jh.join();
+            panic!("{label}: read did not complete within {timeout:?} (cancelled)");
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            jh.join().ok();
+            panic!("{label}: worker thread ended without ever returning a result");
+        }
+    }
+}
+
 /// The mgmt lane is lockstep with no unsolicited pushes (unlike the attach
 /// lane above) — one outstanding request at a time, so a plain synchronous
 /// "write, then read until one full reply decodes" is sufficient; no
-/// background thread needed.
+/// background thread needed. The read itself is bounded (finding 6, see
+/// `read_bounded`), unlike a plain `PipeClient::read` call.
 fn mgmt_roundtrip(
-    client: &PipeClient,
+    client: &Arc<PipeClient>,
     splitter: &mut wire::FrameSplitter,
     pending: &mut VecDeque<wire::DecodedFrame>,
     request: Vec<u8>,
@@ -287,10 +364,9 @@ fn mgmt_roundtrip(
                 other => panic!("expected a MgmtReply, got {other:?}"),
             }
         }
-        let mut buf = [0u8; 4096];
-        let n = client.read(&mut buf).unwrap();
-        assert!(n > 0, "unexpected EOF waiting for a mgmt reply");
-        let (decoded, err) = splitter.feed(&buf[..n]);
+        let bytes = read_bounded(client, "mgmt reply", Duration::from_secs(10));
+        assert!(!bytes.is_empty(), "unexpected EOF waiting for a mgmt reply");
+        let (decoded, err) = splitter.feed(&bytes);
         assert_eq!(err, None, "unexpected wire error decoding a mgmt reply");
         pending.extend(decoded);
     }
@@ -333,10 +409,9 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
     let cfg = config(dir.path(), &voyage_id, argv, 80, 25);
     let root = cfg.voyage_root.clone();
 
-    let (mut transport, transport_rx) = PipeTransport::new(8);
+    let mut transport = PipeTransport::new(8);
     let (_cmd_tx, cmd_rx) = mpsc::channel();
-    let handle =
-        std::thread::spawn(move || capsule_win::run(cfg, cmd_rx, transport_rx, &mut transport));
+    let handle = std::thread::spawn(move || capsule_win::run(cfg, cmd_rx, &mut transport));
 
     // The pipe is created INSIDE `run` (`Transport::bind` runs right after
     // `open_for_writing` — see `capsule_win.rs`'s own doc at that call
@@ -354,12 +429,7 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
         .then_some(())
     });
     watcher_client.write_all(&frame::attach("watcher")).unwrap();
-    let watcher_checkpoint =
-        watcher.collect_checkpoint("watcher checkpoint", Duration::from_secs(10));
-    assert!(
-        !watcher_checkpoint.is_empty(),
-        "expected a non-empty checkpoint transfer"
-    );
+    watcher.collect_checkpoint("watcher checkpoint", Duration::from_secs(10), 80, 25);
 
     // The producer keeps emitting (drip, every ~200ms, indefinitely) —
     // prove the watcher also receives LIVE post-watermark output, not
@@ -385,7 +455,7 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
         .then_some(())
     });
     driver_client.write_all(&frame::attach("driver")).unwrap();
-    driver.collect_checkpoint("driver checkpoint", Duration::from_secs(10));
+    driver.collect_checkpoint("driver checkpoint", Duration::from_secs(10), 80, 25);
     driver_client.write_all(&frame::take("driver")).unwrap();
     let epoch = driver.wait_for("driver take_ok", Duration::from_secs(10), |f| match f {
         wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => {
@@ -451,8 +521,35 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
     // e2e's job (proving the REAL PIPE plumbing, not re-litigating
     // protocol timing) does not need. Dropped here by design.
 
-    // Mgmt lane: a THIRD connection — SOM0 probe + status.
-    let mgmt_client = connect_voyage_pipe(&voyage_id).unwrap();
+    // Finding 8 (round-2 e2e review): the driver connection must be
+    // proven ALIVE and still answering lockstep requests after
+    // everything above -- an immediate, silent rejection or closure
+    // right after the first resize would otherwise still pass this
+    // test. A second, independent resize (back to the original
+    // geometry) is a cheap way to observe one MORE served request on
+    // the SAME connection.
+    driver_client.write_all(&frame::resize(80, 25)).unwrap();
+    let second_resize_ok = driver.wait_for(
+        "driver second resize outcome (liveness proof)",
+        Duration::from_secs(10),
+        |f| match f {
+            wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeOk) => Some(true),
+            wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeRefused { .. }) => {
+                Some(false)
+            }
+            _ => None,
+        },
+    );
+    assert!(
+        second_resize_ok,
+        "expected the driver connection to still be alive and answer a second resize"
+    );
+
+    // Mgmt lane: a THIRD connection — SOM0 probe + status. `Arc`-wrapped
+    // (unlike a plain `PipeClient`) so `read_bounded`'s watchdog can clone
+    // a handle for its worker thread — same reason `watcher_client`/
+    // `driver_client` are `Arc`-wrapped above.
+    let mgmt_client = Arc::new(connect_voyage_pipe(&voyage_id).unwrap());
     let mut mgmt_splitter = wire::FrameSplitter::new();
     let mut mgmt_pending = VecDeque::new();
 
@@ -497,10 +594,13 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
         frame::mgmt_shutdown("e2e test done"),
     );
     assert_eq!(shutdown_reply, wire::MgmtReply::ShutdownOk);
-    let mut eof_buf = [0u8; 16];
-    let n = mgmt_client.read(&mut eof_buf).unwrap();
-    assert_eq!(
-        n, 0,
+    let eof = read_bounded(
+        &mgmt_client,
+        "mgmt EOF after shutdown ack",
+        Duration::from_secs(10),
+    );
+    assert!(
+        eof.is_empty(),
         "expected ordered EOF on the mgmt connection after its own shutdown ack"
     );
 
@@ -516,25 +616,41 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
     verify_voyage(&root, &voyage_id).unwrap();
 
     // The sealed voyage must show the input recorded (length only — its
-    // content is redacted by design) and a matching `forwarded` fact.
+    // content is redacted by design) EXACTLY once, and a `forwarded` fact
+    // correlated to THAT exact input's own sequence via `CausedBy` —
+    // finding 8 (round-2 e2e review): a bare `.find()` claiming "exactly
+    // one" without checking it, and "any forwarded fact exists somewhere"
+    // without correlating it to the recorded input's sequence, would both
+    // still pass a wrong voyage.
     let frames = sealed_frames(&root, &voyage_id);
     let hex: String = idem_key.iter().map(|b| format!("{b:02x}")).collect();
-    let input_frame = frames
+    let input_frames: Vec<&Envelope> = frames
         .iter()
-        .find(|f| f.class == Class::Input && f.payload.as_ref().unwrap()["idem_key"] == hex)
-        .expect("expected exactly one Input frame for this idem_key");
+        .filter(|f| f.class == Class::Input && f.payload.as_ref().unwrap()["idem_key"] == hex)
+        .collect();
+    assert_eq!(
+        input_frames.len(),
+        1,
+        "expected EXACTLY ONE Input frame for this idem_key, found {}",
+        input_frames.len()
+    );
+    let input_frame = input_frames[0];
     assert_eq!(
         input_frame.payload.as_ref().unwrap()["length"],
         payload.len()
     );
+    let input_seq = input_frame.seq;
     let forwarded = frames.iter().any(|f| {
         f.class == Class::Lifecycle
             && f.payload.as_ref().unwrap()["kind"] == "input_fact"
             && f.payload.as_ref().unwrap()["fact"]["fact"] == "forwarded"
+            && f.refs
+                .iter()
+                .any(|r| r.kind == RefKind::CausedBy && r.frame == input_seq)
     });
     assert!(
         forwarded,
-        "expected a forwarded input_fact for the recorded input"
+        "expected a forwarded input_fact CAUSED BY (correlated to) this exact input's own sequence"
     );
 
     watcher.join(Duration::from_secs(10));

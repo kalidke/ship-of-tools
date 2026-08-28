@@ -128,8 +128,8 @@ fn main() {
     // point) creates `\\.\pipe\sot-voyage-<voyage_id>` for real
     // attach/mgmt clients to connect to.
     let (_cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let (mut transport, transport_rx) = sot_log::pipe_transport::PipeTransport::new(MAX_PIPE_INSTANCES);
-    match sot_log::capsule_win::run(config, cmd_rx, transport_rx, &mut transport) {
+    let mut transport = sot_log::pipe_transport::PipeTransport::new(MAX_PIPE_INSTANCES);
+    match sot_log::capsule_win::run(config, cmd_rx, &mut transport) {
         Ok(s) => {
             eprintln!(
                 "sot-capsule: producer exited {:?} ({:?}); {} frames, {} segments sealed \
