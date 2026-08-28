@@ -1,6 +1,6 @@
 //! `sot-conpty-helper [--child]`
 //! `sot-conpty-helper --flood <total-bytes> [--linger]`
-//! `sot-conpty-helper --script [repeats]`
+//! `sot-conpty-helper --script [repeats] [--linger]`
 //!
 //! Minimal helper binary for `conpty.rs`'s containment test (ADR 0041
 //! §"Containment and the owned ConPTY layer") and `capsule_win.rs`'s
@@ -75,6 +75,15 @@ fn main() {
         let pos = std::env::args().position(|a| a == "--script").unwrap();
         let repeats: usize = std::env::args().nth(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(20);
         script(repeats);
+        if std::env::args().any(|a| a == "--linger") {
+            // Same rule as --flood --linger: a test whose assertions
+            // require a LIVE producer must not let the producer's own
+            // emission speed decide whether that holds — 1000 script
+            // repeats finish in milliseconds on a fast conhost, and a
+            // producer exit mid-test moves the capsule into teardown,
+            // where admission (correctly) is no longer served.
+            std::thread::sleep(std::time::Duration::from_secs(600));
+        }
         return;
     }
 

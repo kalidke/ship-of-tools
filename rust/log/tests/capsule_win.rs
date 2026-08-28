@@ -801,11 +801,15 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
-    // Large enough that the helper is still running long after every step
-    // below — this test ends the run with an explicit `Kill`, exactly like
-    // the prior version did, never by waiting for the producer to finish on
-    // its own.
-    let argv = vec![helper, "--script".to_string(), "1000".to_string()];
+    // --linger: the producer must be ALIVE for every step below (this test
+    // ends the run with an explicit `Kill`, never by producer exit). The
+    // previous version relied on 1000 repeats taking long enough — false
+    // on a fast conhost: the emission finished in milliseconds, the
+    // capsule entered teardown before the test's hello was serviced, and
+    // the first wait timed out with the abandoned capsule later logging
+    // PreAdmissionTimeout. Producer lifetime is now explicit, not an
+    // emission-speed assumption.
+    let argv = vec![helper, "--script".to_string(), "1000".to_string(), "--linger".to_string()];
     let (rows, cols) = (25u16, 80u16);
     let cfg = config(dir.path(), "midattach1", argv, cols, rows);
     let root = cfg.voyage_root.clone();
