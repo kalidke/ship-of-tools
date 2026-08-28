@@ -66,6 +66,9 @@ fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows:
 /// `transport_events`, nothing ever calls `send`/`close`).
 struct NoopTransport;
 impl Transport for NoopTransport {
+    fn bind(&mut self, _voyage_id: &str) -> sot_log::Result<()> {
+        Ok(())
+    }
     fn send(&mut self, _conn: ConnId, _bytes: Vec<u8>) -> u64 {
         0
     }
@@ -190,6 +193,13 @@ impl TestTransport {
 }
 
 impl Transport for TestTransport {
+    fn bind(&mut self, _voyage_id: &str) -> sot_log::Result<()> {
+        // The synthetic transport under test here has nothing to bind --
+        // `open`/`feed`/`close_conn` already drive its event channel
+        // directly, standing in for what a real `PipeTransport::bind`
+        // would have wired up.
+        Ok(())
+    }
     fn send(&mut self, conn: ConnId, bytes: Vec<u8>) -> u64 {
         let mut inner = self.inner.lock().unwrap();
         inner.next_id += 1;

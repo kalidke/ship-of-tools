@@ -240,6 +240,18 @@ pub enum TransportEvent {
 /// considered active it is a contract violation and the loop fails loudly
 /// rather than silently dropping it.
 pub trait Transport {
+    /// Bind the transport to `voyage_id` — called by [`run`] EXACTLY ONCE,
+    /// immediately after `open_for_writing` has the voyage's writer lock
+    /// and before anything else that could fail, so that on EVERY exit
+    /// path (including a `bind` failure itself) the pipe-lifetime
+    /// invariant ("the pipe is never live while the writer lock is free")
+    /// is enforced by CODE ORDER alone: nothing before this call can have
+    /// made the transport live, and [`Transport::shutdown_all`] — reached
+    /// via `run`'s `ShutdownGuard` on every path, `bind`'s own early
+    /// return included — always runs before `store`'s drop releases the
+    /// lock. A transport with nothing to bind (a synthetic test transport
+    /// driving the wire lane directly) implements this as a no-op `Ok(())`.
+    fn bind(&mut self, voyage_id: &str) -> Result<()>;
     /// Queue `bytes` for `conn`. Returns an opaque send id; the transport
     /// reports physical completion via [`TransportEvent::Sent`]`(conn, id)`
     /// on the SAME event channel this loop polls — a genuinely async
@@ -872,6 +884,14 @@ pub fn run(
         }
     }
     let transport = ShutdownGuard(transport);
+
+    // The pipe-lifetime invariant, enforced here by code order (see
+    // `Transport::bind`'s own doc): the writer lock is already held
+    // (`store`, above) and `ShutdownGuard` is already in place to close
+    // whatever `bind` DID manage to set up on any later early return, so
+    // `bind` runs before any OTHER fallible step gets a chance to leave
+    // the lock held with the transport in a half-set-up state.
+    transport.0.bind(&config.voyage_id)?;
 
     store.seal_survivor()?;
 
