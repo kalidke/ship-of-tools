@@ -7,28 +7,112 @@
 //! writer loop (the U3 seam: a real named pipe on Windows) executes the
 //! [`Action`]s and feeds the [`AttachProto`] events back.
 //!
+//! ## Rework round (Codex adversarial review, U2)
+//!
+//! The first version of this file shipped six protocol blockers; this is
+//! the corrected version. What changed, and why — cited by finding number
+//! so the review thread and this code stay traceable to each other:
+//!
+//! - **Finding 4 (lockstep cleared early, by unrelated markers).** Every
+//!   accepted client request now allocates a [`RequestId`] ([`AttachProto::mark_outstanding`]
+//!   returns it); `Conn::outstanding_request` is `Option<RequestId>`, not a
+//!   bare bool. A reply's marker CARRIES the request id it answers
+//!   (`Reply`/`ReplyThenClose`/`ShutdownAck`'s `request_id`, a
+//!   `CheckpointChunk`'s `clears_request`), and [`AttachProto::sent`] only
+//!   clears the flag if it still names the SAME request
+//!   (`clear_outstanding_if_matches`) — never unconditionally, and never
+//!   before the reply's bytes are reported physically written. The
+//!   previous version cleared refusals immediately at decision time and let
+//!   a checkpoint's LAST chunk clear whatever request happened to be
+//!   outstanding on that connection at that moment, including one from an
+//!   unrelated LATER request (e.g. a `take` sent after the attach's own
+//!   reply had already cleared) — request correlation closes both holes.
+//! - **Finding 3 + 10 (checkpoint transfer loses output; doubles the
+//!   transient).** A `Watcher`'s checkpoint now streams ONE chunk at a
+//!   time ([`CheckpointProgress::Sending`] holds a shared `Arc<[u8]>` plus
+//!   a cursor; [`AttachProto::sent`]'s `CheckpointChunk` arm requests the
+//!   NEXT chunk on every non-final completion) instead of materializing
+//!   every chunk up front — the peak transient is the one shared buffer
+//!   plus at most one in-flight chunk copy, not the buffer plus a second
+//!   complete copy of it. Live output committed while a watcher is not yet
+//!   `Done` now queues in `WatcherState::pending_post_watermark` (still
+//!   budget-accounted at enqueue time via `bytes_queued`) instead of being
+//!   silently dropped for that subscriber; the final chunk's completion
+//!   flushes it as ordinary `Output` sends.
+//! - **Finding 5 (progress deadline saw only live output).** Every
+//!   connection now tracks `outstanding_sends: u64` and
+//!   `last_send_progress: Instant`, updated by [`AttachProto::sent`] for
+//!   EVERY marker (chunks, replies, keepalives, shutdown acks — everything
+//!   a `make_send` ever emits), with the clock explicitly reset at the
+//!   empty→nonempty transition (not merely at each completion) so a queue
+//!   that stays empty for a long time is never penalized the instant one
+//!   item finally arrives. `tick`'s stall check is now `outstanding_sends >
+//!   0`, replacing the old watcher-only, live-byte-only check — a stalled
+//!   checkpoint, a non-reading mgmt client, a lost keepalive, and an
+//!   unconfirmed shutdown ack are now ALL bounded by the same 30 s rule,
+//!   which is what actually frees the checkpoint slot / admission-cap slot
+//!   a stalled connection was holding.
+//! - **Finding 6 (keepalive suspension: wrong scope, frozen deadline
+//!   dropped).** `tick_keepalive` now scopes suspension to the DRIVER
+//!   CONNECTION'S OWN in-flight transfer only — never to an unrelated
+//!   connection merely occupying the global slot — and, while suspended,
+//!   EXTENDS an already-armed reply deadline by the observed tick-to-tick
+//!   gap (freezing progress toward it) rather than leaving an absolute
+//!   instant that could already be in the past once suspension lifts. (In
+//!   practice this scope is rarely if ever exercised: `take` already
+//!   refuses `CheckpointInFlight` until a connection's OWN transfer is
+//!   `Done`, so a driver's own transfer is Done by construction the moment
+//!   it becomes driver — the logic is kept for fidelity to the ADR's literal
+//!   "suspended during THAT connection's checkpoint transfer" wording, not
+//!   because today's reachable states exercise it.) Separately,
+//!   [`AttachProto::frame`]'s `Keepalive` handling now treats an echo from
+//!   a connection that is NOT the current driver as ignorable (a demoted
+//!   former driver's late reply to a nonce that was already discarded when
+//!   it was demoted) rather than `UnexpectedKeepalive` — only a WRONG nonce
+//!   from the CURRENT driver is still treated as a protocol violation.
+//! - **Finding 12 (ground-timeout demotion could exceed the non-watcher
+//!   cap).** `ground_timeout` now checks `non_watcher_count` against
+//!   [`NON_WATCHER_CAP`] before demoting a timed-out attach back to
+//!   `PostHello`; over cap, it closes the connection instead (still after
+//!   its `AttachRefused` reply is physically sent).
+//! - **Finding 7 (teardown revocation scope).** `self.teardown` is a new
+//!   flag ([`AttachProto::begin_teardown`]) covering ONLY producer-bound
+//!   admission: once set, `take`/`input`/`resize` are silently ignored
+//!   (the lockstep slot they briefly held is released immediately, since
+//!   no reply will ever come). `hello`/`attach`/mgmt `probe`/`status`/
+//!   `shutdown` are UNCHANGED by this flag — this module has no opinion on
+//!   when the caller stops feeding it events; see `capsule_win.rs`'s module
+//!   doc for the loop-side half of this (a reduced action-execution set
+//!   during teardown, since the ConPTY handle needed for `ApplyResize` is
+//!   gone by then regardless).
+//! - **Finding 15 (dead fields).** `WatcherState.controller_id` and
+//!   `DriverState.controller_id`/`take_epoch` are deleted — they had
+//!   producers but no consumers; the durable holder/epoch lives
+//!   capsule-side (`FrameCtx.holder`/`take_epoch` in `capsule_win.rs`), and
+//!   nothing here ever needed a second copy.
+//!
 //! # What this module owns, and what it explicitly does not
 //!
 //! Owned: the connection registry and its role machine; lockstep (one
-//! outstanding client request per connection); the two admission caps and
-//! the pre-admission timeout; the ground-gated, single-slot attach/snapshot
-//! sequencing; the pen (ephemeral driver capability: demote-on-take,
-//! capability-only EOF); the driver keepalive and the generic queue-progress
-//! deadline; the per-watcher live-output queue budget.
+//! outstanding client request per connection, now request-correlated); the
+//! two admission caps and the pre-admission timeout; the ground-gated,
+//! single-slot, one-chunk-at-a-time attach/snapshot sequencing; the pen
+//! (ephemeral driver capability: demote-on-take, capability-only EOF); the
+//! driver keepalive and the generic queue-progress deadline; the
+//! per-watcher live-output queue budget; teardown's producer-bound
+//! admission revocation.
 //!
 //! Not owned, deliberately: encoding a checkpoint (`vt100-ctt` is a
 //! Windows-only dependency of this crate — this module must build and be
 //! tested on every platform), performing the actual OS resize call, reading
 //! `pid`/process-creation-time, computing whether a wire input is stale
-//! against DURABLE state, or ever writing a WAL frame. Those all require
-//! either OS access or the fsync'd voyage this module never touches — they
-//! are the loop's job, requested via an [`Action`] and reported back via an
-//! event ([`AttachProto::checkpoint_ready`], [`AttachProto::take_committed`],
-//! [`AttachProto::resize_outcome`], [`AttachProto::input_outcome`]). "The
-//! durable holder/epoch is the CAPSULE's" (ADR 0041): this module tracks
-//! only the EPHEMERAL, connection-scoped half of "the pen" (who currently
-//! holds the driver capability) — the epoch NUMBER itself is a value fed in
-//! from the capsule at [`AttachProto::take_committed`], never invented here.
+//! against DURABLE state, or ever writing a WAL frame, or deciding WHEN to
+//! stop feeding this module events during teardown. Those all require
+//! either OS access, the fsync'd voyage this module never touches, or a
+//! resource (the ConPTY handle) this module never holds — they are the
+//! loop's job, requested via an [`Action`] and reported back via an event
+//! ([`AttachProto::checkpoint_ready`], [`AttachProto::take_committed`],
+//! [`AttachProto::resize_outcome`], [`AttachProto::input_outcome`]).
 //!
 //! # Connections and roles
 //!
@@ -42,11 +126,11 @@
 //! | first frame                  | new role                              |
 //! |-------------------------------|---------------------------------------|
 //! | any `MgmtRequest`              | [`Role::Mgmt`] (no further deadline)  |
-//! | `AttachClient::Hello` (accepted) | [`Role::PostHello`] (same deadline)  |
+//! | `AttachClient::Hello` (accepted) | `Role::PostHello` (same deadline)   |
 //! | `AttachClient::Hello` (refused)  | closed (`hello_refused` then close)  |
 //! | anything else                  | closed — a protocol violation        |
 //!
-//! `Attach` on a `PostHello` connection promotes it to [`Role::Watcher`]
+//! `Attach` on a `PostHello` connection promotes it to `Role::Watcher`
 //! IMMEDIATELY on admission (before its checkpoint has even started) — "a
 //! frontend relaunch is precisely a reconnect, and reconnects arrive as
 //! watchers" (ADR 0041), and the subscriber cap must count a
@@ -54,34 +138,34 @@
 //! first byte goes out, or a burst of concurrent attaches could blow past
 //! the cap before any of them finish. A connection that never completes
 //! `hello`+`attach` within the shared 10 s admission window is closed
-//! ([`RefusalReason::PreAdmissionTimeout`]) — a judgment call: the ADR names
+//! (`RefusalReason::PreAdmissionTimeout`) — a judgment call: the ADR names
 //! this "pre-hello timeout", but a connection that says `hello` and then
 //! never attaches is occupying the exact same slot a pre-hello connection
 //! does, so the SAME deadline (started once, at `connection_opened`, never
 //! reset by a successful `hello`) governs reaching `Watcher`, not merely
 //! completing `hello`.
 //!
-//! # Lockstep
+//! # Lockstep and request correlation
 //!
-//! Every connection tracks one `outstanding_request` flag. A second
-//! lockstep-classified client frame while it is set is
-//! [`RefusalReason::LockstepViolation`] — closed, no reply (mirrors that
+//! Every connection tracks `outstanding_request: Option<RequestId>`. A
+//! second lockstep-classified client frame while it is `Some(_)` is
+//! `RefusalReason::LockstepViolation` — closed, no reply (mirrors that
 //! `feed` can decode several frames from one burst read, so this is checked
 //! per decoded frame, not per transport read). `keepalive` is exempt (it is
-//! not a client "request" in this sense — see below). The flag is set the
-//! instant a lockstep request is accepted, and cleared only when the
-//! corresponding reply's bytes are reported PHYSICALLY WRITTEN via
-//! [`AttachProto::sent`] with [`SentMarker::Reply`] (or a
-//! [`SentMarker::CheckpointLastChunk`]/`ReplyThenClose`/`ShutdownAck`, which
-//! also clear it) — never merely at the moment this module *decides* the
-//! reply, because a real transport can buffer several already-decoded
-//! client frames ahead of any reply physically leaving. For `attach`, that
-//! means the flag can stay set through the whole ground-pend + checkpoint
-//! transfer; wire.rs's own "the first `checkpoint_chunk` IS the attach
-//! success signal" is exactly when it clears, not when the LAST chunk goes
-//! out — a client is free to send `take` while its own checkpoint is still
-//! streaming (though `take` has an independent admission rule for that
-//! case; see below).
+//! not a client "request" in this sense — see below). `mark_outstanding`
+//! allocates a fresh id and stores it the instant a lockstep request is
+//! accepted; it is cleared only when [`AttachProto::sent`] reports the
+//! MATCHING reply's marker physically written (`clear_outstanding_if_matches`)
+//! — never merely at the moment this module *decides* the reply, because a
+//! real transport can buffer several already-decoded client frames ahead of
+//! any reply physically leaving, and never by an unrelated marker's
+//! completion (finding 4). For `attach`, that means the flag can stay set
+//! through the whole ground-pend + checkpoint transfer; wire.rs's own "the
+//! first `checkpoint_chunk` IS the attach success signal" is exactly when
+//! it clears (the FIRST chunk's `clears_request`), not when the LAST chunk
+//! goes out — a client is free to send `take` while its own checkpoint is
+//! still streaming (though `take` has an independent admission rule for
+//! that case; see below).
 //!
 //! # Caps
 //!
@@ -93,37 +177,48 @@
 //! A `SubscriberCap` refusal — unlike the non-watcher cap, which just closes
 //! outright — sends `attach_refused` and leaves the connection open and
 //! retryable: it never became a `Watcher`, so nothing about it needs
-//! reverting.
+//! reverting. `ground_timeout`'s own demotion back into the non-watcher
+//! pool is ALSO cap-checked (finding 12): a timed-out attach demotes back to
+//! `PostHello` only if there is room; otherwise it closes instead, after its
+//! refusal is sent.
 //!
-//! # The ground-gated attach and the one-slot checkpoint transfer
+//! # The ground-gated, streamed attach and the one-slot checkpoint transfer
 //!
 //! `attach` reserves a `Watcher` slot immediately, then either takes the one
 //! global `checkpoint_slot` (if free) and starts its own 5 s ground-wait
 //! deadline, or joins `checkpoint_queue` with NO deadline yet — "a second
 //! attach pends for the SLOT", not for ground; its own clock only starts
 //! once it becomes the slot holder. [`AttachProto::ground_reached`] (fed by
-//! the loop after a group-commit where `parser.is_ground()`) promotes the
-//! current slot holder, if it is waiting, from `AwaitingGround` to
-//! `Sending` and returns [`Action::BeginCheckpoint`] — the loop encodes
-//! (`Screen::checkpoint()`, which this module cannot call) and hands the
-//! bytes back via [`AttachProto::checkpoint_ready`], which slices them into
-//! `checkpoint_chunk` frames at [`crate::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD`]
-//! and marks the first [`SentMarker::Reply`] and the last
-//! [`SentMarker::CheckpointLastChunk`] (the SAME chunk carries both markers
-//! when there is only one). A [`GROUND_TIMEOUT`] (5 s) with no
-//! `ground_reached` DEMOTES the connection back to `PostHello` (freeing both
-//! its `Watcher` slot and the checkpoint slot, which then advances the
-//! queue) and replies `attach_refused {GroundTimeout}` — explicitly
-//! retryable, per the ADR.
+//! the loop after a group-commit where `parser.is_ground()`) requests
+//! [`Action::BeginCheckpoint`] for the current slot holder if it is waiting;
+//! the loop encodes (`Screen::checkpoint()`, which this module cannot call)
+//! and hands the bytes back via [`AttachProto::checkpoint_ready`], which
+//! wraps them in an `Arc<[u8]>` ONCE and streams them ONE CHUNK AT A TIME —
+//! each chunk's `sent`-completion requests the next
+//! (`advance_checkpoint_stream`) — at
+//! [`crate::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD`] per chunk, marking the
+//! first `clears_request: Some(_)` and the last `is_last: true` (one chunk
+//! carries both when there is only one). A [`GROUND_TIMEOUT`] (5 s) with no
+//! `ground_reached` DEMOTES the connection back to `PostHello` (subject to
+//! the cap check above; freeing both its `Watcher` slot and the checkpoint
+//! slot, which then advances the queue) and replies `attach_refused
+//! {GroundTimeout}` — explicitly retryable, per the ADR.
 //!
 //! `take`'s own [`crate::wire::TakeRefusedReason::CheckpointInFlight`] is a
 //! DIFFERENT rule from the slot: it fires only when the REQUESTING
 //! connection's OWN checkpoint has not yet finished (i.e. it is not yet
-//! [`CheckpointProgress::Done`]) — "refused until the taker's final chunk is
+//! `CheckpointProgress::Done`) — "refused until the taker's final chunk is
 //! REPORTED physically written" (ADR 0041) names the taker's own transfer,
-//! not some unrelated connection's. `Done` is reached only via
-//! [`SentMarker::CheckpointLastChunk`]'s sent-completion, never merely
-//! having chunked the bytes.
+//! not some unrelated connection's. `Done` is reached only via the final
+//! chunk's sent-completion, never merely having chunked the bytes.
+//!
+//! Output committed for a `Watcher` whose checkpoint is not yet `Done`
+//! queues in `WatcherState::pending_post_watermark` (finding 3) — accounted
+//! against the live-output budget at enqueue time, exactly as if it had
+//! been sent immediately — and is flushed, in order, the instant the final
+//! chunk's completion marks the connection `Done`. Nothing committed after
+//! the watermark is ever silently dropped for a slow-to-transfer
+//! subscriber.
 //!
 //! # The pen
 //!
@@ -135,55 +230,65 @@
 //! epoch via [`AttachProto::take_committed`], installs the capability on
 //! THIS connection — silently overwriting whatever connection held it
 //! before, which is the demotion: the previous holder's `Role::Watcher`
-//! entry is untouched, it simply stops being able to pass the driver check.
-//! `input`/`resize` from any connection that is not `self.driver`'s current
-//! holder is refused (`input`: folded into the same "stale" wire reply the
-//! ADR already defines, since a replayed identity from a connection lacking
-//! the capability is indistinguishable on the wire from a stale epoch — see
-//! [`Action::ForwardInput`]'s doc; `resize`: `NotDriver`). A connection's
-//! close ([`AttachProto::connection_closed`], or this module's own
-//! `close_with_refusal`) clears `self.driver` ONLY if it was that
-//! connection — capability-only EOF, no durable transition, per the ADR's
-//! spec-gate deletion of the old local-grant behavior.
+//! entry is untouched, it simply stops being able to pass the driver check,
+//! and its keepalive nonce is simply discarded along with the rest of the
+//! old `DriverState` (a late echo for it is ignored, not fatal — see
+//! keepalive below). `input`/`resize` from any connection that is not
+//! `self.driver`'s current holder is refused (`input`: folded into the same
+//! "stale" wire reply the ADR already defines, since a replayed identity
+//! from a connection lacking the capability is indistinguishable on the
+//! wire from a stale epoch — see [`Action::ForwardInput`]'s doc; `resize`:
+//! `NotDriver`). A connection's close ([`AttachProto::connection_closed`],
+//! or this module's own `close_with_refusal`) clears `self.driver` ONLY
+//! if it was that connection — capability-only EOF, no durable transition,
+//! per the ADR's spec-gate deletion of the old local-grant behavior.
 //!
 //! # Keepalive and the generic progress deadline
 //!
 //! Driver-only. `tick` starts ONE `keepalive` after 30 s since the driver
 //! connection's `last_activity` (any inbound frame, or any `sent`
-//! completion) with none currently outstanding — suspended entirely while
-//! `checkpoint_slot.is_some()` (a judgment call, documented once here
-//! rather than at the call site: the writer loop's attention can be
-//! monopolized for real by a multi-MiB transfer belonging to ANY connection,
-//! not only the driver's own, and that must not be misread as a hung
-//! driver). The reply deadline (30 s) is armed at
-//! [`SentMarker::Keepalive`]'s sent-completion, not at enqueue — a ping
-//! stuck behind a real backlog must not kill a healthy reader before its
-//! bytes even left. A wrong or unexpected `Keepalive` echo (wrong nonce, no
-//! nonce outstanding, or from a non-driver connection) is
-//! `UnexpectedKeepalive` — closed. Independently, ANY connection with
-//! `queued_live_bytes > 0` whose `last_send_progress` is more than 30 s old
-//! is `ProgressStall` — closed (this is the queue-liveness bound, distinct
-//! from keepalive; it applies to watchers too, since a wedged watcher can
-//! sit for a long time below the 4 MiB overflow bound while never draining).
+//! completion) with none currently outstanding — suspended only while the
+//! DRIVER'S OWN checkpoint transfer (not some unrelated connection's) is in
+//! flight, in which case an already-armed reply deadline is EXTENDED by the
+//! elapsed tick gap rather than left as a fixed instant that could already
+//! be past once suspension lifts (finding 6). The reply deadline (30 s) is
+//! armed at [`SentMarker::Keepalive`]'s sent-completion, not at enqueue —
+//! a ping stuck behind a real backlog must not kill a healthy reader before
+//! its bytes even left. A WRONG nonce from the CURRENT driver is
+//! `UnexpectedKeepalive` — closed; an echo from a connection that is NOT
+//! the current driver (a demoted former driver's late reply) is silently
+//! ignored. Independently, ANY connection with `outstanding_sends > 0`
+//! whose `last_send_progress` is more than 30 s old is `ProgressStall` —
+//! closed (finding 5: this is the queue-liveness bound, distinct from
+//! keepalive, and it covers EVERY kind of outstanding send — checkpoint
+//! chunks, replies, keepalives, shutdown acks, live output — not only live
+//! output; the clock resets at the empty→nonempty transition and on every
+//! completion, so an idle connection is never penalized for having been
+//! idle).
 //!
 //! # Queue accounting
 //!
-//! `queued_live_bytes` (LIVE output only — a `Watcher`'s field, absent
-//! entirely for a connection still mid-checkpoint) is incremented by
-//! [`AttachProto::bytes_queued`] (called internally by
-//! [`AttachProto::output_committed`] for every `Done` watcher, and directly
-//! by a caller/test that wants to drive the bound explicitly) and
-//! decremented by [`AttachProto::sent`]'s [`SentMarker::OutputBytes`] arm.
-//! Checkpoint bytes never touch this counter (decision 5: "the checkpoint
-//! work item rides OUTSIDE this budget"). Overflow closes with no wire
-//! frame — "no `evicted` frame exists on the wire, deliberately" — logged
-//! only via [`Action::RecordRefusal`].
+//! `queued_live_bytes` (LIVE output only — a `Watcher`'s field, tracked
+//! whether or not its checkpoint is `Done`, since post-watermark output
+//! queues behind an in-flight transfer rather than skipping the budget) is
+//! incremented by [`AttachProto::bytes_queued`] (called internally by
+//! [`AttachProto::output_committed`] for every watcher, and directly by a
+//! caller/test that wants to drive the bound explicitly) and decremented by
+//! [`AttachProto::sent`]'s [`SentMarker::OutputBytes`] arm, whenever that
+//! batch's frame actually completes (immediately if `Done`, later — once
+//! flushed from `pending_post_watermark` — if not). Checkpoint bytes never
+//! touch this counter (decision 5: "the checkpoint work item rides OUTSIDE
+//! this budget"). Overflow closes with no wire frame — "no `evicted` frame
+//! exists on the wire, deliberately" — logged only via
+//! [`Action::RecordRefusal`]. This is a MEMORY bound, independent of the
+//! `outstanding_sends` TIME bound above.
 
 use crate::wire::{
     self, AttachClient, AttachRefusedReason, AttachServer, DecodedFrame, MgmtReply, MgmtRequest,
     ResizeRefusedReason, Survival, TakeRefusedReason,
 };
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A caller-assigned, opaque connection identifier. This module attaches no
@@ -191,12 +296,21 @@ use std::time::{Duration, Instant};
 /// test transport's own counter) owns the numbering.
 pub type ConnId = u64;
 
+/// An id this module allocates per accepted lockstep request
+/// (`mark_outstanding`), so the eventual reply's marker can name exactly
+/// which request it answers (finding 4: markers must correlate to their
+/// request, not clear whatever happens to be outstanding).
+pub type RequestId = u64;
+
 const NON_WATCHER_CAP: usize = 4;
 const SUBSCRIBER_CAP: usize = 4;
 const PRE_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 const GROUND_TIMEOUT: Duration = Duration::from_secs(5);
 const KEEPALIVE_IDLE_TRIGGER: Duration = Duration::from_secs(30);
 const KEEPALIVE_REPLY_DEADLINE: Duration = Duration::from_secs(30);
+/// The generic write-progress deadline (finding 5): ANY connection with a
+/// nonempty outstanding-sends count must see a completion within this
+/// window, covering every kind of send — not only live output.
 const PROGRESS_DEADLINE: Duration = Duration::from_secs(30);
 /// ADR 0041 budget table: "per-watcher queue 4 MiB, overflow = eviction" —
 /// LIVE output only (decision 5: the checkpoint work item rides outside it).
@@ -224,90 +338,112 @@ enum Role {
     Watcher(WatcherState),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One `Watcher`'s checkpoint-transfer progress. `Sending` streams ONE
+/// chunk at a time (finding 10): `bytes` is the full encoded checkpoint,
+/// wrapped in `Arc` exactly once so advancing the cursor never re-clones
+/// it; `offset` is where the NEXT chunk to be emitted starts.
+#[derive(Debug, Clone)]
 enum CheckpointProgress {
     /// Waiting for the global slot; no deadline yet (see module doc).
     QueuedForSlot,
     /// Holds the slot, waiting for a ground boundary.
     AwaitingGround { deadline: Instant },
-    /// `BeginCheckpoint` was requested; waiting for `checkpoint_ready`
-    /// and/or for its chunks' sent-completions.
-    Sending,
+    /// Streaming; `offset` names the start of the chunk currently in
+    /// flight (sent, awaiting its own completion).
+    Sending { bytes: Arc<[u8]>, offset: usize },
     /// The final chunk was reported physically written.
     Done,
 }
 
 #[derive(Debug, Clone)]
 struct WatcherState {
-    /// Recorded per-connection bookkeeping (ADR 0041 attach protocol); not
-    /// read internally today — `take`'s controller_id comes from the wire
-    /// frame that names it, not from this connection's own attach identity
-    /// — but kept for future diagnostics/attribution (e.g. distinguishing
-    /// which reconnected controller a given subscriber slot belongs to).
-    #[allow(dead_code)]
-    controller_id: String,
+    /// The `attach` request this connection is still owed a reply for —
+    /// consumed (as `clears_request`) by the FIRST checkpoint chunk this
+    /// watcher ever streams, or by an `AttachRefused` if it never gets
+    /// that far (ground timeout, subscriber cap).
+    attach_request_id: RequestId,
     checkpoint: CheckpointProgress,
     /// LIVE output only, budget-checked (see module doc's "Queue
-    /// accounting").
+    /// accounting") — tracked regardless of checkpoint state.
     queued_live_bytes: u64,
+    /// Output committed while `checkpoint` is not yet `Done` (finding 3):
+    /// queued behind the transfer, never dropped, flushed in order once
+    /// the final chunk's completion marks this watcher `Done`.
+    pending_post_watermark: VecDeque<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
 struct Conn {
     role: Role,
-    outstanding_request: bool,
+    outstanding_request: Option<RequestId>,
     /// Any inbound frame, or any `sent` completion — the keepalive
     /// idle-trigger clock.
     last_activity: Instant,
-    /// Only `sent` completions — the generic queue-progress-stall clock,
-    /// deliberately NOT reset by inbound frames (a connection that keeps
-    /// talking to us while its own queue never drains must still be caught).
+    /// How many `Send`s this connection has outstanding right now — EVERY
+    /// kind (finding 5), not just live output. Zero means nothing to make
+    /// progress on; `tick`'s stall check only ever looks at connections
+    /// where this is nonzero.
+    outstanding_sends: u64,
+    /// Reset on every `sent` completion AND at the empty→nonempty
+    /// transition when a new `Send` is issued (never left stale from a
+    /// long-idle period, which is exactly finding 5's "queue first
+    /// becoming nonempty after 30 idle seconds closes immediately" bug).
     last_send_progress: Instant,
 }
 
 #[derive(Debug, Clone)]
 struct DriverState {
     conn: ConnId,
-    #[allow(dead_code)] // carried for future callers/diagnostics; not read internally today
-    controller_id: String,
-    #[allow(dead_code)]
-    take_epoch: u64,
     keepalive_outstanding: Option<u64>,
     /// Armed only once the ping's sent-completion is reported (ADR 0041:
-    /// "not at enqueue").
+    /// "not at enqueue"); extended (never left absolute) while suspended.
     keepalive_deadline: Option<Instant>,
+    /// The last `tick` timestamp observed, so suspension can EXTEND an
+    /// armed deadline by the real elapsed gap (finding 6) instead of
+    /// leaving it as a fixed instant suspension might already have passed.
+    last_tick: Option<Instant>,
 }
 
 /// What a physically-completed [`Action::Send`] means beyond "one fewer
 /// thing in flight" — see the module doc sections on lockstep, the ground
-/// gate, and keepalive for why each variant exists.
+/// gate, and keepalive for why each variant exists. `Reply`/
+/// `ReplyThenClose`/`ShutdownAck`/`CheckpointChunk`'s `clears_request`/
+/// (`request_id`) all carry the [`RequestId`] they answer (finding 4):
+/// [`AttachProto::sent`] only clears lockstep if it still matches the
+/// connection's CURRENT outstanding request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SentMarker {
-    /// This send fully satisfies the connection's outstanding lockstep
-    /// request; clear the flag.
-    Reply,
+    /// This send fully satisfies request `request_id`'s outstanding
+    /// lockstep obligation, IF it is still outstanding.
+    Reply { request_id: RequestId },
     /// As `Reply`, and the connection must close once this reply is
-    /// physically written (`hello_refused`).
-    ReplyThenClose,
-    /// The mgmt `shutdown_ok` reply: clears outstanding, tells the loop to
-    /// begin EndRun, and closes this connection — "the shutdown ack is
-    /// physically written before teardown closes its connection" (ADR
-    /// 0041).
-    ShutdownAck { reason: String },
-    /// The final `checkpoint_chunk` of one connection's own attach
-    /// transfer: clears outstanding if not already, marks this
-    /// connection's checkpoint `Done` (unlocking `take` eligibility),
-    /// frees the global slot, and promotes the next queued attach if any.
-    CheckpointLastChunk,
+    /// physically written (`hello_refused`, or a ground-timeout refusal
+    /// that lost the non-watcher-cap race).
+    ReplyThenClose { request_id: RequestId },
+    /// The mgmt `shutdown_ok` reply: clears `request_id` (if still
+    /// outstanding), tells the loop to begin EndRun, and closes this
+    /// connection — "the shutdown ack is physically written before
+    /// teardown closes its connection" (ADR 0041).
+    ShutdownAck { request_id: RequestId, reason: String },
+    /// One `checkpoint_chunk` in a streamed transfer (finding 10: never
+    /// all of them at once). `clears_request` is `Some(_)` only on the
+    /// FIRST chunk (the attach success signal); `is_last` is true only on
+    /// the actual final chunk — the same chunk carries both when there is
+    /// only one. A non-final chunk's completion requests the next one; the
+    /// final chunk's completion marks the watcher `Done`, frees the global
+    /// slot, and flushes anything queued behind it (finding 3).
+    CheckpointChunk {
+        clears_request: Option<RequestId>,
+        is_last: bool,
+    },
     /// The server-originated keepalive echo request: arms its 30 s reply
     /// deadline NOW.
     Keepalive { nonce: u64 },
-    /// A live `output` frame carrying `n` raw payload bytes (the SAME count
-    /// [`AttachProto::output_committed`] already passed to
-    /// [`AttachProto::bytes_queued`] when it created this send — carried on
-    /// the marker itself, not re-derived from the encoded frame's length,
-    /// so the two can never drift out of sync): decrements the sending
-    /// watcher's queued-byte counter by `n`.
+    /// A live `output` frame carrying `n` raw payload bytes (the SAME
+    /// count [`AttachProto::bytes_queued`] was already given when this
+    /// batch was enqueued — carried on the marker itself, not re-derived
+    /// from the encoded frame's length, so the two can never drift out of
+    /// sync): decrements the sending watcher's queued-byte counter by `n`.
     OutputBytes { n: u64 },
 }
 
@@ -340,7 +476,8 @@ pub enum InputOutcome {
 /// What the loop must do. THIS module decides; the loop executes and, for
 /// the four "request" variants, reports the outcome back via the matching
 /// event ([`AttachProto::checkpoint_ready`], [`AttachProto::take_committed`],
-/// [`AttachProto::resize_outcome`], [`AttachProto::input_outcome`]).
+/// [`AttachProto::resize_outcome`], [`AttachProto::input_outcome`]) —
+/// carrying `request_id` through so the reply can be correlated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Write `frame_bytes` (an already-encoded, complete wire frame) to
@@ -365,7 +502,11 @@ pub enum Action {
     /// `Commit::Immediate` (fsync), THEN report the committed epoch via
     /// [`AttachProto::take_committed`]. The epoch NUMBER is the capsule's;
     /// this module never invents one.
-    CommitTake { conn: ConnId, controller_id: String },
+    CommitTake {
+        conn: ConnId,
+        controller_id: String,
+        request_id: RequestId,
+    },
     /// Execute the full ADR 0039 input WAL for one wire `input` frame:
     /// dedupe-check `idem_key` against the store's index (folded once at
     /// open, kept live) → per the lattice, either commit `input` (fsync) as
@@ -385,7 +526,8 @@ pub enum Action {
     /// `forwarded` (fsync). A `{input,intent}`-only chain (crash-in-flight,
     /// or a duplicate that reached exactly that far) replies
     /// `DeliveryUnknown` and appends nothing further. Report the outcome
-    /// via [`AttachProto::input_outcome`].
+    /// via [`AttachProto::input_outcome`]. Never emitted once
+    /// [`AttachProto::begin_teardown`] has run (finding 7).
     ForwardInput {
         conn: ConnId,
         controller_id: String,
@@ -393,12 +535,21 @@ pub enum Action {
         idem_key: [u8; 16],
         payload: Vec<u8>,
         connection_authorized: bool,
+        request_id: RequestId,
     },
     /// Run the existing step-4 ordered resize exchange (request commit →
     /// one `ResizePseudoConsole` call, skipped if out of budget → parser +
     /// geometry updated only on success → outcome commit) — unchanged by
     /// this unit. Report the outcome via [`AttachProto::resize_outcome`].
-    ApplyResize { conn: ConnId, cols: u16, rows: u16 },
+    /// Never emitted once [`AttachProto::begin_teardown`] has run (finding
+    /// 7) — the ConPTY handle needed to perform it may already be gone by
+    /// then regardless.
+    ApplyResize {
+        conn: ConnId,
+        cols: u16,
+        rows: u16,
+        request_id: RequestId,
+    },
     /// Begin `EndRun`: the mgmt `shutdown_ok` ack has already been reported
     /// physically written. `reason` is the client-supplied string, to be
     /// recorded in `producer_dead`'s detail.
@@ -423,6 +574,13 @@ pub struct AttachProto {
     checkpoint_queue: VecDeque<ConnId>,
     driver: Option<DriverState>,
     nonce_counter: u64,
+    next_request_id: u64,
+    /// Set once by [`AttachProto::begin_teardown`] (finding 7): from then
+    /// on, `take`/`input`/`resize` are silently ignored rather than
+    /// admitted — producer-bound admission revocation. `hello`/`attach`/
+    /// mgmt are unaffected; this module has no opinion on whether the
+    /// caller keeps feeding it events past this point.
+    teardown: bool,
 }
 
 impl AttachProto {
@@ -437,7 +595,16 @@ impl AttachProto {
             checkpoint_queue: VecDeque::new(),
             driver: None,
             nonce_counter: 0,
+            next_request_id: 0,
+            teardown: false,
         }
+    }
+
+    /// Producer-bound admission (`take`/`input`/`resize`) is revoked from
+    /// this point on (finding 7) — mgmt and the attach lane's `hello`/
+    /// `attach` are unaffected. Idempotent.
+    pub fn begin_teardown(&mut self) {
+        self.teardown = true;
     }
 
     // -- lifecycle events ------------------------------------------------
@@ -462,8 +629,9 @@ impl AttachProto {
                 role: Role::Unclassified {
                     deadline: now + PRE_ADMISSION_TIMEOUT,
                 },
-                outstanding_request: false,
+                outstanding_request: None,
                 last_activity: now,
+                outstanding_sends: 0,
                 last_send_progress: now,
             },
         );
@@ -482,10 +650,7 @@ impl AttachProto {
     }
 
     /// One decoded frame arrived on `conn`, in order. May return zero, one,
-    /// or several actions (a multi-chunk checkpoint kickoff is still only
-    /// one `BeginCheckpoint`, but a resize/take/input round trip's ultimate
-    /// reply arrives through a LATER event, not this one, for anything that
-    /// needs the loop's own state).
+    /// or several actions.
     pub fn frame(&mut self, conn: ConnId, decoded: DecodedFrame, now: Instant) -> Vec<Action> {
         if let DecodedFrame::Keepalive { nonce } = decoded {
             return self.handle_keepalive_reply(conn, nonce, now);
@@ -493,7 +658,7 @@ impl AttachProto {
         let Some(c) = self.conns.get(&conn) else {
             return vec![];
         };
-        if c.outstanding_request {
+        if c.outstanding_request.is_some() {
             return self.close_with_refusal(conn, RefusalReason::LockstepViolation, now);
         }
         if let Some(c) = self.conns.get_mut(&conn) {
@@ -515,39 +680,64 @@ impl AttachProto {
 
     /// One `Action::Send`'s bytes were reported PHYSICALLY WRITTEN. `marker`
     /// is whatever the originating `Send` carried, or `None` for a send
-    /// with no bookkeeping consequence. Always resets
-    /// `last_activity`/`last_send_progress`.
+    /// with no bookkeeping consequence. Always resets `last_activity`/
+    /// `last_send_progress` and decrements `outstanding_sends` for `conn`
+    /// (finding 5) — a checked decrement: more completions than sends ever
+    /// issued is this module's own bookkeeping bug.
     pub fn sent(&mut self, conn: ConnId, marker: Option<SentMarker>, now: Instant) -> Vec<Action> {
-        if let Some(c) = self.conns.get_mut(&conn) {
-            c.last_activity = now;
-            c.last_send_progress = now;
+        match self.conns.get_mut(&conn) {
+            Some(c) => {
+                c.last_activity = now;
+                c.outstanding_sends = c
+                    .outstanding_sends
+                    .checked_sub(1)
+                    .expect("sent(): more completions than sends were ever issued for this connection");
+                c.last_send_progress = now;
+            }
+            None => return vec![], // already closed; nothing to do (finding 11)
         }
         let Some(marker) = marker else { return vec![] };
         match marker {
-            SentMarker::Reply => {
-                self.clear_outstanding(conn);
+            SentMarker::Reply { request_id } => {
+                self.clear_outstanding_if_matches(conn, request_id);
                 vec![]
             }
-            SentMarker::ReplyThenClose => {
-                self.clear_outstanding(conn);
+            SentMarker::ReplyThenClose { request_id } => {
+                self.clear_outstanding_if_matches(conn, request_id);
                 self.remove_connection(conn, now);
                 vec![Action::Close(conn)]
             }
-            SentMarker::ShutdownAck { reason } => {
-                self.clear_outstanding(conn);
+            SentMarker::ShutdownAck { request_id, reason } => {
+                self.clear_outstanding_if_matches(conn, request_id);
                 self.remove_connection(conn, now);
                 vec![Action::Shutdown { reason }, Action::Close(conn)]
             }
-            SentMarker::CheckpointLastChunk => {
-                self.clear_outstanding(conn);
-                if let Some(Role::Watcher(w)) = self.conns.get_mut(&conn).map(|c| &mut c.role) {
-                    w.checkpoint = CheckpointProgress::Done;
+            SentMarker::CheckpointChunk { clears_request, is_last } => {
+                if let Some(rid) = clears_request {
+                    self.clear_outstanding_if_matches(conn, rid);
                 }
+                if !is_last {
+                    return self.advance_checkpoint_stream(conn, now);
+                }
+                let pending = match self.conns.get_mut(&conn).map(|c| &mut c.role) {
+                    Some(Role::Watcher(w)) => {
+                        w.checkpoint = CheckpointProgress::Done;
+                        std::mem::take(&mut w.pending_post_watermark)
+                    }
+                    _ => VecDeque::new(),
+                };
                 if self.checkpoint_slot == Some(conn) {
                     self.checkpoint_slot = None;
                     self.advance_checkpoint_queue(now);
                 }
-                vec![]
+                let mut actions = Vec::new();
+                for bytes in pending {
+                    let n = bytes.len() as u64;
+                    let encoded = wire::encode_attach_server(&AttachServer::Output { bytes })
+                        .expect("output frame within the outer 1 MiB cap is the loop's own responsibility");
+                    actions.push(self.make_send(conn, encoded, Some(SentMarker::OutputBytes { n }), now));
+                }
+                actions
             }
             SentMarker::Keepalive { nonce } => {
                 if let Some(d) = &mut self.driver {
@@ -573,7 +763,9 @@ impl AttachProto {
     /// `Watcher`; any other role is a no-op — checkpoint bytes never call
     /// this). Closes on overflow past [`WATCHER_LIVE_QUEUE_BUDGET_BYTES`],
     /// per decision 5's "the checkpoint work item rides OUTSIDE this
-    /// budget" — this is the LIVE-only counter.
+    /// budget" — this is the LIVE-only counter, tracked regardless of
+    /// whether the watcher is `Done` yet (finding 3: pre-`Done` output
+    /// still counts against the budget even though it is not sent yet).
     pub fn bytes_queued(&mut self, conn: ConnId, n: u64, now: Instant) -> Vec<Action> {
         let overflowed = match self.conns.get_mut(&conn).map(|c| &mut c.role) {
             Some(Role::Watcher(w)) => {
@@ -591,7 +783,8 @@ impl AttachProto {
 
     /// Time-driven checks with no inbound frame to trigger them: the two
     /// admission timeouts, the ground-wait deadline, the generic
-    /// queue-progress stall, and the driver keepalive state machine.
+    /// queue-progress stall (finding 5), and the driver keepalive state
+    /// machine (finding 6).
     pub fn tick(&mut self, now: Instant) -> Vec<Action> {
         let mut actions = Vec::new();
 
@@ -614,19 +807,18 @@ impl AttachProto {
             if let Role::Watcher(w) = &c.role {
                 if let CheckpointProgress::AwaitingGround { deadline } = w.checkpoint {
                     if now >= deadline {
-                        ground_timed_out.push(*id);
+                        ground_timed_out.push((*id, w.attach_request_id));
                     }
                 }
             }
         }
-        for id in ground_timed_out {
-            actions.extend(self.ground_timeout(id, now));
+        for (id, rid) in ground_timed_out {
+            actions.extend(self.ground_timeout(id, rid, now));
         }
 
         let mut stalled = Vec::new();
         for (id, c) in &self.conns {
-            let queued = matches!(&c.role, Role::Watcher(w) if w.queued_live_bytes > 0);
-            if queued && now.saturating_duration_since(c.last_send_progress) >= PROGRESS_DEADLINE {
+            if c.outstanding_sends > 0 && now.saturating_duration_since(c.last_send_progress) >= PROGRESS_DEADLINE {
                 stalled.push(*id);
             }
         }
@@ -639,9 +831,9 @@ impl AttachProto {
     }
 
     /// Fed by the loop right after a group-commit where `parser.is_ground()`
-    /// held. Promotes the current checkpoint-slot holder from
-    /// `AwaitingGround` to `Sending`, if any — a no-op otherwise (ground
-    /// recurs constantly; most calls have nothing to promote).
+    /// held. Requests a checkpoint for the current checkpoint-slot holder,
+    /// if it is waiting — a no-op otherwise (ground recurs constantly; most
+    /// calls have nothing to promote).
     pub fn ground_reached(&mut self, now: Instant) -> Vec<Action> {
         let _ = now;
         let Some(conn) = self.checkpoint_slot else {
@@ -654,58 +846,57 @@ impl AttachProto {
         if !awaiting {
             return vec![];
         }
-        if let Some(Role::Watcher(w)) = self.conns.get_mut(&conn).map(|c| &mut c.role) {
-            w.checkpoint = CheckpointProgress::Sending;
-        }
         vec![Action::BeginCheckpoint { conn }]
     }
 
     /// The loop encoded `conn`'s checkpoint (only it can — see the module
-    /// doc) and hands back the bytes. Slices them into `checkpoint_chunk`
-    /// frames within [`crate::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD`], marking
-    /// the first [`SentMarker::Reply`] and the last
-    /// [`SentMarker::CheckpointLastChunk`] (one chunk carries both).
-    /// Ignored (defensive no-op) if `conn` is not this run's current slot
-    /// holder mid-`Sending` — should not happen given the loop only ever
-    /// calls this in response to `BeginCheckpoint`.
-    pub fn checkpoint_ready(&mut self, conn: ConnId, bytes: Vec<u8>, _now: Instant) -> Vec<Action> {
-        let sending = matches!(
+    /// doc) and hands back the bytes. Wraps them in `Arc` ONCE and emits
+    /// only the FIRST chunk (finding 10: streamed, not materialized all at
+    /// once) — later chunks are requested by [`AttachProto::sent`]'s
+    /// `CheckpointChunk` handling as each one completes. Ignored (defensive
+    /// no-op) if `conn` is not this run's current slot holder still
+    /// `AwaitingGround` — should not happen given the loop only ever calls
+    /// this in response to `BeginCheckpoint`.
+    pub fn checkpoint_ready(&mut self, conn: ConnId, bytes: Vec<u8>, now: Instant) -> Vec<Action> {
+        let awaiting = matches!(
             self.conns.get(&conn).and_then(watcher_checkpoint),
-            Some(CheckpointProgress::Sending)
+            Some(CheckpointProgress::AwaitingGround { .. })
         );
-        if !sending || self.checkpoint_slot != Some(conn) {
+        if !awaiting || self.checkpoint_slot != Some(conn) {
             return vec![];
         }
-        chunk_checkpoint(conn, bytes)
+        let shared: Arc<[u8]> = Arc::from(bytes);
+        if let Some(Role::Watcher(w)) = self.conns.get_mut(&conn).map(|c| &mut c.role) {
+            w.checkpoint = CheckpointProgress::Sending { bytes: shared.clone(), offset: 0 };
+        }
+        self.emit_next_checkpoint_chunk(conn, shared, 0, now)
     }
 
     /// The loop fsynced `take_state {holder: controller_id, epoch:
     /// new_take_epoch}`. Installs the ephemeral capability on `conn`,
     /// silently overwriting whoever held it before (the demotion — that
-    /// connection's own `Watcher` entry is untouched).
-    pub fn take_committed(&mut self, conn: ConnId, controller_id: String, new_take_epoch: u64, now: Instant) -> Vec<Action> {
+    /// connection's own `Watcher` entry is untouched; its keepalive nonce,
+    /// if any, is simply discarded — see the module doc's keepalive
+    /// section for why a late echo for it is then ignored rather than
+    /// fatal).
+    pub fn take_committed(&mut self, conn: ConnId, new_take_epoch: u64, request_id: RequestId, now: Instant) -> Vec<Action> {
         self.driver = Some(DriverState {
             conn,
-            controller_id,
-            take_epoch: new_take_epoch,
             keepalive_outstanding: None,
             keepalive_deadline: None,
+            last_tick: None,
         });
         if let Some(c) = self.conns.get_mut(&conn) {
             c.last_activity = now;
         }
         let bytes = wire::encode_attach_server(&AttachServer::TakeOk { take_epoch: new_take_epoch })
             .expect("TakeOk is a fixed-shape body, always within MAX_BODY_LEN");
-        vec![Action::Send {
-            conn,
-            frame_bytes: bytes,
-            marker: Some(SentMarker::Reply),
-        }]
+        vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)]
     }
 
     /// The loop ran the input WAL for `conn`'s `input` frame and reports the
     /// outcome.
-    pub fn input_outcome(&mut self, conn: ConnId, outcome: InputOutcome, now: Instant) -> Vec<Action> {
+    pub fn input_outcome(&mut self, conn: ConnId, outcome: InputOutcome, request_id: RequestId, now: Instant) -> Vec<Action> {
         if let Some(c) = self.conns.get_mut(&conn) {
             c.last_activity = now;
         }
@@ -716,16 +907,12 @@ impl AttachProto {
         };
         let bytes =
             wire::encode_attach_server(&frame).expect("input reply is a fixed-shape body, always within MAX_BODY_LEN");
-        vec![Action::Send {
-            conn,
-            frame_bytes: bytes,
-            marker: Some(SentMarker::Reply),
-        }]
+        vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)]
     }
 
     /// The loop ran the ordered resize exchange for `conn` and reports
     /// whether the geometry was in budget.
-    pub fn resize_outcome(&mut self, conn: ConnId, ok: bool, now: Instant) -> Vec<Action> {
+    pub fn resize_outcome(&mut self, conn: ConnId, ok: bool, request_id: RequestId, now: Instant) -> Vec<Action> {
         if let Some(c) = self.conns.get_mut(&conn) {
             c.last_activity = now;
         }
@@ -738,42 +925,43 @@ impl AttachProto {
         };
         let bytes =
             wire::encode_attach_server(&frame).expect("resize reply is a fixed-shape body, always within MAX_BODY_LEN");
-        vec![Action::Send {
-            conn,
-            frame_bytes: bytes,
-            marker: Some(SentMarker::Reply),
-        }]
+        vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)]
     }
 
-    /// Live producer output just committed (the watermark). Enqueues an
-    /// `output` frame for every `Watcher` whose own checkpoint is `Done` —
-    /// a connection still mid-attach gets nothing here (checkpoint chunks
-    /// then only post-watermark output, never a batch that predates its own
-    /// watermark).
+    /// Live producer output just committed (the watermark). For every
+    /// `Watcher`: budget-check via `bytes_queued`; if `Done`, enqueue an
+    /// `output` frame now; otherwise queue it behind the in-flight
+    /// checkpoint transfer (finding 3) — flushed once that watcher reaches
+    /// `Done`.
     pub fn output_committed(&mut self, bytes: &[u8], now: Instant) -> Vec<Action> {
         let targets: Vec<ConnId> = self
             .conns
             .iter()
             .filter_map(|(id, c)| match &c.role {
-                Role::Watcher(w) if w.checkpoint == CheckpointProgress::Done => Some(*id),
+                Role::Watcher(_) => Some(*id),
                 _ => None,
             })
             .collect();
         let mut actions = Vec::new();
         for conn in targets {
             actions.extend(self.bytes_queued(conn, bytes.len() as u64, now));
-            let still_live = matches!(
-                self.conns.get(&conn).and_then(watcher_checkpoint),
-                Some(CheckpointProgress::Done)
-            );
-            if still_live {
-                let encoded = wire::encode_attach_server(&AttachServer::Output { bytes: bytes.to_vec() })
-                    .expect("output frame within the outer 1 MiB cap is the loop's own responsibility");
-                actions.push(Action::Send {
-                    conn,
-                    frame_bytes: encoded,
-                    marker: Some(SentMarker::OutputBytes { n: bytes.len() as u64 }),
-                });
+            match self.conns.get(&conn).and_then(watcher_checkpoint) {
+                Some(CheckpointProgress::Done) => {
+                    let encoded = wire::encode_attach_server(&AttachServer::Output { bytes: bytes.to_vec() })
+                        .expect("output frame within the outer 1 MiB cap is the loop's own responsibility");
+                    actions.push(self.make_send(
+                        conn,
+                        encoded,
+                        Some(SentMarker::OutputBytes { n: bytes.len() as u64 }),
+                        now,
+                    ));
+                }
+                Some(_) => {
+                    if let Some(Role::Watcher(w)) = self.conns.get_mut(&conn).map(|c| &mut c.role) {
+                        w.pending_post_watermark.push_back(bytes.to_vec());
+                    }
+                }
+                None => {} // closed by bytes_queued's own overflow handling, or not a watcher
             }
         }
         actions
@@ -794,15 +982,11 @@ impl AttachProto {
             // latched to the attach lane) — refuse rather than panic.
             _ => return self.close_with_refusal(conn, RefusalReason::LaneSequenceViolation, now),
         }
-        self.mark_outstanding(conn);
+        let rid = self.mark_outstanding(conn);
         match req {
             MgmtRequest::Probe => {
                 let bytes = wire::encode_mgmt_reply(&MgmtReply::ProbeOk).expect("fixed-shape body");
-                vec![Action::Send {
-                    conn,
-                    frame_bytes: bytes,
-                    marker: Some(SentMarker::Reply),
-                }]
+                vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id: rid }), now)]
             }
             MgmtRequest::Status => {
                 let s = self.mgmt_status;
@@ -812,19 +996,11 @@ impl AttachProto {
                     survival: s.survival,
                 })
                 .expect("fixed-shape body");
-                vec![Action::Send {
-                    conn,
-                    frame_bytes: bytes,
-                    marker: Some(SentMarker::Reply),
-                }]
+                vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id: rid }), now)]
             }
             MgmtRequest::Shutdown { reason } => {
                 let bytes = wire::encode_mgmt_reply(&MgmtReply::ShutdownOk).expect("fixed-shape body");
-                vec![Action::Send {
-                    conn,
-                    frame_bytes: bytes,
-                    marker: Some(SentMarker::ShutdownAck { reason }),
-                }]
+                vec![self.make_send(conn, bytes, Some(SentMarker::ShutdownAck { request_id: rid, reason }), now)]
             }
         }
     }
@@ -847,22 +1023,22 @@ impl AttachProto {
             return self.close_with_refusal(conn, RefusalReason::LaneSequenceViolation, now);
         }
 
-        self.mark_outstanding(conn);
+        let rid = self.mark_outstanding(conn);
         match frame {
-            AttachClient::Hello { proto } => self.handle_hello(conn, proto),
-            AttachClient::Attach { controller_id } => self.handle_attach(conn, controller_id, now),
-            AttachClient::Take { controller_id } => self.handle_take(conn, controller_id),
+            AttachClient::Hello { proto } => self.handle_hello(conn, proto, rid, now),
+            AttachClient::Attach { controller_id: _ } => self.handle_attach(conn, rid, now),
+            AttachClient::Take { controller_id } => self.handle_take(conn, controller_id, rid, now),
             AttachClient::Input {
                 controller_id,
                 take_epoch,
                 idem_key,
                 payload,
-            } => self.handle_input(conn, controller_id, take_epoch, idem_key, payload),
-            AttachClient::Resize { cols, rows } => self.handle_resize(conn, cols, rows),
+            } => self.handle_input(conn, controller_id, take_epoch, idem_key, payload, rid),
+            AttachClient::Resize { cols, rows } => self.handle_resize(conn, cols, rows, rid, now),
         }
     }
 
-    fn handle_hello(&mut self, conn: ConnId, proto: u32) -> Vec<Action> {
+    fn handle_hello(&mut self, conn: ConnId, proto: u32, request_id: RequestId, now: Instant) -> Vec<Action> {
         match wire::negotiate(proto) {
             wire::Negotiated::Accepted(v) => {
                 if let Some(c) = self.conns.get_mut(&conn) {
@@ -871,36 +1047,23 @@ impl AttachProto {
                     }
                 }
                 let bytes = wire::encode_attach_server(&AttachServer::HelloOk { proto: v }).expect("fixed-shape body");
-                vec![Action::Send {
-                    conn,
-                    frame_bytes: bytes,
-                    marker: Some(SentMarker::Reply),
-                }]
+                vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)]
             }
             wire::Negotiated::Refused { supported } => {
                 let bytes =
                     wire::encode_attach_server(&AttachServer::HelloRefused { supported }).expect("fixed-shape body");
-                vec![Action::Send {
-                    conn,
-                    frame_bytes: bytes,
-                    marker: Some(SentMarker::ReplyThenClose),
-                }]
+                vec![self.make_send(conn, bytes, Some(SentMarker::ReplyThenClose { request_id }), now)]
             }
         }
     }
 
-    fn handle_attach(&mut self, conn: ConnId, controller_id: String, now: Instant) -> Vec<Action> {
+    fn handle_attach(&mut self, conn: ConnId, request_id: RequestId, now: Instant) -> Vec<Action> {
         if self.watcher_count >= SUBSCRIBER_CAP {
-            self.clear_outstanding(conn);
             let bytes = wire::encode_attach_server(&AttachServer::AttachRefused {
                 reason: AttachRefusedReason::SubscriberCap,
             })
             .expect("fixed-shape body");
-            return vec![Action::Send {
-                conn,
-                frame_bytes: bytes,
-                marker: Some(SentMarker::Reply),
-            }];
+            return vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)];
         }
         self.non_watcher_count = self.non_watcher_count.saturating_sub(1);
         self.watcher_count += 1;
@@ -915,15 +1078,20 @@ impl AttachProto {
         };
         if let Some(c) = self.conns.get_mut(&conn) {
             c.role = Role::Watcher(WatcherState {
-                controller_id,
+                attach_request_id: request_id,
                 checkpoint,
                 queued_live_bytes: 0,
+                pending_post_watermark: VecDeque::new(),
             });
         }
         vec![]
     }
 
-    fn handle_take(&mut self, conn: ConnId, controller_id: String) -> Vec<Action> {
+    fn handle_take(&mut self, conn: ConnId, controller_id: String, request_id: RequestId, now: Instant) -> Vec<Action> {
+        if self.teardown {
+            self.clear_outstanding_if_matches(conn, request_id);
+            return vec![];
+        }
         let checkpoint = self.conns.get(&conn).and_then(watcher_checkpoint);
         let reason = match checkpoint {
             None => Some(TakeRefusedReason::NotAttached),
@@ -931,15 +1099,10 @@ impl AttachProto {
             Some(_) => Some(TakeRefusedReason::CheckpointInFlight),
         };
         if let Some(reason) = reason {
-            self.clear_outstanding(conn);
             let bytes = wire::encode_attach_server(&AttachServer::TakeRefused { reason }).expect("fixed-shape body");
-            return vec![Action::Send {
-                conn,
-                frame_bytes: bytes,
-                marker: Some(SentMarker::Reply),
-            }];
+            return vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)];
         }
-        vec![Action::CommitTake { conn, controller_id }]
+        vec![Action::CommitTake { conn, controller_id, request_id }]
     }
 
     fn handle_input(
@@ -949,7 +1112,12 @@ impl AttachProto {
         take_epoch: u64,
         idem_key: [u8; 16],
         payload: Vec<u8>,
+        request_id: RequestId,
     ) -> Vec<Action> {
+        if self.teardown {
+            self.clear_outstanding_if_matches(conn, request_id);
+            return vec![];
+        }
         let connection_authorized = self.driver.as_ref().map(|d| d.conn) == Some(conn);
         vec![Action::ForwardInput {
             conn,
@@ -958,31 +1126,38 @@ impl AttachProto {
             idem_key,
             payload,
             connection_authorized,
+            request_id,
         }]
     }
 
-    fn handle_resize(&mut self, conn: ConnId, cols: u16, rows: u16) -> Vec<Action> {
+    fn handle_resize(&mut self, conn: ConnId, cols: u16, rows: u16, request_id: RequestId, now: Instant) -> Vec<Action> {
+        if self.teardown {
+            self.clear_outstanding_if_matches(conn, request_id);
+            return vec![];
+        }
         if self.driver.as_ref().map(|d| d.conn) != Some(conn) {
-            self.clear_outstanding(conn);
             let bytes = wire::encode_attach_server(&AttachServer::ResizeRefused {
                 reason: ResizeRefusedReason::NotDriver,
             })
             .expect("fixed-shape body");
-            return vec![Action::Send {
-                conn,
-                frame_bytes: bytes,
-                marker: Some(SentMarker::Reply),
-            }];
+            return vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)];
         }
-        vec![Action::ApplyResize { conn, cols, rows }]
+        vec![Action::ApplyResize { conn, cols, rows, request_id }]
     }
 
     fn handle_keepalive_reply(&mut self, conn: ConnId, nonce: u64, now: Instant) -> Vec<Action> {
-        let matches = self
-            .driver
-            .as_ref()
-            .is_some_and(|d| d.conn == conn && d.keepalive_outstanding == Some(nonce));
+        let is_driver = self.driver.as_ref().map(|d| d.conn) == Some(conn);
+        if !is_driver {
+            // A demoted former driver's late echo (or a watcher that was
+            // never driver at all): its nonce was already discarded when
+            // `DriverState` was replaced -- ignorable, not fatal (finding
+            // 6).
+            return vec![];
+        }
+        let matches = self.driver.as_ref().is_some_and(|d| d.keepalive_outstanding == Some(nonce));
         if !matches {
+            // Still the current driver, but a WRONG/bogus nonce: genuinely
+            // unexpected.
             return self.close_with_refusal(conn, RefusalReason::UnexpectedKeepalive, now);
         }
         if let Some(d) = &mut self.driver {
@@ -999,11 +1174,34 @@ impl AttachProto {
         let Some(conn) = self.driver.as_ref().map(|d| d.conn) else {
             return vec![];
         };
-        // Suspended while ANY checkpoint transfer occupies the writer
-        // loop's attention — see the module doc.
-        if self.checkpoint_slot.is_some() {
+
+        let last_tick = self.driver.as_ref().and_then(|d| d.last_tick).unwrap_or(now);
+        let elapsed_since_tick = now.saturating_duration_since(last_tick);
+        if let Some(d) = &mut self.driver {
+            d.last_tick = Some(now);
+        }
+
+        // Scoped to THIS connection's OWN in-flight transfer only (finding
+        // 6) -- see the module doc for why this is rarely if ever true in
+        // practice, and kept anyway.
+        let own_transfer_in_flight = matches!(
+            self.conns.get(&conn).and_then(watcher_checkpoint),
+            Some(CheckpointProgress::QueuedForSlot)
+                | Some(CheckpointProgress::AwaitingGround { .. })
+                | Some(CheckpointProgress::Sending { .. })
+        );
+        if own_transfer_in_flight {
+            // Freeze: extend an already-armed deadline by exactly how much
+            // real time just passed, so suspension never counts against it
+            // (finding 6).
+            if let Some(d) = &mut self.driver {
+                if let Some(deadline) = &mut d.keepalive_deadline {
+                    *deadline += elapsed_since_tick;
+                }
+            }
             return vec![];
         }
+
         let (outstanding, deadline) = {
             let d = self.driver.as_ref().expect("checked above");
             (d.keepalive_outstanding, d.keepalive_deadline)
@@ -1030,51 +1228,120 @@ impl AttachProto {
         if let Some(d) = &mut self.driver {
             d.keepalive_outstanding = Some(nonce);
         }
-        vec![Action::Send {
+        let bytes = wire::encode_keepalive(nonce);
+        vec![self.make_send(conn, bytes, Some(SentMarker::Keepalive { nonce }), now)]
+    }
+
+    // -- checkpoint streaming (finding 10) -------------------------------
+
+    fn advance_checkpoint_stream(&mut self, conn: ConnId, now: Instant) -> Vec<Action> {
+        let next = match self.conns.get(&conn).and_then(watcher_checkpoint) {
+            Some(CheckpointProgress::Sending { bytes, offset }) => Some((bytes, offset)),
+            _ => None,
+        };
+        let Some((bytes, offset)) = next else { return vec![] };
+        self.emit_next_checkpoint_chunk(conn, bytes, offset, now)
+    }
+
+    fn emit_next_checkpoint_chunk(&mut self, conn: ConnId, bytes: Arc<[u8]>, offset: usize, now: Instant) -> Vec<Action> {
+        let max = wire::MAX_CHECKPOINT_CHUNK_PAYLOAD;
+        let end = (offset + max).min(bytes.len());
+        let is_last = end == bytes.len();
+        let chunk = AttachServer::CheckpointChunk {
+            last: is_last,
+            bytes: bytes[offset..end].to_vec(),
+        };
+        let encoded = wire::encode_attach_server(&chunk)
+            .expect("each chunk is capped at MAX_CHECKPOINT_CHUNK_PAYLOAD by construction");
+        let attach_request_id = match self.conns.get(&conn).map(|c| &c.role) {
+            Some(Role::Watcher(w)) => Some(w.attach_request_id),
+            _ => None,
+        };
+        let clears_request = if offset == 0 { attach_request_id } else { None };
+        if let Some(Role::Watcher(w)) = self.conns.get_mut(&conn).map(|c| &mut c.role) {
+            w.checkpoint = CheckpointProgress::Sending { bytes: bytes.clone(), offset: end };
+        }
+        vec![self.make_send(
             conn,
-            frame_bytes: wire::encode_keepalive(nonce),
-            marker: Some(SentMarker::Keepalive { nonce }),
-        }]
+            encoded,
+            Some(SentMarker::CheckpointChunk { clears_request, is_last }),
+            now,
+        )]
     }
 
     // -- shared helpers ------------------------------------------------
 
-    fn mark_outstanding(&mut self, conn: ConnId) {
+    /// Allocates a fresh [`RequestId`], records it as `conn`'s outstanding
+    /// request, and returns it so the caller can embed it in whatever
+    /// eventual reply resolves this request (finding 4).
+    fn mark_outstanding(&mut self, conn: ConnId) -> RequestId {
+        self.next_request_id += 1;
+        let rid = self.next_request_id;
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.outstanding_request = true;
+            c.outstanding_request = Some(rid);
+        }
+        rid
+    }
+
+    /// Clears `conn`'s outstanding request ONLY if it is still `rid`
+    /// (finding 4) — an unrelated or late marker must never clear a
+    /// DIFFERENT, still-pending request.
+    fn clear_outstanding_if_matches(&mut self, conn: ConnId, rid: RequestId) {
+        if let Some(c) = self.conns.get_mut(&conn) {
+            if c.outstanding_request == Some(rid) {
+                c.outstanding_request = None;
+            }
         }
     }
 
-    fn clear_outstanding(&mut self, conn: ConnId) {
+    /// Constructs a `Send` action AND records the generic write-progress
+    /// bookkeeping (finding 5): increments `outstanding_sends`, and resets
+    /// `last_send_progress` on the empty→nonempty transition. Every `Send`
+    /// this module ever emits goes through here — there is no other
+    /// construction site.
+    fn make_send(&mut self, conn: ConnId, frame_bytes: Vec<u8>, marker: Option<SentMarker>, now: Instant) -> Action {
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.outstanding_request = false;
+            if c.outstanding_sends == 0 {
+                c.last_send_progress = now;
+            }
+            c.outstanding_sends += 1;
         }
+        Action::Send { conn, frame_bytes, marker }
     }
 
-    fn ground_timeout(&mut self, conn: ConnId, now: Instant) -> Vec<Action> {
-        if let Some(c) = self.conns.get_mut(&conn) {
-            c.role = Role::PostHello {
-                deadline: now + PRE_ADMISSION_TIMEOUT,
-            };
-            c.outstanding_request = false;
-        }
-        self.watcher_count = self.watcher_count.saturating_sub(1);
-        self.non_watcher_count += 1;
+    fn ground_timeout(&mut self, conn: ConnId, request_id: RequestId, now: Instant) -> Vec<Action> {
         if self.checkpoint_slot == Some(conn) {
             self.checkpoint_slot = None;
             self.advance_checkpoint_queue(now);
         } else {
             self.checkpoint_queue.retain(|&id| id != conn);
         }
+
         let bytes = wire::encode_attach_server(&AttachServer::AttachRefused {
             reason: AttachRefusedReason::GroundTimeout,
         })
         .expect("fixed-shape body");
-        vec![Action::Send {
-            conn,
-            frame_bytes: bytes,
-            marker: Some(SentMarker::Reply),
-        }]
+
+        if self.non_watcher_count >= NON_WATCHER_CAP {
+            // Demoting would exceed the shared non-watcher cap (finding
+            // 12) -- close instead. The role stays `Watcher` until this
+            // reply's `Sent` fires `remove_connection`, which does the
+            // `watcher_count` bookkeeping; touching it here would
+            // double-count.
+            return vec![self.make_send(conn, bytes, Some(SentMarker::ReplyThenClose { request_id }), now)];
+        }
+
+        // Demote: this connection stops being a Watcher right now, so its
+        // OWN bookkeeping must happen here -- no later `remove_connection`
+        // call will ever see it as a Watcher again.
+        self.watcher_count = self.watcher_count.saturating_sub(1);
+        self.non_watcher_count += 1;
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.role = Role::PostHello {
+                deadline: now + PRE_ADMISSION_TIMEOUT,
+            };
+        }
+        vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)]
     }
 
     fn advance_checkpoint_queue(&mut self, now: Instant) {
@@ -1129,51 +1396,9 @@ impl AttachProto {
 
 fn watcher_checkpoint(c: &Conn) -> Option<CheckpointProgress> {
     match &c.role {
-        Role::Watcher(w) => Some(w.checkpoint),
+        Role::Watcher(w) => Some(w.checkpoint.clone()),
         _ => None,
     }
-}
-
-/// Slices an encoded checkpoint into `checkpoint_chunk` frames at
-/// [`crate::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD`]. The first chunk carries
-/// [`SentMarker::Reply`] (the attach success signal); the last carries
-/// [`SentMarker::CheckpointLastChunk`] — the SAME chunk when there is only
-/// one. A zero-byte checkpoint (never produced in practice — even an empty
-/// screen's fixed header is nonzero) still emits exactly one empty `last`
-/// chunk, matching the wire's "a non-final `bytes` may legally be empty"
-/// rule read at its edge case.
-fn chunk_checkpoint(conn: ConnId, bytes: Vec<u8>) -> Vec<Action> {
-    let max = wire::MAX_CHECKPOINT_CHUNK_PAYLOAD;
-    let total = bytes.len();
-    let mut actions = Vec::new();
-    let mut offset = 0usize;
-    loop {
-        let end = (offset + max).min(total);
-        let is_last = end == total;
-        let chunk = AttachServer::CheckpointChunk {
-            last: is_last,
-            bytes: bytes[offset..end].to_vec(),
-        };
-        let encoded =
-            wire::encode_attach_server(&chunk).expect("each chunk is capped at MAX_CHECKPOINT_CHUNK_PAYLOAD by construction");
-        let marker = if is_last {
-            Some(SentMarker::CheckpointLastChunk)
-        } else if offset == 0 {
-            Some(SentMarker::Reply)
-        } else {
-            None
-        };
-        actions.push(Action::Send {
-            conn,
-            frame_bytes: encoded,
-            marker,
-        });
-        offset = end;
-        if is_last {
-            break;
-        }
-    }
-    actions
 }
 
 #[cfg(test)]
@@ -1223,31 +1448,73 @@ mod tests {
         )
     }
 
-    /// Drives one connection all the way to a `Done` watcher (the common
-    /// setup every take/input/resize/keepalive/budget test needs):
-    /// connection_opened -> hello -> attach -> ground_reached ->
-    /// checkpoint_ready(1 byte, a single chunk) -> its sent-completion.
-    fn attach_to_done(p: &mut AttachProto, conn: ConnId, now: Instant) {
-        assert_eq!(p.connection_opened(conn, now), vec![]);
-        let a = p.frame(conn, hello_frame(), now);
-        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply), .. }]));
-        p.sent(conn, a[0].send_marker(), now);
-        let a = p.frame(conn, attach_frame("ctrl"), now);
-        assert!(a.is_empty(), "attach should pend, not reply immediately: {a:?}");
-        let a = p.ground_reached(now);
-        assert!(matches!(a.as_slice(), [Action::BeginCheckpoint { conn: c }] if *c == conn));
-        let a = p.checkpoint_ready(conn, vec![0xAB], now);
-        assert_eq!(a.len(), 1);
-        assert_eq!(a[0].send_marker(), Some(SentMarker::CheckpointLastChunk));
-        p.sent(conn, a[0].send_marker(), now);
-    }
-
     impl Action {
         fn send_marker(&self) -> Option<SentMarker> {
             match self {
                 Action::Send { marker, .. } => marker.clone(),
                 _ => panic!("not a Send: {self:?}"),
             }
+        }
+        fn send_bytes(&self) -> &[u8] {
+            match self {
+                Action::Send { frame_bytes, .. } => frame_bytes,
+                _ => panic!("not a Send: {self:?}"),
+            }
+        }
+    }
+
+    /// Drives one checkpoint transfer to completion, one chunk at a time
+    /// (finding 10: `checkpoint_ready`/`sent` must never emit more than one
+    /// `Send` per step) — the common setup every take/input/resize/
+    /// keepalive/budget test needs once a watcher must be fully `Done`.
+    fn drive_checkpoint_to_done(p: &mut AttachProto, conn: ConnId, checkpoint_bytes: Vec<u8>, now: Instant) {
+        let mut actions = p.checkpoint_ready(conn, checkpoint_bytes, now);
+        loop {
+            assert_eq!(actions.len(), 1, "expected exactly one Send per checkpoint step: {actions:?}");
+            let marker = actions[0].send_marker();
+            let is_last = matches!(marker, Some(SentMarker::CheckpointChunk { is_last: true, .. }));
+            actions = p.sent(conn, marker, now);
+            if is_last {
+                break;
+            }
+        }
+    }
+
+    /// Drives one connection all the way to a `Done` watcher: connection_opened
+    /// -> hello -> attach -> ground_reached -> a streamed one-chunk checkpoint.
+    fn attach_to_done(p: &mut AttachProto, conn: ConnId, now: Instant) {
+        assert_eq!(p.connection_opened(conn, now), vec![]);
+        let a = p.frame(conn, hello_frame(), now);
+        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
+        p.sent(conn, a[0].send_marker(), now);
+        let a = p.frame(conn, attach_frame("ctrl"), now);
+        assert!(a.is_empty(), "attach should pend, not reply immediately: {a:?}");
+        let a = p.ground_reached(now);
+        assert!(matches!(a.as_slice(), [Action::BeginCheckpoint { conn: c }] if *c == conn));
+        drive_checkpoint_to_done(p, conn, vec![0xAB], now);
+    }
+
+    /// Drives `take` to completion: frame -> CommitTake -> take_committed
+    /// (the loop's own fsync is not modeled here; this module never needs
+    /// it) -> the TakeOk reply's own sent-completion.
+    fn drive_take(p: &mut AttachProto, conn: ConnId, controller_id: &str, epoch: u64, now: Instant) {
+        let a = p.frame(conn, take_frame(controller_id), now);
+        let request_id = match a.as_slice() {
+            [Action::CommitTake { request_id, .. }] => *request_id,
+            other => panic!("expected CommitTake: {other:?}"),
+        };
+        let a = p.take_committed(conn, epoch, request_id, now);
+        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
+        p.sent(conn, a[0].send_marker(), now);
+    }
+
+    /// Reaches directly into a watcher's checkpoint state (tests are a
+    /// descendant module of `attach_proto` and may see its private fields)
+    /// to exercise a transition the normal admission rules never actually
+    /// reach in production — see the keepalive-freeze test for why.
+    fn force_checkpoint_state(p: &mut AttachProto, conn: ConnId, state: CheckpointProgress) {
+        if let Some(Role::Watcher(w)) = p.conns.get_mut(&conn).map(|c| &mut c.role) {
+            w.checkpoint = state;
         }
     }
 
@@ -1284,6 +1551,47 @@ mod tests {
         assert!(matches!(a2.as_slice(), [Action::Send { .. }]), "{a2:?}");
     }
 
+    /// Finding 4's own regression scenario: an UNRELATED checkpoint chunk's
+    /// completion (whose `clears_request` is `None` -- it isn't the first
+    /// chunk) must never clear a DIFFERENT request's lockstep. Before the
+    /// fix, `CheckpointChunk`'s handler cleared `outstanding_request`
+    /// unconditionally, so `take`'s own still-unsent reply would have been
+    /// wrongly freed by this unrelated completion.
+    #[test]
+    fn an_unrelated_checkpoint_chunks_completion_does_not_clear_a_different_outstanding_requests_lockstep() {
+        let mut p = proto();
+        let now = t0();
+        p.connection_opened(1, now);
+        let a = p.frame(1, hello_frame(), now);
+        p.sent(1, a[0].send_marker(), now);
+        p.frame(1, attach_frame("alice"), now);
+        p.ground_reached(now);
+        let big = vec![0u8; wire::MAX_CHECKPOINT_CHUNK_PAYLOAD + 1]; // 2 chunks
+        let chunk1 = p.checkpoint_ready(1, big, now);
+        let chunk2 = p.sent(1, chunk1[0].send_marker(), now); // clears ATTACH's own lockstep
+        assert!(matches!(
+            chunk2[0].send_marker(),
+            Some(SentMarker::CheckpointChunk { clears_request: None, is_last: true })
+        ));
+
+        // `take` is now legal (attach's lockstep already cleared) --
+        // refused CheckpointInFlight (own transfer not yet Done); ITS OWN
+        // reply is queued but not yet reported sent.
+        let a = p.frame(1, take_frame("alice"), now);
+        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
+
+        // Report the UNRELATED chunk2 completion now.
+        let _ = p.sent(1, chunk2[0].send_marker(), now);
+
+        // take's own reply STILL hasn't been reported sent -- a second
+        // take must still be a lockstep violation.
+        let a2 = p.frame(1, take_frame("alice"), now);
+        assert!(
+            a2.iter().any(|x| matches!(x, Action::Close(1))),
+            "an unrelated checkpoint completion must not clear take's own lockstep: {a2:?}"
+        );
+    }
+
     // -- caps ---------------------------------------------------------
 
     #[test]
@@ -1316,7 +1624,7 @@ mod tests {
         let a = p.frame(9, attach_frame("late"), now);
         assert!(!a.iter().any(|x| matches!(x, Action::Close(_))), "must stay open: {a:?}");
         match a.as_slice() {
-            [Action::Send { frame_bytes, marker: Some(SentMarker::Reply), .. }] => {
+            [Action::Send { frame_bytes, marker: Some(SentMarker::Reply { .. }), .. }] => {
                 let decoded = decode_one(frame_bytes);
                 assert_eq!(
                     decoded,
@@ -1335,6 +1643,49 @@ mod tests {
         assert!(a.is_empty(), "should now pend for ground, not refuse: {a:?}");
     }
 
+    /// Finding 12: a timed-out attach demotes back to `PostHello` only if
+    /// there is room; over the shared non-watcher cap, it closes instead
+    /// (after its refusal is sent).
+    #[test]
+    fn ground_timeout_over_cap_closes_instead_of_demoting() {
+        let mut p = proto();
+        let now = t0();
+        // conn 1: hello -> attach (now a Watcher, no longer counted as
+        // non-watcher) -- pending ground, never resolved.
+        p.connection_opened(1, now);
+        let a = p.frame(1, hello_frame(), now);
+        p.sent(1, a[0].send_marker(), now);
+        p.frame(1, attach_frame("alice"), now);
+
+        // Fill the non-watcher cap with 4 OTHER connections.
+        for id in 100..104u64 {
+            assert_eq!(p.connection_opened(id, now), vec![]);
+        }
+
+        // conn 1's ground-wait times out: demoting it back to PostHello
+        // would make a 5th non-watcher -- must close instead.
+        let later = now + Duration::from_secs(6);
+        let a = p.tick(later);
+        let send = a.iter().find_map(|x| match x {
+            Action::Send { conn, frame_bytes, marker } if *conn == 1 => Some((frame_bytes.clone(), marker.clone())),
+            _ => None,
+        });
+        let (bytes, marker) = send.expect("expected conn 1's ground-timeout reply");
+        assert!(
+            matches!(marker, Some(SentMarker::ReplyThenClose { .. })),
+            "over cap must close, not demote: {marker:?}"
+        );
+        let decoded = decode_one(&bytes);
+        assert_eq!(
+            decoded,
+            DecodedFrame::AttachServer(AttachServer::AttachRefused {
+                reason: AttachRefusedReason::GroundTimeout
+            })
+        );
+        let after = p.sent(1, marker, later);
+        assert_eq!(after, vec![Action::Close(1)]);
+    }
+
     // -- hello --------------------------------------------------------
 
     #[test]
@@ -1346,7 +1697,7 @@ mod tests {
         let a = p.frame(1, bad_hello, now);
         assert!(matches!(
             a.as_slice(),
-            [Action::Send { marker: Some(SentMarker::ReplyThenClose), .. }]
+            [Action::Send { marker: Some(SentMarker::ReplyThenClose { .. }), .. }]
         ));
         let decoded = decode_one(a[0].send_bytes());
         assert_eq!(
@@ -1361,15 +1712,6 @@ mod tests {
         assert_eq!(after, vec![Action::Close(1)]);
     }
 
-    impl Action {
-        fn send_bytes(&self) -> &[u8] {
-            match self {
-                Action::Send { frame_bytes, .. } => frame_bytes,
-                _ => panic!("not a Send: {self:?}"),
-            }
-        }
-    }
-
     // -- the pen --------------------------------------------------------
 
     #[test]
@@ -1379,17 +1721,8 @@ mod tests {
         attach_to_done(&mut p, 1, now);
         attach_to_done(&mut p, 2, now);
 
-        let a = p.frame(1, take_frame("alice"), now);
-        assert_eq!(a, vec![Action::CommitTake { conn: 1, controller_id: "alice".into() }]);
-        let a = p.take_committed(1, "alice".into(), 1, now);
-        p.sent(1, a[0].send_marker(), now);
-
-        // conn 2 takes next -- conn 1 is demoted but its Watcher role
-        // survives (still eligible to receive output; just no driver).
-        let a = p.frame(2, take_frame("bob"), now);
-        assert_eq!(a, vec![Action::CommitTake { conn: 2, controller_id: "bob".into() }]);
-        let a = p.take_committed(2, "bob".into(), 2, now);
-        p.sent(2, a[0].send_marker(), now);
+        drive_take(&mut p, 1, "alice", 1, now);
+        drive_take(&mut p, 2, "bob", 2, now);
 
         // conn 1 can no longer resize (not the driver any more).
         let resize = decode_one(&encode_attach_client(&AttachClient::Resize { cols: 100, rows: 40 }).unwrap());
@@ -1412,10 +1745,7 @@ mod tests {
         let mut p = proto();
         let now = t0();
         attach_to_done(&mut p, 1, now);
-        let a = p.frame(1, take_frame("alice"), now);
-        let a = p.take_committed(1, "alice".into(), 1, now).into_iter().chain(a).collect::<Vec<_>>();
-        // (order doesn't matter here -- just confirm the driver was set)
-        let _ = a;
+        drive_take(&mut p, 1, "alice", 1, now);
 
         p.connection_closed(1, now);
         // No durable action is emitted for the EOF -- capability-only.
@@ -1423,7 +1753,7 @@ mod tests {
         // without any special-casing, proving no stale state lingered.
         attach_to_done(&mut p, 2, now);
         let a = p.frame(2, take_frame("carol"), now);
-        assert_eq!(a, vec![Action::CommitTake { conn: 2, controller_id: "carol".into() }]);
+        assert!(matches!(a.as_slice(), [Action::CommitTake { conn: 2, controller_id, .. }] if controller_id == "carol"));
     }
 
     #[test]
@@ -1432,9 +1762,7 @@ mod tests {
         let now = t0();
         attach_to_done(&mut p, 1, now);
         attach_to_done(&mut p, 2, now);
-        let a = p.frame(1, take_frame("alice"), now);
-        p.take_committed(1, "alice".into(), 1, now);
-        let _ = a;
+        drive_take(&mut p, 1, "alice", 1, now);
 
         // conn 2 was never granted the capability; even claiming the SAME
         // (controller_id, take_epoch) as the current driver must not be
@@ -1450,17 +1778,25 @@ mod tests {
             .unwrap(),
         );
         let a = p.frame(2, input, now);
-        assert_eq!(
-            a,
-            vec![Action::ForwardInput {
-                conn: 2,
-                controller_id: "alice".into(),
-                take_epoch: 1,
-                idem_key: [7u8; 16],
-                payload: b"ls\n".to_vec(),
-                connection_authorized: false,
-            }]
-        );
+        match a.as_slice() {
+            [Action::ForwardInput {
+                conn,
+                controller_id,
+                take_epoch,
+                idem_key,
+                payload,
+                connection_authorized,
+                request_id: _,
+            }] => {
+                assert_eq!(*conn, 2);
+                assert_eq!(controller_id, "alice");
+                assert_eq!(*take_epoch, 1);
+                assert_eq!(*idem_key, [7u8; 16]);
+                assert_eq!(payload, b"ls\n");
+                assert!(!connection_authorized);
+            }
+            other => panic!("expected ForwardInput: {other:?}"),
+        }
     }
 
     #[test]
@@ -1480,15 +1816,6 @@ mod tests {
         );
     }
 
-    /// `take` sent before ground is even reached: lockstep itself blocks
-    /// it (the connection's `attach` is still outstanding), which the
-    /// lockstep tests already cover. This test proves the DISTINCT
-    /// `CheckpointInFlight` rule: a multi-chunk checkpoint's FIRST chunk
-    /// already clears lockstep ("the first checkpoint_chunk IS the attach
-    /// success signal" — ADR 0041), so a client is free to send `take`
-    /// immediately after, while chunks are still streaming — and THAT is
-    /// refused, distinctly, until the connection's own final chunk is
-    /// reported physically written.
     #[test]
     fn take_while_own_checkpoint_in_flight_is_refused() {
         let mut p = proto();
@@ -1498,14 +1825,24 @@ mod tests {
         p.sent(1, a[0].send_marker(), now);
         p.frame(1, attach_frame("alice"), now);
         p.ground_reached(now);
-        let big = vec![0u8; wire::MAX_CHECKPOINT_CHUNK_PAYLOAD + 1];
-        let chunks = p.checkpoint_ready(1, big, now);
-        assert_eq!(chunks.len(), 2, "expected two chunks for a payload just over the per-chunk cap");
-        assert_eq!(chunks[0].send_marker(), Some(SentMarker::Reply));
-        assert_eq!(chunks[1].send_marker(), Some(SentMarker::CheckpointLastChunk));
-        // Lockstep clears on the FIRST chunk's sent-completion -- a `take`
-        // is now legal to send, but the checkpoint transfer isn't Done yet.
-        p.sent(1, chunks[0].send_marker(), now);
+        let big = vec![0u8; wire::MAX_CHECKPOINT_CHUNK_PAYLOAD + 1]; // 2 chunks
+        let chunk1 = p.checkpoint_ready(1, big, now);
+        assert_eq!(chunk1.len(), 1);
+        assert!(matches!(
+            chunk1[0].send_marker(),
+            Some(SentMarker::CheckpointChunk { clears_request: Some(_), is_last: false })
+        ));
+        // The FIRST chunk's completion clears lockstep (the attach success
+        // signal) and requests the SECOND (last) chunk.
+        let chunk2 = p.sent(1, chunk1[0].send_marker(), now);
+        assert_eq!(chunk2.len(), 1);
+        assert!(matches!(
+            chunk2[0].send_marker(),
+            Some(SentMarker::CheckpointChunk { clears_request: None, is_last: true })
+        ));
+
+        // `take` is legal to send now (lockstep already cleared), but the
+        // transfer is not Done (chunk2 not yet confirmed sent).
         let a = p.frame(1, take_frame("alice"), now);
         let decoded = decode_one(a[0].send_bytes());
         assert_eq!(
@@ -1514,10 +1851,14 @@ mod tests {
                 reason: TakeRefusedReason::CheckpointInFlight
             })
         );
-        // Once the final chunk is reported sent, take succeeds.
-        p.sent(1, chunks[1].send_marker(), now);
+        // Report THIS refusal's own reply sent (clearing its lockstep)
+        // before trying again.
+        p.sent(1, a[0].send_marker(), now);
+        // Once the final checkpoint chunk is ALSO reported sent, take
+        // succeeds.
+        p.sent(1, chunk2[0].send_marker(), now);
         let a = p.frame(1, take_frame("alice"), now);
-        assert_eq!(a, vec![Action::CommitTake { conn: 1, controller_id: "alice".into() }]);
+        assert!(matches!(a.as_slice(), [Action::CommitTake { conn: 1, controller_id, .. }] if controller_id == "alice"));
     }
 
     // -- attach: ground gate + snapshot slot -----------------------------
@@ -1552,8 +1893,7 @@ mod tests {
         // Ground now reached: only conn 1 (the slot holder) may proceed.
         let a = p.ground_reached(now);
         assert_eq!(a, vec![Action::BeginCheckpoint { conn: 1 }]);
-        let a = p.checkpoint_ready(1, vec![0xAB], now);
-        p.sent(1, a[0].send_marker(), now);
+        drive_checkpoint_to_done(&mut p, 1, vec![0xAB], now);
         // conn 1's slot is freed and conn 2 is promoted -- but still needs
         // its OWN ground_reached call to actually begin.
         let a = p.ground_reached(now);
@@ -1573,7 +1913,7 @@ mod tests {
         let a = p.tick(later);
         assert!(a
             .iter()
-            .any(|x| matches!(x, Action::Send { marker: Some(SentMarker::Reply), .. })));
+            .any(|x| matches!(x, Action::Send { marker: Some(SentMarker::Reply { .. }), .. })));
         let send = a.iter().find_map(|x| match x {
             Action::Send { frame_bytes, marker, .. } => Some((frame_bytes.clone(), marker.clone())),
             _ => None,
@@ -1595,14 +1935,89 @@ mod tests {
         assert_eq!(a, vec![Action::BeginCheckpoint { conn: 1 }]);
     }
 
+    // -- checkpoint streaming + output queue-behind (findings 3, 10) -----
+
+    #[test]
+    fn checkpoint_streams_one_chunk_at_a_time_not_all_up_front() {
+        let mut p = proto();
+        let now = t0();
+        p.connection_opened(1, now);
+        let a = p.frame(1, hello_frame(), now);
+        p.sent(1, a[0].send_marker(), now);
+        p.frame(1, attach_frame("alice"), now);
+        p.ground_reached(now);
+        let big = vec![0u8; wire::MAX_CHECKPOINT_CHUNK_PAYLOAD * 3]; // 3 chunks
+        let chunk1 = p.checkpoint_ready(1, big, now);
+        assert_eq!(chunk1.len(), 1, "must emit exactly one chunk per step, not all up front");
+        assert!(matches!(
+            chunk1[0].send_marker(),
+            Some(SentMarker::CheckpointChunk { is_last: false, .. })
+        ));
+        let chunk2 = p.sent(1, chunk1[0].send_marker(), now);
+        assert_eq!(chunk2.len(), 1);
+        assert!(matches!(
+            chunk2[0].send_marker(),
+            Some(SentMarker::CheckpointChunk { is_last: false, .. })
+        ));
+        let chunk3 = p.sent(1, chunk2[0].send_marker(), now);
+        assert_eq!(chunk3.len(), 1);
+        assert!(matches!(
+            chunk3[0].send_marker(),
+            Some(SentMarker::CheckpointChunk { is_last: true, .. })
+        ));
+    }
+
+    #[test]
+    fn output_queues_behind_an_in_flight_checkpoint_and_flushes_once_done() {
+        let mut p = proto();
+        let now = t0();
+        p.connection_opened(1, now);
+        let a = p.frame(1, hello_frame(), now);
+        p.sent(1, a[0].send_marker(), now);
+        p.frame(1, attach_frame("alice"), now);
+        p.ground_reached(now);
+        let big = vec![0u8; wire::MAX_CHECKPOINT_CHUNK_PAYLOAD + 1]; // 2 chunks
+        let chunk1 = p.checkpoint_ready(1, big, now);
+
+        // Output committed WHILE still mid-transfer must not be dropped.
+        let a = p.output_committed(b"queued-behind", now);
+        assert!(a.is_empty(), "no Output send yet -- not Done: {a:?}");
+
+        let chunk2 = p.sent(1, chunk1[0].send_marker(), now);
+        assert!(matches!(
+            chunk2[0].send_marker(),
+            Some(SentMarker::CheckpointChunk { is_last: true, .. })
+        ));
+        let flushed = p.sent(1, chunk2[0].send_marker(), now);
+        assert_eq!(flushed.len(), 1, "the queued output must flush exactly once Done: {flushed:?}");
+        let decoded = decode_one(flushed[0].send_bytes());
+        assert_eq!(
+            decoded,
+            DecodedFrame::AttachServer(AttachServer::Output { bytes: b"queued-behind".to_vec() })
+        );
+    }
+
     // -- keepalive --------------------------------------------------------
 
+    /// The keepalive's OWN send is also subject to the generic
+    /// progress-stall bound (finding 5: it is just another outstanding
+    /// send) -- so an UNCONFIRMED keepalive eventually closes the
+    /// connection regardless, via that generic mechanism, and this test
+    /// must not (and does not) contradict that. What it proves instead is
+    /// the DISTINCT property the ADR pins for the reply deadline
+    /// specifically: once the keepalive IS confirmed sent, its OWN 30s
+    /// reply window starts fresh from THAT moment, not from whenever it
+    /// was originally enqueued -- confirming it late (here, 25s after
+    /// enqueue, comfortably inside both bounds) and then checking a point
+    /// that would already be expired under a wrongly enqueue-anchored
+    /// deadline, but is not under a correctly sent-completion-anchored
+    /// one, is what distinguishes the two.
     #[test]
     fn keepalive_deadline_starts_at_sent_completion_not_enqueue() {
         let mut p = proto();
         let now = t0();
         attach_to_done(&mut p, 1, now);
-        p.take_committed(1, "alice".into(), 1, now);
+        drive_take(&mut p, 1, "alice", 1, now);
 
         let idle = now + KEEPALIVE_IDLE_TRIGGER;
         let a = p.tick(idle);
@@ -1615,38 +2030,102 @@ mod tests {
             other => panic!("expected a Keepalive send: {other:?}"),
         };
 
-        // Even well past 30s WITHOUT the sent-completion ever being
-        // reported, the reply deadline must not have started -- no close,
-        // no second keepalive.
-        let much_later = idle + Duration::from_secs(120);
-        let a = p.tick(much_later);
-        assert!(a.is_empty(), "deadline must not run before sent-completion: {a:?}");
+        // Confirmed late -- 25s after being sent, still inside every
+        // bound.
+        let confirmed_at = idle + Duration::from_secs(25);
+        assert!(p.tick(confirmed_at).is_empty());
+        p.sent(1, Some(SentMarker::Keepalive { nonce }), confirmed_at);
 
-        // NOW report it sent -- the 30s reply deadline starts here.
-        p.sent(1, Some(SentMarker::Keepalive { nonce }), much_later);
-        let a = p.tick(much_later + Duration::from_secs(29));
-        assert!(a.is_empty(), "must not fire before its own 30s window: {a:?}");
-        let a = p.tick(much_later + Duration::from_secs(31));
+        // 29s after CONFIRMATION (54s after the original enqueue): past a
+        // WRONGLY enqueue-anchored deadline (idle+30s), but still inside a
+        // correctly confirmation-anchored one (confirmed_at+30s).
+        let a = p.tick(confirmed_at + Duration::from_secs(29));
+        assert!(a.is_empty(), "the reply deadline must run from sent-completion, not enqueue: {a:?}");
+        let a = p.tick(confirmed_at + Duration::from_secs(31));
         assert!(a.iter().any(|x| matches!(x, Action::Close(1))), "expected keepalive death: {a:?}");
     }
 
+    /// Finding 6: suspension scopes to the DRIVER connection's OWN
+    /// in-flight transfer only -- an unrelated connection's transfer must
+    /// never suspend it.
     #[test]
-    fn keepalive_suspended_during_a_checkpoint_transfer() {
+    fn keepalive_not_suspended_by_an_unrelated_connections_checkpoint_transfer() {
         let mut p = proto();
         let now = t0();
         attach_to_done(&mut p, 1, now);
-        p.take_committed(1, "alice".into(), 1, now);
+        drive_take(&mut p, 1, "alice", 1, now);
 
-        // A second connection's attach occupies the global slot.
+        // A second connection's attach occupies the global slot, actually
+        // IN FLIGHT (Sending, not merely AwaitingGround -- which would
+        // itself ground-timeout well before the 30s mark below and
+        // confound the assertion) -- must NOT affect connection 1's
+        // keepalive at all.
         p.connection_opened(2, now);
         let a = p.frame(2, hello_frame(), now);
         p.sent(2, a[0].send_marker(), now);
         p.frame(2, attach_frame("bob"), now);
-        p.ground_reached(now); // conn 2 begins Sending -- slot occupied
+        p.ground_reached(now);
+        let big = vec![0u8; wire::MAX_CHECKPOINT_CHUNK_PAYLOAD + 1]; // 2 chunks
+        p.checkpoint_ready(2, big, now); // conn 2 now Sending; never confirmed
 
-        let idle = now + KEEPALIVE_IDLE_TRIGGER + Duration::from_secs(60);
+        // (Conn 2's own never-confirmed chunk send will ALSO trip the
+        // generic progress-stall bound at this same 30s mark -- that is
+        // correct and unrelated; this test only cares whether conn 1's
+        // keepalive fired.)
+        let idle = now + KEEPALIVE_IDLE_TRIGGER;
         let a = p.tick(idle);
-        assert!(a.is_empty(), "keepalive must be suspended while a checkpoint is in flight: {a:?}");
+        assert!(
+            a.iter().any(|x| matches!(x, Action::Send { conn: 1, marker: Some(SentMarker::Keepalive { .. }), .. })),
+            "an unrelated connection's transfer must not suspend this driver's keepalive: {a:?}"
+        );
+    }
+
+    /// Exercises the FREEZE mechanism in isolation, by directly installing
+    /// the driver capability on a connection whose own checkpoint is still
+    /// mid-transfer -- a state the normal `take` gate (`CheckpointInFlight`)
+    /// never actually permits in practice (see the module doc), but the
+    /// suspend/freeze logic itself should still behave correctly if this
+    /// invariant were ever relaxed.
+    #[test]
+    fn keepalive_reply_deadline_is_frozen_while_the_drivers_own_checkpoint_is_in_flight() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done(&mut p, 1, now);
+        drive_take(&mut p, 1, "alice", 1, now);
+
+        let idle = now + KEEPALIVE_IDLE_TRIGGER;
+        let a = p.tick(idle);
+        let nonce = match &a[0] {
+            Action::Send {
+                marker: Some(SentMarker::Keepalive { nonce }),
+                ..
+            } => *nonce,
+            other => panic!("expected a Keepalive send: {other:?}"),
+        };
+        p.sent(1, Some(SentMarker::Keepalive { nonce }), idle); // reply deadline armed: idle + 30s
+
+        force_checkpoint_state(
+            &mut p,
+            1,
+            CheckpointProgress::Sending { bytes: Arc::from(vec![0u8; 4]), offset: 0 },
+        );
+
+        // 40s of real time passes while suspended -- past the UN-frozen
+        // deadline (idle+30s).
+        let mid_suspend = idle + Duration::from_secs(20);
+        assert!(p.tick(mid_suspend).is_empty(), "must not fire while suspended");
+        let end_suspend = idle + Duration::from_secs(40);
+        assert!(
+            p.tick(end_suspend).is_empty(),
+            "still suspended -- must not fire even past the original deadline"
+        );
+
+        // End suspension; the deadline was pushed forward by the suspended
+        // span, so it must NOT fire immediately.
+        force_checkpoint_state(&mut p, 1, CheckpointProgress::Done);
+        assert!(p.tick(end_suspend).is_empty(), "must not fire the instant suspension ends");
+        let past_extended_deadline = end_suspend + Duration::from_secs(31);
+        assert!(p.tick(past_extended_deadline).iter().any(|a| matches!(a, Action::Close(1))));
     }
 
     #[test]
@@ -1654,7 +2133,7 @@ mod tests {
         let mut p = proto();
         let now = t0();
         attach_to_done(&mut p, 1, now);
-        p.take_committed(1, "alice".into(), 1, now);
+        drive_take(&mut p, 1, "alice", 1, now);
         let idle = now + KEEPALIVE_IDLE_TRIGGER;
         let a = p.tick(idle);
         let real_nonce = match &a[0] {
@@ -1669,23 +2148,76 @@ mod tests {
             .any(|x| matches!(x, Action::RecordRefusal { reason: RefusalReason::UnexpectedKeepalive, .. })));
     }
 
-    // -- queue accounting -------------------------------------------------
-
+    /// Finding 6, fix 2: a demoted former driver's late keepalive echo
+    /// (for a nonce that was discarded the moment it was demoted) is
+    /// ignorable, not fatal -- it must not close the connection, which is
+    /// still a legitimate subscriber.
     #[test]
-    fn progress_deadline_fires_on_a_stalled_nonempty_queue() {
+    fn demoted_drivers_late_keepalive_echo_is_ignored_not_fatal() {
         let mut p = proto();
         let now = t0();
         attach_to_done(&mut p, 1, now);
-        let a = p.bytes_queued(1, 1024, now);
-        assert!(a.is_empty());
-        let a = p.tick(now + Duration::from_secs(29));
-        assert!(a.is_empty(), "must not fire early: {a:?}");
-        let a = p.tick(now + Duration::from_secs(31));
+        attach_to_done(&mut p, 2, now);
+        drive_take(&mut p, 1, "alice", 1, now);
+
+        let idle = now + KEEPALIVE_IDLE_TRIGGER;
+        let a = p.tick(idle);
+        let nonce = match &a[0] {
+            Action::Send { marker: Some(SentMarker::Keepalive { nonce }), .. } => *nonce,
+            other => panic!("{other:?}"),
+        };
+
+        // conn 2 takes next, demoting conn 1 -- conn 1's nonce is discarded.
+        drive_take(&mut p, 2, "bob", 2, now);
+
+        let echo = decode_one(&encode_keepalive(nonce));
+        let a = p.frame(1, echo, now);
+        assert!(a.is_empty(), "a demoted driver's late echo must be ignored, not closed: {a:?}");
+        let out = p.output_committed(b"hi", now);
+        assert!(out.iter().any(|a| matches!(a, Action::Send { conn: 1, .. })));
+    }
+
+    // -- progress deadline (finding 5) ------------------------------------
+
+    /// The generic deadline covers EVERY kind of outstanding send (here: an
+    /// unconfirmed mgmt reply, not live output) and resets at the
+    /// empty→nonempty transition: a connection that sat idle for a LONG
+    /// time before anything was ever queued must not be penalized for that
+    /// idle stretch the instant something finally is.
+    #[test]
+    fn progress_deadline_covers_every_kind_of_outstanding_send_and_resets_at_the_empty_to_nonempty_transition() {
+        let mut p = proto();
+        let now = t0();
+        p.connection_opened(1, now);
+        let much_later = now + Duration::from_secs(1000);
+        let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
+        let a = p.frame(1, probe, much_later);
+        assert!(matches!(a.as_slice(), [Action::Send { .. }]));
+
+        let a = p.tick(much_later + Duration::from_secs(29));
+        assert!(
+            a.is_empty(),
+            "must not fire early, and must not be penalized for the earlier idle stretch: {a:?}"
+        );
+        let a = p.tick(much_later + Duration::from_secs(31));
         assert!(a.iter().any(|x| matches!(x, Action::Close(1))), "{a:?}");
         assert!(a
             .iter()
             .any(|x| matches!(x, Action::RecordRefusal { reason: RefusalReason::ProgressStall, .. })));
     }
+
+    #[test]
+    fn progress_deadline_still_covers_live_output_specifically() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done(&mut p, 1, now);
+        let a = p.output_committed(b"hi", now);
+        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::OutputBytes { n: 2 }), .. }]));
+        let a = p.tick(now + Duration::from_secs(31));
+        assert!(a.iter().any(|x| matches!(x, Action::Close(1))));
+    }
+
+    // -- queue accounting -------------------------------------------------
 
     #[test]
     fn queue_overflow_closes_with_no_wire_frame() {
@@ -1711,5 +2243,42 @@ mod tests {
         let a = p.output_committed(b"hi", now);
         assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::OutputBytes { n: 2 }), .. }]));
         p.sent(1, a[0].send_marker(), now);
+    }
+
+    // -- teardown (finding 7) ---------------------------------------------
+
+    #[test]
+    fn teardown_ignores_producer_bound_requests_but_not_mgmt_or_attach() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done(&mut p, 1, now);
+        drive_take(&mut p, 1, "alice", 1, now);
+        p.begin_teardown();
+
+        let input = decode_one(
+            &encode_attach_client(&AttachClient::Input {
+                controller_id: "alice".into(),
+                take_epoch: 1,
+                idem_key: [1u8; 16],
+                payload: b"x".to_vec(),
+            })
+            .unwrap(),
+        );
+        assert_eq!(p.frame(1, input, now), vec![]);
+        let resize = decode_one(&encode_attach_client(&AttachClient::Resize { cols: 100, rows: 40 }).unwrap());
+        assert_eq!(p.frame(1, resize, now), vec![]);
+
+        // No lockstep leak from an ignored request: a follow-up (still
+        // ignored) request on the same connection produces no violation
+        // either.
+        let resize2 = decode_one(&encode_attach_client(&AttachClient::Resize { cols: 90, rows: 30 }).unwrap());
+        let a = p.frame(1, resize2, now);
+        assert!(a.is_empty());
+        assert!(!a.iter().any(|x| matches!(x, Action::Close(_))));
+
+        // mgmt still works, on a separate connection.
+        p.connection_opened(2, now);
+        let a = p.frame(2, decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap()), now);
+        assert!(matches!(a.as_slice(), [Action::Send { .. }]), "mgmt must still be serviced during teardown: {a:?}");
     }
 }

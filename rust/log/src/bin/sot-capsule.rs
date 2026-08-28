@@ -72,6 +72,7 @@ impl sot_log::capsule_win::Transport for NullTransport {
         self.next_id
     }
     fn close(&mut self, _conn: sot_log::attach_proto::ConnId) {}
+    fn shutdown_all(&mut self) {}
 }
 
 /// Temporary harness for the Windows capsule runtime (ADR 0041 steps 4-5,

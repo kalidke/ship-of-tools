@@ -98,17 +98,24 @@
 //!   are the ordinary, expected end of the drain. The `ReaderClosedUnexpectedly`
 //!   `ExitKind` variant is gone — it named a failure as if it were a
 //!   legitimate way for a run to end successfully, which it never was.
-//! - **`run` no longer owns stdin.** The first version read the real
-//!   process stdin internally, which (a) is process-global state a
+//! - **`run` no longer owns stdin.** (Historical, step 4: at the time this
+//!   applied to a `Command` enum that still carried `Input`/`Resize`
+//!   alongside `Kill`, and to a bin harness that forwarded raw stdin bytes
+//!   as `Command::Input` — step 5 later DELETED both, see "Step 5 (U2)"
+//!   below; only `Kill` remains on `Command` today, and the bin harness has
+//!   no stdin thread at all any more.) The first version of THIS file read
+//!   the real process stdin internally, which (a) is process-global state a
 //!   reusable library function has no business owning, and (b) meant
 //!   "teardown revokes admission" was really just "teardown discards what
-//!   it already accepted" — the thread kept enqueueing regardless. `run`
-//!   now takes exactly ONE caller-owned command channel
-//!   (`mpsc::Receiver<Command>`, `Command` now including `Input` alongside
-//!   `Resize`/`Kill`); the bin harness owns its own stdin-reading thread
-//!   and forwards `Command::Input` into it. Admission revocation is now
-//!   real: once the main loop is left for teardown, this channel is never
-//!   read from again — not received-then-discarded, simply never polled.
+//!   it already accepted" — the thread kept enqueueing regardless. The fix
+//!   that survives step 5: `run` takes exactly the caller-owned channels a
+//!   caller feeds (today `commands: mpsc::Receiver<Command>` for `Kill`, and
+//!   `transport_events` for the wire) — it owns none of the sources that
+//!   feed them. Admission revocation is real: once the main loop is left
+//!   for teardown, `commands` is never read from again — not
+//!   received-then-discarded, simply never polled (the wire lane's own,
+//!   NARROWER revocation — producer-bound ops only, mgmt/`Sent` still
+//!   serviced — is `AttachProto::begin_teardown`, see "Step 5 (U2)").
 //!
 //! Judgment calls the review looked at and left standing (not litigated
 //! further here): `FrameCtx::capsule_frame` (not `controller_frame`) as the
@@ -212,6 +219,16 @@ pub trait Transport {
     /// Sever `conn` at the transport level. Idempotent: closing an
     /// already-closed or unknown connection is a no-op.
     fn close(&mut self, conn: ConnId);
+    /// Close EVERY connection and stop accepting new ones — called exactly
+    /// once, at the very end of `run` (via an RAII guard, so every exit
+    /// path reaches it, not only the success one), so the pipe is
+    /// guaranteed closed BEFORE the writer lock releases (finding 7: "the
+    /// capsule can enforce pipe-closed-before-lock-release"). U3's real
+    /// named-pipe server already closes everything on `Drop`; this method
+    /// exists so the writer loop can trigger that deterministically at the
+    /// right moment rather than relying on cross-type drop ordering
+    /// between the transport and the `VoyageStore` holding the lock.
+    fn shutdown_all(&mut self);
 }
 
 /// ADR 0041 "Terminal state" resource budget — the geometry a resize (or
@@ -375,24 +392,37 @@ fn wall_ms() -> i64 {
 /// because `attach_proto` must never make an OS call itself. `survival` is
 /// the spawner-supplied value (decision 11), never derived from
 /// `IsProcessInJob`.
-fn self_status(survival: Survival) -> MgmtStatus {
+///
+/// Finding 14: `GetProcessTimes`' return value is CHECKED, not ignored — a
+/// failure becomes a loud `Err`, never a silent `created: 0`. A synthesized
+/// zero would be indistinguishable, to step 6's adoption identity
+/// challenge, from a process genuinely created at the Windows epoch; the
+/// challenge compares this value EXACTLY against `GetProcessTimes` called a
+/// second time (via `OpenProcess`) on a candidate handle, so a wrong-but
+/// -plausible value here is worse than an explicit failure the caller can
+/// act on.
+fn self_status(survival: Survival) -> Result<MgmtStatus> {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
     // SAFETY: `GetCurrentProcess` returns a pseudo-handle needing no close;
-    // the four FILETIME out-params are plain, fully-initialized structs on
-    // return (a failed call — which cannot happen for the current process's
-    // own pseudo-handle — would leave them zeroed, a harmless `created: 0`).
+    // the four FILETIME out-params are plain, stack-local structs, valid to
+    // write into regardless of the call's outcome.
     let (pid, created) = unsafe {
         let pid = GetCurrentProcessId();
         let mut creation: FILETIME = std::mem::zeroed();
         let mut exit: FILETIME = std::mem::zeroed();
         let mut kernel: FILETIME = std::mem::zeroed();
         let mut user: FILETIME = std::mem::zeroed();
-        GetProcessTimes(GetCurrentProcess(), &mut creation, &mut exit, &mut kernel, &mut user);
+        if GetProcessTimes(GetCurrentProcess(), &mut creation, &mut exit, &mut kernel, &mut user) == 0 {
+            return Err(Error::State(format!(
+                "capsule_win: GetProcessTimes on the current process failed: {:?}",
+                std::io::Error::last_os_error()
+            )));
+        }
         let created = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
         (pid, created)
     };
-    MgmtStatus { pid, created, survival }
+    Ok(MgmtStatus { pid, created, survival })
 }
 
 struct BudgetState {
@@ -601,8 +631,41 @@ impl FrameCtx {
 /// [`AttachAction::ForwardInput`]'s doc for the full sequence this
 /// implements; `connection_authorized` is `attach_proto`'s connection-scoped
 /// half of the ADR's "the capability AND the durable holder/epoch" check —
-/// the durable half (`controller_id`/`take_epoch` against `ctx`'s own
-/// state) is this function's job, and both must pass for a fresh forward.
+/// the durable half (against `ctx`'s own state) is this function's job, and
+/// both must pass for a fresh forward.
+///
+/// **Finding 1 (verifier-red frames):** every controller-actor envelope
+/// this function writes — `input`, `refused_stale_epoch`, `forward_intent`,
+/// `forwarded` alike — carries `ctx.take_epoch`, the CURRENTLY COMMITTED
+/// epoch, in its `Actor.take_epoch` field, NEVER the wire-claimed
+/// (possibly stale) `take_epoch` parameter. `verify.rs` requires every
+/// controller frame's declared `take_epoch` to equal whatever is committed
+/// AT THAT POINT in the frame stream (`controller take_epoch {te} !=
+/// committed {committed_take_epoch}` is its exact check) — that field
+/// records WHEN a frame was written, not what a client claimed. Staleness
+/// lives ONLY in the `refused_stale_epoch` fact itself (the fact-kind IS
+/// the record that this input was rejected) plus an informational
+/// `claimed` object in its body (ignorable extra JSON — ADR 0039: "unknown
+/// object members are ignorable") for operators who want to see what was
+/// actually asserted. `controller_id` stays the WIRE-CLAIMED identity
+/// (unlike `take_epoch`, `verify.rs` never checks it against anything, and
+/// recording who actually attempted the write is more useful than
+/// overwriting it with the current holder's name on a REFUSED attempt).
+///
+/// **Finding 2 (the last-moment recheck's position):** `is_fresh` is
+/// computed ONCE, here, before `input` is even committed — and that single
+/// computation is what "immediately before the PTY write" (ADR 0041) means
+/// in a SINGLE-THREADED, ordered writer loop: this whole function executes
+/// as one uninterrupted step of that loop (no other connection's action,
+/// no tick, nothing else touches `ctx.holder`/`ctx.take_epoch` between here
+/// and `writer.write_all` below), so re-evaluating the same durable state
+/// again right before the syscall could only ever reproduce the SAME
+/// answer — which the `debug_assert!` beside the syscall states as an
+/// explicit invariant rather than leaving implicit. Checking any LATER
+/// than here would also break the lattice: the legal refused chain is
+/// `{input, refused}` (ADR 0039 lists no `{input, intent, refused}`
+/// member), so staleness must be decided BEFORE `forward_intent` is ever
+/// committed, not after.
 #[allow(clippy::too_many_arguments)]
 fn run_input_wal(
     ctx: &mut FrameCtx,
@@ -616,9 +679,8 @@ fn run_input_wal(
     payload: &[u8],
     connection_authorized: bool,
 ) -> Result<InputOutcome> {
-    let is_fresh = connection_authorized
-        && ctx.holder.as_deref() == Some(controller_id)
-        && take_epoch == ctx.take_epoch;
+    let is_fresh =
+        connection_authorized && ctx.holder.as_deref() == Some(controller_id) && take_epoch == ctx.take_epoch;
 
     // A brand-new idem_key commits `input` (fsync) first, always -- "input
     // is durably logged before the producer sees it" (ADR 0039) applies
@@ -629,7 +691,7 @@ fn run_input_wal(
             let input = ctx.controller_frame(
                 Class::Input,
                 controller_id.to_string(),
-                take_epoch,
+                ctx.take_epoch,
                 json!({"idem_key": hex_idem_key(&idem_key), "content": "redacted", "length": payload.len()}),
             );
             let input_seq = input.seq;
@@ -660,9 +722,10 @@ fn run_input_wal(
         let mut refused = ctx.controller_frame(
             Class::Lifecycle,
             controller_id.to_string(),
-            take_epoch,
+            ctx.take_epoch,
             json!({"kind": "input_fact",
-                   "fact": {"input": {"epoch": input_seq.epoch, "n": input_seq.n}, "fact": "refused_stale_epoch"}}),
+                   "fact": {"input": {"epoch": input_seq.epoch, "n": input_seq.n}, "fact": "refused_stale_epoch"},
+                   "claimed": {"controller_id": controller_id, "take_epoch": take_epoch}}),
         );
         refused.refs = vec![FrameRef { kind: RefKind::CausedBy, frame: input_seq }];
         w.append(&refused, Commit::Immediate)?;
@@ -676,7 +739,7 @@ fn run_input_wal(
     let mut intent = ctx.controller_frame(
         Class::Lifecycle,
         controller_id.to_string(),
-        take_epoch,
+        ctx.take_epoch,
         json!({"kind": "input_fact",
                "fact": {"input": {"epoch": input_seq.epoch, "n": input_seq.n}, "fact": "forward_intent"}}),
     );
@@ -689,12 +752,22 @@ fn run_input_wal(
         e.intent = Some(intent_seq);
     }
 
+    // The "immediately before the PTY write" recheck (finding 2): stated as
+    // an assertion, not a second decision branch -- see this function's own
+    // doc for why a DIFFERENT answer here is impossible in this
+    // single-threaded loop, and why the lattice forbids acting as if it
+    // could be (there is no legal `{input, intent, refused}` chain to fall
+    // back to).
+    debug_assert!(
+        connection_authorized && ctx.holder.as_deref() == Some(controller_id) && take_epoch == ctx.take_epoch,
+        "durable state changed within one WAL step -- the single-threaded writer-loop invariant was violated"
+    );
     writer.write_all(payload)?; // the forward syscall
 
     let mut fwd = ctx.controller_frame(
         Class::Lifecycle,
         controller_id.to_string(),
-        take_epoch,
+        ctx.take_epoch,
         json!({"kind": "input_fact",
                "fact": {"input": {"epoch": input_seq.epoch, "n": input_seq.n}, "fact": "forwarded",
                         "intent": {"epoch": intent_seq.epoch, "n": intent_seq.n}}}),
@@ -738,6 +811,20 @@ pub fn run(
     let mut store = VoyageStore::open_for_writing(&voyage_root, &config.voyage_id)?;
     store.seal_survivor()?;
 
+    // Finding 7: `shutdown_all` must run before the writer lock releases
+    // (`store`'s own drop) on EVERY exit path from this point on, not only
+    // the success one -- an RAII guard is the only way to guarantee that
+    // regardless of which `?` returns early below. Declared AFTER `store`:
+    // Rust drops locals in REVERSE declaration order, so this guard's
+    // `Drop` (closing the pipe) runs BEFORE `store`'s (releasing the lock).
+    struct ShutdownGuard<'a>(&'a mut dyn Transport);
+    impl Drop for ShutdownGuard<'_> {
+        fn drop(&mut self) {
+            self.0.shutdown_all();
+        }
+    }
+    let transport = ShutdownGuard(transport);
+
     let mut ctx = FrameCtx {
         epoch: store.epoch,
         next_n: 1,
@@ -766,9 +853,16 @@ pub fn run(
 
     // The attach protocol: platform-neutral state machine (`attach_proto`);
     // `pid`/`created` are OS values it must never compute itself.
-    let mut attach_proto = AttachProto::new(self_status(config.survival));
+    let mut attach_proto = AttachProto::new(self_status(config.survival)?);
     let mut splitters: HashMap<ConnId, wire::FrameSplitter> = HashMap::new();
-    let mut pending_sends: HashMap<u64, (ConnId, Option<SentMarker>)> = HashMap::new();
+    // Finding 11: keyed by (conn, id), not id alone -- a transport's send
+    // ids are only ever meaningful scoped to the connection that issued
+    // them (a real transport may recycle ids across connections), and
+    // every entry for a connection is purged the moment it closes (see
+    // `execute_light_actions!`'s `Close` arm), so a canceled write can
+    // never leak an entry, nor can a stale/mismatched completion apply a
+    // marker meant for a connection that no longer exists.
+    let mut pending_sends: HashMap<(ConnId, u64), Option<SentMarker>> = HashMap::new();
     let mut shutdown_requested = false;
     let mut shutdown_reason: Option<String> = None;
 
@@ -962,12 +1056,18 @@ pub fn run(
             while let Some(action) = queue.pop_front() {
                 match action {
                     AttachAction::Send { conn, frame_bytes, marker } => {
-                        let id = transport.send(conn, frame_bytes);
-                        pending_sends.insert(id, (conn, marker));
+                        let id = transport.0.send(conn, frame_bytes);
+                        pending_sends.insert((conn, id), marker);
                     }
                     AttachAction::Close(conn) => {
-                        transport.close(conn);
+                        transport.0.close(conn);
                         splitters.remove(&conn);
+                        // Finding 11: purge every pending send this
+                        // connection still had outstanding -- a canceled
+                        // write's completion, if the transport ever
+                        // reported one anyway, must find nothing to apply
+                        // a marker to.
+                        pending_sends.retain(|&(c, _), _| c != conn);
                         queue.extend(attach_proto.connection_closed(conn, Instant::now()));
                     }
                     AttachAction::RecordRefusal { conn, reason } => {
@@ -1038,7 +1138,7 @@ pub fn run(
                     | AttachAction::BeginCheckpoint { .. }) => {
                         execute_light_actions!(vec![light]);
                     }
-                    AttachAction::CommitTake { conn, controller_id } => {
+                    AttachAction::CommitTake { conn, controller_id, request_id } => {
                         flush_output!(w);
                         ctx.take_epoch += 1;
                         ctx.holder = Some(controller_id.clone());
@@ -1049,7 +1149,7 @@ pub fn run(
                         );
                         w.append(&f, Commit::Immediate)?;
                         frames_written += 1;
-                        queue.extend(attach_proto.take_committed(conn, controller_id, ctx.take_epoch, Instant::now()));
+                        queue.extend(attach_proto.take_committed(conn, ctx.take_epoch, request_id, Instant::now()));
                     }
                     AttachAction::ForwardInput {
                         conn,
@@ -1058,6 +1158,7 @@ pub fn run(
                         idem_key,
                         payload,
                         connection_authorized,
+                        request_id,
                     } => {
                         let outcome = run_input_wal(
                             &mut ctx,
@@ -1072,9 +1173,9 @@ pub fn run(
                             connection_authorized,
                         )?;
                         maybe_rotate!(w);
-                        queue.extend(attach_proto.input_outcome(conn, outcome, Instant::now()));
+                        queue.extend(attach_proto.input_outcome(conn, outcome, request_id, Instant::now()));
                     }
-                    AttachAction::ApplyResize { conn, cols, rows } => {
+                    AttachAction::ApplyResize { conn, cols, rows, request_id } => {
                         // ADR 0041: "resize (driver-only) routes into the
                         // step-4 exchange unchanged" -- same ordered
                         // request -> one ResizePseudoConsole call (skipped
@@ -1118,7 +1219,7 @@ pub fn run(
                         w.append(&out, Commit::Immediate)?;
                         frames_written += 1;
                         maybe_rotate!(w);
-                        queue.extend(attach_proto.resize_outcome(conn, ok, Instant::now()));
+                        queue.extend(attach_proto.resize_outcome(conn, ok, request_id, Instant::now()));
                     }
                     AttachAction::Shutdown { reason } => {
                         shutdown_requested = true;
@@ -1151,18 +1252,101 @@ pub fn run(
                             execute_actions!(attach_proto.frame(conn, f, Instant::now()));
                         }
                         if err.is_some() {
-                            transport.close(conn);
+                            transport.0.close(conn);
                             splitters.remove(&conn);
+                            pending_sends.retain(|&(c, _), _| c != conn); // finding 11
                             execute_actions!(attach_proto.connection_closed(conn, Instant::now()));
                         }
                     }
                     TransportEvent::ConnectionClosed(conn) => {
                         splitters.remove(&conn);
+                        pending_sends.retain(|&(c, _), _| c != conn); // finding 11
                         execute_actions!(attach_proto.connection_closed(conn, Instant::now()));
                     }
                     TransportEvent::Sent(conn, id) => {
-                        if let Some((_, marker)) = pending_sends.remove(&id) {
+                        if let Some(marker) = pending_sends.remove(&(conn, id)) {
                             execute_actions!(attach_proto.sent(conn, marker, Instant::now()));
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    // Finding 7: producer-bound admission is revoked once EndRun begins
+    // (`AttachProto::begin_teardown`), but mgmt (`probe`/`status`) and
+    // `Sent` completions must keep being serviced through BOTH teardown
+    // phases, until the pipe is explicitly closed -- step 6's adoption
+    // status-challenge premise depends on it ("revoke admission" applies to
+    // producer-bound input/resize/take, never to mgmt status/probe). This
+    // is the teardown-safe action executor: every "light" action
+    // (Send/Close/RecordRefusal/BeginCheckpoint -- none of which need
+    // `pty`, already moved into the Phase-B closer thread by the time this
+    // runs there) delegates to `execute_light_actions!`; `Shutdown` (a
+    // second EndRun request racing the first) is harmless; `CommitTake`/
+    // `ForwardInput`/`ApplyResize` are asserted UNREACHABLE --
+    // `begin_teardown` guarantees `AttachProto` never emits them again at
+    // the SOURCE, so this is a documented invariant enforced loudly, not a
+    // live code path (which could not exist here regardless: `pty` is not
+    // even in scope during Phase B).
+    macro_rules! execute_teardown_actions {
+        ($seed:expr) => {{
+            let mut queue: VecDeque<AttachAction> = VecDeque::from($seed);
+            while let Some(action) = queue.pop_front() {
+                match action {
+                    light @ (AttachAction::Send { .. }
+                    | AttachAction::Close(_)
+                    | AttachAction::RecordRefusal { .. }
+                    | AttachAction::BeginCheckpoint { .. }) => {
+                        execute_light_actions!(vec![light]);
+                    }
+                    AttachAction::Shutdown { reason } => {
+                        shutdown_requested = true;
+                        shutdown_reason = Some(reason);
+                    }
+                    other @ (AttachAction::CommitTake { .. }
+                    | AttachAction::ForwardInput { .. }
+                    | AttachAction::ApplyResize { .. }) => {
+                        unreachable!("AttachProto must never emit {other:?} once begin_teardown() has run");
+                    }
+                }
+            }
+        }};
+    }
+
+    /// As `service_transport_events!`, but dispatching through
+    /// `execute_teardown_actions!` -- used by BOTH teardown phases so mgmt
+    /// traffic and `Sent` completions keep flowing right up until the pipe
+    /// is closed (finding 7).
+    macro_rules! service_transport_events_teardown {
+        () => {
+            while let Ok(ev) = transport_events.try_recv() {
+                match ev {
+                    TransportEvent::ConnectionOpened(conn) => {
+                        splitters.insert(conn, wire::FrameSplitter::new());
+                        execute_teardown_actions!(attach_proto.connection_opened(conn, Instant::now()));
+                    }
+                    TransportEvent::Bytes(conn, bytes) => {
+                        let Some(splitter) = splitters.get_mut(&conn) else { continue };
+                        let (frames, err) = splitter.feed(&bytes);
+                        for f in frames {
+                            execute_teardown_actions!(attach_proto.frame(conn, f, Instant::now()));
+                        }
+                        if err.is_some() {
+                            transport.0.close(conn);
+                            splitters.remove(&conn);
+                            pending_sends.retain(|&(c, _), _| c != conn);
+                            execute_teardown_actions!(attach_proto.connection_closed(conn, Instant::now()));
+                        }
+                    }
+                    TransportEvent::ConnectionClosed(conn) => {
+                        splitters.remove(&conn);
+                        pending_sends.retain(|&(c, _), _| c != conn);
+                        execute_teardown_actions!(attach_proto.connection_closed(conn, Instant::now()));
+                    }
+                    TransportEvent::Sent(conn, id) => {
+                        if let Some(marker) = pending_sends.remove(&(conn, id)) {
+                            execute_teardown_actions!(attach_proto.sent(conn, marker, Instant::now()));
                         }
                     }
                 }
@@ -1308,6 +1492,14 @@ pub fn run(
     };
     flush_output!(w);
 
+    // Producer-bound admission (take/input/resize) is revoked from here on
+    // (finding 7) — but mgmt (probe/status/shutdown) and Sent completions
+    // keep being serviced through BOTH phases below, via
+    // `service_transport_events_teardown!`, until the pipe closes (see that
+    // macro's own doc for why, and `execute_teardown_actions!` for the
+    // reduced action set this implies).
+    attach_proto.begin_teardown();
+
     // ONE teardown orchestrator (ADR 0041: "Teardown has ONE orchestrator")
     // for both exit_kind::ProducerExited and exit_kind::Requested — every
     // step below is unconditional: terminating an already-empty job is a
@@ -1316,16 +1508,18 @@ pub fn run(
     //
     // Phase A: terminate the job, then REAP-POLL `ActiveProcesses` WHILE
     // STILL SERVICING `output_rx` (committing frames, answering the
-    // handshake) — review finding, the blocker: the previous version
-    // polled the job with nobody draining the channel, so a reader already
-    // blocked in `OutputBudget::reserve` (or a DA1 only this loop could
-    // answer) could leave `hOutput` undrained right when
-    // `ClosePseudoConsole` needed it drained, and Microsoft's own docs say
-    // a pre-24H2 build's close can wait indefinitely under exactly that
-    // condition.
+    // handshake) AND the transport (mgmt/Sent, per finding 7) — review
+    // finding, the blocker: the previous version polled the job with
+    // nobody draining the channel, so a reader already blocked in
+    // `OutputBudget::reserve` (or a DA1 only this loop could answer) could
+    // leave `hOutput` undrained right when `ClosePseudoConsole` needed it
+    // drained, and Microsoft's own docs say a pre-24H2 build's close can
+    // wait indefinitely under exactly that condition.
     job.terminate()?;
     let reap_deadline = Instant::now() + TEARDOWN_REAP_TIMEOUT;
     loop {
+        service_transport_events_teardown!();
+        execute_teardown_actions!(attach_proto.tick(Instant::now()));
         if job.active_processes()? == 0 {
             break;
         }
@@ -1369,6 +1563,8 @@ pub fn run(
     let closer_handle = std::thread::spawn(move || pty.close_pty());
     let drain_deadline = Instant::now() + TEARDOWN_DRAIN_TIMEOUT;
     loop {
+        service_transport_events_teardown!();
+        execute_teardown_actions!(attach_proto.tick(Instant::now()));
         match output_rx.recv_timeout(TEARDOWN_DRAIN_POLL) {
             Ok(ReaderEvent::Output(bytes)) => {
                 handle_output!(bytes);

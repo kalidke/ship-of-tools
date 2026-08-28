@@ -1,5 +1,6 @@
 //! `sot-conpty-helper [--child]`
 //! `sot-conpty-helper --flood <total-bytes>`
+//! `sot-conpty-helper --script [repeats]`
 //!
 //! Minimal helper binary for `conpty.rs`'s containment test (ADR 0041
 //! §"Containment and the owned ConPTY layer") and `capsule_win.rs`'s
@@ -32,6 +33,21 @@
 //! Content is deliberately not meaningful: the test verifies byte COUNT
 //! (all of it survived the 8 MiB budget without loss or duplication), not
 //! content.
+//!
+//! `--script [repeats]` (default 20) is ADR 0041 step 5's attach-fidelity
+//! test's producer (finding 13: a deterministic byte-emitting helper, not
+//! an interactive shell whose startup/rendering output the test cannot
+//! predict or control). Writes a FIXED byte sequence — plain text, a CSI
+//! color pair, an OSC (BEL-terminated) title, a 3-byte and a 4-byte UTF-8
+//! codepoint, and a DCS (ST-terminated) payload — ONE BYTE AT A TIME with a
+//! short sleep and an explicit flush between each, `repeats` times, then
+//! exits 0 (a natural exit, so the run's own teardown is exercised too).
+//! One-byte pacing does not GUARANTEE any particular ConPTY read boundary
+//! (conhost's own buffering is opaque to a producer outside it) — it
+//! removes every reason for conhost to coalesce ahead of bytes not yet
+//! written, which is the most a producer can promise from outside; the
+//! fidelity property under test must hold regardless of where the actual
+//! cut falls, precisely because this helper does not engineer one.
 
 #[cfg(windows)]
 fn main() {
@@ -43,6 +59,13 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .expect("--flood needs a byte count");
         flood(total);
+        return;
+    }
+
+    if std::env::args().any(|a| a == "--script") {
+        let pos = std::env::args().position(|a| a == "--script").unwrap();
+        let repeats: usize = std::env::args().nth(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(20);
+        script(repeats);
         return;
     }
 
@@ -97,6 +120,32 @@ fn flood(total: usize) {
         written += n;
     }
     let _ = stdout.flush();
+}
+
+/// The fixed byte sequence `--script` emits, repeated: plain text; a CSI
+/// SGR pair (color on, "red", color off); an OSC title set, BEL-terminated;
+/// a 3-byte UTF-8 codepoint (★ U+2605) immediately followed by a 4-byte one
+/// (😀 U+1F600); a DCS payload, ST-terminated; a trailing newline. Exposed
+/// so the integration test can build its OWN reference byte stream from the
+/// identical literal, rather than guessing at what this binary emits.
+pub const SCRIPT_BLOCK: &[u8] =
+    b"plain text\x1b[31mred\x1b[0m\x1b]0;title\x07\xe2\x98\x85\xf0\x9f\x98\x80\x1bPdcs-payload\x1b\\done\n";
+
+/// Writes [`SCRIPT_BLOCK`] `repeats` times, one byte at a time with a short
+/// sleep and an explicit flush between each (see the module doc), then
+/// returns (the caller exits 0 right after — a natural exit).
+#[cfg(windows)]
+fn script(repeats: usize) {
+    use std::io::Write;
+    use std::time::Duration;
+    let mut stdout = std::io::stdout().lock();
+    for _ in 0..repeats {
+        for &b in SCRIPT_BLOCK {
+            stdout.write_all(&[b]).expect("script write");
+            let _ = stdout.flush();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 #[cfg(not(windows))]

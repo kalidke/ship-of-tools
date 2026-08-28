@@ -55,6 +55,7 @@ impl Transport for NoopTransport {
         0
     }
     fn close(&mut self, _conn: ConnId) {}
+    fn shutdown_all(&mut self) {}
 }
 
 /// Constructs an already-disconnected `(Sender, Receiver)` pair's receiving
@@ -72,6 +73,14 @@ fn no_transport() -> (mpsc::Receiver<TransportEvent>, NoopTransport) {
 /// same-stack callback into it (`Transport::send`'s own doc) — except while
 /// `hold` is set, when completions queue in `held` for the test to release
 /// on its own schedule (needed to prove send-before-teardown ordering).
+///
+/// Transport contract (finding 3): both `sent`/`held` are plain per-
+/// connection FIFO queues — `send` always appends, `release_held` always
+/// drains front-to-back — because U3's real named pipe delivers everything
+/// written to one connection in write order with no reordering. Any test
+/// that depends on ordering (a checkpoint transfer followed by queued
+/// post-watermark output, in particular) relies on that guarantee holding
+/// here exactly as it holds for the real transport.
 #[derive(Clone)]
 struct TestTransport {
     events_tx: mpsc::Sender<TransportEvent>,
@@ -88,6 +97,7 @@ struct TestInner {
     hold_for: std::collections::HashSet<ConnId>,
     held: Vec<(ConnId, u64)>,
     closed: Vec<ConnId>,
+    shutdown_all_called: bool,
 }
 
 impl TestTransport {
@@ -130,6 +140,9 @@ impl TestTransport {
     fn closed_conns(&self) -> Vec<ConnId> {
         self.inner.lock().unwrap().closed.clone()
     }
+    fn shutdown_all_was_called(&self) -> bool {
+        self.inner.lock().unwrap().shutdown_all_called
+    }
 }
 
 impl Transport for TestTransport {
@@ -149,6 +162,9 @@ impl Transport for TestTransport {
     }
     fn close(&mut self, conn: ConnId) {
         self.inner.lock().unwrap().closed.push(conn);
+    }
+    fn shutdown_all(&mut self) {
+        self.inner.lock().unwrap().shutdown_all_called = true;
     }
 }
 
@@ -656,20 +672,54 @@ fn exit_code_high_bit_status_preserved_through_producer_dead() {
 
 /// Test 7: attach mid-stream, on a producer emitting escape sequences and
 /// multibyte UTF-8 continuously, reproduces a from-scratch replay
-/// byte-for-byte. The vt100 fork's own unit tests already prove `is_ground`
-/// is safe to cut CSI/OSC/DCS/UTF-8 at any byte boundary (U0); what THIS
-/// test proves is the WIRING: the watermark barrier really does force a
-/// commit, publish, checkpoint, and subscribe as one step, so a checkpoint
-/// taken while a producer is still actively emitting mixed escape/unicode
-/// output plus every wire `output` frame received AFTER it exactly equals a
-/// reference parser fed the ENTIRE voyage from the start.
+/// byte-for-byte.
+///
+/// Rebuilt (finding 13 — the review's own diagnosis of the prior version's
+/// CI failure): the producer is now `sot-conpty-helper --script`, a
+/// deterministic byte-emitting helper (see its module doc), not a
+/// `cmd.exe /d /c for /l ... echo` loop whose own startup latency and
+/// console rendering the test could not predict or control. One-byte
+/// pacing across 1000 repeats of a block containing a CSI pair, a
+/// BEL-terminated OSC, an ST-terminated DCS, and a 3-byte codepoint
+/// immediately followed by a 4-byte one (no ASCII separator) makes it all
+/// but certain some ConPTY read lands inside every one of those sequence
+/// classes across the run — "forced" by sheer repetition, not engineered to
+/// land at one exact byte. The vt100 fork's own unit tests already prove
+/// `is_ground` is safe to cut any of them at any byte boundary (U0); what
+/// THIS test proves is the WIRING.
+///
+/// Two things get proved, both stronger than the prior version's:
+///
+/// 1. Finding 3 (queuing, not dropping): this connection's sends are held
+///    from before `attach` through a window where the producer keeps
+///    emitting, so whichever chunk is last never completes yet — proving
+///    newly committed output queues behind an in-flight checkpoint transfer
+///    (`sent_frames` must show zero `output` frames for this connection
+///    while held) rather than being sent ahead of it or dropped. Releasing
+///    then delivers the transfer followed immediately by every queued
+///    frame, in order — the FIFO contract documented on `TestTransport`
+///    above.
+/// 2. Finding 13 (the U0 oracle): rather than compare rendered
+///    `Screen::contents()` strings — which cannot see cursor position,
+///    attributes, or mode bits that aren't in the current viewport — this
+///    compares raw bytes twice: the exact tail-byte-equality of what this
+///    connection received against the voyage's own recorded producer
+///    bytes, and the wire checkpoint against an independently computed
+///    `Screen::checkpoint()` of the exact same prefix. Checkpoint bytes are
+///    a pure function of screen state (magic/version/geometry/modes/attrs/
+///    grid — see `vt100_ctt::Screen::checkpoint`), so two parsers fed
+///    identical byte prefixes must produce identical checkpoints; anything
+///    else is either a wiring bug or a checkpoint-format non-determinism
+///    this crate depends on not existing.
 #[test]
 fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     let dir = tempfile::tempdir().unwrap();
-    let esc = '\u{1b}';
-    let star = '\u{2605}'; // multibyte UTF-8 (3 bytes), interleaved with CSI
-    let script = format!("for /l %i in (1,1,400) do @echo line %i {esc}[31mcolor{esc}[0m {star}");
-    let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), script];
+    let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
+    // Large enough that the helper is still running long after every step
+    // below — this test ends the run with an explicit `Kill`, exactly like
+    // the prior version did, never by waiting for the producer to finish on
+    // its own.
+    let argv = vec![helper, "--script".to_string(), "1000".to_string()];
     let (rows, cols) = (25u16, 80u16);
     let cfg = config(dir.path(), "midattach1", argv, cols, rows);
     let root = cfg.voyage_root.clone();
@@ -694,7 +744,37 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     watcher.wait_for(CONN, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
     });
+
+    // Finding 3: hold every send to this connection from before `attach`
+    // through a window where the producer keeps emitting, so the
+    // checkpoint transfer's own completion(s) never get reported while
+    // more output is committed behind it.
+    transport.set_hold_for(CONN, true);
     transport.feed(CONN, frame::attach("watcher"));
+    // A throwaway cursor: only confirms a checkpoint chunk was actually
+    // constructed and queued (`sent_frames` records the bytes at `send`
+    // time, held or not) without disturbing `watcher`'s own cursor -- which
+    // still needs to find that SAME chunk itself, below, once released.
+    FrameWatcher::new(&transport).wait_for(CONN, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::CheckpointChunk { .. })).then_some(())
+    });
+
+    // The producer keeps emitting while the transfer sits unconfirmed.
+    std::thread::sleep(Duration::from_millis(500));
+    let output_frames_while_held = transport
+        .sent_frames()
+        .into_iter()
+        .filter(|(c, _)| *c == CONN)
+        .flat_map(|(_, bytes)| wire::FrameSplitter::new().feed(&bytes).0)
+        .filter(|f| matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::Output { .. })))
+        .count();
+    assert_eq!(
+        output_frames_while_held, 0,
+        "post-watermark output must queue behind an unconfirmed checkpoint transfer, never be sent ahead of it"
+    );
+
+    transport.set_hold_for(CONN, false);
+    transport.release_held();
     let checkpoint_bytes = watcher.collect_checkpoint(CONN, Duration::from_secs(10));
 
     // Let more output flow post-watermark, then end the run.
@@ -720,30 +800,60 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
             }
         }
     }
+    assert!(!post_watermark.is_empty(), "expected at least some post-watermark output");
+    let suffix: Vec<u8> = post_watermark.into_iter().flatten().collect();
 
-    // The restored side: fresh parser, checkpoint, then every post-
-    // watermark output frame in order.
-    let mut restored = vt100_ctt::Parser::new(rows, cols, 0);
-    restored.restore_screen(&checkpoint_bytes).expect("checkpoint must decode");
-    for bytes in &post_watermark {
-        restored.process(bytes);
-    }
-
-    // The reference side: a from-scratch parser fed the WHOLE voyage.
+    // The full, from-scratch reference: every producer byte the voyage
+    // ever recorded, in order.
     let frames = sealed_frames(&root, "midattach1");
-    let mut reference = vt100_ctt::Parser::new(rows, cols, 0);
+    let mut total = Vec::new();
     for f in &frames {
         if f.class == Class::Producer {
             let b64 = f.payload.as_ref().unwrap()["bytes_b64"].as_str().unwrap();
-            reference.process(&decode_b64(b64));
+            total.extend(decode_b64(b64));
         }
     }
 
-    assert!(!post_watermark.is_empty(), "expected at least some post-watermark output");
+    // Finding 13, part 1: the post-watermark stream this connection
+    // received must be the EXACT byte-for-byte tail of the voyage's total
+    // producer bytes -- proves nothing was dropped, duplicated, or
+    // reordered across the watermark boundary.
+    assert!(suffix.len() <= total.len(), "received more post-watermark bytes than the voyage ever recorded");
+    let split = total.len() - suffix.len();
     assert_eq!(
-        restored.screen().contents(),
-        reference.screen().contents(),
-        "checkpoint + subsequent stream must reproduce the reference screen exactly"
+        &total[split..],
+        suffix.as_slice(),
+        "post-watermark output must be the exact byte-for-byte tail of the voyage"
+    );
+    let prefix = &total[..split];
+
+    // Finding 13, part 2 (the U0 oracle): the wire checkpoint must be
+    // byte-identical to one computed independently by feeding a fresh
+    // reference parser exactly the prefix.
+    let mut reference_at_watermark = vt100_ctt::Parser::new(rows, cols, 0);
+    reference_at_watermark.process(prefix);
+    let reference_checkpoint =
+        reference_at_watermark.screen().checkpoint().expect("prefix screen must be representable");
+    assert_eq!(
+        checkpoint_bytes, reference_checkpoint,
+        "the wire checkpoint must be byte-identical to an independently computed checkpoint of the same prefix"
+    );
+
+    // And the full round trip, at the same checkpoint-byte granularity: a
+    // fresh parser restored from the wire checkpoint and replayed with the
+    // exact suffix must reach a state whose OWN checkpoint is
+    // byte-identical to a from-scratch parser's, fed the entire voyage.
+    let mut restored = vt100_ctt::Parser::new(rows, cols, 0);
+    restored.restore_screen(&checkpoint_bytes).expect("checkpoint must decode");
+    restored.process(&suffix);
+
+    let mut reference = vt100_ctt::Parser::new(rows, cols, 0);
+    reference.process(&total);
+
+    assert_eq!(
+        restored.screen().checkpoint().expect("restored screen must be representable"),
+        reference.screen().checkpoint().expect("reference screen must be representable"),
+        "checkpoint + subsequent stream must reproduce the reference session byte-for-byte"
     );
     assert_eq!(summary.exit_kind, ExitKind::Requested);
 }
@@ -1120,4 +1230,68 @@ fn shutdown_ack_sent_before_teardown() {
     let frames = sealed_frames(&root, "shutdownseq1");
     let dead = assert_producer_dead_is_last(&frames);
     assert_eq!(dead["reason"], "integration-test-reason");
+}
+
+/// Test 12 (finding 7, Codex review rework): `Transport::shutdown_all` is
+/// actually invoked before `run` returns, on every exit path -- the one
+/// piece of the teardown rework that is new wiring, not a restatement of
+/// something the pure-logic `AttachProto` tests already cover. The reduced
+/// legal action set teardown enforces (mgmt served, producer-bound
+/// admission revoked, no lockstep leak from an ignored request) is proven
+/// exhaustively and race-free at that level already
+/// (`attach_proto::teardown_ignores_producer_bound_requests_but_not_mgmt_or_attach`)
+/// — reproving it here against a real ConPTY would only buy a race between
+/// the test thread's writes and whichever loop iteration observes them
+/// first, without adding coverage `execute_teardown_actions!`'s own
+/// `unreachable!` arms don't already give at compile time.
+#[test]
+fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Path 1: a natural producer exit.
+    {
+        let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
+        let cfg = config(dir.path(), "shutdownall1", argv, 80, 25);
+        let (transport, trx) = TestTransport::new();
+        let (_tx, rx) = mpsc::channel();
+        let mut run_transport = transport.clone();
+        let summary = capsule_win::run(cfg, rx, trx, &mut run_transport).unwrap();
+        assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
+        assert!(
+            transport.shutdown_all_was_called(),
+            "shutdown_all must be called even on a natural producer exit"
+        );
+    }
+
+    // Path 2: a requested kill, with an attached connection still open --
+    // proving `shutdown_all` runs even when the pipe has real state on it,
+    // not only in the no-connections-ever-opened case above.
+    {
+        let argv = vec!["cmd.exe".to_string()]; // stays open until killed
+        let cfg = config(dir.path(), "shutdownall2", argv, 80, 25);
+        let (transport, trx) = TestTransport::new();
+        let (tx, rx) = mpsc::channel();
+        let run_transport = transport.clone();
+        let handle = std::thread::spawn(move || {
+            let mut t = run_transport;
+            capsule_win::run(cfg, rx, trx, &mut t)
+        });
+
+        const CONN: ConnId = 1;
+        transport.open(CONN);
+        transport.feed(CONN, frame::hello());
+        let mut watcher = FrameWatcher::new(&transport);
+        watcher.wait_for(CONN, Duration::from_secs(10), |f| {
+            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+        });
+        transport.feed(CONN, frame::attach("watcher"));
+        watcher.collect_checkpoint(CONN, Duration::from_secs(10));
+
+        tx.send(Command::Kill).unwrap();
+        let summary = wait_for_join(handle, Duration::from_secs(30))
+            .expect("run did not return within the teardown bound")
+            .unwrap();
+        assert_eq!(summary.exit_kind, ExitKind::Requested);
+        assert!(transport.shutdown_all_was_called(), "shutdown_all must be called on a requested kill too");
+    }
 }

@@ -50,11 +50,11 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 tempfile = { workspace = true }
 
-[target.'cfg(windows)'.dev-dependencies]
-# tests/capsule_win.rs's own reference-parser fidelity check (ADR 0041 step
-# 5: attach checkpoint + subsequent stream reproduces a from-scratch replay
-# byte-for-byte) needs to drive a second, independent `vt100_ctt::Parser` —
-# the same crate `capsule_win.rs` itself uses, dev-only here since no
-# non-test code in this crate's own target needs it outside the `[target.
-# 'cfg(windows)'.dependencies]` entry above.
-vt100-ctt = "0.17"
+# No separate `[target.'cfg(windows)'.dev-dependencies]` entry for
+# vt100-ctt: finding 15 (Codex review, U2 rework) — Cargo already exposes a
+# package's own normal `[target.'cfg(windows)'.dependencies]` to its
+# integration tests (they're additional units in the same package's build,
+# not a separate consumer), so `tests/capsule_win.rs`'s independent
+# `vt100_ctt::Parser` for its reference-parser fidelity check already
+# resolves against the entry above. A second entry here would just be two
+# names for the one dependency.

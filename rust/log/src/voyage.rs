@@ -47,13 +47,13 @@ pub struct DedupeEntry {
     pub intent: Option<Seq>,
 }
 
-/// Parses a lowercase `hex32` `idem_key` into its 16 raw bytes. Malformed
-/// input (wrong length, non-hex, or uppercase) leaves the fold silently
-/// skipping that frame's contribution rather than failing the whole walk:
-/// schema legality is `Envelope::validate`'s and the verifier's job: this
-/// index is a best-effort accelerator built FROM already-accepted frames,
-/// not a second enforcer of the wire format.
-fn parse_idem_key(s: &str) -> Option<IdemKey> {
+/// Parses a lowercase `hex32` `idem_key` into its 16 raw bytes. Shared by
+/// the fold (below, the "writer" side) and `verify.rs` (finding 8: "add
+/// lowercase-hex32 idem_key enforcement to BOTH the writer validation and
+/// the verifier" — one format check, not two independently-drifting ones).
+/// `pub(crate)` rather than a second copy: a malformed key is now a FOLD
+/// ERROR (see `walk_segment`), not a silently-skipped frame.
+pub(crate) fn parse_idem_key(s: &str) -> Option<IdemKey> {
     if s.len() != 32 || !s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
         return None;
     }
@@ -71,25 +71,57 @@ fn parse_seq(v: &serde_json::Value) -> Option<Seq> {
     })
 }
 
-/// Folds one segment's `input` and `input_fact` frames into `index`, in
-/// frame order — the SAME pass `max_take_epoch` already walks in
-/// `open_for_writing` (ADR 0041 decision 5: "never a second scan"). `by_seq`
-/// is a WALK-TIME-ONLY accessory (an `input_fact`'s `fact.input` names its
-/// input frame by `Seq`, never by `idem_key` — the wire schema has no other
-/// way to resolve it) threaded across every segment alongside `index`, then
+/// Walks one segment's frames EXACTLY ONCE (finding 9: the previous version
+/// traversed `reader.frames` a second time for this, even though there was
+/// only ever one disk read/decode; `open_for_writing`'s max-take-epoch
+/// tracking now folds into this SAME loop instead of its own), computing
+/// the max committed `take_state.take_epoch` AND folding the ADR 0041
+/// decision-5 input-WAL dedupe index together. `by_seq` is a
+/// WALK-TIME-ONLY accessory (an `input_fact`'s `fact.input` names its input
+/// frame by `Seq`, never by `idem_key` — the wire schema has no other way
+/// to resolve it) threaded across every segment alongside `index`, then
 /// dropped: a capsule's own LIVE updates after open always already hold the
 /// idem_key of whatever they just wrote, so they never need it.
-fn fold_dedupe_index(
+///
+/// FAILS CLOSED (finding 8): a duplicate `idem_key` across two `input`
+/// frames, an `input_fact` naming an unresolvable input, a fact-kind
+/// illegal from its idem_key's CURRENT lattice state (mirroring
+/// `verify.rs`'s own `FactState` machine exactly — `forward_intent` only
+/// from `Input`, `forwarded`/`refused_stale_epoch` only from... see below),
+/// an unrecognized fact-kind string, or a malformed (non-lowercase-hex32)
+/// `idem_key` are all errors, not silently-skipped or last-writer-wins
+/// frames. This index is read by a LIVE writer to decide whether to
+/// re-forward a duplicate input — silently mis-indexing it here is not a
+/// defect an optional, separate `sot-log verify` run can be trusted to
+/// catch first.
+fn walk_segment(
     index: &mut HashMap<IdemKey, DedupeEntry>,
     by_seq: &mut HashMap<Seq, IdemKey>,
     reader: &SegmentReader,
-) {
+) -> Result<u64> {
+    let mut max_take = 0u64;
     for f in &reader.frames {
         let Some(p) = f.payload.as_ref() else { continue };
+
+        if p.get("kind").and_then(|v| v.as_str()) == Some("take_state") {
+            if let Some(te) = p.get("take").and_then(|t| t.get("take_epoch")).and_then(|v| v.as_u64()) {
+                max_take = max_take.max(te);
+            }
+        }
+
         if f.class == crate::envelope::Class::Input {
-            let Some(key) = p.get("idem_key").and_then(|v| v.as_str()).and_then(parse_idem_key) else {
+            let Some(key_str) = p.get("idem_key").and_then(|v| v.as_str()) else {
                 continue;
             };
+            let key = parse_idem_key(key_str).ok_or_else(|| {
+                Error::Schema(format!("frame {:?}: idem_key {key_str:?} is not lowercase hex32", f.seq))
+            })?;
+            if index.contains_key(&key) {
+                return Err(Error::Schema(format!(
+                    "frame {:?}: idem_key {key_str:?} reused from an earlier input frame",
+                    f.seq
+                )));
+            }
             by_seq.insert(f.seq, key);
             index.insert(
                 key,
@@ -101,6 +133,7 @@ fn fold_dedupe_index(
             );
             continue;
         }
+
         if f.class != crate::envelope::Class::Lifecycle
             || p.get("kind").and_then(|v| v.as_str()) != Some("input_fact")
         {
@@ -109,10 +142,23 @@ fn fold_dedupe_index(
         let Some(fact) = p.get("fact") else { continue };
         let Some(fact_kind) = fact.get("fact").and_then(|v| v.as_str()) else { continue };
         let Some(input_seq) = fact.get("input").and_then(parse_seq) else { continue };
-        let Some(&key) = by_seq.get(&input_seq) else { continue };
-        let Some(entry) = index.get_mut(&key) else { continue };
+        let key = *by_seq.get(&input_seq).ok_or_else(|| {
+            Error::Schema(format!(
+                "frame {:?}: input_fact names {input_seq:?}, which is not a committed input frame",
+                f.seq
+            ))
+        })?;
+        let entry = index
+            .get_mut(&key)
+            .expect("by_seq and index are populated together, in the same branch above");
         match fact_kind {
             "forward_intent" => {
+                if entry.state != DedupeState::Input {
+                    return Err(Error::Schema(format!(
+                        "frame {:?}: forward_intent illegal from the current chain state for idem_key {key:02x?}",
+                        f.seq
+                    )));
+                }
                 // The `forward_intent` fact carries no separate `intent`
                 // field (ADR 0039: only `forwarded`/`producer_observed`
                 // do, naming a PRIOR frame) -- THIS frame's own seq IS the
@@ -120,11 +166,45 @@ fn fold_dedupe_index(
                 entry.state = DedupeState::Intent;
                 entry.intent = Some(f.seq);
             }
-            "forwarded" | "producer_observed" => entry.state = DedupeState::Forwarded,
-            "refused_stale_epoch" => entry.state = DedupeState::Refused,
-            _ => {}
+            "forwarded" => {
+                if entry.state != DedupeState::Intent {
+                    return Err(Error::Schema(format!(
+                        "frame {:?}: forwarded illegal from the current chain state for idem_key {key:02x?}",
+                        f.seq
+                    )));
+                }
+                entry.state = DedupeState::Forwarded;
+            }
+            "producer_observed" => {
+                if entry.state != DedupeState::Forwarded {
+                    return Err(Error::Schema(format!(
+                        "frame {:?}: producer_observed illegal from the current chain state for idem_key {key:02x?}",
+                        f.seq
+                    )));
+                }
+                // Already the terminal `Forwarded` bucket (see
+                // `DedupeState`'s doc) -- no state change.
+            }
+            "refused_stale_epoch" => {
+                if entry.state != DedupeState::Input {
+                    return Err(Error::Schema(format!(
+                        "frame {:?}: refused_stale_epoch illegal from the current chain state for idem_key {key:02x?}",
+                        f.seq
+                    )));
+                }
+                entry.state = DedupeState::Refused;
+            }
+            other => {
+                // `InputFactKind` is a closed serde enum, but `payload` is
+                // raw JSON at this layer (schema enforcement for a
+                // TYPED read happens only in `verify.rs`'s own pass) --
+                // fail closed here too rather than silently ignoring an
+                // unrecognized fact-kind string.
+                return Err(Error::Schema(format!("frame {:?}: unknown input_fact kind {other:?}", f.seq)));
+            }
         }
     }
+    Ok(max_take)
 }
 
 pub struct VoyageStore {
@@ -154,21 +234,6 @@ pub struct VoyageStore {
     /// whatever it just wrote, so it updates this map directly rather than
     /// re-deriving anything from it.
     pub dedupe_index: HashMap<IdemKey, DedupeEntry>,
-}
-
-/// Max take_epoch across a segment's committed `take_state` frames.
-fn max_take_epoch(reader: &SegmentReader) -> u64 {
-    reader
-        .frames
-        .iter()
-        .filter_map(|f| {
-            let p = f.payload.as_ref()?;
-            (p.get("kind")?.as_str()? == "take_state")
-                .then(|| p.get("take")?.get("take_epoch")?.as_u64())
-                .flatten()
-        })
-        .max()
-        .unwrap_or(0)
 }
 
 impl VoyageStore {
@@ -380,8 +445,7 @@ impl VoyageStore {
                             r.header.voyage_id, voyage_id
                         )));
                     }
-                    last_take = last_take.max(max_take_epoch(&r));
-                    fold_dedupe_index(&mut dedupe_index, &mut dedupe_by_seq, &r);
+                    last_take = last_take.max(walk_segment(&mut dedupe_index, &mut dedupe_by_seq, &r)?);
                     survivor = Some(id);
                     next_index = idx + 1;
                 }
@@ -409,8 +473,7 @@ impl VoyageStore {
                     if *idx == 0 {
                         retention = r.header.retention_class;
                     }
-                    last_take = last_take.max(max_take_epoch(&r));
-                    fold_dedupe_index(&mut dedupe_index, &mut dedupe_by_seq, &r);
+                    last_take = last_take.max(walk_segment(&mut dedupe_index, &mut dedupe_by_seq, &r)?);
                     prev = r.seal.as_ref().map(|s| s.digest.clone());
                     next_index = idx + 1;
                 }
@@ -689,10 +752,11 @@ mod tests {
     /// chain shape (ADR 0039's exact five, minus `{…,observed}` which
     /// `DedupeState` deliberately folds into `Forwarded` — see its doc),
     /// folded by `open_for_writing`'s OWN existing frame walk. "No second
-    /// scan" is asserted by construction, not timing: `fold_dedupe_index`
-    /// is called only from inside that walk (visible in this module's
-    /// source, `open_for_writing` above) — there is no second call site
-    /// anywhere in the crate. Reopening as a SUCCESSOR incarnation (a fresh
+    /// scan" is asserted by construction, not timing: `walk_segment` is
+    /// called only from inside that walk (visible in this module's source,
+    /// `open_for_writing` above), computing BOTH the max take epoch and the
+    /// dedupe fold in one pass — there is no second call site anywhere in
+    /// the crate. Reopening as a SUCCESSOR incarnation (a fresh
     /// `open_for_writing`, not the same store handle) proves the index
     /// survives an epoch boundary — the exact case decision 5 names: "a
     /// successor capsule starting with an empty index would let a
@@ -766,6 +830,97 @@ mod tests {
         assert_eq!(e.intent, None);
 
         assert_eq!(store.dedupe_index.len(), 4, "no extra/spurious entries");
+    }
+
+    /// Finding 8: the fold FAILS CLOSED on retained history it cannot
+    /// trust, rather than silently degrading the index. Four ways a
+    /// segment can be untrustworthy, each its own test below: a duplicate
+    /// `idem_key` across two `input` frames (previously last-writer-wins);
+    /// an `input_fact` naming a `Seq` that was never a committed `input`
+    /// frame (previously silently skipped); a fact-kind illegal from its
+    /// idem_key's current lattice state, mirroring `verify.rs`'s own
+    /// `FactState` machine (previously accepted unconditionally); and a
+    /// malformed (non-lowercase-hex32) `idem_key` (previously silently
+    /// skipped, which could verify green yet omit an identity from the
+    /// index and re-forward it).
+    #[test]
+    fn dedupe_fold_rejects_a_duplicate_idem_key_across_two_input_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voydup");
+        VoyageStore::bootstrap(&root, "voydup", RetentionClass::Discard).unwrap();
+        let dup_key = "5".repeat(32);
+        {
+            let mut store = VoyageStore::open_for_writing(&root, "voydup").unwrap();
+            let mut w = store.open_segment(0).unwrap();
+            w.append(&lc_take(1, 1, 1, None), Commit::Immediate).unwrap();
+            w.append(&lc_take(1, 2, 2, Some("ctrl")), Commit::Immediate).unwrap();
+            w.append(&input_env(1, 3, &dup_key), Commit::Immediate).unwrap();
+            w.append(&input_env(1, 4, &dup_key), Commit::Immediate).unwrap(); // SAME key, second input
+            w.seal(None).unwrap();
+        }
+        let Err(err) = VoyageStore::open_for_writing(&root, "voydup") else { panic!("expected open_for_writing to fail") };
+        assert!(matches!(err, Error::Schema(_)), "expected a Schema error, got: {err}");
+    }
+
+    #[test]
+    fn dedupe_fold_rejects_a_fact_naming_an_unresolvable_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voybadref");
+        VoyageStore::bootstrap(&root, "voybadref", RetentionClass::Discard).unwrap();
+        {
+            let mut store = VoyageStore::open_for_writing(&root, "voybadref").unwrap();
+            let mut w = store.open_segment(0).unwrap();
+            w.append(&lc_take(1, 1, 1, None), Commit::Immediate).unwrap();
+            w.append(&lc_take(1, 2, 2, Some("ctrl")), Commit::Immediate).unwrap();
+            // A forward_intent fact naming a Seq that was never an input
+            // frame.
+            w.append(&intent_env(1, 3, Seq { epoch: 1, n: 99 }), Commit::Immediate).unwrap();
+            w.seal(None).unwrap();
+        }
+        let Err(err) = VoyageStore::open_for_writing(&root, "voybadref") else { panic!("expected open_for_writing to fail") };
+        assert!(matches!(err, Error::Schema(_)), "expected a Schema error, got: {err}");
+    }
+
+    #[test]
+    fn dedupe_fold_rejects_an_illegal_state_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voyillegal");
+        VoyageStore::bootstrap(&root, "voyillegal", RetentionClass::Discard).unwrap();
+        let key = "6".repeat(32);
+        {
+            let mut store = VoyageStore::open_for_writing(&root, "voyillegal").unwrap();
+            let mut w = store.open_segment(0).unwrap();
+            w.append(&lc_take(1, 1, 1, None), Commit::Immediate).unwrap();
+            w.append(&lc_take(1, 2, 2, Some("ctrl")), Commit::Immediate).unwrap();
+            w.append(&input_env(1, 3, &key), Commit::Immediate).unwrap();
+            // `forwarded` directly from the `Input` state, skipping
+            // `forward_intent` entirely -- illegal (mirrors verify.rs's
+            // own FactState lattice).
+            let input_seq = Seq { epoch: 1, n: 3 };
+            w.append(&forwarded_env(1, 4, input_seq, input_seq), Commit::Immediate).unwrap();
+            w.seal(None).unwrap();
+        }
+        let Err(err) = VoyageStore::open_for_writing(&root, "voyillegal") else { panic!("expected open_for_writing to fail") };
+        assert!(matches!(err, Error::Schema(_)), "expected a Schema error, got: {err}");
+    }
+
+    #[test]
+    fn dedupe_fold_rejects_a_malformed_idem_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voybadkey");
+        VoyageStore::bootstrap(&root, "voybadkey", RetentionClass::Discard).unwrap();
+        {
+            let mut store = VoyageStore::open_for_writing(&root, "voybadkey").unwrap();
+            let mut w = store.open_segment(0).unwrap();
+            w.append(&lc_take(1, 1, 1, None), Commit::Immediate).unwrap();
+            w.append(&lc_take(1, 2, 2, Some("ctrl")), Commit::Immediate).unwrap();
+            // Uppercase hex: structurally a 32-char string, not lowercase
+            // hex32.
+            w.append(&input_env(1, 3, &"A".repeat(32)), Commit::Immediate).unwrap();
+            w.seal(None).unwrap();
+        }
+        let Err(err) = VoyageStore::open_for_writing(&root, "voybadkey") else { panic!("expected open_for_writing to fail") };
+        assert!(matches!(err, Error::Schema(_)), "expected a Schema error, got: {err}");
     }
 
     /// The concurrent-bootstrap race a shared staging pathname allowed
