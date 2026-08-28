@@ -12,9 +12,10 @@
 //! multi-frame stream, and fuzzing.
 
 use sot_log::wire::{
-    encode_attach_client, encode_attach_server, encode_mgmt_reply, encode_mgmt_request,
-    AttachClient, AttachRefusedReason, AttachServer, DecodedFrame, FrameSplitter, MgmtReply,
-    MgmtRequest, ResizeRefusedReason, Survival, TakeRefusedReason,
+    encode_attach_client, encode_attach_server, encode_keepalive, encode_mgmt_reply,
+    encode_mgmt_request, AttachClient, AttachRefusedReason, AttachServer, DecodedFrame,
+    FrameSplitter, MgmtReply, MgmtRequest, ResizeRefusedReason, Survival, TakeRefusedReason,
+    WireError, MGMT_MAGIC,
 };
 
 /// xorshift64* -- a fixed seed reproduces a failure exactly, with the
@@ -48,6 +49,16 @@ fn random_ascii_string(rng: &mut Rng, max_len: usize) -> String {
         .collect()
 }
 
+/// Like `random_ascii_string`, but never empty -- for `controller_id`,
+/// which the wire refuses at length 0 (see the module doc's "Field
+/// minimums" section).
+fn random_nonempty_ascii_string(rng: &mut Rng, max_len: usize) -> String {
+    let len = 1 + rng.below(max_len as u32) as usize;
+    (0..len)
+        .map(|_| (b'a' + (rng.below(26) as u8)) as char)
+        .collect()
+}
+
 fn random_bytes(rng: &mut Rng, max_len: usize) -> Vec<u8> {
     let len = rng.below((max_len + 1) as u32) as usize;
     (0..len).map(|_| rng.below(256) as u8).collect()
@@ -61,13 +72,17 @@ fn random_idem_key(rng: &mut Rng) -> [u8; 16] {
     key
 }
 
-/// One frame, tagged by which of the four `encode_*` functions it rides.
+/// One frame, tagged by which encoder it rides. `Keepalive` is its own
+/// variant, not nested under `AttachClient`/`AttachServer`: the wire has
+/// exactly one direction-neutral `keepalive` shape (see `wire`'s module
+/// doc), encoded by the single `encode_keepalive` function.
 #[derive(Debug, Clone)]
 enum GeneratedFrame {
     MgmtRequest(MgmtRequest),
     MgmtReply(MgmtReply),
     AttachClient(AttachClient),
     AttachServer(AttachServer),
+    Keepalive(u64),
 }
 
 impl GeneratedFrame {
@@ -77,6 +92,7 @@ impl GeneratedFrame {
             Self::MgmtReply(f) => encode_mgmt_reply(f).expect("generator stays in-bounds"),
             Self::AttachClient(f) => encode_attach_client(f).expect("generator stays in-bounds"),
             Self::AttachServer(f) => encode_attach_server(f).expect("generator stays in-bounds"),
+            Self::Keepalive(nonce) => encode_keepalive(*nonce),
         }
     }
 
@@ -86,6 +102,7 @@ impl GeneratedFrame {
             Self::MgmtReply(f) => DecodedFrame::MgmtReply(f.clone()),
             Self::AttachClient(f) => DecodedFrame::AttachClient(f.clone()),
             Self::AttachServer(f) => DecodedFrame::AttachServer(f.clone()),
+            Self::Keepalive(nonce) => DecodedFrame::Keepalive { nonce: *nonce },
         }
     }
 }
@@ -119,80 +136,80 @@ fn random_mgmt_frame(rng: &mut Rng) -> GeneratedFrame {
 }
 
 fn random_attach_frame(rng: &mut Rng) -> GeneratedFrame {
-    if rng.bool() {
-        let f = match rng.below(6) {
-            0 => AttachClient::Hello {
-                proto: rng.next_u32(),
-            },
-            1 => AttachClient::Attach {
-                controller_id: random_ascii_string(rng, 128),
-            },
-            2 => AttachClient::Take {
-                controller_id: random_ascii_string(rng, 128),
-            },
-            3 => AttachClient::Input {
-                controller_id: random_ascii_string(rng, 128),
-                take_epoch: (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
-                idem_key: random_idem_key(rng),
-                payload: random_bytes(rng, 200), // small on purpose -- bounds are tested separately
-            },
-            4 => AttachClient::Resize {
-                cols: rng.below(513) as u16,
-                rows: rng.below(257) as u16,
-            },
-            _ => AttachClient::Keepalive {
-                nonce: (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
-            },
-        };
-        GeneratedFrame::AttachClient(f)
-    } else {
-        let f = match rng.below(13) {
-            0 => AttachServer::HelloOk {
-                proto: rng.next_u32(),
-            },
-            1 => AttachServer::HelloRefused {
-                supported: rng.next_u32(),
-            },
-            2 => AttachServer::CheckpointChunk {
-                last: rng.bool(),
-                bytes: random_bytes(rng, 300),
-            },
-            3 => AttachServer::AttachRefused {
-                reason: if rng.bool() {
-                    AttachRefusedReason::GroundTimeout
-                } else {
-                    AttachRefusedReason::SubscriberCap
+    match rng.below(3) {
+        0 => {
+            let f = match rng.below(5) {
+                0 => AttachClient::Hello {
+                    proto: rng.next_u32(),
                 },
-            },
-            4 => AttachServer::Output {
-                bytes: random_bytes(rng, 300),
-            },
-            5 => AttachServer::TakeOk {
-                take_epoch: (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
-            },
-            6 => AttachServer::TakeRefused {
-                reason: if rng.bool() {
-                    TakeRefusedReason::NotAttached
-                } else {
-                    TakeRefusedReason::CheckpointInFlight
+                1 => AttachClient::Attach {
+                    controller_id: random_nonempty_ascii_string(rng, 128),
                 },
-            },
-            7 => AttachServer::InputRecorded,
-            8 => AttachServer::InputRefusedStale,
-            9 => AttachServer::InputDeliveryUnknown,
-            10 => AttachServer::ResizeOk,
-            11 => AttachServer::ResizeRefused {
-                reason: if rng.bool() {
-                    ResizeRefusedReason::OutOfBudget
-                } else {
-                    ResizeRefusedReason::NotDriver
+                2 => AttachClient::Take {
+                    controller_id: random_nonempty_ascii_string(rng, 128),
                 },
-            },
-            _ => AttachServer::Keepalive {
-                nonce: (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
-            },
-        };
-        GeneratedFrame::AttachServer(f)
+                3 => AttachClient::Input {
+                    controller_id: random_nonempty_ascii_string(rng, 128),
+                    take_epoch: (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
+                    idem_key: random_idem_key(rng),
+                    payload: random_bytes(rng, 200), // small -- bounds are tested separately
+                },
+                _ => AttachClient::Resize {
+                    cols: rng.below(513) as u16,
+                    rows: rng.below(257) as u16,
+                },
+            };
+            GeneratedFrame::AttachClient(f)
+        }
+        1 => {
+            let f = match rng.below(12) {
+                0 => AttachServer::HelloOk {
+                    proto: rng.next_u32(),
+                },
+                1 => AttachServer::HelloRefused {
+                    supported: rng.next_u32(),
+                },
+                2 => AttachServer::CheckpointChunk {
+                    last: rng.bool(),
+                    bytes: random_bytes(rng, 300),
+                },
+                3 => AttachServer::AttachRefused {
+                    reason: if rng.bool() {
+                        AttachRefusedReason::GroundTimeout
+                    } else {
+                        AttachRefusedReason::SubscriberCap
+                    },
+                },
+                4 => AttachServer::Output {
+                    bytes: random_bytes(rng, 300),
+                },
+                5 => AttachServer::TakeOk {
+                    take_epoch: (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
+                },
+                6 => AttachServer::TakeRefused {
+                    reason: if rng.bool() {
+                        TakeRefusedReason::NotAttached
+                    } else {
+                        TakeRefusedReason::CheckpointInFlight
+                    },
+                },
+                7 => AttachServer::InputRecorded,
+                8 => AttachServer::InputRefusedStale,
+                9 => AttachServer::InputDeliveryUnknown,
+                10 => AttachServer::ResizeOk,
+                _ => AttachServer::ResizeRefused {
+                    reason: if rng.bool() {
+                        ResizeRefusedReason::OutOfBudget
+                    } else {
+                        ResizeRefusedReason::NotDriver
+                    },
+                },
+            };
+            GeneratedFrame::AttachServer(f)
+        }
+        _ => GeneratedFrame::Keepalive(
+            (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
+        ),
     }
 }
 
@@ -210,7 +227,9 @@ fn random_sequence(rng: &mut Rng, mgmt_lane: bool, count: usize) -> Vec<Generate
 
 fn decode_all_at_once(bytes: &[u8]) -> Vec<DecodedFrame> {
     let mut splitter = FrameSplitter::new();
-    splitter.feed(bytes).expect("a valid stream must decode")
+    let (frames, err) = splitter.feed(bytes);
+    assert_eq!(err, None, "a valid stream must decode without error");
+    frames
 }
 
 fn decode_in_chunks(bytes: &[u8], chunk_bounds: &[usize]) -> Vec<DecodedFrame> {
@@ -218,11 +237,34 @@ fn decode_in_chunks(bytes: &[u8], chunk_bounds: &[usize]) -> Vec<DecodedFrame> {
     let mut out = Vec::new();
     let mut start = 0;
     for &end in chunk_bounds {
-        out.extend(splitter.feed(&bytes[start..end]).expect("a valid stream must decode"));
+        let (frames, err) = splitter.feed(&bytes[start..end]);
+        assert_eq!(err, None, "a valid stream must decode without error");
+        out.extend(frames);
         start = end;
     }
-    out.extend(splitter.feed(&bytes[start..]).expect("a valid stream must decode"));
+    let (frames, err) = splitter.feed(&bytes[start..]);
+    assert_eq!(err, None, "a valid stream must decode without error");
+    out.extend(frames);
     out
+}
+
+/// Feeds every chunk in order, accumulating frames across calls and
+/// capturing the FIRST error observed (later calls after a failure only
+/// ever repeat it, per the failed-state latch) -- the outcome a caller
+/// actually cares about is this cumulative pair, not any one call's
+/// partial answer.
+fn accumulate_feed(chunks: &[&[u8]]) -> (Vec<DecodedFrame>, Option<WireError>) {
+    let mut splitter = FrameSplitter::new();
+    let mut frames = Vec::new();
+    let mut error = None;
+    for chunk in chunks {
+        let (f, e) = splitter.feed(chunk);
+        frames.extend(f);
+        if error.is_none() {
+            error = e;
+        }
+    }
+    (frames, error)
 }
 
 // ------------------------------------------------------------------
@@ -274,6 +316,38 @@ fn splitter_decodes_identically_fed_one_byte_at_a_time() {
     let bounds: Vec<usize> = (1..bytes.len()).collect();
     let got = decode_in_chunks(&bytes, &bounds);
     assert_eq!(got, expected, "byte-at-a-time feed diverged from one-shot decode");
+}
+
+// ------------------------------------------------------------------
+// should-fix 3: the same (frames, error) outcome at every split point,
+// for a stream that DOES error partway through.
+// ------------------------------------------------------------------
+
+#[test]
+fn splitter_reports_identical_frames_and_error_at_every_split_point() {
+    // A few valid mgmt-lane frames, then one with an unknown tag on the
+    // SAME lane (so the error is `UnknownTag`, never a lane mismatch).
+    let mut rng = Rng(0x0FA1_1ED0_FA11_ED00);
+    let good_frames = random_sequence(&mut rng, true, 5);
+    let mut bytes: Vec<u8> = good_frames.iter().flat_map(|f| f.encode()).collect();
+    let bad_body = vec![0x99u8];
+    bytes.extend_from_slice(&MGMT_MAGIC);
+    bytes.extend_from_slice(&(bad_body.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&bad_body);
+
+    let expected_frames: Vec<DecodedFrame> =
+        good_frames.iter().map(GeneratedFrame::as_decoded).collect();
+
+    for split in 0..=bytes.len() {
+        let (frames, error) = accumulate_feed(&[&bytes[..split], &bytes[split..]]);
+        assert_eq!(frames, expected_frames, "split at {split} of {}: frames diverged", bytes.len());
+        assert_eq!(
+            error,
+            Some(WireError::UnknownTag(0x99)),
+            "split at {split} of {}: error diverged",
+            bytes.len()
+        );
+    }
 }
 
 // ------------------------------------------------------------------
@@ -339,25 +413,30 @@ fn fuzz_random_mutations_of_valid_streams_never_panic() {
 
             match rng.below(4) {
                 0 => {
-                    // Flip a random byte.
+                    // Flip a random byte -- XOR 0xff can never be a no-op.
                     let idx = rng.below(bytes.len() as u32) as usize;
                     bytes[idx] ^= 0xff;
                 }
                 1 => {
-                    // Truncate at a random point.
-                    let cut = rng.below((bytes.len() + 1) as u32) as usize;
+                    // Truncate at a random point STRICTLY shorter than
+                    // the original -- `below(bytes.len())` never returns
+                    // `bytes.len()` itself, so this can never be a no-op.
+                    let cut = rng.below(bytes.len() as u32) as usize;
                     bytes.truncate(cut);
                 }
                 2 => {
-                    // Insert random garbage at a random position.
+                    // Insert 1-8 bytes of random garbage at a random
+                    // position -- never zero bytes.
                     let idx = rng.below((bytes.len() + 1) as u32) as usize;
-                    let garbage: Vec<u8> = (0..rng.below(8)).map(|_| rng.below(256) as u8).collect();
+                    let garbage: Vec<u8> =
+                        (0..1 + rng.below(8)).map(|_| rng.below(256) as u8).collect();
                     bytes.splice(idx..idx, garbage);
                 }
                 _ => {
-                    // Overwrite a random run with random bytes.
+                    // Overwrite a run of 1-4 bytes with random bytes --
+                    // never a zero-length (no-op) overwrite.
                     let start = rng.below(bytes.len() as u32) as usize;
-                    let run = rng.below(5) as usize;
+                    let run = 1 + rng.below(4) as usize;
                     for b in bytes.iter_mut().skip(start).take(run) {
                         *b = rng.below(256) as u8;
                     }
@@ -372,8 +451,8 @@ fn fuzz_random_mutations_of_valid_streams_never_panic() {
             let bytes_for_panic_check = bytes.clone();
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut splitter = FrameSplitter::new();
-                let first = splitter.feed(&bytes_for_panic_check[..cut]);
-                if first.is_err() {
+                let (_, err) = splitter.feed(&bytes_for_panic_check[..cut]);
+                if err.is_some() {
                     return;
                 }
                 let _ = splitter.feed(&bytes_for_panic_check[cut..]);
