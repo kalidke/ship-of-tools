@@ -54,19 +54,40 @@ fn main() {
     }
 }
 
-/// Temporary harness for the Windows capsule runtime (ADR 0041 step 4). No
-/// interactive resize/kill command source yet — the real named-pipe
-/// attach lane is step 5's job — so this bin owns its OWN stdin-forwarding
-/// thread (per the library's own discharge-round change: `run` no longer
-/// reads stdin itself, so a caller must) and forwards every byte as
-/// `Command::Input`; there is no way yet to send a resize or a requested
-/// kill (Ctrl+C simply kills this whole process, which is exactly
-/// FE-loss, not EndRun — ADR 0041 Lifecycle: nothing in this bin can
-/// express EndRun yet).
+/// A `Transport` with no real connections — this bin has nowhere to accept
+/// one from until U3's named pipe server exists. `send`/`close` are
+/// reachable only if `run` somehow produced an action despite the paired
+/// empty `transport_events` channel meaning no connection was ever opened;
+/// they are harmless no-ops either way.
+#[cfg(windows)]
+#[derive(Default)]
+struct NullTransport {
+    next_id: u64,
+}
+
+#[cfg(windows)]
+impl sot_log::capsule_win::Transport for NullTransport {
+    fn send(&mut self, _conn: sot_log::attach_proto::ConnId, _bytes: Vec<u8>) -> u64 {
+        self.next_id += 1;
+        self.next_id
+    }
+    fn close(&mut self, _conn: sot_log::attach_proto::ConnId) {}
+}
+
+/// Temporary harness for the Windows capsule runtime (ADR 0041 steps 4-5,
+/// U2). The pipe server is step 5's U3 — this bin's Windows arm is
+/// deliberately just "config + run" now: no stdin-forwarding thread (the
+/// wire lane replaces it — a real named pipe has nothing to attach to yet,
+/// so this harness has no interactive input/resize source at all until
+/// U3), no `--echo` (pipe fan-out is the real subscriber path; a bare
+/// stdout mirror duplicated that for no one). `NullTransport` below is a
+/// placeholder satisfying `run`'s transport seam with zero real
+/// connections. Ctrl+C still simply kills this whole process — FE-loss, not
+/// EndRun (ADR 0041 Lifecycle) — until a real supervisor exists.
 #[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--no-echo] [--cols <n>] [--rows <n>] -- <cmd> [args...]";
+    let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--cols <n>] [--rows <n>] -- <cmd> [args...]";
     if args.len() < 4 || args[0] != "run" {
         eprintln!("{usage}");
         std::process::exit(2);
@@ -74,17 +95,12 @@ fn main() {
     let voyage_root = std::path::PathBuf::from(&args[1]);
     let voyage_id = args[2].clone();
     let mut rest = &args[3..];
-    let mut echo = true;
     // Matches vt100_ctt::Parser's own Default (80x24) — a reasonable
     // harness default, not an ADR-pinned one.
     let mut cols: u16 = 80;
     let mut rows: u16 = 24;
     loop {
         match rest.first().map(String::as_str) {
-            Some("--no-echo") => {
-                echo = false;
-                rest = &rest[1..];
-            }
             Some("--cols") if rest.len() > 1 => {
                 cols = rest[1].parse().unwrap_or_else(|_| {
                     eprintln!("{usage}");
@@ -114,26 +130,18 @@ fn main() {
         retention: sot_log::segment::RetentionClass::Archive,
         producer_kind: "raw-terminal-windows".into(),
         argv,
-        echo,
         cols,
         rows,
+        // Step 6's breakaway attempt is the real source (ADR 0041 decision
+        // 11) — this bin has none yet, so it states the honest default.
+        survival: sot_log::wire::Survival::Normal,
     };
-    // This bin's own stdin-forwarding thread (the library no longer owns
-    // one — discharge-round change): every byte typed here becomes a
-    // `Command::Input`, exactly the same bytes the Linux capsule's
-    // internal stdin thread would have forwarded.
-    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        use std::io::Read;
-        let mut stdin = std::io::stdin();
-        let mut buf = [0u8; 8192];
-        while let Ok(n) = stdin.read(&mut buf) {
-            if n == 0 || cmd_tx.send(sot_log::capsule_win::Command::Input(buf[..n].to_vec())).is_err() {
-                break;
-            }
-        }
-    });
-    match sot_log::capsule_win::run(config, cmd_rx) {
+    // No command source yet (Ctrl+C kills the process instead — see the
+    // doc above); no transport events either -- a real named pipe is U3.
+    let (_cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let (_transport_tx, transport_rx) = std::sync::mpsc::channel();
+    let mut transport = NullTransport::default();
+    match sot_log::capsule_win::run(config, cmd_rx, transport_rx, &mut transport) {
         Ok(s) => {
             eprintln!(
                 "sot-capsule: producer exited {:?} ({:?}); {} frames, {} segments sealed \

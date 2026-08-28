@@ -7,6 +7,7 @@
 //! retention deletion, no forks, no packs — those return through the
 //! `codec_id` / `required_features` / version seams).
 
+pub mod attach_proto;
 pub mod capsule;
 pub mod capsule_win;
 pub mod claude;

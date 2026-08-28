@@ -120,16 +120,47 @@
 //! `seq`; `ExitKind`'s remaining vocabulary (`ProducerExited`/`Requested`/
 //! `SpawnFailed`) having no ADR-pinned name, existing purely for the Rust
 //! caller and never reaching a frame.
+//!
+//! ## Step 5 (U2): the pipe protocol through this loop
+//!
+//! `run` gains a transport-event channel ([`TransportEvent`]/[`Transport`],
+//! the U3 seam — a real named pipe on Windows, or a test transport here)
+//! serviced every MAIN-LOOP iteration through
+//! [`crate::attach_proto::AttachProto`] — that module OWNS the
+//! connection/role/lockstep/pen/keepalive state machine; this loop only
+//! executes the [`crate::attach_proto::Action`]s it returns
+//! (`execute_actions!`) and feeds events back
+//! (`connection_opened`/`frame`/`sent`/`tick`/`ground_reached`/
+//! `checkpoint_ready`/`take_committed`/`resize_outcome`/`input_outcome`).
+//! `flush_output!`'s watermark now ALSO publishes committed bytes to
+//! existing subscribers and, on a ground boundary, promotes any pending
+//! attach — the watermark barrier the ADR requires, one loop step.
+//!
+//! Four things this unit DELETES, per the ADR 0041 step-5 spec gate: the
+//! preamble's automatic `"local"` take grant (the null-holder revoke is now
+//! the whole preamble — the first driver ever is a pipe `take`);
+//! `Command::Input`/`Command::Resize` (the wire lane replaces both —
+//! `Command::Kill` stays, driven by either a direct caller or the wire's
+//! mgmt `shutdown`); the bin harness's Windows stdin-forwarding thread and
+//! its stdout echo mirroring (pipe fan-out is the real subscriber path now;
+//! a bare `--echo` mirror duplicates that for no one); and the capsule's own
+//! `random_idem_key` generator (the CLIENT supplies `idem_key` on the wire —
+//! `hex_idem_key` still exists, for encoding it, not generating one).
 
 #![cfg(windows)]
 
+use crate::attach_proto::{
+    Action as AttachAction, AttachProto, ConnId, InputOutcome, MgmtStatus, SentMarker,
+};
 use crate::conpty::{observe_spawning_process_jobbed, ConptySpawn};
 use crate::envelope::*;
 use crate::host_handshake::{self, HostHandshake};
-use crate::segment::{Commit, RetentionClass};
-use crate::voyage::VoyageStore;
+use crate::segment::{Commit, RetentionClass, SegmentWriter};
+use crate::voyage::{DedupeEntry, DedupeState, VoyageStore};
+use crate::wire::{self, Survival};
 use crate::{Error, Result};
 use serde_json::json;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -140,7 +171,48 @@ const GROUP_COMMIT_WINDOW: Duration = Duration::from_millis(50);
 const GROUP_COMMIT_BYTES: usize = 256 * 1024;
 const SEGMENT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const READ_CHUNK: usize = 8192;
-const LOCAL_CONTROLLER: &str = "local";
+
+/// One event the transport layer reports to the writer loop. U3's real
+/// named-pipe server on Windows produces these; this unit is proven with a
+/// synthetic test transport driving the identical channel (ADR 0041 step 5:
+/// "the loop gains a transport-event channel... for THIS unit, a test
+/// transport").
+#[derive(Debug)]
+pub enum TransportEvent {
+    /// A new pipe connection accepted (mgmt or attach — lane is unknown
+    /// until its first frame; see `attach_proto`'s module doc).
+    ConnectionOpened(ConnId),
+    /// Raw bytes read from `conn`, in order. May contain zero, one, or
+    /// several complete frames, or a partial one carried to the next call.
+    Bytes(ConnId, Vec<u8>),
+    /// `conn` is gone (ordered EOF or a transport error) — capability-only
+    /// EOF per the pen (see `attach_proto`'s module doc); no durable
+    /// transition happens here.
+    ConnectionClosed(ConnId),
+    /// A previously requested [`Transport::send`] (identified by the send
+    /// id that call returned) is now reported PHYSICALLY WRITTEN. Arriving
+    /// through this SAME event channel keeps completion ordering
+    /// centralized in the one loop that already serializes everything
+    /// else.
+    Sent(ConnId, u64),
+}
+
+/// What the writer loop needs from a transport to deliver bytes and sever
+/// connections. U3 implements this over a real named pipe; this unit's
+/// tests implement it as an in-memory sink.
+pub trait Transport {
+    /// Queue `bytes` for `conn`. Returns an opaque send id; the transport
+    /// reports physical completion via [`TransportEvent::Sent`]`(conn, id)`
+    /// on the SAME event channel this loop polls — a genuinely async
+    /// transport (real overlapped pipe I/O) reports it whenever the write
+    /// actually finishes; a synchronous test transport may push it
+    /// immediately, since that is an ordinary channel send picked up on
+    /// this loop's NEXT poll, not a same-stack callback into it.
+    fn send(&mut self, conn: ConnId, bytes: Vec<u8>) -> u64;
+    /// Sever `conn` at the transport level. Idempotent: closing an
+    /// already-closed or unknown connection is a no-op.
+    fn close(&mut self, conn: ConnId);
+}
 
 /// ADR 0041 "Terminal state" resource budget — the geometry a resize (or
 /// the initial spawn) may request. Independent from the vt100 fork's own
@@ -189,39 +261,37 @@ pub struct CapsuleWinConfig {
     /// argv[0] is the program; must be non-empty (`ConptySpawn::spawn`'s
     /// own check is what actually enforces this).
     pub argv: Vec<String>,
-    /// Echo producer output to the capsule's stdout after commit — same
-    /// visibility watermark as the Linux capsule: after the fsync that
-    /// covers it, never before.
-    pub echo: bool,
     /// Initial terminal geometry, validated by the SAME 2x2..512x256 rule
     /// a later resize is (ADR 0041: "Initial geometry is validated by the
     /// same rule").
     pub cols: u16,
     pub rows: u16,
+    /// Supplied by the SPAWNER, never inferred (ADR 0041 decision 11: step
+    /// 6's breakaway attempt is the real source; `IsProcessInJob`
+    /// observation stays diagnostics, never authority). Transported
+    /// verbatim in mgmt `status`.
+    pub survival: Survival,
 }
 
-/// The caller-owned command surface `run` services. ADR 0041's attach
-/// lane's `resize`/`input` ops and the mgmt lane's `shutdown` (which drives
-/// `EndRun`) are all step 5's job to wire onto a real named pipe — this is
-/// the internal Rust channel step 5 forwards into, not the wire protocol
-/// itself, and this unit does not implement admission (who may call it).
-/// `run` owns none of the sources that feed this channel — not stdin, not
-/// a pipe — a caller (the bin harness, later a real attach lane) does, and
-/// is responsible for keeping the `Sender` alive for as long as it wants
+/// The caller-owned command surface `run` services, alongside the wire
+/// protocol. Step 5 DELETES this channel's raw `Input`/`Resize` variants
+/// (ADR 0041 spec gate): the wire lane replaces both — real input and
+/// resize now arrive as `AttachClient::Input`/`Resize` frames, handled
+/// through `AttachProto` and `execute_actions!`'s `ForwardInput`/
+/// `ApplyResize` arms, never through this channel. `Kill` stays: it is the
+/// step-4-visible primitive behind `EndRun` (ADR 0041 Lifecycle) that BOTH
+/// the mgmt lane's `shutdown` (via `Action::Shutdown`) and a caller that
+/// bypasses the pipe entirely (the bin harness, a supervisor) can drive.
+/// `run` owns none of the sources that feed this channel — a caller is
+/// responsible for keeping the `Sender` alive for as long as it wants
 /// commands serviced (review finding: a previous version read stdin
 /// itself, which made "teardown revokes admission" not really true).
 #[derive(Debug, Clone)]
 pub enum Command {
-    /// Raw producer input bytes to forward, redacted by default per the
-    /// raw-terminal profile (ADR 0037/0039).
-    Input(Vec<u8>),
-    /// "resize {cols, rows} — driver-only" (ADR 0041 attach protocol);
-    /// this unit only implements the ordered exchange once a command
-    /// arrives.
-    Resize { cols: u16, rows: u16 },
-    /// The step-4-visible primitive behind `EndRun` (ADR 0041 Lifecycle):
-    /// an EXTERNALLY REQUESTED end. Never inferred from an exit code, a
-    /// channel disconnect, or anything else — only an explicit `Kill`.
+    /// An EXTERNALLY REQUESTED end. Never inferred from an exit code, a
+    /// channel disconnect, or anything else — only an explicit `Kill` (or
+    /// the wire's `Action::Shutdown`, which drives the identical
+    /// `ExitKind::Requested` path).
     Kill,
 }
 
@@ -235,7 +305,8 @@ pub enum ExitKind {
     /// The producer exited on its own; this run's own program ending is
     /// what closed it — never treated as a request.
     ProducerExited,
-    /// `Command::Kill` was received.
+    /// `Command::Kill` was received, or the mgmt lane's `shutdown` drove
+    /// `Action::Shutdown` (EndRun) after its ack was physically written.
     Requested,
     /// `ConptySpawn::spawn` failed, or the initial geometry was outside
     /// the budget — nothing ever ran. `producer_dead {spawn_failed:true}`
@@ -283,13 +354,13 @@ enum ReaderEvent {
     Done(std::result::Result<(), std::io::Error>),
 }
 
-/// 16 random bytes from the OS, as lowercase hex32 (the ADR idem_key
-/// shape) — duplicated from `capsule.rs` rather than shared; see the
-/// module doc.
-fn random_idem_key() -> Result<String> {
-    let mut b = [0u8; 16];
-    getrandom::fill(&mut b).map_err(std::io::Error::from)?;
-    Ok(b.iter().map(|x| format!("{:02x}", x)).collect())
+/// Encodes a wire `idem_key` (16 raw bytes) as the lowercase hex32 shape
+/// ADR 0039's `input` frame requires. Step 5 deletes the capsule's own
+/// `random_idem_key` generator from the production path — capsule-generated
+/// idem keys are gone now that the CLIENT supplies one per wire input — but
+/// the hex encoding itself is still needed, for the frame's JSON payload.
+fn hex_idem_key(bytes: &[u8; 16]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn wall_ms() -> i64 {
@@ -297,6 +368,31 @@ fn wall_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// This process's mgmt `status` fields (ADR 0041 attach protocol): pid and
+/// process CREATION TIME as the raw FILETIME bits — computed ONCE, here,
+/// because `attach_proto` must never make an OS call itself. `survival` is
+/// the spawner-supplied value (decision 11), never derived from
+/// `IsProcessInJob`.
+fn self_status(survival: Survival) -> MgmtStatus {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
+    // SAFETY: `GetCurrentProcess` returns a pseudo-handle needing no close;
+    // the four FILETIME out-params are plain, fully-initialized structs on
+    // return (a failed call — which cannot happen for the current process's
+    // own pseudo-handle — would leave them zeroed, a harmless `created: 0`).
+    let (pid, created) = unsafe {
+        let pid = GetCurrentProcessId();
+        let mut creation: FILETIME = std::mem::zeroed();
+        let mut exit: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        GetProcessTimes(GetCurrentProcess(), &mut creation, &mut exit, &mut kernel, &mut user);
+        let created = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+        (pid, created)
+    };
+    MgmtStatus { pid, created, survival }
 }
 
 struct BudgetState {
@@ -410,7 +506,15 @@ struct FrameCtx {
     epoch: u64,
     next_n: u64,
     t0: Instant,
+    /// The DURABLE take-epoch value — the capsule's own, fed in/out of
+    /// `attach_proto` as a plain value (ADR 0041: "the durable holder/epoch
+    /// is the CAPSULE's"). Starts at the null-holder revoke's value; the
+    /// step-4 "local" grant is deleted (spec gate) — the first driver ever
+    /// is a pipe `take`.
     take_epoch: u64,
+    /// The DURABLE holder's controller_id, mirroring `take_epoch` — `None`
+    /// until the first real `take` commits.
+    holder: Option<String>,
     attached: Option<Seq>,
 }
 
@@ -448,14 +552,34 @@ impl FrameCtx {
             payload_ref: None,
         }
     }
-    fn controller_frame(&mut self, class: Class, payload: serde_json::Value) -> Envelope {
+    /// A controller-actor frame declaring EXACTLY `(controller_id,
+    /// take_epoch)` — the identity being RECORDED, not necessarily this
+    /// ctx's own current durable state: a stale wire `input` is still
+    /// honestly attributed to whatever it claimed (the verifier, not this
+    /// frame, is what later judges staleness — ADR 0039's take predicate).
+    fn controller_frame(
+        &mut self,
+        class: Class,
+        controller_id: String,
+        take_epoch: u64,
+        payload: serde_json::Value,
+    ) -> Envelope {
         let mut e = self.capsule_frame(class, payload);
         e.source.actor = Actor {
             kind: ActorKind::Controller,
-            controller_id: Some(LOCAL_CONTROLLER.into()),
-            take_epoch: Some(self.take_epoch),
+            controller_id: Some(controller_id),
+            take_epoch: Some(take_epoch),
         };
         e
+    }
+    /// A controller-actor frame using THIS ctx's own current durable
+    /// identity — correct only where the actor IS, by construction, the
+    /// current holder (e.g. `resize`, driver-only and carrying no identity
+    /// fields of its own on the wire).
+    fn current_controller_frame(&mut self, class: Class, payload: serde_json::Value) -> Envelope {
+        let controller_id = self.holder.clone().unwrap_or_default();
+        let take_epoch = self.take_epoch;
+        self.controller_frame(class, controller_id, take_epoch, payload)
     }
     fn producer_frame(&mut self, payload: serde_json::Value) -> Envelope {
         let mut e = self.capsule_frame(Class::Producer, payload);
@@ -470,18 +594,142 @@ impl FrameCtx {
     }
 }
 
+/// Executes the ADR 0039 input WAL for one wire `input` frame, using the
+/// store's dedupe index (folded once at open, kept live here) to fold a
+/// duplicate `idem_key` per the lattice exactly, and returns the outcome
+/// for the caller to report back via [`AttachProto::input_outcome`]. See
+/// [`AttachAction::ForwardInput`]'s doc for the full sequence this
+/// implements; `connection_authorized` is `attach_proto`'s connection-scoped
+/// half of the ADR's "the capability AND the durable holder/epoch" check —
+/// the durable half (`controller_id`/`take_epoch` against `ctx`'s own
+/// state) is this function's job, and both must pass for a fresh forward.
+#[allow(clippy::too_many_arguments)]
+fn run_input_wal(
+    ctx: &mut FrameCtx,
+    w: &mut SegmentWriter,
+    store: &mut VoyageStore,
+    writer: &mut dyn Write,
+    frames_written: &mut u64,
+    controller_id: &str,
+    take_epoch: u64,
+    idem_key: [u8; 16],
+    payload: &[u8],
+    connection_authorized: bool,
+) -> Result<InputOutcome> {
+    let is_fresh = connection_authorized
+        && ctx.holder.as_deref() == Some(controller_id)
+        && take_epoch == ctx.take_epoch;
+
+    // A brand-new idem_key commits `input` (fsync) first, always -- "input
+    // is durably logged before the producer sees it" (ADR 0039) applies
+    // regardless of whether the write will turn out to be stale.
+    let existing = store.dedupe_index.get(&idem_key).copied();
+    let input_seq = match existing {
+        None => {
+            let input = ctx.controller_frame(
+                Class::Input,
+                controller_id.to_string(),
+                take_epoch,
+                json!({"idem_key": hex_idem_key(&idem_key), "content": "redacted", "length": payload.len()}),
+            );
+            let input_seq = input.seq;
+            w.append(&input, Commit::Immediate)?;
+            *frames_written += 1;
+            store.dedupe_index.insert(
+                idem_key,
+                DedupeEntry {
+                    input: input_seq,
+                    state: DedupeState::Input,
+                    intent: None,
+                },
+            );
+            input_seq
+        }
+        Some(DedupeEntry { state: DedupeState::Input, input, .. }) => {
+            // Chain = {input}: a same-key retry MUST re-attempt (new
+            // intent, SAME input identity) -- ADR 0039's deterministic
+            // retry-fold, never a new `input` frame.
+            input
+        }
+        Some(DedupeEntry { state: DedupeState::Intent, .. }) => return Ok(InputOutcome::DeliveryUnknown),
+        Some(DedupeEntry { state: DedupeState::Forwarded, .. }) => return Ok(InputOutcome::Recorded),
+        Some(DedupeEntry { state: DedupeState::Refused, .. }) => return Ok(InputOutcome::RefusedStale),
+    };
+
+    if !is_fresh {
+        let mut refused = ctx.controller_frame(
+            Class::Lifecycle,
+            controller_id.to_string(),
+            take_epoch,
+            json!({"kind": "input_fact",
+                   "fact": {"input": {"epoch": input_seq.epoch, "n": input_seq.n}, "fact": "refused_stale_epoch"}}),
+        );
+        refused.refs = vec![FrameRef { kind: RefKind::CausedBy, frame: input_seq }];
+        w.append(&refused, Commit::Immediate)?;
+        *frames_written += 1;
+        if let Some(e) = store.dedupe_index.get_mut(&idem_key) {
+            e.state = DedupeState::Refused;
+        }
+        return Ok(InputOutcome::RefusedStale);
+    }
+
+    let mut intent = ctx.controller_frame(
+        Class::Lifecycle,
+        controller_id.to_string(),
+        take_epoch,
+        json!({"kind": "input_fact",
+               "fact": {"input": {"epoch": input_seq.epoch, "n": input_seq.n}, "fact": "forward_intent"}}),
+    );
+    intent.refs = vec![FrameRef { kind: RefKind::CausedBy, frame: input_seq }];
+    let intent_seq = intent.seq;
+    w.append(&intent, Commit::Immediate)?;
+    *frames_written += 1;
+    if let Some(e) = store.dedupe_index.get_mut(&idem_key) {
+        e.state = DedupeState::Intent;
+        e.intent = Some(intent_seq);
+    }
+
+    writer.write_all(payload)?; // the forward syscall
+
+    let mut fwd = ctx.controller_frame(
+        Class::Lifecycle,
+        controller_id.to_string(),
+        take_epoch,
+        json!({"kind": "input_fact",
+               "fact": {"input": {"epoch": input_seq.epoch, "n": input_seq.n}, "fact": "forwarded",
+                        "intent": {"epoch": intent_seq.epoch, "n": intent_seq.n}}}),
+    );
+    fwd.refs = vec![FrameRef { kind: RefKind::CausedBy, frame: input_seq }];
+    w.append(&fwd, Commit::Immediate)?;
+    *frames_written += 1;
+    if let Some(e) = store.dedupe_index.get_mut(&idem_key) {
+        e.state = DedupeState::Forwarded;
+    }
+
+    Ok(InputOutcome::Recorded)
+}
+
 /// Run one producer under a Windows capsule. Blocks until the run ends —
-/// either the producer exits on its own, or `commands` delivers
-/// [`Command::Kill`] (ADR 0041 Lifecycle: an externally requested end).
-/// `commands` mirrors `claude.rs`'s `operator: mpsc::Receiver<OperatorCmd>`
-/// parameter — the raw command surface a future attach lane (step 5)
-/// forwards into; the caller owns its `Sender` and everything that feeds
-/// it (stdin included — see the module doc).
+/// either the producer exits on its own, `commands` delivers
+/// [`Command::Kill`], or the mgmt lane's `shutdown` drives `Action::Shutdown`
+/// once its ack is physically written (ADR 0041 Lifecycle: an externally
+/// requested end — EndRun). `commands` mirrors `claude.rs`'s `operator:
+/// mpsc::Receiver<OperatorCmd>` parameter; the caller owns its `Sender` (see
+/// the module doc's stdin-ownership point). `transport_events`/`transport`
+/// are the ADR 0041 step-5 pipe protocol's seam: a real named pipe on
+/// Windows (U3) or a test transport (this unit) drives the SAME
+/// [`AttachProto`] state machine either way — see `attach_proto`'s module
+/// doc for the protocol this loop executes.
 // unused_assignments: `flush_output!`'s state reset is dead only at its
 // FINAL expansion (after the loop) — load-bearing at every other site,
 // same allow capsule.rs carries for the identical reason.
 #[allow(unused_assignments)]
-pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Result<ExitSummary> {
+pub fn run(
+    config: CapsuleWinConfig,
+    commands: mpsc::Receiver<Command>,
+    transport_events: mpsc::Receiver<TransportEvent>,
+    transport: &mut dyn Transport,
+) -> Result<ExitSummary> {
     // Resolve ONCE — see capsule.rs's identical comment on the same call.
     let voyage_root = crate::fsutil::ensure_container(&config.voyage_root)?;
     if !voyage_root.exists() {
@@ -495,6 +743,7 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
         next_n: 1,
         t0: Instant::now(),
         take_epoch: 0,
+        holder: None,
         attached: None,
     };
     let mut w = store.open_segment(wall_ms())?;
@@ -502,23 +751,26 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
     let mut frames_written: u64 = 0;
     let mut segments_sealed: u64 = 0;
 
-    // Control preamble — every frame here commits immediately. Identical
-    // shape to capsule.rs: revoke-first (null holder, bumped epoch), then
-    // grant local.
+    // Control preamble — every frame here commits immediately. The step-4
+    // "local" take grant is DELETED (ADR 0041 step-5 spec gate): this stops
+    // after the null-holder revoke. The first driver ever is a pipe `take`
+    // (`Action::CommitTake`, below).
     let prior_take = store.last_take_epoch;
+    ctx.take_epoch = prior_take + 1;
     let f = ctx.capsule_frame(
         Class::Lifecycle,
-        json!({"kind": "take_state", "take": {"take_epoch": prior_take + 1, "holder": null}}),
+        json!({"kind": "take_state", "take": {"take_epoch": ctx.take_epoch, "holder": null}}),
     );
     w.append(&f, Commit::Immediate)?;
     frames_written += 1;
-    ctx.take_epoch = prior_take + 2;
-    let f = ctx.capsule_frame(
-        Class::Lifecycle,
-        json!({"kind": "take_state", "take": {"take_epoch": ctx.take_epoch, "holder": LOCAL_CONTROLLER}}),
-    );
-    w.append(&f, Commit::Immediate)?;
-    frames_written += 1;
+
+    // The attach protocol: platform-neutral state machine (`attach_proto`);
+    // `pid`/`created` are OS values it must never compute itself.
+    let mut attach_proto = AttachProto::new(self_status(config.survival));
+    let mut splitters: HashMap<ConnId, wire::FrameSplitter> = HashMap::new();
+    let mut pending_sends: HashMap<u64, (ConnId, Option<SentMarker>)> = HashMap::new();
+    let mut shutdown_requested = false;
+    let mut shutdown_reason: Option<String> = None;
 
     // producer_attached: the raw-terminal redaction profile, content-hashed
     // — identical to capsule.rs (this is a cross-platform semantic, not a
@@ -681,23 +933,80 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
         })
     };
 
-    let mut stdout = std::io::stdout();
-    let mut pending_echo: Vec<u8> = Vec::new();
+    let mut pending_output: Vec<u8> = Vec::new();
     let mut pending_bytes: usize = 0;
     let mut last_commit = Instant::now();
+
+    // THIS module decides nothing; `attach_proto::AttachProto` does (see
+    // its module doc). `execute_light_actions!` runs the action kinds that
+    // `output_committed`/`ground_reached`/`checkpoint_ready` can ever
+    // produce (proven by `attach_proto`'s own implementation: never
+    // `CommitTake`/`ForwardInput`/`ApplyResize`/`Shutdown`) -- kept SEPARATE
+    // from the full `execute_actions!` below rather than one macro calling
+    // itself, because `flush_output!` needs to run actions too, and
+    // `flush_output!` is itself called FROM `execute_actions!`'s
+    // `CommitTake`/`ApplyResize` arms: a macro invoking itself through that
+    // path is not runtime recursion (which would be fine) but INFINITE
+    // COMPILE-TIME macro expansion (`recursion limit reached`, hit and
+    // fixed while building this unit) -- every match arm is expanded
+    // unconditionally at compile time, `flush_output!`'s body included,
+    // regardless of which arm ever actually runs. Splitting the acyclic
+    // subset out breaks the cycle: `execute_light_actions!` calls nothing
+    // else here; `flush_output!` calls only `execute_light_actions!`;
+    // `execute_actions!` calls `flush_output!`, `maybe_rotate!`, and (for
+    // its own light-kind actions) `execute_light_actions!` -- all strictly
+    // "downward", never back.
+    macro_rules! execute_light_actions {
+        ($seed:expr) => {{
+            let mut queue: VecDeque<AttachAction> = VecDeque::from($seed);
+            while let Some(action) = queue.pop_front() {
+                match action {
+                    AttachAction::Send { conn, frame_bytes, marker } => {
+                        let id = transport.send(conn, frame_bytes);
+                        pending_sends.insert(id, (conn, marker));
+                    }
+                    AttachAction::Close(conn) => {
+                        transport.close(conn);
+                        splitters.remove(&conn);
+                        queue.extend(attach_proto.connection_closed(conn, Instant::now()));
+                    }
+                    AttachAction::RecordRefusal { conn, reason } => {
+                        // Diagnostic only -- no wire frame exists for most
+                        // of these refusals, by design (ADR 0041 decision
+                        // 5: queue overflow has none at all).
+                        eprintln!("sot-capsule: attach protocol refusal conn={conn:?} reason={reason:?}");
+                    }
+                    AttachAction::BeginCheckpoint { conn } => {
+                        let bytes = parser.screen().checkpoint().expect(
+                            "geometry is bounded to 2x2..512x256, always representable at that range (ADR 0041)",
+                        );
+                        queue.extend(attach_proto.checkpoint_ready(conn, bytes, Instant::now()));
+                    }
+                    other => unreachable!(
+                        "execute_light_actions!: {other:?} is not one output_committed/ground_reached/checkpoint_ready can produce"
+                    ),
+                }
+            }
+        }};
+    }
 
     macro_rules! flush_output {
         ($w:expr) => {
             if pending_bytes > 0 {
-                $w.commit()?; // the watermark: fsync BEFORE anything is echoed
-                if config.echo {
-                    let _ = stdout.write_all(&pending_echo);
-                    let _ = stdout.flush();
-                }
-                pending_echo.clear();
+                $w.commit()?; // the watermark: fsync BEFORE anything is published
+                execute_light_actions!(attach_proto.output_committed(&pending_output, Instant::now()));
+                pending_output.clear();
                 pending_bytes = 0;
             }
             last_commit = Instant::now();
+            // ADR 0041: attach is GROUND-GATED; the watermark barrier
+            // (force pending commit -> publish to EXISTING subscribers ->
+            // checkpoint -> subscribe) is exactly this ordering -- publish
+            // above already ran, so a ground boundary found HERE is the
+            // single loop step the barrier requires.
+            if parser.is_ground() {
+                execute_light_actions!(attach_proto.ground_reached(Instant::now()));
+            }
         };
     }
 
@@ -710,6 +1019,153 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
                 segments_sealed += 1;
                 $w = store.open_segment(wall_ms())?;
                 seg_bytes = 0;
+            }
+        };
+    }
+
+    // The full action set -- everything `execute_light_actions!` handles,
+    // delegated one line at a time (never re-expanding `flush_output!`
+    // itself), PLUS the four action kinds only an inbound CLIENT frame can
+    // ever produce.
+    macro_rules! execute_actions {
+        ($seed:expr) => {{
+            let mut queue: VecDeque<AttachAction> = VecDeque::from($seed);
+            while let Some(action) = queue.pop_front() {
+                match action {
+                    light @ (AttachAction::Send { .. }
+                    | AttachAction::Close(_)
+                    | AttachAction::RecordRefusal { .. }
+                    | AttachAction::BeginCheckpoint { .. }) => {
+                        execute_light_actions!(vec![light]);
+                    }
+                    AttachAction::CommitTake { conn, controller_id } => {
+                        flush_output!(w);
+                        ctx.take_epoch += 1;
+                        ctx.holder = Some(controller_id.clone());
+                        let f = ctx.capsule_frame(
+                            Class::Lifecycle,
+                            json!({"kind": "take_state",
+                                   "take": {"take_epoch": ctx.take_epoch, "holder": controller_id}}),
+                        );
+                        w.append(&f, Commit::Immediate)?;
+                        frames_written += 1;
+                        queue.extend(attach_proto.take_committed(conn, controller_id, ctx.take_epoch, Instant::now()));
+                    }
+                    AttachAction::ForwardInput {
+                        conn,
+                        controller_id,
+                        take_epoch,
+                        idem_key,
+                        payload,
+                        connection_authorized,
+                    } => {
+                        let outcome = run_input_wal(
+                            &mut ctx,
+                            &mut w,
+                            &mut store,
+                            &mut writer,
+                            &mut frames_written,
+                            &controller_id,
+                            take_epoch,
+                            idem_key,
+                            &payload,
+                            connection_authorized,
+                        )?;
+                        maybe_rotate!(w);
+                        queue.extend(attach_proto.input_outcome(conn, outcome, Instant::now()));
+                    }
+                    AttachAction::ApplyResize { conn, cols, rows } => {
+                        // ADR 0041: "resize (driver-only) routes into the
+                        // step-4 exchange unchanged" -- same ordered
+                        // request -> one ResizePseudoConsole call (skipped
+                        // if out of budget) -> parser/geometry updated
+                        // only on success -> outcome shape step 4 already
+                        // built, now reachable from the wire too.
+                        flush_output!(w);
+                        let req = ctx.current_controller_frame(
+                            Class::ControlExchange,
+                            json!({"phase": "request", "kind_ns": "conpty/resize",
+                                   "to": {"kind": "producer"}, "body": {"cols": cols, "rows": rows}}),
+                        );
+                        let req_seq = req.seq;
+                        w.append(&req, Commit::Immediate)?;
+                        frames_written += 1;
+                        let in_budget =
+                            (MIN_COLS..=MAX_COLS).contains(&cols) && (MIN_ROWS..=MAX_ROWS).contains(&rows);
+                        let ok = if !in_budget {
+                            false
+                        } else {
+                            resize_os_calls += 1;
+                            match pty.resize(cols, rows) {
+                                Ok(()) => {
+                                    parser.screen_mut().set_size(rows, cols);
+                                    true
+                                }
+                                Err(_) => false,
+                            }
+                        };
+                        let outcome_body = if ok {
+                            json!({"disposition": "ok", "cols": cols, "rows": rows})
+                        } else {
+                            json!({"disposition": "failed", "cols": cols, "rows": rows,
+                                   "reason": "outside the 2x2..512x256 budget, or ResizePseudoConsole failed"})
+                        };
+                        let out = ctx.current_controller_frame(
+                            Class::ControlExchange,
+                            json!({"phase": "outcome", "kind_ns": "conpty/resize", "scope": "pty",
+                                   "target": format!("{}:{}", req_seq.epoch, req_seq.n), "body": outcome_body}),
+                        );
+                        w.append(&out, Commit::Immediate)?;
+                        frames_written += 1;
+                        maybe_rotate!(w);
+                        queue.extend(attach_proto.resize_outcome(conn, ok, Instant::now()));
+                    }
+                    AttachAction::Shutdown { reason } => {
+                        shutdown_requested = true;
+                        shutdown_reason = Some(reason);
+                    }
+                }
+            }
+        }};
+    }
+
+    // Drains every currently-available transport event (non-blocking, like
+    // `commands.try_recv()` below) through `AttachProto`, executing
+    // whatever it decides. Called every MAIN-LOOP iteration only: once this
+    // loop is left for teardown, the wire lane's admission is revoked at
+    // the SAME boundary `commands` already is (`pty` is also moved into the
+    // Phase-B closer thread by then, so a wire-triggered resize could not
+    // run even if admitted).
+    macro_rules! service_transport_events {
+        () => {
+            while let Ok(ev) = transport_events.try_recv() {
+                match ev {
+                    TransportEvent::ConnectionOpened(conn) => {
+                        splitters.insert(conn, wire::FrameSplitter::new());
+                        execute_actions!(attach_proto.connection_opened(conn, Instant::now()));
+                    }
+                    TransportEvent::Bytes(conn, bytes) => {
+                        let Some(splitter) = splitters.get_mut(&conn) else { continue };
+                        let (frames, err) = splitter.feed(&bytes);
+                        for f in frames {
+                            execute_actions!(attach_proto.frame(conn, f, Instant::now()));
+                        }
+                        if err.is_some() {
+                            transport.close(conn);
+                            splitters.remove(&conn);
+                            execute_actions!(attach_proto.connection_closed(conn, Instant::now()));
+                        }
+                    }
+                    TransportEvent::ConnectionClosed(conn) => {
+                        splitters.remove(&conn);
+                        execute_actions!(attach_proto.connection_closed(conn, Instant::now()));
+                    }
+                    TransportEvent::Sent(conn, id) => {
+                        if let Some((_, marker)) = pending_sends.remove(&id) {
+                            execute_actions!(attach_proto.sent(conn, marker, Instant::now()));
+                        }
+                    }
+                }
             }
         };
     }
@@ -731,7 +1187,7 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
             frames_written += 1;
             seg_bytes += bytes.len() as u64 + 128;
             output_budget.release(bytes.len() as u64);
-            pending_echo.extend_from_slice(&bytes);
+            pending_output.extend_from_slice(&bytes);
             pending_bytes += bytes.len();
             if pending_bytes >= GROUP_COMMIT_BYTES {
                 flush_output!(w);
@@ -790,94 +1246,20 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
     // GROUP_COMMIT_WINDOW of latency, regardless of event volume); the
     // caller's command channel is polled NON-BLOCKINGLY (rare traffic, and
     // this is the last point it is EVER polled — teardown never touches it
-    // again, which is what makes admission revocation real).
+    // again, which is what makes admission revocation real). The wire
+    // transport is serviced every iteration too (`service_transport_events!`
+    // + `tick`) — see the module doc's "Step 5 (U2)" section.
     let exit_kind = 'main: loop {
         if process.wait(Duration::ZERO)? {
             break 'main ExitKind::ProducerExited;
         }
+        service_transport_events!();
+        execute_actions!(attach_proto.tick(Instant::now()));
+        if shutdown_requested {
+            break 'main ExitKind::Requested;
+        }
         match commands.try_recv() {
             Ok(Command::Kill) => break 'main ExitKind::Requested,
-            Ok(Command::Input(bytes)) => {
-                // WAL order identical to capsule.rs: input -> intent ->
-                // syscall -> forwarded.
-                flush_output!(w);
-                let input = ctx.controller_frame(
-                    Class::Input,
-                    json!({"idem_key": random_idem_key()?, "content": "redacted", "length": bytes.len()}),
-                );
-                let input_seq = input.seq;
-                w.append(&input, Commit::Immediate)?;
-                let mut intent = ctx.controller_frame(
-                    Class::Lifecycle,
-                    json!({"kind": "input_fact",
-                           "fact": {"input": {"epoch": input_seq.epoch, "n": input_seq.n},
-                                     "fact": "forward_intent"}}),
-                );
-                intent.refs = vec![FrameRef { kind: RefKind::CausedBy, frame: input_seq }];
-                let intent_seq = intent.seq;
-                w.append(&intent, Commit::Immediate)?;
-                writer.write_all(&bytes)?; // the forward syscall
-                let mut fwd = ctx.controller_frame(
-                    Class::Lifecycle,
-                    json!({"kind": "input_fact",
-                           "fact": {"input": {"epoch": input_seq.epoch, "n": input_seq.n},
-                                     "fact": "forwarded",
-                                     "intent": {"epoch": intent_seq.epoch, "n": intent_seq.n}}}),
-                );
-                fwd.refs = vec![FrameRef { kind: RefKind::CausedBy, frame: input_seq }];
-                w.append(&fwd, Commit::Immediate)?;
-                frames_written += 3;
-                maybe_rotate!(w);
-            }
-            Ok(Command::Resize { cols, rows }) => {
-                // ADR 0041: "Resize rejects, never clamps" — an
-                // ordered-writer-loop command: request committed -> one
-                // ResizePseudoConsole call (skipped entirely if
-                // out-of-budget) -> parser + geometry updated only on
-                // success -> outcome committed. request+outcome only (no
-                // response phase): the exchange resolves entirely within
-                // this loop, nothing external to await.
-                flush_output!(w);
-                let req = ctx.controller_frame(
-                    Class::ControlExchange,
-                    json!({"phase": "request", "kind_ns": "conpty/resize",
-                           "to": {"kind": "producer"}, "body": {"cols": cols, "rows": rows}}),
-                );
-                let req_seq = req.seq;
-                w.append(&req, Commit::Immediate)?;
-                frames_written += 1;
-
-                let in_budget =
-                    (MIN_COLS..=MAX_COLS).contains(&cols) && (MIN_ROWS..=MAX_ROWS).contains(&rows);
-                let outcome_body = if !in_budget {
-                    json!({"disposition": "failed", "cols": cols, "rows": rows,
-                           "reason": "outside the 2x2..512x256 budget"})
-                } else {
-                    resize_os_calls += 1;
-                    match pty.resize(cols, rows) {
-                        Ok(()) => {
-                            // vt100_ctt's own argument order is (rows,
-                            // cols) — the opposite of ConPTY's (cols,
-                            // rows); both call sites are spelled out
-                            // explicitly rather than sharing a tuple, so a
-                            // future reorder of one can't silently swap
-                            // the other.
-                            parser.screen_mut().set_size(rows, cols);
-                            json!({"disposition": "ok", "cols": cols, "rows": rows})
-                        }
-                        Err(e) => json!({"disposition": "failed", "cols": cols, "rows": rows,
-                                          "reason": e.to_string()}),
-                    }
-                };
-                let out = ctx.controller_frame(
-                    Class::ControlExchange,
-                    json!({"phase": "outcome", "kind_ns": "conpty/resize", "scope": "pty",
-                           "target": format!("{}:{}", req_seq.epoch, req_seq.n), "body": outcome_body}),
-                );
-                w.append(&out, Commit::Immediate)?;
-                frames_written += 1;
-                maybe_rotate!(w);
-            }
             Err(mpsc::TryRecvError::Empty) => {}
             // The caller dropped its `Sender` — NOT a kill (ADR: no
             // channel-disconnect-as-kill, "no exit code, no FE event, no
@@ -1026,10 +1408,13 @@ pub fn run(config: CapsuleWinConfig, commands: mpsc::Receiver<Command>) -> Resul
     }
     let exit_code = process.exit_code_after_confirmed_exit()?;
 
-    let f = ctx.capsule_frame(
-        Class::Lifecycle,
-        json!({"kind": "producer_dead", "detail": {"exit_code": exit_code}}),
-    );
+    // The mgmt `shutdown` reason, if that is what drove this EndRun (ADR
+    // 0041: "the reason string is recorded in producer_dead's detail").
+    let mut detail = json!({"exit_code": exit_code});
+    if let Some(reason) = &shutdown_reason {
+        detail["reason"] = json!(reason);
+    }
+    let f = ctx.capsule_frame(Class::Lifecycle, json!({"kind": "producer_dead", "detail": detail}));
     w.append(&f, Commit::Immediate)?;
     frames_written += 1;
 

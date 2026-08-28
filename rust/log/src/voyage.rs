@@ -2,15 +2,130 @@
 //! CAS publication (ADR 0039). Kernel-semantics parts have Linux and
 //! Windows arms (ADR 0041 §store port); the codec itself is portable.
 
-use crate::envelope::Digest;
+use crate::envelope::{Digest, Seq};
 use crate::fsutil::{self, WriterLock};
 use crate::recovery::{self, Reconciled};
 use crate::segment::{
     HeaderBody, RetentionClass, SegmentIdentity, SegmentReader, SegmentState, SegmentWriter,
 };
 use crate::{Error, Result};
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+
+/// A 16-byte `idem_key`, parsed once from its `hex32` wire/JSON form (ADR
+/// 0041 decision 5: "Parsed keys, not Strings") and used as the dedupe
+/// index's key type from then on.
+pub type IdemKey = [u8; 16];
+
+/// One `idem_key`'s position in the ADR 0039 "Input WAL + dedupe" lattice,
+/// as folded from the retained voyage. Four states, not the verifier's
+/// five (`FactState` in `verify.rs` also tracks `Observed`): a
+/// `producer_observed` fact — an adapter-only extension raw-terminal
+/// capsules never emit (ADR 0041: "raw-terminal chains end at `forwarded`")
+/// — folds into `Forwarded` here too, because both answer a duplicate
+/// `idem_key` identically (`input_recorded`); this index exists to decide
+/// that wire reply, not to record whether echo-confirmation ever happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DedupeState {
+    Input,
+    Intent,
+    Forwarded,
+    Refused,
+}
+
+/// One `idem_key`'s dedupe record. `input` is the ORIGINAL input frame's
+/// seq — a `{input}`-only chain's retry-fold (ADR 0039: "chain = {input} =>
+/// a same-key retry MUST re-attempt, new intent, same input identity")
+/// needs it, not a freshly-minted one. `intent` is set once a
+/// `forward_intent` fact has been folded in, so a later `forwarded`/
+/// `refused_stale_epoch` fact (or a live re-attempt) can reference it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DedupeEntry {
+    pub input: Seq,
+    pub state: DedupeState,
+    pub intent: Option<Seq>,
+}
+
+/// Parses a lowercase `hex32` `idem_key` into its 16 raw bytes. Malformed
+/// input (wrong length, non-hex, or uppercase) leaves the fold silently
+/// skipping that frame's contribution rather than failing the whole walk:
+/// schema legality is `Envelope::validate`'s and the verifier's job: this
+/// index is a best-effort accelerator built FROM already-accepted frames,
+/// not a second enforcer of the wire format.
+fn parse_idem_key(s: &str) -> Option<IdemKey> {
+    if s.len() != 32 || !s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+fn parse_seq(v: &serde_json::Value) -> Option<Seq> {
+    Some(Seq {
+        epoch: v.get("epoch")?.as_u64()?,
+        n: v.get("n")?.as_u64()?,
+    })
+}
+
+/// Folds one segment's `input` and `input_fact` frames into `index`, in
+/// frame order — the SAME pass `max_take_epoch` already walks in
+/// `open_for_writing` (ADR 0041 decision 5: "never a second scan"). `by_seq`
+/// is a WALK-TIME-ONLY accessory (an `input_fact`'s `fact.input` names its
+/// input frame by `Seq`, never by `idem_key` — the wire schema has no other
+/// way to resolve it) threaded across every segment alongside `index`, then
+/// dropped: a capsule's own LIVE updates after open always already hold the
+/// idem_key of whatever they just wrote, so they never need it.
+fn fold_dedupe_index(
+    index: &mut HashMap<IdemKey, DedupeEntry>,
+    by_seq: &mut HashMap<Seq, IdemKey>,
+    reader: &SegmentReader,
+) {
+    for f in &reader.frames {
+        let Some(p) = f.payload.as_ref() else { continue };
+        if f.class == crate::envelope::Class::Input {
+            let Some(key) = p.get("idem_key").and_then(|v| v.as_str()).and_then(parse_idem_key) else {
+                continue;
+            };
+            by_seq.insert(f.seq, key);
+            index.insert(
+                key,
+                DedupeEntry {
+                    input: f.seq,
+                    state: DedupeState::Input,
+                    intent: None,
+                },
+            );
+            continue;
+        }
+        if f.class != crate::envelope::Class::Lifecycle
+            || p.get("kind").and_then(|v| v.as_str()) != Some("input_fact")
+        {
+            continue;
+        }
+        let Some(fact) = p.get("fact") else { continue };
+        let Some(fact_kind) = fact.get("fact").and_then(|v| v.as_str()) else { continue };
+        let Some(input_seq) = fact.get("input").and_then(parse_seq) else { continue };
+        let Some(&key) = by_seq.get(&input_seq) else { continue };
+        let Some(entry) = index.get_mut(&key) else { continue };
+        match fact_kind {
+            "forward_intent" => {
+                // The `forward_intent` fact carries no separate `intent`
+                // field (ADR 0039: only `forwarded`/`producer_observed`
+                // do, naming a PRIOR frame) -- THIS frame's own seq IS the
+                // intent record.
+                entry.state = DedupeState::Intent;
+                entry.intent = Some(f.seq);
+            }
+            "forwarded" | "producer_observed" => entry.state = DedupeState::Forwarded,
+            "refused_stale_epoch" => entry.state = DedupeState::Refused,
+            _ => {}
+        }
+    }
+}
 
 pub struct VoyageStore {
     root: PathBuf,
@@ -31,6 +146,14 @@ pub struct VoyageStore {
     /// v1 keeps it simple: reconcile() recovers tears, and a clean survivor
     /// is sealed by `seal_survivor` before new writing).
     survivor_open: Option<SegmentIdentity>,
+    /// ADR 0041 decision 5: the input-WAL dedupe index, folded once from
+    /// this SAME open-time walk (never a second scan) over the whole
+    /// retained voyage — keys never expire in v1, so this is O(retained
+    /// inputs) memory, unbounded, stated here rather than hidden. A capsule
+    /// keeps it live across the run: it already holds the idem_key of
+    /// whatever it just wrote, so it updates this map directly rather than
+    /// re-deriving anything from it.
+    pub dedupe_index: HashMap<IdemKey, DedupeEntry>,
 }
 
 /// Max take_epoch across a segment's committed `take_state` frames.
@@ -239,6 +362,8 @@ impl VoyageStore {
         let mut survivor: Option<SegmentIdentity> = None;
         let mut retention: Option<RetentionClass> = None;
         let mut last_take = 0u64;
+        let mut dedupe_index: HashMap<IdemKey, DedupeEntry> = HashMap::new();
+        let mut dedupe_by_seq: HashMap<Seq, IdemKey> = HashMap::new();
         for (idx, ep) in &idents {
             let id = SegmentIdentity {
                 voyage_id: voyage_id.to_string(),
@@ -256,6 +381,7 @@ impl VoyageStore {
                         )));
                     }
                     last_take = last_take.max(max_take_epoch(&r));
+                    fold_dedupe_index(&mut dedupe_index, &mut dedupe_by_seq, &r);
                     survivor = Some(id);
                     next_index = idx + 1;
                 }
@@ -284,6 +410,7 @@ impl VoyageStore {
                         retention = r.header.retention_class;
                     }
                     last_take = last_take.max(max_take_epoch(&r));
+                    fold_dedupe_index(&mut dedupe_index, &mut dedupe_by_seq, &r);
                     prev = r.seal.as_ref().map(|s| s.digest.clone());
                     next_index = idx + 1;
                 }
@@ -300,6 +427,7 @@ impl VoyageStore {
             retention_class: retention.unwrap_or(RetentionClass::Archive),
             last_take_epoch: last_take,
             survivor_open: survivor,
+            dedupe_index,
         })
     }
 
@@ -467,7 +595,7 @@ impl VoyageStore {
 #[cfg(all(test, any(target_os = "linux", windows)))]
 mod tests {
     use super::*;
-    use crate::envelope::Class;
+    use crate::envelope::{Actor, ActorKind, Class, Derivation, Emitter, Envelope, FrameRef, RefKind, Source};
     use crate::segment::{tests::test_env, Commit};
 
     /// A conforming standalone frame (lifecycle needs no attached_to).
@@ -476,6 +604,168 @@ mod tests {
         e.class = Class::Lifecycle;
         e.payload = Some(serde_json::json!({"kind": "producer_ready"}));
         e
+    }
+
+    /// A controller-actor frame (`Actor.kind=controller` requires
+    /// `controller_id`+`take_epoch` — ADR 0039's cross-field matrix), the
+    /// shape both `input` and `input_fact` frames use in `capsule_win.rs`'s
+    /// real WAL.
+    fn ctrl_env(epoch: u64, n: u64, class: Class, payload: serde_json::Value, refs: Vec<FrameRef>) -> Envelope {
+        Envelope {
+            seq: Seq { epoch, n },
+            class,
+            source: Source {
+                emitter: Emitter::Capsule,
+                actor: Actor {
+                    kind: ActorKind::Controller,
+                    controller_id: Some("ctrl".into()),
+                    take_epoch: Some(2),
+                },
+                derivation: Derivation::Synthetic,
+            },
+            t_wall_ms: 1_756_000_000_000,
+            t_mono_us: n * 1000,
+            stream: None,
+            transformed: None,
+            refs,
+            payload: Some(payload),
+            payload_ref: None,
+        }
+    }
+
+    /// A `take_state` lifecycle frame (revoke-first / grant), the preamble
+    /// every real capsule commits before any producer-bound action.
+    fn lc_take(epoch: u64, n: u64, take_epoch: u64, holder: Option<&str>) -> Envelope {
+        let mut e = lc(epoch, n);
+        e.payload = Some(serde_json::json!({"kind": "take_state", "take": {"take_epoch": take_epoch, "holder": holder}}));
+        e
+    }
+
+    fn input_env(epoch: u64, n: u64, idem_key: &str) -> Envelope {
+        ctrl_env(
+            epoch,
+            n,
+            Class::Input,
+            serde_json::json!({"idem_key": idem_key, "content": "redacted", "length": 3}),
+            vec![],
+        )
+    }
+
+    fn intent_env(epoch: u64, n: u64, input: Seq) -> Envelope {
+        ctrl_env(
+            epoch,
+            n,
+            Class::Lifecycle,
+            serde_json::json!({"kind": "input_fact",
+                "fact": {"input": {"epoch": input.epoch, "n": input.n}, "fact": "forward_intent"}}),
+            vec![FrameRef { kind: RefKind::CausedBy, frame: input }],
+        )
+    }
+
+    fn forwarded_env(epoch: u64, n: u64, input: Seq, intent: Seq) -> Envelope {
+        ctrl_env(
+            epoch,
+            n,
+            Class::Lifecycle,
+            serde_json::json!({"kind": "input_fact",
+                "fact": {"input": {"epoch": input.epoch, "n": input.n}, "fact": "forwarded",
+                         "intent": {"epoch": intent.epoch, "n": intent.n}}}),
+            vec![FrameRef { kind: RefKind::CausedBy, frame: input }],
+        )
+    }
+
+    fn refused_env(epoch: u64, n: u64, input: Seq) -> Envelope {
+        ctrl_env(
+            epoch,
+            n,
+            Class::Lifecycle,
+            serde_json::json!({"kind": "input_fact",
+                "fact": {"input": {"epoch": input.epoch, "n": input.n}, "fact": "refused_stale_epoch"}}),
+            vec![FrameRef { kind: RefKind::CausedBy, frame: input }],
+        )
+    }
+
+    /// The dedupe index, from a voyage exercising every legal `idem_key`
+    /// chain shape (ADR 0039's exact five, minus `{…,observed}` which
+    /// `DedupeState` deliberately folds into `Forwarded` — see its doc),
+    /// folded by `open_for_writing`'s OWN existing frame walk. "No second
+    /// scan" is asserted by construction, not timing: `fold_dedupe_index`
+    /// is called only from inside that walk (visible in this module's
+    /// source, `open_for_writing` above) — there is no second call site
+    /// anywhere in the crate. Reopening as a SUCCESSOR incarnation (a fresh
+    /// `open_for_writing`, not the same store handle) proves the index
+    /// survives an epoch boundary — the exact case decision 5 names: "a
+    /// successor capsule starting with an empty index would let a
+    /// pre-crash `forwarded` key re-forward".
+    #[test]
+    fn dedupe_index_folds_every_legal_chain_shape_across_a_capsule_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voyd");
+        VoyageStore::bootstrap(&root, "voyd", RetentionClass::Discard).unwrap();
+
+        let key_input_only = "1".repeat(32);
+        let key_intent_only = "2".repeat(32);
+        let key_forwarded = "3".repeat(32);
+        let key_refused = "4".repeat(32);
+
+        {
+            let mut store = VoyageStore::open_for_writing(&root, "voyd").unwrap();
+            let mut w = store.open_segment(0).unwrap();
+            // The take preamble every real capsule commits: revoke-first
+            // (null holder), then grant -- required for the verifier's
+            // take-matrix check (a controller frame's declared take_epoch
+            // must match committed state).
+            w.append(&lc_take(1, 1, 1, None), Commit::Immediate).unwrap();
+            w.append(&lc_take(1, 2, 2, Some("ctrl")), Commit::Immediate).unwrap();
+            // {input} only.
+            w.append(&input_env(1, 3, &key_input_only), Commit::Immediate).unwrap();
+            // {input, intent}.
+            w.append(&input_env(1, 4, &key_intent_only), Commit::Immediate).unwrap();
+            w.append(&intent_env(1, 5, Seq { epoch: 1, n: 4 }), Commit::Immediate).unwrap();
+            // {input, intent, forwarded}.
+            w.append(&input_env(1, 6, &key_forwarded), Commit::Immediate).unwrap();
+            w.append(&intent_env(1, 7, Seq { epoch: 1, n: 6 }), Commit::Immediate).unwrap();
+            w.append(
+                &forwarded_env(1, 8, Seq { epoch: 1, n: 6 }, Seq { epoch: 1, n: 7 }),
+                Commit::Immediate,
+            )
+            .unwrap();
+            // {input, refused} -- refusal skips intent entirely (ADR 0039's
+            // exact chain list has no {input,intent,refused} member).
+            w.append(&input_env(1, 9, &key_refused), Commit::Immediate).unwrap();
+            w.append(&refused_env(1, 10, Seq { epoch: 1, n: 9 }), Commit::Immediate).unwrap();
+            let d = w.seal(None).unwrap();
+            store.advance_chain(d);
+
+            crate::verify::verify_voyage(&root, "voyd").unwrap();
+        }
+
+        // Reopen as a successor incarnation -- the index must be rebuilt
+        // from the retained voyage, not start empty.
+        let store = VoyageStore::open_for_writing(&root, "voyd").unwrap();
+        let key = |s: &str| -> IdemKey { parse_idem_key(s).unwrap() };
+
+        let e = store.dedupe_index[&key(&key_input_only)];
+        assert_eq!(e.state, DedupeState::Input);
+        assert_eq!(e.input, Seq { epoch: 1, n: 3 });
+        assert_eq!(e.intent, None);
+
+        let e = store.dedupe_index[&key(&key_intent_only)];
+        assert_eq!(e.state, DedupeState::Intent);
+        assert_eq!(e.input, Seq { epoch: 1, n: 4 });
+        assert_eq!(e.intent, Some(Seq { epoch: 1, n: 5 }));
+
+        let e = store.dedupe_index[&key(&key_forwarded)];
+        assert_eq!(e.state, DedupeState::Forwarded);
+        assert_eq!(e.input, Seq { epoch: 1, n: 6 });
+        assert_eq!(e.intent, Some(Seq { epoch: 1, n: 7 }));
+
+        let e = store.dedupe_index[&key(&key_refused)];
+        assert_eq!(e.state, DedupeState::Refused);
+        assert_eq!(e.input, Seq { epoch: 1, n: 9 });
+        assert_eq!(e.intent, None);
+
+        assert_eq!(store.dedupe_index.len(), 4, "no extra/spurious entries");
     }
 
     /// The concurrent-bootstrap race a shared staging pathname allowed

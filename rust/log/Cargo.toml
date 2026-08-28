@@ -49,3 +49,12 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+# tests/capsule_win.rs's own reference-parser fidelity check (ADR 0041 step
+# 5: attach checkpoint + subsequent stream reproduces a from-scratch replay
+# byte-for-byte) needs to drive a second, independent `vt100_ctt::Parser` —
+# the same crate `capsule_win.rs` itself uses, dev-only here since no
+# non-test code in this crate's own target needs it outside the `[target.
+# 'cfg(windows)'.dependencies]` entry above.
+vt100-ctt = "0.17"
