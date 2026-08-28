@@ -480,6 +480,109 @@ them:
   and every proposed protocol counter on the exit summary — tests
   observe checkpoint receipt, EOF, and voyage facts directly.
 
+### Step 5 as built (2026-08-28, PRs #135, #136, #138, #139, #140)
+
+Every spec-gate ruling shipped as specified — lane-typed connections,
+binary bodies both lanes, the ground-gated watermark barrier, the
+checkpoint outside the live queue, capability-only EOF with
+demote-on-take and no local grant, dedupe seeding in the existing
+`open_for_writing` walk, physical-write liveness clocks, the pipe never
+live while the writer lock is free, supplied-not-inferred survival, and
+the production-path deletions. What the paper design could not know,
+learned by running it against the real OS and a real transport —
+recorded because step 6 builds on these facts:
+
+- **Attaching to an IDLE producer is the normal attach, and the gate
+  must not wait for output to prove it.** As first wired, the ground
+  evaluation ran only at fresh-output commit boundaries; a silent
+  producer (a shell at its prompt) never produces one, so the attach
+  rode its full pend into a GroundTimeout refusal. The rule as built:
+  with no uncommitted bytes pending, the current position IS a commit
+  boundary — the gate is evaluated the iteration an attach is admitted
+  and on every tick while one pends. The masking behavior (residual
+  conhost rendering after the producer finished) differed between CI
+  images, which is why the bug surfaced late.
+- **A real transport reorders `Sent` against the reply's own
+  consequences.** The reply's overlapped write completes, the client
+  reads it and sends its next request, and the server's reader thread
+  can publish those bytes before the writer thread publishes `Sent` —
+  so strict lockstep would close a fully compliant client. As built,
+  lockstep HOLDS exactly one frame that arrives while its
+  predecessor's reply is queued-but-unconfirmed and replays it on the
+  completion — against the transfer's COMPLETED state (a one-chunk
+  checkpoint's first chunk is its last; marking `Done` after the
+  replay falsely refused a racing `take`). A second held frame, or a
+  frame with no reply in flight, remains a violation.
+- **The budget table's driver row is two clauses, together.** A first
+  reading exempted the driver from the 4 MiB bound outright
+  ("never dropped while live"); the review's correction stands as
+  built: the bound STAYS, and overflow CLOSES the driver — bytes are
+  never silently dropped while it lives, because ending liveness is
+  the resolution; the record retains everything.
+- **conhost delivers its rendered writes sequence-atomically** on both
+  CI images — across 1000 script repeats, zero reader-chunk boundaries
+  landed inside a CSI/OSC/DCS/UTF-8 sequence. The mid-sequence carry
+  property therefore keeps its deterministic pins where cuts can be
+  forced (the fork's ground/checkpoint suites, the wire splitter's
+  every-byte-boundary fuzz); the e2e reports how much fragmentation a
+  run actually exercised instead of gating on conhost internals.
+- **Producer lifetime is a test invariant, never an emission-speed
+  assumption.** Two distinct mechanisms produced one identical timeout
+  symptom: a producer exiting mid-test moved the capsule into teardown
+  (where admission is correctly refused), and a lingering-but-silent
+  producer starved waits that needed live output. The helper's
+  `--linger` and `--drip` modes make the intended lifetime explicit at
+  every call site; the diagnostic trail (three falsified scheduling
+  theories before the timeline reconstruction) is preserved in the
+  landing commits as method, not embarrassment.
+- **The transport seam is event-polling, not event-pushing.** The
+  first bridge wrapped the pipe server in an actor thread with an
+  unbounded forward channel — machinery that existed only because
+  `run` took a separate event receiver, and which silently defeated
+  the transport's own bounded inbound channel. As built, `Transport`
+  exposes `try_recv_event`, the capsule polls under a per-pass quota
+  (a flood interleaves with output/tick, never starves them), and the
+  pipe transport owns its server directly. A terminal accept failure
+  is not a mute-but-live service: it routes into the same orderly end
+  as an external EndRun (reason `transport-accept-failed`), so the
+  next leg re-binds a fresh pipe.
+- **The real API referees what paper review blesses.** The pipe SDDL
+  shipped with five ACE fields — both the author and the adversarial
+  review read `(A;FA;;;sid)` as correct — and every bind failed with
+  error 87 on the first real run; an ACE is six fields, and the empty
+  flags field must be present: `D:P(A;;FA;;;<sid>)`. The descriptor
+  builder now takes flags and rights separately so the malformed shape
+  cannot be reconstructed.
+- **The fork owns its state machine.** No released `vte` (through
+  0.15.0) exposes parser state, so `is_ground()` required vendoring
+  vte's core into the vt100 fork — where review then verified the
+  pinned transition table against upstream's macro across all 4,096
+  cells, and where vte's DEFAULT features turning out to be the
+  `no_std`/arrayvec arm meant the OSC accumulation cap was the
+  actually-shipping behavior and is kept unconditionally.
+
+Step-7 acceptance rows now CI-PROVEN on top of step 4's: attach with
+the screen restored exactly (checkpoint transfer over the REAL pipe,
+restore-oracle-verified, mid-stream and idle); stale-controller input
+refused per the lattice with the WAL chains proven across a capsule
+restart; slow-watcher eviction while the driver stays live; the
+hung-driver bound (keepalive + whole-queue progress deadlines, unit
+level); mgmt probe/status/shutdown over the real pipe with the
+shutdown ack physically sent before EOF; the pipe DACL on the wire.
+Remaining for the real machine, unchanged: everything FE-facing,
+multi-user ACL, reboot/logout, AV, disk-full, forced-reboot recovery,
+supervisor adoption and the nightly composite — step 6 builds the
+callers those rows need.
+
+Accepted residuals, named in the landing commits: the e2e's
+cross-process pid identity is asserted in-process only (the true
+cross-process challenge is step 6's adoption test); keepalive timing
+is unit-proven under synthetic clocks (the e2e's drip keeps the driver
+perpetually active, which is fidelity to real use, not a gap); and the
+capsule integration suite runs serialized because two real ConPTY
+floods on a two-core runner starve each other — additive, not
+adversarial, by design.
+
 ## The attach protocol
 
 One local socket per voyage (a named pipe on Windows), created
