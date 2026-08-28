@@ -33,6 +33,21 @@ use sot_log::{Class, Envelope, RefKind};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Every test in this binary spawns a real ConPTY producer plus a capsule
+/// writer loop and reader thread. Run CONCURRENTLY (cargo's default) on a
+/// two-core CI runner, one test's 20 MiB flood can starve another test's
+/// entire process group long enough to blow its pre-admission and wait
+/// deadlines — observed as PreAdmissionTimeout on a hello that had been
+/// sent, surviving two intra-loop pacing fixes because the contention was
+/// never inside one capsule at all. One shared lock makes the heavy tests
+/// additive instead of adversarial; poisoning is tolerated so one failing
+/// test doesn't cascade.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+
 fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows: u16) -> CapsuleWinConfig {
     CapsuleWinConfig {
         voyage_root: dir.join(name),
@@ -418,6 +433,7 @@ fn assert_producer_dead_is_last(frames: &[Envelope]) -> serde_json::Value {
 /// `tests/conpty.rs`'s own DA1-presence finding).
 #[test]
 fn e2e_records_and_verifies() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let marker = "SOT_CAPSULE_WIN_E2E_9f31";
     let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), format!("echo {marker}")];
@@ -487,6 +503,7 @@ fn e2e_records_and_verifies() {
 /// inherited here), and `producer_dead` is still the last frame recorded.
 #[test]
 fn spawn_failure_is_compensated() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv = vec!["Z:\\sot_capsule_win_test_no_such_exe_9f31.exe".to_string()];
     let cfg = config(dir.path(), "fail1", argv, 80, 25);
@@ -509,6 +526,7 @@ fn spawn_failure_is_compensated() {
 /// "Initial geometry is validated by the same rule" a resize is (ADR 0041).
 #[test]
 fn spawn_failure_from_out_of_budget_initial_geometry() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
     let cfg = config(dir.path(), "fail2", argv, 1, 25); // cols=1 < the 2-column floor
@@ -528,6 +546,7 @@ fn spawn_failure_from_out_of_budget_initial_geometry() {
 /// voyage, with a real (job-imposed) exit code recorded as the last frame.
 #[test]
 fn requested_kill_tears_down_and_seals() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv = vec!["cmd.exe".to_string()]; // bare interactive shell — stays open until killed
     let cfg = config(dir.path(), "kill1", argv, 80, 25);
@@ -563,6 +582,7 @@ fn requested_kill_tears_down_and_seals() {
 /// -> three `resize` wire frames -> `resize_ok`/`resize_refused` replies.
 #[test]
 fn resize_ordered_exchange_commits_and_rejects() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv = vec!["cmd.exe".to_string()];
     let cfg = config(dir.path(), "resize1", argv, 80, 25);
@@ -655,6 +675,7 @@ fn resize_ordered_exchange_commits_and_rejects() {
 /// whole CI job's timeout.
 #[test]
 fn flood_drains_to_a_sealed_voyage_without_deadlock() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
     let total: usize = 20 * 1024 * 1024; // > the 8 MiB producer-channel budget
@@ -704,6 +725,7 @@ fn flood_drains_to_a_sealed_voyage_without_deadlock() {
 /// capsule runtime doesn't reintroduce the cast above it.
 #[test]
 fn exit_code_high_bit_status_preserved_through_producer_dead() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv =
         vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit -1073741819".to_string()];
@@ -776,6 +798,7 @@ fn exit_code_high_bit_status_preserved_through_producer_dead() {
 ///    this crate depends on not existing.
 #[test]
 fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
     // Large enough that the helper is still running long after every step
@@ -978,6 +1001,7 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
 /// segments, not started empty — ADR 0041 decision 5's whole point).
 #[test]
 fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_restart() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let name = "inputwal1";
     let root = dir.path().join(name);
@@ -1154,6 +1178,7 @@ fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_resta
 /// functional throughout.
 #[test]
 fn slow_watcher_overflow_closes_while_driver_stays_live() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
     let total: usize = 6 * 1024 * 1024; // > the 4 MiB per-watcher budget
@@ -1239,6 +1264,7 @@ fn slow_watcher_overflow_closes_while_driver_stays_live() {
 /// connection still succeeds normally.
 #[test]
 fn hello_refusal_leaves_mgmt_and_later_attach_working() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv = vec!["cmd.exe".to_string()];
     let cfg = config(dir.path(), "hellorefuse1", argv, 80, 25);
@@ -1314,6 +1340,7 @@ fn hello_refusal_leaves_mgmt_and_later_attach_working() {
 /// proceeds. The reason string travels into `producer_dead`'s detail.
 #[test]
 fn shutdown_ack_sent_before_teardown() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv = vec!["cmd.exe".to_string()]; // stays open until EndRun
     let cfg = config(dir.path(), "shutdownseq1", argv, 80, 25);
@@ -1367,6 +1394,7 @@ fn shutdown_ack_sent_before_teardown() {
 /// `unreachable!` arms don't already give at compile time.
 #[test]
 fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
 
     // Path 1: a natural producer exit.
