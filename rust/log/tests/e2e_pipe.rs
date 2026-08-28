@@ -296,24 +296,38 @@ fn mgmt_roundtrip(
     }
 }
 
-/// The full scenario: a real `--script --linger` producer under a real
+/// The full scenario: a real `--script --drip` producer under a real
 /// capsule, its pipe bound for real, driven by three real OS connections —
 /// a watcher (checkpoint + live output), a driver (checkpoint, take,
-/// input, resize, keepalive), and a mgmt connection (probe, status,
-/// shutdown) — ending the run via the mgmt lane's own `shutdown` and
-/// verifying the sealed voyage records the input.
+/// input, resize), and a mgmt connection (probe, status, shutdown) —
+/// ending the run via the mgmt lane's own `shutdown` and verifying the
+/// sealed voyage records the input.
 #[test]
 fn full_pipe_e2e_two_clients_and_mgmt() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
-    // --linger: the producer must stay alive for every step below; the run
-    // ends by an explicit mgmt `shutdown`, never by the producer exiting.
+    // --drip, not --linger: the producer must stay alive for every step
+    // below (the run ends by an explicit mgmt `shutdown`, never by the
+    // producer exiting) AND must keep emitting real live output, since
+    // the watcher's and the driver's own attaches land at two DIFFERENT,
+    // real-wall-clock-separated points in the stream — a driver that
+    // connects only after the watcher's own full hello/attach/checkpoint
+    // round trip has no guarantee a fixed-size, one-shot `--script` burst
+    // hasn't already finished and gone silent by then. A SMALL initial
+    // block (5 repeats, not 1000: this test only needs a non-empty
+    // checkpoint, not an exhaustive fidelity fixture — see
+    // `tests/capsule_win.rs`'s `attach_mid_stream_checkpoint_reproduces_
+    // reference_screen` for that) bounds the one-time burst every
+    // pre-`take` connection's watcher-role queue (4 MiB, ADR 0041 budget
+    // table) must absorb; the indefinite low-rate drip after it replaces
+    // --linger's silent sleep so live output is always imminent,
+    // regardless of image speed.
     let argv = vec![
         helper,
         "--script".to_string(),
-        "1000".to_string(),
-        "--linger".to_string(),
+        "5".to_string(),
+        "--drip".to_string(),
     ];
     let voyage_id = fresh_voyage_id();
     let cfg = config(dir.path(), &voyage_id, argv, 80, 25);
@@ -347,9 +361,9 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
         "expected a non-empty checkpoint transfer"
     );
 
-    // The producer keeps emitting (--script, 1000 repeats) — prove the
-    // watcher also receives LIVE post-watermark output, not just the
-    // checkpoint.
+    // The producer keeps emitting (drip, every ~200ms, indefinitely) —
+    // prove the watcher also receives LIVE post-watermark output, not
+    // just the checkpoint.
     let live_bytes = watcher.wait_for("watcher live output", Duration::from_secs(10), |f| {
         if let wire::DecodedFrame::AttachServer(wire::AttachServer::Output { bytes }) = f {
             Some(bytes.clone())
@@ -414,25 +428,28 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
     );
     assert!(resize_ok, "expected the in-budget resize to succeed");
 
-    // Keepalive: the server originates it after `KEEPALIVE_IDLE_TRIGGER`
-    // (30s) of driver inactivity — this connection does nothing else in
-    // the meantime, so the wait below is genuinely ~30s, bounded
-    // generously past that. `wire.rs`'s own contract: the client must
-    // bounce the IDENTICAL bytes back verbatim.
-    let nonce = driver.wait_for(
-        "driver keepalive from server",
-        Duration::from_secs(50),
-        |f| {
-            if let wire::DecodedFrame::Keepalive { nonce } = f {
-                Some(*nonce)
-            } else {
-                None
-            }
-        },
-    );
-    driver_client
-        .write_all(&wire::encode_keepalive(nonce))
-        .unwrap();
+    // No keepalive step here, deliberately (round-2 e2e fix): keepalive's
+    // `last_activity` clock resets on ANY sent completion for a
+    // connection, INCLUDING a live `Output` frame — `attach_proto.rs`'s
+    // own doc: "any inbound frame, or any `sent` completion" — and a
+    // connection that holds the driver capability is STILL, underneath,
+    // a `Role::Watcher` subscribed to the same live output every other
+    // attached connection gets (`take` only layers a capability on top;
+    // it does not unsubscribe). With `--drip` now keeping the producer
+    // ACTIVELY emitting every ~200ms for the whole test (needed above so
+    // "watcher receives live output" is deterministic on every image),
+    // the driver connection's `last_activity` is refreshed well inside
+    // `KEEPALIVE_IDLE_TRIGGER` (30s) forever, so the server-originated
+    // keepalive this test used to wait up to 50s for would now never
+    // fire — not a bug, a direct consequence of trading a silent-then-
+    // dead producer for a live one. Keepalive timing itself is already
+    // proven at the `attach_proto` unit level under synthetic
+    // `Instant`s, with no wall-clock dependency (see that module's own
+    // `KEEPALIVE_IDLE_TRIGGER`-driven tests) — re-deriving it here would
+    // mean either reintroducing a silent producer window (the exact
+    // flakiness this round exists to remove) or a real ~30s sleep this
+    // e2e's job (proving the REAL PIPE plumbing, not re-litigating
+    // protocol timing) does not need. Dropped here by design.
 
     // Mgmt lane: a THIRD connection — SOM0 probe + status.
     let mgmt_client = connect_voyage_pipe(&voyage_id).unwrap();
