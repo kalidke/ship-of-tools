@@ -317,16 +317,19 @@ fn resize_ordered_exchange_commits_and_rejects() {
     }
 }
 
-/// Test 5: backpressure. A flood producer emits well beyond the 8 MiB
-/// output budget; the run must engage the budget's backpressure (proven by
-/// its own high-water/blocked-count seam, not a byte-count comparison
-/// across the wrong transform boundary — review finding) without
-/// deadlocking, and seal a verifiable voyage. Run on a background thread
-/// with a LOCAL bounded wait: a teardown regression here is exactly a
-/// deadlock, and this test must fail loud within its own bound rather than
-/// consume the whole CI job's timeout.
+/// Test 5: flood. A producer emits well beyond the 8 MiB output budget;
+/// the run must drain it all to a sealed, verify-green voyage without
+/// deadlocking. Whether the budget ever actually BLOCKED during the flood
+/// is deliberately NOT asserted here — engagement depends on conhost's
+/// burst pacing on the runner, which nothing here controls (a runner-image
+/// change turned exactly that assertion red on unchanged code); the
+/// blocking property is proven deterministically by OutputBudget's own
+/// unit tests in capsule_win.rs. Run on a background thread with a LOCAL
+/// bounded wait: a teardown regression here is exactly a deadlock, and
+/// this test must fail loud within its own bound rather than consume the
+/// whole CI job's timeout.
 #[test]
-fn flood_engages_backpressure_without_deadlock() {
+fn flood_drains_to_a_sealed_voyage_without_deadlock() {
     let dir = tempfile::tempdir().unwrap();
     let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
     let total: usize = 20 * 1024 * 1024; // > the 8 MiB producer-channel budget
@@ -348,17 +351,8 @@ fn flood_engages_backpressure_without_deadlock() {
     // is conhost's own rendered VT stream, not a byte-for-byte copy of
     // what the child wrote to its own stdout — startup sequences and
     // line-wrap/scroll handling can legitimately change the total length,
-    // so exact equality against `total` proves nothing. What IS meaningful:
-    // the budget's own high-water mark actually reached a substantial
-    // fraction of the cap (proving backpressure really ran, not merely
-    // that 20 MiB happened to fit through uncontested), the reader
-    // actually blocked at least once, and a substantial amount of output
-    // was captured at all.
-    assert!(summary.output_high_water_bytes > 0, "output budget never recorded any outstanding bytes");
-    assert!(
-        summary.output_reserve_blocks > 0,
-        "reader never blocked in OutputBudget::reserve — the flood did not exceed the budget in practice"
-    );
+    // so exact equality against `total` proves nothing; the half-of-total
+    // bound below is the honest platform-behavior assertion.
 
     let frames = sealed_frames(&root, "flood1");
     let mut total_decoded = 0usize;
