@@ -1,24 +1,43 @@
 #![cfg(windows)]
 //! Integration tests for the ADR 0041 step-5 pipe transport
-//! (`src/pipe_win.rs`, unit U3 round 1 — TRANSPORT ONLY, no capsule). Lives
-//! in `tests/` for the same structural reason `tests/conpty.rs` and
+//! (`src/pipe_win.rs`, unit U3 round 2 — discharges the Codex adversarial
+//! review of round 1, including its eight-test audit). Lives in `tests/`
+//! for the same structural reason `tests/conpty.rs` and
 //! `tests/capsule_win.rs` do: this module's own types are `pub`
-//! specifically so a real-pipe integration test can reach them, and an
-//! integration test binary is the only kind of test that gets its own
-//! separate process (needed here for `server`/`client` values that must
-//! genuinely cross an OS pipe rather than share memory).
+//! specifically so a real-pipe integration test can reach them.
 //!
 //! Every test drives a PLAIN ECHO/probe consumer against `PipeServer`'s
 //! event stream and `PipeClient`'s blocking read/write — no capsule, no
-//! wire-frame parsing (that is `wire.rs`'s and the follow-up unit's job).
+//! wire-frame parsing.
+//!
+//! Two structural fixes the round-1 audit asked for, applied throughout:
+//! - The pipe is byte-type, so one write is not guaranteed to arrive as
+//!   one `Bytes` event — every test that checks received content
+//!   accumulates bytes across events up to the expected length rather
+//!   than asserting a one-write-one-event correspondence.
+//! - `PipeServer::drop` (and, in round 1, the now-deleted blocking `close`)
+//!   is the one call in this module that can still hang the whole test
+//!   runner if a regression reintroduces an unbounded wait. Every such
+//!   call here runs through [`assert_completes_within`], a watchdog-THREAD
+//!   pattern (not a genuine child process): the call runs on a background
+//!   thread while the test thread bounds it with `recv_timeout`, so a
+//!   regression fails the one test loudly instead of wedging the runner —
+//!   Rust's default test harness `process::exit`s after the run rather
+//!   than joining threads, so a hung watchdog thread cannot outlive the
+//!   test binary either. This discharges the review's actual concern
+//!   ("a regression fails rather than wedging the runner") with far less
+//!   machinery than re-invoking the test binary as a child process would
+//!   need.
 
-use sot_log::pipe_win::{connect_voyage_pipe, ClosedReason, PipeError, PipeServer, TransportEvent};
+use sot_log::pipe_win::{connect_voyage_pipe, ClosedReason, ConnId, PipeError, PipeServer, TransportEvent};
 use std::time::{Duration, Instant};
+
+const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A fresh, canonical lowercase-hyphenated UUID for one test's voyage id —
 /// `now_v7` because that is the only generator feature this crate's `uuid`
-/// dependency enables (`features = ["v7"]`); any generated version would
-/// do, since only the STRING SHAPE matters to `pipe_win.rs`.
+/// dependency enables (`features = ["v7"]`); only the STRING SHAPE matters
+/// to `pipe_win.rs`.
 fn fresh_voyage_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
@@ -32,10 +51,58 @@ fn next_event(server: &PipeServer, timeout: Duration) -> TransportEvent {
         .unwrap_or_else(|e| panic!("expected a transport event within {timeout:?}, got {e}"))
 }
 
-fn expect_accepted(server: &PipeServer, timeout: Duration) -> u64 {
+fn expect_accepted(server: &PipeServer, timeout: Duration) -> ConnId {
     match next_event(server, timeout) {
         TransportEvent::Accepted(id) => id,
         other => panic!("expected Accepted, got {other:?}"),
+    }
+}
+
+fn expect_closed(server: &PipeServer, conn_id: ConnId, timeout: Duration) -> ClosedReason {
+    match next_event(server, timeout) {
+        TransportEvent::Closed(id, reason) => {
+            assert_eq!(id, conn_id, "Closed for the wrong connection");
+            reason
+        }
+        other => panic!("expected Closed, got {other:?}"),
+    }
+}
+
+/// Pull `Bytes` events for `conn_id` until `expected_len` bytes have
+/// accumulated (or `timeout` elapses) — the pipe is byte-type, so a single
+/// write is not guaranteed to surface as a single `Bytes` event (round-1
+/// audit finding).
+fn accumulate_bytes(server: &PipeServer, conn_id: ConnId, expected_len: usize, timeout: Duration) -> Vec<u8> {
+    let deadline = Instant::now() + timeout;
+    let mut out = Vec::new();
+    while out.len() < expected_len {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "only got {} of {expected_len} expected bytes: {out:?}", out.len());
+        match next_event(server, remaining) {
+            TransportEvent::Bytes(cid, bytes) => {
+                assert_eq!(cid, conn_id, "Bytes for the wrong connection");
+                out.extend(bytes);
+            }
+            other => panic!("expected Bytes, got {other:?}"),
+        }
+    }
+    assert_eq!(out.len(), expected_len, "accumulated more than expected: {out:?}");
+    out
+}
+
+/// Run `f` (typically a `drop(server)`/`drop(client)` call) on a
+/// background thread and bound its completion — see the module doc's
+/// watchdog-thread note.
+fn assert_completes_within<T: Send + 'static>(what: &str, timeout: Duration, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let result = f();
+        let _ = tx.send(());
+        result
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(()) => handle.join().expect("watchdog-monitored thread panicked"),
+        Err(_) => panic!("{what} did not complete within {timeout:?} -- watchdog fired"),
     }
 }
 
@@ -48,11 +115,10 @@ fn wide(s: &str) -> Vec<u16> {
 
 /// Attempt to create the FIRST instance of `voyage_id`'s pipe name with
 /// `FILE_FLAG_FIRST_PIPE_INSTANCE` — the squat-detection probe. Default
-/// security (a null `SECURITY_ATTRIBUTES`) is fine here: this probe is
-/// only ever used either while `pipe_win.rs`'s own descriptor already owns
-/// the name (proving the rival create fails) or on a name nothing else has
-/// ever touched (proving it succeeds) — never both on the SAME live name,
-/// so its own weaker descriptor is never load-bearing.
+/// security (a null `SECURITY_ATTRIBUTES`) is fine: this probe is only
+/// ever used either while `pipe_win.rs`'s own descriptor already owns the
+/// name (proving the rival create fails) or on a name nothing else has
+/// ever touched (proving it succeeds).
 fn try_create_first_instance(voyage_id: &str) -> std::io::Result<()> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{
@@ -84,9 +150,8 @@ fn try_create_first_instance(voyage_id: &str) -> std::io::Result<()> {
 }
 
 /// This process's own token-user SID, stringified — independently derived
-/// (not calling into `pipe_win.rs`'s or `fsutil.rs`'s private helpers) so a
-/// bug in THEIR SID lookup could not also hide from this test. Identical in
-/// spirit to `voyage.rs`'s own test helper of the same name.
+/// so a bug in `pipe_win.rs`'s or `fsutil.rs`'s own SID lookup could not
+/// also hide from this test.
 fn current_user_sid_string() -> String {
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
     use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
@@ -114,25 +179,24 @@ fn current_user_sid_string() -> String {
     }
 }
 
-/// Round-trip `pipe_path`'s DACL to SDDL text via `GetNamedSecurityInfoW` +
-/// `ConvertSecurityDescriptorToStringSecurityDescriptorW` — Npfs (the named
-/// pipe file system driver) answers the same `SE_FILE_OBJECT` security
-/// queries a real file or directory does, which is why `voyage.rs`'s
-/// directory-descriptor test helper of the same name generalizes here
-/// unchanged apart from the object path.
-fn security_descriptor_sddl(pipe_path: &str) -> String {
+/// Round-trip a LIVE PIPE HANDLE's DACL to SDDL text via `GetSecurityInfo`
+/// (Codex review, finding 11: named pipes are not among the documented
+/// object types for the NAME-based `GetNamedSecurityInfoW`; Microsoft
+/// directs named-pipe security queries through the HANDLE-based
+/// `GetSecurityInfo` instead — this replaces round 1's name-based helper).
+/// `handle` needs `READ_CONTROL` access, which `open_pipe_handle` below
+/// requests explicitly.
+fn security_descriptor_sddl(handle: windows_sys::Win32::Foundation::HANDLE) -> String {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{
-        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1,
-        SE_FILE_OBJECT,
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
 
-    let wide_path = wide(pipe_path);
     unsafe {
         let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-        let rc = GetNamedSecurityInfoW(
-            wide_path.as_ptr(),
+        let rc = GetSecurityInfo(
+            handle,
             SE_FILE_OBJECT,
             DACL_SECURITY_INFORMATION,
             std::ptr::null_mut(),
@@ -141,7 +205,7 @@ fn security_descriptor_sddl(pipe_path: &str) -> String {
             std::ptr::null_mut(),
             &mut psd,
         );
-        assert_eq!(rc, 0, "GetNamedSecurityInfoW({pipe_path}) failed: {rc}");
+        assert_eq!(rc, 0, "GetSecurityInfo failed: {rc}");
         let mut sddl_ptr: *mut u16 = std::ptr::null_mut();
         let mut sddl_len: u32 = 0;
         let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
@@ -162,8 +226,9 @@ fn security_descriptor_sddl(pipe_path: &str) -> String {
 
 /// Round-trip an SDDL STRING through the converter pair to ITS canonical
 /// form, so the expected side speaks the same well-known-SID-aliasing
-/// dialect the actual side comes back in (see `voyage.rs`'s identical
-/// helper for why this is needed, not merely stylistic).
+/// dialect the actual side comes back in (`voyage.rs`'s and round 1's
+/// identical helper; same technique the coordinator asked this test to
+/// reuse).
 fn canonical_sddl(sddl: &str) -> String {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{
@@ -203,121 +268,199 @@ fn canonical_sddl(sddl: &str) -> String {
     }
 }
 
-/// Test 1: one server, one client, bytes both ways; a marker-tagged send's
-/// `Sent` event carries the exact bytes the client actually received.
+/// Open a raw handle to the voyage's pipe with `READ_CONTROL` for security
+/// queries — deliberately bypassing `connect_voyage_pipe` (which has no
+/// reason to expose its raw handle) since this is a test-only need, same
+/// pattern as `try_create_first_instance`.
+fn open_pipe_handle(voyage_id: &str) -> windows_sys::Win32::Foundation::HANDLE {
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, READ_CONTROL};
+    let name = wide(&format!(r"\\.\pipe\sot-voyage-{voyage_id}"));
+    let h = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
+            0,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(h, INVALID_HANDLE_VALUE, "CreateFileW failed: {}", std::io::Error::last_os_error());
+    h
+}
+
+fn process_handle_count() -> u32 {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+    let mut count: u32 = 0;
+    let ok = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
+    assert_ne!(ok, 0, "GetProcessHandleCount failed: {}", std::io::Error::last_os_error());
+    count
+}
+
+/// One connect -> accept -> server-close -> confirmed-closed -> client
+/// drop cycle, used by the churn/leak test.
+fn churn_one(server: &PipeServer, id: &str) {
+    let client = connect_voyage_pipe(id).unwrap();
+    let conn_id = expect_accepted(server, TIMEOUT);
+    server.close(conn_id);
+    expect_closed(server, conn_id, TIMEOUT);
+    drop(client);
+}
+
+/// Test 1: one server, one client, bytes both ways (accumulated, not
+/// assumed to arrive as one `Bytes` event each); a marker-tagged send's
+/// `Sent` event fires once its `WriteFile` physically completes.
 #[test]
 fn server_and_client_exchange_bytes_and_sent_carries_marker() {
     let id = fresh_voyage_id();
     let server = PipeServer::bind(&id, 4).unwrap();
     let client = connect_voyage_pipe(&id).unwrap();
-    let conn_id = expect_accepted(&server, Duration::from_secs(5));
+    let conn_id = expect_accepted(&server, TIMEOUT);
 
-    client.write_all(b"hello from client").unwrap();
-    match next_event(&server, Duration::from_secs(5)) {
-        TransportEvent::Bytes(cid, bytes) => {
-            assert_eq!(cid, conn_id);
-            assert_eq!(bytes, b"hello from client");
-        }
-        other => panic!("expected Bytes, got {other:?}"),
+    let outbound = b"hello from client";
+    client.write_all(outbound).unwrap();
+    let got = accumulate_bytes(&server, conn_id, outbound.len(), TIMEOUT);
+    assert_eq!(got, outbound);
+
+    let inbound = b"hello from server";
+    server.send(conn_id, inbound.to_vec(), Some(42)).unwrap();
+    let mut buf = vec![0u8; inbound.len()];
+    let mut got = 0;
+    while got < buf.len() {
+        got += client.read(&mut buf[got..]).unwrap();
     }
+    assert_eq!(buf, inbound);
 
-    server.send(conn_id, b"hello from server".to_vec(), Some(42)).unwrap();
-    let mut buf = [0u8; 64];
-    let n = client.read(&mut buf).unwrap();
-    assert_eq!(&buf[..n], b"hello from server");
-
-    match next_event(&server, Duration::from_secs(5)) {
+    match next_event(&server, TIMEOUT) {
         TransportEvent::Sent(cid, marker) => {
             assert_eq!(cid, conn_id);
             assert_eq!(marker, 42);
         }
         other => panic!("expected Sent, got {other:?}"),
     }
+
+    assert_completes_within("server drop", TIMEOUT, move || drop(server));
 }
 
 /// Test 2: two clients connected to the same voyage pipe are multiplexed
-/// by distinct `ConnId`s — `connect_voyage_pipe`'s own bounded retry
-/// absorbs the ordinary race against the accept loop posting the SECOND
-/// instance's `ConnectNamedPipe` after the first hand-off.
+/// by distinct `ConnId`s (bytes accumulated per connection, not assumed
+/// to arrive as one event each) — `connect_voyage_pipe`'s own bounded
+/// retry absorbs the ordinary race against the accept loop posting the
+/// SECOND instance's `ConnectNamedPipe` after the first hand-off.
 #[test]
 fn two_concurrent_clients_multiplexed_by_conn_id() {
     let id = fresh_voyage_id();
     let server = PipeServer::bind(&id, 4).unwrap();
 
     let client_a = connect_voyage_pipe(&id).unwrap();
-    let conn_a = expect_accepted(&server, Duration::from_secs(5));
+    let conn_a = expect_accepted(&server, TIMEOUT);
     let client_b = connect_voyage_pipe(&id).unwrap();
-    let conn_b = expect_accepted(&server, Duration::from_secs(5));
+    let conn_b = expect_accepted(&server, TIMEOUT);
     assert_ne!(conn_a, conn_b);
 
     client_a.write_all(b"from A").unwrap();
     client_b.write_all(b"from B").unwrap();
 
-    let mut seen = std::collections::HashMap::new();
-    for _ in 0..2 {
-        match next_event(&server, Duration::from_secs(5)) {
-            TransportEvent::Bytes(cid, bytes) => {
-                seen.insert(cid, bytes);
-            }
-            other => panic!("expected Bytes, got {other:?}"),
+    // Events for the two connections may interleave; drain by connection.
+    let mut a_got = Vec::new();
+    let mut b_got = Vec::new();
+    let deadline = Instant::now() + TIMEOUT;
+    while a_got.len() < 6 || b_got.len() < 6 {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "timed out: a={a_got:?} b={b_got:?}");
+        match next_event(&server, remaining) {
+            TransportEvent::Bytes(cid, bytes) if cid == conn_a => a_got.extend(bytes),
+            TransportEvent::Bytes(cid, bytes) if cid == conn_b => b_got.extend(bytes),
+            other => panic!("unexpected event: {other:?}"),
         }
     }
-    assert_eq!(seen.get(&conn_a).map(Vec::as_slice), Some(&b"from A"[..]));
-    assert_eq!(seen.get(&conn_b).map(Vec::as_slice), Some(&b"from B"[..]));
+    assert_eq!(a_got, b"from A");
+    assert_eq!(b_got, b"from B");
+
+    assert_completes_within("server drop", TIMEOUT, move || drop(server));
 }
 
-/// Test 3: squat detection. A rival `CreateNamedPipeW` carrying
-/// `FILE_FLAG_FIRST_PIPE_INSTANCE` fails with `ERROR_ACCESS_DENIED` while
-/// the server holds any instance of the name; dropping the server frees it.
+/// Test 3: squat detection AND continuous name hold (finding 7). With
+/// `max_instances == 1` to stress the tightest case, several
+/// connect/close cycles run in a row; the `FIRST_PIPE_INSTANCE` rival
+/// probe must fail EVERY time, including immediately after each
+/// teardown — the instance is disconnected-and-recycled, never actually
+/// closed, so the OS-level instance count never touches zero while the
+/// server lives. Only after `PipeServer::drop` does the probe succeed.
 #[test]
-fn rival_first_instance_create_fails_while_server_lives_then_frees_on_drop() {
+fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
     use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 
     let id = fresh_voyage_id();
-    let server = PipeServer::bind(&id, 2).unwrap();
+    let server = PipeServer::bind(&id, 1).unwrap();
 
-    let err = try_create_first_instance(&id).unwrap_err();
-    assert_eq!(err.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32), "unexpected squat-check error: {err}");
+    for _ in 0..3 {
+        let err = try_create_first_instance(&id).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32), "unexpected squat-check error: {err}");
 
-    drop(server);
+        let client = connect_voyage_pipe(&id).unwrap();
+        let conn_id = expect_accepted(&server, TIMEOUT);
+        server.close(conn_id);
+        assert_eq!(expect_closed(&server, conn_id, TIMEOUT), ClosedReason::Closed);
+        drop(client);
+
+        // Immediately after teardown: recycled, not closed. The window
+        // round 1's test 3 missed must not exist.
+        let err = try_create_first_instance(&id).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32), "squat window reopened after teardown");
+    }
+
+    assert_completes_within("server drop", TIMEOUT, move || drop(server));
     try_create_first_instance(&id).unwrap_or_else(|e| panic!("expected the freed name to bind again: {e}"));
 }
 
-/// Test 4: the pipe's own security descriptor — protected, owner-only full
+/// Test 4: the pipe's own security descriptor, queried on a LIVE HANDLE
+/// via `GetSecurityInfo` (finding 11) — protected, owner-only full
 /// access, and (unlike the voyage-tree directory descriptor) NO `OI`/`CI`
-/// inheritance flags, since a pipe object has no children to inherit onto.
+/// inheritance flags, since a pipe object has no children to inherit
+/// onto. The expected SDDL is the CORRECT six-field ACE form
+/// (`D:P(A;;FA;;;<sid>)` — empty flags field, not an omitted one; see
+/// `fsutil.rs`'s `owner_protected_descriptor_with_ace` doc for the
+/// five-field bug this shape fixes), round-tripped through the same
+/// converter so a regression in either direction is a string mismatch,
+/// not a parse failure at `bind` time.
 #[test]
 fn pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags() {
     let id = fresh_voyage_id();
     let server = PipeServer::bind(&id, 1).unwrap();
-    let pipe_path = format!(r"\\.\pipe\sot-voyage-{id}");
 
+    let handle = open_pipe_handle(&id);
     let sid = current_user_sid_string();
-    let expected = canonical_sddl(&format!("D:P(A;FA;;;{sid})"));
-    let actual = security_descriptor_sddl(&pipe_path);
+    let expected = canonical_sddl(&format!("D:P(A;;FA;;;{sid})"));
+    let actual = security_descriptor_sddl(handle);
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+
     assert_eq!(actual, expected);
     assert!(!actual.contains("OICI"), "pipe descriptor must carry no OI/CI flags: {actual}");
 
-    drop(server);
+    assert_completes_within("server drop", TIMEOUT, move || drop(server));
 }
 
 /// Test 5: a client that connects and never reads while the server floods
-/// it. The outbound queue (capacity 8) eventually reports full once the
+/// it. The outbound BYTE budget eventually reports full once the
 /// head-of-line `WriteFile` itself is stuck in the kernel (the pipe's own
-/// 64 KiB buffer also fills); `close` still completes promptly —
-/// `CancelIoEx` proving itself against a write that would otherwise never
-/// finish — and the subsequent server drop (which joins every remaining
-/// thread) is equally prompt.
+/// 64 KiB buffer also fills). `close` is fire-and-forget (finding 6): it
+/// cannot itself hang, so the bound under test is how promptly the
+/// `Closed` event follows — proving `IoSlot::cancel` actually aborted the
+/// otherwise-eternal write — and, separately, that dropping the server
+/// afterward (which joins every remaining thread) is itself prompt.
 #[test]
 fn flooded_never_reading_client_close_completes_within_bound() {
     let id = fresh_voyage_id();
     let server = PipeServer::bind(&id, 2).unwrap();
     let client = connect_voyage_pipe(&id).unwrap(); // deliberately never reads
-    let conn_id = expect_accepted(&server, Duration::from_secs(5));
+    let conn_id = expect_accepted(&server, TIMEOUT);
 
     let payload = vec![0xABu8; 65_536];
     let mut saw_full = false;
-    for _ in 0..64 {
+    for _ in 0..128 {
         match server.send(conn_id, payload.clone(), None) {
             Ok(()) => {}
             Err(PipeError::QueueFull(cid)) => {
@@ -328,38 +471,33 @@ fn flooded_never_reading_client_close_completes_within_bound() {
             Err(other) => panic!("unexpected send error: {other}"),
         }
     }
-    assert!(saw_full, "expected the outbound queue to report full against a non-reading peer");
+    assert!(saw_full, "expected the outbound budget to report full against a non-reading peer");
 
-    let start = Instant::now();
-    server.close(conn_id).unwrap();
-    assert!(start.elapsed() < Duration::from_secs(10), "close on a stuck write did not complete promptly");
+    server.close(conn_id);
+    assert_eq!(expect_closed(&server, conn_id, TIMEOUT), ClosedReason::Closed);
 
-    let start = Instant::now();
-    drop(server);
-    assert!(start.elapsed() < Duration::from_secs(10), "server drop did not complete promptly (a thread did not join)");
+    assert_completes_within("server drop after a stuck write", TIMEOUT, move || drop(server));
     drop(client);
 }
 
 /// Test 6: a pending accept with no client ever connecting — server drop
-/// must return promptly (the accept thread's blocked `ConnectNamedPipe` is
-/// cancelled, not merely abandoned) rather than hang.
+/// must return promptly (the accept thread's blocked `ConnectNamedPipe`
+/// is cancelled via `IoSlot`, not merely abandoned) rather than hang the
+/// runner (watchdog-bounded per the module doc).
 #[test]
 fn pending_accept_with_no_client_drops_promptly() {
     let id = fresh_voyage_id();
     let server = PipeServer::bind(&id, 1).unwrap();
-    let start = Instant::now();
-    drop(server);
-    assert!(start.elapsed() < Duration::from_secs(10), "drop with a pending, client-less accept hung");
+    assert_completes_within("drop with a pending, client-less accept", TIMEOUT, move || drop(server));
 }
 
 /// Test 7: invalid voyage ids — path-traversal shapes, wrong length,
 /// uppercase, hyphen-less "simple" form, braced form, and empty — are all
 /// refused loudly by both `bind` and `connect_voyage_pipe`, and `bind`
-/// never gets far enough to create anything under the rejected name (shown
-/// by a first-instance create against one of those exact strings still
-/// succeeding afterward).
+/// never gets far enough to create anything under the rejected name.
+/// Also covers `max_instances`'s documented `1..=255` range (finding 7).
 #[test]
-fn invalid_voyage_ids_are_rejected_loudly_and_create_nothing() {
+fn invalid_voyage_ids_and_instance_counts_are_rejected_loudly() {
     let bad_ids = [
         "../../../etc/passwd",
         "not-a-uuid",
@@ -377,9 +515,12 @@ fn invalid_voyage_ids_are_rejected_loudly_and_create_nothing() {
     }
 
     // "creates nothing": if `bind` had gotten as far as `CreateNamedPipeW`
-    // for a rejected id, that name would already be squatted — instead the
-    // very first bad id above is still free to bind under raw Win32 here.
+    // for a rejected id, that name would already be squatted.
     try_create_first_instance("not-a-uuid").unwrap_or_else(|e| panic!("expected a rejected id to create no pipe at all: {e}"));
+
+    let id = fresh_voyage_id();
+    assert!(matches!(PipeServer::bind(&id, 0).unwrap_err(), PipeError::InvalidMaxInstances));
+    assert!(matches!(PipeServer::bind(&id, 256).unwrap_err(), PipeError::InvalidMaxInstances));
 }
 
 /// Test 8: `close` on the server side gives the client an ordered EOF
@@ -393,23 +534,71 @@ fn server_close_yields_client_eof_and_client_drop_yields_server_closed() {
     // Server-initiated close -> client observes ordered EOF, server itself
     // reports `Closed`.
     let client_a = connect_voyage_pipe(&id).unwrap();
-    let conn_a = expect_accepted(&server, Duration::from_secs(5));
-    server.close(conn_a).unwrap();
+    let conn_a = expect_accepted(&server, TIMEOUT);
+    server.close(conn_a);
     let mut buf = [0u8; 16];
     let n = client_a.read(&mut buf).unwrap();
     assert_eq!(n, 0, "expected ordered EOF after a server-initiated close");
-    match next_event(&server, Duration::from_secs(5)) {
-        TransportEvent::Closed(cid, ClosedReason::Closed) => assert_eq!(cid, conn_a),
-        other => panic!("expected Closed(Closed), got {other:?}"),
-    }
+    assert_eq!(expect_closed(&server, conn_a, TIMEOUT), ClosedReason::Closed);
 
     // Client drop -> server's OWN reader observes the disconnect and
-    // reports `Closed(Eof)` without any `close`/`drain_and_close` call.
+    // reports `Closed(Eof)` without any `close` call.
     let client_b = connect_voyage_pipe(&id).unwrap();
-    let conn_b = expect_accepted(&server, Duration::from_secs(5));
+    let conn_b = expect_accepted(&server, TIMEOUT);
     drop(client_b);
-    match next_event(&server, Duration::from_secs(5)) {
-        TransportEvent::Closed(cid, ClosedReason::Eof) => assert_eq!(cid, conn_b),
-        other => panic!("expected Closed(Eof), got {other:?}"),
+    assert_eq!(expect_closed(&server, conn_b, TIMEOUT), ClosedReason::Eof);
+
+    assert_completes_within("server drop", TIMEOUT, move || drop(server));
+}
+
+/// New coverage (finding 4 / round-1 audit miss): a client that connects
+/// and disconnects IMMEDIATELY — before the server-side start gate could
+/// plausibly have opened yet — must still be cleanly `Accepted` then
+/// `Closed(Eof)`, with its instance recycled rather than leaked (proven by
+/// a subsequent connect succeeding immediately).
+#[test]
+fn eof_before_registration_is_handled_cleanly() {
+    let id = fresh_voyage_id();
+    let server = PipeServer::bind(&id, 2).unwrap();
+
+    let client = connect_voyage_pipe(&id).unwrap();
+    drop(client);
+
+    let conn_id = expect_accepted(&server, TIMEOUT);
+    assert_eq!(expect_closed(&server, conn_id, TIMEOUT), ClosedReason::Eof);
+
+    let client2 = connect_voyage_pipe(&id).unwrap();
+    let _ = expect_accepted(&server, TIMEOUT);
+    drop(client2);
+
+    assert_completes_within("server drop", TIMEOUT, move || drop(server));
+}
+
+/// New coverage (finding 5 / round-1 audit miss): sequential connect/close
+/// churn must not grow this process's OS handle count without bound — the
+/// reaper joins and recycles every connection immediately rather than
+/// accumulating retired threads or handles.
+#[test]
+fn sequential_connect_close_churn_does_not_leak_handles() {
+    let id = fresh_voyage_id();
+    let server = PipeServer::bind(&id, 4).unwrap();
+
+    // Warm-up: let the instance pool and any one-time allocations settle
+    // before taking the baseline measurement.
+    for _ in 0..5 {
+        churn_one(&server, &id);
     }
+
+    let before = process_handle_count();
+    for _ in 0..50 {
+        churn_one(&server, &id);
+    }
+    let after = process_handle_count();
+
+    assert!(
+        after <= before + 20,
+        "handle count grew from {before} to {after} across 50 connect/close cycles -- suspected leak"
+    );
+
+    assert_completes_within("server drop", TIMEOUT, move || drop(server));
 }
