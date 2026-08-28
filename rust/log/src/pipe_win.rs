@@ -954,16 +954,35 @@ fn accept_loop(shared: Arc<ServerShared>, name: Vec<u16>, first_instance: OwnedH
         shared.accept.lock().unwrap().current = None;
 
         match connect_result {
+            // Finding (round-2 CI): a client that connects and vanishes
+            // fast enough can make `ConnectNamedPipe` report the
+            // completion as an ERROR rather than success or
+            // `ERROR_PIPE_CONNECTED` -- Windows does not guarantee the
+            // connect-side notification survives an immediate
+            // disconnect race cleanly. The only outcome that is EVER
+            // this module's own doing is `ERROR_OPERATION_ABORTED`,
+            // raised exclusively by `IoSlot::cancel` (`PipeServer::drop`
+            // cancelling a pending accept) -- every other error still
+            // means A REAL CLIENT SHOWED UP. Silently recycling and
+            // waiting for a "fresh" connect in that case discards the
+            // one client that will ever arrive for this attempt: nothing
+            // else is coming, so the accept loop would sit forever and
+            // the consumer would see NO event at all (round-2 CI:
+            // `eof_before_registration_is_handled_cleanly` timed out
+            // this way). Registering it instead gives it the full
+            // `Accepted` -> ... -> `Closed` lifecycle: the reader's own
+            // first `ReadFile` reliably discovers and classifies
+            // whatever the peer actually did.
             Ok(_) => handle_new_connection(&shared, inst, raw, slot),
-            Err(e) => {
+            Err(e) if e.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) => {
                 recycle_instance(&shared, inst);
-                let aborted = e.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32);
-                if aborted && shared.accept.lock().unwrap().shutting_down {
+                if shared.accept.lock().unwrap().shutting_down {
                     return;
                 }
-                // A real connect error on this one instance — try a fresh
-                // instance rather than ending the whole accept loop.
+                // Not actually shutting down -- nothing else ever cancels
+                // this slot, but stay defensive and just try again.
             }
+            Err(_e) => handle_new_connection(&shared, inst, raw, slot),
         }
     }
 }

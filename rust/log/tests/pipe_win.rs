@@ -149,6 +149,29 @@ fn try_create_first_instance(voyage_id: &str) -> std::io::Result<()> {
     }
 }
 
+/// Assert that a squat probe (`try_create_first_instance`) failed with one
+/// of the TWO documented codes Windows can report for the same underlying
+/// protection, rather than pinning one exact value (CI finding, round 2):
+/// `ERROR_ACCESS_DENIED` (5) is `FILE_FLAG_FIRST_PIPE_INSTANCE`'s own check
+/// firing against a name that already has ANY instance; `ERROR_PIPE_BUSY`
+/// (231) is the plain instance-count check firing because `nMaxInstances`
+/// is already saturated. Under `pipe_win.rs`'s continuous-hold design
+/// (instances are `DisconnectNamedPipe`+recycled, never closed, between
+/// clients) the count is saturated almost all the time whenever
+/// `max_instances` is small, so the count check can win the race against
+/// the first-instance check on any given attempt — both mean the same
+/// thing here: the name could not be taken. Which one fires on a given
+/// call is an unspecified implementation-order detail Windows does not
+/// document.
+fn assert_squat_check_failed(err: std::io::Error) {
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY};
+    let code = err.raw_os_error();
+    assert!(
+        code == Some(ERROR_ACCESS_DENIED as i32) || code == Some(ERROR_PIPE_BUSY as i32),
+        "expected ERROR_ACCESS_DENIED (5) or ERROR_PIPE_BUSY (231), got {err}"
+    );
+}
+
 /// This process's own token-user SID, stringified — independently derived
 /// so a bug in `pipe_win.rs`'s or `fsutil.rs`'s own SID lookup could not
 /// also hide from this test.
@@ -391,15 +414,20 @@ fn two_concurrent_clients_multiplexed_by_conn_id() {
 /// server lives. Only after `PipeServer::drop` does the probe succeed.
 #[test]
 fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
-    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
-
     let id = fresh_voyage_id();
     let server = PipeServer::bind(&id, 1).unwrap();
 
     for _ in 0..3 {
-        let err = try_create_first_instance(&id).unwrap_err();
-        assert_eq!(err.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32), "unexpected squat-check error: {err}");
+        // The name stays owned (either documented squat-failure code --
+        // see `assert_squat_check_failed`'s doc).
+        assert_squat_check_failed(try_create_first_instance(&id).unwrap_err());
 
+        // A legitimate client can still connect: `max_instances == 1`
+        // means exactly one instance exists, and it is either free
+        // (idle, listening) or about to become free the instant the
+        // previous cycle's teardown recycles it -- `connect_voyage_pipe`'s
+        // own bounded retry on `ERROR_PIPE_BUSY` absorbs that ordinary
+        // race, matching the single-instance arithmetic of this test.
         let client = connect_voyage_pipe(&id).unwrap();
         let conn_id = expect_accepted(&server, TIMEOUT);
         server.close(conn_id);
@@ -408,8 +436,7 @@ fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
 
         // Immediately after teardown: recycled, not closed. The window
         // round 1's test 3 missed must not exist.
-        let err = try_create_first_instance(&id).unwrap_err();
-        assert_eq!(err.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32), "squat window reopened after teardown");
+        assert_squat_check_failed(try_create_first_instance(&id).unwrap_err());
     }
 
     assert_completes_within("server drop", TIMEOUT, move || drop(server));
@@ -556,6 +583,20 @@ fn server_close_yields_client_eof_and_client_drop_yields_server_closed() {
 /// plausibly have opened yet — must still be cleanly `Accepted` then
 /// `Closed(Eof)`, with its instance recycled rather than leaked (proven by
 /// a subsequent connect succeeding immediately).
+///
+/// Round-2 CI caught a REAL bug here (not a test-timing flake): the accept
+/// loop treated ANY non-success `ConnectNamedPipe` outcome as "nobody
+/// connected, recycle and wait for a fresh attempt" — but a client that
+/// vanishes fast enough can make that overlapped call report an ERROR
+/// rather than success or `ERROR_PIPE_CONNECTED`, even though a real
+/// client genuinely did connect. Silently recycling in that case discards
+/// the one client that will ever arrive, so the accept loop sits waiting
+/// for a connect that already happened and this test's `expect_accepted`
+/// timed out with NO event at all. Fixed in `pipe_win.rs`'s accept loop:
+/// only `ERROR_OPERATION_ABORTED` (this module's own shutdown-triggered
+/// cancel) still means "no connection, try again" — every other connect
+/// outcome now registers the connection and lets the reader's own first
+/// `ReadFile` discover and classify whatever actually happened.
 #[test]
 fn eof_before_registration_is_handled_cleanly() {
     let id = fresh_voyage_id();
