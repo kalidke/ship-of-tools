@@ -1030,6 +1030,42 @@ pub fn run(
     let mut pending_output: Vec<u8> = Vec::new();
     let mut pending_bytes: usize = 0;
     let mut last_commit = Instant::now();
+    // Loop fairness (real CI failure, windows-latest only:
+    // `attach_mid_stream_checkpoint_reproduces_reference_screen` timed out
+    // waiting on a connection the capsule itself closed with
+    // `PreAdmissionTimeout`, even though the test's `hello` had already
+    // arrived on the wire). `output_rx.recv_timeout` below never actually
+    // blocks -- and so never yields this thread -- for as long as output
+    // keeps arriving faster than the timeout; on a CPU-constrained runner
+    // with a fast enough producer (windows-latest's conhost measured ~2x
+    // windows-2022's), that starves whatever OS thread delivers transport
+    // bytes for this connection, long enough for the unrelated
+    // `PRE_ADMISSION_TIMEOUT` deadline to fire on a `hello` the loop never
+    // got a chance to even see. ADR 0041's own "control/liveness always
+    // serviced" backpressure rule for the 8 MiB producer-channel budget is
+    // the same principle applied here to CPU scheduling: bound how much
+    // output work runs before this thread explicitly yields, so a thread
+    // starved of CPU time gets a scheduling window every group-commit's
+    // worth of output rather than only whenever this loop happens to run
+    // dry. `service_transport_events!`/`tick` themselves are untouched --
+    // they already run once per iteration regardless -- this only adds a
+    // yield the CURRENT structure never gave the scheduler.
+    //
+    // No deterministic unit test pins this one: `output_rx` (and the
+    // reader thread feeding it) is constructed a few lines below, entirely
+    // INSIDE this function, over a real spawned ConPTY -- unlike
+    // `commands`/`transport_events`/`transport`, it is not a parameter a
+    // test can substitute a synthetic, saturated source for. The bug
+    // itself is an OS CPU-scheduling race (a fast enough producer thread
+    // starving a sibling thread on a core-constrained runner), not a
+    // logical invariant this module's state machine can violate on its
+    // own -- `attach_proto`'s own tests already prove the PROTOCOL is
+    // correct regardless of timing (see its `replay_slow_watcher_flood_*`
+    // tests from the prior discharge round). The two real Windows CI legs
+    // (windows-2022, windows-latest) are the pin for this specific
+    // behavior until `run` grows an injectable output source worth the
+    // refactor.
+    let mut bytes_since_yield: usize = 0;
 
     // THIS module decides nothing; `attach_proto::AttachProto` does (see
     // its module doc). `execute_light_actions!` runs the action kinds that
@@ -1119,6 +1155,23 @@ pub fn run(
                 segments_sealed += 1;
                 $w = store.open_segment(wall_ms())?;
                 seg_bytes = 0;
+            }
+        };
+    }
+
+    /// Bounds consecutive output work to one `GROUP_COMMIT_BYTES` worth
+    /// (the SAME threshold the writer already paces its own fsyncs by)
+    /// before yielding this thread -- the loop-fairness fix above. Takes
+    /// `bytes` itself (not a pre-computed length) so every call site reads
+    /// as "handle this chunk, paced" in one line: `.len()` borrows before
+    /// `handle_output!` moves it.
+    macro_rules! pace_output {
+        ($bytes:ident) => {
+            bytes_since_yield += $bytes.len();
+            handle_output!($bytes);
+            if bytes_since_yield >= GROUP_COMMIT_BYTES {
+                std::thread::yield_now();
+                bytes_since_yield = 0;
             }
         };
     }
@@ -1456,7 +1509,7 @@ pub fn run(
         }
         match output_rx.recv_timeout(GROUP_COMMIT_WINDOW) {
             Ok(ReaderEvent::Output(bytes)) => {
-                handle_output!(bytes);
+                pace_output!(bytes);
                 maybe_rotate!(w);
             }
             Ok(ReaderEvent::Done(result)) => {
@@ -1530,7 +1583,7 @@ pub fn run(
         }
         match output_rx.recv_timeout(TEARDOWN_REAP_POLL) {
             Ok(ReaderEvent::Output(bytes)) => {
-                handle_output!(bytes);
+                pace_output!(bytes);
                 maybe_rotate!(w);
             }
             Ok(ReaderEvent::Done(result)) => {
@@ -1567,7 +1620,7 @@ pub fn run(
         execute_teardown_actions!(attach_proto.tick(Instant::now()));
         match output_rx.recv_timeout(TEARDOWN_DRAIN_POLL) {
             Ok(ReaderEvent::Output(bytes)) => {
-                handle_output!(bytes);
+                pace_output!(bytes);
                 maybe_rotate!(w);
             }
             Ok(ReaderEvent::Done(_)) => break,
