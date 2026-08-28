@@ -1,5 +1,5 @@
 //! `sot-conpty-helper [--child]`
-//! `sot-conpty-helper --flood <total-bytes>`
+//! `sot-conpty-helper --flood <total-bytes> [--linger]`
 //! `sot-conpty-helper --script [repeats]`
 //!
 //! Minimal helper binary for `conpty.rs`'s containment test (ADR 0041
@@ -59,6 +59,15 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .expect("--flood needs a byte count");
         flood(total);
+        if std::env::args().any(|a| a == "--linger") {
+            // Stay alive after the flood until externally terminated: a
+            // test that asserts "the driver stays functional while the
+            // producer runs" needs the producer to still be running when
+            // its post-flood assertions execute — without this, the
+            // producer's own exit races those assertions into teardown,
+            // where producer-bound ops are (correctly) no longer served.
+            std::thread::sleep(std::time::Duration::from_secs(600));
+        }
         return;
     }
 

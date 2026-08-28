@@ -1098,11 +1098,17 @@ fn slow_watcher_overflow_closes_while_driver_stays_live() {
     let dir = tempfile::tempdir().unwrap();
     let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
     let total: usize = 6 * 1024 * 1024; // > the 4 MiB per-watcher budget
-    let argv = vec![helper, "--flood".to_string(), total.to_string()];
+    // --linger: the producer must OUTLIVE the post-eviction assertions.
+    // Without it, the flood's completion races the eviction wait: the
+    // producer can exit first, the run enters teardown, and the resize
+    // below is then (correctly) not served — observed as a deterministic
+    // 10 s timeout on the real windows legs while every protocol-level
+    // replay of this sequence passed.
+    let argv = vec![helper, "--flood".to_string(), total.to_string(), "--linger".to_string()];
     let cfg = config(dir.path(), "slowwatcher1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (transport, trx) = TestTransport::new();
-    let (_tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
@@ -1157,10 +1163,13 @@ fn slow_watcher_overflow_closes_while_driver_stays_live() {
     });
     assert!(resize_ok, "the driver must still be able to resize after the watcher's eviction");
 
+    // The lingering producer is ended BY REQUEST — which is also the
+    // honest exit_kind for this scenario.
+    tx.send(Command::Kill).unwrap();
     let summary = wait_for_join(handle, Duration::from_secs(60))
         .expect("run did not return within the local deadline")
         .unwrap();
-    assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
     verify_voyage(&root, "slowwatcher1").unwrap();
 }
 
