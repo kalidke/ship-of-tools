@@ -1247,6 +1247,41 @@ pub fn run(
         };
     }
 
+    /// Attaching to an idle session (real CI failure, windows-latest
+    /// only): `ground_reached` was previously fed ONLY from
+    /// `flush_output!`, itself reached only by fresh output crossing the
+    /// group-commit threshold, or a periodic idle check gated behind the
+    /// OUTPUT CHANNEL's own `recv_timeout` cadence — never directly by
+    /// admission, and never by `tick`, the one hook this loop already
+    /// calls unconditionally every iteration. An attach landing on an
+    /// ALREADY-idle, already-at-ground session (a shell sitting at its
+    /// prompt — the ordinary case, exercised once the fidelity test's
+    /// producer goes silent after `--linger`) depended entirely on that
+    /// separate cadence happening to notice, which is exactly the kind of
+    /// dependency `pace_output!`'s own history above already proved
+    /// fragile on a loaded windows-latest runner: the attach pended for
+    /// the full 5 s `GroundTimeout` and was refused instead of completing
+    /// on the very next iteration.
+    ///
+    /// Called every iteration, right after `tick`, so it runs in the SAME
+    /// iteration an attach was just admitted in (a) and on every
+    /// subsequent iteration while one still pends (b) — no separate
+    /// cadence to depend on. Scoped behind `ground_gate_pending()` (a
+    /// cheap check) so the vastly more common "nothing pending" iteration
+    /// pays nothing beyond it. Watermark semantics stay exact: with no
+    /// pending uncommitted bytes, NOW already is a valid commit boundary
+    /// (`flush_output!` skips the commit but still evaluates ground); with
+    /// some pending, `flush_output!` forces the SAME commit-then-check
+    /// barrier it always runs, just immediately rather than waiting for
+    /// the group-commit threshold or the idle timer to get to it.
+    macro_rules! eager_ground_check {
+        () => {
+            if attach_proto.ground_gate_pending() {
+                flush_output!(w);
+            }
+        };
+    }
+
     // The full action set -- everything `execute_light_actions!` handles,
     // delegated one line at a time (never re-expanding `flush_output!`
     // itself), PLUS the four action kinds only an inbound CLIENT frame can
@@ -1593,6 +1628,7 @@ pub fn run(
         }
         service_transport_events!();
         execute_actions!(attach_proto.tick(Instant::now()));
+        eager_ground_check!();
         if shutdown_requested {
             break 'main ExitKind::Requested;
         }
@@ -1674,6 +1710,7 @@ pub fn run(
     loop {
         service_transport_events_teardown!();
         execute_teardown_actions!(attach_proto.tick(Instant::now()));
+        eager_ground_check!();
         if job.active_processes()? == 0 {
             break;
         }
@@ -1719,6 +1756,7 @@ pub fn run(
     loop {
         service_transport_events_teardown!();
         execute_teardown_actions!(attach_proto.tick(Instant::now()));
+        eager_ground_check!();
         match output_rx.recv_timeout(TEARDOWN_DRAIN_POLL) {
             Ok(ReaderEvent::Output(bytes)) => {
                 pace_output!(bytes);

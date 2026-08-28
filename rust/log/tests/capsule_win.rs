@@ -274,8 +274,15 @@ impl<'a> FrameWatcher<'a> {
         Self { transport, next_idx: std::collections::HashMap::new() }
     }
 
+    /// `label` names WHICH expectation this call is waiting for, purely
+    /// for the timeout panic -- every wait used to say the same generic
+    /// "timed out waiting for an expected frame on conn N" regardless of
+    /// which of the dozens of call sites in this file it was, which cost
+    /// real time isolating the ground-gate bug (every failure looked
+    /// identical until the CI timeline was cross-referenced by hand).
     fn wait_for<T>(
         &mut self,
+        label: &'static str,
         conn: ConnId,
         timeout: Duration,
         mut pred: impl FnMut(&wire::DecodedFrame) -> Option<T>,
@@ -314,20 +321,21 @@ impl<'a> FrameWatcher<'a> {
             }
             self.next_idx.insert(conn, pos);
             if Instant::now() >= deadline {
-                panic!("timed out waiting for an expected frame on conn {conn}");
+                panic!("timed out waiting for {label:?} on conn {conn}");
             }
             std::thread::sleep(Duration::from_millis(10));
         }
     }
 
     /// Collects a full checkpoint transfer's bytes for `conn` (one or more
-    /// `checkpoint_chunk` frames, concatenated through `last`).
-    fn collect_checkpoint(&mut self, conn: ConnId, timeout: Duration) -> Vec<u8> {
+    /// `checkpoint_chunk` frames, concatenated through `last`). `label`
+    /// passes straight through to `wait_for`'s own timeout message.
+    fn collect_checkpoint(&mut self, label: &'static str, conn: ConnId, timeout: Duration) -> Vec<u8> {
         let deadline = Instant::now() + timeout;
         let mut out = Vec::new();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
-            let (last, bytes) = self.wait_for(conn, remaining, |f| {
+            let (last, bytes) = self.wait_for(label, conn, remaining, |f| {
                 if let wire::DecodedFrame::AttachServer(wire::AttachServer::CheckpointChunk { last, bytes }) = f {
                     Some((*last, bytes.clone()))
                 } else {
@@ -599,30 +607,30 @@ fn resize_ordered_exchange_commits_and_rejects() {
     transport.open(CONN);
     transport.feed(CONN, frame::hello());
     let mut watcher = FrameWatcher::new(&transport);
-    watcher.wait_for(CONN, Duration::from_secs(10), |f| {
+    watcher.wait_for("driver hello_ok", CONN, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
     });
     transport.feed(CONN, frame::attach("driver"));
-    watcher.collect_checkpoint(CONN, Duration::from_secs(10));
+    watcher.collect_checkpoint("driver checkpoint", CONN, Duration::from_secs(10));
     transport.feed(CONN, frame::take("driver"));
-    watcher.wait_for(CONN, Duration::from_secs(10), |f| {
+    watcher.wait_for("driver take_ok", CONN, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { .. })).then_some(())
     });
 
     transport.feed(CONN, frame::resize(100, 40)); // in budget
-    let ok1 = watcher.wait_for(CONN, Duration::from_secs(10), |f| match f {
+    let ok1 = watcher.wait_for("resize1 in-budget outcome", CONN, Duration::from_secs(10), |f| match f {
         wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeOk) => Some(true),
         wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeRefused { .. }) => Some(false),
         _ => None,
     });
     transport.feed(CONN, frame::resize(9999, 40)); // > 512 cols
-    let ok2 = watcher.wait_for(CONN, Duration::from_secs(10), |f| match f {
+    let ok2 = watcher.wait_for("resize2 over-512-cols outcome", CONN, Duration::from_secs(10), |f| match f {
         wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeOk) => Some(true),
         wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeRefused { .. }) => Some(false),
         _ => None,
     });
     transport.feed(CONN, frame::resize(40, 1)); // < 2 rows
-    let ok3 = watcher.wait_for(CONN, Duration::from_secs(10), |f| match f {
+    let ok3 = watcher.wait_for("resize3 under-2-rows outcome", CONN, Duration::from_secs(10), |f| match f {
         wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeOk) => Some(true),
         wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeRefused { .. }) => Some(false),
         _ => None,
@@ -831,7 +839,7 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     transport.open(CONN);
     transport.feed(CONN, frame::hello());
     let mut watcher = FrameWatcher::new(&transport);
-    watcher.wait_for(CONN, Duration::from_secs(10), |f| {
+    watcher.wait_for("conn hello_ok", CONN, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
     });
 
@@ -845,7 +853,7 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     // constructed and queued (`sent_frames` records the bytes at `send`
     // time, held or not) without disturbing `watcher`'s own cursor -- which
     // still needs to find that SAME chunk itself, below, once released.
-    FrameWatcher::new(&transport).wait_for(CONN, Duration::from_secs(10), |f| {
+    FrameWatcher::new(&transport).wait_for("checkpoint chunk queued (throwaway probe)", CONN, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::CheckpointChunk { .. })).then_some(())
     });
 
@@ -865,7 +873,7 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
 
     transport.set_hold_for(CONN, false);
     transport.release_held();
-    let checkpoint_bytes = watcher.collect_checkpoint(CONN, Duration::from_secs(10));
+    let checkpoint_bytes = watcher.collect_checkpoint("post-hold checkpoint", CONN, Duration::from_secs(10));
 
     // Let more output flow post-watermark, then end the run.
     std::thread::sleep(Duration::from_millis(300));
@@ -1029,20 +1037,20 @@ fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_resta
         transport.open(A);
         transport.feed(A, frame::hello());
         let mut watcher = FrameWatcher::new(&transport);
-        watcher.wait_for(A, Duration::from_secs(10), |f| {
+        watcher.wait_for("A hello_ok", A, Duration::from_secs(10), |f| {
             matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
         });
         transport.feed(A, frame::attach("alice"));
-        watcher.collect_checkpoint(A, Duration::from_secs(10));
+        watcher.collect_checkpoint("A checkpoint", A, Duration::from_secs(10));
         transport.feed(A, frame::take("alice"));
-        let epoch = watcher.wait_for(A, Duration::from_secs(10), |f| match f {
+        let epoch = watcher.wait_for("A take_ok", A, Duration::from_secs(10), |f| match f {
             wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => Some(*take_epoch),
             _ => None,
         });
 
         // K1: fresh input while authorized -- recorded.
         transport.feed(A, frame::input("alice", epoch, k1, b"echo one\r\n"));
-        let outcome1 = watcher.wait_for(A, Duration::from_secs(10), |f| match f {
+        let outcome1 = watcher.wait_for("A input K1 fresh outcome", A, Duration::from_secs(10), |f| match f {
             wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
             wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
             _ => None,
@@ -1054,7 +1062,7 @@ fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_resta
         // (checked after this incarnation seals, via the sealed frame count
         // for K1's idem_key, below).
         transport.feed(A, frame::input("alice", epoch, k1, b"echo one\r\n"));
-        let outcome1_replay = watcher.wait_for(A, Duration::from_secs(10), |f| match f {
+        let outcome1_replay = watcher.wait_for("A input K1 replay outcome", A, Duration::from_secs(10), |f| match f {
             wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
             wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
             _ => None,
@@ -1065,13 +1073,13 @@ fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_resta
         const B: ConnId = 2;
         transport.open(B);
         transport.feed(B, frame::hello());
-        watcher.wait_for(B, Duration::from_secs(10), |f| {
+        watcher.wait_for("B hello_ok", B, Duration::from_secs(10), |f| {
             matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
         });
         transport.feed(B, frame::attach("bob"));
-        watcher.collect_checkpoint(B, Duration::from_secs(10));
+        watcher.collect_checkpoint("B checkpoint", B, Duration::from_secs(10));
         transport.feed(B, frame::take("bob"));
-        watcher.wait_for(B, Duration::from_secs(10), |f| {
+        watcher.wait_for("B take_ok", B, Duration::from_secs(10), |f| {
             matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { .. })).then_some(())
         });
 
@@ -1080,7 +1088,7 @@ fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_resta
         // defines for a durable epoch mismatch (a demoted connection is
         // indistinguishable from one on the wire).
         transport.feed(A, frame::input("alice", epoch, k2, b"echo two\r\n"));
-        let outcome2 = watcher.wait_for(A, Duration::from_secs(10), |f| match f {
+        let outcome2 = watcher.wait_for("A input K2 stale outcome", A, Duration::from_secs(10), |f| match f {
             wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
             wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
             _ => None,
@@ -1129,13 +1137,13 @@ fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_resta
         transport.open(C);
         transport.feed(C, frame::hello());
         let mut watcher = FrameWatcher::new(&transport);
-        watcher.wait_for(C, Duration::from_secs(10), |f| {
+        watcher.wait_for("C hello_ok", C, Duration::from_secs(10), |f| {
             matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
         });
         transport.feed(C, frame::attach("carol"));
-        watcher.collect_checkpoint(C, Duration::from_secs(10));
+        watcher.collect_checkpoint("C checkpoint", C, Duration::from_secs(10));
         transport.feed(C, frame::take("carol"));
-        let epoch2 = watcher.wait_for(C, Duration::from_secs(10), |f| match f {
+        let epoch2 = watcher.wait_for("C take_ok", C, Duration::from_secs(10), |f| match f {
             wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => Some(*take_epoch),
             _ => None,
         });
@@ -1147,7 +1155,7 @@ fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_resta
         // successor capsule starting with an empty index would let a
         // pre-crash forwarded key re-forward").
         transport.feed(C, frame::input("carol", epoch2, k1, b"echo one\r\n"));
-        let replay_after_restart = watcher.wait_for(C, Duration::from_secs(10), |f| match f {
+        let replay_after_restart = watcher.wait_for("C input K1 replay-after-restart outcome", C, Duration::from_secs(10), |f| match f {
             wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
             wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
             _ => None,
@@ -1209,23 +1217,23 @@ fn slow_watcher_overflow_closes_while_driver_stays_live() {
 
     transport.open(DRIVER);
     transport.feed(DRIVER, frame::hello());
-    watcher.wait_for(DRIVER, Duration::from_secs(10), |f| {
+    watcher.wait_for("driver hello_ok", DRIVER, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
     });
     transport.feed(DRIVER, frame::attach("driver"));
-    watcher.collect_checkpoint(DRIVER, Duration::from_secs(10));
+    watcher.collect_checkpoint("driver checkpoint", DRIVER, Duration::from_secs(10));
     transport.feed(DRIVER, frame::take("driver"));
-    watcher.wait_for(DRIVER, Duration::from_secs(10), |f| {
+    watcher.wait_for("driver take_ok", DRIVER, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { .. })).then_some(())
     });
 
     transport.open(WATCHER);
     transport.feed(WATCHER, frame::hello());
-    watcher.wait_for(WATCHER, Duration::from_secs(10), |f| {
+    watcher.wait_for("watcher hello_ok", WATCHER, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
     });
     transport.feed(WATCHER, frame::attach("watcher"));
-    watcher.collect_checkpoint(WATCHER, Duration::from_secs(10));
+    watcher.collect_checkpoint("watcher checkpoint", WATCHER, Duration::from_secs(10));
     // Never drains from here on: every future send to WATCHER queues
     // forever, simulating a client that stopped reading its pipe.
     transport.set_hold_for(WATCHER, true);
@@ -1244,7 +1252,7 @@ fn slow_watcher_overflow_closes_while_driver_stays_live() {
 
     // The driver is still fully functional: a resize still completes.
     transport.feed(DRIVER, frame::resize(100, 40));
-    let resize_ok = watcher.wait_for(DRIVER, Duration::from_secs(10), |f| match f {
+    let resize_ok = watcher.wait_for("driver post-eviction resize outcome", DRIVER, Duration::from_secs(10), |f| match f {
         wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeOk) => Some(true),
         wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeRefused { .. }) => Some(false),
         _ => None,
@@ -1287,7 +1295,7 @@ fn hello_refusal_leaves_mgmt_and_later_attach_working() {
 
     transport.open(MGMT);
     transport.feed(MGMT, frame::mgmt_probe());
-    watcher.wait_for(MGMT, Duration::from_secs(10), |f| {
+    watcher.wait_for("mgmt probe_ok (initial)", MGMT, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ProbeOk)).then_some(())
     });
 
@@ -1296,7 +1304,7 @@ fn hello_refusal_leaves_mgmt_and_later_attach_working() {
         BAD_HELLO,
         wire::encode_attach_client(&wire::AttachClient::Hello { proto: 999 }).unwrap(),
     );
-    watcher.wait_for(BAD_HELLO, Duration::from_secs(10), |f| {
+    watcher.wait_for("bad_hello hello_refused", BAD_HELLO, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloRefused { .. })).then_some(())
     });
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1311,11 +1319,11 @@ fn hello_refusal_leaves_mgmt_and_later_attach_working() {
     // Mgmt still works on its own connection -- probe AND status, the
     // latter carrying this process's own pid/creation-time/survival.
     transport.feed(MGMT, frame::mgmt_probe());
-    watcher.wait_for(MGMT, Duration::from_secs(10), |f| {
+    watcher.wait_for("mgmt probe_ok (after bad hello)", MGMT, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ProbeOk)).then_some(())
     });
     transport.feed(MGMT, frame::mgmt_status());
-    let (pid, survival) = watcher.wait_for(MGMT, Duration::from_secs(10), |f| match f {
+    let (pid, survival) = watcher.wait_for("mgmt status_ok", MGMT, Duration::from_secs(10), |f| match f {
         wire::DecodedFrame::MgmtReply(wire::MgmtReply::StatusOk { pid, survival, .. }) => Some((*pid, *survival)),
         _ => None,
     });
@@ -1325,11 +1333,11 @@ fn hello_refusal_leaves_mgmt_and_later_attach_working() {
     // A fresh, compatible attach still succeeds.
     transport.open(GOOD);
     transport.feed(GOOD, frame::hello());
-    watcher.wait_for(GOOD, Duration::from_secs(10), |f| {
+    watcher.wait_for("good hello_ok", GOOD, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
     });
     transport.feed(GOOD, frame::attach("late"));
-    watcher.collect_checkpoint(GOOD, Duration::from_secs(10));
+    watcher.collect_checkpoint("good checkpoint", GOOD, Duration::from_secs(10));
 
     tx.send(Command::Kill).unwrap();
     let summary = wait_for_join(handle, Duration::from_secs(30))
@@ -1364,7 +1372,7 @@ fn shutdown_ack_sent_before_teardown() {
 
     // The ack's bytes are constructed and queued...
     let mut watcher = FrameWatcher::new(&transport);
-    watcher.wait_for(MGMT, Duration::from_secs(10), |f| {
+    watcher.wait_for("mgmt shutdown_ok", MGMT, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
     });
     // ...but `run` must NOT have begun tearing down yet: nothing has
@@ -1434,11 +1442,11 @@ fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
         transport.open(CONN);
         transport.feed(CONN, frame::hello());
         let mut watcher = FrameWatcher::new(&transport);
-        watcher.wait_for(CONN, Duration::from_secs(10), |f| {
+        watcher.wait_for("conn hello_ok", CONN, Duration::from_secs(10), |f| {
             matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
         });
         transport.feed(CONN, frame::attach("watcher"));
-        watcher.collect_checkpoint(CONN, Duration::from_secs(10));
+        watcher.collect_checkpoint("conn checkpoint", CONN, Duration::from_secs(10));
 
         tx.send(Command::Kill).unwrap();
         let summary = wait_for_join(handle, Duration::from_secs(30))

@@ -918,6 +918,32 @@ impl AttachProto {
         vec![Action::BeginCheckpoint { conn }]
     }
 
+    /// Whether the loop has any reason to call [`AttachProto::ground_reached`]
+    /// right now, beyond its own regular fresh-output cadence — i.e.
+    /// whether the checkpoint-slot holder is currently `AwaitingGround`.
+    ///
+    /// Real CI failure (windows-latest, U2 round-3): `ground_reached` used
+    /// to be fed ONLY from `flush_output!`, itself reached only by FRESH
+    /// output crossing the group-commit threshold, or a periodic idle
+    /// timer tied to the output channel's own polling cadence — never
+    /// directly by admission or by `tick`, the loop's one truly
+    /// unconditional, every-iteration hook. Attaching to an ALREADY-idle,
+    /// already-at-ground session (a shell sitting at its prompt — THE
+    /// ordinary case) landed in that gap: nothing forced a fresh
+    /// evaluation, so the attach pended for the full 5 s `GroundTimeout`
+    /// before being refused, work that should have completed on the very
+    /// next loop iteration. The loop now calls this cheap check every
+    /// iteration and, when true, evaluates ground directly (see
+    /// `capsule_win.rs`'s call site) instead of waiting on that separate
+    /// cadence — `false` on the vastly more common "nothing pending"
+    /// iteration costs one `Option` comparison.
+    pub fn ground_gate_pending(&self) -> bool {
+        self.checkpoint_slot
+            .and_then(|conn| self.conns.get(&conn))
+            .and_then(watcher_checkpoint)
+            .is_some_and(|cp| matches!(cp, CheckpointProgress::AwaitingGround { .. }))
+    }
+
     /// The loop encoded `conn`'s checkpoint (only it can — see the module
     /// doc) and hands back the bytes. Wraps them in `Arc` ONCE and emits
     /// only the FIRST chunk (finding 10: streamed, not materialized all at
@@ -1987,6 +2013,55 @@ mod tests {
         // its OWN ground_reached call to actually begin.
         let a = p.ground_reached(now);
         assert_eq!(a, vec![Action::BeginCheckpoint { conn: 2 }]);
+    }
+
+    /// Real CI failure (windows-latest): attaching to an ALREADY-idle,
+    /// already-at-ground session (a shell sitting at its prompt -- THE
+    /// ordinary attach) pended for the full 5 s `GroundTimeout` instead of
+    /// completing immediately, because the wiring only ever called
+    /// `ground_reached` from fresh-output-triggered paths. This pins the
+    /// MACHINE-level half of the fix: `ground_gate_pending()` must report
+    /// an admitted attach as awaiting ground the instant it is admitted
+    /// (so the wiring's own eager check has something to act on), and
+    /// `ground_reached` must complete it from THAT SAME state with no
+    /// further event -- no `tick`, no `output_committed`, no time advance
+    /// beyond the admission step itself.
+    #[test]
+    fn attach_admitted_at_ground_can_begin_checkpoint_immediately_no_tick_needed() {
+        let mut p = proto();
+        let now = t0();
+        p.connection_opened(1, now);
+        let a = p.frame(1, hello_frame(), now);
+        p.sent(1, a[0].send_marker(), now);
+        let a = p.frame(1, attach_frame("alice"), now);
+        assert!(a.is_empty(), "attach itself never begins the checkpoint directly: {a:?}");
+        assert!(
+            p.ground_gate_pending(),
+            "an admitted attach must be reported as awaiting ground immediately"
+        );
+        // No tick, no output_committed, no time advance -- exactly what
+        // the wiring's eager check now calls at admission time.
+        let a = p.ground_reached(now);
+        assert_eq!(a, vec![Action::BeginCheckpoint { conn: 1 }]);
+    }
+
+    /// The negative case `ground_gate_pending` must also get right: once
+    /// nothing is actually awaiting ground (no attach ever happened, or
+    /// the one that did already finished), the eager wiring check must
+    /// cost nothing and do nothing -- it must not report pending forever.
+    #[test]
+    fn ground_gate_pending_is_false_with_nothing_awaiting_ground() {
+        let mut p = proto();
+        let now = t0();
+        assert!(!p.ground_gate_pending(), "nothing has ever attached");
+        p.connection_opened(1, now);
+        let a = p.frame(1, hello_frame(), now);
+        p.sent(1, a[0].send_marker(), now);
+        assert!(!p.ground_gate_pending(), "hello alone never awaits ground");
+        p.frame(1, attach_frame("alice"), now);
+        assert!(p.ground_gate_pending(), "the attach just admitted must be reported as pending");
+        drive_checkpoint_to_done(&mut p, 1, vec![0xAB], now);
+        assert!(!p.ground_gate_pending(), "once Done, nothing is awaiting ground any longer");
     }
 
     #[test]
