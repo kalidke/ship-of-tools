@@ -108,10 +108,13 @@
 //!   reusable library function has no business owning, and (b) meant
 //!   "teardown revokes admission" was really just "teardown discards what
 //!   it already accepted" — the thread kept enqueueing regardless. The fix
-//!   that survives step 5: `run` takes exactly the caller-owned channels a
-//!   caller feeds (today `commands: mpsc::Receiver<Command>` for `Kill`, and
-//!   `transport_events` for the wire) — it owns none of the sources that
-//!   feed them. Admission revocation is real: once the main loop is left
+//!   that survives step 5: `run` takes exactly the caller-owned channel a
+//!   caller feeds (today `commands: mpsc::Receiver<Command>` for `Kill`;
+//!   the wire's own events are polled through `Transport::try_recv_event`
+//!   instead of a second channel parameter, round-2 e2e review's own
+//!   deletion pressure — see that method's doc) — it owns none of the
+//!   sources that feed them. Admission revocation is real: once the main
+//!   loop is left
 //!   for teardown, `commands` is never read from again — not
 //!   received-then-discarded, simply never polled (the wire lane's own,
 //!   NARROWER revocation — producer-bound ops only, mgmt/`Sent` still
@@ -202,6 +205,22 @@ pub enum TransportEvent {
     /// centralized in the one loop that already serializes everything
     /// else.
     Sent(ConnId, u64),
+    /// The transport itself has permanently, terminally failed — no future
+    /// connection can ever be accepted while this capsule holds the
+    /// voyage's name (round-2 e2e review, finding 4: `pipe_win`'s own
+    /// `AcceptError` is exactly this for the real named-pipe transport).
+    /// Unlike every other variant, this is not a per-connection event and
+    /// carries no `ConnId` — `run` maps it to an ORDERLY self-end, the
+    /// SAME path as an externally requested `EndRun`
+    /// (`shutdown_requested`/`shutdown_reason`, reason
+    /// `"transport-accept-failed"`): drain, `producer_dead`, seal
+    /// verify-green, exit — so a step-6 supervisor sees an ordinary
+    /// "run ended, new leg" and respawns a fresh capsule that binds a
+    /// fresh pipe, rather than a wedged process silently unreachable
+    /// forever. The `String` is a diagnostic detail, logged but not
+    /// itself part of the recorded reason (which stays the fixed,
+    /// supervisor-matchable string above).
+    TransportFatal(String),
 }
 
 /// What the writer loop needs from a transport to deliver bytes and sever
@@ -240,6 +259,37 @@ pub enum TransportEvent {
 /// considered active it is a contract violation and the loop fails loudly
 /// rather than silently dropping it.
 pub trait Transport {
+    /// Bind the transport to `voyage_id` — called by [`run`] EXACTLY ONCE,
+    /// immediately after `open_for_writing` has the voyage's writer lock
+    /// and before anything else that could fail, so that on EVERY exit
+    /// path (including a `bind` failure itself) the pipe-lifetime
+    /// invariant ("the pipe is never live while the writer lock is free")
+    /// is enforced by CODE ORDER alone: nothing before this call can have
+    /// made the transport live, and [`Transport::shutdown_all`] — reached
+    /// via `run`'s `ShutdownGuard` on every path, `bind`'s own early
+    /// return included — always runs before `store`'s drop releases the
+    /// lock. A transport with nothing to bind (a synthetic test transport
+    /// driving the wire lane directly) implements this as a no-op `Ok(())`.
+    fn bind(&mut self, voyage_id: &str) -> Result<()>;
+    /// Return the next available [`TransportEvent`] for this transport, or
+    /// `None` if nothing is available RIGHT NOW — round-2 e2e review's
+    /// deletion pressure: `run` used to take a separate
+    /// `mpsc::Receiver<TransportEvent>` parameter, which only existed to
+    /// let a transport hand events back on a channel of its own; polling
+    /// through the trait itself removes that whole seam (an unbounded
+    /// forwarding channel, an actor thread, a join) for an implementation
+    /// that already owns a channel — real or synthetic — of its own.
+    /// MUST NOT BLOCK: called once per MAIN-LOOP iteration
+    /// (`service_transport_events!`/`_teardown!`), in a `while let Some(ev)
+    /// = ...` drain, immediately BEFORE this loop's own
+    /// `output_rx.recv_timeout(GROUP_COMMIT_WINDOW)` wait — that recv is
+    /// this loop's ONE latency budget per iteration; a blocking or
+    /// timed-wait implementation here would add a second, uncoordinated
+    /// wait ahead of it every iteration, silently doubling worst-case
+    /// per-iteration latency regardless of how small the deadline
+    /// (see the module doc's own `output_rx.recv_timeout` starvation
+    /// history for why an extra wait on this loop's thread is never free).
+    fn try_recv_event(&mut self) -> Option<TransportEvent>;
     /// Queue `bytes` for `conn`. Returns an opaque send id; the transport
     /// reports physical completion via [`TransportEvent::Sent`]`(conn, id)`
     /// on the SAME event channel this loop polls — a genuinely async
@@ -829,11 +879,12 @@ fn run_input_wal(
 /// once its ack is physically written (ADR 0041 Lifecycle: an externally
 /// requested end — EndRun). `commands` mirrors `claude.rs`'s `operator:
 /// mpsc::Receiver<OperatorCmd>` parameter; the caller owns its `Sender` (see
-/// the module doc's stdin-ownership point). `transport_events`/`transport`
-/// are the ADR 0041 step-5 pipe protocol's seam: a real named pipe on
-/// Windows (U3) or a test transport (this unit) drives the SAME
-/// [`AttachProto`] state machine either way — see `attach_proto`'s module
-/// doc for the protocol this loop executes.
+/// the module doc's stdin-ownership point). `transport` is the ADR 0041
+/// step-5 pipe protocol's seam: a real named pipe on Windows (U3) or a
+/// test transport (this unit) drives the SAME [`AttachProto`] state
+/// machine either way, polled every iteration via
+/// [`Transport::try_recv_event`] — see `attach_proto`'s module doc for the
+/// protocol this loop executes.
 // unused_assignments: `flush_output!`'s state reset is dead only at its
 // FINAL expansion (after the loop) — load-bearing at every other site,
 // same allow capsule.rs carries for the identical reason.
@@ -841,7 +892,6 @@ fn run_input_wal(
 pub fn run(
     config: CapsuleWinConfig,
     commands: mpsc::Receiver<Command>,
-    transport_events: mpsc::Receiver<TransportEvent>,
     transport: &mut dyn Transport,
 ) -> Result<ExitSummary> {
     // Resolve ONCE — see capsule.rs's identical comment on the same call.
@@ -872,6 +922,14 @@ pub fn run(
         }
     }
     let transport = ShutdownGuard(transport);
+
+    // The pipe-lifetime invariant, enforced here by code order (see
+    // `Transport::bind`'s own doc): the writer lock is already held
+    // (`store`, above) and `ShutdownGuard` is already in place to close
+    // whatever `bind` DID manage to set up on any later early return, so
+    // `bind` runs before any OTHER fallible step gets a chance to leave
+    // the lock held with the transport in a half-set-up state.
+    transport.0.bind(&config.voyage_id)?;
 
     store.seal_survivor()?;
 
@@ -1116,8 +1174,8 @@ pub fn run(
     // No deterministic unit test pins this one: `output_rx` (and the
     // reader thread feeding it) is constructed a few lines below, entirely
     // INSIDE this function, over a real spawned ConPTY -- unlike
-    // `commands`/`transport_events`/`transport`, it is not a parameter a
-    // test can substitute a synthetic, saturated source for. The two real
+    // `commands`/`transport`, it is not a parameter a test can substitute
+    // a synthetic, saturated source for. The two real
     // Windows CI legs (windows-2022, windows-latest) are the pin for this
     // specific behavior until `run` grows an injectable output source
     // worth the refactor.
@@ -1396,9 +1454,19 @@ pub fn run(
     // the SAME boundary `commands` already is (`pty` is also moved into the
     // Phase-B closer thread by then, so a wire-triggered resize could not
     // run even if admitted).
+    // Per-pass event quota: a client flood can refill the bounded transport
+    // channel as fast as this loop drains it, and an UNBOUNDED while-let
+    // would then starve output commits, tick, and the exit checks
+    // indefinitely (review finding). The quota bounds one pass; the next
+    // loop iteration resumes immediately, so nothing is dropped -- only
+    // interleaved.
+    const TRANSPORT_EVENTS_PER_PASS: usize = 64;
     macro_rules! service_transport_events {
         () => {
-            while let Ok(ev) = transport_events.try_recv() {
+            let mut quota = TRANSPORT_EVENTS_PER_PASS;
+            while quota > 0 {
+                quota -= 1;
+                let Some(ev) = transport.0.try_recv_event() else { break };
                 match ev {
                     TransportEvent::ConnectionOpened(conn) => {
                         splitters.insert(conn, wire::FrameSplitter::new());
@@ -1440,6 +1508,18 @@ pub fn run(
                                  matching outstanding send"
                             ),
                         }
+                    }
+                    // Round-2 e2e review, finding 4: a terminal transport
+                    // failure gets the SAME orderly self-end as an
+                    // externally requested EndRun -- no future connection
+                    // can ever be admitted, so continuing to run would
+                    // leave this capsule silently unreachable forever.
+                    TransportEvent::TransportFatal(detail) => {
+                        eprintln!(
+                            "sot-capsule: transport reported a terminal failure, ending this run: {detail}"
+                        );
+                        shutdown_requested = true;
+                        shutdown_reason = Some("transport-accept-failed".to_string());
                     }
                 }
             }
@@ -1501,7 +1581,13 @@ pub fn run(
     /// is closed (finding 7).
     macro_rules! service_transport_events_teardown {
         () => {
-            while let Ok(ev) = transport_events.try_recv() {
+            // Same per-pass quota as the main loop's macro, same reason --
+            // teardown's own deadlines must not be defeatable by a client
+            // flood refilling the channel mid-drain (review finding).
+            let mut quota = TRANSPORT_EVENTS_PER_PASS;
+            while quota > 0 {
+                quota -= 1;
+                let Some(ev) = transport.0.try_recv_event() else { break };
                 match ev {
                     TransportEvent::ConnectionOpened(conn) => {
                         splitters.insert(conn, wire::FrameSplitter::new());
@@ -1537,6 +1623,23 @@ pub fn run(
                                  matching outstanding send"
                             ),
                         }
+                    }
+                    TransportEvent::TransportFatal(detail) => {
+                        // Round-2 e2e review, finding 4, teardown-phase
+                        // analog of `AttachAction::Shutdown`'s own
+                        // teardown-time arm just above: `shutdown_requested`
+                        // is dead here (already left `'main`), but a fatal
+                        // transport failure arriving DURING teardown still
+                        // deserves its own reason folded into the eventual
+                        // `producer_dead` detail -- unless a real reason is
+                        // already recorded (the run is ending for some
+                        // OTHER cause; don't overwrite it with a fatal
+                        // event that is likely just this SAME pipe closing
+                        // as a side effect of that other teardown).
+                        eprintln!(
+                            "sot-capsule: transport reported a terminal failure during teardown: {detail}"
+                        );
+                        shutdown_reason.get_or_insert_with(|| "transport-accept-failed".to_string());
                     }
                 }
             }

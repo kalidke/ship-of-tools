@@ -66,6 +66,12 @@ fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows:
 /// `transport_events`, nothing ever calls `send`/`close`).
 struct NoopTransport;
 impl Transport for NoopTransport {
+    fn bind(&mut self, _voyage_id: &str) -> sot_log::Result<()> {
+        Ok(())
+    }
+    fn try_recv_event(&mut self) -> Option<TransportEvent> {
+        None
+    }
     fn send(&mut self, _conn: ConnId, _bytes: Vec<u8>) -> u64 {
         0
     }
@@ -73,12 +79,10 @@ impl Transport for NoopTransport {
     fn shutdown_all(&mut self) {}
 }
 
-/// Constructs an already-disconnected `(Sender, Receiver)` pair's receiving
-/// half plus a `NoopTransport` in one call, for the common "just run it, the
-/// wire lane is irrelevant to this test" case.
-fn no_transport() -> (mpsc::Receiver<TransportEvent>, NoopTransport) {
-    let (_tx, rx) = mpsc::channel();
-    (rx, NoopTransport)
+/// A `NoopTransport` in one call, for the common "just run it, the wire
+/// lane is irrelevant to this test" case.
+fn no_transport() -> NoopTransport {
+    NoopTransport
 }
 
 /// A synthetic transport driving the SAME `TransportEvent`/`Transport` seam
@@ -99,6 +103,7 @@ fn no_transport() -> (mpsc::Receiver<TransportEvent>, NoopTransport) {
 #[derive(Clone)]
 struct TestTransport {
     events_tx: mpsc::Sender<TransportEvent>,
+    events_rx: Arc<Mutex<mpsc::Receiver<TransportEvent>>>,
     inner: Arc<Mutex<TestInner>>,
 }
 
@@ -116,12 +121,13 @@ struct TestInner {
 }
 
 impl TestTransport {
-    fn new() -> (Self, mpsc::Receiver<TransportEvent>) {
+    fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        (
-            Self { events_tx: tx, inner: Arc::new(Mutex::new(TestInner::default())) },
-            rx,
-        )
+        Self {
+            events_tx: tx,
+            events_rx: Arc::new(Mutex::new(rx)),
+            inner: Arc::new(Mutex::new(TestInner::default())),
+        }
     }
     fn open(&self, conn: ConnId) {
         let _ = self.events_tx.send(TransportEvent::ConnectionOpened(conn));
@@ -190,6 +196,16 @@ impl TestTransport {
 }
 
 impl Transport for TestTransport {
+    fn bind(&mut self, _voyage_id: &str) -> sot_log::Result<()> {
+        // The synthetic transport under test here has nothing to bind --
+        // `open`/`feed`/`close_conn` already drive its event channel
+        // directly, standing in for what a real `PipeTransport::bind`
+        // would have wired up.
+        Ok(())
+    }
+    fn try_recv_event(&mut self) -> Option<TransportEvent> {
+        self.events_rx.lock().unwrap().try_recv().ok()
+    }
     fn send(&mut self, conn: ConnId, bytes: Vec<u8>) -> u64 {
         let mut inner = self.inner.lock().unwrap();
         inner.next_id += 1;
@@ -448,8 +464,8 @@ fn e2e_records_and_verifies() {
     let cfg = config(dir.path(), "e2e1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    let (trx, mut transport) = no_transport();
-    let summary = capsule_win::run(cfg, rx, trx, &mut transport).unwrap();
+    let mut transport = no_transport();
+    let summary = capsule_win::run(cfg, rx, &mut transport).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
     assert_eq!(summary.exit_code, Some(0));
     assert_eq!(summary.segments_sealed, 1);
@@ -517,8 +533,8 @@ fn spawn_failure_is_compensated() {
     let cfg = config(dir.path(), "fail1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    let (trx, mut transport) = no_transport();
-    let summary = capsule_win::run(cfg, rx, trx, &mut transport).unwrap();
+    let mut transport = no_transport();
+    let summary = capsule_win::run(cfg, rx, &mut transport).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
     assert_eq!(summary.exit_code, None);
     assert_eq!(summary.segments_sealed, 1);
@@ -540,8 +556,8 @@ fn spawn_failure_from_out_of_budget_initial_geometry() {
     let cfg = config(dir.path(), "fail2", argv, 1, 25); // cols=1 < the 2-column floor
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    let (trx, mut transport) = no_transport();
-    let summary = capsule_win::run(cfg, rx, trx, &mut transport).unwrap();
+    let mut transport = no_transport();
+    let summary = capsule_win::run(cfg, rx, &mut transport).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
     verify_voyage(&root, "fail2").unwrap();
     let frames = sealed_frames(&root, "fail2");
@@ -561,8 +577,8 @@ fn requested_kill_tears_down_and_seals() {
     let root = cfg.voyage_root.clone();
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
-        let (trx, mut transport) = no_transport();
-        capsule_win::run(cfg, rx, trx, &mut transport)
+        let mut transport = no_transport();
+        capsule_win::run(cfg, rx, &mut transport)
     });
     std::thread::sleep(Duration::from_millis(500));
     tx.send(Command::Kill).unwrap();
@@ -595,12 +611,12 @@ fn resize_ordered_exchange_commits_and_rejects() {
     let argv = vec!["cmd.exe".to_string()];
     let cfg = config(dir.path(), "resize1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
-    let (transport, trx) = TestTransport::new();
+    let transport = TestTransport::new();
     let (tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
-        capsule_win::run(cfg, rx, trx, &mut t)
+        capsule_win::run(cfg, rx, &mut t)
     });
 
     const CONN: ConnId = 1;
@@ -693,8 +709,8 @@ fn flood_drains_to_a_sealed_voyage_without_deadlock() {
     let (_tx, rx) = mpsc::channel();
     let start = Instant::now();
     let handle = std::thread::spawn(move || {
-        let (trx, mut transport) = no_transport();
-        capsule_win::run(cfg, rx, trx, &mut transport)
+        let mut transport = no_transport();
+        capsule_win::run(cfg, rx, &mut transport)
     });
     let summary = wait_for_join(handle, Duration::from_secs(60))
         .expect("run did not return within the local deadline (deadlock?)")
@@ -740,8 +756,8 @@ fn exit_code_high_bit_status_preserved_through_producer_dead() {
     let cfg = config(dir.path(), "exitcode1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    let (trx, mut transport) = no_transport();
-    let summary = capsule_win::run(cfg, rx, trx, &mut transport).unwrap();
+    let mut transport = no_transport();
+    let summary = capsule_win::run(cfg, rx, &mut transport).unwrap();
     assert_eq!(summary.exit_code, Some(0xC000_0005));
     verify_voyage(&root, "exitcode1").unwrap();
     let frames = sealed_frames(&root, "exitcode1");
@@ -821,12 +837,12 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     let (rows, cols) = (25u16, 80u16);
     let cfg = config(dir.path(), "midattach1", argv, cols, rows);
     let root = cfg.voyage_root.clone();
-    let (transport, trx) = TestTransport::new();
+    let transport = TestTransport::new();
     let (tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
-        capsule_win::run(cfg, rx, trx, &mut t)
+        capsule_win::run(cfg, rx, &mut t)
     });
 
     // Attach WHILE the producer is still actively emitting -- no attempt to
@@ -1024,12 +1040,12 @@ fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_resta
     {
         let argv = vec!["cmd.exe".to_string()]; // stays open until killed
         let cfg = config(dir.path(), name, argv, 80, 25);
-        let (transport, trx) = TestTransport::new();
+        let transport = TestTransport::new();
         let (tx, rx) = mpsc::channel();
         let run_transport = transport.clone();
         let handle = std::thread::spawn(move || {
             let mut t = run_transport;
-            capsule_win::run(cfg, rx, trx, &mut t)
+            capsule_win::run(cfg, rx, &mut t)
         });
 
         // conn A attaches and takes -- the first driver ever, a pipe take.
@@ -1125,12 +1141,12 @@ fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_resta
     {
         let argv = vec!["cmd.exe".to_string()];
         let cfg = config(dir.path(), name, argv, 80, 25);
-        let (transport, trx) = TestTransport::new();
+        let transport = TestTransport::new();
         let (tx, rx) = mpsc::channel();
         let run_transport = transport.clone();
         let handle = std::thread::spawn(move || {
             let mut t = run_transport;
-            capsule_win::run(cfg, rx, trx, &mut t)
+            capsule_win::run(cfg, rx, &mut t)
         });
 
         const C: ConnId = 1;
@@ -1203,12 +1219,12 @@ fn slow_watcher_overflow_closes_while_driver_stays_live() {
     let argv = vec![helper, "--flood".to_string(), total.to_string(), "--linger".to_string()];
     let cfg = config(dir.path(), "slowwatcher1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
-    let (transport, trx) = TestTransport::new();
+    let transport = TestTransport::new();
     let (tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
-        capsule_win::run(cfg, rx, trx, &mut t)
+        capsule_win::run(cfg, rx, &mut t)
     });
 
     const DRIVER: ConnId = 1;
@@ -1280,12 +1296,12 @@ fn hello_refusal_leaves_mgmt_and_later_attach_working() {
     let dir = tempfile::tempdir().unwrap();
     let argv = vec!["cmd.exe".to_string()];
     let cfg = config(dir.path(), "hellorefuse1", argv, 80, 25);
-    let (transport, trx) = TestTransport::new();
+    let transport = TestTransport::new();
     let (tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
-        capsule_win::run(cfg, rx, trx, &mut t)
+        capsule_win::run(cfg, rx, &mut t)
     });
     let mut watcher = FrameWatcher::new(&transport);
 
@@ -1357,12 +1373,12 @@ fn shutdown_ack_sent_before_teardown() {
     let argv = vec!["cmd.exe".to_string()]; // stays open until EndRun
     let cfg = config(dir.path(), "shutdownseq1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
-    let (transport, trx) = TestTransport::new();
+    let transport = TestTransport::new();
     let (_tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
-        capsule_win::run(cfg, rx, trx, &mut t)
+        capsule_win::run(cfg, rx, &mut t)
     });
 
     const MGMT: ConnId = 1;
@@ -1413,10 +1429,10 @@ fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
     {
         let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
         let cfg = config(dir.path(), "shutdownall1", argv, 80, 25);
-        let (transport, trx) = TestTransport::new();
+        let transport = TestTransport::new();
         let (_tx, rx) = mpsc::channel();
         let mut run_transport = transport.clone();
-        let summary = capsule_win::run(cfg, rx, trx, &mut run_transport).unwrap();
+        let summary = capsule_win::run(cfg, rx, &mut run_transport).unwrap();
         assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
         assert!(
             transport.shutdown_all_was_called(),
@@ -1430,12 +1446,12 @@ fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
     {
         let argv = vec!["cmd.exe".to_string()]; // stays open until killed
         let cfg = config(dir.path(), "shutdownall2", argv, 80, 25);
-        let (transport, trx) = TestTransport::new();
+        let transport = TestTransport::new();
         let (tx, rx) = mpsc::channel();
         let run_transport = transport.clone();
         let handle = std::thread::spawn(move || {
             let mut t = run_transport;
-            capsule_win::run(cfg, rx, trx, &mut t)
+            capsule_win::run(cfg, rx, &mut t)
         });
 
         const CONN: ConnId = 1;

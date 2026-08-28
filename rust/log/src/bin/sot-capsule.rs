@@ -54,37 +54,22 @@ fn main() {
     }
 }
 
-/// A `Transport` with no real connections — this bin has nowhere to accept
-/// one from until U3's named pipe server exists. `send`/`close` are
-/// reachable only if `run` somehow produced an action despite the paired
-/// empty `transport_events` channel meaning no connection was ever opened;
-/// they are harmless no-ops either way.
+/// The RAW total simultaneous pipe-instance ceiling this harness passes to
+/// `PipeTransport::new` (ADR 0041: subscribers plus separately bounded
+/// pre-hello/mgmt connections — the exact combined figure is a real
+/// budget-table computation step 6/7's supervisor owns; this bin is a
+/// manual-testing harness with no supervisor yet, so it states a single
+/// generous constant rather than inventing that computation here).
 #[cfg(windows)]
-#[derive(Default)]
-struct NullTransport {
-    next_id: u64,
-}
-
-#[cfg(windows)]
-impl sot_log::capsule_win::Transport for NullTransport {
-    fn send(&mut self, _conn: sot_log::attach_proto::ConnId, _bytes: Vec<u8>) -> u64 {
-        self.next_id += 1;
-        self.next_id
-    }
-    fn close(&mut self, _conn: sot_log::attach_proto::ConnId) {}
-    fn shutdown_all(&mut self) {}
-}
+const MAX_PIPE_INSTANCES: u32 = 8;
 
 /// Temporary harness for the Windows capsule runtime (ADR 0041 steps 4-5,
-/// U2). The pipe server is step 5's U3 — this bin's Windows arm is
-/// deliberately just "config + run" now: no stdin-forwarding thread (the
-/// wire lane replaces it — a real named pipe has nothing to attach to yet,
-/// so this harness has no interactive input/resize source at all until
-/// U3), no `--echo` (pipe fan-out is the real subscriber path; a bare
-/// stdout mirror duplicated that for no one). `NullTransport` below is a
-/// placeholder satisfying `run`'s transport seam with zero real
-/// connections. Ctrl+C still simply kills this whole process — FE-loss, not
-/// EndRun (ADR 0041 Lifecycle) — until a real supervisor exists.
+/// U2/U3). No stdin-forwarding thread (the wire lane replaces it — real
+/// input/resize now arrive over the pipe, from whatever attaches to it)
+/// and no `--echo` (pipe fan-out is the real subscriber path; a bare
+/// stdout mirror duplicated that for no one). Ctrl+C still simply kills
+/// this whole process — FE-loss, not EndRun (ADR 0041 Lifecycle) — until a
+/// real supervisor exists.
 #[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -138,11 +123,13 @@ fn main() {
         survival: sot_log::wire::Survival::Normal,
     };
     // No command source yet (Ctrl+C kills the process instead — see the
-    // doc above); no transport events either -- a real named pipe is U3.
+    // doc above). The pipe IS real now (U3 round 2): `PipeTransport::bind`
+    // (called by `run` itself, at the pipe-lifetime invariant's exact
+    // point) creates `\\.\pipe\sot-voyage-<voyage_id>` for real
+    // attach/mgmt clients to connect to.
     let (_cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let (_transport_tx, transport_rx) = std::sync::mpsc::channel();
-    let mut transport = NullTransport::default();
-    match sot_log::capsule_win::run(config, cmd_rx, transport_rx, &mut transport) {
+    let mut transport = sot_log::pipe_transport::PipeTransport::new(MAX_PIPE_INSTANCES);
+    match sot_log::capsule_win::run(config, cmd_rx, &mut transport) {
         Ok(s) => {
             eprintln!(
                 "sot-capsule: producer exited {:?} ({:?}); {} frames, {} segments sealed \

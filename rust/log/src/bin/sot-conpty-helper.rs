@@ -1,6 +1,7 @@
 //! `sot-conpty-helper [--child]`
 //! `sot-conpty-helper --flood <total-bytes> [--linger]`
 //! `sot-conpty-helper --script [repeats] [--linger]`
+//! `sot-conpty-helper --script [repeats] --drip`
 //!
 //! Minimal helper binary for `conpty.rs`'s containment test (ADR 0041
 //! §"Containment and the owned ConPTY layer") and `capsule_win.rs`'s
@@ -48,6 +49,24 @@
 //! written, which is the most a producer can promise from outside; the
 //! fidelity property under test must hold regardless of where the actual
 //! cut falls, precisely because this helper does not engineer one.
+//!
+//! `--drip` (ADR 0041 step 5, U3 round 2's e2e pipe test) replaces
+//! `--linger`'s silent post-emission sleep with ACTIVE, deterministic
+//! output: after `repeats` copies of the script block, this helper writes
+//! one short line every ~200 ms, forever, instead of going quiet. A named-
+//! pipe e2e attaches a second (driver) connection strictly after a first
+//! (watcher) one has already completed its own hello/attach/checkpoint
+//! round trip — real wall-clock time the fixed-size, one-shot `--script`
+//! burst does not control the length of, and once that burst's tail has
+//! already passed, a silent producer leaves nothing live for a
+//! later-attaching connection to ever see. `--drip`'s low, indefinite rate
+//! means any attach at any point after it starts is guaranteed fresh
+//! output within one interval, independent of image speed — and, being
+//! small and steady rather than a several-hundred-repeat burst, it cannot
+//! itself accumulate the volume that can trip a per-connection queue
+//! budget while that connection is still pre-admission. Plain `--script
+//! --linger` (no `--drip`) is unchanged, for tests that want the fixed
+//! block's exact byte content and nothing after it.
 
 #[cfg(windows)]
 fn main() {
@@ -75,6 +94,12 @@ fn main() {
         let pos = std::env::args().position(|a| a == "--script").unwrap();
         let repeats: usize = std::env::args().nth(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(20);
         script(repeats);
+        if std::env::args().any(|a| a == "--drip") {
+            // Never returns (see `drip`'s own doc and the module doc
+            // above) — the process stays alive, actively emitting, until
+            // the test's own teardown kills it.
+            drip();
+        }
         if std::env::args().any(|a| a == "--linger") {
             // Same rule as --flood --linger: a test whose assertions
             // require a LIVE producer must not let the producer's own
@@ -172,6 +197,26 @@ fn script(repeats: usize) {
             let _ = stdout.flush();
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+}
+
+/// See the module doc's `--drip` section. One short, cheap, position-
+/// independent plain-text line every ~200 ms, forever — deliberately not
+/// escape-sequence-heavy like [`SCRIPT_BLOCK`] (this only needs to prove
+/// "fresh live output keeps arriving", not re-exercise fidelity), and
+/// deliberately a small, steady rate rather than a burst, so it can never
+/// itself be the volume that fills a per-connection queue budget.
+#[cfg(windows)]
+fn drip() -> ! {
+    use std::io::Write;
+    use std::time::Duration;
+    let mut stdout = std::io::stdout().lock();
+    let mut n: u64 = 0;
+    loop {
+        n += 1;
+        let _ = writeln!(stdout, "drip {n}");
+        let _ = stdout.flush();
+        std::thread::sleep(Duration::from_millis(200));
     }
 }
 

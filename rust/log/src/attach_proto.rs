@@ -409,6 +409,25 @@ struct WatcherState {
 struct Conn {
     role: Role,
     outstanding_request: Option<RequestId>,
+    /// Set the instant `make_send` queues the marker that will eventually
+    /// clear `outstanding_request` (`Reply`/`ReplyThenClose`/`ShutdownAck`/
+    /// `CheckpointChunk`'s first-chunk `clears_request`) — round-2 e2e
+    /// review finding 1: distinguishes "the reply already exists, so a
+    /// next frame is a benign transport race" (HOLD it, see `held_frame`)
+    /// from "no reply exists yet at all" (a genuine lockstep violation) —
+    /// something `outstanding_sends != 0` alone cannot do, since a
+    /// connection can have UNRELATED sends (live output, an earlier
+    /// keepalive) in flight at the same time. Cleared alongside
+    /// `outstanding_request` in `clear_outstanding_if_matches`.
+    reply_queued: bool,
+    /// At most one frame, held when it arrives for a connection whose
+    /// `reply_queued` is true (see `frame`'s own doc) — replayed through
+    /// `frame` itself the moment the matching completion clears
+    /// `outstanding_request` (`clear_outstanding_and_replay`). A SECOND
+    /// frame arriving while one is already held is a genuine lockstep
+    /// violation, not a race: a real client waits for exactly one reply
+    /// before sending its next request.
+    held_frame: Option<DecodedFrame>,
     /// Any inbound frame, or any `sent` completion — the keepalive
     /// idle-trigger clock.
     last_activity: Instant,
@@ -676,6 +695,8 @@ impl AttachProto {
                     deadline: now + PRE_ADMISSION_TIMEOUT,
                 },
                 outstanding_request: None,
+                reply_queued: false,
+                held_frame: None,
                 last_activity: now,
                 outstanding_sends: 0,
                 last_send_progress: now,
@@ -702,15 +723,37 @@ impl AttachProto {
         if let DecodedFrame::Keepalive { nonce } = decoded {
             return self.handle_keepalive_reply(conn, nonce, now);
         }
-        let Some(c) = self.conns.get(&conn) else {
+        let Some(c) = self.conns.get_mut(&conn) else {
             return vec![];
         };
         if c.outstanding_request.is_some() {
+            // Round-2 e2e review, finding 1: a real transport's reader and
+            // writer threads race independently of each other -- a
+            // compliant, fast client can read a reply and send its next
+            // lockstep request before THIS module ever observes that
+            // reply's own completion (`sent`). That is indistinguishable,
+            // right here, from a genuinely early client -- so hold the
+            // ONE frame that arrives while this connection's reply is
+            // already queued (`reply_queued`) rather than refusing it;
+            // `clear_outstanding_and_replay` replays it the instant the
+            // matching completion clears `outstanding_request`. A second
+            // frame arriving while one is ALREADY held is a real
+            // violation (a compliant client never sends two requests
+            // without waiting for a reply to the first), and "no reply
+            // queued at all yet" (e.g. `take`, mid-`CommitTake`, waiting
+            // on the loop's own fsync round trip) is also a real
+            // violation -- neither of those is a transport-timing
+            // artifact.
+            if c.held_frame.is_some() {
+                return self.close_with_refusal(conn, RefusalReason::LockstepViolation, now);
+            }
+            if c.reply_queued {
+                c.held_frame = Some(decoded);
+                return vec![];
+            }
             return self.close_with_refusal(conn, RefusalReason::LockstepViolation, now);
         }
-        if let Some(c) = self.conns.get_mut(&conn) {
-            c.last_activity = now;
-        }
+        c.last_activity = now;
         match decoded {
             DecodedFrame::MgmtRequest(req) => self.handle_mgmt(conn, req, now),
             DecodedFrame::MgmtReply(_) | DecodedFrame::AttachServer(_) => {
@@ -745,10 +788,7 @@ impl AttachProto {
         }
         let Some(marker) = marker else { return vec![] };
         match marker {
-            SentMarker::Reply { request_id } => {
-                self.clear_outstanding_if_matches(conn, request_id);
-                vec![]
-            }
+            SentMarker::Reply { request_id } => self.clear_outstanding_and_replay(conn, request_id, now),
             SentMarker::ReplyThenClose { request_id } => {
                 self.clear_outstanding_if_matches(conn, request_id);
                 self.remove_connection(conn, now);
@@ -760,12 +800,25 @@ impl AttachProto {
                 vec![Action::Shutdown { reason }, Action::Close(conn)]
             }
             SentMarker::CheckpointChunk { clears_request, is_last } => {
-                if let Some(rid) = clears_request {
-                    self.clear_outstanding_if_matches(conn, rid);
-                }
+                // Only `Reply`/`CheckpointChunk`'s first-chunk completion
+                // can ever have a frame held behind it (see `frame`'s own
+                // doc) -- `ReplyThenClose`/`ShutdownAck` close the
+                // connection instead, so they never go through
+                // `clear_outstanding_and_replay`.
                 if !is_last {
-                    return self.advance_checkpoint_stream(conn, now);
+                    let mut actions = match clears_request {
+                        Some(rid) => self.clear_outstanding_and_replay(conn, rid, now),
+                        None => Vec::new(),
+                    };
+                    actions.extend(self.advance_checkpoint_stream(conn, now));
+                    return actions;
                 }
+                // Final chunk: the transfer's terminal state must be
+                // committed BEFORE any held frame replays -- a one-chunk
+                // transfer's first chunk IS its last, and a compliant
+                // client that read it can have a `take` already held; a
+                // replay against still-in-flight state falsely refuses it
+                // with CheckpointInFlight (review-reproduced race).
                 let pending = match self.conns.get_mut(&conn).map(|c| &mut c.role) {
                     Some(Role::Watcher(w)) => {
                         w.checkpoint = CheckpointProgress::Done;
@@ -777,7 +830,11 @@ impl AttachProto {
                     self.checkpoint_slot = None;
                     self.advance_checkpoint_queue(now);
                 }
-                let mut actions = Vec::new();
+                // Replay only now, against the fully-completed state.
+                let mut actions = match clears_request {
+                    Some(rid) => self.clear_outstanding_and_replay(conn, rid, now),
+                    None => Vec::new(),
+                };
                 for bytes in pending {
                     let n = bytes.len() as u64;
                     let encoded = wire::encode_attach_server(&AttachServer::Output { bytes })
@@ -1410,12 +1467,57 @@ impl AttachProto {
 
     /// Clears `conn`'s outstanding request ONLY if it is still `rid`
     /// (finding 4) — an unrelated or late marker must never clear a
-    /// DIFFERENT, still-pending request.
-    fn clear_outstanding_if_matches(&mut self, conn: ConnId, rid: RequestId) {
+    /// DIFFERENT, still-pending request. Returns whether it actually
+    /// cleared (round-2 e2e review, finding 1: `clear_outstanding_and_replay`
+    /// uses this to know whether replaying a held frame is even in play).
+    fn clear_outstanding_if_matches(&mut self, conn: ConnId, rid: RequestId) -> bool {
         if let Some(c) = self.conns.get_mut(&conn) {
             if c.outstanding_request == Some(rid) {
                 c.outstanding_request = None;
+                c.reply_queued = false;
+                return true;
             }
+        }
+        false
+    }
+
+    /// Round-2 e2e review, finding 1: once the reply that actually clears
+    /// `conn`'s outstanding request completes, replay whatever frame
+    /// `frame` held for it (see that method's own doc) through `frame`
+    /// itself — `outstanding_request` now `None`, it processes normally.
+    /// A no-op (returns `vec![]`) if `rid` didn't match (nothing cleared)
+    /// or nothing was held. Only sound for markers that leave the
+    /// connection ALIVE afterward — `ReplyThenClose`/`ShutdownAck` close
+    /// it instead, so they call `clear_outstanding_if_matches` directly
+    /// and never route through here.
+    fn clear_outstanding_and_replay(&mut self, conn: ConnId, rid: RequestId, now: Instant) -> Vec<Action> {
+        if !self.clear_outstanding_if_matches(conn, rid) {
+            return vec![];
+        }
+        let Some(held) = self.conns.get_mut(&conn).and_then(|c| c.held_frame.take()) else {
+            return vec![];
+        };
+        self.frame(conn, held, now)
+    }
+
+    /// Whether `marker` is the [`SentMarker`] variant that, once its
+    /// completion fires, would clear `outstanding` via
+    /// `clear_outstanding_if_matches` — used only to flip
+    /// `Conn::reply_queued` at the moment the send is QUEUED (`make_send`),
+    /// never to clear anything itself.
+    fn reply_clears(marker: &Option<SentMarker>, outstanding: Option<RequestId>) -> bool {
+        let Some(outstanding) = outstanding else {
+            return false;
+        };
+        match marker {
+            Some(SentMarker::Reply { request_id })
+            | Some(SentMarker::ReplyThenClose { request_id })
+            | Some(SentMarker::ShutdownAck { request_id, .. }) => *request_id == outstanding,
+            Some(SentMarker::CheckpointChunk {
+                clears_request: Some(rid),
+                ..
+            }) => *rid == outstanding,
+            _ => false,
         }
     }
 
@@ -1430,6 +1532,9 @@ impl AttachProto {
                 c.last_send_progress = now;
             }
             c.outstanding_sends += 1;
+            if Self::reply_clears(&marker, c.outstanding_request) {
+                c.reply_queued = true;
+            }
         }
         Action::Send { conn, frame_bytes, marker }
     }
@@ -1635,23 +1740,114 @@ mod tests {
 
     // -- lockstep ---------------------------------------------------------
 
+    /// Round-2 e2e review, finding 1: a second frame while the first's
+    /// reply is already QUEUED (`Action::Send` handed to the transport,
+    /// physical completion not yet reported) is exactly the benign
+    /// cross-thread race a real transport's independent reader/writer
+    /// threads can produce -- held, not closed, and replayed the instant
+    /// the matching `sent` arrives (superseding this test's own prior
+    /// name and behavior, which asserted the old, now-corrected
+    /// immediate-close semantics for precisely this scenario).
     #[test]
-    fn lockstep_violation_closes() {
+    fn lockstep_race_is_held_and_replays_once_the_reply_completes() {
         let mut p = proto();
         let now = t0();
         p.connection_opened(1, now);
         let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
         let a1 = p.frame(1, probe.clone(), now);
         assert!(matches!(a1.as_slice(), [Action::Send { .. }]), "{a1:?}");
-        // A second request before the first's reply is reported sent.
+        // A second request arrives before the first's reply is reported
+        // sent -- held, no actions yet, connection still alive.
         let a2 = p.frame(1, probe, now);
+        assert_eq!(a2, vec![], "expected the race frame to be held, not acted on: {a2:?}");
+        // Reporting the first reply's completion now replays the held
+        // frame, producing exactly what a fresh probe would.
+        let a3 = p.sent(1, a1[0].send_marker(), now);
+        assert!(matches!(a3.as_slice(), [Action::Send { .. }]), "expected the held probe to replay: {a3:?}");
+    }
+
+    /// A THIRD frame while one is already held is a real violation -- a
+    /// compliant client never sends a second request before seeing a
+    /// reply to its first, race or not.
+    #[test]
+    fn lockstep_violation_closes_on_a_second_held_frame() {
+        let mut p = proto();
+        let now = t0();
+        p.connection_opened(1, now);
+        let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
+        let a1 = p.frame(1, probe.clone(), now);
+        let a2 = p.frame(1, probe.clone(), now);
+        assert_eq!(a2, vec![], "expected the first race frame to be held: {a2:?}");
+        let a3 = p.frame(1, probe, now);
         assert!(
-            a2.iter().any(|a| matches!(a, Action::Close(c) if *c == 1)),
-            "expected a close on lockstep violation: {a2:?}"
+            a3.iter().any(|a| matches!(a, Action::Close(c) if *c == 1)),
+            "expected a close on a second frame held behind the first: {a3:?}"
         );
-        assert!(a2
+        assert!(a3
             .iter()
             .any(|a| matches!(a, Action::RecordRefusal { reason: RefusalReason::LockstepViolation, .. })));
+        // The first reply's own completion is still exactly as queued --
+        // proving the violation didn't also corrupt the race path.
+        let _ = a1;
+    }
+
+    /// Final-verification round: a ONE-chunk checkpoint's first chunk IS
+    /// its last, and a compliant client that reads it can have a `take`
+    /// already held behind that chunk's pending completion. The replay
+    /// must run against the transfer's COMPLETED state -- Done marked and
+    /// the snapshot slot freed before the held frame re-enters -- or the
+    /// take is falsely refused CheckpointInFlight (review-reproduced).
+    #[test]
+    fn a_take_held_behind_a_one_chunk_checkpoint_replays_against_done_state() {
+        let mut p = proto();
+        let now = t0();
+        assert_eq!(p.connection_opened(1, now), vec![]);
+        let a = p.frame(1, hello_frame(), now);
+        p.sent(1, a[0].send_marker(), now);
+        let a = p.frame(1, attach_frame("ctrl"), now);
+        assert!(a.is_empty());
+        let a = p.ground_reached(now);
+        assert!(matches!(a.as_slice(), [Action::BeginCheckpoint { conn: 1 }]));
+        let chunk = p.checkpoint_ready(1, vec![0xAB], now);
+        let marker = chunk[0].send_marker();
+        assert!(
+            matches!(marker, Some(SentMarker::CheckpointChunk { is_last: true, .. })),
+            "a one-byte checkpoint must be a single, final chunk: {marker:?}"
+        );
+        // The take races in while that final chunk's completion is pending.
+        let held = p.frame(1, take_frame("ctrl"), now);
+        assert_eq!(held, vec![], "expected the racing take to be held: {held:?}");
+        // Completion: the replay must see Done + a free slot and commit
+        // the take -- never TakeRefused::CheckpointInFlight.
+        let a = p.sent(1, marker, now);
+        assert!(
+            a.iter().any(|x| matches!(x, Action::CommitTake { .. })),
+            "expected the held take to replay into CommitTake against Done state: {a:?}"
+        );
+        assert!(
+            !a.iter().any(|x| matches!(x, Action::RecordRefusal { .. })),
+            "the held take must not be refused: {a:?}"
+        );
+    }
+
+    /// A frame arriving while `outstanding_request` is set but NO reply
+    /// has been queued yet (`take`, mid-`CommitTake`, waiting on the
+    /// loop's own fsync round trip) is a real violation, not a race --
+    /// there is no send in flight this frame could be racing.
+    #[test]
+    fn lockstep_violation_closes_when_no_reply_is_queued_yet() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done(&mut p, 1, now);
+        let a = p.frame(1, take_frame("alice"), now);
+        assert!(matches!(a.as_slice(), [Action::CommitTake { .. }]), "{a:?}");
+        // take's own reply has not even been constructed yet (waiting on
+        // take_committed) -- a second frame here is a genuine violation.
+        let a2 = p.frame(1, take_frame("alice"), now);
+        assert!(
+            a2.iter().any(|a| matches!(a, Action::Close(c) if *c == 1)),
+            "expected a close: no reply was ever queued for this request to race against: {a2:?}"
+        );
     }
 
     #[test]
@@ -1699,11 +1895,28 @@ mod tests {
         let _ = p.sent(1, chunk2[0].send_marker(), now);
 
         // take's own reply STILL hasn't been reported sent -- a second
-        // take must still be a lockstep violation.
+        // take must still see take's OWN lockstep held, not cleared by
+        // the unrelated chunk2 completion. Round-2 e2e review, finding 1
+        // superseded the old assertion here (an immediate close): a
+        // second frame while a reply is already queued is now HELD, not
+        // closed -- proving the connection stays open and the SAME
+        // outstanding request is still the one in effect (not silently
+        // cleared by the unrelated completion) is the point this test
+        // still makes, just via the held-frame path instead of a close.
         let a2 = p.frame(1, take_frame("alice"), now);
-        assert!(
-            a2.iter().any(|x| matches!(x, Action::Close(1))),
+        assert_eq!(
+            a2,
+            vec![],
             "an unrelated checkpoint completion must not clear take's own lockstep: {a2:?}"
+        );
+
+        // Reporting take's OWN reply sent now replays the held frame --
+        // alice's checkpoint is Done (chunk2 above), so this replay is a
+        // fresh, legal take, no longer refused CheckpointInFlight.
+        let a3 = p.sent(1, a[0].send_marker(), now);
+        assert!(
+            matches!(a3.as_slice(), [Action::CommitTake { .. }]),
+            "expected the held take to replay once its predecessor's own reply completed: {a3:?}"
         );
     }
 
