@@ -11,6 +11,12 @@ pub mod capsule;
 pub mod capsule_win;
 pub mod claude;
 pub mod conpty;
+// ADR 0041 step 5, unit U3: the Windows named-pipe transport (server +
+// client). `pub`, matching `conpty`/`capsule_win`/`wire`: its tests live in
+// `tests/pipe_win.rs`, a separate integration-test crate that can only ever
+// reach `pub` items — the same reason those sibling modules are `pub`
+// rather than `pub(crate)`.
+pub mod pipe_win;
 // Crate-private (Codex review finding, capsule_win.rs round): ADR 0041's
 // "one private machine" ruling means this module's items are not part of
 // the crate's public API — `capsule_win.rs` is the only real caller and

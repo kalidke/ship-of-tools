@@ -230,7 +230,7 @@ pub fn create_dir_protected(path: &Path) -> Result<()> {
     let descriptor = owner_protected_descriptor()?;
     let sa = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor.sd,
+        lpSecurityDescriptor: descriptor.as_ptr(),
         bInheritHandle: 0,
     };
     let wide = wide_verbatim(path)?;
@@ -250,11 +250,25 @@ pub fn create_dir_protected(path: &Path) -> Result<()> {
 }
 
 /// Owns a security descriptor built by `ConvertStringSecurityDescriptorToSecurityDescriptorW`
-/// (`LocalAlloc`'d by that API) for exactly as long as `create_dir_protected`
-/// needs it live; freed on drop.
+/// (`LocalAlloc`'d by that API) for exactly as long as the caller needs it
+/// live; freed on drop. `pub(crate)` (ADR 0041 step 5): `pipe_win.rs`, a
+/// sibling module, builds and consumes the pipe-flavored descriptor below
+/// through this same type — the `sd` field itself stays private, `as_ptr`
+/// is the one crate-visible seam into it.
 #[cfg(windows)]
-struct OwnerProtectedDescriptor {
+pub(crate) struct OwnerProtectedDescriptor {
     sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+}
+
+#[cfg(windows)]
+impl OwnerProtectedDescriptor {
+    /// The raw descriptor pointer for a `SECURITY_ATTRIBUTES.lpSecurityDescriptor`
+    /// field. Borrowed, not transferred — the returned pointer is valid only
+    /// as long as `self` is alive, exactly like `create_dir_protected`'s own
+    /// direct use of the (formerly private) `sd` field.
+    pub(crate) fn as_ptr(&self) -> windows_sys::Win32::Security::PSECURITY_DESCRIPTOR {
+        self.sd
+    }
 }
 
 #[cfg(windows)]
@@ -268,21 +282,16 @@ impl Drop for OwnerProtectedDescriptor {
     }
 }
 
-/// Build the descriptor from an SDDL string — `D:P(A;OICI;FA;;;<sid>)` — via
-/// `ConvertStringSecurityDescriptorToSecurityDescriptorW` rather than a
-/// hand-assembled ACL: far less code, and the SDDL string doubles as
-/// documentation of exactly what is granted. `<sid>` is this process's own
-/// token-user SID, read via `OpenProcessToken` + `GetTokenInformation
-/// (TokenUser)` and stringified via `ConvertSidToStringSidW` — every
-/// `LocalAlloc`'d intermediate (the token handle via `CloseHandle`, the SID
-/// string) is freed before returning; only the final descriptor survives,
-/// owned by the caller's `OwnerProtectedDescriptor`.
+/// This process's own token-user SID, stringified — the shared first half
+/// of every owner-protected descriptor this module builds (the directory
+/// flavor below, and `pipe_win.rs`'s pipe flavor): same account, same
+/// `OpenProcessToken`/`GetTokenInformation(TokenUser)`/`ConvertSidToStringSidW`
+/// lookup, same `LocalAlloc`/`CloseHandle` discipline. Only the SDDL ACE
+/// that wraps this SID differs between callers.
 #[cfg(windows)]
-fn owner_protected_descriptor() -> Result<OwnerProtectedDescriptor> {
+fn token_user_sid_string() -> Result<String> {
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-    };
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
     use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -333,10 +342,35 @@ fn owner_protected_descriptor() -> Result<OwnerProtectedDescriptor> {
     unsafe {
         LocalFree(sid_str as windows_sys::Win32::Foundation::HLOCAL);
     }
+    Ok(sid_string)
+}
 
-    // D: (DACL) P (protected), one ACE: (A)llow, (OICI) object+container
-    // inherit, (FA) full access, for the token-user SID.
-    let sddl = format!("D:P(A;OICI;FA;;;{sid_string})");
+/// Build an owner-only, protected descriptor from an SDDL ACE's `flags`
+/// and `rights` fields — `("OICI", "FA")` for the directory flavor,
+/// `("", "FA")` for the pipe flavor (ADR 0041 step 5) — wrapped around
+/// `token_user_sid_string()`'s SID as `D:P(A;<flags>;<rights>;;;<sid>)`,
+/// via `ConvertStringSecurityDescriptorToSecurityDescriptorW` rather than a
+/// hand-assembled ACL: far less code, and the SDDL string doubles as
+/// documentation of exactly what is granted.
+///
+/// An ACE string is SIX fields (`type;flags;rights;object_guid;
+/// inherit_object_guid;account_sid`), not five: omitting `OI`/`CI` must
+/// leave the `flags` field EMPTY, never delete it outright -- `D:P(A;FA;;;
+/// <sid>)` (five fields) is a real bug this signature makes structurally
+/// impossible to reintroduce, caught live on the first real Windows run
+/// (`ConvertStringSecurityDescriptorToSecurityDescriptorW` failing every
+/// `bind` with error 87/`ERROR_INVALID_PARAMETER`, because that shape
+/// parses `"FA"` as the ACE's *flags* field and leaves `rights` empty).
+#[cfg(windows)]
+fn owner_protected_descriptor_with_ace(flags: &str, rights: &str) -> Result<OwnerProtectedDescriptor> {
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+
+    let sid_string = token_user_sid_string()?;
+    // D: (DACL) P (protected), one ACE: (A)llow, `flags`, `rights`, for the
+    // token-user SID.
+    let sddl = format!("D:P(A;{flags};{rights};;;{sid_string})");
     let sddl_wide = wide_null(&sddl);
     let mut sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     if unsafe {
@@ -354,6 +388,27 @@ fn owner_protected_descriptor() -> Result<OwnerProtectedDescriptor> {
         ));
     }
     Ok(OwnerProtectedDescriptor { sd })
+}
+
+/// `D:P(A;OICI;FA;;;<sid>)` — object+container inherit, full access, for
+/// the voyage staging root (`create_dir_protected`). Behavior UNCHANGED by
+/// the ADR 0041 step 5 refactor above: same SDDL string, same steps, now
+/// shared with the pipe flavor below rather than duplicated.
+#[cfg(windows)]
+fn owner_protected_descriptor() -> Result<OwnerProtectedDescriptor> {
+    owner_protected_descriptor_with_ace("OICI", "FA")
+}
+
+/// `D:P(A;FA;;;<sid>)` — full access, NO `OI`/`CI` — for the ADR 0041 step
+/// 5 attach-protocol pipe. "Attach protocol" §Security split: a named
+/// pipe's DACL gates the two connection ENDS directly; `OI`/`CI` is
+/// directory-child-inheritance semantics with no meaning for a pipe object,
+/// so it is deliberately absent here rather than copy-pasted from the
+/// directory flavor. `SE_DACL_PROTECTED` (the `P` flag) is preserved
+/// identically — a permissive ancestor still can never inject ACEs.
+#[cfg(windows)]
+pub(crate) fn owner_protected_pipe_descriptor() -> Result<OwnerProtectedDescriptor> {
+    owner_protected_descriptor_with_ace("", "FA")
 }
 
 /// Read a NUL-terminated wide string produced by a Win32 API into an owned

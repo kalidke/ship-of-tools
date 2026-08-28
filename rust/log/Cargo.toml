@@ -35,7 +35,11 @@ vt100-ctt = "0.17"
 # calls. Plus the owned-ConPTY layer (ADR 0041 "Containment and the owned
 # ConPTY layer"): Win32_System_Console for CreatePseudoConsole/Resize/Close,
 # Win32_System_JobObjects for the anonymous containment job, Win32_System_Pipes
-# for CreatePipe. Same version the frontend pins.
+# for CreatePipe. Plus the ADR 0041 step 5 pipe transport (`pipe_win.rs`):
+# Win32_System_Pipes also for CreateNamedPipeW/ConnectNamedPipe/WaitNamedPipeW,
+# Win32_System_IO for OVERLAPPED/CancelIoEx/GetOverlappedResult — the pinned
+# cancellation mechanism a dedicated thread alone cannot provide. Same
+# version the frontend pins.
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
@@ -45,6 +49,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Console",
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
+    "Win32_System_IO",
 ] }
 
 [dev-dependencies]
