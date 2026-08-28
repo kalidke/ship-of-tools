@@ -587,6 +587,37 @@ fn pending_accept_with_no_client_drops_promptly() {
     drop(server);
 }
 
+/// New coverage (drop-vs-lifecycle-delivery regression): saturate the
+/// events channel and never drain it, then drop the server. `Drop` must
+/// still return -- it MUST NOT deadlock behind its own
+/// `send_lifecycle_event` escape by joining the accept thread before
+/// setting `dropping` (the accept thread's own `Accepted`/`AcceptError`
+/// publishes can be stuck retrying against the very saturation this test
+/// creates).
+#[test]
+fn drop_returns_even_with_a_saturated_events_channel() {
+    if !run_isolated("drop_returns_even_with_a_saturated_events_channel") {
+        return;
+    }
+    let id = fresh_voyage_id();
+    let server = PipeServer::bind(&id, 2).unwrap();
+
+    // Churn connections without ever draining events() -- each churn
+    // queues at least Accepted + Closed(Eof), so a generous number of
+    // attempts guarantees the channel fills well past its capacity, at
+    // which point the accept thread itself is blocked delivering an
+    // Accepted through send_lifecycle_event's retry loop.
+    for _ in 0..200 {
+        match connect_voyage_pipe(&id) {
+            Ok(client) => drop(client),
+            Err(_) => break, // the accept side is now saturated/stalled -- as intended
+        }
+    }
+
+    // Must return even though nobody ever drained events().
+    drop(server);
+}
+
 /// Test 7: invalid voyage ids and out-of-range instance counts are
 /// rejected loudly. Provably non-wedging (every case fails before any
 /// Win32 I/O call), so this test is NOT process-isolated.

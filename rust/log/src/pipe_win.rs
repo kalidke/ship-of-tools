@@ -1,39 +1,35 @@
-//! The ADR 0041 step-5 Windows named-pipe transport (round 3: discharges
-//! the second Codex adversarial round — 5 blockers + 4 should-fixes,
-//! several against round 2's own new machinery). Moves bytes over
-//! `\\.\pipe\sot-voyage-<id>` and reports completions; it does not know
-//! about mgmt/attach lanes, `hello`, opcodes, or checkpoints — `wire.rs`
-//! owns every frame shape, and [`wire::FrameSplitter`] is what a consumer
-//! of this module's `Bytes` events feeds. Still TRANSPORT ONLY: no
-//! dependency on the capsule or `sot-capsule` bin, and none may be added
-//! here.
+//! The ADR 0041 step-5 Windows named-pipe transport: a server and client
+//! for `\\.\pipe\sot-voyage-<id>`. It moves bytes and reports completions;
+//! it does not know about mgmt/attach lanes, `hello`, opcodes, or
+//! checkpoints — `wire.rs` owns every frame shape, and
+//! [`wire::FrameSplitter`] is what a consumer of this module's `Bytes`
+//! events feeds. Transport only: no dependency on the capsule or
+//! `sot-capsule` bin, and none may be added here.
 //!
 //! # The I/O slot: one state machine, every direction, every role
 //!
 //! A `Mutex<SlotState>` (`Idle` / `Pending` / `Closing`) guards an
 //! address-stable, MANUAL-RESET-event-backed `OVERLAPPED` — manual, not
 //! auto, because Microsoft documents overlapped pipe I/O against
-//! manual-reset events. [`IoSlot::submit_and_wait`] resets and issues the
-//! OS call and flips the state to `Pending` ALL UNDER ONE LOCK
-//! ACQUISITION, then releases the lock before the (possibly long) wait —
-//! so [`IoSlot::cancel`], which also takes that lock, can only ever
-//! observe `Idle` (latch `Closing`; the next submission refuses before
-//! touching the OS) or `Pending` (call `CancelIoEx`, then latch
-//! `Closing`). A cancel can never miss a submission that hasn't happened
-//! yet, nor land after one has already started reusing the structure.
-//!
-//! Round 2 left one gap here (round-3 finding 2): the same check only
-//! rejected `Closing`, not `Pending` — a SECOND concurrent same-direction
-//! caller (only reachable through `PipeClient`, whose `read`/`write_all`
-//! take `&self`) could see `Pending`, proceed anyway, and reset/reissue
-//! the SAME `OVERLAPPED` an earlier caller was still waiting on,
-//! violating Microsoft's unique-OVERLAPPED/no-reuse-until-completion
-//! rule. `submit_and_wait` now rejects `Pending` too, with a distinct
-//! marker error (`PipeError::ConcurrentSubmit` at the `PipeClient`
-//! boundary) — never touching the OS or the `OVERLAPPED` for the rejected
-//! call. This is what makes `unsafe impl Sync for IoSlot` actually sound:
-//! completion is now provably consumed by exactly the one thread that
-//! got past this check, never a second one racing it.
+//! manual-reset events and warns that an auto-reset event can hang
+//! `GetOverlappedResult(..., TRUE)` when a completion races the wait
+//! call. [`IoSlot::submit_and_wait`] resets and issues the OS call and
+//! flips the state to `Pending` ALL UNDER ONE LOCK ACQUISITION, then
+//! releases the lock before the (possibly long) wait — so
+//! [`IoSlot::cancel`], which also takes that lock, can only ever observe
+//! `Idle` (latch `Closing`; the next submission refuses before touching
+//! the OS) or `Pending` (call `CancelIoEx`, then latch `Closing`). A
+//! cancel can never miss a submission that hasn't happened yet, nor land
+//! after one has already started reusing the structure. The same check
+//! also rejects a SECOND submission while one is already `Pending`,
+//! distinctly from `Closing` — reachable only through `PipeClient`, whose
+//! `read`/`write_all` take `&self`: without this, two concurrent
+//! same-direction callers could both reset and reissue the one shared
+//! `OVERLAPPED`, corrupting whichever completed second. Rejecting it
+//! (`PipeError::ConcurrentSubmit` at the `PipeClient` boundary, never
+//! touching the OS) is what makes `unsafe impl Sync for IoSlot` sound:
+//! completion is always consumed by exactly the one thread that got past
+//! this check.
 //!
 //! # Reaping: one thread owns every join
 //!
@@ -41,27 +37,24 @@
 //! alongside the accept thread) is the only code in this module that ever
 //! removes an entry from `conns` or joins a REGISTERED connection's
 //! reader/writer — for any reason. [`PipeServer::close`], a reader's own
-//! natural-EOF signal, and a writer's own `WriteFile`-error signal (round
-//! 3, finding 4: previously the writer just exited silently) all route
-//! through [`request_teardown`], which enqueues at most ONCE per
-//! connection (round-3 finding 5 — see "Bounded reaper inbox" below);
-//! [`teardown_if_present`] is the one function that does the real work,
-//! called exclusively from [`reaper_loop`], processing messages strictly
-//! one at a time. The one correct exception: `handle_new_connection`'s
-//! own partial-spawn-failure unwind directly `join`s an aborted reader
-//! that was NEVER registered into `conns` at all — the reaper has nothing
-//! to reap because that connection never had a lifecycle for it to know
-//! about.
+//! natural-EOF signal, and a writer's own `WriteFile`-error signal all
+//! route through [`request_teardown`], which enqueues at most once per
+//! connection (see "Bounded reaper inbox" below); [`teardown_if_present`]
+//! is the one function that does the real work, called exclusively from
+//! [`reaper_loop`], processing messages strictly one at a time. The one
+//! correct exception: `handle_new_connection`'s own partial-spawn-failure
+//! unwind directly `join`s an aborted reader that was NEVER registered
+//! into `conns` — the reaper has nothing to reap because that connection
+//! never had a lifecycle for it to know about.
 //!
-//! Registration is ordered (a client that connects and disconnects
-//! instantly can never let a reader reach the reaper before the entry
-//! exists to be found): a connection's reader/writer threads spawn
-//! already blocked on a [`StartGate`] and do not touch the pipe until
-//! AFTER the `ConnHandle` is in the map AND `Accepted` has been RELIABLY
-//! queued (see below) — round 2's version opened the gate even if the
-//! best-effort `Accepted` publish had silently failed (round-3 finding 1).
+//! Registration is ordered so that a client which connects and
+//! disconnects instantly can never let a reader reach the reaper before
+//! the entry exists to be found: a connection's reader/writer threads
+//! spawn already blocked on a [`StartGate`] and do not touch the pipe
+//! until AFTER the `ConnHandle` is in the map AND `Accepted` has been
+//! RELIABLY queued (see below).
 //!
-//! # Reliable lifecycle delivery (round-3 finding 1)
+//! # Reliable lifecycle delivery
 //!
 //! `Accepted`, `Sent`, `Closed`, and `AcceptError` must be delivered, not
 //! merely attempted — a dropped `Accepted` lets `Bytes` arrive for a
@@ -72,13 +65,18 @@
 //! indefinitely, with exactly ONE escape: [`ServerShared::dropping`], set
 //! only by [`PipeServer::drop`] — once true, nothing could ever call
 //! `events()` again (its `Receiver` lives inside the `PipeServer` being
-//! dropped), so continuing would be pure busywork. Memory-bounded by
-//! construction (exactly one event is ever "in hand" being retried per
-//! caller, never accumulated); time-bounded otherwise ONLY by the
-//! CONSUMER's own contract — it must keep draining `events()`, which the
-//! future capsule's one ordered loop does by construction. That contract
-//! is this mechanism's other half; this module cannot enforce it, only
-//! document it.
+//! dropped), so continuing would be pure busywork. `dropping` is set at
+//! the very START of `drop`, before anything else, INCLUDING before the
+//! accept-thread join: any thread (the accept thread's own `AcceptError`/
+//! `Accepted` publishes included) can be inside this retry loop when
+//! `Drop` runs, and joining it first would deadlock `Drop` behind the
+//! very escape hatch meant to unblock it. Memory-bounded by construction
+//! (exactly one event is ever "in hand" being retried per caller, never
+//! accumulated); time-bounded otherwise ONLY by the CONSUMER's own
+//! contract — it must keep draining `events()`, which the future
+//! capsule's one ordered loop does by construction. That contract is this
+//! mechanism's other half; this module cannot enforce it, only document
+//! it.
 //!
 //! ONLY `Bytes` may still be abandoned — the transport is the read-ahead
 //! producer and must not let a stalled consumer grow memory without
@@ -88,34 +86,44 @@
 //! GUARANTEED `Closed` (through the same reliable path), never a silent
 //! stream gap with nothing to mark it.
 //!
-//! # Bounded reaper inbox (round-3 finding 5)
+//! # Bounded reaper inbox
 //!
-//! `reaper_tx` is a bounded channel — `max_instances + `[`REAPER_INBOX_SLACK`]
-//! — rather than unbounded. What makes that bound actually hold: every
-//! connection carries its own `torn_down_requested: Arc<AtomicBool>`, and
-//! [`request_teardown`] enqueues a `ReaperMsg` only on the `compare_exchange`
-//! that WINS flipping it — an explicit `close`, the reader's own EOF
-//! signal, and the writer's own error signal can all race for the same
-//! connection, but at most one of them ever reaches the channel. The
-//! inbox can therefore never hold more than one live `Torn` message per
-//! currently-open connection (≤ `max_instances`) plus `Drop`'s own
+//! `reaper_tx` is a bounded channel — `max_instances +`
+//! [`REAPER_INBOX_SLACK`] — rather than unbounded. What makes that bound
+//! actually hold: every connection carries its own
+//! `torn_down_requested: Arc<AtomicBool>`, and [`request_teardown`]
+//! enqueues a `ReaperMsg` only on the `compare_exchange` that WINS
+//! flipping it — an explicit `close`, the reader's own EOF signal, and
+//! the writer's own error signal can all race for the same connection,
+//! but at most one of them ever reaches the channel. The inbox can
+//! therefore never hold more than one live `Torn` message per
+//! currently-open connection (≤ `max_instances`) plus `Drop`'s own single
 //! `Shutdown`.
 //!
 //! # Continuous name hold
 //!
 //! An instance is never actually closed while the server lives. Once
 //! `DisconnectNamedPipe`'d, a torn-down instance is RECYCLED — pushed onto
-//! `AcceptState::recycled` — rather than dropped and later re-created.
-//! Round 3 (finding 4) closes a gap here too: if `DisconnectNamedPipe`
-//! itself fails, that instance is in an unknown state and is NOT safe to
-//! hand back for a future `ConnectNamedPipe` — [`recycle_instance`] now
-//! creates a FRESH replacement FIRST and only closes the failed instance
-//! once the replacement is already recycled, so the name is never
-//! instance-less even transiently. If no replacement can be created
-//! either, that is a genuine terminal resource failure, reported the same
-//! way any other one is (`AcceptError`, accept loop stopped).
-//! `recycle_instance` remains the ONLY way an instance is ever set aside
-//! short of the whole server's `Drop`.
+//! `AcceptState::recycled` — rather than dropped and later re-created. If
+//! `DisconnectNamedPipe` itself fails, the instance is in an unknown
+//! state and unsafe to hand back for a future `ConnectNamedPipe` — but it
+//! is deliberately RETAINED anyway (`AcceptState::retained_dead`), never
+//! closed, for the rest of the server's life. This looks wasteful — that
+//! instance's capacity is gone for good — but the alternative is worse:
+//! creating a replacement here would need to exceed `max_instances` while
+//! the failed instance is still open (at `max_instances == 1` this is not
+//! merely awkward, it is impossible — `CreateNamedPipeW` fails with
+//! `ERROR_PIPE_BUSY` every time, since the OS still counts the open,
+//! merely-broken handle against the cap), and closing the failed instance
+//! to make room is exactly the name-hold lapse this design exists to
+//! prevent. The invariant this module promises is that the NAME stays
+//! held, not that every instance stays usable — a held name and a dead
+//! handle both satisfy it; a closed handle does not. `recycle_instance`
+//! remains the ONLY way an instance is ever set aside short of the whole
+//! server's `Drop`, and a `DisconnectNamedPipe` failure there also
+//! terminalizes the accept loop via [`terminalize_accept_loop`] — see
+//! that function's doc for why stopping (rather than merely losing one
+//! slot's worth of capacity and continuing) is the safer default.
 //!
 //! # Byte-bounded both directions
 //!
@@ -123,19 +131,6 @@
 //! including the in-flight item, released only once the write physically
 //! completes. Inbound: `events_tx` is a bounded channel and `Bytes`
 //! delivery is bounded as described above.
-//!
-//! # Deleted
-//!
-//! `drain_and_close` / `ClosedReason::Drained` / `ClosedReason::ServerShutdown`
-//! / `cancel_read`: see round 2's history for why (unobservable through
-//! safe use, or superseded by `PipeClient::cancel`). `ACCEPT_POLL_INTERVAL`
-//! (round-3 finding 10): the accept loop's wait predicate is checked under
-//! the SAME mutex the condvar uses, and every state change that could
-//! satisfy it (`Drop`, a recycle) already `notify_all`s — a plain,
-//! un-timed `wait` is correct and simpler; polling bought nothing.
-//! `OutboundBudget::cap` (round-3 finding 10): it was always
-//! [`OUTBOUND_BUDGET_BYTES`], never configurable, so the field is gone and
-//! the constant is used directly.
 //!
 //! # Visibility
 //!
@@ -193,16 +188,16 @@ const EVENTS_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 
 /// How long [`deliver_bytes`] may retry a single `Bytes` chunk against a
 /// full `events` channel before abandoning it and force-closing the
-/// connection with a guaranteed `Closed` (round-3 finding 1). Generous
-/// relative to [`EVENTS_RETRY_INTERVAL`] — this is "the consumer has
-/// genuinely stalled," not routine backpressure.
+/// connection with a guaranteed `Closed`. Generous relative to
+/// [`EVENTS_RETRY_INTERVAL`] — this is "the consumer has genuinely
+/// stalled," not routine backpressure.
 const BYTES_ABANDON_AFTER: Duration = Duration::from_secs(5);
 
-/// Extra capacity on the bounded reaper inbox beyond `max_instances`
-/// (round-3 finding 5) — headroom for `Drop`'s own `Shutdown` message to
-/// still fit even when every live connection already has a `Torn`
-/// message in flight.
-const REAPER_INBOX_SLACK: usize = 4;
+/// Extra capacity on the bounded reaper inbox beyond `max_instances` — a
+/// connection's own at-most-once teardown flag already caps live `Torn`
+/// messages at one per open connection, so the only other traffic this
+/// inbox ever carries is `Drop`'s own single `Shutdown` message.
+const REAPER_INBOX_SLACK: usize = 1;
 
 /// `\\.\pipe\sot-voyage-<id>`, UTF-16, NUL-terminated. Panics never: `id`
 /// is validated by [`validate_voyage_id`] at every call site before this
@@ -259,8 +254,8 @@ pub enum ClosedReason {
     Closed,
     /// An I/O error other than a recognized disconnect ended a
     /// connection's reader or writer loop, or its `Bytes` delivery was
-    /// abandoned (round-3 finding 1: always paired with this guaranteed
-    /// notification, never a silent stream gap).
+    /// abandoned — always paired with this guaranteed notification,
+    /// never a silent stream gap.
     Error(String),
 }
 
@@ -309,10 +304,10 @@ pub enum PipeError {
     PayloadTooLarge(usize),
     #[error("operation cancelled")]
     Cancelled,
-    /// Round-3 finding 2: a second same-direction `PipeClient` call (e.g.
-    /// two concurrent `read`s) was rejected before it ever touched the OS
-    /// or the shared `OVERLAPPED` — misuse, not a race this module
-    /// resolves for the caller.
+    /// A second same-direction `PipeClient` call (e.g. two concurrent
+    /// `read`s) was rejected before it ever touched the OS or the shared
+    /// `OVERLAPPED` — misuse, not a race this module resolves for the
+    /// caller.
     #[error("another operation is already pending on this client's same direction")]
     ConcurrentSubmit,
 }
@@ -349,12 +344,11 @@ struct IoSlot {
 // SAFETY: `ov`'s contents are only ever touched (reset, issued, or read
 // via `GetOverlappedResult`) by the ONE thread that got past
 // `submit_and_wait`'s `Pending` check for this slot — a second thread
-// racing that check is REJECTED before touching `ov` at all (round-3
-// finding 2). A cancelling thread only ever reads the slot's STABLE
-// ADDRESS to hand to `CancelIoEx`, an OS-level operation on that address,
-// never a Rust-level read of the struct's bytes. `state`'s `Mutex` is
-// what serializes submission against both cancellation and a second
-// submission attempt.
+// racing that check is REJECTED before touching `ov` at all. A cancelling
+// thread only ever reads the slot's STABLE ADDRESS to hand to
+// `CancelIoEx`, an OS-level operation on that address, never a Rust-level
+// read of the struct's bytes. `state`'s `Mutex` is what serializes
+// submission against both cancellation and a second submission attempt.
 unsafe impl Send for IoSlot {}
 unsafe impl Sync for IoSlot {}
 
@@ -363,12 +357,12 @@ fn aborted_error() -> std::io::Error {
 }
 
 /// Marker error: `submit_and_wait` rejected a call because another
-/// submission is already `Pending` on this exact direction (round-3
-/// finding 2). Server-internal code never triggers this — each slot has
-/// exactly one driving thread by construction — it exists so
-/// `PipeClient`'s genuinely `Sync`, `&self`-based `read`/`write_all`
-/// reject concurrent same-direction misuse with a distinct `Result`
-/// instead of corrupting one shared `OVERLAPPED`.
+/// submission is already `Pending` on this exact direction. Server-
+/// internal code never triggers this — each slot has exactly one driving
+/// thread by construction — it exists so `PipeClient`'s genuinely `Sync`,
+/// `&self`-based `read`/`write_all` reject concurrent same-direction
+/// misuse with a distinct `Result` instead of corrupting one shared
+/// `OVERLAPPED`.
 #[derive(Debug)]
 struct ConcurrentSubmitMarker;
 impl std::fmt::Display for ConcurrentSubmitMarker {
@@ -381,6 +375,29 @@ impl std::error::Error for ConcurrentSubmitMarker {}
 fn is_concurrent_submit(e: &std::io::Error) -> bool {
     e.get_ref()
         .is_some_and(|inner| inner.is::<ConcurrentSubmitMarker>())
+}
+
+/// The Win32 error codes that mean "the pipe is disconnected, broken, or
+/// being closed" — the family both a live connection's read/write AND an
+/// in-flight `ConnectNamedPipe` can report when a peer vanishes.
+/// [`classify_terminal_error`] treats these (plus this module's own
+/// cancellation code) as an ordinary, expected `Eof` for a LIVE
+/// connection's reader/writer; the accept loop's own connect-result match
+/// treats them as "a client connected and vanished before the completion
+/// was fully processed" and registers that connection anyway rather than
+/// silently discarding it — the SAME family, one call earlier.
+/// `ERROR_BROKEN_PIPE` and `ERROR_PIPE_NOT_CONNECTED` are Microsoft's
+/// documented disconnect-family codes for named-pipe I/O; `ERROR_NO_DATA`
+/// ("The pipe is being closed") is the code Windows documents pipe I/O
+/// (including a `ConnectNamedPipe` racing a local close) returning when
+/// the local end is torn down mid-operation — exactly the instant-close
+/// race this module must not misclassify as a fatal accept failure. Any
+/// OTHER connect error is a genuine anomaly and is NOT in this list —
+/// see the accept loop's own match for why that distinction matters.
+fn is_disconnect_family(code: i32) -> bool {
+    code == ERROR_NO_DATA as i32
+        || code == ERROR_BROKEN_PIPE as i32
+        || code == ERROR_PIPE_NOT_CONNECTED as i32
 }
 
 impl IoSlot {
@@ -420,11 +437,11 @@ impl IoSlot {
     /// `BOOL` of `ConnectNamedPipe`/`ReadFile`/`WriteFile`) and block for
     /// its definitive result. Refuses WITHOUT ever calling `issue` if this
     /// slot is `Closing` (`Err(aborted)`) or already `Pending`
-    /// (`Err(ConcurrentSubmitMarker)`, round-3 finding 2) — both checked
-    /// under the same lock `cancel` uses, so neither race is possible.
-    /// `synchronous_ok` names a synchronous-failure `GetLastError` code
-    /// that actually means success (`ConnectNamedPipe`'s
-    /// `ERROR_PIPE_CONNECTED`); pass `|_| false` for plain reads/writes.
+    /// (`Err(ConcurrentSubmitMarker)`) — both checked under the same lock
+    /// `cancel` uses, so neither race is possible. `synchronous_ok` names
+    /// a synchronous-failure `GetLastError` code that actually means
+    /// success (`ConnectNamedPipe`'s `ERROR_PIPE_CONNECTED`); pass
+    /// `|_| false` for plain reads/writes.
     fn submit_and_wait(
         &self,
         handle: HANDLE,
@@ -546,8 +563,8 @@ fn create_pipe_instance(
 /// [`PipeServer::send`] before an item is even queued, released only once
 /// the writer's `submit_and_wait` for that item RETURNS (success or
 /// failure) — the in-flight item stays counted the whole time. The cap is
-/// always [`OUTBOUND_BUDGET_BYTES`] (round-3 finding 10: not configurable,
-/// so no field for it).
+/// always [`OUTBOUND_BUDGET_BYTES`] — not configurable, so no field for
+/// it.
 struct OutboundBudget {
     used: Mutex<usize>,
 }
@@ -640,8 +657,8 @@ struct ConnHandle {
     sender: Sender<WriteCmd>,
     reader_jh: JoinHandle<()>,
     writer_jh: JoinHandle<()>,
-    /// At-most-once teardown gate shared with the reader/writer threads
-    /// (round-3 finding 5) — see [`request_teardown`].
+    /// At-most-once teardown gate shared with the reader/writer threads —
+    /// see [`request_teardown`].
     torn_down_requested: Arc<AtomicBool>,
 }
 
@@ -651,25 +668,30 @@ struct AcceptState {
     /// The accept loop should stop (and, once observed, HAS stopped)
     /// accepting new connections — set either by `PipeServer::drop` or by
     /// a persistent resource failure the accept loop reported via
-    /// `AcceptError` (round-3 finding 10: this name no longer conflates
-    /// "the server is being dropped" with "the accept loop died on its
-    /// own" — see `ServerShared::dropping` for the former). EXISTING
-    /// connections are unaffected either way.
+    /// `AcceptError` (see `ServerShared::dropping` for the distinct
+    /// "the whole server is being dropped" flag). EXISTING connections
+    /// are unaffected either way.
     accept_stopping: bool,
     /// Instances successfully created and currently held (recycled or
     /// live) for this pipe name (<= `max_instances`): incremented when a
     /// creation attempt is about to run, decremented if that attempt
     /// fails, so it always reflects instances this server actually holds
-    /// rather than a permanently-climbing attempt counter (round-3
-    /// finding 10: the prior doc claimed pure monotonicity, which the
-    /// failure-path decrement already contradicted).
+    /// rather than a permanently-climbing attempt counter.
     created: u32,
     /// Disconnected, ready-to-relisten instances. Popped by the accept
     /// loop in preference to creating a fresh instance.
     recycled: VecDeque<OwnedHandle>,
+    /// Instances a failed `DisconnectNamedPipe` left in an unknown state
+    /// — retained (never closed, never reused) for the rest of the
+    /// server's life so the pipe name's continuous hold survives the
+    /// failure. See the module doc's "Continuous name hold" section.
+    retained_dead: Vec<OwnedHandle>,
     /// The accept loop's currently in-flight `ConnectNamedPipe` attempt,
-    /// if any — consulted by `Drop` so it can [`IoSlot::cancel`] exactly
-    /// the operation that's actually pending.
+    /// if any — consulted so [`stop_accept_loop`] can [`IoSlot::cancel`]
+    /// exactly the operation that's actually pending, from whichever
+    /// thread discovers a reason to stop (the caller dropping the
+    /// server, or the reaper thread finding a `DisconnectNamedPipe`
+    /// failure while tearing down an unrelated connection).
     current: Option<(SendableHandle, Arc<IoSlot>)>,
 }
 
@@ -693,10 +715,12 @@ struct ServerShared {
     events_tx: SyncSender<TransportEvent>,
     max_instances: u32,
     name: Vec<u16>,
-    /// Set exactly once, by `PipeServer::drop`, BEFORE it sends
-    /// `ReaperMsg::Shutdown` — the one escape for
-    /// [`send_lifecycle_event`]'s otherwise-indefinite retry loop. See the
-    /// module doc's "Reliable lifecycle delivery" section.
+    /// Set exactly once, by `PipeServer::drop`, at the very START of
+    /// `drop` — before anything else, including the accept-thread join —
+    /// because it is the one escape for [`send_lifecycle_event`]'s
+    /// otherwise-indefinite retry loop, and that loop can be running on
+    /// the very thread `drop` is about to join. See the module doc's
+    /// "Reliable lifecycle delivery" section.
     dropping: AtomicBool,
 }
 
@@ -761,6 +785,7 @@ impl PipeServer {
                 accept_stopping: false,
                 created: 1,
                 recycled: VecDeque::new(),
+                retained_dead: Vec::new(),
                 current: None,
             }),
             accept_cv: Condvar::new(),
@@ -771,11 +796,11 @@ impl PipeServer {
             dropping: AtomicBool::new(false),
         });
 
-        // Round-3 finding 3: spawn the reaper FIRST. If the accept thread
-        // then fails to spawn, unwind the reaper (it has nothing queued
-        // yet, so its own `Shutdown` drain is instant) rather than leave
-        // it running forever with no accept thread able to feed it. No
-        // `JoinHandle` is ever dropped while its thread could still run.
+        // Spawn the reaper FIRST. If the accept thread then fails to
+        // spawn, unwind the reaper (it has nothing queued yet, so its
+        // own `Shutdown` drain is instant) rather than leave it running
+        // forever with no accept thread able to feed it. No `JoinHandle`
+        // is ever dropped while its thread could still run.
         let reaper_jh = thread::Builder::new()
             .name("sot-pipe-reaper".into())
             .spawn({
@@ -863,10 +888,9 @@ impl PipeServer {
 
     /// Request that `conn_id` be torn down: both directions cancelled,
     /// both threads joined, the instance recycled. Fire-and-forget — this
-    /// enqueues the request at most once (round-3 finding 5) for the
-    /// reaper thread; completion is observed as [`TransportEvent::Closed`].
-    /// A no-op if `conn_id` is already gone or already has a teardown in
-    /// flight.
+    /// enqueues the request at most once for the reaper thread;
+    /// completion is observed as [`TransportEvent::Closed`]. A no-op if
+    /// `conn_id` is already gone or already has a teardown in flight.
     pub fn close(&self, conn_id: ConnId) {
         let map = self.shared.conns.lock().unwrap();
         if let Some(conn) = map.get(&conn_id) {
@@ -881,25 +905,20 @@ impl PipeServer {
 }
 
 impl Drop for PipeServer {
-    /// Cancel a pending accept (if any) and join the accept thread; latch
-    /// [`ServerShared::dropping`] (the lifecycle-delivery escape hatch);
-    /// tell the reaper to drain and tear down every remaining connection,
-    /// then join it. Every thread this module ever spawned is joined by
-    /// the time this returns.
+    /// Latch [`ServerShared::dropping`] FIRST (see its doc for why this
+    /// must be the very first thing `drop` does); cancel a pending accept
+    /// (if any) and join the accept thread; tell the reaper to drain and
+    /// tear down every remaining connection, then join it. Every thread
+    /// this module ever spawned is joined by the time this returns.
     fn drop(&mut self) {
-        {
-            let mut st = self.shared.accept.lock().unwrap();
-            st.accept_stopping = true;
-            if let Some((h, slot)) = st.current.take() {
-                slot.cancel(h.0);
-            }
-        }
+        self.shared.dropping.store(true, Ordering::Release);
+
+        stop_accept_loop(&self.shared);
         self.shared.accept_cv.notify_all();
         if let Some(jh) = self.accept_jh.take() {
             jh.join().ok();
         }
 
-        self.shared.dropping.store(true, Ordering::Release);
         let _ = self.shared.reaper_tx.send(ReaperMsg::Shutdown);
         if let Some(jh) = self.reaper_jh.take() {
             jh.join().ok();
@@ -907,15 +926,40 @@ impl Drop for PipeServer {
     }
 }
 
+/// Mark the accept loop stopped and cancel its currently in-flight
+/// `ConnectNamedPipe`, if any. Shared by `PipeServer::drop` (planned
+/// shutdown) and [`terminalize_accept_loop`] (a persistent resource
+/// failure) — both need the SAME cross-thread-safe cancellation, since
+/// either can be triggered by a thread other than the accept thread
+/// itself (`Drop` runs on the caller's thread; a resource failure can be
+/// discovered on the reaper thread while tearing down an unrelated
+/// connection's instance). Without this, a failure discovered off the
+/// accept thread could leave a pending accept to linger — or even admit
+/// one more client — after the consumer was already told no more
+/// connections are coming.
+fn stop_accept_loop(shared: &Arc<ServerShared>) {
+    let mut st = shared.accept.lock().unwrap();
+    st.accept_stopping = true;
+    if let Some((h, slot)) = st.current.take() {
+        slot.cancel(h.0);
+    }
+}
+
+/// Stop the accept loop for good and report why — the ONE place every
+/// persistent-resource-failure path routes through, regardless of which
+/// thread discovers the failure.
+fn terminalize_accept_loop(shared: &Arc<ServerShared>, message: String) {
+    stop_accept_loop(shared);
+    shared.accept_cv.notify_all();
+    send_lifecycle_event(shared, TransportEvent::AcceptError(message));
+}
+
 /// Set `inst` aside for reuse rather than closing it. `DisconnectNamedPipe`
 /// resets it to the listening state; on success it is pushed onto
-/// `AcceptState::recycled`. On FAILURE (round-3 finding 4), `inst` is in
-/// an unknown state and unsafe to reuse — a fresh replacement instance is
-/// created and recycled FIRST, and only then is the failed instance
-/// closed, so the name is never instance-less even transiently. If no
-/// replacement can be created either, that is a genuine terminal resource
-/// failure (`AcceptError`, accept loop stopped) — there is nothing else
-/// this function can safely do if it cannot keep the name held.
+/// `AcceptState::recycled`. On FAILURE, `inst` is retained (never closed)
+/// and the accept loop is terminalized — see the module doc's "Continuous
+/// name hold" section for why retaining the dead handle, rather than
+/// replacing or closing it, is the correct response.
 fn recycle_instance(shared: &Arc<ServerShared>, inst: OwnedHandle) {
     let disconnected = unsafe { DisconnectNamedPipe(inst.as_raw_handle() as HANDLE) } != 0;
     if disconnected {
@@ -923,29 +967,14 @@ fn recycle_instance(shared: &Arc<ServerShared>, inst: OwnedHandle) {
         shared.accept_cv.notify_all();
         return;
     }
-    match create_pipe_instance(&shared.name, false, shared.max_instances) {
-        Ok(replacement) => {
-            shared
-                .accept
-                .lock()
-                .unwrap()
-                .recycled
-                .push_back(replacement);
-            shared.accept_cv.notify_all();
-            drop(inst); // NOW safe: the replacement already holds the name.
-        }
-        Err(e) => {
-            shared.accept.lock().unwrap().accept_stopping = true;
-            send_lifecycle_event(
-                shared,
-                TransportEvent::AcceptError(format!(
-                    "DisconnectNamedPipe failed on a torn-down instance and no replacement could be created: {e}"
-                )),
-            );
-            shared.accept_cv.notify_all();
-            drop(inst);
-        }
-    }
+    shared.accept.lock().unwrap().retained_dead.push(inst);
+    terminalize_accept_loop(
+        shared,
+        "DisconnectNamedPipe failed on a torn-down instance; it is retained (never closed) to keep the pipe \
+         name held, permanently costing one instance's worth of capacity, and no further connections will be \
+         accepted"
+            .to_string(),
+    );
 }
 
 /// Deliver one lifecycle event (`Accepted`/`Sent`/`Closed`/`AcceptError`)
@@ -968,12 +997,12 @@ fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: TransportEvent) {
     }
 }
 
-/// Request teardown for `conn_id`, at most once (round-3 finding 5):
-/// every caller (`PipeServer::close`, a reader's own EOF signal, a
-/// writer's own `WriteFile`-error signal) races the SAME connection's
-/// `flag` via `compare_exchange`; only the winner enqueues a
-/// [`ReaperMsg`], so repeated or concurrent requests can never grow the
-/// reaper's bounded inbox past one entry per connection.
+/// Request teardown for `conn_id`, at most once: every caller (an
+/// explicit `close`, the reader's own EOF signal, a writer's own
+/// `WriteFile`-error signal) races the SAME connection's `flag` via
+/// `compare_exchange`; only the winner enqueues a [`ReaperMsg`], so
+/// repeated or concurrent requests can never grow the reaper's bounded
+/// inbox past one entry per connection.
 fn request_teardown(
     shared: &Arc<ServerShared>,
     conn_id: ConnId,
@@ -990,11 +1019,11 @@ fn request_teardown(
 
 /// Notify the consumer that a just-connected instance could not be fully
 /// registered (write-slot creation, or a worker's `thread::Builder::spawn`,
-/// failed) — round-3 finding 4: `Accepted` then an immediate
-/// `Closed(Error(..))`, both via the reliable path, so the consumer's own
-/// per-connection bookkeeping is created and discarded cleanly rather
-/// than never learning this connection existed. Not terminal to the
-/// accept loop — the next connection attempt is unaffected.
+/// failed) — `Accepted` then an immediate `Closed(Error(..))`, both via
+/// the reliable path, so the consumer's own per-connection bookkeeping is
+/// created and discarded cleanly rather than never learning this
+/// connection existed. Not terminal to the accept loop — the next
+/// connection attempt is unaffected.
 fn report_registration_failure(shared: &Arc<ServerShared>, what: &str, e: impl std::fmt::Display) {
     let conn_id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     send_lifecycle_event(shared, TransportEvent::Accepted(conn_id));
@@ -1046,11 +1075,11 @@ fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
 
 /// Obtain the next instance to listen on: a recycled one in preference to
 /// creating a fresh one, blocking at the instance cap with nothing
-/// recycled yet. Waits on the plain condvar (round-3 finding 10: every
-/// state change that could satisfy this predicate — `Drop`, a recycle —
-/// already `notify_all`s, so polling bought nothing). `None` means: stop
-/// accepting — either shutdown, or a persistent creation failure already
-/// reported via `TransportEvent::AcceptError`.
+/// recycled yet. Waits on the plain condvar — every state change that
+/// could satisfy this predicate (`Drop`, a recycle) already `notify_all`s,
+/// so a polling wait would buy nothing. `None` means: stop accepting —
+/// either shutdown, or a persistent creation failure already reported via
+/// `TransportEvent::AcceptError`.
 fn obtain_instance(shared: &Arc<ServerShared>) -> Option<OwnedHandle> {
     loop {
         let mut st = shared.accept.lock().unwrap();
@@ -1068,10 +1097,8 @@ fn obtain_instance(shared: &Arc<ServerShared>) -> Option<OwnedHandle> {
                 Err(e) => {
                     let mut st = shared.accept.lock().unwrap();
                     st.created -= 1;
-                    st.accept_stopping = true;
                     drop(st);
-                    send_lifecycle_event(shared, TransportEvent::AcceptError(e.to_string()));
-                    shared.accept_cv.notify_all();
+                    terminalize_accept_loop(shared, e.to_string());
                     return None;
                 }
             }
@@ -1101,17 +1128,10 @@ fn accept_loop(shared: Arc<ServerShared>, first_instance: OwnedHandle) {
         let slot = match IoSlot::new() {
             Ok(s) => Arc::new(s),
             Err(e) => {
-                // Round-3 finding 4: this used to recycle and silently
-                // `continue` forever. A slot-creation failure here is a
-                // resource failure exactly like `create_pipe_instance`'s
-                // own — terminalize the same way rather than spin.
+                // A slot-creation failure here is a resource failure
+                // exactly like `create_pipe_instance`'s own.
                 recycle_instance(&shared, inst);
-                shared.accept.lock().unwrap().accept_stopping = true;
-                send_lifecycle_event(
-                    &shared,
-                    TransportEvent::AcceptError(format!("IoSlot::new (accept): {e}")),
-                );
-                shared.accept_cv.notify_all();
+                terminalize_accept_loop(&shared, format!("IoSlot::new (accept): {e}"));
                 return;
             }
         };
@@ -1133,25 +1153,34 @@ fn accept_loop(shared: Arc<ServerShared>, first_instance: OwnedHandle) {
         shared.accept.lock().unwrap().current = None;
 
         match connect_result {
-            // A client that connects and vanishes fast enough can make
-            // `ConnectNamedPipe` report the completion as an ERROR rather
-            // than success or `ERROR_PIPE_CONNECTED`. The only outcome
-            // that is EVER this module's own doing is
-            // `ERROR_OPERATION_ABORTED`, raised exclusively by
-            // `IoSlot::cancel` — every other error still means a real
-            // client showed up, so it is registered anyway and the
-            // reader's own first `ReadFile` discovers/classifies whatever
-            // actually happened.
             Ok(_) => handle_new_connection(&shared, inst, raw, slot),
             Err(e) if e.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) => {
+                // This module's own cancellation (a `Drop`-triggered
+                // stop) — never a real client.
                 recycle_instance(&shared, inst);
                 if shared.accept.lock().unwrap().accept_stopping {
                     return;
                 }
-                // Not actually shutting down -- nothing else ever cancels
-                // this slot, but stay defensive and just try again.
+                // Not actually stopping -- nothing else ever cancels this
+                // slot, but stay defensive and just try again.
             }
-            Err(_e) => handle_new_connection(&shared, inst, raw, slot),
+            Err(e) if e.raw_os_error().is_some_and(is_disconnect_family) => {
+                // A client connected and vanished before/while the
+                // completion was processed -- register it anyway so the
+                // reader's own first `ReadFile` discovers and classifies
+                // whatever actually happened, giving it a real
+                // `Accepted` -> `Closed` lifecycle instead of discarding
+                // a real client attempt.
+                handle_new_connection(&shared, inst, raw, slot);
+            }
+            Err(e) => {
+                // Any other connect failure is a genuine anomaly, not a
+                // disconnect race -- recycle the instance and terminalize
+                // rather than misreport it as a client that connected.
+                recycle_instance(&shared, inst);
+                terminalize_accept_loop(&shared, format!("ConnectNamedPipe: {e}"));
+                return;
+            }
         }
     }
 }
@@ -1165,7 +1194,7 @@ fn accept_loop(shared: Arc<ServerShared>, first_instance: OwnedHandle) {
 /// immediately — before the instance is recycled, so a handle is never
 /// closed (or recycled) while any thread might still be using it. Any
 /// registration failure is reported via [`report_registration_failure`]
-/// rather than silently dropping the client (round-3 finding 4).
+/// rather than silently dropping the client.
 fn handle_new_connection(
     shared: &Arc<ServerShared>,
     inst: OwnedHandle,
@@ -1251,9 +1280,9 @@ fn handle_new_connection(
         torn_down_requested,
     };
     shared.conns.lock().unwrap().insert(conn_id, conn);
-    // RELIABLE, not best-effort (round-3 finding 1): retries until the
-    // consumer actually has room, so the gate below can never open onto a
-    // connection the consumer was never told exists.
+    // RELIABLE, not best-effort: retries until the consumer actually has
+    // room, so the gate below can never open onto a connection the
+    // consumer was never told exists.
     send_lifecycle_event(shared, TransportEvent::Accepted(conn_id));
     gate.open(); // ONLY now may the reader/writer threads touch the pipe.
 }
@@ -1261,11 +1290,10 @@ fn handle_new_connection(
 /// Attempt to deliver one `Bytes` event, retrying against a full `events`
 /// channel for up to [`BYTES_ABANDON_AFTER`] — abandoning delivery
 /// (returning `false`) once that bound elapses OR the moment `slot` has
-/// been independently cancelled (round-3 finding 1: `Bytes` is the one
-/// event kind allowed to be abandoned, but abandoning it always forces
-/// this connection closed with a guaranteed `Closed` — see
-/// [`reader_loop`]). Returns `false` also if the consumer is gone
-/// entirely (channel disconnected).
+/// been independently cancelled (`Bytes` is the one event kind allowed to
+/// be abandoned, but abandoning it always forces this connection closed
+/// with a guaranteed `Closed` — see [`reader_loop`]). Returns `false`
+/// also if the consumer is gone entirely (channel disconnected).
 fn deliver_bytes(
     shared: &Arc<ServerShared>,
     conn_id: ConnId,
@@ -1290,18 +1318,13 @@ fn deliver_bytes(
 }
 
 /// Classify a terminal `ReadFile`/`WriteFile`/`GetOverlappedResult`
-/// error: the recognized disconnect family (broken/unconnected pipe, the
-/// pipe being closed, or this side's own cancellation) is `Eof`; anything
-/// else is `Error`. A SUCCESSFUL zero-byte read is handled separately, in
-/// [`reader_loop`] itself — it never reaches this function.
+/// error: the disconnect family (see [`is_disconnect_family`]) plus this
+/// side's own cancellation is `Eof`; anything else is `Error`. A
+/// SUCCESSFUL zero-byte read is handled separately, in [`reader_loop`]
+/// itself — it never reaches this function.
 fn classify_terminal_error(e: std::io::Error) -> ClosedReason {
     match e.raw_os_error() {
-        Some(c)
-            if c == ERROR_BROKEN_PIPE as i32
-                || c == ERROR_PIPE_NOT_CONNECTED as i32
-                || c == ERROR_NO_DATA as i32
-                || c == ERROR_OPERATION_ABORTED as i32 =>
-        {
+        Some(c) if c == ERROR_OPERATION_ABORTED as i32 || is_disconnect_family(c) => {
             ClosedReason::Eof
         }
         _ => ClosedReason::Error(e.to_string()),
@@ -1407,10 +1430,10 @@ fn writer_loop(
 
 /// The client side of one voyage's pipe: `read`/`write_all` are blocking
 /// from the calling thread's own perspective, but `PipeClient` is `Sync`
-/// (via the same [`IoSlot`] the server uses, now rejecting a concurrent
-/// same-direction submission rather than corrupting one — round-3 finding
-/// 2) — a second thread may call [`PipeClient::cancel`] at any time to
-/// unblock whichever of the two is currently in flight.
+/// (via the same [`IoSlot`] the server uses, rejecting a concurrent
+/// same-direction submission rather than corrupting one) — a second
+/// thread may call [`PipeClient::cancel`] at any time to unblock whichever
+/// of the two is currently in flight.
 pub struct PipeClient {
     #[allow(dead_code)] // held for its Drop (closes the pipe handle)
     handle: OwnedHandle,
@@ -1488,9 +1511,8 @@ impl PipeClient {
     /// larger than a single Win32 write can represent. A concurrent
     /// SECOND `write_all` call from another thread returns
     /// `Err(PipeError::ConcurrentSubmit)` rather than corrupting the
-    /// shared `OVERLAPPED` (round-3 finding 2). Named pipes complete a
-    /// `WriteFile` as one atomic operation (byte-mode, no partial writes
-    /// to retry-loop over).
+    /// shared `OVERLAPPED`. Named pipes complete a `WriteFile` as one
+    /// atomic operation (byte-mode, no partial writes to retry-loop over).
     pub fn write_all(&self, bytes: &[u8]) -> Result<(), PipeError> {
         if bytes.is_empty() {
             return Err(PipeError::EmptyPayload);
@@ -1518,11 +1540,11 @@ impl PipeClient {
 
     /// Blocking read into `buf`, cancellable from another thread via
     /// [`PipeClient::cancel`]. `buf` must be non-empty and no larger than
-    /// a single Win32 read can represent (round-3 finding 6: an empty
-    /// buffer previously looped forever re-issuing zero-byte reads, and a
-    /// buffer whose length silently narrows to zero at the `u32` Win32
-    /// boundary — exactly 4 GiB — had the identical failure). A
-    /// concurrent SECOND `read` call from another thread returns
+    /// a single Win32 read can represent — an empty buffer would loop
+    /// forever re-issuing zero-byte reads, and a buffer whose length
+    /// silently narrows to zero at the `u32` Win32 boundary (exactly
+    /// 4 GiB) would have the identical failure. A concurrent SECOND
+    /// `read` call from another thread returns
     /// `Err(PipeError::ConcurrentSubmit)`. `Ok(0)` means the server closed
     /// its end (ordered EOF) — NEVER a successful zero-byte completion,
     /// which this method silently retries past (this transport's own
@@ -1551,9 +1573,8 @@ impl PipeClient {
             match result {
                 Ok(0) => continue,
                 Ok(n) => return Ok(n as usize),
-                Err(e) if matches!(e.raw_os_error(), Some(c) if c == ERROR_BROKEN_PIPE as i32 || c == ERROR_PIPE_NOT_CONNECTED as i32 || c == ERROR_NO_DATA as i32) =>
-                {
-                    return Ok(0);
+                Err(e) if matches!(e.raw_os_error(), Some(c) if is_disconnect_family(c)) => {
+                    return Ok(0)
                 }
                 Err(e) => return Err(map_client_io_error("ReadFile")(e)),
             }
