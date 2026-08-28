@@ -583,6 +583,426 @@ capsule integration suite runs serialized because two real ConPTY
 floods on a two-core runner starve each other — additive, not
 adversarial, by design.
 
+### Step 6 as specified (2026-08-28, pre-implementation review)
+
+The build-order line for step 6 compresses seven mechanisms — probe/adopt,
+EndRun on real quit, the attach-only FE, the `fe_down` marker,
+`initial_command`, packaging, and the `shutdown-sot.ps1` rewrite — and it is
+the first step whose callers live OUTSIDE this crate. A pre-code adversarial
+review of the work split found that the compression hid one missing durable
+fact, two races the pinned prose creates rather than prevents, and one
+mechanism (the launcher) that cannot physically host the role the Lifecycle
+section assigns it. The rulings, so implementation cannot re-litigate them:
+
+- **The probe needs a NAME before it needs a state table.** The pipe is
+  `\\.\pipe\sot-voyage-<id>` and `validate_voyage_id` requires a canonical
+  UUID, so the state table presumes the supervisor already knows WHICH
+  voyage to probe — and nothing durable names one. Step 6 adds exactly one
+  new durable fact, `<state-dir>\drawer.json`, holding
+  `{voyage: <uuid>, state: open | ended}`. Only the supervisor ever writes
+  `voyage`; the `state` field is discussed two rulings down. It is published
+  with the store's own pinned Windows order (temp → flush → rename → renamed
+  flush → parent-directory flush) through a REPLACE variant of `fsutil`'s
+  existing publish — replace, not no-replace, because a current-value
+  pointer's whole purpose is to be overwritten and a no-replace publish
+  would need a delete step with a window where no pointer exists. It lives
+  in the state dir, NOT under `voyages\`, so the `SE_DACL_PROTECTED`
+  descriptor keeps governing exactly the voyage tree. Deletion pressure
+  applied and the alternative rejected: enumerating `\\.\pipe\*` answers
+  "some capsule exists" in a global multi-user namespace, never "MY drawer's
+  capsule", and would make adoption target selection a guess.
+- **The session is the voyage; a respawn is a LEG, not a new voyage.** ADR
+  0039 already pins epoch = leg = one producer-run attempt by one capsule
+  incarnation, and `open_for_writing` allocates max-durable + 1 at every
+  open. So the pointer changes only when there is no pointer at all; every
+  respawn, adoption, and next-morning start reuses the same voyage id — and
+  therefore the same pipe name, which is what lets the FE's reconnect target
+  stay constant across a leg boundary it never predicted. Minting is the
+  first-ever-start path and the operator's escape (delete the pointer); a
+  pointer naming a store that no longer exists re-mints and ANNOUNCES it,
+  because the data is already gone and a loud stop over lost data helps
+  nobody.
+- **The state table is amended: the pipe's own answer is the authority, and
+  the lock is consulted only where there is no pipe to ask.** The Lifecycle
+  section's four rows read as if `(pipe, writer.lock)` were sampled
+  simultaneously. They cannot be — they are two syscalls, and step 5's
+  teardown closes the pipe (`shutdown_all`, via the RAII guard) microseconds
+  BEFORE the `VoyageStore` drop releases the lock. A supervisor that
+  observes "pipe live", then "lock free", across an ordinary capsule exit
+  would fire the table's "inconsistent: loud stop" on a completely healthy
+  shutdown. As specified:
+
+  | observation                    | required action                    |
+  |--------------------------------|------------------------------------|
+  | connect ok, challenge PASSES   | ADOPT — never touch the lock (a    |
+  |                                | live server answering already      |
+  |                                | proves a live writer holds it)     |
+  | connect ok, challenge FAILS    | LOUD STOP — a squat or a foreign   |
+  | (no reply in bound, malformed, | server; never spawn over it, never |
+  | pid or creation-time mismatch) | touch the lock                     |
+  | no pipe, lock HELD             | BOUNDED RETRY → visible wedge      |
+  |                                | error; never spawn over it         |
+  | no pipe, lock FREE             | release the probe lock, SPAWN,     |
+  |                                | RE-PROBE to converge               |
+
+  Only `ERROR_FILE_NOT_FOUND` means "pipe absent". `ERROR_PIPE_BUSY` means
+  all instances are connected — a live capsule at its cap, which
+  `connect_voyage_pipe` already absorbs for 2 s and which must never be read
+  as absence. The lock test is `fsutil::lock_writer` itself (not a second
+  implementation), acquired and DROPPED before any spawn, since the capsule's
+  own `open_for_writing` must be able to take it. The bounded retry covers
+  exactly two structural transients, both named so the bound can be chosen
+  rather than guessed: a capsule between `open_for_writing` and
+  `Transport::bind` (step 5 pinned `bind` as the first fallible step after
+  the lock, so this window cannot grow), and `lock_writer`'s own 250 ms
+  post-kill release lag. The retry's expiry is a loud stop, never a spawn:
+  spawning over a held lock is the one thing a probe must never do. And the
+  table is the supervisor loop's RE-ENTRY point, not only its start: an
+  adopted capsule that ends puts the supervisor back at the top, where the
+  ordinary answer is the fourth row and one new leg.
+- **Cross-process adoption is proven by a supervisor that is a different
+  PROCESS, which is the step-5 residual this closes.** The step-5 e2e
+  asserted `status`-pid against its own pid in-process and named the real
+  check as step 6's. The challenge itself is unchanged and its ORDER is
+  load-bearing: read the server pid P via `GetNamedPipeServerProcessId` on
+  the live connection; `OpenProcess(P, PROCESS_TERMINATE |
+  PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE)`; THEN issue mgmt
+  `status` on the same connection; proven iff reply-pid == P AND
+  reply-`created` == `GetProcessTimes(handle)` on the exact `u64` FILETIME
+  bits. Open-before-challenge IS the pid-reuse defense; a later tidy-up that
+  reorders it has deleted the property. Step 5 made a `GetProcessTimes`
+  failure a loud `Err` rather than a synthesized zero for exactly this
+  comparison. What the proving test can and cannot claim, stated rather than
+  blurred: it spawns `sot-capsule.exe` as a real child and asserts
+  reply-pid ≠ the test's own pid, reply-pid == the server pid, and the
+  creation-time match against an independently opened handle; it asserts the
+  negatives (a same-named pipe stood up by a non-capsule helper fails; the
+  comparison against a handle to a DIFFERENT live process fails). It does
+  NOT simulate pid recycling, which no test can force. The property proven
+  is substitutability — the challenge fails whenever the (handle,
+  creation-time) pair does not match the answering server — and that is the
+  whole of what the pid-reuse race needs. The termination-capable handle is
+  RETAINED past the challenge: it costs one handle and it is the only thing
+  that makes the Upgrade section's mgmt-lane-invalidated fallback
+  executable, so it names its invariant and stays.
+- **The supervisor holds ONE mgmt connection for the capsule's whole life;
+  its EOF is the death signal.** No polling loop, no `WaitForExit` (which an
+  adopting supervisor has no handle for anyway), no second mechanism. Step
+  5's own admission control makes this legal by construction and the spec
+  states the dependency so it cannot be silently removed: `Role::Mgmt`
+  carries no deadline (only `Unclassified`/`PostHello` do), keepalive is
+  driver-only, and the progress deadline only bites a connection with
+  outstanding sends. The cost is one permanent slot of `NON_WATCHER_CAP`,
+  which is the budget statement step 6 owes: supervisor 1, the teardown
+  script's own EndRun connection 1 (it must never require a live
+  supervisor), leaving 2 for pre-hello attaches. Consequently
+  `MAX_PIPE_INSTANCES` stops being the harness's invented "single generous
+  constant" and is DERIVED and exported from the protocol's own caps
+  (`NON_WATCHER_CAP + SUBSCRIBER_CAP`), so the transport ceiling cannot
+  drift from the admission control it exists to cover. Related deletion
+  pressure, resolved honestly rather than by deleting: mgmt `probe` ends up
+  with no caller at all — `status` is strictly more informative and the
+  supervisor always needs identity — but the v0 lane is PERMANENTLY pinned,
+  so `probe` stays, unused, and is recorded here as unused rather than
+  quietly given a job to justify it.
+- **The spawn-owner role is one, and it cannot live in the launcher.** The
+  Lifecycle section assigns it to "the launcher loop that already outlives
+  FE respawns and keeps the ssh tunnel" — a PowerShell process, which cannot
+  do overlapped named-pipe I/O, binary framing, `OpenProcess`, or
+  `GetProcessTimes`. The role moves to a `sot-capsule supervise` subcommand
+  of the binary that already owns the voyage, the pipe, and the wire; the
+  launcher's job shrinks to starting it and restarting it with the same
+  backoff it already gives the tunnel. Legs are spawned as CHILD PROCESSES
+  and deliberately NOT placed in the supervisor's job — the supervisor dying
+  must be harmless, which is the nightly-composite row made structural
+  rather than tested-for. The invariant that survives the move: exactly one
+  process may spawn legs, and it is the one that can also probe.
+- **Respawn is bounded; a fast-failing capsule stops the loop.** A
+  supervisor that respawns unconditionally is a fork bomb the moment the
+  store is unopenable — an omission in the existing prose, not a
+  refinement of it. Consecutive legs that end within a short floor with no
+  client ever attached increment a failure count; at a small threshold the
+  loop STOPS with a visible error naming the last `producer_dead` detail. A
+  leg that ran normally resets it. The supervisor's job is to keep ONE
+  session alive, not to keep trying forever; an unspawnable voyage is a
+  human's problem and must look like one.
+- **EndRun ends the SESSION, so `state: ended` is what stops the respawn.**
+  The pinned teardown order puts EndRun first, while the supervisor is still
+  alive — and a supervisor whose entire job is to replace an ended leg will
+  do exactly that, spawning a fresh headless capsule that the next two steps
+  then orphan. The same race exists on the FE's own quit path. The
+  permanently pinned mgmt lane cannot grow a "this end was requested" field,
+  and making the supervisor parse the sealed voyage to learn why would couple
+  it to the format for one bit. So the bit lives where the intent already
+  does: every EndRun caller flips the pointer to `state: ended` BEFORE
+  issuing mgmt `shutdown`, and the supervisor's leg-end handler re-reads it —
+  `open` means respawn and announce "run ended — new leg", `ended` means stop
+  and announce "session ended". Supervisor start sets `open` unconditionally
+  before its first probe (a new launcher run is a new intent to have a
+  session) and, finding `ended` with a capsule still live, adopts and
+  finishes the interrupted teardown rather than leaving an orphan forever.
+- **Step 6 adds exactly three EndRun callers, and the supervisor is not one
+  of them.** (a) The FE's real-quit path — `Action::Quit` today sets
+  `should_exit` and returns an implicit 0 with no teardown hook, so the
+  mgmt round trip is inserted there, synchronous and bounded, before the
+  event loop exits. Exit 75 never issues one. (b) `sot-capsule endrun`,
+  which flips the pointer and issues `shutdown` in one command so the two
+  steps cannot be ordered wrongly by a caller that is a shell script.
+  (c) The incompatible-upgrade end-run, offered rather than automatic. The
+  supervisor NEVER issues EndRun on its own initiative — not on FE exit,
+  not on FE crash, not on tunnel loss, not on its own shutdown. That single
+  rule is what keeps "one spawn owner" from becoming "one killer of runs",
+  and it is what makes the operator-note inversion true. A quit whose ack
+  never arrives fails LOUDLY and does not escalate to termination: a quit
+  that cannot reach the capsule leaves a live session and says so, because
+  silently promoting "quit" to "kill" exactly when the protocol is already
+  misbehaving is the worst possible moment for it. The reason vocabulary is
+  pinned so the record is greppable and the three callers are
+  distinguishable in `producer_dead`'s detail: `fe-quit`, `shutdown-script`,
+  `upgrade-incompatible`; the capsule's internal `transport-accept-failed`
+  stays reserved.
+- **The FE stops owning a process and becomes a client.** `LocalTerminal`
+  keeps its parser, its reader thread and its dead flag, and loses the
+  master, the child, the writer and `portable-pty`; `spawn` becomes
+  `attach`. `respond_to_queries` is DELETED — the host-facing handshake is
+  capsule-side from producer spawn, with zero clients attached, which is why
+  step 7 can assert it was answered before anything ever connected. The
+  first paint comes from `restore_screen` on the attach checkpoint, never
+  from replaying bytes into a blank parser: checkpoint v1 exists precisely
+  because reconstruction cannot encode the inactive grid or alternate-screen
+  identity, and a `hello` refusal is a loud refusal offering EndRun, never a
+  blank screen and never a silent replacement, at every version. The pen:
+  attach arrives as a WATCHER always, and the FE takes on the FIRST
+  KEYSTROKE, not on attach — one extra round trip, once, on a local pipe,
+  and it means a second FE opened to LOOK at a session does not steal the
+  pen from the one being typed at. (Auto-take-on-attach was the first
+  draft's answer and is rejected for that reason; demote-on-take already
+  makes the last taker win when someone actually types.) Resize is
+  driver-only and reject-never-clamp, so a watcher renders the driver's
+  geometry rather than fighting it — the alternative makes the recorded
+  geometry a lie. Scrollback is stated, not papered over: the capsule keeps
+  none, the FE accumulates its own from the live stream after attach, so a
+  reattach shows a correct SCREEN and an empty history until frame replay
+  lands in P4, and the drawer says so once rather than pretending.
+- **The FE gains a `sot-log` dependency, and does not gain a new crate.**
+  It needs `wire`, `pipe_win::PipeClient`, and the vt100 fork it already
+  has; it does not need the store, the verifier, or recovery. A third crate
+  to express that is machinery for a dependency edge, so the ruling is the
+  plain dependency — with the escape named in advance rather than
+  discovered: if the store's transitive deps prove unacceptable in the FE
+  binary, the fix is a `client` cargo feature gating the store modules, not
+  a crate split.
+- **`fe_down` is written by the FE, on attach, and only when there is a
+  down-window to report.** The FE is already the inbox's only writer, and
+  keeping the marker there means its existence is evidence of exactly what
+  it claims: an FE is present now and was not before. It is written
+  immediately after the attach completes and before the drawer becomes
+  interactive, through the SAME append path as a relayed message. `from` is
+  not derivable from FE memory across a crash, so it is read back from the
+  inbox — the timestamp of the last line this side wrote; with no such line
+  (a first-ever attach) the marker is SKIPPED, because a synthetic zero
+  would be a lie about a window that never existed. The line's shape is
+  constrained by its readers, not by taste: existing monitors project
+  `from`/`to`/`text` out of each line, so the marker is an ordinary
+  `{"from","to","text","ts"}` object carrying an `fe_down` discriminator —
+  a bare `{"fe_down":{…}}` line renders as nulls in every current reader.
+  The invariant, stated because it is the marker's only reason to exist: the
+  retired ritual's session-start catch-up was the sole mechanism that ever
+  noticed a dropped relay message, and P3 must not make that failure
+  quieter. A marker skipped when it was due, or written from the wrong side,
+  silently reopens the hole.
+- **`initial_command`'s firing rule is about the CAPSULE, so it needs no
+  flag.** It fires when a capsule spawns the shell — the supervisor's spawn
+  path, including every respawned leg, which is a genuinely new shell — and
+  never on the adopt path, because there is no spawn to attach it to. It is
+  passed as the capsule's shell launch ARGS (`-NoExit -Command` / `/K` /
+  `-c "…; exec $SHELL"`, ADR 0017 §4's own mechanism), never as PTY stdin,
+  so the prompt race stays solved and the command is part of the recorded
+  spawn rather than a synthetic input frame. `resolve_shell` and the arg
+  injection move out of the FE to the supervisor with it. `resume_command`
+  is DELETED, not aliased: a stale key in an existing settings file is a
+  loud startup warning naming its replacement, because silently honoring it
+  would re-run `claude --continue` inside an ADOPTED session — the exact
+  ritual P3 exists to retire, now doubled. `--relaunched` keeps only its
+  ADR 0017 §1–§3 meaning (open into the drawer) and selects no command;
+  today's arming condition additionally fires on a plain start, and collapses
+  with the setting.
+- **Adoption is announced on BOTH branches.** Two surfaces, both required
+  because they fail independently: the supervisor's own append-only log, and
+  an FE-visible drawer notice on attach. The start time is `status.created`
+  rendered locally — no new field and no new frame, which is the right
+  source precisely because the permanent lane cannot grow one. A SPAWN is
+  announced too: the operator's failure mode is not knowing which of the two
+  happened, and an announcement that fires on only one branch teaches
+  nothing.
+- **Packaging: ship the capsule, stage it after exit.** `sot-capsule.exe` is
+  already built by the workspace release build and simply never copied into
+  the stage directory; four sites hardcode the two-binary set (the release
+  packaging step, the artifact smoke assertion, the updater's required-file
+  list, and the applier's install/restore/rollback loops) and each must
+  learn the third, which also means the capsule needs a `--version` line in
+  the shape the smoke job asserts. Staging is **stage-after-exit**: the
+  staged binary is replaced only after EndRun completes, a running capsule
+  is never overwritten in place, and the condition "no live capsule" is
+  answered by the probe the supervisor already runs rather than by a second
+  mechanism. OUT: an installer, code signing, and capsule auto-update
+  independent of the release.
+- **The `shutdown-sot.ps1` rewrite is an INSERTION, not a redesign.** The
+  script's existing order — supervisor first (a force kill runs no `finally`,
+  which is what keeps it from respawning the FE or tearing the tunnel early),
+  then the FE, then a bounded drain, then the tunnel — already achieves
+  daemon-detach-before-tunnel and is kept verbatim. Step 6 prepends the
+  EndRun step and extends "supervisor" to include the capsule supervisor
+  process. The pinned order therefore reads: `EndRun → capsule ack + seal +
+  lock release → supervisor stop → FE close → tunnel down`, with proof of
+  completion being capsule ack + pipe closure + verify-green + lock release,
+  never `WaitForExit` (the script has no child handle either). Every wait is
+  bounded and every timeout is LOUD: a script that cannot reach the capsule
+  STOPS and reports a live session rather than proceeding to kill the
+  supervisor, which is the exact strand the reorder exists to prevent. Orphan
+  stop is defined: no pointer, or pipe absent with the lock free, means skip
+  EndRun and proceed — a fresh install and a post-crash cleanup must both
+  work. The daemon-detach property is ASSERTED by the rewrite's own check,
+  not inherited by assumption.
+
+**Contradiction sweep** — where the existing prose and step-5 reality
+disagree, named and amended rather than worked around:
+
+1. The probe table's implied simultaneity, and "pipe live + lock free →
+   inconsistent" as a SAMPLING rule. Amended above: as a sampling rule it
+   fires on healthy shutdowns; as a SQUAT rule ("the pipe answers but fails
+   the challenge") it is exactly right, and that is what it now says.
+2. The Lifecycle section's teardown order races the supervisor it does not
+   mention. Amended by `state: ended`, above — the order itself stands, and
+   step 7's row keeps its wording because the flag is what makes "the run
+   ends before any process dies" safe rather than merely stated.
+3. "ONE spawn owner — the launcher loop." The launcher cannot perform the
+   probe. The ROLE is one; its home moves into `sot-capsule supervise`.
+4. Build-order line 1 is discharged for the frontend but not for the rule:
+   the FE's `paths.rs` is now the single Windows `%LOCALAPPDATA%\sot` site,
+   and step 6 must not add a fifth copy for the capsule — the rule is
+   promoted into `sot-log` and the FE delegates. Two copies stay OUT of
+   scope and are named so they are not mistaken for discharged: the
+   backend's own state dir (deliberately different, Linux-side, daemon-
+   private) and the FE's roaming `%APPDATA%\sot\state-<host>.toml`
+   persistence path, which is still capable of the exact split line 1 was
+   written to kill.
+5. `MAX_PIPE_INSTANCES = 8` is carried in the harness bin as an admittedly
+   invented constant whose real computation "step 6/7's supervisor owns".
+   Step 6 owns it and derives it.
+6. The Lifecycle section forbids `WaitForExit` while the Upgrade section
+   requires a bounded `WaitForSingleObject`. Not a contradiction, and pinned
+   so nobody resolves one against the other: the prohibition is on using
+   process exit as the PROOF OF ENDRUN; the bounded wait applies after
+   `TerminateProcess`, on a handle whose identity the challenge proved.
+7. ADR 0017 §4 is marked retired in its own header; step 6 is the change
+   that makes that true in code, by deleting `resume_command` rather than
+   superseding it in prose.
+
+**Units** (build order; each is one PR):
+
+- **U0 — the capsule becomes a real, spawnable, findable program.** The
+  Windows CLI grows `supervise` and `endrun` alongside `run`, plus
+  `--version`; the state-dir rule is promoted into `sot-log` and the FE
+  delegates; `<state-dir>\drawer.json` gets its publish/read/validate with
+  the default voyage root `%LOCALAPPDATA%\sot\voyages` (the step-4 gate
+  assigned this default to the step-6 spawn owner); `MAX_PIPE_INSTANCES` is
+  derived from the protocol caps. Evidence: both Windows legs start the
+  binary as a child process and complete an attach plus an mgmt round trip
+  against it; pointer tests for absent, malformed (loud stop, never a
+  guess), and stale-store (re-mint, announced). First because everything
+  else needs an out-of-process capsule to test against.
+- **U1 — the probe and the cross-process adoption challenge.** The amended
+  state table, the challenge, the retained termination handle. No spawning.
+  Evidence: the challenge matrix above on both legs, including both
+  negatives; a loop that spawns and probes repeatedly under an output flood,
+  asserting zero false wedges and zero double-spawns. This is the unit that
+  discharges the step-5 residual, and it lands before anything depends on
+  adoption.
+- **U2 — `sot-capsule supervise`.** The loop, spawn with `initial_command`,
+  adopt, the breakaway attempt that produces `Survival`, the held mgmt
+  connection, announcement on both branches, `state`-gated respawn, and the
+  anti-flap bound. Evidence: hard-kill a capsule and watch a new leg appear
+  on the SAME voyage with a new epoch, both legs verify-green; two racing
+  supervisors converge with the loser converging on the winner; a capsule
+  spawned by a supervisor that has since exited is adopted by a fresh one.
+- **U3 — `endrun`, the script rewrite, and the launcher hosting.** The
+  reason vocabulary, bounded waits, loud failures, orphan stop, the
+  preserved detach property, and the launcher restarting `supervise` the way
+  it restarts the tunnel. Evidence: a scripted teardown that ends the run
+  before the FE and tunnel go down, asserted on the voyage (sealed,
+  verify-green); the negative — an unreachable capsule stops the script
+  loudly and leaves the voyage open.
+- **U4 — the attach-only drawer.** Client, checkpoint restore,
+  take-on-first-keystroke, driver-only resize, the "run ended — new leg"
+  UX in place of "process exited", the adoption/spawn notice, and EndRun on
+  real quit. Evidence: attach fidelity against a real capsule through the
+  FE's own parser (restore-oracle-verified), including alternate-screen and
+  a resize between detach and reattach; the version-skew refusal path. The
+  largest unit; if it must split, the seam is client-transport versus
+  drawer-integration.
+- **U5 — the `fe_down` marker and the settings migration.** Marker shape,
+  `from` derivation, the skip rule; `initial_command` in, `resume_command`
+  out with a loud warning on a stale key. Evidence: unit tests on the
+  derivation and the skip; a settings-migration test.
+- **U6 — packaging.** The four sites, the smoke assertion, and the
+  stage-after-exit gate. Landable any time after U0.
+
+Any new Windows test binary must be added to the `windows-2022` job
+explicitly — the workspace run on `windows-latest` will execute it, but only
+the older image exercises the blocking `ClosePseudoConsole` that steps 4 and
+5 both learned their real lessons from.
+
+**Explicitly OUT of step 6**, deferred where the ladder already puts them:
+every row of step 7's real-machine matrix (step 6 builds the callers those
+rows need — multi-user ACL, logout/reboot, AV, disk-full, forced-reboot
+recovery, and the nightly composite are step 7's to RUN); frame replay and
+pre-attach scrollback (P4); remote attach (P4 — the pipe stays local and
+keeps rejecting remote clients); Sessions-mode rows for FE voyages and the
+catalog; the Claude SDK adapter on Windows (the drawer stays a raw-terminal
+voyage); the fe-inbox down-window itself, whose DETECTION is all that is
+built here; any change to the merged Linux capsule path; multi-FE pen
+arbitration beyond what demote-on-take already gives; voyage rotation
+policy for a long-lived drawer voyage (measured here, decided in P4); and
+broker workarounds for the breakaway-denied path, which stays DEGRADED,
+surfaced, and unworked-around.
+
+**Open risks, each with the test that settles it:**
+
+1. *Cross-process adoption* — the step-5 residual. Settled by U1's matrix on
+   both legs. The pid-RECYCLE race stays unsimulable; what is proven is
+   substitutability, and the spec says exactly that rather than overclaiming.
+2. *Probe transients on a loaded machine* — the spawn-to-`bind` window and
+   the post-kill lock-release lag are both timing-dependent on two-core,
+   contended runners that already forced step 5's suite to serialize.
+   Settled by U1's repeated spawn/probe loop under flood, and by stating the
+   retry bound as a number with the two transients it must dominate.
+3. *The held mgmt connection as the death signal* — it depends on
+   `Role::Mgmt` never acquiring a deadline. Settled by an explicit
+   regression test that an idle mgmt connection outlives the pre-admission,
+   keepalive, and progress deadlines combined, so a future timeout added to
+   that role fails loudly here instead of silently blinding the supervisor.
+4. *Leg startup is O(retained history)* — `open_for_writing` seeds the
+   dedupe index from the whole retained voyage (step 5's own stated
+   unbounded-memory note), and this voyage is meant to live for weeks across
+   many legs. Settled by a measurement test that builds a voyage with a
+   realistic input count and pins open time and index memory to a budget;
+   exceeding it is a P4 rotation decision, not a step-6 build.
+5. *A quit that cannot reach the capsule* — the no-escalation rule
+   deliberately leaves a session alive rather than killing it under protocol
+   failure. Settled by U3's negative test and then by dogfooding judgment;
+   if it proves wrong, the fix is a second, explicitly operator-confirmed
+   force path, never an automatic one.
+6. *Checkpoint restore through the FE's own parser* — step 5 proved restore
+   against a test oracle; U4 is the first time the live drawer, with its own
+   geometry and resize history, is the restorer. Settled by U4's
+   attach-fidelity test including alternate-screen and a resize across the
+   detach.
+7. *A new durable fact can be stale, corrupt, or absent* — settled by U0's
+   three pointer tests, and by the ruling that a pointer naming a missing
+   store re-mints with an announcement rather than wedging over data that is
+   already gone.
+
 ## The attach protocol
 
 One local socket per voyage (a named pipe on Windows), created
