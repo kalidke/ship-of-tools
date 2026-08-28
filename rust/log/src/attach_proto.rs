@@ -218,7 +218,14 @@
 //! been sent immediately — and is flushed, in order, the instant the final
 //! chunk's completion marks the connection `Done`. Nothing committed after
 //! the watermark is ever silently dropped for a slow-to-transfer
-//! subscriber.
+//! subscriber. That queue also accumulates everything committed while the
+//! connection was `QueuedForSlot`/`AwaitingGround` — i.e. everything the
+//! checkpoint itself is about to encode — so `checkpoint_ready` PURGES it
+//! the moment it takes the snapshot (real CI bug, PR #139 discharge round:
+//! left unpurged, that backlog is a duplicate of the checkpoint's own
+//! grid, redelivered a second time once `Done`). From that purge onward
+//! the checkpoint and the queue are non-overlapping halves of the same
+//! committed timeline.
 //!
 //! # The pen
 //!
@@ -314,6 +321,12 @@ const KEEPALIVE_REPLY_DEADLINE: Duration = Duration::from_secs(30);
 const PROGRESS_DEADLINE: Duration = Duration::from_secs(30);
 /// ADR 0041 budget table: "per-watcher queue 4 MiB, overflow = eviction" —
 /// LIVE output only (decision 5: the checkpoint work item rides outside it).
+/// This is the WATCHER row specifically — the table's DRIVER row is a
+/// different number with a different consequence ("committed driver-visible
+/// bytes are never dropped while the connection is live... a hung driver
+/// cannot wedge the writer loop"), so [`AttachProto::bytes_queued`] never
+/// applies this eviction to whichever connection currently holds the
+/// driver capability, even though it is still, underneath, a `Watcher`.
 const WATCHER_LIVE_QUEUE_BUDGET_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The capsule's self-reported mgmt `status` fields (ADR 0041 attach
@@ -766,11 +779,30 @@ impl AttachProto {
     /// budget" — this is the LIVE-only counter, tracked regardless of
     /// whether the watcher is `Done` yet (finding 3: pre-`Done` output
     /// still counts against the budget even though it is not sent yet).
+    ///
+    /// Real CI failure (windows-2022, PR #139 discharge round): the
+    /// current DRIVER connection is ALSO, underneath, a `Watcher` (the
+    /// take capability layers on top of it, never replaces it — module
+    /// doc, "the pen"), so a flood large enough to outrun this loop's own
+    /// confirm-drain cadence tripped the SAME 4 MiB ceiling on the driver
+    /// as on an actually-slow watcher, evicting it mid-flood
+    /// (`slow_watcher_overflow_closes_while_driver_stays_live`'s own name
+    /// is the assertion this violated). The ADR's budget table gives the
+    /// driver row a DIFFERENT consequence: "committed driver-visible bytes
+    /// are never dropped while the connection is live... a hung driver
+    /// cannot wedge the writer loop" — liveness for a truly-stuck driver is
+    /// the keepalive and the generic progress-stall deadline (finding 5),
+    /// never this byte-count heuristic, which exists to bound a passive
+    /// subscriber that might never read at all. `queued_live_bytes` still
+    /// accrues and drains normally for the driver (`sent`'s `OutputBytes`
+    /// arm doesn't distinguish roles either) — only the EVICTION
+    /// consequence is skipped for it.
     pub fn bytes_queued(&mut self, conn: ConnId, n: u64, now: Instant) -> Vec<Action> {
+        let is_driver = self.driver.as_ref().is_some_and(|d| d.conn == conn);
         let overflowed = match self.conns.get_mut(&conn).map(|c| &mut c.role) {
             Some(Role::Watcher(w)) => {
                 w.queued_live_bytes += n;
-                w.queued_live_bytes > WATCHER_LIVE_QUEUE_BUDGET_BYTES
+                !is_driver && w.queued_live_bytes > WATCHER_LIVE_QUEUE_BUDGET_BYTES
             }
             _ => false,
         };
@@ -857,6 +889,28 @@ impl AttachProto {
     /// no-op) if `conn` is not this run's current slot holder still
     /// `AwaitingGround` — should not happen given the loop only ever calls
     /// this in response to `BeginCheckpoint`.
+    ///
+    /// Real CI failure (windows-2022, PR #139 discharge round): every
+    /// `output_committed` call made while `conn` was `QueuedForSlot` or
+    /// `AwaitingGround` — i.e. every group-commit round from `attach` until
+    /// THIS one — has already queued its bytes into
+    /// `WatcherState::pending_post_watermark` (`output_committed`'s `Some(_)
+    /// => queue` arm treats every non-`Done` state alike). `bytes` (the live
+    /// parser's checkpoint, taken via `capsule_win.rs`'s
+    /// `flush_output!`/`ground_reached` watermark barrier: fsync -> publish
+    /// -> checkpoint, in that order, one loop step) reflects EXACTLY that
+    /// same committed history — the barrier's own ordering is correct; the
+    /// bug was never syncing the queue to it. Left alone, that backlog is a
+    /// duplicate: the SAME bytes are already baked into the grid `bytes`
+    /// encodes, and clearing it later at `Done` would deliver them a SECOND
+    /// time on top of the checkpoint. Purging it HERE — the one moment this
+    /// checkpoint's cut point and the queue's own contents are both in
+    /// scope — is what makes the checkpoint and
+    /// `WatcherState::pending_post_watermark` two genuinely
+    /// non-overlapping halves of the same committed timeline, the
+    /// invariant a fidelity check across the two can only hold if it's true
+    /// (`tests/capsule_win.rs`'s `attach_mid_stream_checkpoint_reproduces_
+    /// reference_screen`).
     pub fn checkpoint_ready(&mut self, conn: ConnId, bytes: Vec<u8>, now: Instant) -> Vec<Action> {
         let awaiting = matches!(
             self.conns.get(&conn).and_then(watcher_checkpoint),
@@ -868,6 +922,7 @@ impl AttachProto {
         let shared: Arc<[u8]> = Arc::from(bytes);
         if let Some(Role::Watcher(w)) = self.conns.get_mut(&conn).map(|c| &mut c.role) {
             w.checkpoint = CheckpointProgress::Sending { bytes: shared.clone(), offset: 0 };
+            w.pending_post_watermark.clear();
         }
         self.emit_next_checkpoint_chunk(conn, shared, 0, now)
     }
@@ -1997,6 +2052,69 @@ mod tests {
         );
     }
 
+    /// Real CI failure (windows-2022, PR #139 discharge round): the
+    /// rebuilt fidelity test found the wire checkpoint diverging from an
+    /// independently computed reference of the same prefix. Root cause —
+    /// bytes committed WHILE a watcher is still `QueuedForSlot`/
+    /// `AwaitingGround` (before its turn) queue into
+    /// `pending_post_watermark` the same as any other pre-`Done` output
+    /// (finding 3's own `Some(_) => queue` arm doesn't distinguish the
+    /// two) — but the live parser that produces the checkpoint at
+    /// `checkpoint_ready` time has, by construction, ALREADY consumed
+    /// everything ever published to this connection up to and including
+    /// that exact commit round (`capsule_win.rs`'s watermark barrier:
+    /// fsync -> publish -> checkpoint, one loop step, in that order — the
+    /// barrier's own ordering was never the bug). Left in the queue, that
+    /// backlog is a duplicate of what the checkpoint already encodes, and
+    /// got redelivered a SECOND time once `Done`. Fixed by purging
+    /// `pending_post_watermark` inside `checkpoint_ready` itself, the one
+    /// moment the cut point and the queue are both in scope.
+    #[test]
+    fn output_committed_before_the_checkpoint_is_taken_is_not_redelivered_after_it() {
+        let mut p = proto();
+        let now = t0();
+        p.connection_opened(1, now);
+        let a = p.frame(1, hello_frame(), now);
+        p.sent(1, a[0].send_marker(), now);
+        p.frame(1, attach_frame("alice"), now);
+
+        // Committed WHILE still AwaitingGround -- queues, exactly like any
+        // other pre-Done output (finding 3).
+        let a = p.output_committed(b"already-in-the-checkpoint", now);
+        assert!(a.is_empty(), "no Output send yet -- not Done: {a:?}");
+
+        // Ground reached: the real loop would encode the checkpoint from a
+        // live parser that has ALREADY processed the bytes above -- the
+        // checkpoint bytes below stand in for a snapshot that already
+        // covers "already-in-the-checkpoint".
+        let a = p.ground_reached(now);
+        assert!(matches!(a.as_slice(), [Action::BeginCheckpoint { conn: c }] if *c == 1));
+        let chunk = p.checkpoint_ready(1, b"checkpoint-bytes".to_vec(), now);
+        assert!(matches!(
+            chunk.as_slice(),
+            [Action::Send { marker: Some(SentMarker::CheckpointChunk { is_last: true, .. }), .. }]
+        ));
+
+        // Genuinely NEW output, committed AFTER the checkpoint was taken,
+        // still queues behind the (still in-flight, one-chunk) transfer
+        // normally.
+        let a = p.output_committed(b"after-the-checkpoint", now);
+        assert!(a.is_empty());
+
+        let flushed = p.sent(1, chunk[0].send_marker(), now);
+        assert_eq!(
+            flushed.len(),
+            1,
+            "exactly ONE queued output frame must flush once Done -- the pre-checkpoint backlog must have been purged: {flushed:?}"
+        );
+        let decoded = decode_one(flushed[0].send_bytes());
+        assert_eq!(
+            decoded,
+            DecodedFrame::AttachServer(AttachServer::Output { bytes: b"after-the-checkpoint".to_vec() }),
+            "only output committed AFTER the checkpoint was taken may be redelivered"
+        );
+    }
+
     // -- keepalive --------------------------------------------------------
 
     /// The keepalive's OWN send is also subject to the generic
@@ -2233,6 +2351,30 @@ mod tests {
             !a.iter().any(|x| matches!(x, Action::Send { .. })),
             "no wire frame exists for eviction, by design: {a:?}"
         );
+    }
+
+    /// Real CI failure (windows-2022, PR #139 discharge round): a 6 MiB
+    /// flood evicted BOTH the deliberately-never-draining watcher AND the
+    /// driver under the SAME flood, timing out the test's own post-eviction
+    /// resize on the driver. Root cause — the current driver connection is,
+    /// underneath, still a `Watcher` (module doc, "the pen": the take
+    /// capability layers on top, never replaces the role), so it was
+    /// subject to the SAME 4 MiB per-watcher eviction ceiling as an
+    /// actually-slow subscriber. The ADR's budget table gives the driver
+    /// row a different consequence ("committed driver-visible bytes are
+    /// never dropped while the connection is live... a hung driver cannot
+    /// wedge the writer loop") — this proves `bytes_queued` now honors
+    /// that: the SAME over-budget call that closes an ordinary watcher
+    /// (`queue_overflow_closes_with_no_wire_frame`, just above) produces no
+    /// action at all once that connection holds the driver capability.
+    #[test]
+    fn the_driver_is_exempt_from_the_per_watcher_queue_overflow_eviction() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done(&mut p, 1, now);
+        drive_take(&mut p, 1, "alice", 1, now);
+        let a = p.bytes_queued(1, WATCHER_LIVE_QUEUE_BUDGET_BYTES + 1, now);
+        assert!(a.is_empty(), "the driver must never be evicted by the per-watcher live-queue budget: {a:?}");
     }
 
     #[test]
