@@ -685,27 +685,26 @@ still owns its own PTY is two sessions, so U2 and U3 stay off until U4.
 - **U0 — libraries, no behavior.** The state-dir rule as a public
   `sot-log` helper the frontend delegates to; `drawer.voyage`
   publication and validation; the same-connection challenge — including
-  its target-process token-SID helper — and retained
-  process-handle wrappers; the fence primitive with its `CREATE_NEW`
-  bootstrap; classifier fault-injection scaffolding. No decision list is
-  frozen here.
+  its target-process token-SID helper — and retained process-handle
+  wrappers; the fence primitive with its `CREATE_NEW` bootstrap;
+  classifier fault-injection scaffolding. No decision list is frozen
+  here.
 - **U1 — active capsule changes**, in two separately reviewable slices
   because one of them changes durable compatibility and the other does
   not. **U1a (plumbing):** enforcing the challenge in the shared
   `connect_voyage_pipe` constructor, which is active behavior for
   today's step-5 clients and therefore not U0's; idempotent
-  `shutdown_all` so the RAII guard
-  can be disarmed, the 5 s mgmt idle deadline, the ack grace, and the
-  `open_for_writing` split that puts the writer fence and the lease
-  check ahead of history traversal. **U1b (durable):** the
-  `sot.capsule.run-end-requested-v1` registration with bidirectional
-  verifier enforcement (amending ADR 0039's own displayed registry and
-  lifecycle grammar in the same change, so the older normative document
-  does not stay at two entries), the reader-first rollout with its
-  installed-capability gate, the marker frame and its latch, and the
-  aggregate teardown deadline. Every existing test stays; the new ones
-  are the marker, teardown, idle-mgmt and feature-boundary rows of the
-  acceptance matrix.
+  `shutdown_all` so the RAII guard can be disarmed; the 5 s mgmt idle
+  deadline; the ack grace; and the `open_for_writing` split that puts
+  the writer fence and the lease check ahead of history traversal.
+  **U1b (durable):** the `sot.capsule.run-end-requested-v1` registration
+  with bidirectional verifier enforcement (amending ADR 0039's own
+  displayed registry and lifecycle grammar in the same change, so the
+  older normative document does not stay at two entries), the
+  reader-first rollout with its installed-capability gate, the marker
+  frame and its latch, and the aggregate teardown deadline. Every
+  existing test stays; the new ones are the marker, teardown, idle-mgmt
+  and feature-boundary rows of the acceptance matrix.
 - **U2 — the authority.** `sot-capsule supervise` with its lane, the
   election fence, the classifier, spawn/adopt, the parent lease, start
   modes, both anti-flap counters, `record_verified`, the exit-code
@@ -1331,23 +1330,22 @@ and then binds anyway, minutes after its authority exited.
 
 Whether 60 s is generous or cruel depends on an `open_for_writing` cost
 the ADR may not assert without evidence. So the SUPPORTED ENVELOPE is
-named and gated. Claimed: **release build, ≤ 2 GiB retained across ≤ 64 segments,
-≤ 100 000 retained input facts, on the two-core Windows CI runner class,
-cold cache, with the default AV posture.** A release-mode test at
-exactly that boundary is a CI EVIDENCE GATE — and it is a COMPOSITION
-gate, not merely a number publisher, because four other budgets are
-DERIVED from these two: readiness sets fence acquisition, which sets the
-FE quit cutoff; readiness plus the stability interval sets the health
-window. The gate is green only if `B >= measured × 3` AND every formula
-above and every consumer of it is recomputed in the same change — the
-FE's cutoff, the classifier oracle, the health window, the anti-flap
-interval, all of them. If the measurement does not fit, the envelope shrinks or
-`open_for_writing` gets faster — its quadratic identity collection is a
-known cost inside the envelope and is fixed or measured, never assumed
-away — and beyond the envelope the answer is rotation, not a larger
-constant. Cold cache is ESTABLISHED, not hoped for: the test writes the
-boundary voyage, drops it from the OS cache (a fresh process on a volume
-whose working set has been evicted, asserted rather than assumed), and
+named and gated. Claimed: **release build, ≤ 2 GiB retained across
+≤ 64 segments, ≤ 100 000 retained input facts, on the two-core Windows
+CI runner class, cold cache, with the default AV posture.** A
+release-mode test at exactly that boundary is a CI EVIDENCE GATE — and a
+COMPOSITION gate, not merely a number publisher, because every other
+deadline above is a formula over B. The gate is green only if
+`B >= measured × 3` AND every formula above and every consumer of it is
+recomputed in the same change — the FE's cutoff, the classifier oracle,
+the health window, the anti-flap interval, all of them. If the
+measurement does not fit, the envelope shrinks or `open_for_writing`
+gets faster — its quadratic identity collection is a known cost inside
+the envelope and is fixed or measured, never assumed away — and beyond
+the envelope the answer is rotation, not a larger constant. Cold cache
+is ESTABLISHED, not hoped for: the test writes the boundary voyage,
+drops it from the OS cache (a fresh process on a volume whose working
+set has been evicted, asserted rather than assumed), and
 only then measures the open, so it cannot accidentally time
 just-generated hot files.
 
