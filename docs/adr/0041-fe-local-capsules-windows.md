@@ -840,11 +840,22 @@ here because "reusing `pipe_win`" carries mechanics, not a contract:
   stable hash of the canonicalized state-dir path — the same thing that
   scopes the pointer and the fence, so two installs on one machine
   cannot collide and one install cannot address the wrong state.
-- **Security, stated rather than inherited.** The same posture the
-  voyage pipe already proves: an explicit owner-account DACL,
-  `PIPE_REJECT_REMOTE_CLIENTS`, non-inheritable handles, and
-  `FILE_FLAG_FIRST_PIPE_INSTANCE` — a squatter therefore loses the bind
-  loudly instead of silently receiving `end_run` or `reset`.
+- **Security is MUTUAL, and this closes a step-5 gap as well.** The
+  server side is the posture the voyage pipe already proves: an explicit
+  owner-account DACL, `PIPE_REJECT_REMOTE_CLIENTS`, non-inheritable
+  handles, and `FILE_FLAG_FIRST_PIPE_INSTANCE`. But a DACL is
+  DIRECTIONAL — it says who may connect to the object the legitimate
+  server made; it cannot tell a client that the object it found was made
+  by that server, and first-instance creation only makes the honest bind
+  FAIL, it does not evict the process that won. A build identity is
+  compatibility data, not a credential. So every CLIENT of a Ship's Log
+  local pipe, on the SAME live connection and before trusting any reply,
+  reads the server pid with `GetNamedPipeServerProcessId`, opens it with
+  `PROCESS_QUERY_LIMITED_INFORMATION`, and requires that process's token
+  user SID to equal this account's — the SID `fsutil` already computes
+  for the descriptor. A mismatch is FOREIGN, never live authority. The
+  rule is shared, not lane-specific: the voyage pipe's own clients have
+  the same hole today, so it is pinned once here and applied to both.
 - **Lifetime, bracketed by the fence.** Bound only while holding
   `supervisor.lock`, AFTER the fence and BEFORE any adopt or spawn, and
   dropped BEFORE the fence releases. So the lane is present exactly when
@@ -853,43 +864,66 @@ here because "reusing `pipe_win`" carries mechanics, not a contract:
 - **Liveness, because a present name is not a living service.**
   `pipe_win` deliberately retains a dead instance and terminalizes
   acceptance while keeping the name alive, so absence is not the only
-  failure. Every client's first act is a `status` with a 5 s budget; a
-  lane that accepts but does not answer within it is treated exactly as
-  an absent lane. On the server side, a terminal accept failure EXITS
-  the supervisor (69) rather than leaving a misleading live name.
+  failure. Every client's first act, after the identity check above, is
+  a `status` with a 5 s budget; a lane that accepts but does not answer
+  within it is treated exactly as an absent lane. On the server side, a
+  terminal accept failure EXITS the supervisor (69) rather than leaving
+  a misleading live name.
 - **Build boundary.** The first frame of every connection carries the
   build identity; a mismatch is answered `refused {version_skew}` and
   closed. File replacement is not process replacement — the launcher is
   a long-lived process and an old FE can outlive an apply — so the
-  upgrade transaction must quiesce the old FE explicitly (below) AND the
-  lane must reject the pair it did not, rather than decoding an opcode
-  with the wrong shape.
+  upgrade transaction quiesces the old FE explicitly (below) AND the
+  lane rejects the pair it did not. Identity is the belt; the build
+  check is the version-skew braces.
 
-**The lane's operations are one command family and one query family**,
-because the earlier three-op list could not express the semantics that
-depend on it — there was no `stop` despite two flows requiring an
-acknowledged supervisor stop, and no way to answer `end_run` at
-`record_closed` while still reporting a later verification failure.
+**The lane's operations are one command family and one query family.**
 
 - `command {op, operation_id}` where `op` ∈ { `end_run {reason}`,
-  `reset`, `stop`, `status` }. `operation_id` is a client-minted UUID
-  and makes every command AT MOST ONCE: the authority keeps a bounded
-  ledger of completed ids, so a retried `reset` whose reply was lost
-  returns the original outcome instead of renaming a pointer twice.
-- `query {operation_id}` returns that operation's current state:
-  `accepted` | `in_progress` | `record_closed` | `record_verified` |
-  `failed {detail}` | `refused {reason}`. This is what resolves the
-  `end_run` timing question: the COMMAND reply arrives at
-  `record_closed`, and `record_verified` is reported through `query` —
-  so the FE never blocks on an O(history) walk, and a verification
-  failure still has a place to be reported rather than vanishing.
+  `reset`, `stop`, `status` }. Every op's success is a typed terminal
+  result, not silence: `end_run` → `record_closed` then
+  `record_verified`; `reset` → `reset_done {new_voyage}`; `stop` →
+  `stopping` and then process exit, which the caller confirms by the
+  handle and fence rather than by a further frame; `status` →
+  `status_ok {leg, ready, build, since}`, which is what the health table
+  reads.
+- `status` is STATELESS AND UNLEDGERED. It mutates nothing, so
+  at-most-once buys it nothing, and polling traffic must never evict a
+  destructive result from the journal below.
+- **`operation_id` is durable for MUTATING ops only.** Before the first
+  irreversible act of an `end_run`, `reset` or `stop`, the authority
+  writes a journal record under the protected state dir — the id, a
+  canonical digest of the command, its state, and for `reset` the new
+  voyage identity it intends to publish — and recovers it on restart, so
+  at-most-once survives an authority crash rather than only an authority
+  lifetime. Retention is by the durable journal, not a size-bounded
+  cache. An id resubmitted with a DIFFERENT command digest is
+  `refused {id_conflict}`; an id already ACTIVE returns its current
+  state rather than starting a second execution.
+- `query {operation_id}` returns `accepted` | `in_progress` |
+  `record_closed` | `record_verified` | `reset_done` | `stopping` |
+  `failed {detail}` | `refused {reason}` | `unknown_operation`.
+  `unknown_operation` means this authority has never seen the id and it
+  is therefore SAFE TO RESUBMIT; every other state means the operation
+  exists and must not be reissued under a new id. This is also what
+  resolves the `end_run` timing question: the COMMAND reply arrives at
+  `record_closed`, and `record_verified` follows through `query` — so
+  the FE never blocks on an O(history) walk, and a verification failure
+  still has a place to be reported rather than vanishing.
 - Every op has one budget: connect 2 s, request write 2 s, reply read
   5 s, and the client may re-`query` on any timeout. A client timeout
   ABANDONS THE CONNECTION, NEVER THE OPERATION — accepted intent is the
   authority's, not the caller's.
-- **Accepted `end_run` and `stop` intent PREEMPTS respawn and outlives
-  the client.** Once accepted, no new leg is spawned whatever happens to
-  the requester. This is what makes a lost reply harmless.
+- **ACCEPTANCE IS THE MARKER COMMIT, and that is the only respawn
+  barrier.** Before it, an `end_run` is `in_progress` and its
+  no-respawn hold is PROVISIONAL: if the marker append fails, the
+  operation terminalizes `failed {record_append}`, the hold is released,
+  and the crashed leg is repaired and replaced — which is correct,
+  because no durable evidence of a requested end exists and a later
+  `--resume` would reach the same conclusion. At or after the commit the
+  end is irrevocably accepted, the journal records it, and no new leg is
+  legal whatever happens to the requester. One fact, one barrier: the
+  marker IS the acceptance, so the two rules can no longer disagree.
 
 **One authority means one linearized state machine, not one blocking
 thread.** The authority admits, latches and answers on a lane-service
@@ -1000,14 +1034,12 @@ prerequisite:
 3. If the append FAILS there is NO REFUSAL FRAME, because the pinned v0
    lane has none to send: every reply tag means success, and inventing
    one would break the compatibility promise that lane exists to keep.
-   An append failure is instead what it actually is — the store this
-   capsule exists to write has stopped accepting records — so the
-   capsule takes ADR 0039's crash shape: no ack, no marker, the
-   connection closes, the run ends unsealed and loudly. The client sees
-   EOF and reports "outcome unknown"; the authority sees a leg that
-   ended without a marker and replaces it, which is the correct
-   recovery. (An earlier revision promised a "typed refusal" here; it was
-   not encodable and is deleted rather than paid for with a wire change.)
+   An append failure is what it actually is — the store this capsule
+   exists to write has stopped accepting records — so the capsule takes
+   ADR 0039's crash shape: no ack, no marker, unsealed process exit. The
+   mgmt client sees EOF; the lane operation terminalizes
+   `failed {record_append}` per the acceptance barrier above, releasing
+   its provisional hold, and the authority repairs and replaces the leg.
 4. Concurrent requests: the first commit wins and writes the only
    marker; every later `shutdown` is acked without a second marker. A
    request accepted in the final service poll has its ack queued and the
