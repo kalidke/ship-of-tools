@@ -1472,3 +1472,96 @@ fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
         assert!(transport.shutdown_all_was_called(), "shutdown_all must be called on a requested kill too");
     }
 }
+
+/// Test 13 (U1a, ADR 0041 EndRun state machine item 4 / "ack grace"): a
+/// mgmt `shutdown` accepted during teardown (mirroring "a request accepted
+/// in the final service poll") must have its `ShutdownAck` physically
+/// written before this capsule's own transport disappears — proven by
+/// holding that ack's completion and observing `run` genuinely blocks
+/// rather than tearing the pipe down out from under it, then releasing it
+/// and observing `run` completes promptly.
+#[test]
+fn shutdown_ack_grace_defers_transport_shutdown_until_the_late_ack_completes() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec!["cmd.exe".to_string()]; // stays open until killed
+    let cfg = config(dir.path(), "ackgrace1", argv, 80, 25);
+    let transport = TestTransport::new();
+    let (tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule_win::run(cfg, rx, &mut t)
+    });
+
+    // A SEPARATE cause drives the primary into teardown (an operator kill,
+    // mirroring a natural producer exit just as well) -- the late mgmt
+    // connection below is a RACING request, not what ends the run.
+    const LATE_MGMT: ConnId = 1;
+    transport.open(LATE_MGMT);
+    transport.set_hold_for(LATE_MGMT, true); // never completes on its own
+    transport.feed(LATE_MGMT, frame::mgmt_shutdown("late-in-teardown"));
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+    tx.send(Command::Kill).unwrap();
+
+    // The ack's bytes are already QUEUED (proven above via `wait_for`, which
+    // watches queued bytes, not completions) but its physical-write
+    // completion is HELD -- `run` must not let its transport disappear
+    // while that is true.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!handle.is_finished(), "the ack grace must hold the transport open until the late ack completes");
+    assert!(!transport.shutdown_all_was_called(), "shutdown_all must not run before the grace resolves");
+
+    transport.release_held();
+    let summary = wait_for_join(handle, Duration::from_secs(10))
+        .expect("run did not return after the late ack was released")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+    assert!(transport.shutdown_all_was_called());
+
+    let frames = sealed_frames(&dir.path().join("ackgrace1"), "ackgrace1");
+    let dead = assert_producer_dead_is_last(&frames);
+    assert_eq!(dead["reason"], "late-in-teardown");
+}
+
+/// Test 14 (U1a): the grace is a DEADLINE, not an indefinite wait — if the
+/// late ack's completion never arrives, `run` still completes once
+/// `SHUTDOWN_ACK_GRACE` (2s) elapses, and `shutdown_all` still runs
+/// afterward.
+#[test]
+fn shutdown_ack_grace_expires_and_teardown_still_completes() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec!["cmd.exe".to_string()];
+    let cfg = config(dir.path(), "ackgrace2", argv, 80, 25);
+    let transport = TestTransport::new();
+    let (_tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule_win::run(cfg, rx, &mut t)
+    });
+
+    const LATE_MGMT: ConnId = 1;
+    transport.open(LATE_MGMT);
+    transport.set_hold_for(LATE_MGMT, true); // NEVER released -- proves the deadline, not the release
+    transport.feed(LATE_MGMT, frame::mgmt_shutdown("never-acked"));
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+    // This connection's own accepted `shutdown` is itself what ends the
+    // run (an ordinary EndRun) -- no separate `Command::Kill` needed.
+
+    let started = Instant::now();
+    let summary = wait_for_join(handle, Duration::from_secs(15))
+        .expect("run did not return even after the ack grace should have expired")
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(elapsed >= Duration::from_secs(2), "must honor the full grace before giving up: {elapsed:?}");
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+    assert!(transport.shutdown_all_was_called());
+}
