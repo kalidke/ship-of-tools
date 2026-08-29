@@ -3920,6 +3920,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sot-log",
  "tempfile",
  "thiserror 2.0.18",
  "uuid",

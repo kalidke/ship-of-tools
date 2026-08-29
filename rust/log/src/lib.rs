@@ -45,7 +45,16 @@ pub mod probe;
 // there specifically, rather than losing it crate-wide or windows-only.
 #[cfg_attr(not(windows), allow(dead_code))]
 mod host_handshake;
+// ADR 0041 step 6, unit U0 round-1: the three-state deadline race
+// challenge::challenge's exchange phase uses. Portable -- no OS
+// dependency at all -- so its own tests run everywhere, not merely on
+// Windows.
+pub mod deadline;
 pub mod envelope;
+// ADR 0041 step 6, unit U0 round-1: a pipe lane's post-SID identity
+// exchange (encode request, decode reply) -- the one thing
+// challenge::challenge delegates per-lane. Portable, like `deadline`.
+pub mod exchange;
 // ADR 0041 step 6, unit U0: `drawer.voyage` publication + validation.
 // Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
 // which already has both platform arms.

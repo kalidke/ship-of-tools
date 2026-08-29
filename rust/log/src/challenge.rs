@@ -16,13 +16,31 @@
 //! Nothing here is wired into `pipe_win::connect_voyage_pipe` either —
 //! that's active behavior for today's clients (U1a), not a library with
 //! no behavior change (U0).
+//!
+//! # Round-1 review: the exchange is now a lane seam, not a lane
+//!
+//! Steps 1-3 (identify the peer process, authenticate its token-user SID)
+//! are the SAME procedure for every pipe lane and stay centralized in
+//! [`challenge()`]. Only steps 4-5 (what bytes to send, what bytes count
+//! as "the identity") vary per lane — the voyage mgmt lane's `status`
+//! request today, the supervisor lane's own `status_ok {voyage, leg?,
+//! phase}` protocol later — so [`crate::exchange::IdentityExchange`] is
+//! the one thing a lane provides, and this function is the one thing
+//! every lane shares: a lane cannot skip or reorder the OS steps, because
+//! `challenge()` is the only caller of `IdentityExchange::feed`, and it
+//! calls it only AFTER the SID has already matched. The deadline race
+//! itself ([`crate::deadline::run_with_deadline`]) and the exchange
+//! trait/codec ([`crate::exchange`]) are both portable — genuinely
+//! tested on every CI platform, not merely compile-checked on Windows —
+//! leaving only the actual Win32 authentication calls in this,
+//! necessarily Windows-only, module.
 
 #![cfg(windows)]
 
+use crate::deadline::run_with_deadline;
+use crate::exchange::{ExchangeDecode, IdentityExchange};
 use crate::fsutil;
-use crate::wire::{self, DecodedFrame, MgmtReply, MgmtRequest};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{FILETIME, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
@@ -58,26 +76,31 @@ pub trait ChallengeableConnection: Sync {
     fn cancel(&self);
 }
 
-/// What the challenge concluded.
+/// What the challenge concluded. Generic over the retained-process type
+/// so `probe::ProbeOps` (an associated-type seam) can drive this same
+/// three-way split with a cheap dummy type in tests, while the real
+/// [`challenge()`] free function always instantiates
+/// `ChallengeOutcome<ChallengedProcess>`.
 #[derive(Debug)]
-pub enum ChallengeOutcome {
+pub enum ChallengeOutcome<P> {
     /// SID matched, and the reply's pid/creation matched what
     /// `GetNamedPipeServerProcessId` + `GetProcessTimes` independently
     /// observed. Carries the retained process handle — the ADR's death
     /// signal and pre-terminate re-verification both need a LIVE handle,
     /// not a remembered pid a later `OpenProcess` could resolve to a
     /// recycled process.
-    Proven(ChallengedProcess),
-    /// A well-formed WRONG answer: a SID mismatch, a wrong-but-decodable
-    /// frame, a well-formed `status_ok` whose pid/creation does not match,
-    /// or undecodable bytes / a frame over the wire cap. An unproven
-    /// server — never retried as if it might still be legitimate.
+    Proven(P),
+    /// A well-formed WRONG answer: a SID mismatch, a wrong pid/creation,
+    /// or anything `IdentityExchange::feed` classified `Foreign`. An
+    /// unproven server — never retried as if it might still be
+    /// legitimate.
     Foreign,
     /// Any OS-call failure (`GetNamedPipeServerProcessId`, `OpenProcess`,
     /// `OpenProcessToken`, `GetTokenInformation`, `GetProcessTimes`), EOF,
-    /// or a timeout — anywhere in the five steps. Never classified as
-    /// proven or foreign (ADR 0041: "a failure ... is PENDING, never
-    /// READY and never ADOPTED").
+    /// a timeout, or a watchdog that could not even be established —
+    /// anywhere in the five steps. Never classified as proven or foreign
+    /// (ADR 0041: "a failure ... is PENDING, never READY and never
+    /// ADOPTED").
     Undetermined,
 }
 
@@ -133,31 +156,45 @@ impl ChallengedProcess {
         Ok(creation_filetime_bits(self.raw())? == self.created)
     }
 
-    /// `WaitForSingleObject`, bounded — the death signal a supervisor
-    /// waits on rather than sampling process absence (ADR 0041: "any
-    /// operation needing that proof holds or re-acquires a process
-    /// handle and waits on it"). `Ok(true)`: the process signaled
-    /// (exited) within `timeout`. `Ok(false)`: the timeout elapsed; still
-    /// running.
+    /// The death signal a supervisor waits on rather than sampling
+    /// process absence (ADR 0041: "any operation needing that proof
+    /// holds or re-acquires a process handle and waits on it"). See
+    /// [`wait_handle`]'s own doc for the bound.
     pub fn wait(&self, timeout: Duration) -> std::io::Result<bool> {
-        let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
-        match unsafe { WaitForSingleObject(self.raw(), ms) } {
-            WAIT_OBJECT_0 => Ok(true),
-            WAIT_TIMEOUT => Ok(false),
-            WAIT_FAILED => Err(std::io::Error::last_os_error()),
-            other => Err(std::io::Error::other(format!("unexpected wait result {other:#x}"))),
-        }
+        wait_handle(self.raw(), timeout)
     }
 
-    /// `TerminateProcess` — the KILL half of the probe's own KILL+WAIT
-    /// row, and the invalid-mgmt fallback's hard stop. Raw call only;
-    /// sequencing (terminate, then `wait`) is the caller's.
+    /// The KILL half of the probe's own KILL+WAIT row, and the
+    /// invalid-mgmt fallback's hard stop. Raw call only; sequencing
+    /// (terminate, then `wait`) is the caller's.
     pub fn terminate(&self) -> std::io::Result<()> {
-        if unsafe { TerminateProcess(self.raw(), 1) } == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(())
+        terminate_handle(self.raw())
     }
+}
+
+/// `WaitForSingleObject`, bounded (never Win32 `INFINITE` —
+/// `fsutil::duration_to_wait_ms`'s guard). Shared by every retained
+/// Windows process handle in this crate: [`ChallengedProcess::wait`]
+/// above, and `probe::SpawnedChild::wait` — the pre-proof owned child,
+/// which needs the identical bounded wait but is deliberately a DIFFERENT
+/// type (nothing has proven ITS identity yet).
+pub(crate) fn wait_handle(handle: HANDLE, timeout: Duration) -> std::io::Result<bool> {
+    let ms = fsutil::duration_to_wait_ms(timeout);
+    match unsafe { WaitForSingleObject(handle, ms) } {
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Ok(false),
+        WAIT_FAILED => Err(std::io::Error::last_os_error()),
+        other => Err(std::io::Error::other(format!("unexpected wait result {other:#x}"))),
+    }
+}
+
+/// `TerminateProcess`. Shared by [`ChallengedProcess::terminate`] and
+/// `probe::SpawnedChild::terminate`.
+pub(crate) fn terminate_handle(handle: HANDLE) -> std::io::Result<()> {
+    if unsafe { TerminateProcess(handle, 1) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// `GetProcessTimes` on an already-open handle, packed to the exact bits
@@ -181,18 +218,25 @@ fn creation_filetime_bits(handle: HANDLE) -> std::io::Result<u64> {
 /// (1) read the server pid `P` via `GetNamedPipeServerProcessId`; (2)
 /// `OpenProcess(P, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION |
 /// PROCESS_SYNCHRONIZE)`; (3) compare that process's token-user SID
-/// against this account's; (4) only then `status` on the SAME connection;
-/// (5) proven iff the SID matched AND reply-pid == `P` AND reply creation
-/// time == `GetProcessTimes(handle)` on the exact FILETIME bits. Nothing
-/// in the reply is decoded for meaning or acted on before step 3
+/// against this account's; (4) only then `exchange`'s request on the SAME
+/// connection; (5) proven iff the SID matched AND reply-pid == `P` AND
+/// reply creation time == `GetProcessTimes(handle)` on the exact FILETIME
+/// bits — pid compared FIRST, creation time queried only if it matches
+/// (ADR 0041 U0 round-1 finding 6: an already-proven wrong pid must never
+/// become `Undetermined` merely because `GetProcessTimes` also failed).
+/// Nothing in the reply is decoded for meaning or acted on before step 3
 /// succeeds.
 ///
-/// `reply_deadline` bounds ONLY steps 4-5 (sending `status` and reading
-/// its reply) — steps 1-3 are local, synchronous OS calls with no wait to
-/// bound. Picking the deadline VALUE (the ADR's "2s, clamped to the
-/// episode's remaining wall time") is the probe classifier's job, a
-/// later unit; this function only enforces whatever it is given.
-pub fn challenge(conn: &dyn ChallengeableConnection, reply_deadline: Instant) -> ChallengeOutcome {
+/// `reply_deadline` bounds ONLY steps 4-5 — steps 1-3 are local,
+/// synchronous OS calls with no wait to bound. Picking the deadline VALUE
+/// (the ADR's "2s, clamped to the episode's remaining wall time") is the
+/// probe classifier's job, a later unit; this function only enforces
+/// whatever it is given.
+pub fn challenge(
+    conn: &dyn ChallengeableConnection,
+    exchange: &mut dyn IdentityExchange,
+    reply_deadline: Instant,
+) -> ChallengeOutcome<ChallengedProcess> {
     // Step 1.
     let mut server_pid: u32 = 0;
     if unsafe { GetNamedPipeServerProcessId(conn.raw_handle(), &mut server_pid) } == 0 {
@@ -223,17 +267,50 @@ pub fn challenge(conn: &dyn ChallengeableConnection, reply_deadline: Instant) ->
         return ChallengeOutcome::Foreign;
     }
 
-    // Steps 4-5.
-    let (reply_pid, reply_created) = match status_reply(conn, reply_deadline) {
-        Ok(v) => v,
-        Err(StatusFailure::Foreign) => return ChallengeOutcome::Foreign,
-        Err(StatusFailure::Undetermined) => return ChallengeOutcome::Undetermined,
+    // Steps 4-5: the lane's own request/reply, bounded by the shared
+    // three-state watchdog (finding 4).
+    let request = exchange.encode_request();
+    let exchange_result = run_with_deadline(
+        reply_deadline,
+        || conn.cancel(),
+        move || -> Result<(u32, u64), StatusFailure> {
+            conn.write_all(&request).map_err(|_| StatusFailure::Undetermined)?;
+            let mut buf = [0u8; 512];
+            loop {
+                let n = conn.read(&mut buf).map_err(|_| StatusFailure::Undetermined)?;
+                if n == 0 {
+                    return Err(StatusFailure::Undetermined); // ordered EOF mid-challenge
+                }
+                match exchange.feed(&buf[..n]) {
+                    ExchangeDecode::Incomplete => continue,
+                    ExchangeDecode::Identity { pid, created } => return Ok((pid, created)),
+                    ExchangeDecode::Foreign => return Err(StatusFailure::Foreign),
+                }
+            }
+        },
+    );
+
+    let (reply_pid, reply_created) = match exchange_result {
+        // The watchdog won the race (timed out, completed too late, or a
+        // deadline could not even be established) — never proven, never
+        // foreign.
+        None => return ChallengeOutcome::Undetermined,
+        Some(Ok(v)) => v,
+        Some(Err(StatusFailure::Foreign)) => return ChallengeOutcome::Foreign,
+        Some(Err(StatusFailure::Undetermined)) => return ChallengeOutcome::Undetermined,
     };
+
+    // Finding 6: compare the pid BEFORE querying creation time, so a
+    // provably wrong pid is ALWAYS Foreign, never Undetermined because
+    // GetProcessTimes happened to also fail.
+    if reply_pid != server_pid {
+        return ChallengeOutcome::Foreign;
+    }
     let created_now = match creation_filetime_bits(handle.as_raw_handle() as HANDLE) {
         Ok(c) => c,
         Err(_) => return ChallengeOutcome::Undetermined,
     };
-    if reply_pid != server_pid || reply_created != created_now {
+    if reply_created != created_now {
         return ChallengeOutcome::Foreign;
     }
 
@@ -247,205 +324,4 @@ pub fn challenge(conn: &dyn ChallengeableConnection, reply_deadline: Instant) ->
 enum StatusFailure {
     Foreign,
     Undetermined,
-}
-
-/// Send `status` and read its reply, bounded by `deadline` via a polling
-/// watchdog that cancels the connection if the exchange is still
-/// outstanding past it — connections implementing
-/// [`ChallengeableConnection`] have no per-call timeout parameter of
-/// their own, only a cross-thread `cancel`.
-fn status_reply(
-    conn: &dyn ChallengeableConnection,
-    deadline: Instant,
-) -> Result<(u32, u64), StatusFailure> {
-    let done = AtomicBool::new(false);
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            while !done.load(Ordering::Acquire) {
-                if Instant::now() >= deadline {
-                    conn.cancel();
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        });
-
-        let result = (|| {
-            let request = wire::encode_mgmt_request(&MgmtRequest::Status)
-                .map_err(|_| StatusFailure::Undetermined)?;
-            conn.write_all(&request).map_err(|_| StatusFailure::Undetermined)?;
-
-            let mut splitter = wire::FrameSplitter::new();
-            let mut buf = [0u8; 512];
-            loop {
-                let n = conn.read(&mut buf).map_err(|_| StatusFailure::Undetermined)?;
-                if n == 0 {
-                    return Err(StatusFailure::Undetermined); // ordered EOF mid-challenge
-                }
-                let (frames, err) = splitter.feed(&buf[..n]);
-                if let Some(frame) = frames.into_iter().next() {
-                    return match frame {
-                        DecodedFrame::MgmtReply(MgmtReply::StatusOk { pid, created, .. }) => {
-                            Ok((pid, created))
-                        }
-                        _ => Err(StatusFailure::Foreign), // well-formed, wrong opcode
-                    };
-                }
-                if err.is_some() {
-                    return Err(StatusFailure::Foreign); // undecodable / over the wire cap
-                }
-                // else: a partial frame — keep reading.
-            }
-        })();
-
-        done.store(true, Ordering::Release);
-        result
-    })
-}
-
-// `pub(crate)`, not private: `probe.rs`'s own tests reuse
-// `self_proven_process` below (via `crate::challenge::tests::...`) as
-// their "give me a real `ChallengedProcess`" helper, rather than
-// duplicating the bind-connect-reply dance a second time.
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use crate::pipe_win::{connect_voyage_pipe, PipeServer, TransportEvent};
-    use crate::wire::Survival;
-
-    fn fresh_voyage_id() -> String {
-        uuid::Uuid::now_v7().to_string()
-    }
-
-    fn expect_accepted(server: &PipeServer, timeout: Duration) -> crate::pipe_win::ConnId {
-        match server.events().recv_timeout(timeout) {
-            Ok(TransportEvent::Accepted(id)) => id,
-            other => panic!("expected Accepted within {timeout:?}, got {other:?}"),
-        }
-    }
-
-    /// The `status` request has no body, so its ENCODED length alone is
-    /// what we wait for; the pipe is byte-type, so a single write is not
-    /// guaranteed to surface as a single `Bytes` event.
-    fn await_status_request(server: &PipeServer, conn_id: crate::pipe_win::ConnId) {
-        let expected = wire::encode_mgmt_request(&MgmtRequest::Status).unwrap();
-        let mut got = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while got.len() < expected.len() {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            assert!(!remaining.is_zero(), "timed out waiting for the status request");
-            match server.events().recv_timeout(remaining) {
-                Ok(TransportEvent::Bytes(cid, bytes)) if cid == conn_id => got.extend(bytes),
-                Ok(other) => panic!("unexpected event waiting for status: {other:?}"),
-                Err(_) => panic!("timed out waiting for the status request"),
-            }
-        }
-        assert_eq!(got, expected);
-    }
-
-    fn self_pid_and_created() -> (u32, u64) {
-        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId};
-        let pid = unsafe { GetCurrentProcessId() };
-        let created = creation_filetime_bits(unsafe { GetCurrentProcess() }).unwrap();
-        (pid, created)
-    }
-
-    /// Real challenge, real pipe, SAME process on both ends — a genuine
-    /// same-user server, proven. Also this test's own shared "give me a
-    /// real `ChallengedProcess`" helper (`probe.rs`'s scripted-ops smoke
-    /// test reuses it): it holds a handle to THIS TEST PROCESS, so
-    /// callers must never call `.terminate()` on the result.
-    pub(crate) fn self_proven_process() -> ChallengedProcess {
-        let voyage_id = fresh_voyage_id();
-        let server = PipeServer::bind(&voyage_id, 1).expect("bind");
-        let client = connect_voyage_pipe(&voyage_id).expect("connect");
-
-        std::thread::scope(|scope| {
-            let challenge_handle =
-                scope.spawn(|| challenge(&client, Instant::now() + Duration::from_secs(5)));
-
-            let conn_id = expect_accepted(&server, Duration::from_secs(5));
-            await_status_request(&server, conn_id);
-            let (pid, created) = self_pid_and_created();
-            let reply = wire::encode_mgmt_reply(&MgmtReply::StatusOk {
-                pid,
-                created,
-                survival: Survival::Normal,
-            })
-            .unwrap();
-            server.send(conn_id, reply, None).expect("send status_ok");
-
-            match challenge_handle.join().expect("challenge thread panicked") {
-                ChallengeOutcome::Proven(p) => p,
-                other => panic!("expected Proven, got {other:?}"),
-            }
-        })
-    }
-
-    #[test]
-    fn challenge_proves_a_genuine_same_user_server() {
-        let p = self_proven_process();
-        let (pid, created) = self_pid_and_created();
-        assert_eq!(p.pid(), pid);
-        assert_eq!(p.created(), created);
-    }
-
-    #[test]
-    fn challenged_process_reverify_and_wait_reflect_a_live_self_proof() {
-        let p = self_proven_process();
-        assert!(p.reverify().unwrap());
-        // Still running: this handle names our OWN test process.
-        assert!(!p.wait(Duration::from_millis(50)).unwrap());
-    }
-
-    #[test]
-    fn challenge_rejects_a_pid_creation_mismatch_as_foreign() {
-        let voyage_id = fresh_voyage_id();
-        let server = PipeServer::bind(&voyage_id, 1).expect("bind");
-        let client = connect_voyage_pipe(&voyage_id).expect("connect");
-
-        let outcome = std::thread::scope(|scope| {
-            let challenge_handle =
-                scope.spawn(|| challenge(&client, Instant::now() + Duration::from_secs(5)));
-
-            let conn_id = expect_accepted(&server, Duration::from_secs(5));
-            await_status_request(&server, conn_id);
-            // A well-formed status_ok, but a FABRICATED pid/creation that
-            // does not match the real server process (this test binary
-            // itself) — the SID check upstream cannot catch this: same
-            // account, wrong reply.
-            let reply = wire::encode_mgmt_reply(&MgmtReply::StatusOk {
-                pid: 1,
-                created: 0,
-                survival: Survival::Normal,
-            })
-            .unwrap();
-            server.send(conn_id, reply, None).expect("send status_ok");
-
-            challenge_handle.join().expect("challenge thread panicked")
-        });
-
-        assert!(matches!(outcome, ChallengeOutcome::Foreign), "{outcome:?}");
-    }
-
-    #[test]
-    fn challenge_classifies_connection_death_mid_challenge_as_undetermined() {
-        let voyage_id = fresh_voyage_id();
-        let server = PipeServer::bind(&voyage_id, 1).expect("bind");
-        let client = connect_voyage_pipe(&voyage_id).expect("connect");
-
-        let outcome = std::thread::scope(|scope| {
-            let challenge_handle =
-                scope.spawn(|| challenge(&client, Instant::now() + Duration::from_secs(5)));
-
-            let conn_id = expect_accepted(&server, Duration::from_secs(5));
-            await_status_request(&server, conn_id);
-            // The server closes without ever answering `status`.
-            server.close(conn_id);
-
-            challenge_handle.join().expect("challenge thread panicked")
-        });
-
-        assert!(matches!(outcome, ChallengeOutcome::Undetermined), "{outcome:?}");
-    }
 }
