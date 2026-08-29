@@ -376,22 +376,61 @@ impl VoyageStore {
 
     /// Open for writing: take the kernel lock, reconcile every segment
     /// identity found, allocate this writer's epoch (max durable + 1), and
-    /// compute the chain tip.
+    /// compute the chain tip. No lease to check (see
+    /// [`Self::open_for_writing_with_lease`] for the U2 supervisor's own
+    /// entry point) — every in-tree caller today.
     pub fn open_for_writing(root: &Path, voyage_id: &str) -> Result<Self> {
-        // Canonicalize FIRST — before preflight, before anchoring, before
-        // the lock — and use the resolved path for everything after,
+        Self::open_for_writing_with_lease(root, voyage_id, None)
+    }
+
+    /// As [`Self::open_for_writing`], with the ADR 0041 Lifecycle
+    /// "Discovery, and the two windows" parent-death lease check folded in:
+    /// `lease_broken`, if supplied, is called EXACTLY ONCE, immediately
+    /// after the writer fence is acquired and before any other pre-fence
+    /// durability I/O or history traversal — "the child's first act after
+    /// acquiring the fence is to check the parent-death lease it was
+    /// spawned with... if the lease is broken it releases the fence and
+    /// exits without binding." `None` (every in-tree caller today) skips
+    /// the check entirely; U2's supervisor is the first real caller of
+    /// `Some(_)`, passing an OS-checked, synchronizable handle to its own
+    /// supervisor. `Err(Error::LeaseBroken)` means exactly that: the fence
+    /// is already released by the time this returns, and the caller must
+    /// exit without binding — never retry, never repair.
+    ///
+    /// **Order, and why it changed (U1a):** canonicalize → LOCK (the
+    /// fence) → the lease check → volume preflight → the two directory
+    /// flushes → history traversal (enumerate/reconcile every segment
+    /// identity, fold the dedupe index). Before U1a, preflight and both
+    /// flushes ran BEFORE the fence — real durability I/O with no bound,
+    /// inflating the spawned child's INVISIBLE window (`CreateProcess` →
+    /// fence acquisition) past "process start plus an open and a
+    /// `try_lock`" for no protective reason, since none of that I/O
+    /// needs to precede the fence for correctness. Canonicalize itself
+    /// still precedes the lock — that ordering is a SEPARATE invariant
+    /// (the symlink-retarget escape below) unrelated to the window this
+    /// unit closes, and moving it would reopen that escape instead.
+    pub fn open_for_writing_with_lease(
+        root: &Path,
+        voyage_id: &str,
+        lease_broken: Option<&dyn Fn() -> bool>,
+    ) -> Result<Self> {
+        // Canonicalize FIRST — before the lock, before preflight, before
+        // anchoring — and use the resolved path for everything after,
         // including what `self.root` stores. The order is load-bearing:
-        // preflighting or fsyncing the UNRESOLVED path and canonicalizing
-        // only afterward leaves exactly the window a demonstrated escape
-        // used — bootstrap A and B, point a symlink `alias` at A, open via
-        // `alias` (the lock and the reconciliation below land on A), then
-        // retarget `alias` -> B: a writer that kept re-resolving the
-        // unresolved `alias` STRING at each later syscall would still hold
-        // A's lock but write `open_segment`'s next segment into B, because
-        // the OS re-follows the symlink fresh on every call. Canonicalizing
-        // once, here, and storing the result closes it — `self.root` is
-        // never a symlink afterward, so a later retarget has nothing left
-        // in this store to redirect.
+        // locking or fsyncing the UNRESOLVED path and canonicalizing only
+        // afterward leaves exactly the window a demonstrated escape used —
+        // bootstrap A and B, point a symlink `alias` at A, open via `alias`
+        // (the lock and the reconciliation below land on A), then retarget
+        // `alias` -> B: a writer that kept re-resolving the unresolved
+        // `alias` STRING at each later syscall would still hold A's lock
+        // but write `open_segment`'s next segment into B, because the OS
+        // re-follows the symlink fresh on every call. Canonicalizing once,
+        // here, and storing the result closes it — `self.root` is never a
+        // symlink afterward, so a later retarget has nothing left in this
+        // store to redirect. This is independent of, and precedes, U1a's
+        // own reordering below: the escape this closes is about what a
+        // symlink resolves to on EACH call, not about I/O volume ahead of
+        // the fence.
         //
         // No in-tree caller passes a nonexistent root (every call follows
         // `bootstrap`, or the caller's own exists-check already ran), so
@@ -406,9 +445,26 @@ impl VoyageStore {
         // closes.)
         let root = std::fs::canonicalize(root)?;
         let root = root.as_path();
+
+        // U1a: the fence, moved ahead of preflight/fsync/history — see this
+        // method's own doc for why. `lock_writer` itself does no directory
+        // enumeration or unbounded I/O: open-existing plus one bounded
+        // `try_lock` retry (ADR 0041 store port), exactly the primitive the
+        // spawned child's INVISIBLE window is defined in terms of.
+        let lock = fsutil::lock_writer(&root.join("writer.lock"))?;
+
+        // The lease check: the fence's FIRST act, before any other durable
+        // I/O or history traversal. `lock` (and the fence it holds) drops
+        // here on the early return, releasing it before this function ever
+        // touches the segment directory.
+        if lease_broken.is_some_and(|f| f()) {
+            return Err(Error::LeaseBroken);
+        }
+
         // Re-run the volume preflight on the resolved voyage dir (ADR 0041):
         // a store bootstrapped elsewhere and moved to an unsuitable volume
-        // must refuse before the fence is even touched.
+        // must refuse — now checked with the fence already held, since nothing
+        // about the refusal itself needs to precede it.
         fsutil::preflight_volume(root)?;
         // Restate the root's anchoring: bootstrap's publish rename may have
         // become visible while its container flush was lost to a crash — the
@@ -422,7 +478,6 @@ impl VoyageStore {
         if let Some(parent) = root.parent() {
             fsutil::fsync_dir(parent)?;
         }
-        let lock = fsutil::lock_writer(&root.join("writer.lock"))?;
         let seg_dir = root.join("seg");
 
         // Enumerate identities across ALL states.
@@ -1114,6 +1169,89 @@ mod tests {
         let _first = VoyageStore::open_for_writing(&root, "voy2").unwrap();
         let second = VoyageStore::open_for_writing(&root, "voy2");
         assert!(matches!(second, Err(Error::State(_))));
+    }
+
+    /// U1a (ADR 0041 Lifecycle "Discovery, and the two windows"): a broken
+    /// parent-death lease refuses with the dedicated typed error, and — the
+    /// ADR's own "releases the fence and exits without binding" — the fence
+    /// is provably free again immediately afterward: a fresh open right
+    /// after the broken-lease attempt must succeed, not see a lock the
+    /// failed attempt left held.
+    #[test]
+    fn lease_broken_releases_the_fence_and_exits_without_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voylease");
+        VoyageStore::bootstrap(&root, "voylease", RetentionClass::Discard).unwrap();
+
+        let broken: &dyn Fn() -> bool = &|| true;
+        let result = VoyageStore::open_for_writing_with_lease(&root, "voylease", Some(broken));
+        assert!(matches!(result, Err(Error::LeaseBroken)), "{:?}", result.err());
+
+        let reopened = VoyageStore::open_for_writing(&root, "voylease");
+        assert!(
+            reopened.is_ok(),
+            "the fence must be released on a broken lease, not left held: {:?}",
+            reopened.err()
+        );
+    }
+
+    /// A lease supplied but reporting itself intact is a pure no-op —
+    /// `open_for_writing_with_lease(..., Some(&|| false))` must behave
+    /// identically to `open_for_writing`'s own no-lease default.
+    #[test]
+    fn lease_intact_does_not_affect_an_ordinary_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voyleaseok");
+        VoyageStore::bootstrap(&root, "voyleaseok", RetentionClass::Discard).unwrap();
+
+        let intact: &dyn Fn() -> bool = &|| false;
+        let store = VoyageStore::open_for_writing_with_lease(&root, "voyleaseok", Some(intact));
+        assert!(store.is_ok(), "{:?}", store.err());
+    }
+
+    /// U1a: the fence and lease check run BEFORE history traversal, not
+    /// after — proven by a voyage whose sealed history is genuinely
+    /// corrupt (the same "bad forward-intent reference" fixture
+    /// `dedupe_fold_rejects_a_fact_naming_an_unresolvable_input` uses,
+    /// confirmed below to still fail the way that test expects for an
+    /// ordinary open). A BROKEN lease against this same store must refuse
+    /// with `Error::LeaseBroken`, never the history walk's own
+    /// `Error::Schema` — if the walk ran first, the corruption would win
+    /// the race and mask the lease check entirely.
+    #[test]
+    fn lease_check_precedes_history_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voyleasehist");
+        VoyageStore::bootstrap(&root, "voyleasehist", RetentionClass::Discard).unwrap();
+        {
+            let mut store = VoyageStore::open_for_writing(&root, "voyleasehist").unwrap();
+            let mut w = store.open_segment(0).unwrap();
+            w.append(&lc_take(1, 1, 1, None), Commit::Immediate).unwrap();
+            w.append(&lc_take(1, 2, 2, Some("ctrl")), Commit::Immediate).unwrap();
+            // A forward_intent fact naming a Seq that was never an input
+            // frame -- the exact fixture the existing dedupe-fold test uses,
+            // reused here so the corruption is provably genuine, not a
+            // stand-in.
+            w.append(&intent_env(1, 3, Seq { epoch: 1, n: 99 }), Commit::Immediate).unwrap();
+            w.seal(None).unwrap();
+        }
+
+        // Confirm the corruption is real and reachable via an ordinary,
+        // no-lease open -- otherwise the test below would prove nothing.
+        let Err(err) = VoyageStore::open_for_writing(&root, "voyleasehist") else {
+            panic!("expected the corrupt history to fail an ordinary open")
+        };
+        assert!(matches!(err, Error::Schema(_)), "expected a Schema error, got: {err}");
+
+        // The SAME store, with a broken lease: the lease check must win
+        // the race against the corrupt history walk.
+        let broken: &dyn Fn() -> bool = &|| true;
+        let result = VoyageStore::open_for_writing_with_lease(&root, "voyleasehist", Some(broken));
+        assert!(
+            matches!(result, Err(Error::LeaseBroken)),
+            "the lease check must run before history traversal ever sees the corruption: {:?}",
+            result.err()
+        );
     }
 
     #[test]
