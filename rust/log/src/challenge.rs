@@ -268,12 +268,16 @@ pub fn challenge(
     }
 
     // Steps 4-5: the lane's own request/reply, bounded by the shared
-    // three-state watchdog (finding 4).
-    let request = exchange.encode_request();
+    // three-state watchdog (finding 4). `encode_request()` runs INSIDE
+    // the deadline-bounded body (round-2 finding 2): an already-expired
+    // deadline must never call the lane at all, and a blocking future
+    // lane's own `encode_request()` must not be able to defeat the bound
+    // by running before the watchdog even exists.
     let exchange_result = run_with_deadline(
         reply_deadline,
         || conn.cancel(),
         move || -> Result<(u32, u64), StatusFailure> {
+            let request = exchange.encode_request();
             conn.write_all(&request).map_err(|_| StatusFailure::Undetermined)?;
             let mut buf = [0u8; 512];
             loop {
