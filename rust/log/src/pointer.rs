@@ -165,6 +165,12 @@ mod tests {
         uuid::Uuid::now_v7().to_string()
     }
 
+    // macOS (non-Linux unix) fails closed in fsutil::rename_noreplace_raw
+    // (fsutil.rs: "renamex_np when a macOS FE exists to dogfood it" -- ADR
+    // 0041 scope note) -- publish() can never succeed there today, so this
+    // publish-exercising test is gated the same way the store's own
+    // voyage/segment/recovery test suites already gate theirs.
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn publish_then_validate_round_trips() {
         let dir = tempfile::tempdir().unwrap();
@@ -176,6 +182,7 @@ mod tests {
         }
     }
 
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn a_second_publication_fails_write_once() {
         let dir = tempfile::tempdir().unwrap();
@@ -202,6 +209,7 @@ mod tests {
     /// exactly one winner — the no-clobber rename is what arbitrates, so
     /// this proves that arbitration under REAL contention, not merely by
     /// inspecting the code.
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn concurrent_first_publications_have_exactly_one_winner() {
         let dir = tempfile::tempdir().unwrap();
@@ -310,14 +318,19 @@ mod tests {
 
     /// `OtherIo`, distinct from `Corrupt`: an operational failure reading
     /// an otherwise-well-formed pointer (unix permission denial — the
-    /// only portable way to force this deterministically).
+    /// only portable way to force this deterministically). Hand-writes
+    /// the pointer directly rather than calling `publish` (which is
+    /// gated to Linux/Windows -- see the tests above): this test only
+    /// needs A FILE with valid canonical content to exist, never the
+    /// crash-durable publish sequence itself, so it stays portable and
+    /// keeps running on macOS.
     #[test]
     #[cfg(unix)]
     fn validate_reports_other_io_for_a_permission_denied_pointer() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let id = fresh_voyage_id();
-        publish(dir.path(), &id).unwrap();
+        std::fs::write(pointer_path(dir.path()), &id).unwrap();
         let path = pointer_path(dir.path());
         let original_perms = std::fs::metadata(&path).unwrap().permissions();
         struct RestorePerms(PathBuf, std::fs::Permissions);
@@ -336,6 +349,7 @@ mod tests {
         assert!(matches!(validate(dir.path()), PointerState::OtherIo(_)));
     }
 
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn a_crash_between_create_and_publish_leaves_no_usable_permanent_pointer() {
         // Simulate the exact crash shape `publish` can leave: the temp
