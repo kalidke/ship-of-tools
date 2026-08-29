@@ -974,53 +974,95 @@ where that fact actually lives. A next-morning attach to yesterday's
 session is still a visible event: the leg time is yesterday's, on
 screen, in the drawer.
 
-**The probe algorithm** — one classification, run at supervisor start
-and at every loop re-entry. (Amended 2026-08-28: the original was a
-table over `(pipe, writer.lock)` read as if the two were sampled at
-once. They are two syscalls, and step 5's teardown closes the pipe
-microseconds before it releases the lock, so an ordinary healthy
-shutdown could be classified fatal. The pipe's own ANSWER is the
-authority; the lock is consulted only where there is no pipe to ask;
-and the only fatal classification is a WELL-FORMED WRONG ANSWER.)
+**The probe algorithm** — one ORDERED, TOTAL decision, run at supervisor
+start and at every loop re-entry. (Amended 2026-08-28 twice over: the
+original sampled `(pipe, writer.lock)` as if simultaneously, so a
+healthy shutdown could be called fatal; the replacement was a set of
+prose cases that neither covered every reachable OS outcome nor kept
+them disjoint — `ERROR_FILE_NOT_FOUND` matched two rows at once, and
+half a dozen real failures matched none.) It is stated as a first-match
+list so exhaustiveness holds BY CONSTRUCTION rather than by inspection:
 
-| class   | evidence                                          | action    |
-|---------|---------------------------------------------------|-----------|
-| ADOPTED | connect ok, challenge passes                      | adopt; never touch the lock |
-| FOREIGN | connect ok, well-formed mgmt reply, identity does not match | LOUD STOP |
-| PENDING | connect ok but EOF or timeout before a reply; `ERROR_PIPE_BUSY` past its own retry; any other connect error; no pipe with the lock HELD; a spawned child alive but not yet holding the lock | retry |
-| ABSENT  | no pipe, lock free, no spawn outstanding          | spawn     |
-| WEDGED  | the retry budget expired in PENDING               | LOUD STOP |
+1. An owned spawn attempt exists and its child is alive, within its
+   readiness deadline → SPAWN-PENDING. Wait; never spawn a second.
+2. An owned spawn attempt exists and its child has EXITED → LEG ENDED.
+   Take the end-of-leg path; a child that never reached READY is a
+   startup failure.
+3. An owned spawn attempt exists and the readiness deadline EXPIRED →
+   KILL the child, WAIT for its exit, count a startup failure, re-enter.
+   Never leave it to bind later against the next operator's launch.
+4. `connect` succeeded, and then:
+   a. a well-formed `status_ok` whose identity matches → ADOPTED.
+   b. a well-formed `status_ok` whose identity does NOT match → FOREIGN.
+   c. a complete, well-formed frame that is not `status_ok` → FOREIGN.
+   d. undecodable bytes, or a frame over the wire cap → FOREIGN: the
+      pinned v0 lane cannot be malformed by a real capsule.
+   e. EOF, timeout, a write or read I/O error, or a failure of
+      `GetNamedPipeServerProcessId` / `OpenProcess` / `GetProcessTimes`
+      → PENDING.
+5. `connect` failed `ERROR_FILE_NOT_FOUND` (past its own retry), and
+   then the writer fence is probed — the ONLY place the fence is
+   consulted, which is what keeps this row disjoint from row 8:
+   a. held → PENDING.  b. free → ABSENT: spawn.  c. any other error
+   probing it → PENDING.
+6. `connect` failed `ERROR_PIPE_BUSY` past its own retry → PENDING.
+7. `connect` failed `ERROR_ACCESS_DENIED` → FOREIGN. Our own DACL admits
+   us; a denial means the name is not ours.
+8. Any other `connect` error → PENDING.
+9. Any PENDING once the EPISODE deadline has expired → WEDGED.
 
-PENDING is ONE class because its members are indistinguishable from
-outside and converge on the same two answers. It covers four REAL
-healthy states, each named so its bound can be chosen rather than
-guessed: a capsule that has bound its pipe but not yet built its
-protocol machine (bind is deliberately the first fallible step after the
-lock, ahead of `seal_survivor`, the first segment and the preamble); a
-capsule in its shutdown TAIL, whose pipe stays live through the reap
-poll, the process wait, the `producer_dead` write and the seal; a live
-capsule momentarily at its instance cap; and SPAWN-PENDING — a child
-that exists but has not yet acquired the writer lock, because
-`open_for_writing` enumerates, reconciles and rebuilds the dedupe index
-over all retained history before it returns. That last window is
-O(retained history), so it gets its own, much larger bound.
+Rows 1–3 run before anything else, so an owned spawn is tracked
+independently of pipe and fence state — a slow startup holds the writer
+fence WHILE it rebuilds history (the fence is taken first, then the
+enumerate/reconcile/dedupe walk runs), which would otherwise present as
+row 5a and be judged against the short budget instead of the readiness
+one. PENDING is one class because its members are indistinguishable from
+outside and converge on the same two answers, and it runs on ONE
+monotonic episode deadline that a change of PENDING subtype never
+resets — otherwise alternating evidence livelocks forever.
+
+Two capsule-side changes make the healthy window fit inside that
+deadline, rather than inflating the deadline to fit the code:
+
+- **The pipe closes when mgmt service ends, not when `run` returns.**
+  Today the transport is torn down by a guard at the very end, so
+  between the last mgmt poll and the seal the pipe is live with nothing
+  able to answer on it — an unbounded PENDING window worth up to the
+  reap, the joins, the process wait and the seal. Closing it at the end
+  of service converts that window into an ordinary `FILE_NOT_FOUND` +
+  fence-held (row 5a). The existing invariant is unchanged and gains a
+  sibling: THE PIPE IS NEVER LIVE WHILE THE WRITER FENCE IS FREE, and
+  NEVER LIVE WHILE NOTHING CAN ANSWER IT.
+- **An admitted mgmt connection gets an idle deadline** (60 s with no
+  outstanding request). It has none today, so four idle mgmt clients can
+  hold a healthy capsule at its non-watcher cap indefinitely and every
+  probe is closed without a reply — PENDING until WEDGED, a false
+  terminal stop. Nothing legitimate holds an idle mgmt connection now
+  that the death signal is the process handle.
+- **The two post-EOF joins are bounded** (5 s each, a timeout being a
+  loud failure), so the quit proof below has a real envelope.
 
 The numbers, pinned here so that no implementation invents them:
 
-| bound            | value               | what it must dominate            |
-|------------------|---------------------|----------------------------------|
-| connect          | 2 s                 | `connect_voyage_pipe`'s existing retry |
-| challenge        | 2 s                 | one `status` answered from memory by a loop whose per-iteration budget is one group-commit window |
-| probe retry      | 10 × 500 ms = 5 s   | startup-before-protocol, the shutdown tail (worst case the 5 s process wait plus a seal), and BUSY |
-| spawn-ready      | 60 s, polled 500 ms | O(retained history) `open_for_writing`; a child exit short-circuits it |
-| lock retry       | `lock_writer`'s existing 250 ms | nothing more: Windows' unbounded post-kill release lag is absorbed by the probe retry above, never by a second lock bound |
-| anti-flap        | floor 10 s, 3 consecutive | a leg that cannot start    |
-| launcher restart | ≤ 5 in 60 s         | a crash-looping supervisor       |
+| bound              | value                | what it must dominate           |
+|--------------------|----------------------|---------------------------------|
+| connect            | 2 s                  | `connect_voyage_pipe`'s existing deadline |
+| challenge          | 2 s                  | one `status` answered from memory; retryable, so a scheduler stall is absorbed rather than fatal |
+| probe EPISODE      | 10 s WALL, attempts spaced 500 ms | bind, seal and fence release once the pipe closes at end-of-service — NOT an attempt count, which could not bound anything when each attempt may spend 4 s |
+| spawn readiness    | 60 s from spawn, polled 500 ms, then KILL + wait | the `open_for_writing` walk over all retained history, held under the writer fence |
+| fence acquisition  | 10 s, separate from the probe | a kernel lock's documented OS-unbounded post-kill release |
+| anti-flap          | 3 consecutive never-READY children | a store that cannot open |
+| launcher restart   | ≤ 5 in 60 s, on the launcher's shipped 1/3/7/15/30 s sequence | a crash-looping supervisor |
+| FE quit proof      | 75 s                 | 10 s reap + 30 s drain + 5 s process wait + 2 × 5 s joins + seal + fence release |
+| mgmt idle          | 60 s                 | pool squatting |
 
-The 60 s spawn-ready bound is DEFENDED, not assumed: the acceptance
-suite measures `open_for_writing` against a realistic retained voyage
-and fails if it approaches the bound. If it grows there, the answer is
-voyage rotation, not a larger constant.
+The 60 s readiness bound is an availability CUTOFF, not a proof that
+startup fits: retained history has no normative maximum while rotation
+is deferred, so it is the point at which the supervisor gives up, kills
+and counts a failure. What the acceptance suite defends is the supported
+envelope — the largest voyage shape and the runner class the bound is
+claimed for — and rotation, not a larger constant, is the answer when it
+is exceeded.
 
 **The challenge**, unchanged, with its ORDER load-bearing: (1) read the
 server pid P via `GetNamedPipeServerProcessId` on the live connection;
