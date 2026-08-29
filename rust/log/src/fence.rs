@@ -87,8 +87,11 @@ mod tests {
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
                     barrier.wait();
-                    // Retry against the kernel lock's own "held" error --
-                    // this loop is the RACE, not a cooperative queue.
+                    // Round-2 finding 6: bounded, and retries ONLY the
+                    // expected contention error -- a real regression
+                    // (a permission/path failure, say) must fail this
+                    // test loudly and promptly, never retry forever.
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
                     loop {
                         match lock_supervisor(&path) {
                             Ok(guard) => {
@@ -98,11 +101,27 @@ mod tests {
                                 // holder sneaking in would be caught by
                                 // `max_observed`.
                                 std::thread::sleep(std::time::Duration::from_millis(5));
-                                concurrent_holders.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                                // Decrement AFTER the guard drops (round-2
+                                // finding 6): the "held" interval this test
+                                // observes must cover the WHOLE time the
+                                // kernel lock is actually held, not end one
+                                // instruction early and leave a small
+                                // unobserved ownership gap.
                                 drop(guard);
+                                concurrent_holders.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                                 return;
                             }
-                            Err(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                            Err(e) => {
+                                assert!(
+                                    format!("{e}").contains("held by another process"),
+                                    "unexpected lock_supervisor failure (not ordinary contention): {e}"
+                                );
+                                assert!(
+                                    std::time::Instant::now() < deadline,
+                                    "gave up waiting for the supervisor fence after 30s -- looks wedged"
+                                );
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
                         }
                     }
                 })

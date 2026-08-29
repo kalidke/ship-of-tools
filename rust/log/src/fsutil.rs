@@ -745,9 +745,14 @@ pub fn lock_writer(lock_path: &Path) -> Result<WriterLock> {
             Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io(e)),
         }
         if std::time::Instant::now() >= deadline {
-            return Err(Error::State(
-                "voyage writer lock held by another process".into(),
-            ));
+            // Generic on purpose (round-2 finding 6): `lock_writer` is
+            // also `lock_supervisor`'s own mechanism (fence.rs), so a
+            // message hardcoding "voyage writer lock" would misdescribe
+            // a contended supervisor.lock. Naming the path is both more
+            // honest and more useful than a fixed noun either way.
+            return Err(Error::State(format!(
+                "lock held by another process: {lock_path:?}"
+            )));
         }
         std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
     }
