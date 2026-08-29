@@ -961,6 +961,38 @@ impl AttachProto {
             actions.extend(self.ground_timeout(id, rid, now));
         }
 
+        // U1a Codex round-1, Major 4 discharge: the effective mgmt bound is
+        // the EARLIER of `MGMT_IDLE_DEADLINE` (5s) and the generic
+        // `PROGRESS_DEADLINE` (30s) below, not the later one. Round 1
+        // shipped this gated on `outstanding_sends == 0`, which let a
+        // client that stopped reading its OWN unconfirmed reply squat on
+        // the non-watcher pool for the full 30s — exactly the "outstanding
+        // server send expands the management bound" escape review found:
+        // a tiny mgmt reply nobody drains for 5s is squatting, not
+        // legitimate write progress. The clock this check reads now
+        // follows WHICH kind of quiet the connection is in: `last_activity`
+        // (no reply outstanding — a genuinely silent client) or
+        // `last_send_progress` (a reply queued but not yet confirmed
+        // physically written — the same clock `PROGRESS_DEADLINE` reads,
+        // just against the tighter mgmt-specific bound). This scan runs
+        // BEFORE the generic stalled scan below so a connection matching
+        // BOTH gets the mgmt-specific label and eviction, never the
+        // generic one — the two bounds would otherwise race for whichever
+        // scan's `RefusalReason` a single large clock jump happens to see
+        // first.
+        let mut mgmt_idle = Vec::new();
+        for (id, c) in &self.conns {
+            if matches!(c.role, Role::Mgmt) {
+                let last_progress = if c.outstanding_sends > 0 { c.last_send_progress } else { c.last_activity };
+                if now.saturating_duration_since(last_progress) >= MGMT_IDLE_DEADLINE {
+                    mgmt_idle.push(*id);
+                }
+            }
+        }
+        for id in mgmt_idle {
+            actions.extend(self.close_with_refusal(id, RefusalReason::MgmtIdleTimeout, now));
+        }
+
         let mut stalled = Vec::new();
         for (id, c) in &self.conns {
             if c.outstanding_sends > 0 && now.saturating_duration_since(c.last_send_progress) >= PROGRESS_DEADLINE {
@@ -969,32 +1001,6 @@ impl AttachProto {
         }
         for id in stalled {
             actions.extend(self.close_with_refusal(id, RefusalReason::ProgressStall, now));
-        }
-
-        // U1a: an ADMITTED mgmt connection (already classified — a
-        // pre-classification connection is covered by
-        // `PRE_ADMISSION_TIMEOUT` above, not this) that is GENUINELY quiet
-        // — nothing outstanding either direction — past
-        // `MGMT_IDLE_DEADLINE`. `outstanding_sends == 0` is what
-        // distinguishes this from `PROGRESS_DEADLINE` just above: a
-        // connection mid-reply (our own send not yet confirmed physically
-        // written) is making progress and stays that check's problem, on
-        // its own longer 30s bound, never this one's — otherwise a
-        // slow-but-healthy reply would be misclassified as an idle client
-        // squatting on the pool. `last_activity` is the same clock every
-        // inbound frame and outbound completion already resets, so a
-        // connection that keeps sending requests is never touched.
-        let mut mgmt_idle = Vec::new();
-        for (id, c) in &self.conns {
-            if matches!(c.role, Role::Mgmt)
-                && c.outstanding_sends == 0
-                && now.saturating_duration_since(c.last_activity) >= MGMT_IDLE_DEADLINE
-            {
-                mgmt_idle.push(*id);
-            }
-        }
-        for id in mgmt_idle {
-            actions.extend(self.close_with_refusal(id, RefusalReason::MgmtIdleTimeout, now));
         }
 
         actions.extend(self.tick_keepalive(now));
@@ -2673,19 +2679,27 @@ mod tests {
 
     // -- progress deadline (finding 5) ------------------------------------
 
-    /// The generic deadline covers EVERY kind of outstanding send (here: an
-    /// unconfirmed mgmt reply, not live output) and resets at the
-    /// empty→nonempty transition: a connection that sat idle for a LONG
-    /// time before anything was ever queued must not be penalized for that
-    /// idle stretch the instant something finally is.
+    /// The generic 30s deadline covers a watcher's own outstanding
+    /// live-output send and resets at the empty→nonempty transition: a
+    /// connection that sat idle for a LONG time before anything was ever
+    /// queued must not be penalized for that idle stretch the instant
+    /// something finally is.
+    ///
+    /// U1a Codex round-1, Major 4 discharge: this test's ORIGINAL vehicle
+    /// was an unconfirmed MGMT reply — which now has its own tighter,
+    /// mgmt-specific 5s bound (see the "mgmt idle deadline" tests above),
+    /// so an mgmt connection can no longer reach 29s/31s without the
+    /// mgmt-specific check firing first at 5s. A watcher's own outstanding
+    /// `output` send is unaffected by that mgmt-only rule and still proves
+    /// the SAME generic-30s / empty-to-nonempty-reset property this test
+    /// exists for.
     #[test]
     fn progress_deadline_covers_every_kind_of_outstanding_send_and_resets_at_the_empty_to_nonempty_transition() {
         let mut p = proto();
         let now = t0();
-        p.connection_opened(1, now);
+        attach_to_done(&mut p, 1, now);
         let much_later = now + Duration::from_secs(1000);
-        let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
-        let a = p.frame(1, probe, much_later);
+        let a = p.output_committed(b"hi", much_later);
         assert!(matches!(a.as_slice(), [Action::Send { .. }]));
 
         let a = p.tick(much_later + Duration::from_secs(29));
@@ -2770,6 +2784,38 @@ mod tests {
         // The watcher/driver machinery (NON_WATCHER_CAP, admission) is
         // untouched by this connection staying open across the interval.
         assert_eq!(p.non_watcher_count, 1);
+    }
+
+    /// U1a Codex round-1, Major 4 discharge: an mgmt connection that stops
+    /// draining its OWN unconfirmed reply is evicted at the tighter 5s
+    /// bound, never the generic 30s `PROGRESS_DEADLINE` -- squatting on an
+    /// outstanding send is not legitimate write progress for this role.
+    /// The send is never confirmed (`p.sent` is deliberately not called),
+    /// so `outstanding_sends` stays 1 throughout.
+    #[test]
+    fn mgmt_connection_with_a_stalled_outbound_reply_is_evicted_at_the_tighter_bound() {
+        let mut p = proto();
+        let now = t0();
+        assert_eq!(p.connection_opened(1, now), vec![]);
+        let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
+        let a = p.frame(1, probe, now);
+        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
+
+        // Just under the tighter bound: untouched (proving it isn't ALSO
+        // firing prematurely off some other clock).
+        let a = p.tick(now + MGMT_IDLE_DEADLINE - Duration::from_millis(1));
+        assert!(a.is_empty(), "must not evict before the tighter bound: {a:?}");
+
+        // At the tighter bound (well before the generic 30s deadline could
+        // ever apply): evicted, with the mgmt-specific reason, never
+        // ProgressStall.
+        let a = p.tick(now + MGMT_IDLE_DEADLINE);
+        assert!(a.iter().any(|x| matches!(x, Action::Close(1))), "{a:?}");
+        assert!(
+            a.iter()
+                .any(|x| matches!(x, Action::RecordRefusal { reason: RefusalReason::MgmtIdleTimeout, .. })),
+            "{a:?}"
+        );
     }
 
     /// Watchers and the driver are a different `Role` entirely — the mgmt
