@@ -6,6 +6,16 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+# ADR 0041 U0 round-1, minor finding 9: gates ScriptedProbeOps (and its
+# dummy OS-object stand-ins) out of the production API. Enabled for this
+# crate's OWN unit tests via `cfg(test)` directly (see probe.rs); this
+# feature is the SEPARATE path a `tests/*.rs` integration-test crate in
+# this same package needs, since those compile the library WITHOUT
+# `cfg(test)` on it. Never enabled by a normal consumer (the frontend, or
+# a future `sot-capsule` caller) unless it explicitly opts in.
+test-support = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -54,3 +64,8 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Self-referential dev-dependency (a standard Cargo idiom): enables
+# `test-support` for every target `cargo test -p sot-log` builds --
+# this crate's own `tests/*.rs` integration binaries included — without
+# ever enabling it for a normal consumer of the library.
+sot-log = { path = ".", features = ["test-support"] }

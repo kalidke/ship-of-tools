@@ -10,6 +10,10 @@
 pub mod attach_proto;
 pub mod capsule;
 pub mod capsule_win;
+// ADR 0041 step 6, unit U0: the same-connection challenge and the
+// process-handle wrapper it returns. `pub`, matching `pipe_win`/
+// `capsule_win`: Windows-only (see the module's own `#![cfg(windows)]`).
+pub mod challenge;
 pub mod claude;
 pub mod conpty;
 // ADR 0041 step 5, unit U3: the Windows named-pipe transport (server +
@@ -25,6 +29,10 @@ pub mod pipe_win;
 // -- one bridge, reused by both, rather than duplicated or made
 // unreachable from the test crate.
 pub mod pipe_transport;
+// ADR 0041 step 6, unit U0: fault-injection scaffolding for the probe
+// classifier's own (later) model test. NO classifier logic lives here —
+// see the module's own doc.
+pub mod probe;
 // Crate-private (Codex review finding, capsule_win.rs round): ADR 0041's
 // "one private machine" ruling means this module's items are not part of
 // the crate's public API — `capsule_win.rs` is the only real caller and
@@ -37,10 +45,38 @@ pub mod pipe_transport;
 // there specifically, rather than losing it crate-wide or windows-only.
 #[cfg_attr(not(windows), allow(dead_code))]
 mod host_handshake;
+// ADR 0041 step 6, unit U0 round-1: the three-state deadline race
+// challenge::challenge's exchange phase uses. Portable -- no OS
+// dependency at all -- so its own tests run everywhere, not merely on
+// Windows. Crate-private (round-2 finding 7): no caller outside this
+// crate needs it yet -- challenge.rs is a sibling module, not an
+// external consumer. Same `cfg_attr` reasoning as `host_handshake` just
+// above: its own tests are pure logic and run on every platform, but its
+// only real caller (`challenge.rs`) is Windows-only, so a non-Windows
+// build now has no caller at all for this now-private item.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod deadline;
 pub mod envelope;
+// ADR 0041 step 6, unit U0 round-1 (blocker 3): the public facade over
+// fsutil::lock_supervisor -- fsutil itself is a private module, invisible
+// from any OTHER crate, including a future sot-capsule binary target.
+pub mod fence;
+// ADR 0041 step 6, unit U0 round-1: a pipe lane's post-SID identity
+// exchange (encode request, decode reply) -- the one thing
+// challenge::challenge delegates per-lane. Portable, like `deadline`.
+pub mod exchange;
+// ADR 0041 step 6, unit U0: `drawer.voyage` publication + validation.
+// Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
+// which already has both platform arms.
+pub mod pointer;
 pub mod record;
 pub mod recovery;
 pub mod segment;
+// ADR 0041 step 6, unit U0 (promoted from the frontend's own paths.rs):
+// the per-machine state-dir resolution rule, owned here so every process
+// that needs it (today: the frontend) shares one rule instead of
+// drifting copies.
+pub mod state_dir;
 pub mod verify;
 pub mod voyage;
 pub mod wire;

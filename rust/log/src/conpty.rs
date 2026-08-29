@@ -329,7 +329,9 @@ impl PrimaryProcess {
     /// `Ok(true)`: the process signaled (exited) within `timeout`.
     /// `Ok(false)`: the timeout elapsed; still running.
     pub fn wait(&self, timeout: std::time::Duration) -> Result<bool> {
-        let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+        // ADR 0041 U0 round-1 finding 8: capped at u32::MAX - 1, never the
+        // literal Win32 INFINITE -- see fsutil::duration_to_wait_ms's doc.
+        let ms = crate::fsutil::duration_to_wait_ms(timeout);
         match unsafe { WaitForSingleObject(self.raw(), ms) } {
             WAIT_OBJECT_0 => Ok(true),
             WAIT_TIMEOUT => Ok(false),

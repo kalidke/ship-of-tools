@@ -1,0 +1,230 @@
+//! A pipe lane's own post-SID identity exchange (ADR 0041 Lifecycle "The
+//! challenge", steps 4-5): what request bytes to send once, and how to
+//! decode the reply into a `(pid, created)` pair or a foreign/incomplete
+//! verdict. Portable — the wire codec this depends on
+//! ([`wire::FrameSplitter`]) already builds and is tested on every
+//! platform, so this module's frame-loop precedence logic is exercised by
+//! REAL executed tests everywhere, not merely compile-checked on
+//! Windows. `challenge::challenge` (Windows-only, since steps 1-3 are
+//! genuine Win32 calls) is the ONLY caller of either trait method, and
+//! calls them only after step 3 (SID equality) has already succeeded —
+//! implementing [`IdentityExchange`] cannot skip or reorder the OS
+//! authentication steps, because this trait never sees the connection
+//! until they are done.
+
+use crate::wire::{self, DecodedFrame, MgmtReply, MgmtRequest};
+
+/// What one lane's post-SID exchange concluded, fed one chunk of newly
+/// read bytes at a time.
+pub enum ExchangeDecode {
+    /// Not enough bytes yet for this lane's own framing to decide
+    /// anything — keep reading.
+    Incomplete,
+    /// Exactly one well-formed reply, naming the peer's pid and creation
+    /// time.
+    Identity { pid: u32, created: u64 },
+    /// A well-formed WRONG answer, undecodable bytes, a frame over this
+    /// lane's own size cap, or MORE than one complete reply/frame in what
+    /// should have been a single round trip. An unproven server — this
+    /// lane's own framing is the only thing that can tell "one clean
+    /// reply" from "trailing protocol corruption", which is exactly why
+    /// this decision lives in the lane, not in `challenge::challenge`.
+    Foreign,
+}
+
+/// A pipe lane's own post-SID identity exchange.
+pub trait IdentityExchange {
+    /// This lane's one-shot identity-yielding request, written once as
+    /// the first content on the connection after SID equality.
+    fn encode_request(&self) -> Vec<u8>;
+    /// Consume newly-read bytes (appended to whatever this lane's own
+    /// decoder already holds from earlier calls) and report what they now
+    /// decode to. `&mut self`: a lane's own decoder (e.g. a
+    /// [`wire::FrameSplitter`]) is itself stateful across calls.
+    fn feed(&mut self, bytes: &[u8]) -> ExchangeDecode;
+}
+
+/// The voyage mgmt lane's `IdentityExchange`: `status` request,
+/// `status_ok` reply — today's only lane. Error takes precedence over a
+/// decoded frame, and exactly one complete reply is accepted per
+/// exchange: a `StatusOk` bundled with trailing malformed bytes, or two
+/// complete replies in one read, is `Foreign`, never the first frame
+/// alone (ADR 0041 U0 round-1 finding 5).
+///
+/// TERMINAL after one conclusive answer (round-2 finding 1): `done`
+/// latches on the FIRST `Identity` or `Foreign` this exchange ever
+/// reaches, and every later `feed` call — regardless of what bytes it
+/// carries, including none of its own — returns `Foreign` without
+/// touching the splitter again. This closes two leaks the round-1
+/// version had: a second complete `status_ok` arriving in a LATER `feed`
+/// call (the splitter alone has no memory that this exchange already
+/// answered) and a single trailing partial-header byte riding along with
+/// a valid reply in the SAME call (`frames.len() == 1` looks identical
+/// whether or not the splitter is also carrying leftover bytes, so
+/// [`wire::FrameSplitter::has_pending_bytes`] is the one way to tell them
+/// apart).
+pub struct VoyageMgmtExchange {
+    splitter: wire::FrameSplitter,
+    done: bool,
+}
+
+impl Default for VoyageMgmtExchange {
+    fn default() -> Self {
+        Self { splitter: wire::FrameSplitter::new(), done: false }
+    }
+}
+
+impl IdentityExchange for VoyageMgmtExchange {
+    fn encode_request(&self) -> Vec<u8> {
+        wire::encode_mgmt_request(&MgmtRequest::Status)
+            .expect("MgmtRequest::Status has no fields; encoding cannot fail")
+    }
+
+    fn feed(&mut self, bytes: &[u8]) -> ExchangeDecode {
+        if self.done {
+            // Anything after a conclusive answer is corruption, never a
+            // "next" reply — this lane's protocol is exactly one round
+            // trip.
+            return ExchangeDecode::Foreign;
+        }
+        let (frames, err) = self.splitter.feed(bytes);
+        // Finding 5: error takes precedence over any frame decoded in the
+        // SAME call, and more than one complete frame is corruption too —
+        // both checked BEFORE ever looking at frame contents.
+        if err.is_some() {
+            self.done = true;
+            return ExchangeDecode::Foreign;
+        }
+        match frames.len() {
+            0 => ExchangeDecode::Incomplete,
+            1 => {
+                self.done = true; // conclusive either way, from here on
+                if self.splitter.has_pending_bytes() {
+                    // A trailing byte (or more) rode along with the ONE
+                    // reply this exchange is entitled to — corruption,
+                    // never silently carried past.
+                    return ExchangeDecode::Foreign;
+                }
+                match &frames[0] {
+                    DecodedFrame::MgmtReply(MgmtReply::StatusOk { pid, created, .. }) => {
+                        ExchangeDecode::Identity { pid: *pid, created: *created }
+                    }
+                    _ => ExchangeDecode::Foreign, // well-formed, wrong opcode
+                }
+            }
+            _ => {
+                self.done = true;
+                ExchangeDecode::Foreign // two-or-more complete replies in one read
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status_ok_bytes(pid: u32, created: u64) -> Vec<u8> {
+        wire::encode_mgmt_reply(&MgmtReply::StatusOk { pid, created, survival: wire::Survival::Normal }).unwrap()
+    }
+
+    #[test]
+    fn incomplete_on_a_partial_frame() {
+        let mut ex = VoyageMgmtExchange::default();
+        let full = status_ok_bytes(1, 2);
+        assert!(matches!(ex.feed(&full[..full.len() - 1]), ExchangeDecode::Incomplete));
+    }
+
+    #[test]
+    fn decodes_exactly_one_clean_status_ok() {
+        let mut ex = VoyageMgmtExchange::default();
+        let full = status_ok_bytes(123, 456);
+        match ex.feed(&full) {
+            ExchangeDecode::Identity { pid, created } => {
+                assert_eq!(pid, 123);
+                assert_eq!(created, 456);
+            }
+            ExchangeDecode::Foreign => panic!("expected Identity, got Foreign"),
+            ExchangeDecode::Incomplete => panic!("expected Identity, got Incomplete"),
+        }
+    }
+
+    #[test]
+    fn two_complete_replies_in_one_feed_is_foreign() {
+        let mut ex = VoyageMgmtExchange::default();
+        let mut bytes = status_ok_bytes(1, 2);
+        bytes.extend(status_ok_bytes(1, 2));
+        assert!(matches!(ex.feed(&bytes), ExchangeDecode::Foreign));
+    }
+
+    #[test]
+    fn status_ok_followed_by_malformed_bytes_is_foreign_not_proven() {
+        // A frame-plus-error in the SAME feed call: the good StatusOk
+        // must not mask the trailing corruption (finding 5).
+        let mut ex = VoyageMgmtExchange::default();
+        let mut bytes = status_ok_bytes(1, 2);
+        bytes.extend([0xffu8; 16]); // an unknown magic -- UnknownMagic
+        assert!(matches!(ex.feed(&bytes), ExchangeDecode::Foreign));
+    }
+
+    #[test]
+    fn malformed_first_frame_alone_is_foreign() {
+        let mut ex = VoyageMgmtExchange::default();
+        assert!(matches!(ex.feed(&[0xff; 16]), ExchangeDecode::Foreign));
+    }
+
+    #[test]
+    fn oversized_first_frame_is_foreign() {
+        let mut ex = VoyageMgmtExchange::default();
+        // SOM0 magic + a length field announcing far more than MAX_BODY_LEN.
+        let mut bytes = b"SOM0".to_vec();
+        bytes.extend(u32::MAX.to_le_bytes());
+        assert!(matches!(ex.feed(&bytes), ExchangeDecode::Foreign));
+    }
+
+    /// Round-2 finding 1: the round-1 version of this test fed the "bad
+    /// second" bytes to a FRESH exchange, which proves nothing about
+    /// whether THIS SAME instance would still accept them after already
+    /// answering once -- Codex reproduced exactly that gap (a second
+    /// complete `status_ok` fed to the SAME instance in a later `feed`
+    /// call returned `Identity` again). Rewritten to drive one instance
+    /// throughout: a good reply, then a second complete reply arriving
+    /// in a LATER `feed` call, must be `Foreign`.
+    #[test]
+    fn good_first_reply_then_a_later_complete_reply_on_the_same_instance_is_foreign() {
+        let mut ex = VoyageMgmtExchange::default();
+        assert!(matches!(ex.feed(&status_ok_bytes(1, 2)), ExchangeDecode::Identity { pid: 1, created: 2 }));
+        // A second, otherwise-perfectly-well-formed reply, fed to the
+        // SAME already-answered instance in a separate call.
+        assert!(matches!(ex.feed(&status_ok_bytes(3, 4)), ExchangeDecode::Foreign));
+    }
+
+    /// Round-2 finding 1 (the other reproduced leak): a single trailing
+    /// byte riding along with a valid reply in the SAME `feed` call —
+    /// not even enough to determine a magic, so the OLD code's
+    /// `frames.len() == 1` check alone could not distinguish this from
+    /// "nothing left over" and returned `Identity`.
+    #[test]
+    fn status_ok_plus_one_trailing_partial_header_byte_is_foreign() {
+        let mut ex = VoyageMgmtExchange::default();
+        let mut bytes = status_ok_bytes(1, 2);
+        bytes.push(0xAB); // a single byte: not even a full header's worth
+        assert!(matches!(ex.feed(&bytes), ExchangeDecode::Foreign));
+    }
+
+    /// Round-2 finding 1: once terminal, ANY further byte in a LATER
+    /// call is Foreign, even bytes that on their own would be
+    /// `Incomplete` for a fresh exchange (e.g. a lone partial byte).
+    #[test]
+    fn any_byte_at_all_after_a_conclusive_answer_is_foreign() {
+        let mut ex = VoyageMgmtExchange::default();
+        assert!(matches!(ex.feed(&status_ok_bytes(1, 2)), ExchangeDecode::Identity { .. }));
+        assert!(matches!(ex.feed(&[0xAB]), ExchangeDecode::Foreign));
+    }
+
+    #[test]
+    fn encode_request_is_the_pinned_status_wire_bytes() {
+        let ex = VoyageMgmtExchange::default();
+        assert_eq!(ex.encode_request(), wire::encode_mgmt_request(&MgmtRequest::Status).unwrap());
+    }
+}

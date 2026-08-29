@@ -11,21 +11,19 @@
 // under `%LOCALAPPDATA%\sot` unconditionally, and ADR 0041 pins the voyages
 // subtree there too — so the state dir has to agree with them, not with an
 // optional override.
+//
+// ADR 0041 step 6, unit U0: the rule itself moved to `sot_log::state_dir`
+// (the single owner now — a "later" process needing it, e.g. a capsule
+// supervisor, must agree with the FE, not maintain a third copy). This
+// function is a pure delegation: same signature, same resolved paths,
+// byte-identical — `sot_log::state_dir`'s own tests pin the rule
+// (including the XDG_STATE_HOME/%LOCALAPPDATA% precedence) that used to
+// have no test coverage here at all.
 
 /// Per-machine Ship of Tools state directory: `%LOCALAPPDATA%\sot\` on Windows,
 /// `$XDG_STATE_HOME/sot` (or `$HOME/.local/state/sot`) elsewhere. Home for the
 /// staged binary + logs (ADR 0017), the relaunch sentinel, the FE control
 /// channel (ADR 0019), and session reconnect memory (state.rs).
 pub(crate) fn sot_state_dir() -> Option<std::path::PathBuf> {
-    let dir = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)
-    } else {
-        std::env::var_os("XDG_STATE_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|h| std::path::PathBuf::from(h).join(".local").join("state"))
-            })
-    }?;
-    Some(dir.join("sot"))
+    sot_log::state_dir::sot_state_dir()
 }

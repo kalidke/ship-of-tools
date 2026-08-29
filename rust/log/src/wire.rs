@@ -1074,6 +1074,20 @@ impl FrameSplitter {
         Self::default()
     }
 
+    /// `true` iff bytes fed so far include some that have not yet formed
+    /// a complete frame (or been consumed by one) — a caller with its own
+    /// "exactly one reply, nothing more" protocol rule (e.g.
+    /// `exchange::VoyageMgmtExchange`) uses this to detect a trailing
+    /// partial frame arriving ALONGSIDE a complete one in the same
+    /// `feed` call, which `feed`'s own return value (frames + error)
+    /// cannot distinguish from "nothing left over" on its own — both
+    /// return the same `(frames, None)` shape. Read-only: never resets
+    /// or otherwise changes decoder state. `false` after a latched
+    /// error (the buffer is freed then, per `feed`'s own doc).
+    pub fn has_pending_bytes(&self) -> bool {
+        !self.buf.is_empty()
+    }
+
     /// Feeds the next chunk of bytes read from the connection, in order.
     /// Returns every frame that became complete as a result (zero, one,
     /// or more), plus an error if one was encountered while doing so —

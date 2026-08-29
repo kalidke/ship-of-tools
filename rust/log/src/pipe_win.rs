@@ -220,17 +220,17 @@ fn wide_null(s: &str) -> Vec<u16> {
 
 /// The voyage id is validated as a canonical RFC 4122 UUID — lowercase,
 /// hyphenated, the exact form [`uuid::Uuid`]'s own `Display` produces —
-/// before it is ever interpolated into a pipe name. `Uuid::parse_str`
-/// accepts several equivalent shapes (uppercase hex, the 32-hex-digit
-/// "simple" form, braced GUIDs, `urn:uuid:...`); re-rendering the parsed
-/// value and requiring a BYTE-IDENTICAL match to the input pins the wire
-/// to exactly one shape. Anything that fails to parse at all (path-
-/// traversal shapes, wrong length, non-hex bytes) is rejected the same
-/// way.
+/// before it is ever interpolated into a pipe name. Delegates to
+/// `pointer::canonical_voyage_id` (ADR 0041 U0 round-1 minor finding 9):
+/// one canonical-UUID check for this crate, not two that can drift, as
+/// this one already had from `drawer.voyage`'s own (stricter) validation.
+/// Anything that fails to parse at all (path-traversal shapes, wrong
+/// length, non-hex bytes) is rejected the same way.
 fn validate_voyage_id(voyage_id: &str) -> Result<(), PipeError> {
-    match uuid::Uuid::parse_str(voyage_id) {
-        Ok(u) if u.to_string() == voyage_id => Ok(()),
-        _ => Err(PipeError::InvalidVoyageId(voyage_id.to_string())),
+    if crate::pointer::canonical_voyage_id(voyage_id).is_some() {
+        Ok(())
+    } else {
+        Err(PipeError::InvalidVoyageId(voyage_id.to_string()))
     }
 }
 
@@ -1589,6 +1589,43 @@ impl PipeClient {
     pub fn cancel(&self) {
         self.read_slot.cancel(self.raw.0);
         self.write_slot.cancel(self.raw.0);
+    }
+}
+
+/// ADR 0041 step 6, unit U0: the voyage pipe is one of the (currently
+/// one, eventually two) pipe families the same-connection challenge must
+/// serve — see `challenge.rs`'s own doc for why that module depends on
+/// this trait rather than on `PipeClient` by name.
+impl crate::challenge::ChallengeableConnection for PipeClient {
+    fn raw_handle(&self) -> HANDLE {
+        self.raw.0
+    }
+
+    fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
+        PipeClient::write_all(self, bytes).map_err(pipe_error_to_io)
+    }
+
+    fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        PipeClient::read(self, buf).map_err(pipe_error_to_io)
+    }
+
+    fn cancel(&self) {
+        PipeClient::cancel(self)
+    }
+}
+
+/// Map a [`PipeError`] to a plain `io::Error` for the `challenge`
+/// module's trait boundary, which depends on neither pipe family's own
+/// error type by name. `Io` unwraps to its underlying `std::io::Error`
+/// (preserving `ErrorKind` — e.g. a disconnect code); everything else
+/// (`Cancelled`, the misuse variants) wraps opaquely — none of them
+/// distinguishes further at the challenge's own three-way
+/// Proven/Foreign/Undetermined split, which only ever asks "did this
+/// fail," never which failure.
+fn pipe_error_to_io(e: PipeError) -> std::io::Error {
+    match e {
+        PipeError::Io { source, .. } => source,
+        other => std::io::Error::other(other),
     }
 }
 

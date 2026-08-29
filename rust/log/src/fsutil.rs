@@ -287,17 +287,34 @@ impl Drop for OwnerProtectedDescriptor {
 /// flavor below, and `pipe_win.rs`'s pipe flavor): same account, same
 /// `OpenProcessToken`/`GetTokenInformation(TokenUser)`/`ConvertSidToStringSidW`
 /// lookup, same `LocalAlloc`/`CloseHandle` discipline. Only the SDDL ACE
-/// that wraps this SID differs between callers.
+/// that wraps this SID differs between callers. Also the "this account's"
+/// half of the ADR 0041 step 6 same-connection challenge (`challenge.rs`):
+/// step 3 compares THIS against [`sid_string_from_process`]'s answer for
+/// the target.
 #[cfg(windows)]
-fn token_user_sid_string() -> Result<String> {
-    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
-    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+pub(crate) fn token_user_sid_string() -> Result<String> {
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: `GetCurrentProcess` returns a pseudo-handle needing no close
+    // (unlike the token handle `sid_string_from_process` opens and closes).
+    sid_string_from_process(unsafe { GetCurrentProcess() })
+}
 
-    // This process's own token, query-only access.
+/// The token-user SID, stringified, of an ARBITRARY (already-open) process
+/// handle — the same lookup as [`token_user_sid_string`], generalized for
+/// the challenge's target-process check: step 3 opens the CANDIDATE
+/// server's token (query-only) rather than this process's own, then
+/// compares the two strings for equality. `pub(crate)`: `challenge.rs` is
+/// the one other caller.
+#[cfg(windows)]
+pub(crate) fn sid_string_from_process(
+    process: windows_sys::Win32::Foundation::HANDLE,
+) -> Result<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::TOKEN_QUERY;
+    use windows_sys::Win32::System::Threading::OpenProcessToken;
+
     let mut token: HANDLE = std::ptr::null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
         return Err(io_ctx(std::io::Error::last_os_error(), format_args!("OpenProcessToken")));
     }
     struct TokenGuard(HANDLE);
@@ -309,6 +326,18 @@ fn token_user_sid_string() -> Result<String> {
         }
     }
     let _token_guard = TokenGuard(token);
+    sid_string_from_token(token)
+}
+
+/// The `TOKEN_USER` SID, stringified, for an ALREADY-OPEN token handle —
+/// the `GetTokenInformation(TokenUser)` size-query-then-fetch idiom,
+/// shared by both callers above so there is exactly one implementation of
+/// it in this crate.
+#[cfg(windows)]
+fn sid_string_from_token(token: windows_sys::Win32::Foundation::HANDLE) -> Result<String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_USER};
 
     // TOKEN_USER is variable-length: the SID is appended after the fixed
     // struct, so the documented idiom is size-query-then-fetch. A plain
@@ -675,10 +704,37 @@ fn flush_renamed(to: &Path) -> Result<()> {
 /// 1.89): `flock(LOCK_EX | LOCK_NB)` on unix, `LockFileEx(EXCLUSIVE |
 /// FAIL_IMMEDIATELY)` on Windows. Released by the kernel when the guard's
 /// handle closes — including on hard kills, with a documented timing
-/// transient on both platforms that the bounded retry absorbs.
+/// transient on both platforms that the bounded retry absorbs. Both
+/// arms are mandatory, cross-process, cross-thread exclusive locks: a
+/// second handle -- from another process OR another thread of the SAME
+/// process -- conflicting with an already-granted lock is refused
+/// (`WouldBlock`/`ERROR_LOCK_VIOLATION`), never silently granted
+/// alongside it. (ADR 0041 U0 round 3: an earlier revision of this doc
+/// claimed Windows admits a same-process double grant under racing
+/// first acquisitions; that claim was refuted -- Microsoft's own
+/// LockFileEx documentation, the normative MS-FSA conflict algorithm,
+/// and Rust std's own Windows implementation all describe unconditional
+/// conflict checking with no same-process exception, and the CI failure
+/// that prompted the claim was a test-observation bug, not a primitive
+/// gap -- see fence.rs's own test history for the corrected story.)
 pub struct WriterLock {
     #[allow(dead_code)] // held for its Drop (kernel releases the lock)
     file: File,
+}
+
+/// A `Duration` clamped to a Win32 wait-call millisecond parameter,
+/// NEVER `INFINITE` (`u32::MAX`, 0xFFFFFFFF) — a caller-supplied duration
+/// long enough to round to that exact value would silently wait forever
+/// instead of the bounded wait it asked for (ADR 0041 U0 round-1 finding
+/// 8). Shared by every bounded Win32 process wait in this crate
+/// (`conpty::PrimaryProcess::wait`, `challenge::wait_handle` — used by
+/// both `ChallengedProcess` and `probe::SpawnedChild`) so the guard
+/// exists exactly once, not once per call site.
+#[cfg(windows)]
+pub(crate) fn duration_to_wait_ms(timeout: std::time::Duration) -> u32 {
+    u32::try_from(timeout.as_millis())
+        .unwrap_or(u32::MAX)
+        .min(u32::MAX - 1)
 }
 
 pub fn lock_writer(lock_path: &Path) -> Result<WriterLock> {
@@ -701,12 +757,58 @@ pub fn lock_writer(lock_path: &Path) -> Result<WriterLock> {
             Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io(e)),
         }
         if std::time::Instant::now() >= deadline {
-            return Err(Error::State(
-                "voyage writer lock held by another process".into(),
-            ));
+            // Generic on purpose (round-2 finding 6): `lock_writer` is
+            // also `lock_supervisor`'s own mechanism (fence.rs), so a
+            // message hardcoding "voyage writer lock" would misdescribe
+            // a contended supervisor.lock. Naming the path is both more
+            // honest and more useful than a fixed noun either way.
+            return Err(Error::State(format!(
+                "lock held by another process: {lock_path:?}"
+            )));
         }
         std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
     }
+}
+
+/// Bootstrap `<lock_path>` if absent: `create_new` — atomically `CREATE_NEW`
+/// on Windows, `O_CREAT|O_EXCL` on unix, both mapped by std's own
+/// `OpenOptions` — so two processes racing to become the first supervisor
+/// can never each mint a rival inode for the same fence (ADR 0041
+/// Lifecycle: "created CREATE_NEW when absent ... an atomic create stops
+/// two supervisors minting rival inodes"). Idempotent over an
+/// already-bootstrapped file, unlike the writer fence's own bootstrap
+/// (`create_dir_protected`, which deliberately REFUSES residue): that
+/// caller already removes a crashed attempt first, so finding its path
+/// occupied means a concurrent bootstrap; `supervisor.lock` has no such
+/// prior sweep; a bootstrap step lower in a persistent, no-history fence,
+/// so surviving-and-reusing an existing file is the correct idempotent
+/// behavior, not residue to refuse.
+fn bootstrap_supervisor_lock(lock_path: &Path) -> Result<()> {
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(lock_path) {
+        Ok(mut f) => {
+            use std::io::Write as _;
+            f.write_all(b"{}")?;
+            f.sync_all()?;
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `supervisor.lock`: the ONE-AUTHORITY fence (ADR 0041 Lifecycle "one
+/// authority, one fence"). Bootstrapped with `CREATE_NEW` when absent
+/// (above), then taken with the SAME kernel-lock mechanics [`lock_writer`]
+/// uses — open-existing, bounded-retry `try_lock`, kernel-released on any
+/// death, so it is never stale. The only difference from the writer
+/// fence: this lock has no bootstrap step upstream of it (there is no
+/// `sot-capsule supervise` equivalent of voyage bootstrap), so its own
+/// first caller must be able to mint the inode. [`lock_writer`] and
+/// [`open_lock_file`] themselves are UNCHANGED — this is a second CALLER
+/// of the same open-existing arm, not a new one.
+pub fn lock_supervisor(lock_path: &Path) -> Result<WriterLock> {
+    bootstrap_supervisor_lock(lock_path)?;
+    lock_writer(lock_path)
 }
 
 /// Unix lock open: open-existing ONLY, matching the Windows arm — bootstrap
@@ -835,5 +937,66 @@ mod tests {
             got,
             std::fs::canonicalize(dir.path()).unwrap().join("a").join("v1")
         );
+    }
+
+    #[test]
+    fn lock_supervisor_bootstraps_an_absent_lock_file_and_holds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("supervisor.lock");
+        assert!(!lock_path.exists());
+        let guard = lock_supervisor(&lock_path).unwrap();
+        assert!(lock_path.is_file());
+        drop(guard);
+    }
+
+    #[test]
+    fn lock_supervisor_is_idempotent_over_an_already_bootstrapped_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("supervisor.lock");
+        {
+            let guard = lock_supervisor(&lock_path).unwrap();
+            drop(guard); // kernel-released
+        }
+        // A second bootstrap-then-lock over the SAME (already-created) file
+        // must not treat the existing inode as a conflict.
+        let guard = lock_supervisor(&lock_path).unwrap();
+        drop(guard);
+    }
+
+    #[test]
+    fn lock_supervisor_refuses_a_second_concurrent_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("supervisor.lock");
+        let _held = lock_supervisor(&lock_path).unwrap();
+        match lock_supervisor(&lock_path) {
+            Err(e) => assert!(format!("{e}").contains("held by another process"), "{e}"),
+            Ok(_) => panic!("expected a second lock_supervisor call to fail while the first is held"),
+        }
+    }
+
+    #[test]
+    fn lock_supervisor_two_racing_bootstraps_leave_exactly_one_winner() {
+        // The `CREATE_NEW` race itself: two threads bootstrapping the SAME
+        // absent path concurrently must never both believe they created
+        // it, and neither may error out on the other's win (ADR 0041:
+        // "an atomic create stops two supervisors minting rival inodes").
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("supervisor.lock");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let results: Vec<_> = (0..2)
+            .map(|_| {
+                let lock_path = lock_path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    bootstrap_supervisor_lock(&lock_path)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
+        assert!(lock_path.is_file());
     }
 }

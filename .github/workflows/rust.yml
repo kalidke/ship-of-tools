@@ -116,14 +116,26 @@ jobs:
   # `close_pty()` and depends on the exact same blocking-close/concurrent-
   # drain ordering, so `windows-latest` alone could pass it there too
   # without ever exercising the hang risk this job exists to catch.
+  #
+  # ADR 0041 step 6, unit U0 round-1: `pipe_win` and `e2e_pipe` joined this
+  # job too — the same-connection challenge's security-sensitive Windows
+  # tests (real named pipes, a real cross-process server) belong in a named,
+  # budgeted job, not folded anonymously into the general `windows-latest`
+  # matrix's blanket `cargo test --workspace`. This is a PARTIAL adoption of
+  # the ADR's pinned five-command table (conpty/capsule_win/pipe_win/
+  # e2e_pipe/supervisor_win, ~75 min total incl. checkout+build):
+  # `supervisor_win` doesn't exist until U2 mints it, so this job runs the
+  # other four, each at its own ADR-pinned per-step cap; the job-level
+  # timeout leaves headroom for checkout+build plus all four steps'
+  # worst case. `pipe_win`/`e2e_pipe` ALSO still run via the main `test`
+  # job's blanket `cargo test --workspace` on `windows-latest` — the
+  # duplication is deliberate, not yet worth a special-case exclusion.
   conpty-windows-2022:
-    name: conpty + capsule owned-ConPTY tests (windows-2022)
+    name: conpty + capsule owned-ConPTY + pipe/challenge tests (windows-2022)
     runs-on: windows-2022
-    # A close-ordering bug here is exactly a HANG (pre-24H2's
-    # ClosePseudoConsole blocking forever with nothing draining hOutput) —
-    # bounded so that failure mode fails the job in minutes, not by waiting
-    # out the platform-wide default.
-    timeout-minutes: 10
+    # See the per-step caps below for what each command budgets; this is
+    # checkout+build (~15 min per the ADR) plus all four steps' worst case.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: rust
@@ -140,13 +152,30 @@ jobs:
       # asserted; captured output would hide them from CI, the same
       # reasoning the fault sweeps above already establish for this
       # workspace.
+      #
+      # A close-ordering bug here is exactly a HANG (pre-24H2's
+      # ClosePseudoConsole blocking forever with nothing draining hOutput) —
+      # bounded so that failure mode fails the job in minutes, not by
+      # waiting out the platform-wide default.
       - name: Test conpty (owned ConPTY + job containment)
+        timeout-minutes: 5
         run: cargo test -p sot-log --test conpty -- --nocapture
       # --test capsule_win: same reasoning, one test BINARY
       # (tests/capsule_win.rs) — the DSR-presence finding in the e2e test
       # is likewise logged, not asserted (host/build-version-dependent).
       - name: Test capsule_win (Windows capsule runtime)
+        timeout-minutes: 10
         run: cargo test -p sot-log --test capsule_win -- --nocapture
+      # --test pipe_win: the named-pipe transport plus the same-connection
+      # challenge's real-pipe and real-cross-process tests (ADR 0041 U0
+      # round-1).
+      - name: Test pipe_win (named-pipe transport + same-connection challenge)
+        timeout-minutes: 10
+        run: cargo test -p sot-log --test pipe_win -- --nocapture
+      # --test e2e_pipe: the full real-pipe attach/mgmt end-to-end.
+      - name: Test e2e_pipe (real-pipe end-to-end)
+        timeout-minutes: 10
+        run: cargo test -p sot-log --test e2e_pipe -- --nocapture
 
   p2-e2e:
     name: P2 e2e (real helper, offline)
