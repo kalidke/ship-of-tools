@@ -1194,28 +1194,82 @@ where that fact actually lives. A next-morning attach to yesterday's
 session is still a visible event: the leg time is yesterday's, on
 screen, in the drawer.
 
-**The probe algorithm** — supervisor start is a pinned state table on
-(pipe, writer.lock):
+**The probe algorithm** — one classification, run at supervisor start
+and at every loop re-entry. (Amended 2026-08-28: the original was a
+table over `(pipe, writer.lock)` read as if the two were sampled at
+once. They are two syscalls, and step 5's teardown closes the pipe
+microseconds before it releases the lock, so an ordinary healthy
+shutdown could be classified fatal. The pipe's own ANSWER is the
+authority; the lock is consulted only where there is no pipe to ask;
+and the only fatal classification is a WELL-FORMED WRONG ANSWER.)
 
-- pipe live + lock held → ADOPT (never touch the lock). Adoption
-  captures TERMINATION AUTHORITY with a post-open liveness challenge
-  that closes the pid-reuse race: (1) read the server pid P via
-  `GetNamedPipeServerProcessId` on the live connection; (2)
-  `OpenProcess(P, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION
-  | SYNCHRONIZE)`; (3) AFTER the open, issue a mgmt `status` challenge
-  on the same connection — the reply carries the capsule's self-reported
-  pid and creation time; (4) the handle is proven to be the server iff
-  reply-pid == P AND reply creation time == `GetProcessTimes(handle)`.
-  (A dead true server cannot answer the challenge; a live one means P is
-  not recycled — pids are unique among live processes.) The (handle,
-  creation-time) pair is the pinned identity; SYNCHRONIZE makes the
-  post-termination wait executable.
-- pipe absent + lock held → bounded retry → visible wedge error. Never
-  spawn over it.
-- pipe absent + lock free → release the probe lock, spawn, RE-PROBE to
-  converge — two racing supervisors resolve with the loser converging on
-  the winner, never a false fatal.
-- pipe live + lock free, or identity mismatch → inconsistent: loud stop.
+| class   | evidence                                          | action    |
+|---------|---------------------------------------------------|-----------|
+| ADOPTED | connect ok, challenge passes                      | adopt; never touch the lock |
+| FOREIGN | connect ok, well-formed mgmt reply, identity does not match | LOUD STOP |
+| PENDING | connect ok but EOF or timeout before a reply; `ERROR_PIPE_BUSY` past its own retry; any other connect error; no pipe with the lock HELD; a spawned child alive but not yet holding the lock | retry |
+| ABSENT  | no pipe, lock free, no spawn outstanding          | spawn     |
+| WEDGED  | the retry budget expired in PENDING               | LOUD STOP |
+
+PENDING is ONE class because its members are indistinguishable from
+outside and converge on the same two answers. It covers four REAL
+healthy states, each named so its bound can be chosen rather than
+guessed: a capsule that has bound its pipe but not yet built its
+protocol machine (bind is deliberately the first fallible step after the
+lock, ahead of `seal_survivor`, the first segment and the preamble); a
+capsule in its shutdown TAIL, whose pipe stays live through the reap
+poll, the process wait, the `producer_dead` write and the seal; a live
+capsule momentarily at its instance cap; and SPAWN-PENDING — a child
+that exists but has not yet acquired the writer lock, because
+`open_for_writing` enumerates, reconciles and rebuilds the dedupe index
+over all retained history before it returns. That last window is
+O(retained history), so it gets its own, much larger bound.
+
+The numbers, pinned here so that no implementation invents them:
+
+| bound            | value               | what it must dominate            |
+|------------------|---------------------|----------------------------------|
+| connect          | 2 s                 | `connect_voyage_pipe`'s existing retry |
+| challenge        | 2 s                 | one `status` answered from memory by a loop whose per-iteration budget is one group-commit window |
+| probe retry      | 10 × 500 ms = 5 s   | startup-before-protocol, the shutdown tail (worst case the 5 s process wait plus a seal), and BUSY |
+| spawn-ready      | 60 s, polled 500 ms | O(retained history) `open_for_writing`; a child exit short-circuits it |
+| lock retry       | `lock_writer`'s existing 250 ms | nothing more: Windows' unbounded post-kill release lag is absorbed by the probe retry above, never by a second lock bound |
+| anti-flap        | floor 10 s, 3 consecutive | a leg that cannot start    |
+| launcher restart | ≤ 5 in 60 s         | a crash-looping supervisor       |
+
+The 60 s spawn-ready bound is DEFENDED, not assumed: the acceptance
+suite measures `open_for_writing` against a realistic retained voyage
+and fails if it approaches the bound. If it grows there, the answer is
+voyage rotation, not a larger constant.
+
+**The challenge**, unchanged, with its ORDER load-bearing: (1) read the
+server pid P via `GetNamedPipeServerProcessId` on the live connection;
+(2) `OpenProcess(P, PROCESS_TERMINATE |
+PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE)`; (3) AFTER the open,
+issue a mgmt `status` challenge on the SAME connection; (4) the handle
+is proven to be the server iff reply-pid == P AND reply creation time ==
+`GetProcessTimes(handle)`, compared on the exact FILETIME bits. (A dead
+true server cannot answer; a live one means P is not recycled — pids are
+unique among live processes.) The (handle, creation-time) pair is the
+pinned identity; SYNCHRONIZE makes the post-termination wait executable.
+WHAT THIS PROVES, narrowly: the answering process IS the server behind
+this connection, and it is alive with a stable identity. It does not
+attest an executable — a same-user process implementing the pinned v0
+lane would pass. The bound on that is the DACL: the pipe admits only the
+owner account and rejects remote clients, and this ADR's threat model is
+other local users and anonymous access, NOT the owner. No attestation is
+added for a threat the model excludes.
+
+That retained handle is the DEATH SIGNAL as well as the termination
+authority: the supervisor WAITS on it rather than holding a management
+connection open for the capsule's whole life, which leaves the
+protocol's non-watcher pool free for transient callers. There is no
+reserved management slot and none is needed — a probe refused because
+the pool is momentarily full closes without a reply, which is PENDING,
+which retries. `MAX_PIPE_INSTANCES` is derived from the protocol's own
+caps (`NON_WATCHER_CAP + SUBSCRIBER_CAP`), never an invented constant.
+Waking on the handle is not proof of a COMPLETED EndRun — that stays ack
++ pipe closure + verify-green + lock release; it is only a wake-up.
 
 ## Upgrade and version skew
 
