@@ -1114,54 +1114,73 @@ from the protocol's own caps (`NON_WATCHER_CAP + SUBSCRIBER_CAP`).
 
 `probe`/`status`/`shutdown` ride the pinned v0 mgmt framing — the
 permanently compatible lane; attach-protocol versions negotiate via
-`hello` above it.
+`hello` above it. The supervisor lane is version-locked to the release
+instead, because this transaction replaces both its ends at once.
 
-**An upgrade is ONE atomic transaction that stops the session first.**
-(Amended 2026-08-28: "stage-after-exit" was written as though the
-capsule image could be deferred on its own. It cannot — the same
-executable is the supervisor, so "no capsule is live" does not make the
-file replaceable, and the applier's binaries, manifest, junction and
-rollback are already one transaction, in which deferring a single image
-can activate a mixed release or roll back over a running one.) The
-launcher tells the supervisor to end the run — WHILE IT IS STILL ALIVE,
-because it is the process holding the challenged capsule handle, and any
-hard-stop fallback must be mediated before that handle is destroyed —
-waits for the capsule's record AND image proofs, then stops the
-supervisor and waits for ITS process exit and fence release, and only
-then does the applier replace anything. Ordering the supervisor's death
-before the end-run would leave a later `endrun` process able to reach a
-same-user pipe server it cannot authenticate: with the mgmt lane itself
-invalid there is no trusted baseline to "re-verify unchanged" against,
-so it could only terminate blind or refuse, and the upgrade would be
-impossible either way. The supervisor restarts afterwards and spawns a
-fresh leg. The consequence is stated rather than hidden: UPGRADING ENDS
-THE DRAWER SESSION, on purpose, once, at a moment the operator chose.
+**An upgrade is ONE atomic transaction.** The capsule image IS the
+supervisor image, so no image can be deferred on its own: "no capsule is
+live" does not make the file replaceable, and the applier's binaries,
+manifest, junction and rollback are already one transaction in which a
+single deferred image can activate a mixed release or roll back over a
+running one. The order, and every step's reason:
 
-Rollback must be ABSENCE-AWARE. The applier today saves and restores two
-binaries and leaves a file alone when it has no `.prev`; the first
-release that introduces the capsule has no previous capsule, so a
-failure after installing it would restore the two old images and leave
-the new one — the mixed release this section forbids. Transaction
-metadata records prior ABSENCE, restore DELETES new-only files, and
-required-file verification is all-or-nothing. First-boot health cannot
-stay FE-only either: a supervisor that exits terminal or crash-loops
-while the FE stays up would never trip it, so the health window covers
-supervisor readiness — spawned or adopted — as well as the FE, with the
-rollback decision pinned to both. Archive membership — the capsule in
-the artifact, the manifest, the required-file list, and a `--version`
-line in the shape the smoke job asserts — may land before the
-transaction; apply policy may not. The DEVELOPMENT build-and-stage path
-is bound by the same rule: a dev loop that stages only the frontend runs
-yesterday's capsule against today's protocol. If a security defect
-invalidates even
-the mgmt lane, the honest fallback is hard termination + voyage
-recovery, executable because adoption captured a termination-capable
-handle bound to the live pipe server by the liveness challenge
-(re-verified unchanged immediately before `TerminateProcess`, then a
-BOUNDED `WaitForSingleObject` on the same handle — termination is
-asynchronous and can await pending I/O; a timeout is a LOUD failure,
-never an assumed death). Graceful shutdown is not promised
-unconditionally. The release pipeline packages the capsule binary.
+1. The launcher asks the LIVE supervisor to end the run. It must still
+   be alive: it is the process holding the challenged capsule handle,
+   and the invalid-mgmt fallback below must be mediated before that
+   handle is destroyed. Killing it first would leave a later `endrun`
+   process facing a same-user pipe server it cannot authenticate — with
+   the mgmt lane itself invalid there is no trusted baseline to
+   "re-verify unchanged" against, so it could only terminate blind or
+   refuse.
+2. Wait for `record_verified` AND `image_quiescent`. The record can be
+   closed while the image is still open, because `sot-capsule` formats
+   its summary and exits after `run` returns.
+3. Stop the supervisor; wait for its process exit and fence release.
+4. Apply. 5. Start the supervisor with `--start`, which is what makes
+   the fresh leg happen — the requested end just sealed would otherwise
+   suppress it.
+
+The consequence is stated rather than hidden: UPGRADING ENDS THE RUN, on
+purpose, once, at a moment the operator chose. The voyage and the
+session persist; it is a leg that ends.
+
+Rollback is ABSENCE-AWARE. The applier today saves and restores two
+binaries and leaves a file alone when it has no `.prev`, so the first
+release introducing the capsule would, on a later failure, restore the
+two old images and leave the new one — the mixed release this section
+forbids. Transaction metadata records prior ABSENCE, restore DELETES
+new-only files, and required-file verification is all-or-nothing.
+
+First-boot health cannot stay FE-only: a supervisor that exits terminal
+or crash-loops while the FE stays up would never trip it. One window,
+150 s from apply — the readiness cutoff plus its kill-and-wait, so a
+healthy large-voyage start is never mistaken for a failure — and one
+decision:
+
+| observation within the window        | decision       |
+|--------------------------------------|----------------|
+| FE exits abnormally                  | ROLL BACK      |
+| supervisor exits 69, or crashes past its restart budget | ROLL BACK |
+| supervisor never reaches READY (spawned or adopted) | ROLL BACK |
+| FE exits 75                          | not a health signal; the window continues across the relaunch |
+| FE alive AND supervisor READY        | COMMIT         |
+
+Archive membership — the capsule in the artifact, the manifest, the
+required-file list, and a `--version` line in the shape the smoke job
+asserts — may land before the transaction; apply policy may not. The
+DEVELOPMENT build-and-stage path is bound by the same rule: a dev loop
+that stages only the frontend runs yesterday's capsule against today's
+protocol.
+
+If a security defect invalidates even the mgmt lane, the honest fallback
+is hard termination + voyage recovery, executable because adoption
+captured a termination-capable handle bound to the live pipe server by
+the liveness challenge (re-verified unchanged immediately before
+`TerminateProcess`, then a BOUNDED `WaitForSingleObject` on the same
+handle — termination is asynchronous and can await pending I/O; a
+timeout is a LOUD failure, never an assumed death). Graceful shutdown is
+not promised unconditionally. The release pipeline packages the capsule
+binary.
 
 ## Build order (each step lands green)
 
