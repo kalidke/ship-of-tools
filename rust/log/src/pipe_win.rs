@@ -220,17 +220,17 @@ fn wide_null(s: &str) -> Vec<u16> {
 
 /// The voyage id is validated as a canonical RFC 4122 UUID — lowercase,
 /// hyphenated, the exact form [`uuid::Uuid`]'s own `Display` produces —
-/// before it is ever interpolated into a pipe name. `Uuid::parse_str`
-/// accepts several equivalent shapes (uppercase hex, the 32-hex-digit
-/// "simple" form, braced GUIDs, `urn:uuid:...`); re-rendering the parsed
-/// value and requiring a BYTE-IDENTICAL match to the input pins the wire
-/// to exactly one shape. Anything that fails to parse at all (path-
-/// traversal shapes, wrong length, non-hex bytes) is rejected the same
-/// way.
+/// before it is ever interpolated into a pipe name. Delegates to
+/// `pointer::canonical_voyage_id` (ADR 0041 U0 round-1 minor finding 9):
+/// one canonical-UUID check for this crate, not two that can drift, as
+/// this one already had from `drawer.voyage`'s own (stricter) validation.
+/// Anything that fails to parse at all (path-traversal shapes, wrong
+/// length, non-hex bytes) is rejected the same way.
 fn validate_voyage_id(voyage_id: &str) -> Result<(), PipeError> {
-    match uuid::Uuid::parse_str(voyage_id) {
-        Ok(u) if u.to_string() == voyage_id => Ok(()),
-        _ => Err(PipeError::InvalidVoyageId(voyage_id.to_string())),
+    if crate::pointer::canonical_voyage_id(voyage_id).is_some() {
+        Ok(())
+    } else {
+        Err(PipeError::InvalidVoyageId(voyage_id.to_string()))
     }
 }
 
