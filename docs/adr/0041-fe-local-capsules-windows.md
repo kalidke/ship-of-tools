@@ -1405,12 +1405,9 @@ is the safety:
 3. Only then restore, all-or-nothing, with required-file verification.
 
 **A refusal is TERMINAL, not a retry.** ZERO MUTATION means zero RELEASE
-and VOYAGE mutation — recording the decision is not mutation, and
-forbidding that is what left the earlier text unable to choose between a
-marker armed forever and a marker cleared into "the broken release is
-fine". So a typed refusal at step 0 atomically transitions `just-applied`
-from ARMED to a durable terminal `rollback_refused` state carrying its
-diagnostics. The launcher recognizes that state on a COLD launch, after
+and VOYAGE mutation; recording the decision is not mutation. So a typed
+refusal at step 0 atomically transitions `just-applied` from ARMED to a
+durable terminal `rollback_refused` state carrying its diagnostics. The launcher recognizes that state on a COLD launch, after
 any restart, and does exactly two things: surfaces recovery, and stops.
 It does not relaunch the failed release and it does not retry the
 rollback. An operator decides what happens next.
@@ -1490,19 +1487,17 @@ binary.
 
 ### Step 6 units
 
-**Units.** U0 and U1 carry mechanism that the contract does not
-decide, so they can land while it is still under review; U1 CHANGES
-ACTIVE step-5 behavior and is not "dormant" in the no-behavior-change
-sense. U2 and U3 are policy. A supervisor spawning capsules while the FE
-still owns its own PTY is two sessions, so U2 and U3 stay off until U4.
+U0 and U1 carry mechanism the contract does not decide; U2 and U3 are
+policy. U0 has NO BEHAVIOR; U1a changes ACTIVE step-5 plumbing, U1b
+DURABLE compatibility. A supervisor spawning capsules while the FE still
+owns its own PTY is two sessions, so U2 and U3 stay off until U4.
 
 - **U0 — libraries, no behavior.** The state-dir rule as a public
   `sot-log` helper the frontend delegates to; `drawer.voyage`
   publication and validation; the same-connection challenge — including
   its target-process token-SID helper — and retained process-handle
   wrappers; the fence primitive with its `CREATE_NEW` bootstrap;
-  classifier fault-injection scaffolding. No decision list is frozen
-  here.
+  classifier fault-injection scaffolding.
 - **U1 — active capsule changes**, in two separately reviewable slices
   because one of them changes durable compatibility and the other does
   not. **U1a (plumbing):** enforcing the challenge in the shared
