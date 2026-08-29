@@ -853,25 +853,53 @@ signal that the end was REQUESTED. A raw-terminal EndRun writes
 `producer_dead` + seal only — raw terminals emit no turns, so there are
 no synthesized closes.
 
-**Respawn is REASON-GATED, and the gate is that sealed record.** When a
-leg ends, the supervisor reads the just-sealed `producer_dead` detail: a
-`reason` means the session was ended on purpose and NO new leg follows;
-any other end — the producer exiting, a crash, a transport fatal, a
-store that never opened — is replaced by a new leg with a visible "run
-ended — new leg". This is why an EndRun caller needs no lock, no stop
-flag and no handshake with the supervisor: the decision is made AFTER
-the seal, from a verified record with exactly one writer, so there is
-nothing to race and nothing left stuck if the caller dies mid-request.
+**Respawn is gated by a TYPED marker the capsule writes, not by a
+diagnostic string.** (Amended 2026-08-28: an earlier revision gated on
+the presence of `producer_dead.detail.reason`, which the shipped capsule
+also writes for a spawn failure and for `transport-accept-failed` — the
+two ends it must RECOVER from. Gating on it would have made a missing
+shell look like an operator's decision.) On receiving mgmt `shutdown`
+the capsule appends one `run_end_requested {reason}` lifecycle frame,
+committed IMMEDIATELY and BEFORE the `shutdown_ok` ack is queued, so the
+evidence is durable before any caller can observe success. It is written
+by the capsule — the single writer of its own store — inside the leg's
+own epoch, and it inherits that leg's seal, which is what makes it
+single-writer, generation-scoped and durable at once.
+`producer_dead.detail.reason` stays a free-form DIAGNOSTIC and is never
+read as a discriminator. The mapping is total: a spawn failure and a
+transport fatal write no `run_end_requested`, so both are recovered;
+only an externally requested end has one. A second `shutdown` while one
+is in flight is idempotent — acked, no second frame, the first reason
+stands.
 
-**Respawn is bounded.** A leg ending within 10 s of spawn is a FAST
-FAIL; three consecutive fast fails stop the loop; any leg reaching 10 s
-resets the count. The criterion is the supervisor's own measurement of
-its own child, deliberately NOT "no client ever attached" — `status`
-does not report attachment and an attach is not a durable voyage fact,
-so that criterion could never be observed. Diagnosis is whatever
-actually exists: the sealed `producer_dead` detail when a segment
-sealed, the child's exit code and stderr tail when the store never
-opened at all.
+**Start authorization distinguishes a crash-restart from a new
+session.** The gate above is read for exactly one epoch — the leg the
+supervisor itself spawned or adopted — never "the latest record",
+because a leg that died before writing its own tail must not inherit an
+older leg's verdict. On STARTUP the supervisor reads the highest sealed
+epoch instead, and needs one more bit: a launcher that restarts a
+crashed supervisor must not resurrect a session the operator ended,
+while a launcher STARTED FRESH tomorrow must be able to. The launcher
+therefore mints one START TOKEN per launcher run and passes the same
+value to every supervisor it starts within that run; the supervisor
+passes it into the capsule's spawn detail, where it is sealed with the
+leg. Startup spawns unless the highest sealed epoch carries BOTH a
+`run_end_requested` AND this same start token — that combination, and
+only it, means "this launcher run already ended its session". A new
+launcher run carries a new token and starts normally. No file, no
+second writer.
+
+**Respawn is bounded, and the criterion is READINESS, not age.**
+(Amended 2026-08-28: a raw 10 s floor let a store that fails to open
+after 11 s reset the counter forever and spawn without end.) A child
+that never reaches READY — the point at which it holds the writer fence
+AND its pipe answers the challenge — is a STARTUP FAILURE however long
+it took, including one killed at the readiness deadline. Three
+consecutive startup failures stop the loop. Only a leg that actually
+reached READY resets the count; the time it then ran is irrelevant.
+Diagnosis is whatever exists: the sealed `producer_dead` detail when a
+segment sealed, the child's exit code and stderr tail when the store
+never opened at all.
 
 **Supervisor exit codes are the launcher's contract**, so the outer loop
 can neither defeat the bound nor resurrect an ended session. `0` = clean
