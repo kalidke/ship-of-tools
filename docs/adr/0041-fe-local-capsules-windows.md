@@ -583,8 +583,9 @@ adversarial, by design.
 ### Step 6 as specified (2026-08-28, pre-implementation review)
 
 The contract is the "Lifecycle", "Upgrade and version skew" and "Build
-order" sections BELOW. This section carries only what those do not: the
-FE's client behavior, the unit graph, and the acceptance matrix.
+order" sections BELOW, the last of which also carries the unit graph.
+This section carries only what those do not: the FE's client behavior
+and the acceptance matrix.
 
 **The FE client, pinned where the protocol leaves a client free.**
 
@@ -684,59 +685,17 @@ FE's client behavior, the unit graph, and the acceptance matrix.
   drawer error: a marker that exists so a failure is not quiet cannot
   fail quietly itself.
 
-**Units.** U0 and U1 carry mechanism that the contract above does not
-decide, so they can land while it is still under review; U1 CHANGES
-ACTIVE step-5 behavior and is not "dormant" in the no-behavior-change
-sense. U2 and U3 are policy. A supervisor spawning capsules while the FE
-still owns its own PTY is two sessions, so U2 and U3 stay off until U4.
-
-- **U0 — libraries, no behavior.** The state-dir rule as a public
-  `sot-log` helper the frontend delegates to; `drawer.voyage`
-  publication and validation; the same-connection challenge — including
-  its target-process token-SID helper — and retained process-handle
-  wrappers; the fence primitive with its `CREATE_NEW` bootstrap;
-  classifier fault-injection scaffolding. No decision list is frozen
-  here.
-- **U1 — active capsule changes**, in two separately reviewable slices
-  because one of them changes durable compatibility and the other does
-  not. **U1a (plumbing):** enforcing the challenge in the shared
-  `connect_voyage_pipe` constructor, which is active behavior for
-  today's step-5 clients and therefore not U0's; idempotent
-  `shutdown_all` so the RAII guard can be disarmed; the 5 s mgmt idle
-  deadline; the ack grace; and the `open_for_writing` split that puts
-  the writer fence and the lease check ahead of history traversal.
-  **U1b (durable):** the `sot.capsule.run-end-requested-v1` registration
-  with bidirectional verifier enforcement (amending ADR 0039's own
-  displayed registry and lifecycle grammar in the same change, so the
-  older normative document does not stay at two entries), the
-  reader-first rollout with its installed-capability gate, the marker
-  frame and its latch, and the aggregate teardown deadline. Every
-  existing test stays; the new ones are the marker, teardown, idle-mgmt
-  and feature-boundary rows of the acceptance matrix.
-- **U2 — the authority.** `sot-capsule supervise` with its lane, the
-  election fence, the classifier, spawn/adopt, the parent lease, start
-  modes, the anti-flap counter, `record_verified`, the exit-code
-  contract, and `endrun`/`reset` as fence-acquiring in-process callers.
-- **U3 — the FE client**, behind the same off-by-default flag: the six
-  rulings above, checkpoint restore into the drawer's parser, and
-  deletion of its DSR responder.
-- **U4 — the cutover, one flag.** The launcher starts the supervisor
-  with a start mode and the stop handshake, waits for pointer
-  publication and READY before starting the FE, and stages the capsule
-  on the dev path; the FE defaults to attach-only; the teardown script
-  is rewritten; the upgrade transaction and absence-aware rollback land.
-
 **Acceptance** — the races this design turns on, not only its happy
 paths.
 
 | what it settles | the test |
 |---|---|
 | the step-5 cross-process residual | a real child `sot-capsule run`: reply-pid ≠ the test's own pid, reply-pid == the pipe's server pid, creation time == an independently opened handle's |
-| the classifier is total AND every row reachable | one case per row, including malformed frames, wrong opcodes, ACCESS_DENIED, `CreateProcess` failure, `WAIT_FAILED` and kill failure; the Stage-B deadline wedges every Stage-B PENDING row, while an A5 child at its readiness cutoff (A5 at t=0 → A3 at the cutoff) reaches KILL+WAIT — NO Stage-A terminal result may leave a live child; and a Stage-B observer of a fence-held/name-absent history walk AT THE MEASURED BOUNDARY does not expire before the child binds |
+| the classifier is total AND every row reachable | one case per row, including malformed frames, wrong opcodes, ACCESS_DENIED, `CreateProcess` failure, `WAIT_FAILED` and kill failure; the Stage-B deadline wedges every Stage-B PENDING row, while an A5 child at its readiness cutoff (A5 at t=0 → A3 at the cutoff) reaches KILL+WAIT — NO Stage-A terminal result may leave a live child |
 | the marker is the acceptance barrier | an ack stalled after a durable marker still tears down; a failed append yields no ack, no marker, an unsealed exit, `failed {record_append}`, a released hold and a replaced leg; two concurrent callers get one marker and two acks; the frame is refused by the verifier in an undeclaring segment, and a declaring segment is refused by a pre-feature reader |
 | a spawn failure is recovered, not obeyed | a missing shell and a transport fatal both respawn; only `run_end_requested` suppresses |
 | start modes | `--resume` after a requested end exits 0; `--start` after the same end spawns; an ADOPTED leg ends correctly; a provable torn tail is REPAIRED and replaced while a complete corruption exits 69 without spawning |
-| operation recovery is crash-total | a crash injected after journal durability, after the pointer rename, after pointer publication / marker commit, after terminal journal durability, and before the reply — each followed by restart and `query`: reset reconstructs `reset_done {new_voyage}` and never mints a second identity, EndRun reconstructs from the marker, and no entry is left ACTIVE forever |
+| operation recovery is crash-total | a crash injected after journal durability, after the pointer rename, after pointer publication / marker commit, after terminal journal durability, and before the reply — each followed by restart and `query`: reset reconstructs `reset_done {new_voyage}` and never mints a second identity, EndRun reconstructs from the marker, a lost `reset` reply retried under the same operation id does not rename twice, and no entry is left ACTIVE forever |
 | an ended authority still answers | after a requested end, `query`/`status`/`stop` are served before the start-mode exit; a restarted authority serves a recovered result before exiting 0 |
 | the lease is not a sample | supervisor killed between `CreateProcess` and fence acquisition, and again during the history walk: the child exits or is visible, never both-invisible-then-binding |
 | FE quit during spawn-pending | the request is admitted and latched DURING the spawn and ends the run properly, never leaving a capsule behind |
@@ -748,14 +707,13 @@ paths.
 | status and attach cross a leg | a leg death in that window is detected, never rendered as the wrong start time |
 | backpressure | a stalled FE is evicted rather than buffering without bound |
 | the teardown order | the run ends and the record closes before the FE and tunnel die; an unreachable-but-visible capsule stops the script loudly |
-| upgrade | image replacement after both proofs never hits a sharing violation; a first-ever capsule install rolls back by DELETION; each health-table row decides as written, including READY+1 ms death and a lane that wedges after answering once |
+| the release transaction is quiescent both ways | image replacement after both proofs never hits a sharing violation; a first-ever capsule install rolls back by DELETION; a supervisor-69 rollback with the new FE alive quiesces it first and never touches a locked image; the capsule is ended while the supervisor still holds its challenged handle; a pre-reader install cannot activate the writer at all |
 | lifecycle commands are voyage-fenced | an `end_run` minted against voyage A and delivered after a reset to B is `refused {stale_voyage}` with no mutation; a `status` before the first leg answers with no `leg` and phase STARTING |
-| the lane's own lifecycle | a squatted name loses first-instance bind and exits 69; a present-but-unanswering lane is treated as absent; a mismatched build is refused; a lost `reset` reply retried under the same operation id does not rename twice |
+| the lane's own lifecycle | a squatted name loses first-instance bind and exits 69; a present-but-unanswering lane is treated as absent; a mismatched build is refused |
 | the challenge authenticates the SERVER | on a real Windows machine, an OTHER-USER process pre-binds the supervisor name AND the voyage name with a permissive DACL and answers plausibly: every public client entry point classifies it FOREIGN before decoding or trusting a reply, and each target-token lookup failure lands PENDING, never READY or ADOPTED |
-| the supported history envelope composes | a release-mode cold-history open at the named boundary publishes its measured time, and the gate fails unless `B >= measured × 3` and EVERY formula and consumer is recomputed with it in the same change |
-| rollback is safe under a live release | a supervisor-69 rollback with the new FE alive quiesces it first and never touches a locked image; the capsule is ended while the supervisor still holds its challenged handle; a pre-reader install cannot activate the writer at all |
+| the supported history envelope composes | a release-mode cold-history open at the named boundary publishes its measured time, and the gate fails unless `B >= measured × 3` and EVERY formula and consumer is recomputed with it in the same change; at that boundary a Stage-B observer of a fence-held/name-absent history walk does not expire before the child binds |
 | a refusal is terminal | a step-0 feature-boundary refusal mutates no release or voyage state, arms `rollback_refused` durably, and a COLD launcher start then surfaces recovery without relaunching the failed release or retrying rollback |
-| health is total | exit 75 at the deadline with no live FE ROLLS BACK; `just-applied` is never left ARMED — it is committed, rolled back, or terminal |
+| health is total | each health-table row decides as written, including READY+1 ms death and a lane that wedges after answering once; exit 75 at the deadline with no live FE ROLLS BACK; `just-applied` is never left ARMED — it is committed, rolled back, or terminal |
 | teardown composes | worst-case worker fan-out completes inside the 20 s aggregate and the fence is free before the probe episode expires; a probe during the tail, and against four idle mgmt clients, never reaches WEDGED |
 | `fe_down` evidence | baseline captured before this run appends; skipped on a first attach; an append failure is visible |
 
@@ -1492,13 +1450,6 @@ relaunch that has not produced a live FE by the deadline is
 indistinguishable from one that never will, and leaving `just-applied`
 armed forever is the failure mode a total table exists to prevent.
 
-Archive membership — the capsule in the artifact, the manifest, the
-required-file list, and a `--version` line in the shape the smoke job
-asserts — may land before the transaction; apply policy may not. The
-DEVELOPMENT build-and-stage path is bound by the same rule: a dev loop
-that stages only the frontend runs yesterday's capsule against today's
-protocol.
-
 If a security defect invalidates even the mgmt lane, the honest fallback
 is hard termination + voyage recovery, executable because adoption
 captured a termination-capable handle bound to the live pipe server by
@@ -1526,8 +1477,8 @@ binary.
 5. The pipe protocol (mgmt v0 + attach lane) through the ordered writer
    loop; watermark attach; connection-scoped pen.
 6. The supervisor and the attach-only FE, which ACTIVATE TOGETHER —
-   contract in this section and the two above it, unit graph and
-   acceptance in "Step 6 as specified".
+   contract in "Lifecycle", "Upgrade and version skew" and this section,
+   units below, FE behavior and acceptance in "Step 6 as specified".
 7. Acceptance on a real Windows machine — step 6's matrix re-run where
    CI cannot go, plus the rows only a real machine has: multi-user ACL
    denial; logout/login and reboot ACL access; AV rename-retry;
@@ -1536,6 +1487,57 @@ binary.
    NIGHTLY COMPOSITE (supervisor AND FE force-killed AND tunnel torn, no
    EndRun — the capsule survives headless and the next start ADOPTS it,
    never silently).
+
+### Step 6 units
+
+**Units.** U0 and U1 carry mechanism that the contract does not
+decide, so they can land while it is still under review; U1 CHANGES
+ACTIVE step-5 behavior and is not "dormant" in the no-behavior-change
+sense. U2 and U3 are policy. A supervisor spawning capsules while the FE
+still owns its own PTY is two sessions, so U2 and U3 stay off until U4.
+
+- **U0 — libraries, no behavior.** The state-dir rule as a public
+  `sot-log` helper the frontend delegates to; `drawer.voyage`
+  publication and validation; the same-connection challenge — including
+  its target-process token-SID helper — and retained process-handle
+  wrappers; the fence primitive with its `CREATE_NEW` bootstrap;
+  classifier fault-injection scaffolding. No decision list is frozen
+  here.
+- **U1 — active capsule changes**, in two separately reviewable slices
+  because one of them changes durable compatibility and the other does
+  not. **U1a (plumbing):** enforcing the challenge in the shared
+  `connect_voyage_pipe` constructor, which is active behavior for
+  today's step-5 clients and therefore not U0's; idempotent
+  `shutdown_all` so the RAII guard can be disarmed; the 5 s mgmt idle
+  deadline; the ack grace; and the `open_for_writing` split that puts
+  the writer fence and the lease check ahead of history traversal.
+  **U1b (durable):** the `sot.capsule.run-end-requested-v1` registration
+  with bidirectional verifier enforcement (amending ADR 0039's own
+  displayed registry and lifecycle grammar in the same change, so the
+  older normative document does not stay at two entries), the
+  reader-first rollout with its installed-capability gate, the marker
+  frame and its latch, and the aggregate teardown deadline. Every
+  existing test stays; the new ones are the marker, teardown, idle-mgmt
+  and feature-boundary rows of the acceptance matrix.
+- **U2 — the authority.** `sot-capsule supervise` with its lane, the
+  election fence, the classifier, spawn/adopt, the parent lease, start
+  modes, the anti-flap counter, `record_verified`, the exit-code
+  contract, and `endrun`/`reset` as fence-acquiring in-process callers.
+- **U3 — the FE client**, behind the same off-by-default flag: the six
+  FE rulings in "Step 6 as specified", checkpoint restore into the
+  drawer's parser, and deletion of its DSR responder.
+- **U4 — the cutover, one flag.** The launcher starts the supervisor
+  with a start mode and the stop handshake, waits for pointer
+  publication and READY before starting the FE, and stages the capsule
+  on the dev path; the FE defaults to attach-only; the teardown script
+  is rewritten; the upgrade transaction and absence-aware rollback land.
+
+Archive membership — the capsule in the artifact, the manifest, the
+required-file list, and a `--version` line in the shape the smoke job
+asserts — may land before the transaction; apply policy may not. The
+DEVELOPMENT build-and-stage path is bound by the same rule: a dev loop
+that stages only the frontend runs yesterday's capsule against today's
+protocol.
 
 ## Consequences
 
