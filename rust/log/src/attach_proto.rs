@@ -324,6 +324,21 @@ const PRE_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 const GROUND_TIMEOUT: Duration = Duration::from_secs(5);
 const KEEPALIVE_IDLE_TRIGGER: Duration = Duration::from_secs(30);
 const KEEPALIVE_REPLY_DEADLINE: Duration = Duration::from_secs(30);
+/// ADR 0041 bounds table ("mgmt idle", role "pool squatting") / Lifecycle
+/// "Two capsule-side changes": an ADMITTED mgmt connection (`Role::Mgmt` —
+/// classified by its first frame, not the pre-classification
+/// `PRE_ADMISSION_TIMEOUT` above) that sends nothing for this long is
+/// closed. Before this, four idle mgmt clients could hold a healthy
+/// capsule at [`NON_WATCHER_CAP`] forever while every new probe was
+/// refused outright — nothing legitimate holds an idle mgmt connection
+/// open now that the death signal is the retained challenged-process
+/// handle (U1a), not a live pipe a prober can lean on. Measured off the
+/// SAME `last_activity` clock every inbound frame and outbound completion
+/// already resets (U1a introduces no second clock) — an ACTIVE mgmt
+/// client, one that sends a request at least this often, is never
+/// touched (out of scope per the ADR: it is the owner, whom the threat
+/// model excludes).
+const MGMT_IDLE_DEADLINE: Duration = Duration::from_secs(5);
 /// The generic write-progress deadline (finding 5): ANY connection with a
 /// nonempty outstanding-sends count must see a completion within this
 /// window, covering every kind of send — not only live output.
@@ -526,6 +541,10 @@ pub enum RefusalReason {
     ProgressStall,
     KeepaliveDeath,
     UnexpectedKeepalive,
+    /// U1a: an admitted mgmt connection went silent past
+    /// [`MGMT_IDLE_DEADLINE`] (ADR 0041 bounds table, "mgmt idle" — "pool
+    /// squatting").
+    MgmtIdleTimeout,
 }
 
 /// The dedupe-chain outcome the loop reports back after executing
@@ -950,6 +969,32 @@ impl AttachProto {
         }
         for id in stalled {
             actions.extend(self.close_with_refusal(id, RefusalReason::ProgressStall, now));
+        }
+
+        // U1a: an ADMITTED mgmt connection (already classified — a
+        // pre-classification connection is covered by
+        // `PRE_ADMISSION_TIMEOUT` above, not this) that is GENUINELY quiet
+        // — nothing outstanding either direction — past
+        // `MGMT_IDLE_DEADLINE`. `outstanding_sends == 0` is what
+        // distinguishes this from `PROGRESS_DEADLINE` just above: a
+        // connection mid-reply (our own send not yet confirmed physically
+        // written) is making progress and stays that check's problem, on
+        // its own longer 30s bound, never this one's — otherwise a
+        // slow-but-healthy reply would be misclassified as an idle client
+        // squatting on the pool. `last_activity` is the same clock every
+        // inbound frame and outbound completion already resets, so a
+        // connection that keeps sending requests is never touched.
+        let mut mgmt_idle = Vec::new();
+        for (id, c) in &self.conns {
+            if matches!(c.role, Role::Mgmt)
+                && c.outstanding_sends == 0
+                && now.saturating_duration_since(c.last_activity) >= MGMT_IDLE_DEADLINE
+            {
+                mgmt_idle.push(*id);
+            }
+        }
+        for id in mgmt_idle {
+            actions.extend(self.close_with_refusal(id, RefusalReason::MgmtIdleTimeout, now));
         }
 
         actions.extend(self.tick_keepalive(now));
@@ -2664,6 +2709,80 @@ mod tests {
         assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::OutputBytes { n: 2 }), .. }]));
         let a = p.tick(now + Duration::from_secs(31));
         assert!(a.iter().any(|x| matches!(x, Action::Close(1))));
+    }
+
+    // -- mgmt idle deadline (U1a, ADR 0041 bounds table "mgmt idle") -----
+
+    /// An admitted mgmt connection (classified by its first frame) that
+    /// never sends again past `MGMT_IDLE_DEADLINE` is evicted — the "pool
+    /// squatting" row: four such connections could otherwise pin the
+    /// capsule at `NON_WATCHER_CAP` forever while every new probe was
+    /// refused.
+    #[test]
+    fn idle_mgmt_connection_is_evicted_at_the_deadline() {
+        let mut p = proto();
+        let now = t0();
+        assert_eq!(p.connection_opened(1, now), vec![]);
+        let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
+        let a = p.frame(1, probe, now);
+        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
+        p.sent(1, a[0].send_marker(), now); // reply confirmed sent -- last_activity == now
+
+        // Just under the deadline: untouched.
+        let a = p.tick(now + MGMT_IDLE_DEADLINE - Duration::from_millis(1));
+        assert!(a.is_empty(), "must not evict before the deadline: {a:?}");
+
+        // At the deadline: evicted, with the U1a-specific reason.
+        let a = p.tick(now + MGMT_IDLE_DEADLINE);
+        assert!(a.iter().any(|x| matches!(x, Action::Close(1))), "{a:?}");
+        assert!(
+            a.iter()
+                .any(|x| matches!(x, Action::RecordRefusal { reason: RefusalReason::MgmtIdleTimeout, .. })),
+            "{a:?}"
+        );
+    }
+
+    /// The ADR's own carve-out: "ACTIVE occupancy... is out of scope" — a
+    /// connection that keeps sending requests at least once per interval
+    /// is never evicted, because every inbound frame resets the SAME
+    /// `last_activity` clock the deadline reads.
+    #[test]
+    fn active_mgmt_connection_is_never_evicted() {
+        let mut p = proto();
+        let now = t0();
+        assert_eq!(p.connection_opened(1, now), vec![]);
+        let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
+        let a = p.frame(1, probe, now);
+        p.sent(1, a[0].send_marker(), now);
+
+        // A second request just inside the deadline resets the clock.
+        let t1 = now + MGMT_IDLE_DEADLINE - Duration::from_millis(1);
+        let status = decode_one(&encode_mgmt_request(&MgmtRequest::Status).unwrap());
+        let a = p.frame(1, status, t1);
+        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
+        p.sent(1, a[0].send_marker(), t1);
+
+        // Ticking to what would have been the FIRST request's own deadline
+        // must not evict -- the clock reset at t1.
+        let a = p.tick(now + MGMT_IDLE_DEADLINE);
+        assert!(a.is_empty(), "activity must reset the idle clock: {a:?}");
+
+        // The watcher/driver machinery (NON_WATCHER_CAP, admission) is
+        // untouched by this connection staying open across the interval.
+        assert_eq!(p.non_watcher_count, 1);
+    }
+
+    /// Watchers and the driver are a different `Role` entirely — the mgmt
+    /// idle deadline must never reach them, however long they sit with no
+    /// live output to send.
+    #[test]
+    fn idle_deadline_does_not_touch_a_watcher_or_the_driver() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done(&mut p, 1, now);
+        drive_take(&mut p, 1, "alice", 1, now);
+        let a = p.tick(now + MGMT_IDLE_DEADLINE + Duration::from_secs(1));
+        assert!(a.is_empty(), "a watcher/driver connection must never be mgmt-idle-evicted: {a:?}");
     }
 
     // -- queue accounting -------------------------------------------------
