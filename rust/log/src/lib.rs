@@ -48,8 +48,14 @@ mod host_handshake;
 // ADR 0041 step 6, unit U0 round-1: the three-state deadline race
 // challenge::challenge's exchange phase uses. Portable -- no OS
 // dependency at all -- so its own tests run everywhere, not merely on
-// Windows.
-pub mod deadline;
+// Windows. Crate-private (round-2 finding 7): no caller outside this
+// crate needs it yet -- challenge.rs is a sibling module, not an
+// external consumer. Same `cfg_attr` reasoning as `host_handshake` just
+// above: its own tests are pure logic and run on every platform, but its
+// only real caller (`challenge.rs`) is Windows-only, so a non-Windows
+// build now has no caller at all for this now-private item.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod deadline;
 pub mod envelope;
 // ADR 0041 step 6, unit U0 round-1 (blocker 3): the public facade over
 // fsutil::lock_supervisor -- fsutil itself is a private module, invisible

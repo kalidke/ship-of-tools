@@ -24,7 +24,7 @@
 
 #![cfg(windows)]
 
-use crate::challenge::{self, ChallengeOutcome, ChallengeableConnection};
+use crate::challenge::{self, ChallengeOutcome};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -76,8 +76,12 @@ pub enum FenceProbe {
 /// mechanical observation.
 pub trait ProbeOps {
     /// A live connection — `PipeClient` for the real impl, a cheap dummy
-    /// marker for the scripted impl.
-    type Conn: ChallengeableConnection;
+    /// marker for the scripted impl. No trait bound here (round-2 finding
+    /// 7): only `ProbeOps::challenge`'s REAL implementation needs
+    /// `crate::challenge::ChallengeableConnection`, and it already knows its own concrete
+    /// `Conn` type, so the bound would only ever force a placeholder
+    /// implementation on every OTHER impl for no reason.
+    type Conn;
     /// The OWNED, NOT YET CHALLENGED child this probe episode itself
     /// spawned (Stage A). Deliberately distinct from `Process`: nothing
     /// has proven this handle's identity — it's ours because we just
@@ -257,30 +261,16 @@ impl ProbeOps for RealProbeOps {
 // ---------------------------------------------------------------------
 
 /// A cheap placeholder connection for [`ScriptedProbeOps`] — never
-/// touches the OS. `ScriptedProbeOps::challenge` never actually reads
-/// `raw_handle()`/`write_all`/`read`/`cancel` on it (it returns a
-/// pre-scripted outcome directly), so every method here is unreachable
-/// in practice — `unreachable!()` documents that rather than pretending
-/// to a behavior nothing may ever invoke.
+/// touches the OS, and (round-2 finding 7) never implements
+/// [`crate::challenge::ChallengeableConnection`] at all: only `ProbeOps::challenge`
+/// consumes that trait, and only the REAL implementation (over a real
+/// `PipeClient`) ever needs it, so requiring it of every `ProbeOps::Conn`
+/// forced this placeholder to carry a fake null handle and three
+/// panicking I/O methods nothing ever called. Deleted; this is now a
+/// bare marker type `ScriptedProbeOps::challenge` never inspects.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default)]
 pub struct DummyConn;
-
-#[cfg(any(test, feature = "test-support"))]
-impl ChallengeableConnection for DummyConn {
-    fn raw_handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
-        std::ptr::null_mut()
-    }
-    fn write_all(&self, _bytes: &[u8]) -> std::io::Result<()> {
-        unreachable!("ScriptedProbeOps never performs real I/O on DummyConn")
-    }
-    fn read(&self, _buf: &mut [u8]) -> std::io::Result<usize> {
-        unreachable!("ScriptedProbeOps never performs real I/O on DummyConn")
-    }
-    fn cancel(&self) {
-        unreachable!("ScriptedProbeOps never performs real I/O on DummyConn")
-    }
-}
 
 /// A cheap placeholder for [`ProbeOps::SpawnedChild`] under
 /// [`ScriptedProbeOps`] — carries no real handle at all.
@@ -494,7 +484,8 @@ mod tests {
         ops.push_wait_child(WaitOutcome::Exited);
         assert_eq!(ops.wait_child(&child, Duration::from_secs(1)), WaitOutcome::Exited);
 
-        // A3: WAIT_FAILED, or the readiness cutoff expired -> KILL+WAIT.
+        // A3: WAIT_FAILED, or the readiness cutoff expired -> KILL+WAIT
+        // (round-2 finding 5: BOTH halves of the row, not kill alone).
         // The wait-failure half:
         ops.push_wait_child(WaitOutcome::WaitFailed);
         assert_eq!(ops.wait_child(&child, Duration::from_secs(1)), WaitOutcome::WaitFailed);
@@ -502,9 +493,12 @@ mod tests {
         let readiness_cutoff = ops.now() + Duration::from_secs(60);
         ops.advance(Duration::from_secs(61));
         assert!(ops.now() >= readiness_cutoff, "the injected clock must be able to reach a blown cutoff");
-        // Either half ends in KILL:
+        // Either half ends in KILL, THEN the post-kill WAIT -- the row
+        // is named KILL+WAIT, not KILL alone.
         ops.push_kill_child(Ok(()));
         assert!(ops.kill_child(&child).is_ok());
+        ops.push_wait_child(WaitOutcome::Exited);
+        assert_eq!(ops.wait_child(&child, Duration::from_secs(1)), WaitOutcome::Exited);
 
         // A4: alive, within cutoff -> challenge on its pipe -> well-formed
         // status_ok, identity matches -> READY (shares `connect`/
