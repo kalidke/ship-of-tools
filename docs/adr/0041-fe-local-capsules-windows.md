@@ -731,7 +731,9 @@ paths.
 | the classifier is total AND every row reachable | one case per row, including malformed frames, wrong opcodes, ACCESS_DENIED, `CreateProcess` failure, `WAIT_FAILED` and kill failure; the Stage-B deadline wedges every Stage-B PENDING row, while an A5 child at its readiness cutoff (the t=0 A5 → t=60 A3 sequence) reaches KILL+WAIT — NO Stage-A terminal result may leave a live child |
 | the marker is the acceptance barrier | an ack stalled after a durable marker still tears down; a failed append yields no ack, no marker, an unsealed exit, `failed {record_append}`, a released hold and a replaced leg; two concurrent callers get one marker and two acks; the frame is refused by the verifier in an undeclaring segment, and a declaring segment is refused by a pre-feature reader |
 | a spawn failure is recovered, not obeyed | a missing shell and a transport fatal both respawn; only `run_end_requested` suppresses |
-| start modes | `--resume` after a requested end exits 0; `--start` after the same end spawns; an ADOPTED leg ends correctly with no stamp anywhere; a provable torn tail is REPAIRED and replaced while a complete corruption exits 69 without spawning |
+| start modes | `--resume` after a requested end exits 0; `--start` after the same end spawns; an ADOPTED leg ends correctly; a provable torn tail is REPAIRED and replaced while a complete corruption exits 69 without spawning |
+| operation recovery is crash-total | a crash injected after journal durability, after the pointer rename, after pointer publication / marker commit, after terminal journal durability, and before the reply — each followed by restart and `query`: reset reconstructs `reset_done {new_voyage}` and never mints a second identity, EndRun reconstructs from the marker, and no entry is left ACTIVE forever |
+| an ended authority still answers | after a requested end, `query`/`status`/`stop` are served before the start-mode exit; a restarted authority serves a recovered result before exiting 0 |
 | the lease is not a sample | supervisor killed between `CreateProcess` and fence acquisition, and again during the history walk: the child exits or is visible, never both-invisible-then-binding |
 | FE quit during spawn-pending | the request is admitted and latched DURING the spawn and ends the run properly, never leaving a capsule behind |
 | reset under a live authority | mediated, never concurrent; no two-identity state |
@@ -892,24 +894,55 @@ here because "reusing `pipe_win`" carries mechanics, not a contract:
   destructive result from the journal below.
 - **`operation_id` is durable for MUTATING ops only.** Before the first
   irreversible act of an `end_run`, `reset` or `stop`, the authority
-  writes a journal record under the protected state dir — the id, a
-  canonical digest of the command, its state, and for `reset` the new
-  voyage identity it intends to publish — and recovers it on restart, so
-  at-most-once survives an authority crash rather than only an authority
-  lifetime. Retention is by the durable journal, not a size-bounded
-  cache. An id resubmitted with a DIFFERENT command digest is
-  `refused {id_conflict}`; an id already ACTIVE returns its current
-  state rather than starting a second execution.
+  PUBLISHES a journal record under the owner-protected state subtree —
+  the id, a canonical digest of the command, its state, and for `reset`
+  the new voyage identity it intends to publish — with the store's own
+  crash-durable publication order, because NTFS metadata journaling is
+  crash CONSISTENCY, not durability-at-return, and a record that can
+  evaporate would let `unknown_operation` authorize a second destructive
+  run. Retention is the durable journal, not a size-bounded cache. An id
+  resubmitted with a DIFFERENT command digest is `refused {id_conflict}`;
+  an id already ACTIVE returns its current state rather than executing
+  twice.
 - `query {operation_id}` returns `accepted` | `in_progress` |
-  `record_closed` | `record_verified` | `reset_done` | `stopping` |
-  `failed {detail}` | `refused {reason}` | `unknown_operation`.
-  `unknown_operation` means this authority has never seen the id and it
-  is therefore SAFE TO RESUBMIT; every other state means the operation
-  exists and must not be reissued under a new id. This is also what
+  `record_closed` | `record_verified` | `reset_done {new_voyage}` |
+  `stopping` | `failed {detail}` | `refused {reason}` |
+  `unknown_operation`. `unknown_operation` is returned for a MISSING
+  journal entry and ONLY that; it is the one state meaning SAFE TO
+  RESUBMIT. A malformed or torn journal is not missing — it is LOUD, and
+  the authority stops rather than guessing. Every other state means the
+  operation exists and must not be reissued under a new id. This also
   resolves the `end_run` timing question: the COMMAND reply arrives at
   `record_closed`, and `record_verified` follows through `query` — so
   the FE never blocks on an O(history) walk, and a verification failure
   still has a place to be reported rather than vanishing.
+- **Recovery is part of the transaction, and it runs FIRST.** Under
+  `supervisor.lock`, before pointer discovery, before start-mode
+  authorization and before admitting any new command, the authority
+  reconciles every ACTIVE journal entry against the world. For `reset`,
+  four states and no others: pointer still names the OLD voyage → the
+  rename never took, so resume from the beginning; pointer ABSENT with
+  the evidence rename present → resume from publication; pointer names
+  the INTENDED NEW voyage → the operation succeeded, so reconstruct
+  `reset_done {new_voyage}` and make it terminal; pointer names
+  SOMETHING ELSE → loud stop, because a second identity has appeared and
+  minting a third is the one thing at-most-once forbids. For `end_run`,
+  recovery reads the DURABLE MARKER, never a capsule-local latch that no
+  longer exists after process EOF: a marker in the leg's own epoch means
+  ACCEPTED, so reconstruct `record_closed` and keep the no-respawn hold;
+  a leg ended WITHOUT one is the pre-barrier failure, so terminalize
+  `failed {record_append}` and release the hold. A terminal reply, a hold
+  release, or process exit happens only after the terminal journal state
+  is itself crash-durable OR deterministically reconstructible from the
+  durable side effect that caused it. The journal reconciles TO the
+  marker; it never becomes a second barrier.
+- **An ended authority stays serviceable.** A supervisor whose run ended
+  by request does not exit the instant it knows: it enters the
+  ENDED/NO-RESPAWN phase and keeps serving `query`, `status` and an
+  explicit `stop` — which is what lets a lost-reply client learn its
+  outcome and what lets upgrade's acknowledged `stop` happen at all —
+  and a RESTARTED authority holding a recovered operation serves that
+  result before taking the requested-end start-mode exit.
 - Every op has one budget: connect 2 s, request write 2 s, reply read
   5 s, and the client may re-`query` on any timeout. A client timeout
   ABANDONS THE CONNECTION, NEVER THE OPERATION — accepted intent is the
@@ -1068,7 +1101,7 @@ closed at the header cannot reopen the drawer's own voyage.
 NAME gone + writer fence released. `record_verified` = that plus a green
 `verify_voyage` over the retained chain — an O(retained history) walk,
 so never inside an interactive wait: the AUTHORITY performs it after a
-leg ends, before reporting an `end_run` result or exiting 0, and a
+leg ends, before reporting `record_verified` or exiting 0, and a
 failure is terminal. `image_quiescent` = the capsule PROCESS has exited,
 which `record_closed` does not imply because `sot-capsule` formats its
 summary and exits after `run` returns; only upgrade needs it, and
