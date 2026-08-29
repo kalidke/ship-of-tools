@@ -38,6 +38,10 @@ pub mod pipe_transport;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod host_handshake;
 pub mod envelope;
+// ADR 0041 step 6, unit U0: `drawer.voyage` publication + validation.
+// Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
+// which already has both platform arms.
+pub mod pointer;
 pub mod record;
 pub mod recovery;
 pub mod segment;
