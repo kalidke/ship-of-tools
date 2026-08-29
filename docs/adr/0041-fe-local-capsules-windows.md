@@ -690,14 +690,19 @@ still owns its own PTY is two sessions, so U2 and U3 stay off until U4.
   process-handle wrappers; the fence primitive with its `CREATE_NEW`
   bootstrap; classifier fault-injection scaffolding. No decision list is
   frozen here.
-- **U1 — active capsule changes.** The `run_end_requested` frame and its
-  latch; the two-phase teardown that removes the pipe NAME before any
-  join, with all `PipeServer` joins bounded and `shutdown_all` made
-  idempotent so the existing RAII guard can be disarmed; the 5 s mgmt
-  idle deadline; the ack grace. Every existing test stays; new ones
-  cover marker-before-ack, ack-stall-after-marker, final-poll concurrent
-  shutdown, early name disappearance, idle-mgmt expiry, and a probe
-  across the whole occupancy window.
+- **U1 — active capsule changes**, in two separately reviewable slices
+  because one of them changes durable compatibility and the other does
+  not. **U1a (plumbing):** idempotent `shutdown_all` so the RAII guard
+  can be disarmed, the 5 s mgmt idle deadline, the ack grace, and the
+  `open_for_writing` split that puts the writer fence and the lease
+  check ahead of history traversal. **U1b (durable):** the
+  `sot.capsule.run-end-requested-v1` registration with bidirectional
+  verifier enforcement, the reader-first rollout, the marker frame and
+  its latch, and the aggregate teardown deadline. Every existing test
+  stays; new ones cover marker-before-ack, ack-stall-after-marker,
+  final-poll concurrent shutdown, early name disappearance, idle-mgmt
+  expiry, a probe across the whole occupancy window, and a rollback
+  attempt across the feature boundary.
 - **U2 — the authority.** `sot-capsule supervise` with its lane, the
   election fence, the classifier, spawn/adopt, the parent lease, start
   modes, both anti-flap counters, `record_verified`, the exit-code
@@ -909,14 +914,39 @@ prerequisite:
    sent and a close emits no replacement action, so without the latch a
    durable marker could coexist with a shell running on under a record
    saying this run must never be replaced.
-3. If the append FAILS, the request is NOT ACCEPTED: no ack, the
-   connection closes with a typed refusal, the run continues, loudly.
-   The discriminator therefore never lies in either direction.
+3. If the append FAILS there is NO REFUSAL FRAME, because the pinned v0
+   lane has none to send: every reply tag means success, and inventing
+   one would break the compatibility promise that lane exists to keep.
+   An append failure is instead what it actually is — the store this
+   capsule exists to write has stopped accepting records — so the
+   capsule takes ADR 0039's crash shape: no ack, no marker, the
+   connection closes, the run ends unsealed and loudly. The client sees
+   EOF and reports "outcome unknown"; the authority sees a leg that
+   ended without a marker and replaces it, which is the correct
+   recovery. (An earlier revision promised a "typed refusal" here; it was
+   not encodable and is deleted rather than paid for with a wire change.)
 4. Concurrent requests: the first commit wins and writes the only
    marker; every later `shutdown` is acked without a second marker. A
    request accepted in the final service poll has its ack queued and the
    pipe's disappearance is deferred until that ack completes or a 2 s
    grace expires.
+
+**The marker is a registered ADR 0039 feature, not a new enum value
+smuggled into an old segment.** `LifecycleKind` is a closed enum and the
+verifier decodes every lifecycle frame through it, so an undeclared new
+variant is exactly the authority-changing extension ADR 0039's registry
+rule exists to catch. Step 6 registers **`sot.capsule.run-end-requested-v1`**
+and enforces it bidirectionally, like the two entries already there:
+every segment a step-6 capsule opens DECLARES it — unconditionally, at
+segment creation, since a feature cannot be added to an immutable header
+later and the marker's timing is not knowable in advance — and a
+`run_end_requested` frame in a segment that does not declare it fails
+closed. Rollout is therefore two-phase and the order is load-bearing:
+the READER lands one release before the writer, so a rollback from the
+activating release restores a binary that can still open and certify a
+feature-bearing voyage. Rolling back past the reader release is not
+supported and the release notes must say so, because a reader that fails
+closed at the header cannot reopen the drawer's own voyage.
 
 **Three proof terms, defined once and used everywhere below.**
 `record_closed` = capsule ack (or latch, if the ack failed) + the pipe
@@ -1137,12 +1167,19 @@ The consequence is stated rather than hidden: UPGRADING ENDS THE RUN, on
 purpose, once, at a moment the operator chose. The voyage and the
 session persist; it is a leg that ends.
 
-Rollback is ABSENCE-AWARE. The applier today saves and restores two
-binaries and leaves a file alone when it has no `.prev`, so the first
-release introducing the capsule would, on a later failure, restore the
-two old images and leave the new one — the mixed release this section
-forbids. Transaction metadata records prior ABSENCE, restore DELETES
-new-only files, and required-file verification is all-or-nothing.
+Rollback is ABSENCE-AWARE and FEATURE-AWARE. The applier today saves and
+restores two binaries and leaves a file alone when it has no `.prev`, so
+the first release introducing the capsule would, on a later failure,
+restore the two old images and leave the new one — the mixed release
+this section forbids. Transaction metadata records prior ABSENCE,
+restore DELETES new-only files, and required-file verification is
+all-or-nothing. Rollback across a REQUIRED-FEATURE boundary is refused
+rather than attempted: once a capsule has opened a segment declaring
+`sot.capsule.run-end-requested-v1`, restoring a binary that predates the
+reader release would leave a correctly fail-closed verifier unable to
+reopen the drawer's voyage. The two-phase rollout above is what keeps
+one rollback hop always available; the applier checks the boundary and
+refuses loudly instead of producing an unreadable install.
 
 First-boot health cannot stay FE-only: a supervisor that exits terminal
 or crash-loops while the FE stays up would never trip it. One window,
