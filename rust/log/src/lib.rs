@@ -10,6 +10,10 @@
 pub mod attach_proto;
 pub mod capsule;
 pub mod capsule_win;
+// ADR 0041 step 6, unit U0: the same-connection challenge and the
+// process-handle wrapper it returns. `pub`, matching `pipe_win`/
+// `capsule_win`: Windows-only (see the module's own `#![cfg(windows)]`).
+pub mod challenge;
 pub mod claude;
 pub mod conpty;
 // ADR 0041 step 5, unit U3: the Windows named-pipe transport (server +

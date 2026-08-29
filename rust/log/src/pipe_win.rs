@@ -1592,6 +1592,43 @@ impl PipeClient {
     }
 }
 
+/// ADR 0041 step 6, unit U0: the voyage pipe is one of the (currently
+/// one, eventually two) pipe families the same-connection challenge must
+/// serve — see `challenge.rs`'s own doc for why that module depends on
+/// this trait rather than on `PipeClient` by name.
+impl crate::challenge::ChallengeableConnection for PipeClient {
+    fn raw_handle(&self) -> HANDLE {
+        self.raw.0
+    }
+
+    fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
+        PipeClient::write_all(self, bytes).map_err(pipe_error_to_io)
+    }
+
+    fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        PipeClient::read(self, buf).map_err(pipe_error_to_io)
+    }
+
+    fn cancel(&self) {
+        PipeClient::cancel(self)
+    }
+}
+
+/// Map a [`PipeError`] to a plain `io::Error` for the `challenge`
+/// module's trait boundary, which depends on neither pipe family's own
+/// error type by name. `Io` unwraps to its underlying `std::io::Error`
+/// (preserving `ErrorKind` — e.g. a disconnect code); everything else
+/// (`Cancelled`, the misuse variants) wraps opaquely — none of them
+/// distinguishes further at the challenge's own three-way
+/// Proven/Foreign/Undetermined split, which only ever asks "did this
+/// fail," never which failure.
+fn pipe_error_to_io(e: PipeError) -> std::io::Error {
+    match e {
+        PipeError::Io { source, .. } => source,
+        other => std::io::Error::other(other),
+    }
+}
+
 /// Shared client-side error mapping: `ERROR_OPERATION_ABORTED` becomes
 /// [`PipeError::Cancelled`]; the [`ConcurrentSubmitMarker`] becomes
 /// [`PipeError::ConcurrentSubmit`]; everything else is an ordinary I/O
