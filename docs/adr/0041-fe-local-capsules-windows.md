@@ -6,16 +6,13 @@ session survives frontend restarts. Implements the ADR 0037 ladder's P3.
 **Date:** 2026-08-25
 
 > How this was designed: a three-track research spike (Windows store
-> primitives with SQLite/LMDB/RocksDB/PostgreSQL evidence; Job Objects and
-> the successor problem; the frontend's actual process tree and relaunch
-> mechanics) followed by six adversarial review rounds with mandatory
-> deletion pressure. Roughly thirty-five findings were absorbed — several
-> from the reviewer reading crate and OS-API sources directly — and a long
-> list of machinery was deleted on the way: named jobs and their locator
-> feature, ReFS, the explicit detach op, capsule-side scrollback,
-> synthesized closes for raw terminals, a sprawling exit matrix, and the
-> `resume_command` mechanism itself. What remains is the smallest design
-> that satisfies the ADR 0037/0039 invariants on Windows.
+> primitives, Job Objects and the successor problem, the frontend's real
+> process tree) followed by adversarial review rounds with mandatory
+> deletion pressure, per step. Machinery deleted on the way: named jobs
+> and their locator feature, ReFS, the explicit detach op, capsule-side
+> scrollback, synthesized closes for raw terminals, a sprawling exit
+> matrix, a second spawn fence, and the `resume_command` mechanism
+> itself.
 
 ## Scope, in one paragraph
 
@@ -706,11 +703,9 @@ still owns its own PTY is two sessions, so U2 and U3 stay off until U4.
   lifecycle grammar in the same change, so the older normative document
   does not stay at two entries), the reader-first rollout with its
   installed-capability gate, the marker frame and its latch, and the
-  aggregate teardown deadline. Every existing test
-  stays; new ones cover marker-before-ack, ack-stall-after-marker,
-  final-poll concurrent shutdown, early name disappearance, idle-mgmt
-  expiry, a probe across the whole occupancy window, and a rollback
-  attempt across the feature boundary.
+  aggregate teardown deadline. Every existing test stays; the new ones
+  are the marker, teardown, idle-mgmt and feature-boundary rows of the
+  acceptance matrix.
 - **U2 — the authority.** `sot-capsule supervise` with its lane, the
   election fence, the classifier, spawn/adopt, the parent lease, start
   modes, both anti-flap counters, `record_verified`, the exit-code
@@ -746,11 +741,10 @@ paths.
 | status and attach cross a leg | a leg death in that window is detected, never rendered as the wrong start time |
 | backpressure | a stalled FE is evicted rather than buffering without bound |
 | the teardown order | the run ends and the record closes before the FE and tunnel die; an unreachable-but-visible capsule stops the script loudly |
-| upgrade | image replacement after both proofs never hits a sharing violation; a first-ever capsule install rolls back by DELETION; a rollback across the feature boundary is REFUSED; each health-table row decides as written, including READY+1 ms death and a lane that wedges after answering once |
+| upgrade | image replacement after both proofs never hits a sharing violation; a first-ever capsule install rolls back by DELETION; each health-table row decides as written, including READY+1 ms death and a lane that wedges after answering once |
 | lifecycle commands are voyage-fenced | an `end_run` minted against voyage A and delivered after a reset to B is `refused {stale_voyage}` with no mutation; a `status` before the first leg answers with no `leg` and phase STARTING |
 | the lane's own lifecycle | a squatted name loses first-instance bind and exits 69; a present-but-unanswering lane is treated as absent; a mismatched build is refused; a lost `reset` reply retried under the same operation id does not rename twice |
 | the challenge authenticates the SERVER | on a real Windows machine, an OTHER-USER process pre-binds the supervisor name AND the voyage name with a permissive DACL and answers plausibly: every public client entry point classifies it FOREIGN before decoding or trusting a reply, and each target-token lookup failure lands PENDING, never READY or ADOPTED |
-| every classifier row is REACHABLE | a model test drives one case per row, A4 and A3 included |
 | the supported history envelope composes | a release-mode cold-history open at the named boundary publishes its measured time, and the gate fails unless `B >= measured × 3` and EVERY formula and consumer is recomputed with it in the same change |
 | rollback is safe under a live release | a supervisor-69 rollback with the new FE alive quiesces it first and never touches a locked image; the capsule is ended while the supervisor still holds its challenged handle; a pre-reader install cannot activate the writer at all |
 | a refusal is terminal | a step-0 feature-boundary refusal mutates no release or voyage state, arms `rollback_refused` durably, and a COLD launcher start then surfaces recovery without relaunching the failed release or retrying rollback |
@@ -1117,12 +1111,10 @@ every segment a step-6 capsule opens DECLARES it — unconditionally, at
 segment creation, since a feature cannot be added to an immutable header
 later and the marker's timing is not knowable in advance — and a
 `run_end_requested` frame in a segment that does not declare it fails
-closed. Rollout is therefore two-phase and the order is load-bearing:
-the READER lands one release before the writer, so a rollback from the
-activating release restores a binary that can still open and certify a
-feature-bearing voyage. Rolling back past the reader release is not
-supported and the release notes must say so, because a reader that fails
-closed at the header cannot reopen the drawer's own voyage.
+closed. Rollout is two-phase — the READER lands one release before the
+writer — but publication order alone is not the guarantee: the writer
+may not open a feature-bearing segment until the INSTALLED rollback
+target can read one, which "Upgrade and version skew" pins as the gate.
 
 **Three proof terms, defined once and used everywhere below.**
 `record_closed` = capsule ack (or latch, if the ack failed) + the pipe
@@ -1442,9 +1434,8 @@ running one. The order, and every step's reason:
    the fresh leg happen — the requested end just sealed would otherwise
    suppress it.
 
-The consequence is stated rather than hidden: UPGRADING ENDS THE RUN, on
-purpose, once, at a moment the operator chose. The voyage and the
-session persist; it is a leg that ends.
+UPGRADING ENDS THE RUN, on purpose, once, at a moment the operator
+chose (see Consequences).
 
 Rollback is ABSENCE-AWARE, FEATURE-AWARE, and ITS OWN QUIESCENT
 TRANSACTION. The applier today saves and restores two binaries and
