@@ -72,7 +72,38 @@ pub fn run_with_deadline<T>(
             return None;
         };
 
-        let result = body();
+        // Round-2 finding 4: settle the race IMMEDIATELY if `body` panics
+        // while still `PENDING`, rather than leaving the watchdog to
+        // poll all the way out to `deadline` before it notices (a
+        // distant deadline would otherwise make a panic look hung — the
+        // panic itself unwinds instantly, but `thread::scope` will not
+        // let it past this frame until the watchdog thread has been
+        // joined, and the watchdog only stops polling once `state`
+        // leaves `PENDING`). `SettleOnPanic`'s `Drop` runs during that
+        // unwind, before `thread::scope`'s own join, and does nothing on
+        // a normal return (`std::thread::panicking()` is false then) —
+        // the explicit post-`body()` logic below is what settles the
+        // NORMAL-return case, unchanged.
+        struct SettleOnPanic<'a> {
+            state: &'a AtomicU8,
+            on_timeout: &'a (dyn Fn() + Sync),
+        }
+        impl Drop for SettleOnPanic<'_> {
+            fn drop(&mut self) {
+                if std::thread::panicking()
+                    && self
+                        .state
+                        .compare_exchange(PENDING, TIMED_OUT, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
+                    (self.on_timeout)();
+                }
+            }
+        }
+        let result = {
+            let _settle = SettleOnPanic { state: &state, on_timeout: &on_timeout };
+            body()
+        };
 
         let claimed_completed = state
             .compare_exchange(PENDING, COMPLETED, Ordering::AcqRel, Ordering::Acquire)
@@ -90,8 +121,14 @@ pub fn run_with_deadline<T>(
             }
             None
         };
-        let _ = watchdog.join();
-        outcome
+        // Propagate a watchdog panic (round-2 finding 4) rather than
+        // silently discarding it — `on_timeout` is caller-supplied and a
+        // bug in it must not vanish just because it happened to run on
+        // the watchdog thread instead of this one.
+        match watchdog.join() {
+            Ok(()) => outcome,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     })
 }
 
@@ -143,29 +180,30 @@ mod tests {
 
     #[test]
     fn body_finishing_after_deadline_is_rejected_and_cancelled_once() {
-        // The reply/deadline race: `body` "completes" (returns a value)
-        // strictly after `deadline` has already passed, simulating a
-        // reply that physically arrived too late. The deadline is set in
-        // the PAST, so the outcome is deterministic regardless of which
-        // side's CAS happens to win first (see the doc on
-        // `run_with_deadline`'s own "too late" self-check): either the
-        // watchdog wins outright, or `body` wins the CAS but is then
-        // rejected by its own on-time check -- both paths call
-        // `on_timeout` exactly once and reject the result.
+        // Round-2 finding 3: the round-1 version of this test passed an
+        // ALREADY-PAST deadline, which the entry check rejects before
+        // `body` ever runs -- it re-tested `expired_at_entry_never_runs_body`
+        // under a different name, not the reply/deadline race at all.
+        // The GENUINE race needs a FUTURE deadline that `body` actually
+        // runs past: the watchdog (polling every 10ms) discovers the
+        // expiry while `body` is still sleeping, wins the CAS, and calls
+        // `on_timeout` -- `body`'s own later completion then loses its
+        // own CAS attempt (state is already `TIMED_OUT`, not `PENDING`),
+        // so its result is discarded without a second `on_timeout` call.
         let cancels = AtomicUsize::new(0);
-        let deadline = Instant::now() - Duration::from_millis(50);
+        let deadline = Instant::now() + Duration::from_millis(50);
         let result = run_with_deadline(
             deadline,
             || {
                 cancels.fetch_add(1, Ordering::SeqCst);
             },
             || {
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::sleep(Duration::from_millis(300)); // well past the 50ms deadline
                 99
             },
         );
         assert_eq!(result, None);
-        assert_eq!(cancels.load(Ordering::SeqCst), 1, "on_timeout must fire exactly once, whichever side wins");
+        assert_eq!(cancels.load(Ordering::SeqCst), 1, "on_timeout must fire exactly once, from the watchdog's own genuine win");
     }
 
     #[test]
@@ -198,6 +236,56 @@ mod tests {
             move || rx.recv_timeout(Duration::from_secs(5)).is_ok(),
         );
         assert_eq!(result, None, "the deadline must win before body's own timeout would");
+    }
+
+    /// Round-2 finding 4: a body that panics while `PENDING` must settle
+    /// (and cancel) IMMEDIATELY, not leave the watchdog polling all the
+    /// way out to a distant deadline before it notices `state` changed.
+    /// `deadline` here is deliberately 30s away -- if the fix regressed,
+    /// this test would take that long (or hang the whole suite) instead
+    /// of finishing in well under a second.
+    #[test]
+    fn a_panicking_body_settles_promptly_instead_of_hanging_until_a_distant_deadline() {
+        let cancels = AtomicUsize::new(0);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let started = Instant::now();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_with_deadline(
+                deadline,
+                || {
+                    cancels.fetch_add(1, Ordering::SeqCst);
+                },
+                || -> i32 { panic!("body panicked") },
+            )
+        }));
+        assert!(result.is_err(), "the panic must propagate out of run_with_deadline, not be swallowed");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "must settle promptly, not hang until the distant deadline: took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(cancels.load(Ordering::SeqCst), 1, "a panicking body must still settle+cancel exactly once");
+    }
+
+    /// Round-2 finding 4: a panic inside `on_timeout`, running on the
+    /// WATCHDOG thread (the genuine future-deadline race, not the
+    /// synchronous expired-at-entry path), must propagate to the caller
+    /// via the join, not be discarded by a swallowed `let _ =
+    /// watchdog.join()`.
+    #[test]
+    fn watchdog_panic_in_on_timeout_propagates_to_the_caller() {
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_with_deadline(
+                deadline,
+                || panic!("on_timeout panicked"),
+                || {
+                    std::thread::sleep(Duration::from_millis(300)); // outlive the 50ms deadline
+                    42
+                },
+            )
+        }));
+        assert!(result.is_err(), "a watchdog-thread panic in on_timeout must propagate, not be swallowed");
     }
 
     #[test]
