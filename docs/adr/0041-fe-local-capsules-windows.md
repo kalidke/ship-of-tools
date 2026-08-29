@@ -752,8 +752,9 @@ paths.
 | the challenge authenticates the SERVER | on a real Windows machine, an OTHER-USER process pre-binds the supervisor name AND the voyage name with a permissive DACL and answers plausibly: every public client entry point classifies it FOREIGN before decoding or trusting a reply, and each target-token lookup failure lands PENDING, never READY or ADOPTED |
 | every classifier row is REACHABLE | a model test drives one case per row, A4 and A3 included |
 | the supported history envelope composes | a release-mode cold-history open at the named boundary publishes its measured time, and the gate fails unless `B >= measured × 3` and EVERY formula and consumer is recomputed with it in the same change |
-| rollback is safe under a live release | a supervisor-69 rollback with the new FE alive quiesces it first and never touches a locked image; a feature-boundary refusal mutates nothing, keeps the health state and reaches a terminal recovery surface; a pre-reader install cannot activate the writer at all |
-| health is total | exit 75 at the deadline with no live FE ROLLS BACK; `just-applied` is never left armed |
+| rollback is safe under a live release | a supervisor-69 rollback with the new FE alive quiesces it first and never touches a locked image; the capsule is ended while the supervisor still holds its challenged handle; a pre-reader install cannot activate the writer at all |
+| a refusal is terminal | a step-0 feature-boundary refusal mutates no release or voyage state, arms `rollback_refused` durably, and a COLD launcher start then surfaces recovery without relaunching the failed release or retrying rollback |
+| health is total | exit 75 at the deadline with no live FE ROLLS BACK; `just-applied` is never left ARMED — it is committed, rolled back, or terminal |
 | teardown composes | worst-case worker fan-out completes inside the 20 s aggregate and the fence is free before the probe episode expires; a probe during the tail, and against four idle mgmt clients, never reaches WEDGED |
 | `fe_down` evidence | baseline captured before this run appends; skipped on a first attach; an append failure is visible |
 
@@ -1453,21 +1454,38 @@ images and leave the new one — the mixed release this section forbids.
 Transaction metadata records prior ABSENCE and restore DELETES new-only
 files. But absence-awareness alone is not enough, because a health
 rollback runs while the NEW release is live, and a forward apply is
-allowed to assume nothing is:
+allowed to assume nothing is. The steps are numbered because their order
+is the safety:
 
+0. **PREFLIGHT, before ANY release, voyage, process or health-arm
+   mutation.** Validate the restore set, the required files, the
+   prior-absence metadata and the installed-reader compatibility. Every
+   reason to refuse is discovered here, while nothing has been touched —
+   which is what makes a refusal costless rather than a half-rolled-back
+   machine.
 1. Latch no-respawn, then quiesce the new FE — its image is locked while
    it runs, and the forward path's "applier runs before anything is
    spawned" assumption does not hold here.
-2. Stop or end the new supervisor and capsule under the SAME capability
-   matrix the no-supervisor callers use; prove every release image
-   quiescent and the fence free.
+2. If a live supervisor exists, EndRun or safely hard-stop the CAPSULE
+   first, WHILE that supervisor still holds its challenged handle; only
+   then `stop` the supervisor, which destroys that capability. Prove
+   process exit, a free fence, and every release image quiescent. This
+   is the same ordering the forward transaction pins, for the same
+   reason: the handle cannot be reacquired by a successor.
 3. Only then restore, all-or-nothing, with required-file verification.
 
-A feature-boundary refusal is a TYPED MACHINE RESULT that performs ZERO
-MUTATION, retains the health and diagnostic state, and sends the
-launcher to a terminal recovery surface — never "rollback complete" via
-a universal exit 0, which would clear the marker and relaunch the broken
-bits. And the reader hop must be REAL, not merely published: release
+**A refusal is TERMINAL, not a retry.** ZERO MUTATION means zero RELEASE
+and VOYAGE mutation — recording the decision is not mutation, and
+forbidding that is what left the earlier text unable to choose between a
+marker armed forever and a marker cleared into "the broken release is
+fine". So a typed refusal at step 0 atomically transitions `just-applied`
+from ARMED to a durable terminal `rollback_refused` state carrying its
+diagnostics. The launcher recognizes that state on a COLD launch, after
+any restart, and does exactly two things: surfaces recovery, and stops.
+It does not relaunch the failed release and it does not retry the
+rollback. An operator decides what happens next.
+
+The reader hop must also be REAL, not merely published: release
 discovery jumps to the newest release, so a machine on a pre-reader
 release can skip the reader release entirely and land on the writer,
 whose first segment is unreadable by the only target it could roll back
