@@ -14,16 +14,6 @@
 //! or respawn — the probe classifier's transition table (ADR 0041 "The
 //! probe", Stage A/B) is a later unit's decision list, not this one's.
 //!
-//! U1a WIRES THIS IN: `pipe_win::connect_voyage_pipe` (the shared,
-//! step-5-client-facing constructor) now calls [`challenge()`] with
-//! `exchange: None` on every connection it returns — active behavior for
-//! today's clients, not a library with no behavior change, which is why it
-//! waited for this unit rather than shipping with U0. The probe
-//! classifier's own eventual production wiring (a later unit) still needs
-//! a RAW, unchallenged connection so it can run its own two-step
-//! connect/challenge observation with a bespoke deadline — see
-//! `pipe_win::connect_voyage_pipe_unchallenged`'s doc.
-//!
 //! # Round-1 review: the exchange is now a lane seam, not a lane
 //!
 //! Steps 1-3 (identify the peer process, authenticate its token-user SID)
@@ -41,6 +31,24 @@
 //! tested on every CI platform, not merely compile-checked on Windows —
 //! leaving only the actual Win32 authentication calls in this,
 //! necessarily Windows-only, module.
+//!
+//! # U1a Codex round-1, Blocker 1 discharge: `Proven` is EARNED, not implied
+//!
+//! An earlier version of this module let `challenge()` take
+//! `exchange: Option<...>`, with `None` running steps 1-3 alone and still
+//! returning `ChallengeOutcome::Proven(ChallengedProcess)` — the SAME
+//! success type and variant the full five-step exchange produces. Review
+//! (Codex round 1, finding 1) called this a falsely-`Proven` result: a
+//! same-SID pipe server that accepts a connection but never answers
+//! anything was accepted immediately, with no liveness proof and no
+//! pid/creation binding to the CONNECTION's own reply — exactly what steps
+//! 4-5 exist to add. `Proven`/`ChallengedProcess` are RESERVED for the full
+//! five-step exchange again; [`authenticate_server()`] is the separately
+//! named, separately typed steps-1-3-only operation
+//! `pipe_win::connect_voyage_pipe` now calls instead — see that function's
+//! own doc for why the shared, lane-agnostic constructor can only ever
+//! offer SID authentication, never the full proof, and for the attach
+//! lane's own under-specification in the ADR.
 
 #![cfg(windows)]
 
@@ -118,7 +126,9 @@ pub enum ChallengeOutcome<P> {
 /// `PROCESS_QUERY_LIMITED_INFORMATION` (`GetProcessTimes`, both at proof
 /// time and again at [`reverify`](Self::reverify)), `PROCESS_SYNCHRONIZE`
 /// ([`wait`](Self::wait), the death signal). Dropping this closes the
-/// handle.
+/// handle. ONLY the full five-step [`challenge()`] ever produces one —
+/// see [`SidAuthenticated`] for the deliberately weaker, deliberately
+/// handle-less steps-1-3-only counterpart.
 pub struct ChallengedProcess {
     handle: OwnedHandle,
     pid: u32,
@@ -221,44 +231,15 @@ fn creation_filetime_bits(handle: HANDLE) -> std::io::Result<u64> {
     }
 }
 
-/// The five pinned steps (ADR 0041 Lifecycle "The challenge"), in order:
-/// (1) read the server pid `P` via `GetNamedPipeServerProcessId`; (2)
-/// `OpenProcess(P, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION |
-/// PROCESS_SYNCHRONIZE)`; (3) compare that process's token-user SID
-/// against this account's; (4) only then `exchange`'s request on the SAME
-/// connection; (5) proven iff the SID matched AND reply-pid == `P` AND
-/// reply creation time == `GetProcessTimes(handle)` on the exact FILETIME
-/// bits — pid compared FIRST, creation time queried only if it matches
-/// (ADR 0041 U0 round-1 finding 6: an already-proven wrong pid must never
-/// become `Undetermined` merely because `GetProcessTimes` also failed).
-/// Nothing in the reply is decoded for meaning or acted on before step 3
-/// succeeds.
-///
-/// `exchange` is `None` for a MINIMAL SAFE CALL — steps 1-3 only, ending
-/// in `Proven` the instant the SID matches, with `created` read directly
-/// off the handle (no reply needed: it is a property of the process, not
-/// of anything the peer said). U1a's `pipe_win::connect_voyage_pipe` uses
-/// this for every connection regardless of which lane it will carry next
-/// (mgmt's `status`, or the attach lane's `hello`): the attach lane's
-/// `hello_ok` reply carries no pid/creation fields for steps 4-5 to check
-/// against (`wire.rs`'s pinned shape — `proto: u32` only), and sending a
-/// lane-specific request here would itself consume the connection's
-/// once-only first-frame lane binding before the caller ever gets to send
-/// its own. This is the ADR's own under-specification for the attach
-/// lane, resolved minimally: no byte is trusted before the SID matches,
-/// but nothing beyond that is claimed for a connection this function
-/// never round-trips a request over. `Some((exchange, reply_deadline))`
-/// runs the full five steps, for a caller (mgmt lane; the probe
-/// classifier) that both wants and can afford the stronger proof —
-/// `reply_deadline` bounds ONLY steps 4-5 in that case; steps 1-3 are
-/// local, synchronous OS calls with no wait to bound. Picking the
-/// deadline VALUE (the ADR's "2s, clamped to the episode's remaining wall
-/// time") is the probe classifier's job, a later unit; this function only
-/// enforces whatever it is given.
-pub fn challenge(
+/// Steps 1-3 of the OS-side identity check, shared by [`challenge()`] and
+/// [`authenticate_server()`]: read the server pid `P` via
+/// `GetNamedPipeServerProcessId`, `OpenProcess` it, and compare its
+/// token-user SID against this account's. Returns the open handle plus
+/// `P` on a matching SID; `Foreign`/`Undetermined` are already the
+/// caller's own terminal outcome.
+fn authenticate_steps_1_to_3(
     conn: &dyn ChallengeableConnection,
-    exchange: Option<(&mut dyn IdentityExchange, Instant)>,
-) -> ChallengeOutcome<ChallengedProcess> {
+) -> ChallengeOutcome<(OwnedHandle, u32)> {
     // Step 1.
     let mut server_pid: u32 = 0;
     if unsafe { GetNamedPipeServerProcessId(conn.raw_handle(), &mut server_pid) } == 0 {
@@ -289,19 +270,40 @@ pub fn challenge(
         return ChallengeOutcome::Foreign;
     }
 
-    let Some((exchange, reply_deadline)) = exchange else {
-        // Minimal safe call (see this function's own doc): the SID match
-        // above is the whole proof. `created` is read directly off the
-        // handle — a fact about the process, never about a reply.
-        let created = match creation_filetime_bits(handle.as_raw_handle() as HANDLE) {
-            Ok(c) => c,
-            Err(_) => return ChallengeOutcome::Undetermined,
-        };
-        return ChallengeOutcome::Proven(ChallengedProcess {
-            handle,
-            pid: server_pid,
-            created,
-        });
+    ChallengeOutcome::Proven((handle, server_pid))
+}
+
+/// The five pinned steps (ADR 0041 Lifecycle "The challenge"), in order:
+/// (1) read the server pid `P` via `GetNamedPipeServerProcessId`; (2)
+/// `OpenProcess(P, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION |
+/// PROCESS_SYNCHRONIZE)`; (3) compare that process's token-user SID
+/// against this account's; (4) only then `exchange`'s request on the SAME
+/// connection; (5) proven iff the SID matched AND reply-pid == `P` AND
+/// reply creation time == `GetProcessTimes(handle)` on the exact FILETIME
+/// bits — pid compared FIRST, creation time queried only if it matches
+/// (ADR 0041 U0 round-1 finding 6: an already-proven wrong pid must never
+/// become `Undetermined` merely because `GetProcessTimes` also failed).
+/// Nothing in the reply is decoded for meaning or acted on before step 3
+/// succeeds.
+///
+/// `reply_deadline` bounds ONLY steps 4-5 — steps 1-3 are local,
+/// synchronous OS calls with no wait to bound. Picking the deadline VALUE
+/// (the ADR's "2s, clamped to the episode's remaining wall time") is the
+/// probe classifier's job, a later unit; this function only enforces
+/// whatever it is given. `Proven` here means the FULL five-step proof —
+/// see [`authenticate_server()`] for the deliberately separate,
+/// deliberately weaker steps-1-3-only operation (U1a Codex round-1,
+/// Blocker 1: this function no longer takes an `Option` and no longer
+/// returns `Proven` from steps 1-3 alone).
+pub fn challenge(
+    conn: &dyn ChallengeableConnection,
+    exchange: &mut dyn IdentityExchange,
+    reply_deadline: Instant,
+) -> ChallengeOutcome<ChallengedProcess> {
+    let (handle, server_pid) = match authenticate_steps_1_to_3(conn) {
+        ChallengeOutcome::Proven(v) => v,
+        ChallengeOutcome::Foreign => return ChallengeOutcome::Foreign,
+        ChallengeOutcome::Undetermined => return ChallengeOutcome::Undetermined,
     };
 
     // Steps 4-5: the lane's own request/reply, bounded by the shared
@@ -360,6 +362,72 @@ pub fn challenge(
         pid: server_pid,
         created: created_now,
     })
+}
+
+/// The peer's identity once SID-authenticated (steps 1-3 ONLY) — pid plus
+/// creation time read directly off the OS handle, NEVER off a reply (there
+/// is none). Deliberately a plain data struct with NO retained handle: the
+/// capabilities `ChallengedProcess` offers (`reverify`/`wait`/`terminate`)
+/// all depend on the full five-step proof's LIVE handle, and this weaker
+/// operation earns none of them — a caller that needs those must run the
+/// full [`challenge()`] itself. Deliberately NOT named `Proven` and NOT
+/// `ChallengedProcess` (U1a Codex round-1, Blocker 1): the two operations
+/// must never be typed identically, so no consumer can mistake SID-only
+/// authentication for the full reply-bound liveness proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SidAuthenticated {
+    pub pid: u32,
+    pub created: u64,
+}
+
+/// What [`authenticate_server()`] concluded — a SEPARATE enum from
+/// [`ChallengeOutcome`] (not a generic instantiation of it) for the same
+/// reason `SidAuthenticated` is a separate type: nothing here is ever
+/// spelled `Proven`.
+#[derive(Debug)]
+pub enum SidAuthOutcome {
+    /// The peer's token-user SID matches this account's.
+    Authenticated(SidAuthenticated),
+    /// A well-formed WRONG answer: the peer's SID differs. Never retried
+    /// as if it might still be legitimate.
+    Foreign,
+    /// An OS-call failure anywhere in steps 1-3. Never classified as
+    /// authenticated or foreign.
+    Undetermined,
+}
+
+/// ADR 0041 Lifecycle "The challenge", steps 1-3 ONLY: identify the peer
+/// process behind a live connection and authenticate its token-user SID
+/// against this account's. No wire I/O of any kind — this is why
+/// `pipe_win::connect_voyage_pipe` (the shared, lane-agnostic constructor)
+/// can call it unconditionally, regardless of which lane the caller's
+/// FIRST frame will bind the connection to next (mgmt's `status`, or the
+/// attach lane's `hello`): sending a lane-specific request here would
+/// itself consume the connection's once-only first-frame lane binding
+/// before the caller ever sends its own.
+///
+/// This is a WEAKER proof than [`challenge()`]'s full five steps — see
+/// [`SidAuthenticated`]'s own doc for exactly what it does and does not
+/// establish, and `connect_voyage_pipe`'s doc for the ADR's own
+/// under-specification of the attach lane's stronger-proof story. A lane
+/// that both wants and can afford the full proof (mgmt; the probe
+/// classifier) runs `challenge()` itself, on top of a connection this
+/// function already authenticated at the OS level.
+pub fn authenticate_server(conn: &dyn ChallengeableConnection) -> SidAuthOutcome {
+    match authenticate_steps_1_to_3(conn) {
+        ChallengeOutcome::Foreign => SidAuthOutcome::Foreign,
+        ChallengeOutcome::Undetermined => SidAuthOutcome::Undetermined,
+        ChallengeOutcome::Proven((handle, pid)) => {
+            // `created` is read directly off the handle -- a fact about
+            // the process, never about a reply this function never waits
+            // for. The handle itself is then dropped: `SidAuthenticated`
+            // retains nothing (see its own doc).
+            match creation_filetime_bits(handle.as_raw_handle() as HANDLE) {
+                Ok(created) => SidAuthOutcome::Authenticated(SidAuthenticated { pid, created }),
+                Err(_) => SidAuthOutcome::Undetermined,
+            }
+        }
+    }
 }
 
 enum StatusFailure {

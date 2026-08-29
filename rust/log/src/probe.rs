@@ -136,6 +136,11 @@ pub struct SpawnedChild {
 }
 
 impl SpawnedChild {
+    // U1a Codex round-1, Blocker 2: `RealProbeOps` (the only caller of
+    // this constructor) is now `pub(crate)` with no in-crate consumer
+    // yet either -- deliberate scaffolding for U2's classifier, not dead
+    // code to delete (see `RealProbeOps`'s own doc).
+    #[allow(dead_code)]
     fn from_child(child: std::process::Child) -> Self {
         use std::os::windows::io::IntoRawHandle;
         // `into_raw_handle` consumes `child`, transferring ownership of
@@ -168,14 +173,36 @@ impl SpawnedChild {
 /// `VoyageMgmtExchange`), `std::process` spawn, and the bounded
 /// wait/terminate helpers, unmediated. No decisions — just the mechanical
 /// OS calls the classifier drives through [`ProbeOps`]. `connect` uses the
-/// UNCHALLENGED connect (U1a: `pipe_win::connect_voyage_pipe` itself now
-/// runs a challenge internally, which would collapse Stage B's own
+/// UNCHALLENGED connect (`pipe_win::connect_voyage_pipe` itself runs SID
+/// authentication internally, which would collapse Stage B's own
 /// connect-then-challenge rows — see that function's doc) — it currently
 /// carries that raw connect's existing ~2s internal retry on
 /// `PIPE_BUSY`/`FILE_NOT_FOUND`; U0 does not change that function's
 /// behavior, so this is what's available today (a later unit may want a
 /// non-retrying variant for the classifier's own 500ms-spaced probe loop).
-pub struct RealProbeOps;
+///
+/// # `pub(crate)`, not `pub` (U1a Codex round-1, Blocker 2)
+///
+/// An earlier version of this type was `pub`, which made the UNCHALLENGED
+/// connection it hands back through `ConnectOutcome::Connected` a public
+/// path to raw pipe I/O: external code could call
+/// `RealProbeOps.connect(id)`, extract the `PipeClient`, and read/write it
+/// directly without ever running `challenge`/`authenticate_server` — the
+/// exact leak `connect_voyage_pipe`'s own enforcement exists to close,
+/// reopened one layer up. `RealProbeOps` has no production consumer today
+/// (this whole module is scaffolding — see the module doc), so nothing
+/// depends on it being public, and `sot-capsule` (a separate bin CRATE
+/// TARGET, `src/bin/sot-capsule.rs`) cannot see `pub(crate)` items
+/// regardless: it only ever reaches this library through its `pub` API.
+/// That is the intended shape once U2's classifier lands — a `pub`
+/// function/type living IN THIS CRATE, wrapping `RealProbeOps` internally,
+/// which `sot-capsule` calls — never `RealProbeOps` directly. Keeping the
+/// trait (`ProbeOps`) and the scripted implementation (`ScriptedProbeOps`,
+/// already gated behind `cfg(test)`/`test-support`) at their current
+/// visibility is unaffected: neither one hands back a real, unauthenticated
+/// `PipeClient` to anything outside this crate.
+#[allow(dead_code)] // deliberate scaffolding, no consumer until U2 -- see this type's own doc
+pub(crate) struct RealProbeOps;
 
 impl ProbeOps for RealProbeOps {
     type Conn = crate::pipe_win::PipeClient;
@@ -221,7 +248,7 @@ impl ProbeOps for RealProbeOps {
 
     fn challenge(&self, conn: &Self::Conn, deadline: Instant) -> ChallengeOutcome<Self::Process> {
         let mut exchange = crate::exchange::VoyageMgmtExchange::default();
-        challenge::challenge(conn, Some((&mut exchange, deadline)))
+        challenge::challenge(conn, &mut exchange, deadline)
     }
 
     fn writer_fence_probe(&self, voyage_root: &Path) -> FenceProbe {
