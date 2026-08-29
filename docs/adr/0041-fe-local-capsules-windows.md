@@ -721,14 +721,13 @@ paths.
 | what it settles | the test |
 |---|---|
 | the step-5 cross-process residual | a real child `sot-capsule run`: reply-pid ≠ the test's own pid, reply-pid == the pipe's server pid, creation time == an independently opened handle's |
-| the classifier is total | one case per row, including malformed frames, wrong opcodes, ACCESS_DENIED, `CreateProcess` failure, `WAIT_FAILED`, and kill failure; an expired episode wedges from every PENDING row |
-| the marker latches | ack stalled after a durable marker still tears down; a failed append is refused with no ack; two concurrent callers get one marker and two acks |
+| the classifier is total AND every row reachable | one case per row, including malformed frames, wrong opcodes, ACCESS_DENIED, `CreateProcess` failure, `WAIT_FAILED` and kill failure; the Stage-B deadline wedges every Stage-B PENDING row, while an A5 child at its readiness cutoff (the t=0 A5 → t=60 A3 sequence) reaches KILL+WAIT — NO Stage-A terminal result may leave a live child |
+| the marker is the acceptance barrier | an ack stalled after a durable marker still tears down; a failed append yields no ack, no marker, an unsealed exit, `failed {record_append}`, a released hold and a replaced leg; two concurrent callers get one marker and two acks; the frame is refused by the verifier in an undeclaring segment, and a declaring segment is refused by a pre-feature reader |
 | a spawn failure is recovered, not obeyed | a missing shell and a transport fatal both respawn; only `run_end_requested` suppresses |
-| start modes | `--resume` after a requested end exits 0; `--start` after the same end spawns; an ADOPTED leg ends correctly with no stamp anywhere |
+| start modes | `--resume` after a requested end exits 0; `--start` after the same end spawns; an ADOPTED leg ends correctly with no stamp anywhere; a provable torn tail is REPAIRED and replaced while a complete corruption exits 69 without spawning |
 | the lease is not a sample | supervisor killed between `CreateProcess` and fence acquisition, and again during the history walk: the child exits or is visible, never both-invisible-then-binding |
-| FE quit during spawn-pending | the request is queued behind the authority's own spawn and ends the run properly, never leaving a capsule behind |
+| FE quit during spawn-pending | the request is admitted and latched DURING the spawn and ends the run properly, never leaving a capsule behind |
 | reset under a live authority | mediated, never concurrent; no two-identity state |
-| the shutdown tail and a full pool | a probe during teardown, and against four idle mgmt clients, never reaches WEDGED |
 | both flap bounds | a store that never opens, and a shell that dies 1 ms after READY, each reach the threshold |
 | pointer durability | a crash between create and write leaves no unusable permanent pointer; reset preserves evidence under a unique name |
 | input across reconnect and across reset | same key resent within a voyage, each of the three outcomes handled; a changed UUID cancels rather than replays |
@@ -737,12 +736,11 @@ paths.
 | backpressure | a stalled FE is evicted rather than buffering without bound |
 | the teardown order | the run ends and the record closes before the FE and tunnel die; an unreachable-but-visible capsule stops the script loudly |
 | upgrade | image replacement after both proofs never hits a sharing violation; a first-ever capsule install rolls back by DELETION; a rollback across the feature boundary is REFUSED; each health-table row decides as written, including READY+1 ms death and a lane that wedges after answering once |
-| the marker is a format citizen | a `run_end_requested` in an undeclared segment fails the verifier; a declaring segment is refused by a pre-feature reader; the reader-first rollout leaves one rollback hop |
 | the lane's own lifecycle | a squatted name loses first-instance bind and exits 69; a present-but-unanswering lane is treated as absent; a mismatched build is refused; a lost `reset` reply retried under the same operation id does not rename twice |
 | every classifier row is REACHABLE | a model test drives one case per row, A4 and A3 included |
 | the supported history envelope | a release-mode cold-history open at the named boundary publishes its measured time and sets the two provisional numbers |
-| teardown composes | worst-case worker fan-out completes inside the 20 s aggregate, and the fence is free before the probe episode expires |
-| the marker | baseline captured before this run appends; skipped on a first attach; an append failure is visible |
+| teardown composes | worst-case worker fan-out completes inside the 20 s aggregate and the fence is free before the probe episode expires; a probe during the tail, and against four idle mgmt clients, never reaches WEDGED |
+| `fe_down` evidence | baseline captured before this run appends; skipped on a first attach; an append failure is visible |
 
 The `windows-2022` job runs `conpty` and `capsule_win` under one
 10-minute cap. Step 6 makes it five serial commands with pinned budgets
@@ -1105,10 +1103,18 @@ post-upgrade restart deliberately begin again.
 | `--resume` | sealed, carrying its own `run_end_requested` | exit 0; do not spawn |
 | `--resume` | sealed any other way, or no leg at all | spawn a new leg |
 
-A torn or corrupt open tip takes the third row: recovery is exactly what
-`open_for_writing` already does with it, and refusing to start over an
-unreadable tip would strand the session behind the store's own repair
-path. This table governs a SUPERVISOR START only; the no-supervisor
+A PROVABLE TORN TAIL takes the third row: repairing it is exactly what
+`open_for_writing` already does. A COMPLETE CORRUPTION does not, and the
+distinction is ADR 0039's, not a convenience — a complete frame with a
+bad CRC or an invalid closed enum is loud and operator-acknowledged
+only, `SegmentReader` marks nothing but `TornTail` repairable, and
+`reconcile_open` propagates every other condition. Treating the two
+alike would discard a complete record and seal a prefix, turning loud
+corruption into apparently valid history, or spawn a successor over a
+chain the store itself refused. So reconciliation aborting loudly is
+terminal: the supervisor exits 69 WITHOUT spawning, and only an explicit
+operator repair procedure may proceed. This table governs a SUPERVISOR
+START only; the no-supervisor
 `endrun` and `reset` commands are operator acts under the capability
 matrix above and never consult it.
 
