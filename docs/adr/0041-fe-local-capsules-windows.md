@@ -805,24 +805,38 @@ loop with a WATERMARK BARRIER: force the pending output group-commit,
 then establish checkpoint and subscription at that single watermark — a
 snapshot can never show bytes the voyage could still lose.
 
-## Lifecycle: one owner, one rule, one transition, one probe
+## Lifecycle: one authority, one rule, one transition, one probe
 
-ONE spawn owner — the SUPERVISOR, a `sot-capsule supervise` process the
-launcher starts and keeps started. (Amended 2026-08-28: the original
-wording put the role in the launcher loop itself, which cannot perform
-the probe — a PowerShell process can do neither overlapped named-pipe
-I/O nor `OpenProcess`/`GetProcessTimes`. The ROLE is still one; its home
-moves to the binary that already owns the voyage, the pipe and the wire.
-The launcher's job shrinks to starting it, restarting it under the
-exit-code contract below, and keeping the ssh tunnel.) The FE is
-attach-only. Legs are spawned as CHILD PROCESSES and deliberately NOT
-placed in the supervisor's job: the supervisor dying must be harmless to
-the run, which is the whole reason adoption exists.
+**ONE AUTHORITY.** Every act that starts, ends, adopts or resets a run is
+performed by the process holding `<state-dir>\supervisor.lock` — a
+`sot-capsule supervise` process the launcher starts, or, when none is
+running, whichever caller acquires that fence for the duration of its own
+operation. Nobody else touches a capsule. (Rounds 1–3 of this review
+tried the alternatives: the role in the launcher loop, which cannot do
+overlapped pipe I/O or `OpenProcess`; and a second `spawn.lock` that
+teardown callers took directly, which could not linearize a spawn
+decision taken just before the gate, could not be acquired inside a
+legitimate long hold, and let `reset` run under a live supervisor. One
+authority behind one fence deletes all three, because the questions
+"may I spawn?", "may I stop?" and "may I reset?" are no longer separate
+answers that must agree.)
 
-**Discovery, election and exclusion — two fences and a lease, each named
-to the invariant it serves.** A supervisor cannot probe a voyage it
-cannot name; two supervisors must not both spawn; and a spawn already in
-flight must not escape a teardown.
+The FE is attach-only and asks; it never acts. Requests reach the
+authority over the **supervisor lane** — a named pipe the supervisor
+serves, reusing `pipe_win`'s server and `wire`'s outer framing with its
+own magic and three lockstep ops: `end_run {reason}`, `reset`, `status`.
+This lane is VERSION-LOCKED TO THE RELEASE, not permanently pinned like
+the capsule's mgmt lane: the upgrade transaction below replaces the FE
+and the supervisor as one image set, so both ends are always the same
+build. When no supervisor is running, `sot-capsule endrun` and
+`sot-capsule reset` acquire the fence and execute the identical code
+path in-process — the degenerate case is the same case.
+
+Legs are spawned as CHILD PROCESSES and deliberately NOT placed in the
+supervisor's job: the supervisor dying must be harmless to the run,
+which is the whole reason adoption exists.
+
+**Discovery, and the two windows a spawn passes through.**
 
 - `<state-dir>\drawer.voyage` names the drawer's voyage: one canonical
   UUID, WRITE-ONCE. The voyage is the SESSION and every capsule run is a
@@ -832,310 +846,269 @@ flight must not escape a teardown.
   predicted. It is PUBLISHED, not merely created: temp file → write →
   file flush → NO-REPLACE rename → renamed-file flush → parent-directory
   flush, the store's own pinned Windows order, reusing that
-  implementation rather than a second one. A bare `CREATE_NEW`-then-write
-  can crash between the two and leave a permanent empty pointer that no
-  later supervisor can win. Publication completes BEFORE any spawn is
-  authorized, so a pointer can never name a voyage nobody can find. A
+  implementation rather than a second one. Publication completes BEFORE
+  any spawn, so a pointer can never name a voyage nobody can find. A
   pointer that exists but is empty or not a canonical UUID is CORRUPT: a
   loud stop naming `reset`, never a silent re-mint.
 - Absence of the store a pointer names is NOT a licence to re-mint. ADR
   0039 pins absence of data as corruption, always, and "missing" can
   equally be an access denial, a transient I/O failure or an interrupted
   move. `NotFound` is distinguished from every other I/O error and both
-  are a LOUD STOP naming the explicit `reset` operation, which takes the
-  spawn gate, proves no live server, and renames the pointer aside under
-  a unique no-replace name with a directory barrier — evidence is never
-  overwritten and never reappears reordered after a crash.
-- `<state-dir>\supervisor.lock` is the ELECTION fence: the same `fsutil`
-  kernel lock the writer fence uses, created `CREATE_NEW` when absent
-  (the writer fence refuses to create because bootstrap owns it; this one
-  has no bootstrap, and an atomic create is what stops two supervisors
-  minting rival inodes), then opened existing and held for the
-  supervisor's whole life. Kernel-released on any death, so it is never
-  stale. Acquiring it means you are the sole spawner; failing means a
-  supervisor is already live and the loser EXITS 0.
-- `<state-dir>\spawn.lock` is the SPAWN GATE, and it is a different
-  fence because it answers a different question. (Amended 2026-08-28: one
-  lifetime fence could not serve both. A teardown caller cannot take a
-  lock the live supervisor holds for life, which is why an earlier
-  revision exempted the FE's quit path — and that exemption was exactly
-  the hole: an FE quitting during a spawn had no mgmt server to reach and
-  no way to stop the capsule that was about to appear.) The supervisor
-  holds it ONLY across a spawn-to-ready critical section; `endrun` and
-  `reset` — the FE's quit path INCLUDED, with no exemption — hold it for
-  their whole operation. So a teardown that arrives mid-spawn simply
-  WAITS for the child to become ready and then ends it properly, and two
-  EndRun callers serialize instead of racing. Acquisition is bounded
-  separately from the probe (below): the probe cannot absorb a failure
-  that happens before the caller is allowed to probe at all.
-- A pre-ready child is held by a PARENT-DEATH LEASE. A capsule is
-  deliberately not in the supervisor's job, so between `CreateProcess`
-  and readiness it would otherwise outlive a supervisor that died, take
-  the writer fence after a teardown had already concluded nothing was
-  running, and reappear headless. The supervisor therefore hands the
-  child an inherited, synchronizable handle to itself; the child checks
-  it immediately before acquiring the writer fence and again immediately
-  before binding its pipe, and EXITS without doing either if the lease is
-  broken. The residual window is not zero — the supervisor can die
-  between the last check and the bind — so it is bounded rather than
-  claimed away: after taking the spawn gate, `endrun` and `reset` must
-  observe ABSENT TWICE, separated by the bind window, before concluding
-  that nothing is running. The lease shrinks the window; the double
-  observation covers what is left.
+  are a LOUD STOP naming `reset`, which — like everything else — runs
+  under the authority, proves no live server, and renames the pointer
+  aside under a unique no-replace name with a directory barrier, so
+  evidence is never overwritten and never reappears reordered.
+- `<state-dir>\supervisor.lock` is the fence: the same `fsutil` kernel
+  lock the writer fence uses, created `CREATE_NEW` when absent (the
+  writer fence refuses to create because bootstrap owns it; this one has
+  no bootstrap, and an atomic create stops two supervisors minting rival
+  inodes), then opened existing and held for the operation's life.
+  Kernel-released on any death, so it is never stale.
+- A spawned child passes through exactly TWO windows, and only the first
+  is invisible. INVISIBLE: `CreateProcess` → writer-fence acquisition —
+  process start plus an open and a `try_lock`, bounded by neither
+  history nor I/O volume. VISIBLE: fence held, pipe not yet bound —
+  `open_for_writing` takes the fence FIRST and only then enumerates,
+  reconciles and rebuilds the dedupe index over all retained history, so
+  this window is O(retained history) but a probe can SEE it. The child's
+  first act after acquiring the fence is to check the parent-death lease
+  it was spawned with (an inherited, synchronizable handle to its
+  supervisor); if the lease is broken it releases the fence and exits
+  without binding. Because the check is INSIDE the fence, "a delayed
+  child might take the fence later" is not a race to bound — the child
+  either already holds it, and is therefore visible, or it never will.
+  The invisible window is covered by the authority observing ABSENT
+  twice, 2 s apart: that separation is a process-start bound, not a
+  history bound, which is why it can be a small number at all.
 
-**The rule: a run is ENDED BY REQUEST only through an explicit
-`EndRun` over the mgmt lane.** (Amended 2026-08-27 — the original
-wording said a run ends ONLY by EndRun, which contradicted both the
-shipped P1 capsule and step 7's own "run ended — new leg" row: a
-producer that EXITS ends its run intrinsically — `producer_dead` with
-the exit status, seal, verify-green — because the run's program ending
-is not a teardown anyone requested. EndRun governs every EXTERNALLY
-REQUESTED end; nothing else — no exit code, no FE event, no supervisor
-inference — may request one.) Quit intent travels IN-BAND — the FE's real-quit path
-issues EndRun itself before exiting, never leaving the supervisor to
-infer intent from an exit code it may not even be alive to observe
-(review from the target hardware found today's quit path produces only
-an IMPLICIT exit 0, and the nightly cleanup script ends the FE with
-`Stop-Process -Force`, which runs no exit path at all). Exit codes play
-no role in run lifetime: any exit code, an FE crash, supervisor death —
-all are FE loss; the capsule is untouched. Exit 75 keeps its ADR 0017
-relaunch meaning and lands squarely in FE loss.
+**The rule: a run is ENDED BY REQUEST only through an explicit `EndRun`
+over the mgmt lane.** A producer that EXITS ends its run intrinsically —
+`producer_dead` with the exit status, seal, verify-green — because the
+run's program ending is not a teardown anyone requested. EndRun governs
+every EXTERNALLY REQUESTED end; nothing else — no exit code, no FE
+event, no inference — may request one. Exit codes play no role in run
+lifetime: any exit code, an FE crash, supervisor death — all are FE
+loss; the capsule is untouched. Exit 75 keeps its ADR 0017 relaunch
+meaning and lands squarely in FE loss.
 
-**The transition: `EndRun(reason)`** is the only teardown
-implementation, invoked by the FE real-quit path, `sot-capsule endrun`
-(which the teardown script calls) and the incompatible-upgrade end-run.
-EndRun = mgmt `shutdown` → the capsule acks, drains, seals, exits. Proof
-of completion has two halves, and conflating them cost a round: the
-RECORD proof is capsule ack + pipe closure + writer-fence release +
-verify-green, and the IMAGE proof is the capsule PROCESS having exited.
-Neither substitutes for the other. `WaitForExit` was rightly barred as
-the record proof — an adopting supervisor has no child handle, and the
-process can outlive the seal — but it is REQUIRED for the image, because
-`sot-capsule` formats its summary and exits after `run` returns, so a
-Windows image replacement racing that window hits a sharing violation.
-Whoever performs EndRun already holds a challenged, identity-verified
-process handle, so the image proof costs nothing extra. `verify-green`
-is an O(retained history) walk and therefore belongs to the teardown and
-acceptance paths, never inside an interactive wait. The ACK ALONE IS NOT
-PROOF: it is physically written before the
-drain, the process wait, the `producer_dead` write and the seal, so a
-caller that exits on the ack hides a failure in every step that
-actually matters. The `reason` (≤128 B) is recorded in `producer_dead`'s
-detail, and its presence there is the durable, verified, single-writer
-signal that the end was REQUESTED. A raw-terminal EndRun writes
-`producer_dead` + seal only — raw terminals emit no turns, so there are
-no synthesized closes.
+**The transition: `EndRun(reason)`**, invoked by the authority on its own
+behalf or on a `end_run` request. EndRun = mgmt `shutdown`, and its state
+machine is ONE latch, because an ack is a courtesy and not a
+prerequisite:
 
-**Respawn is gated by a TYPED marker the capsule writes, not by a
-diagnostic string.** (Amended 2026-08-28: an earlier revision gated on
-the presence of `producer_dead.detail.reason`, which the shipped capsule
-also writes for a spawn failure and for `transport-accept-failed` — the
-two ends it must RECOVER from. Gating on it would have made a missing
-shell look like an operator's decision.) On receiving mgmt `shutdown`
-the capsule appends one `run_end_requested {reason}` lifecycle frame,
-committed IMMEDIATELY and BEFORE the `shutdown_ok` ack is queued, so the
-evidence is durable before any caller can observe success. It is written
-by the capsule — the single writer of its own store — inside the leg's
-own epoch, and it inherits that leg's seal, which is what makes it
-single-writer, generation-scoped and durable at once.
-`producer_dead.detail.reason` stays a free-form DIAGNOSTIC and is never
-read as a discriminator. The mapping is total: a spawn failure and a
-transport fatal write no `run_end_requested`, so both are recovered;
-only an externally requested end has one. A second `shutdown` while one
-is in flight is idempotent — acked, no second frame, the first reason
-stands.
+1. The capsule appends one `run_end_requested {reason}` lifecycle frame
+   and fsyncs it. This is the ONLY requested-end discriminator; a leg
+   ended by request has one and no other end does.
+2. On successful commit the capsule IRREVOCABLY LATCHES EndRun — in the
+   same writer-loop step, before the ack is queued. Ack completion
+   merely accelerates teardown; ack failure, a client that stops
+   reading, a progress-deadline close, or a connection lost in the final
+   poll can no longer unlatch it. (The shipped machine starts teardown
+   only when the transport reports the ack physically sent, and a
+   connection close emits no replacement action — so without the latch a
+   marker could be durable while the shell ran on under a record saying
+   this run must never be replaced.)
+3. If the append FAILS, the request is NOT ACCEPTED: no ack, the
+   connection closes with a typed refusal, the run continues, loudly.
+   The discriminator therefore never lies in either direction.
+4. Concurrent requests: the first commit wins and writes the only
+   marker; every later `shutdown` is acked without a second marker. A
+   request accepted in the final service poll has its ack queued and the
+   pipe's disappearance is deferred until that ack completes or a 2 s
+   grace expires.
 
-**Start authorization distinguishes a crash-restart from a new
-session.** The gate above is read for exactly one epoch — the leg the
-supervisor itself spawned or adopted — never "the latest record",
-because a leg that died before writing its own tail must not inherit an
-older leg's verdict. On STARTUP the supervisor reads the highest sealed
-epoch instead, and needs one more bit: a launcher that restarts a
-crashed supervisor must not resurrect a session the operator ended,
-while a launcher STARTED FRESH tomorrow must be able to. The launcher
-therefore mints one START TOKEN per launcher run and passes the same
-value to every supervisor it starts within that run; the supervisor
-passes it into the capsule's spawn detail, where it is sealed with the
-leg. Startup spawns unless the highest sealed epoch carries BOTH a
-`run_end_requested` AND this same start token — that combination, and
-only it, means "this launcher run already ended its session". A new
-launcher run carries a new token and starts normally. No file, no
-second writer.
+**Three proof terms, defined once and used everywhere below.**
+`record_closed` = capsule ack (or latch, if the ack failed) + the pipe
+NAME gone + writer fence released. `record_verified` = `record_closed`
+plus a green `verify_voyage` over the retained chain — an O(retained
+history) walk, so it is never inside an interactive wait; the AUTHORITY
+performs it after a leg ends and before reporting an `end_run` result or
+exiting 0, and a verify failure is terminal. `image_quiescent` = the
+capsule PROCESS has exited, which `record_closed` does not imply because
+`sot-capsule` formats its summary and exits after `run` returns; only
+the upgrade path needs it, and whoever performed EndRun already holds a
+challenged handle to wait on.
 
-**Respawn is bounded, and the criterion is READINESS, not age.**
-(Amended 2026-08-28: a raw 10 s floor let a store that fails to open
-after 11 s reset the counter forever and spawn without end.) A child
-that never reaches READY — the point at which it holds the writer fence
-AND its pipe answers the challenge — is a STARTUP FAILURE however long
-it took, including one killed at the readiness deadline. Three
-consecutive startup failures stop the loop. Only a leg that actually
-reached READY resets the count; the time it then ran is irrelevant.
-Diagnosis is whatever exists: the sealed `producer_dead` detail when a
+**Respawn is gated by the typed marker.** When a leg ends, the authority
+reads that leg's own sealed epoch — never "the latest record", because a
+leg that died before writing its tail must not inherit an older verdict.
+A `run_end_requested` means no new leg follows; every other end — the
+producer exiting, a crash, a transport fatal, a store that never opened
+— is replaced, with a visible "run ended — new leg".
+`producer_dead.detail.reason` is a free-form DIAGNOSTIC and is never
+read as a discriminator: the shipped capsule writes it for spawn
+failures and for `transport-accept-failed`, the two ends that must be
+RECOVERED from.
+
+**Startup authorization is a mode, not an identity.** The launcher knows
+whether it is beginning a session or restarting a crashed supervisor, so
+it says which; nothing needs to be stamped into a leg, which is what
+makes this work for an ADOPTED leg the current launcher run never
+spawned, and what lets the post-upgrade restart deliberately begin
+again.
+
+| supervisor start | highest sealed epoch | action |
+|------------------|----------------------|--------|
+| `--start` (an operator launcher run, including post-upgrade and post-reboot) | anything | adopt if live, else spawn |
+| `--resume` (a launcher restarting a crashed supervisor) | a live capsule | adopt |
+| `--resume` | ended with `run_end_requested` | exit 0; do not spawn |
+| `--resume` | ended any other way | spawn a new leg |
+
+`--start` is the operator act. That is sound because the product is
+launched from a desktop shortcut, not an auto-start service: a reboot
+therefore cannot authorize a start on its own, and if an automatic
+launcher restart is ever added, this row is what must be revisited.
+
+**Respawn is bounded at both ends.** A child that never reaches READY —
+holding the writer fence AND answering the challenge — is a STARTUP
+failure however long it took, including one killed at the readiness
+cutoff. A leg that reaches READY and then ends within 60 s is a RUNTIME
+failure. Three consecutive failures of either kind stop the loop; only a
+leg that runs 60 s past READY resets the count. Counting startup
+failures alone was not "bounded": a broken shell that survives one
+in-memory status challenge and exits a millisecond later resets the
+counter forever, churning processes and growing the voyage without end.
+Diagnosis is whatever exists — the sealed `producer_dead` detail when a
 segment sealed, the child's exit code and stderr tail when the store
-never opened at all.
+never opened.
 
-**Supervisor exit codes are the launcher's contract**, so the outer loop
-can neither defeat the bound nor resurrect an ended session. `0` = clean
-end (the run ended by request, or the supervisor was asked to stop) —
-DO NOT restart. `69` = terminal (anti-flap threshold, a foreign server,
-a wedge) — DO NOT restart; surface the error. Anything else is a
-supervisor crash — restart with the backoff the launcher already gives
-the tunnel, at most 5 restarts in 60 s, then stop and report. Only a new
-launcher run, an operator act, starts a session that ended cleanly.
+**Supervisor exit codes are the launcher's contract.** `0` = clean end
+(the run ended by request, or a stop was requested) — DO NOT restart.
+`69` = terminal (three consecutive failures, a foreign server, a wedge,
+a failed `record_verified`) — DO NOT restart; surface it. Anything else
+is a crash — restart with `--resume` on the launcher's shipped
+1/3/7/15/30 s sequence, at most 5 restarts in 60 s, then stop and
+report.
 
 **The machine-teardown ORDER is pinned** (the nightly close): supervisor
-stop → EndRun, holding the spawn gate → capsule ack + seal + lock
-release → FE close → tunnel down. (Amended 2026-08-28: the original put
-EndRun first, so that the script's opening force-kill could not strand a
-run. But the supervisor's entire job is to replace an ended leg, so
-EndRun while it lives races it into spawning a fresh headless capsule
-that the following steps then orphan. Stopping the spawner first costs
-nothing — it holds no handle the capsule depends on — and makes the
-EndRun step's own observation unfalsifiable, because holding the spawn
-gate means nothing can spawn. The invariant is unchanged: THE RUN IS ENDED
-BY REQUEST, AND ITS RECORD SEALED AND VERIFY-GREEN, BEFORE THE FE AND
-THE TUNNEL GO DOWN.) "Supervisor stop" is a defined handshake, not a
-force kill: the launcher — the restart owner — is told to stop first so
-it cannot restart what the teardown is about to kill; the supervisor is
-asked to stop, acknowledges, and the caller waits for its PROCESS EXIT
-and then for the election fence to release, on a bound of its own,
-because a kernel lock's post-kill release is documented as having no OS
-bound. Orphan stop: spawn gate held and ABSENT observed twice means skip
-EndRun and proceed — a fresh install and a post-crash cleanup
-must both work. Every wait is bounded and every timeout is LOUD: a
-teardown that cannot reach a capsule it can see STOPS and reports a live
-session rather than tearing the tunnel out from under it. The
+stop → EndRun under the fence → `record_closed` → FE close → tunnel
+down. The invariant: THE RUN IS ENDED BY REQUEST, AND ITS RECORD CLOSED,
+BEFORE THE FE AND THE TUNNEL GO DOWN. "Supervisor stop" is a defined
+handshake, not a force kill: the launcher — the restart owner — is told
+to stop first so it cannot restart what the teardown is about to end;
+the supervisor is asked to stop, acknowledges, and the caller waits for
+its process exit and then for the fence to release, on a bound of its
+own, because a kernel lock's post-kill release has no documented OS
+bound. Orphan stop: fence held and ABSENT observed twice means skip
+EndRun and proceed — a fresh install and a post-crash cleanup must both
+work. Every wait is bounded and every timeout is LOUD: a teardown that
+cannot reach a capsule it can see STOPS and reports a live session
+rather than tearing the tunnel out from under it. The
 daemon-detach-before-tunnel property the current script achieves is
 preserved by this order and asserted by the rewrite's own check.
 
-**Adoption is never silent, and the notice never claims what its teller
-cannot know.** The FE talks to the capsule; only the supervisor knows
-whether it spawned or adopted, and `status.created` is the LEG process's
-creation time, not the session's. So the FE shows one truthful message
-on every attach — "attached to leg started `<time>`" — and the
-spawn-versus-adopt distinction is logged by the supervisor, which is
-where that fact actually lives. A next-morning attach to yesterday's
-session is still a visible event: the leg time is yesterday's, on
-screen, in the drawer.
+**The attach notice never claims what its teller cannot know.** The FE
+talks to the capsule; only the authority knows whether it spawned or
+adopted, and `status.created` is the LEG process's creation time, not
+the session's. So the FE shows one truthful message on every attach —
+"attached to leg started `<time>`" — and the spawn-versus-adopt
+distinction is logged by the authority, where that fact lives. A
+next-morning attach to yesterday's session is still a visible event: the
+leg time is yesterday's, on screen, in the drawer.
 
-**The probe algorithm** — one ORDERED, TOTAL decision, run at supervisor
-start and at every loop re-entry. (Amended 2026-08-28 twice over: the
-original sampled `(pipe, writer.lock)` as if simultaneously, so a
-healthy shutdown could be called fatal; the replacement was a set of
-prose cases that neither covered every reachable OS outcome nor kept
-them disjoint — `ERROR_FILE_NOT_FOUND` matched two rows at once, and
-half a dozen real failures matched none.) It is stated as a first-match
-list so exhaustiveness holds BY CONSTRUCTION rather than by inspection:
+**The probe.** One episode, one monotonic deadline, evaluated as a typed
+transition table. The deadline is checked BEFORE every attempt, so it
+cannot be shadowed by a row that keeps returning PENDING — the defect a
+first-match prose list had, where an expired `ERROR_PIPE_BUSY` matched
+its own row forever and the terminal row was unreachable.
 
-1. An owned spawn attempt exists and its child is alive, within its
-   readiness deadline → SPAWN-PENDING. Wait; never spawn a second.
-2. An owned spawn attempt exists and its child has EXITED → LEG ENDED.
-   Take the end-of-leg path; a child that never reached READY is a
-   startup failure.
-3. An owned spawn attempt exists and the readiness deadline EXPIRED →
-   KILL the child, WAIT for its exit, count a startup failure, re-enter.
-   Never leave it to bind later against the next operator's launch.
-4. `connect` succeeded, and then:
-   a. a well-formed `status_ok` whose identity matches → ADOPTED.
-   b. a well-formed `status_ok` whose identity does NOT match → FOREIGN.
-   c. a complete, well-formed frame that is not `status_ok` → FOREIGN.
-   d. undecodable bytes, or a frame over the wire cap → FOREIGN: the
-      pinned v0 lane cannot be malformed by a real capsule.
-   e. EOF, timeout, a write or read I/O error, or a failure of
-      `GetNamedPipeServerProcessId` / `OpenProcess` / `GetProcessTimes`
-      → PENDING.
-5. `connect` failed `ERROR_FILE_NOT_FOUND` (past its own retry), and
-   then the writer fence is probed — the ONLY place the fence is
-   consulted, which is what keeps this row disjoint from row 8:
-   a. held → PENDING.  b. free → ABSENT: spawn.  c. any other error
-   probing it → PENDING.
-6. `connect` failed `ERROR_PIPE_BUSY` past its own retry → PENDING.
-7. `connect` failed `ERROR_ACCESS_DENIED` → FOREIGN. Our own DACL admits
-   us; a denial means the name is not ours.
-8. Any other `connect` error → PENDING.
-9. Any PENDING once the EPISODE deadline has expired → WEDGED.
+| # | observation                                                        | class    |
+|---|--------------------------------------------------------------------|----------|
+| 0 | episode deadline expired (checked first, every attempt)            | WEDGED   |
+| 1 | owned child: `CreateProcess` failed                                | SPAWN-FAILED |
+| 2 | owned child: alive, within readiness cutoff                        | PENDING  |
+| 3 | owned child: exited                                                | LEG ENDED |
+| 4 | owned child: readiness cutoff expired, or its handle wait returned `WAIT_FAILED` | KILL+WAIT |
+| 5 | connect ok → well-formed `status_ok`, identity matches             | ADOPTED  |
+| 6 | connect ok → well-formed `status_ok`, identity does not match      | FOREIGN  |
+| 7 | connect ok → a complete well-formed frame that is not `status_ok`  | FOREIGN  |
+| 8 | connect ok → undecodable bytes, or a frame over the wire cap       | FOREIGN  |
+| 9 | connect ok → EOF, timeout, read/write error, or a failure of `GetNamedPipeServerProcessId` / `OpenProcess` / `GetProcessTimes` | PENDING |
+| 10 | connect `ERROR_ACCESS_DENIED`                                     | FOREIGN  |
+| 11 | connect `ERROR_FILE_NOT_FOUND` → writer fence FREE                | ABSENT   |
+| 12 | connect `ERROR_FILE_NOT_FOUND` → fence held, or probing it errored | PENDING  |
+| 13 | connect `ERROR_PIPE_BUSY`, or any other connect error             | PENDING  |
 
-Rows 1–3 run before anything else, so an owned spawn is tracked
-independently of pipe and fence state — a slow startup holds the writer
-fence WHILE it rebuilds history (the fence is taken first, then the
-enumerate/reconcile/dedupe walk runs), which would otherwise present as
-row 5a and be judged against the short budget instead of the readiness
-one. PENDING is one class because its members are indistinguishable from
-outside and converge on the same two answers, and it runs on ONE
-monotonic episode deadline that a change of PENDING subtype never
-resets — otherwise alternating evidence livelocks forever.
+Totality holds over the observation tuple by construction: rows 1–4
+partition the owned-child state and are evaluated first, so an owned
+spawn is tracked independently of pipe and fence state; rows 5–9
+partition every outcome of a successful connect; rows 10–13 partition
+every connect error, with `FILE_NOT_FOUND` the only one that consults
+the fence — which is what keeps it disjoint from the catch-all. ADOPTED
+and FOREIGN are terminal for the episode. KILL+WAIT kills the child,
+waits for its exit on its own bound, counts a startup failure, and
+re-enters; a kill failure or an expired post-kill wait is itself
+terminal, because leaving a child able to bind later against the next
+operator's launch is the failure this row exists to prevent. SPAWN-FAILED
+counts a startup failure and re-enters.
 
-Two capsule-side changes make the healthy window fit inside that
-deadline, rather than inflating the deadline to fit the code:
+Two capsule-side changes make the healthy window observable rather than
+inflating the deadline to fit the code:
 
-- **The pipe closes when mgmt service ends, not when `run` returns.**
-  Today the transport is torn down by a guard at the very end, so
-  between the last mgmt poll and the seal the pipe is live with nothing
-  able to answer on it — an unbounded PENDING window worth up to the
-  reap, the joins, the process wait and the seal. Closing it at the end
-  of service converts that window into an ordinary `FILE_NOT_FOUND` +
-  fence-held (row 5a). The existing invariant is unchanged and gains a
-  sibling: THE PIPE IS NEVER LIVE WHILE THE WRITER FENCE IS FREE, and
-  NEVER LIVE WHILE NOTHING CAN ANSWER IT.
-- **An admitted mgmt connection gets an idle deadline** (60 s with no
-  outstanding request). It has none today, so four idle mgmt clients can
-  hold a healthy capsule at its non-watcher cap indefinitely and every
-  probe is closed without a reply — PENDING until WEDGED, a false
-  terminal stop. Nothing legitimate holds an idle mgmt connection now
-  that the death signal is the process handle.
-- **The two post-EOF joins are bounded** (5 s each, a timeout being a
-  loud failure), so the quit proof below has a real envelope.
+- **The pipe NAME disappears before any blocking join.** Today the
+  transport is dropped at the very end of `run`, so between the last
+  mgmt service point and the seal the pipe is live with nothing able to
+  answer, and `PipeServer::drop` then joins an accept thread, a reaper
+  and every connection's workers with no deadline. Teardown is split:
+  first the listener instance is disconnected and closed, so the NAME
+  is gone — which is the only thing a prober observes — and only then
+  are the threads joined, each on a 5 s bound, a timeout being loud.
+  The existing invariant gains a sibling: THE PIPE IS NEVER LIVE WHILE
+  THE WRITER FENCE IS FREE, and NEVER LIVE WHILE NOTHING CAN ANSWER IT.
+- **An admitted mgmt connection gets a 5 s idle deadline.** It has none
+  today, so four idle clients can hold a healthy capsule at its
+  non-watcher cap and every probe is closed without a reply. 5 s is
+  chosen to be an order of magnitude inside the probe episode — a 60 s
+  idle bound could not prevent a false wedge it is twelve times longer
+  than. Nothing legitimate holds an idle mgmt connection now that the
+  death signal is the retained process handle, so no admission
+  reservation is needed either.
 
-The numbers, pinned here so that no implementation invents them:
+The numbers, pinned here so no implementation invents them. Two are
+AVAILABILITY CUTOFFS, not derived success envelopes: Windows gives no
+bound for post-kill lock release, and `verify_voyage` is O(retained
+history), so past these points the honest report is "outcome unknown".
 
-| bound              | value                | what it must dominate           |
-|--------------------|----------------------|---------------------------------|
-| connect            | 2 s                  | `connect_voyage_pipe`'s existing deadline |
-| challenge          | 2 s                  | one `status` answered from memory; retryable, so a scheduler stall is absorbed rather than fatal |
-| probe EPISODE      | 10 s WALL, attempts spaced 500 ms | bind, seal and fence release once the pipe closes at end-of-service — NOT an attempt count, which could not bound anything when each attempt may spend 4 s |
-| spawn readiness    | 60 s from spawn, polled 500 ms, then KILL + wait | the `open_for_writing` walk over all retained history, held under the writer fence |
-| fence acquisition  | 10 s, separate from the probe | a kernel lock's documented OS-unbounded post-kill release |
-| anti-flap          | 3 consecutive never-READY children | a store that cannot open |
-| launcher restart   | ≤ 5 in 60 s, on the launcher's shipped 1/3/7/15/30 s sequence | a crash-looping supervisor |
-| FE quit proof      | 75 s                 | 10 s reap + 30 s drain + 5 s process wait + 2 × 5 s joins + seal + fence release |
-| mgmt idle          | 60 s                 | pool squatting |
+| bound                | value                | role                        |
+|----------------------|----------------------|-----------------------------|
+| connect              | 2 s                  | `connect_voyage_pipe`'s existing deadline |
+| challenge            | 2 s, clamped to the episode's remaining wall time | one `status` answered from memory; retryable |
+| probe episode        | 60 s wall, attempts 500 ms apart | dominates the visible O(history) window, since the invisible one is process-start bounded |
+| ABSENT separation    | 2 s                  | `CreateProcess` → writer-fence acquisition |
+| readiness cutoff     | 60 s from spawn, then KILL + 10 s wait | availability cutoff over the O(history) walk |
+| fence acquisition    | 90 s                 | must exceed a legitimate readiness hold plus kill and wait |
+| anti-flap            | 3 consecutive startup OR runtime failures; 60 s post-READY resets | a store that cannot open, and a shell that cannot stay up |
+| launcher restart     | ≤ 5 in 60 s, on the shipped 1/3/7/15/30 s sequence | a crash-looping supervisor |
+| FE quit              | 90 s → "outcome unknown" | availability cutoff |
+| mgmt idle            | 5 s                  | pool squatting |
+| capsule thread joins | 5 s each, after the name is gone | loud on expiry |
+| ack grace            | 2 s                  | a final-poll request still gets its ack |
 
-The 60 s readiness bound is an availability CUTOFF, not a proof that
-startup fits: retained history has no normative maximum while rotation
-is deferred, so it is the point at which the supervisor gives up, kills
-and counts a failure. What the acceptance suite defends is the supported
-envelope — the largest voyage shape and the runner class the bound is
-claimed for — and rotation, not a larger constant, is the answer when it
-is exceeded.
+The 60 s readiness cutoff is where the authority gives up, kills and
+counts a failure — not a claim that startup fits. Retained history has
+no normative maximum while rotation is deferred, so what the acceptance
+suite defends is the SUPPORTED ENVELOPE: the largest voyage shape and
+runner class the cutoff is claimed for. Rotation, not a larger constant,
+is the answer when it is exceeded.
 
-**The challenge**, unchanged, with its ORDER load-bearing: (1) read the
-server pid P via `GetNamedPipeServerProcessId` on the live connection;
-(2) `OpenProcess(P, PROCESS_TERMINATE |
-PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE)`; (3) AFTER the open,
-issue a mgmt `status` challenge on the SAME connection; (4) the handle
-is proven to be the server iff reply-pid == P AND reply creation time ==
-`GetProcessTimes(handle)`, compared on the exact FILETIME bits. (A dead
-true server cannot answer; a live one means P is not recycled — pids are
-unique among live processes.) The (handle, creation-time) pair is the
-pinned identity; SYNCHRONIZE makes the post-termination wait executable.
-WHAT THIS PROVES, narrowly: the answering process IS the server behind
-this connection, and it is alive with a stable identity. It does not
-attest an executable — a same-user process implementing the pinned v0
-lane would pass. The bound on that is the DACL: the pipe admits only the
+**The challenge**, with its ORDER load-bearing: (1) read the server pid P
+via `GetNamedPipeServerProcessId` on the live connection; (2)
+`OpenProcess(P, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION |
+SYNCHRONIZE)`; (3) AFTER the open, issue mgmt `status` on the SAME
+connection; (4) proven iff reply-pid == P AND reply creation time ==
+`GetProcessTimes(handle)` on the exact FILETIME bits. A dead true server
+cannot answer; a live one means P is not recycled, since pids are unique
+among live processes. Open-before-challenge IS the pid-reuse defense.
+WHAT THIS PROVES, narrowly: the answering process is the server behind
+this connection and is alive with a stable identity. It does not attest
+an executable — a same-user process implementing the pinned v0 lane
+would pass. The DACL is the bound on that: the pipe admits only the
 owner account and rejects remote clients, and this ADR's threat model is
-other local users and anonymous access, NOT the owner. No attestation is
-added for a threat the model excludes.
-
-That retained handle is the DEATH SIGNAL as well as the termination
-authority: the supervisor WAITS on it rather than holding a management
-connection open for the capsule's whole life, which leaves the
-protocol's non-watcher pool free for transient callers. There is no
-reserved management slot and none is needed — a probe refused because
-the pool is momentarily full closes without a reply, which is PENDING,
-which retries. `MAX_PIPE_INSTANCES` is derived from the protocol's own
-caps (`NON_WATCHER_CAP + SUBSCRIBER_CAP`), never an invented constant.
-Waking on the handle is not proof of a COMPLETED EndRun — that stays ack
-+ pipe closure + verify-green + lock release; it is only a wake-up.
+other local users and anonymous access, NOT the owner. The retained
+handle is also the DEATH SIGNAL, waited on rather than holding a
+management connection open for a leg's whole life, and the termination
+authority for the invalid-mgmt fallback. `MAX_PIPE_INSTANCES` is derived
+from the protocol's own caps (`NON_WATCHER_CAP + SUBSCRIBER_CAP`).
 
 ## Upgrade and version skew
 
