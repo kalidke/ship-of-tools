@@ -597,13 +597,9 @@ FE's client behavior, the unit graph, and the acceptance matrix.
   routes through one `request_quit(reason)`; exit 75, a crash and a
   `--capture` run are excluded by construction. The FE sends `end_run`
   on the supervisor lane and holds its window open in a visible "ending
-  session" state until the `end_run` command reply, which the authority
-  sends at `record_closed`, on the 90 s availability cutoff. It does NOT
-  wait for `record_verified`: that walk is O(retained history) and is
-  reported through `query {operation_id}` afterwards, so a verification
-  failure has somewhere to be reported instead of either blocking the
-  quit or vanishing. A timeout abandons the connection, never the
-  operation. On expiry the window STAYS UP and says
+  session" state until the lane's `end_run` reply — which arrives at
+  `record_closed`, with `record_verified` following through `query`, on
+  the 90 s cutoff. On expiry the window STAYS UP and says
   **"ending the session did not complete — outcome unknown"**: by then
   the job may already be terminated and the capsule mid-seal.
 - **Take-on-first-input is a transaction.** Auto-take on attach stays
@@ -740,7 +736,12 @@ paths.
 | status and attach cross a leg | a leg death in that window is detected, never rendered as the wrong start time |
 | backpressure | a stalled FE is evicted rather than buffering without bound |
 | the teardown order | the run ends and the record closes before the FE and tunnel die; an unreachable-but-visible capsule stops the script loudly |
-| upgrade | image replacement after both proofs never hits a sharing violation; a first-ever capsule install rolls back by DELETION; each health-table row decides as written |
+| upgrade | image replacement after both proofs never hits a sharing violation; a first-ever capsule install rolls back by DELETION; a rollback across the feature boundary is REFUSED; each health-table row decides as written, including READY+1 ms death and a lane that wedges after answering once |
+| the marker is a format citizen | a `run_end_requested` in an undeclared segment fails the verifier; a declaring segment is refused by a pre-feature reader; the reader-first rollout leaves one rollback hop |
+| the lane's own lifecycle | a squatted name loses first-instance bind and exits 69; a present-but-unanswering lane is treated as absent; a mismatched build is refused; a lost `reset` reply retried under the same operation id does not rename twice |
+| every classifier row is REACHABLE | a model test drives one case per row, A4 and A3 included |
+| the supported history envelope | a release-mode cold-history open at the named boundary publishes its measured time and sets the two provisional numbers |
+| teardown composes | worst-case worker fan-out completes inside the 20 s aggregate, and the fence is free before the probe episode expires |
 | the marker | baseline captured before this run appends; skipped on a first attach; an append failure is visible |
 
 The `windows-2022` job runs `conpty` and `capsule_win` under one
@@ -955,10 +956,20 @@ which is the whole reason adoption exists.
   supervisor); if the lease is broken it releases the fence and exits
   without binding. Because the check is INSIDE the fence, "a delayed
   child might take the fence later" is not a race to bound — the child
-  either already holds it, and is visible, or it never will. The
-  invisible window is covered by observing ABSENT twice, 2 s apart — a
-  process-start bound, not a history bound, which is why it can be a
-  small number at all.
+  either already holds it, and is visible, or — having found the lease
+  broken — releases it and exits. This requires a REAL API SPLIT, not a
+  check moved around a call: `open_for_writing` today canonicalizes,
+  preflights the volume and flushes two directories BEFORE `lock_writer`,
+  so the pre-fence path already performs durability I/O with no bound.
+  U1a splits acquisition so the fence and the lease check both precede
+  history traversal. What remains invisible is then genuinely small, but
+  it is NOT proven small: `CreateProcess` returns before child
+  initialization completes and Windows publishes no upper bound, so the
+  2 s ABSENT separation is UI PACING and a responsiveness heuristic —
+  never proof of process absence or of `image_quiescent`. Any operation
+  needing that proof holds or re-acquires a process handle and waits on
+  it. The safety of the lease comes from the fence ordering, not from
+  two samples.
 
 **The rule: a run is ENDED BY REQUEST only through an explicit `EndRun`
 over the mgmt lane.** A producer that EXITS ends its run intrinsically —
@@ -1096,12 +1107,11 @@ report.
 **The machine-teardown ORDER is pinned** (the nightly close): supervisor
 stop → EndRun under the fence → `record_closed` → FE close → tunnel
 down. The invariant: THE RUN IS ENDED BY REQUEST, AND ITS RECORD CLOSED,
-BEFORE THE FE AND THE TUNNEL GO DOWN. "Supervisor stop" is a defined
-handshake, not a force kill: the launcher — the restart owner — is told
-to stop first so it cannot restart what the teardown is about to end;
-the supervisor is asked to stop, acknowledges, and the caller waits for
-its process exit and then for the fence to release, on a bound of its
-own, because a kernel lock's post-kill release has no documented OS
+BEFORE THE FE AND THE TUNNEL GO DOWN. "Supervisor stop" is the lane's
+`stop` command, not a force kill — the launcher is told to stop first so
+it cannot restart what the teardown is about to end, then the caller
+waits for process exit and fence release on the fence-acquisition
+budget, because a kernel lock's post-kill release has no documented OS
 bound. Orphan stop: fence held and ABSENT observed twice means skip
 EndRun and proceed — a fresh install and a post-crash cleanup must both
 work. Every wait is bounded and every timeout is LOUD: a teardown that
@@ -1181,44 +1191,64 @@ inflating the deadline to fit the code:
   answer, and `PipeServer::drop` then joins an accept thread, a reaper
   and every connection's workers with no deadline. Teardown splits: the
   listener is disconnected and closed so the NAME is gone, which is all
-  a prober observes, and only then are threads joined, each on a 5 s
-  bound, loud on expiry. The invariant gains a sibling: THE PIPE IS
+  a prober observes; every worker is then cancelled and the joins share
+  ONE 20 s absolute deadline, loud on expiry. The invariant gains a
+  sibling: THE PIPE IS
   NEVER LIVE WHILE THE WRITER FENCE IS FREE, and NEVER LIVE WHILE
   NOTHING CAN ANSWER IT.
 - **An admitted mgmt connection gets a 5 s idle deadline.** It has none
   today, so four idle clients can hold a healthy capsule at its
   non-watcher cap while every probe is closed without a reply. 5 s sits
-  an order of magnitude inside the probe episode; a 60 s bound could not
-  prevent a false wedge it is twelve times longer than. Nothing
-  legitimate holds an idle mgmt connection now that the death signal is
-  the retained handle, so no admission reservation is needed either.
+  an order of magnitude inside the probe episode. Nothing legitimate
+  holds an idle mgmt connection now that the death signal is the
+  retained handle. ACTIVE occupancy — four owner clients each sending a
+  valid request just inside the interval — is out of scope: they are the
+  owner, whom the threat model excludes.
 
-The numbers, pinned here so no implementation invents them. Two are
+The numbers, pinned here so no implementation invents them. Most are
 AVAILABILITY CUTOFFS, not derived success envelopes: Windows gives no
-bound for post-kill lock release, and `verify_voyage` is O(retained
-history), so past these points the honest report is "outcome unknown".
+bound for post-kill lock release or for child initialization, and
+`verify_voyage` and `open_for_writing` are both O(retained history), so
+past these points the honest report is "outcome unknown".
 
 | bound                | value                | role                        |
 |----------------------|----------------------|-----------------------------|
 | connect              | 2 s                  | `connect_voyage_pipe`'s existing deadline |
 | challenge            | 2 s, clamped to the episode's remaining wall time | one `status` answered from memory; retryable |
-| probe episode        | 60 s wall, attempts 500 ms apart | dominates the visible O(history) window, since the invisible one is process-start bounded |
-| ABSENT separation    | 2 s                  | `CreateProcess` → writer-fence acquisition |
-| readiness cutoff     | 60 s from spawn, then KILL + 10 s wait | availability cutoff over the O(history) walk |
+| probe episode        | 60 s wall, attempts 500 ms apart — PROVISIONAL UNTIL MEASURED | covers the visible O(history) window within the supported envelope below |
+| ABSENT separation    | 2 s                  | UI pacing only; proves nothing |
+| readiness cutoff     | 60 s from spawn, then KILL + 10 s wait — PROVISIONAL UNTIL MEASURED | availability cutoff over the O(history) walk |
 | fence acquisition    | 90 s                 | must exceed a legitimate readiness hold plus kill and wait |
 | anti-flap            | 3 consecutive startup OR runtime failures; 60 s post-READY resets | a store that cannot open, and a shell that cannot stay up |
 | launcher restart     | ≤ 5 in 60 s, on the shipped 1/3/7/15/30 s sequence | a crash-looping supervisor |
 | FE quit              | 90 s → "outcome unknown" | availability cutoff |
 | mgmt idle            | 5 s                  | pool squatting |
-| capsule thread joins | 5 s each, after the name is gone | loud on expiry |
+| teardown aggregate   | 20 s TOTAL after the name is gone, one absolute deadline shared by every join | loud on expiry |
 | ack grace            | 2 s                  | a final-poll request still gets its ack |
 
-The 60 s readiness cutoff is where the authority gives up, kills and
-counts a failure — not a claim that startup fits. Retained history has
-no normative maximum while rotation is deferred, so what the acceptance
-suite defends is the SUPPORTED ENVELOPE: the largest voyage shape and
-runner class the cutoff is claimed for. Rotation, not a larger constant,
-is the answer when it is exceeded.
+The two PROVISIONAL numbers are provisional in a specific, closeable
+sense: 60 s is where the authority gives up, and whether it is generous
+or cruel depends on a `open_for_writing` cost the ADR may not assert
+without evidence. So the SUPPORTED ENVELOPE is named and gated. Claimed:
+**release build, ≤ 2 GiB retained across ≤ 64 segments, ≤ 100 000
+retained input facts, on the two-core Windows CI runner class, cold
+cache, with the default AV posture.** A release-mode cold-history test
+at exactly that boundary is a CI EVIDENCE GATE: it publishes the
+measured time, and the two numbers above are whatever that measurement
+plus a 3× margin requires — the ADR pins the METHOD and the envelope,
+and the first green run pins the values. Beyond the envelope the honest
+answer is rotation, not a larger constant; `open_for_writing`'s
+quadratic identity collection is a known cost inside it and is fixed or
+measured, not assumed away.
+
+The teardown aggregate replaces a per-thread bound that could not
+compose. "5 s each" over an acceptor, a reaper, up to sixteen connection
+workers and the capsule's own threads sums far past both the probe
+episode and the FE cutoff, while the writer fence stays held — so a
+healthy bounded teardown could be classified WEDGED. Cancellation is
+issued to every worker FIRST; the joins then share ONE absolute
+deadline, and each wait receives the remaining budget rather than a
+fresh 5 s. 20 s sits inside both outer cutoffs with room for the seal.
 
 **The challenge**, with its ORDER load-bearing: (1) read the server pid P
 via `GetNamedPipeServerProcessId` on the live connection; (2)
@@ -1292,10 +1322,15 @@ one rollback hop always available; the applier checks the boundary and
 refuses loudly instead of producing an unreadable install.
 
 First-boot health cannot stay FE-only: a supervisor that exits terminal
-or crash-loops while the FE stays up would never trip it. One window,
-150 s from apply — the readiness cutoff plus its kill-and-wait, so a
-healthy large-voyage start is never mistaken for a failure — and one
-decision:
+or crash-loops while the FE stays up would never trip it. Nor may it
+COMMIT at first READY, which this ADR itself calls insufficient — a leg
+that dies one millisecond after answering one status challenge is a
+RUNTIME failure by the anti-flap rule, and committing before that
+interval blesses a release the same document condemns. So the window is
+150 s from apply and the arithmetic is stated: a healthy first attempt
+needs at most the 60 s readiness cutoff plus the 60 s post-READY
+stability interval, which fits with 30 s to spare. ANY rollback
+observation before commit WINS, whenever it occurs in the window:
 
 | observation within the window        | decision       |
 |--------------------------------------|----------------|
@@ -1303,7 +1338,7 @@ decision:
 | supervisor exits 69, or crashes past its restart budget | ROLL BACK |
 | supervisor never reaches READY (spawned or adopted) | ROLL BACK |
 | FE exits 75                          | not a health signal; the window continues across the relaunch |
-| FE alive AND supervisor READY        | COMMIT         |
+| FE alive AND supervisor lane answering with the expected build AND the leg READY AND STILL HEALTHY 60 s PAST READY | COMMIT |
 
 Archive membership — the capsule in the artifact, the manifest, the
 required-file list, and a `--version` line in the shape the smoke job
