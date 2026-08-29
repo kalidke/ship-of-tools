@@ -685,13 +685,17 @@ still owns its own PTY is two sessions, so U2 and U3 stay off until U4.
 
 - **U0 — libraries, no behavior.** The state-dir rule as a public
   `sot-log` helper the frontend delegates to; `drawer.voyage`
-  publication and validation; the same-connection challenge and retained
+  publication and validation; the same-connection challenge — including
+  its target-process token-SID helper — and retained
   process-handle wrappers; the fence primitive with its `CREATE_NEW`
   bootstrap; classifier fault-injection scaffolding. No decision list is
   frozen here.
 - **U1 — active capsule changes**, in two separately reviewable slices
   because one of them changes durable compatibility and the other does
-  not. **U1a (plumbing):** idempotent `shutdown_all` so the RAII guard
+  not. **U1a (plumbing):** enforcing the challenge in the shared
+  `connect_voyage_pipe` constructor, which is active behavior for
+  today's step-5 clients and therefore not U0's; idempotent
+  `shutdown_all` so the RAII guard
   can be disarmed, the 5 s mgmt idle deadline, the ack grace, and the
   `open_for_writing` split that puts the writer fence and the lease
   check ahead of history traversal. **U1b (durable):** the
@@ -740,6 +744,7 @@ paths.
 | the teardown order | the run ends and the record closes before the FE and tunnel die; an unreachable-but-visible capsule stops the script loudly |
 | upgrade | image replacement after both proofs never hits a sharing violation; a first-ever capsule install rolls back by DELETION; a rollback across the feature boundary is REFUSED; each health-table row decides as written, including READY+1 ms death and a lane that wedges after answering once |
 | the lane's own lifecycle | a squatted name loses first-instance bind and exits 69; a present-but-unanswering lane is treated as absent; a mismatched build is refused; a lost `reset` reply retried under the same operation id does not rename twice |
+| the challenge authenticates the SERVER | on a real Windows machine, an OTHER-USER process pre-binds the supervisor name AND the voyage name with a permissive DACL and answers plausibly: every public client entry point classifies it FOREIGN before decoding or trusting a reply, and each target-token lookup failure lands PENDING, never READY or ADOPTED |
 | every classifier row is REACHABLE | a model test drives one case per row, A4 and A3 included |
 | the supported history envelope composes | a release-mode cold-history open at the named boundary publishes its measured time, and the gate fails unless `measured × 3` fits readiness and every derived budget is recomputed with it |
 | rollback is safe under a live release | a supervisor-69 rollback with the new FE alive quiesces it first and never touches a locked image; a feature-boundary refusal mutates nothing, keeps the health state and reaches a terminal recovery surface; a pre-reader install cannot activate the writer at all |
@@ -843,22 +848,14 @@ here because "reusing `pipe_win`" carries mechanics, not a contract:
   stable hash of the canonicalized state-dir path — the same thing that
   scopes the pointer and the fence, so two installs on one machine
   cannot collide and one install cannot address the wrong state.
-- **Security is MUTUAL, and this closes a step-5 gap as well.** The
-  server side is the posture the voyage pipe already proves: an explicit
-  owner-account DACL, `PIPE_REJECT_REMOTE_CLIENTS`, non-inheritable
-  handles, and `FILE_FLAG_FIRST_PIPE_INSTANCE`. But a DACL is
-  DIRECTIONAL — it says who may connect to the object the legitimate
-  server made; it cannot tell a client that the object it found was made
-  by that server, and first-instance creation only makes the honest bind
-  FAIL, it does not evict the process that won. A build identity is
-  compatibility data, not a credential. So every CLIENT of a Ship's Log
-  local pipe, on the SAME live connection and before trusting any reply,
-  reads the server pid with `GetNamedPipeServerProcessId`, opens it with
-  `PROCESS_QUERY_LIMITED_INFORMATION`, and requires that process's token
-  user SID to equal this account's — the SID `fsutil` already computes
-  for the descriptor. A mismatch is FOREIGN, never live authority. The
-  rule is shared, not lane-specific: the voyage pipe's own clients have
-  the same hole today, so it is pinned once here and applied to both.
+- **Security is MUTUAL.** The server side is the posture the voyage pipe
+  already proves: an explicit owner-account DACL,
+  `PIPE_REJECT_REMOTE_CLIENTS`, non-inheritable handles, and
+  `FILE_FLAG_FIRST_PIPE_INSTANCE`. The client side is THE CHALLENGE
+  below, run before any reply is trusted — one procedure for both pipe
+  families, because both have the same object-authentication problem and
+  the voyage pipe's own clients have the hole today. A build identity is
+  compatibility data, not a credential.
 - **Lifetime, bracketed by the fence.** Bound only while holding
   `supervisor.lock`, AFTER the fence and BEFORE any adopt or spawn, and
   dropped BEFORE the fence releases. So the lane is present exactly when
@@ -1188,10 +1185,10 @@ where WEDGED disposes of nothing):
 |---|-------------|-------|
 | B0 | episode deadline expired | WEDGED |
 | B1 | connect ok → well-formed `status_ok`, identity matches | ADOPTED |
-| B2 | connect ok → well-formed `status_ok`, identity does not match | FOREIGN |
+| B2 | connect ok → the server's token SID differs, or a well-formed `status_ok` whose pid/creation identity does not match | FOREIGN |
 | B3 | connect ok → a complete well-formed frame that is not `status_ok` | FOREIGN |
 | B4 | connect ok → undecodable bytes, or a frame over the wire cap | FOREIGN |
-| B5 | connect ok → EOF, timeout, read/write error, or a failure of `GetNamedPipeServerProcessId` / `OpenProcess` / `GetProcessTimes` | PENDING |
+| B5 | connect ok → EOF, timeout, read/write error, or a failure of `GetNamedPipeServerProcessId` / `OpenProcess` / `OpenProcessToken` / `GetTokenInformation` / `GetProcessTimes` | PENDING |
 | B6 | connect `ERROR_ACCESS_DENIED` | FOREIGN |
 | B7 | connect `ERROR_FILE_NOT_FOUND` → writer fence FREE | ABSENT |
 | B8 | connect `ERROR_FILE_NOT_FOUND` → fence held, or probing it errored | PENDING |
@@ -1288,19 +1285,40 @@ every worker FIRST; the joins then share ONE deadline, each wait taking
 the remaining budget. 20 s sits inside both outer cutoffs with room for
 the seal.
 
-**The challenge**, with its ORDER load-bearing: (1) read the server pid P
-via `GetNamedPipeServerProcessId` on the live connection; (2)
+**The challenge** is ONE procedure used by every client of BOTH pipe
+families, and its ORDER is load-bearing throughout: (1) read the server
+pid P with `GetNamedPipeServerProcessId` on the live connection; (2)
 `OpenProcess(P, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION |
-SYNCHRONIZE)`; (3) AFTER the open, mgmt `status` on the SAME connection;
-(4) proven iff reply-pid == P AND reply creation time ==
-`GetProcessTimes(handle)` on the exact FILETIME bits. A dead true server
-cannot answer; a live one means P is not recycled. Open-before-challenge
-IS the pid-reuse defense. WHAT IT PROVES, narrowly: the answering
+SYNCHRONIZE)`; (3) `OpenProcessToken` on that handle and compare its
+TOKEN USER SID to this account's — the SID `fsutil` already computes for
+the descriptor; (4) only then `status` on the SAME connection; (5)
+proven iff the SID matched AND reply-pid == P AND reply creation time ==
+`GetProcessTimes(handle)` on the exact FILETIME bits. Nothing in the
+reply is trusted, decoded for meaning, or acted on before step 3
+succeeds. A dead true server cannot answer; a live one means P is not
+recycled; a wrong SID means the object was created by someone else.
+
+The SID step is not decoration, and it is why steps 1–2 alone were never
+enough. A DACL is DIRECTIONAL: it governs who may connect to the object
+the honest server made, and says nothing about who made the object a
+client found. `FILE_FLAG_FIRST_PIPE_INSTANCE` only makes the honest bind
+FAIL; it does not evict the process that won. So an other-user process
+that creates the predictable name first, and deliberately grants the
+victim connect access, can answer a PID/creation-only challenge
+perfectly. WHAT THE FULL CHALLENGE PROVES, narrowly: the answering
 process is the server behind this connection, alive, with a stable
-identity. It does not attest an executable — a same-user process
-implementing the pinned v0 lane would pass — and the DACL is the bound
-on that, since the pipe admits only the owner account and this ADR's
-threat model is other local users and anonymous access, not the owner.
+identity, running as THIS ACCOUNT. It still does not attest an
+executable — a same-user process implementing the pinned v0 lane would
+pass — and that residue is what the threat model excludes, since it
+names other local users and anonymous access, not the owner.
+
+Failure classification is total and no failure is permissive: a
+successful token read whose SID DIFFERS is FOREIGN; a failure of
+`OpenProcessToken` or `GetTokenInformation` — like a failure of
+`GetNamedPipeServerProcessId`, `OpenProcess` or `GetProcessTimes` — is
+PENDING, never READY and never ADOPTED. An unproven server is retried or
+abandoned; it is never believed.
+
 The retained handle is also the DEATH SIGNAL and the termination
 authority for the invalid-mgmt fallback. `MAX_PIPE_INSTANCES` derives
 from the protocol's caps (`NON_WATCHER_CAP + SUBSCRIBER_CAP`).
