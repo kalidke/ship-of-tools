@@ -41,6 +41,11 @@ pub mod envelope;
 pub mod record;
 pub mod recovery;
 pub mod segment;
+// ADR 0041 step 6, unit U0 (promoted from the frontend's own paths.rs):
+// the per-machine state-dir resolution rule, owned here so every process
+// that needs it (today: the frontend) shares one rule instead of
+// drifting copies.
+pub mod state_dir;
 pub mod verify;
 pub mod voyage;
 pub mod wire;

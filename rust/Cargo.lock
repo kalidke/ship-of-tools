@@ -3886,6 +3886,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "sot-log",
  "sot-protocol",
  "sot-updater",
  "tiny-skia",

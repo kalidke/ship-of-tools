@@ -15,6 +15,10 @@ path = "src/main.rs"
 [dependencies]
 sot-protocol = { path = "../protocol" }
 sot-updater = { path = "../updater" }
+# ADR 0041 step 6, unit U0: the per-machine state-dir resolution rule now
+# lives in sot-log (`state_dir::sot_state_dir`); this crate's own
+# `paths::sot_state_dir` delegates to it instead of carrying a copy.
+sot-log = { path = "../log" }
 
 # Async + plumbing
 tokio = { workspace = true }
