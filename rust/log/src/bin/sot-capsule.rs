@@ -163,6 +163,24 @@ fn main() {
     std::process::exit(2);
 }
 
+// ADR 0041 U0 round-1 blocker 3: `sot_log::fence::lock_supervisor` must be
+// reachable from THIS binary crate -- Cargo treats `src/bin/sot-capsule.rs`
+// as a SEPARATE crate from the package's own library even though they share
+// one Cargo.toml, so a `pub fn` hidden inside a private library module (the
+// ORIGINAL `fsutil::lock_supervisor`) was invisible here. This test is the
+// actual proof: it calls the public facade from the real consumer Codex
+// named, not merely from the library's own test suite.
+#[cfg(all(test, windows))]
+mod tests {
+    #[test]
+    fn supervisor_lock_facade_is_reachable_and_works_from_this_binary_crate() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = sot_log::fence::lock_supervisor(dir.path()).unwrap();
+        assert!(sot_log::fence::supervisor_lock_path(dir.path()).is_file());
+        drop(guard);
+    }
+}
+
 /// The ADR 0040 producer: operator commands ride stdin as JSON lines
 /// ({"turn": text} | {"interrupt": true} | {"shutdown": true}).
 #[cfg(target_os = "linux")]

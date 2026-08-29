@@ -51,6 +51,10 @@ mod host_handshake;
 // Windows.
 pub mod deadline;
 pub mod envelope;
+// ADR 0041 step 6, unit U0 round-1 (blocker 3): the public facade over
+// fsutil::lock_supervisor -- fsutil itself is a private module, invisible
+// from any OTHER crate, including a future sot-capsule binary target.
+pub mod fence;
 // ADR 0041 step 6, unit U0 round-1: a pipe lane's post-SID identity
 // exchange (encode request, decode reply) -- the one thing
 // challenge::challenge delegates per-lane. Portable, like `deadline`.
