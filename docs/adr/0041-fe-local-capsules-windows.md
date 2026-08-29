@@ -1031,35 +1031,48 @@ which `record_closed` does not imply because `sot-capsule` formats its
 summary and exits after `run` returns; only upgrade needs it, and
 whoever performed EndRun already holds a challenged handle to wait on.
 
-**Respawn is gated by the typed marker.** When a leg ends, the authority
-reads that leg's own sealed epoch — never "the latest record", because a
-leg that died before writing its tail must not inherit an older verdict.
-A `run_end_requested` means no new leg follows; every other end — the
-producer exiting, a crash, a transport fatal, a store that never opened
-— is replaced, with a visible "run ended — new leg".
-`producer_dead.detail.reason` is a free-form DIAGNOSTIC and is never
-read as a discriminator: the shipped capsule writes it for spawn
+**Respawn is gated by the typed marker, read from the LATEST LEG AFTER
+RECONCILIATION.** "Highest sealed epoch" was the wrong key: `.open` and
+`.recovering` segments are states the store already treats as
+authoritative — `open_for_writing` enumerates all three before choosing
+the next epoch — so a leg that was hard-killed with its segment still
+open is newer than the last sealed one and must not inherit that one's
+verdict. Concretely, the hole this closes: a requested end seals epoch
+E, an upgrade starts E+1 with `--start`, E+1 is hard-killed with an open
+tip, the supervisor then crashes, and a `--resume` restart that looked
+only at sealed epochs would find E's marker and exit 0 — abandoning a
+newer crashed leg that needs recovery. So the decision is taken under
+the fence, on the latest leg of ANY state, and a marker governs only its
+OWN epoch. `producer_dead.detail.reason` remains a free-form DIAGNOSTIC
+and is never a discriminator: the shipped capsule writes it for spawn
 failures and for `transport-accept-failed`, the two ends that must be
 RECOVERED from.
 
 **Startup authorization is a mode, not an identity.** The launcher knows
 whether it is beginning a session or restarting a crashed supervisor, so
-it says which; nothing needs to be stamped into a leg, which is what
-makes this work for an ADOPTED leg the current launcher run never
-spawned, and what lets the post-upgrade restart deliberately begin
-again.
+it says which; nothing is stamped into a leg, which is what makes this
+work for an ADOPTED leg this launcher run never spawned and lets the
+post-upgrade restart deliberately begin again.
 
-| supervisor start | highest sealed epoch | action |
-|------------------|----------------------|--------|
+| supervisor start | latest leg after reconciliation | action |
+|------------------|----------------------------------|--------|
 | `--start` (an operator launcher run, including post-upgrade and post-reboot) | anything | adopt if live, else spawn |
-| `--resume` (a launcher restarting a crashed supervisor) | a live capsule | adopt |
-| `--resume` | ended with `run_end_requested` | exit 0; do not spawn |
-| `--resume` | ended any other way | spawn a new leg |
+| `--resume` | a live capsule | adopt |
+| `--resume` | open or recovering, no live capsule | RECOVER and spawn a new leg — an unfinished leg is never a requested end |
+| `--resume` | sealed, carrying its own `run_end_requested` | exit 0; do not spawn |
+| `--resume` | sealed any other way, or no leg at all | spawn a new leg |
+
+A torn or corrupt open tip takes the third row: recovery is exactly what
+`open_for_writing` already does with it, and refusing to start over an
+unreadable tip would strand the session behind the store's own repair
+path. This table governs a SUPERVISOR START only; the no-supervisor
+`endrun` and `reset` commands are operator acts under the capability
+matrix above and never consult it.
 
 `--start` is the operator act. That is sound because the product is
 launched from a desktop shortcut, not an auto-start service: a reboot
-therefore cannot authorize a start on its own, and if an automatic
-launcher restart is ever added, this row is what must be revisited.
+cannot authorize a start on its own, and if an automatic launcher
+restart is ever added, this row is what must be revisited.
 
 **Respawn is bounded at BOTH ends.** A child that never reaches READY —
 holding the writer fence AND answering the challenge — is a STARTUP
@@ -1107,38 +1120,57 @@ next-morning attach to yesterday's session is still a visible event: the
 leg time is yesterday's, on screen, in the drawer.
 
 **The probe.** One episode, one monotonic deadline, evaluated as a typed
-transition table. The deadline is checked BEFORE every attempt, so it
-cannot be shadowed by a row that keeps returning PENDING — the defect a
-first-match prose list had, where an expired `ERROR_PIPE_BUSY` matched
-its own row forever and the terminal row was unreachable.
+transition table in TWO stages. An earlier revision put the deadline and
+the owned-child rows first and shadowed two of its own outcomes: an
+alive child matched "PENDING" before its pipe was ever observed, so a
+healthy `status_ok` could not make it READY, and at the cutoff the
+deadline row returned WEDGED before the kill row ran, leaving a live
+child able to bind against the next operator's launch. So the owned
+child is resolved FIRST AND COMPLETELY, including its own challenge, and
+the episode deadline governs only observations that leave nothing to
+clean up.
 
-| # | observation                                                        | class    |
-|---|--------------------------------------------------------------------|----------|
-| 0 | episode deadline expired (checked first, every attempt)            | WEDGED   |
-| 1 | owned child: `CreateProcess` failed                                | SPAWN-FAILED |
-| 2 | owned child: alive, within readiness cutoff                        | PENDING  |
-| 3 | owned child: exited                                                | LEG ENDED |
-| 4 | owned child: readiness cutoff expired, or its handle wait returned `WAIT_FAILED` | KILL+WAIT |
-| 5 | connect ok → well-formed `status_ok`, identity matches             | ADOPTED  |
-| 6 | connect ok → well-formed `status_ok`, identity does not match      | FOREIGN  |
-| 7 | connect ok → a complete well-formed frame that is not `status_ok`  | FOREIGN  |
-| 8 | connect ok → undecodable bytes, or a frame over the wire cap       | FOREIGN  |
-| 9 | connect ok → EOF, timeout, read/write error, or a failure of `GetNamedPipeServerProcessId` / `OpenProcess` / `GetProcessTimes` | PENDING |
-| 10 | connect `ERROR_ACCESS_DENIED`                                     | FOREIGN  |
-| 11 | connect `ERROR_FILE_NOT_FOUND` → writer fence FREE                | ABSENT   |
-| 12 | connect `ERROR_FILE_NOT_FOUND` → fence held, or probing it errored | PENDING  |
-| 13 | connect `ERROR_PIPE_BUSY`, or any other connect error             | PENDING  |
+**Stage A — an owned spawn attempt exists** (evaluated before any
+deadline, because every terminal answer here has a child to dispose of):
 
-Totality holds over the observation tuple by construction: rows 1–4
-partition the owned-child state and run first, so an owned spawn is
-tracked independently of pipe and fence state; 5–9 partition every
-outcome of a successful connect; 10–13 partition every connect error,
-with `FILE_NOT_FOUND` the only one consulting the fence, which is what
-keeps it disjoint from the catch-all. ADOPTED and FOREIGN end the
-episode. KILL+WAIT kills, waits on its own bound, counts a startup
-failure and re-enters — a kill failure or expired wait is itself
-terminal, since a child able to bind against the next operator's launch
-is exactly what this row prevents. SPAWN-FAILED counts and re-enters.
+| # | observation | class |
+|---|-------------|-------|
+| A1 | `CreateProcess` failed | SPAWN-FAILED |
+| A2 | the child has exited | LEG ENDED |
+| A3 | its handle wait returned `WAIT_FAILED`, or the readiness cutoff expired | KILL+WAIT |
+| A4 | alive, within cutoff → challenge on its pipe → well-formed `status_ok`, identity matches | READY |
+| A5 | alive, within cutoff → any other challenge or connect outcome | PENDING |
+
+**Stage B — no owned spawn attempt** (the deadline is checked first here,
+where WEDGED disposes of nothing):
+
+| # | observation | class |
+|---|-------------|-------|
+| B0 | episode deadline expired | WEDGED |
+| B1 | connect ok → well-formed `status_ok`, identity matches | ADOPTED |
+| B2 | connect ok → well-formed `status_ok`, identity does not match | FOREIGN |
+| B3 | connect ok → a complete well-formed frame that is not `status_ok` | FOREIGN |
+| B4 | connect ok → undecodable bytes, or a frame over the wire cap | FOREIGN |
+| B5 | connect ok → EOF, timeout, read/write error, or a failure of `GetNamedPipeServerProcessId` / `OpenProcess` / `GetProcessTimes` | PENDING |
+| B6 | connect `ERROR_ACCESS_DENIED` | FOREIGN |
+| B7 | connect `ERROR_FILE_NOT_FOUND` → writer fence FREE | ABSENT |
+| B8 | connect `ERROR_FILE_NOT_FOUND` → fence held, or probing it errored | PENDING |
+| B9 | connect `ERROR_PIPE_BUSY`, or any other connect error | PENDING |
+
+Totality holds by construction: A1–A5 partition the owned-child state
+including its challenge; B1–B5 partition every outcome of a successful
+connect; B6–B9 partition every connect error, with `FILE_NOT_FOUND` the
+only one consulting the fence, which keeps it disjoint from the
+catch-all. REACHABILITY is a separate property and is now also true —
+A4 is reachable because the challenge is attempted while the child is
+alive, and A3 is reachable because no deadline precedes it — and it is
+asserted by a model test that drives one case per row, not by reading
+the list. READY and ADOPTED are the same evidence from different
+provenance and both end the episode, as does FOREIGN. KILL+WAIT kills,
+waits on its own bound, counts a startup failure and re-enters; a kill
+failure or expired wait is itself terminal, since a child able to bind
+later is exactly what this row prevents. SPAWN-FAILED counts and
+re-enters. Stage B's WEDGED is terminal with nothing outstanding.
 
 Two capsule-side changes make the healthy window observable rather than
 inflating the deadline to fit the code:
@@ -1328,7 +1360,8 @@ binary.
   the single most fragile piece of the FE session lifecycle — is
   deleted rather than repaired.
 - OPERATOR NOTE — an intuition inversion: after P3, QUITTING (real quit
-  = EndRun) and UPGRADING are what end the drawer session, while
+  = EndRun) and UPGRADING are what end the drawer's RUN — the voyage and
+  session persist; a leg ends — while
   crashes and rebuild-relaunches are harmless to it. Today it is exactly
   backwards (quit is safe, crashes lose work). The attach notice's leg
   time and the "run ended — new leg" UX exist to keep this inversion
