@@ -1008,7 +1008,7 @@ fn self_proven_challenge() -> ChallengeOutcome<sot_log::challenge::ChallengedPro
     std::thread::scope(|scope| {
         let challenge_handle = scope.spawn(|| {
             let mut exchange = VoyageMgmtExchange::default();
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30))
+            challenge(&client, Some((&mut exchange, Instant::now() + Duration::from_secs(30))))
         });
 
         let conn_id = expect_accepted(&server, TIMEOUT);
@@ -1061,7 +1061,7 @@ fn challenge_rejects_a_pid_creation_mismatch_as_foreign() {
     let outcome = std::thread::scope(|scope| {
         let challenge_handle = scope.spawn(|| {
             let mut exchange = VoyageMgmtExchange::default();
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30))
+            challenge(&client, Some((&mut exchange, Instant::now() + Duration::from_secs(30))))
         });
 
         let conn_id = expect_accepted(&server, TIMEOUT);
@@ -1102,7 +1102,7 @@ fn challenge_cancels_a_genuinely_pending_read_when_the_deadline_expires() {
             let mut exchange = VoyageMgmtExchange::default();
             // A short but real deadline -- the server below never replies,
             // so this can only resolve via the watchdog's own cancel.
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_millis(300))
+            challenge(&client, Some((&mut exchange, Instant::now() + Duration::from_millis(300))))
         });
 
         let conn_id = expect_accepted(&server, TIMEOUT);
@@ -1133,7 +1133,7 @@ fn challenge_classifies_connection_death_mid_challenge_as_undetermined() {
     let outcome = std::thread::scope(|scope| {
         let challenge_handle = scope.spawn(|| {
             let mut exchange = VoyageMgmtExchange::default();
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30))
+            challenge(&client, Some((&mut exchange, Instant::now() + Duration::from_secs(30))))
         });
 
         let conn_id = expect_accepted(&server, TIMEOUT);
@@ -1210,7 +1210,7 @@ fn cross_process_challenge_proves_a_real_child_server() {
     // extra synchronization needed.
     let client = connect_voyage_pipe(&voyage_id).expect("connect to the cross-process server");
     let mut exchange = VoyageMgmtExchange::default();
-    let outcome = challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30));
+    let outcome = challenge(&client, Some((&mut exchange, Instant::now() + Duration::from_secs(30))));
 
     match outcome {
         ChallengeOutcome::Proven(p) => {
@@ -1227,4 +1227,85 @@ fn cross_process_challenge_proves_a_real_child_server() {
         let _ = c.wait();
     }
     guard.0 = None;
+}
+
+// ---------------------------------------------------------------------
+// U1a: challenge enforcement in the shared `connect_voyage_pipe`
+// constructor. Every step-5 client — mgmt or attach, tests and the e2e
+// harness included — now gets steps 1-3 of ADR 0041's same-connection
+// challenge (SID authentication) as PART of connecting, not as a separate
+// call the caller has to remember to make. Steps 4-5 (the mgmt lane's own
+// `status` round trip) deliberately do NOT run here — see
+// `connect_voyage_pipe`'s own doc for why the attach lane's `hello` still
+// gets to be the connection's first frame.
+// ---------------------------------------------------------------------
+
+/// The pass case: against a genuine same-account server, the
+/// challenge-enforced connect is a transparent pass-through — the
+/// connection it hands back is fully usable for the caller's own intended
+/// protocol (an ordinary mgmt round trip here), not merely "connected".
+#[test]
+fn connect_voyage_pipe_challenge_enforced_pass_against_a_genuine_server() {
+    if !run_isolated("connect_voyage_pipe_challenge_enforced_pass_against_a_genuine_server") {
+        return;
+    }
+    let voyage_id = fresh_voyage_id();
+    let server = PipeServer::bind(&voyage_id, 1).expect("bind");
+    let client = connect_voyage_pipe(&voyage_id)
+        .expect("challenge-enforced connect must pass against a genuine same-account server");
+
+    let conn_id = expect_accepted(&server, TIMEOUT);
+    let probe = wire::encode_mgmt_request(&MgmtRequest::Probe).unwrap();
+    client.write_all(&probe).expect("the connection must still be fully usable after the challenge");
+    let expected = wire::encode_mgmt_request(&MgmtRequest::Probe).unwrap();
+    let got = accumulate_bytes(&server, conn_id, expected.len(), TIMEOUT);
+    assert_eq!(got, expected);
+
+    let reply = wire::encode_mgmt_reply(&MgmtReply::ProbeOk).unwrap();
+    server.send(conn_id, reply.clone(), None).expect("send probe_ok");
+    let mut buf = [0u8; 512];
+    let n = client.read(&mut buf).expect("read probe_ok");
+    assert_eq!(&buf[..n], reply.as_slice());
+}
+
+/// A `ChallengeableConnection` whose `raw_handle()` is deliberately
+/// invalid (`INVALID_HANDLE_VALUE`, the exact value a failed `CreateFileW`
+/// itself would have produced) — proves the typed-failure surface of
+/// U1a's `None`-mode challenge (steps 1-3 only, no reply round trip) with
+/// NO real pipe, process, or account boundary needed: step 1
+/// (`GetNamedPipeServerProcessId`) itself fails against this handle,
+/// deterministically, on every run. `write_all`/`read`/`cancel` are never
+/// reached in `None` mode (that mode never touches `IdentityExchange`,
+/// so `challenge()` never calls any of them) — `unreachable!()` makes
+/// that a loud, checked assumption rather than a silent one.
+///
+/// A genuine WRONG-SID server (an other-user process winning the pipe
+/// name first) is the ADR's own step-7 REAL-MACHINE acceptance row ("on a
+/// real Windows machine, an OTHER-USER process pre-binds... every public
+/// client entry point classifies it FOREIGN") — not constructible in CI
+/// without a second real account, so it is deliberately not attempted
+/// here; this test instead proves the OTHER typed failure — `Undetermined`
+/// — that steps 1-3 alone can already produce, which is exactly what
+/// `connect_voyage_pipe` maps to `PipeError::Undetermined`.
+struct InvalidHandleConn;
+impl sot_log::challenge::ChallengeableConnection for InvalidHandleConn {
+    fn raw_handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+    }
+    fn write_all(&self, _bytes: &[u8]) -> std::io::Result<()> {
+        unreachable!("None-mode challenge never sends a request")
+    }
+    fn read(&self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        unreachable!("None-mode challenge never reads a reply")
+    }
+    fn cancel(&self) {
+        unreachable!("None-mode challenge never arms the reply watchdog")
+    }
+}
+
+#[test]
+fn none_mode_challenge_is_undetermined_when_step_one_itself_fails() {
+    use sot_log::challenge::{challenge, ChallengeOutcome};
+    let outcome = challenge(&InvalidHandleConn, None);
+    assert!(matches!(outcome, ChallengeOutcome::Undetermined), "{outcome:?}");
 }

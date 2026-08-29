@@ -13,9 +13,16 @@
 //! `Proven`/`Foreign`/`Undetermined` result MEANS for readiness, adoption,
 //! or respawn — the probe classifier's transition table (ADR 0041 "The
 //! probe", Stage A/B) is a later unit's decision list, not this one's.
-//! Nothing here is wired into `pipe_win::connect_voyage_pipe` either —
-//! that's active behavior for today's clients (U1a), not a library with
-//! no behavior change (U0).
+//!
+//! U1a WIRES THIS IN: `pipe_win::connect_voyage_pipe` (the shared,
+//! step-5-client-facing constructor) now calls [`challenge()`] with
+//! `exchange: None` on every connection it returns — active behavior for
+//! today's clients, not a library with no behavior change, which is why it
+//! waited for this unit rather than shipping with U0. The probe
+//! classifier's own eventual production wiring (a later unit) still needs
+//! a RAW, unchallenged connection so it can run its own two-step
+//! connect/challenge observation with a bespoke deadline — see
+//! `pipe_win::connect_voyage_pipe_unchallenged`'s doc.
 //!
 //! # Round-1 review: the exchange is now a lane seam, not a lane
 //!
@@ -227,15 +234,30 @@ fn creation_filetime_bits(handle: HANDLE) -> std::io::Result<u64> {
 /// Nothing in the reply is decoded for meaning or acted on before step 3
 /// succeeds.
 ///
-/// `reply_deadline` bounds ONLY steps 4-5 — steps 1-3 are local,
-/// synchronous OS calls with no wait to bound. Picking the deadline VALUE
-/// (the ADR's "2s, clamped to the episode's remaining wall time") is the
-/// probe classifier's job, a later unit; this function only enforces
-/// whatever it is given.
+/// `exchange` is `None` for a MINIMAL SAFE CALL — steps 1-3 only, ending
+/// in `Proven` the instant the SID matches, with `created` read directly
+/// off the handle (no reply needed: it is a property of the process, not
+/// of anything the peer said). U1a's `pipe_win::connect_voyage_pipe` uses
+/// this for every connection regardless of which lane it will carry next
+/// (mgmt's `status`, or the attach lane's `hello`): the attach lane's
+/// `hello_ok` reply carries no pid/creation fields for steps 4-5 to check
+/// against (`wire.rs`'s pinned shape — `proto: u32` only), and sending a
+/// lane-specific request here would itself consume the connection's
+/// once-only first-frame lane binding before the caller ever gets to send
+/// its own. This is the ADR's own under-specification for the attach
+/// lane, resolved minimally: no byte is trusted before the SID matches,
+/// but nothing beyond that is claimed for a connection this function
+/// never round-trips a request over. `Some((exchange, reply_deadline))`
+/// runs the full five steps, for a caller (mgmt lane; the probe
+/// classifier) that both wants and can afford the stronger proof —
+/// `reply_deadline` bounds ONLY steps 4-5 in that case; steps 1-3 are
+/// local, synchronous OS calls with no wait to bound. Picking the
+/// deadline VALUE (the ADR's "2s, clamped to the episode's remaining wall
+/// time") is the probe classifier's job, a later unit; this function only
+/// enforces whatever it is given.
 pub fn challenge(
     conn: &dyn ChallengeableConnection,
-    exchange: &mut dyn IdentityExchange,
-    reply_deadline: Instant,
+    exchange: Option<(&mut dyn IdentityExchange, Instant)>,
 ) -> ChallengeOutcome<ChallengedProcess> {
     // Step 1.
     let mut server_pid: u32 = 0;
@@ -266,6 +288,21 @@ pub fn challenge(
     if their_sid != my_sid {
         return ChallengeOutcome::Foreign;
     }
+
+    let Some((exchange, reply_deadline)) = exchange else {
+        // Minimal safe call (see this function's own doc): the SID match
+        // above is the whole proof. `created` is read directly off the
+        // handle — a fact about the process, never about a reply.
+        let created = match creation_filetime_bits(handle.as_raw_handle() as HANDLE) {
+            Ok(c) => c,
+            Err(_) => return ChallengeOutcome::Undetermined,
+        };
+        return ChallengeOutcome::Proven(ChallengedProcess {
+            handle,
+            pid: server_pid,
+            created,
+        });
+    };
 
     // Steps 4-5: the lane's own request/reply, bounded by the shared
     // three-state watchdog (finding 4). `encode_request()` runs INSIDE

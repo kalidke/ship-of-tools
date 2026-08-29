@@ -310,6 +310,20 @@ pub enum PipeError {
     /// caller.
     #[error("another operation is already pending on this client's same direction")]
     ConcurrentSubmit,
+    /// U1a: `connect_voyage_pipe`'s own same-connection challenge (ADR 0041
+    /// Lifecycle "The challenge") answered with a WELL-FORMED WRONG proof —
+    /// a different token-user SID behind the pipe. A loud, typed failure:
+    /// never retried as if the peer might still turn out legitimate.
+    #[error("connect_voyage_pipe: the peer failed the same-connection challenge (a different account's process is behind this pipe)")]
+    Foreign,
+    /// U1a: the challenge could not be completed at all — an OS-call
+    /// failure (`GetNamedPipeServerProcessId`, `OpenProcess`,
+    /// `OpenProcessToken`, `GetTokenInformation`, `GetProcessTimes`), an
+    /// ordered EOF, or a watchdog timeout mid-challenge. Never silently
+    /// treated as either proven or foreign (ADR 0041: "a failure... is
+    /// PENDING, never READY and never ADOPTED").
+    #[error("connect_voyage_pipe: the same-connection challenge could not be completed (peer identity undetermined)")]
+    Undetermined,
 }
 
 /// A raw Windows `HANDLE`, asserted `Send` AND `Sync`. `Send`: exactly one
@@ -1448,12 +1462,49 @@ impl std::fmt::Debug for PipeClient {
     }
 }
 
-/// Connect to `\\.\pipe\sot-voyage-<voyage_id>`. Retries `CreateFileW`
-/// (bounded, 2s total) on `ERROR_PIPE_BUSY` (all instances currently
-/// connected — waits on `WaitNamedPipeW` between attempts) and
-/// `ERROR_FILE_NOT_FOUND` (the server has not called `bind` yet) — both
-/// are ordinary races in a healthy multi-client server, not failures.
+/// Connect to `\\.\pipe\sot-voyage-<voyage_id>` AND authenticate the
+/// server behind it (ADR 0041 Lifecycle "The challenge" / U1a) before
+/// handing the connection back — the shared, step-5-client-facing
+/// constructor every ordinary caller (tests, the e2e harness, and any
+/// future mgmt/attach client) uses. A pipe's DACL is directional (governs
+/// who may CONNECT, not who MADE the object), so a raw successful
+/// `CreateFileW` here proves nothing about who is on the other end; this
+/// function runs the challenge's steps 1-3 (identify the peer process,
+/// compare its token-user SID to this account's) before returning
+/// `Ok(_)` — the MINIMAL SAFE CALL for a connection whose lane is not yet
+/// known here (the caller's own first frame — `status`/`probe`/`shutdown`
+/// for mgmt, `hello` for attach — decides that, and this function must not
+/// consume either by sending a lane-specific request of its own; see
+/// `challenge::challenge`'s own doc for why steps 4-5 do not apply at this
+/// layer). A failed challenge is a loud, typed [`PipeError::Foreign`] or
+/// [`PipeError::Undetermined`] — never a silent retry.
+///
+/// Retries `CreateFileW` (bounded, 2s total) on `ERROR_PIPE_BUSY` (all
+/// instances currently connected — waits on `WaitNamedPipeW` between
+/// attempts) and `ERROR_FILE_NOT_FOUND` (the server has not called `bind`
+/// yet) — both are ordinary races in a healthy multi-client server, not
+/// failures.
 pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, PipeError> {
+    let client = connect_voyage_pipe_unchallenged(voyage_id)?;
+    match crate::challenge::challenge(&client, None) {
+        crate::challenge::ChallengeOutcome::Proven(_) => Ok(client),
+        crate::challenge::ChallengeOutcome::Foreign => Err(PipeError::Foreign),
+        crate::challenge::ChallengeOutcome::Undetermined => Err(PipeError::Undetermined),
+    }
+}
+
+/// The raw connect, with NO challenge — every step-5 client must go
+/// through [`connect_voyage_pipe`] instead. This exists ONLY for the probe
+/// classifier's own `ProbeOps::connect` (a later unit, ADR 0041 "The
+/// probe"), which deliberately keeps "connect" and "challenge" as two
+/// separately-observed steps — Stage B's own transition table (B1-B6) is
+/// defined in terms of a raw connect outcome followed by a SEPARATELY
+/// timed challenge (a bespoke deadline clamped to the probe episode's
+/// remaining wall time), so folding the challenge into the connect itself
+/// here would collapse rows the classifier needs to tell apart. Not
+/// `pub(crate)`-restricted further than that: `probe.rs` is the one
+/// in-crate consumer today.
+pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeClient, PipeError> {
     validate_voyage_id(voyage_id)?;
     let name = pipe_name_wide(voyage_id);
     let deadline = Instant::now() + Duration::from_secs(2);

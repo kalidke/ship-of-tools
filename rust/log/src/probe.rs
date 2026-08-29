@@ -163,15 +163,18 @@ impl SpawnedChild {
     }
 }
 
-/// The real implementation: `connect_voyage_pipe`, `challenge::challenge`
-/// (with the voyage mgmt lane's `VoyageMgmtExchange`), `std::process`
-/// spawn, and the bounded wait/terminate helpers, unmediated. No
-/// decisions — just the mechanical OS calls the classifier drives
-/// through [`ProbeOps`]. `connect` currently carries `connect_voyage_pipe`'s
-/// own existing ~2s internal retry on `PIPE_BUSY`/`FILE_NOT_FOUND`; U0
-/// does not change that function's behavior, so this is what's available
-/// today (a later unit may want a non-retrying variant for the
-/// classifier's own 500ms-spaced probe loop).
+/// The real implementation: `connect_voyage_pipe_unchallenged`,
+/// `challenge::challenge` (with the voyage mgmt lane's
+/// `VoyageMgmtExchange`), `std::process` spawn, and the bounded
+/// wait/terminate helpers, unmediated. No decisions — just the mechanical
+/// OS calls the classifier drives through [`ProbeOps`]. `connect` uses the
+/// UNCHALLENGED connect (U1a: `pipe_win::connect_voyage_pipe` itself now
+/// runs a challenge internally, which would collapse Stage B's own
+/// connect-then-challenge rows — see that function's doc) — it currently
+/// carries that raw connect's existing ~2s internal retry on
+/// `PIPE_BUSY`/`FILE_NOT_FOUND`; U0 does not change that function's
+/// behavior, so this is what's available today (a later unit may want a
+/// non-retrying variant for the classifier's own 500ms-spaced probe loop).
 pub struct RealProbeOps;
 
 impl ProbeOps for RealProbeOps {
@@ -199,7 +202,7 @@ impl ProbeOps for RealProbeOps {
     }
 
     fn connect(&self, voyage_id: &str) -> ConnectOutcome<Self::Conn> {
-        match crate::pipe_win::connect_voyage_pipe(voyage_id) {
+        match crate::pipe_win::connect_voyage_pipe_unchallenged(voyage_id) {
             Ok(client) => ConnectOutcome::Connected(client),
             Err(crate::pipe_win::PipeError::Io { source, .. }) => {
                 use windows_sys::Win32::Foundation::{
@@ -218,7 +221,7 @@ impl ProbeOps for RealProbeOps {
 
     fn challenge(&self, conn: &Self::Conn, deadline: Instant) -> ChallengeOutcome<Self::Process> {
         let mut exchange = crate::exchange::VoyageMgmtExchange::default();
-        challenge::challenge(conn, &mut exchange, deadline)
+        challenge::challenge(conn, Some((&mut exchange, deadline)))
     }
 
     fn writer_fence_probe(&self, voyage_root: &Path) -> FenceProbe {
