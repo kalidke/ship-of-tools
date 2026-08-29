@@ -1054,10 +1054,54 @@ loop with a WATERMARK BARRIER: force the pending output group-commit,
 then establish checkpoint and subscription at that single watermark — a
 snapshot can never show bytes the voyage could still lose.
 
-## Lifecycle: one rule, one transition, one probe algorithm
+## Lifecycle: one owner, one rule, one transition, one probe
 
-ONE spawn owner — the supervisor (the launcher loop that already
-outlives FE respawns and keeps the ssh tunnel). The FE is attach-only.
+ONE spawn owner — the SUPERVISOR, a `sot-capsule supervise` process the
+launcher starts and keeps started. (Amended 2026-08-28: the original
+wording put the role in the launcher loop itself, which cannot perform
+the probe — a PowerShell process can do neither overlapped named-pipe
+I/O nor `OpenProcess`/`GetProcessTimes`. The ROLE is still one; its home
+moves to the binary that already owns the voyage, the pipe and the wire.
+The launcher's job shrinks to starting it, restarting it under the
+exit-code contract below, and keeping the ssh tunnel.) The FE is
+attach-only. Legs are spawned as CHILD PROCESSES and deliberately NOT
+placed in the supervisor's job: the supervisor dying must be harmless to
+the run, which is the whole reason adoption exists.
+
+**Discovery, election and exclusion — three invariants, two files, one
+primitive.** A supervisor cannot probe a voyage it cannot name, and two
+supervisors must not both spawn.
+
+- `<state-dir>\drawer.voyage` names the drawer's voyage: one canonical
+  UUID, WRITE-ONCE, created `CREATE_NEW` and never replaced, so a lost
+  read-modify-write update cannot exist and two supervisors cannot mint
+  rival ids. The voyage is the SESSION and every capsule run is a LEG
+  (ADR 0039's epoch), so the pointer changes only when there is none: a
+  respawn, an adoption and a next-morning start all reuse it, and
+  therefore reuse the same pipe name — which is why the FE's reconnect
+  target survives a leg boundary it never predicted.
+- Absence of the store a pointer names is NOT a licence to re-mint. ADR
+  0039 pins absence of data as corruption, always, and "missing" can
+  equally be an access denial, a transient I/O failure or an interrupted
+  move. `NotFound` is distinguished from every other I/O error and both
+  are a LOUD STOP naming the explicit `reset` operation, which requires
+  the election fence, proves no live server by the probe, and RENAMES
+  the pointer aside for diagnosis rather than deleting it.
+- `<state-dir>\supervisor.lock` is the election fence: the same
+  `fsutil` kernel lock the writer fence uses, created `CREATE_NEW` when
+  absent (the writer fence refuses to create because bootstrap owns it;
+  this one has no bootstrap, and an atomic create is what stops two
+  supervisors minting rival inodes), then opened existing and held for
+  the holder's whole life. Kernel-released on any death, so it is never
+  stale. Acquiring it means you are the sole spawner; failing means a
+  supervisor is already live and the loser EXITS 0 — the converging
+  supervisor race is decided by the kernel rather than by re-probing.
+- The same fence is the teardown's EXCLUSION: `endrun` and `reset` must
+  hold it, which is possible only when no supervisor lives. That turns
+  the teardown ORDER below from a convention into a checked
+  precondition, and makes unconstructible the race where a script
+  observes no capsule, a supervisor concurrently spawns one, and the
+  script then kills everything around it.
 
 **The rule: a run is ENDED BY REQUEST only through an explicit
 `EndRun` over the mgmt lane.** (Amended 2026-08-27 — the original
@@ -1078,26 +1122,77 @@ all are FE loss; the capsule is untouched. Exit 75 keeps its ADR 0017
 relaunch meaning and lands squarely in FE loss.
 
 **The transition: `EndRun(reason)`** is the only teardown
-implementation, invoked by the FE real-quit path, `shutdown-sot.ps1`,
-and incompatible-upgrade end-run. EndRun = mgmt `shutdown` → the capsule
-acks, drains, seals, exits. Proof of completion is capsule ack + pipe
-closure + verify-green + lock release — never `WaitForExit` (an
-adopting supervisor has no child handle). A raw-terminal EndRun writes
+implementation, invoked by the FE real-quit path, `sot-capsule endrun`
+(which the teardown script calls) and the incompatible-upgrade end-run.
+EndRun = mgmt `shutdown` → the capsule acks, drains, seals, exits. Proof
+of completion is capsule ack + pipe closure + verify-green + lock
+release — never `WaitForExit` (an adopting supervisor has no child
+handle). The ACK ALONE IS NOT PROOF: it is physically written before the
+drain, the process wait, the `producer_dead` write and the seal, so a
+caller that exits on the ack hides a failure in every step that
+actually matters. The `reason` (≤128 B) is recorded in `producer_dead`'s
+detail, and its presence there is the durable, verified, single-writer
+signal that the end was REQUESTED. A raw-terminal EndRun writes
 `producer_dead` + seal only — raw terminals emit no turns, so there are
 no synthesized closes.
 
-**The machine-teardown ORDER is pinned** (the nightly close): EndRun →
-capsule ack + seal + lock release → supervisor stop → FE close → tunnel
-down. `shutdown-sot.ps1` today force-kills the supervisor FIRST — under
-P3 that order would strand the capsule headless behind a dead tunnel;
-its rewrite is an explicit build-order deliverable. The
-daemon-detach-before-tunnel property the current script achieves is
-preserved by this order.
+**Respawn is REASON-GATED, and the gate is that sealed record.** When a
+leg ends, the supervisor reads the just-sealed `producer_dead` detail: a
+`reason` means the session was ended on purpose and NO new leg follows;
+any other end — the producer exiting, a crash, a transport fatal, a
+store that never opened — is replaced by a new leg with a visible "run
+ended — new leg". This is why an EndRun caller needs no lock, no stop
+flag and no handshake with the supervisor: the decision is made AFTER
+the seal, from a verified record with exactly one writer, so there is
+nothing to race and nothing left stuck if the caller dies mid-request.
 
-**Adoption is ANNOUNCED, never silent**: whenever the probe adopts a
-live capsule, the supervisor and the FE surface "adopted a running
-session (started <time>)" — a next-morning attach to yesterday's
-session must be a visible event, not a silent substitution.
+**Respawn is bounded.** A leg ending within 10 s of spawn is a FAST
+FAIL; three consecutive fast fails stop the loop; any leg reaching 10 s
+resets the count. The criterion is the supervisor's own measurement of
+its own child, deliberately NOT "no client ever attached" — `status`
+does not report attachment and an attach is not a durable voyage fact,
+so that criterion could never be observed. Diagnosis is whatever
+actually exists: the sealed `producer_dead` detail when a segment
+sealed, the child's exit code and stderr tail when the store never
+opened at all.
+
+**Supervisor exit codes are the launcher's contract**, so the outer loop
+can neither defeat the bound nor resurrect an ended session. `0` = clean
+end (the run ended by request, or the supervisor was asked to stop) —
+DO NOT restart. `69` = terminal (anti-flap threshold, a foreign server,
+a wedge) — DO NOT restart; surface the error. Anything else is a
+supervisor crash — restart with the backoff the launcher already gives
+the tunnel, at most 5 restarts in 60 s, then stop and report. Only a new
+launcher run, an operator act, starts a session that ended cleanly.
+
+**The machine-teardown ORDER is pinned** (the nightly close): supervisor
+stop → EndRun, holding the election fence → capsule ack + seal + lock
+release → FE close → tunnel down. (Amended 2026-08-28: the original put
+EndRun first, so that the script's opening force-kill could not strand a
+run. But the supervisor's entire job is to replace an ended leg, so
+EndRun while it lives races it into spawning a fresh headless capsule
+that the following steps then orphan. Stopping the spawner first costs
+nothing — it holds no handle the capsule depends on — and makes the
+EndRun step's own observation unfalsifiable, because acquiring the fence
+proves nothing can spawn. The invariant is unchanged: THE RUN IS ENDED
+BY REQUEST, AND ITS RECORD SEALED AND VERIFY-GREEN, BEFORE THE FE AND
+THE TUNNEL GO DOWN.) Orphan stop: fence acquired and no capsule found
+means skip EndRun and proceed — a fresh install and a post-crash cleanup
+must both work. Every wait is bounded and every timeout is LOUD: a
+teardown that cannot reach a capsule it can see STOPS and reports a live
+session rather than tearing the tunnel out from under it. The
+daemon-detach-before-tunnel property the current script achieves is
+preserved by this order and asserted by the rewrite's own check.
+
+**Adoption is never silent, and the notice never claims what its teller
+cannot know.** The FE talks to the capsule; only the supervisor knows
+whether it spawned or adopted, and `status.created` is the LEG process's
+creation time, not the session's. So the FE shows one truthful message
+on every attach — "attached to leg started `<time>`" — and the
+spawn-versus-adopt distinction is logged by the supervisor, which is
+where that fact actually lives. A next-morning attach to yesterday's
+session is still a visible event: the leg time is yesterday's, on
+screen, in the drawer.
 
 **The probe algorithm** — supervisor start is a pinned state table on
 (pipe, writer.lock):
@@ -1126,10 +1221,26 @@ session must be a visible event, not a silent substitution.
 
 `probe`/`status`/`shutdown` ride the pinned v0 mgmt framing — the
 permanently compatible lane; attach-protocol versions negotiate via
-`hello` above it. The staged capsule binary is replaced only after
-EndRun completes (stage-after-exit) — a running capsule is never
-overwritten in place; an FE upgrade mid-run keeps the old capsule and
-offers end-run via the mgmt lane. If a security defect invalidates even
+`hello` above it.
+
+**An upgrade is ONE atomic transaction that stops the session first.**
+(Amended 2026-08-28: "stage-after-exit" was written as though the
+capsule image could be deferred on its own. It cannot — the same
+executable is the supervisor, so "no capsule is live" does not make the
+file replaceable, and the applier's binaries, manifest, junction and
+rollback are already one transaction, in which deferring a single image
+can activate a mixed release or roll back over a running one.) The
+launcher stops the supervisor, acquires the election fence, ends any
+live run through the incompatible-upgrade EndRun, and only then does the
+applier replace anything; the supervisor restarts afterwards and spawns
+a fresh leg. The consequence is stated rather than hidden: UPGRADING
+ENDS THE DRAWER SESSION, on purpose, once, at a moment the operator
+chose. Archive membership — the capsule in the artifact, the manifest,
+the required-file list, and a `--version` line in the shape the smoke
+job asserts — may land before that transaction; apply policy may not.
+The DEVELOPMENT build-and-stage path is bound by the same rule: a dev
+loop that stages only the frontend runs yesterday's capsule against
+today's protocol. If a security defect invalidates even
 the mgmt lane, the honest fallback is hard termination + voyage
 recovery, executable because adoption captured a termination-capable
 handle bound to the live pipe server by the liveness challenge
@@ -1156,10 +1267,17 @@ unconditionally. The release pipeline packages the capsule binary.
    containment + DSR carry + request/outcome resize + the budget table.
 5. The pipe protocol (mgmt v0 + attach lane) through the ordered writer
    loop; watermark attach; connection-scoped pen.
-6. Supervisor probe/adopt/EndRun (adoption announced) + FE attach-only
-   backend with in-band EndRun on real quit + the `fe_down` attach
-   marker + `initial_command` + packaging + the `shutdown-sot.ps1`
-   REWRITE to the pinned teardown order (EndRun first; orphan stop).
+6. The supervisor and the attach-only FE, which ACTIVATE TOGETHER:
+   discovery pointer + election fence + probe/adopt/challenge;
+   reason-gated respawn with the anti-flap bound and the launcher
+   exit-code contract; `sot-capsule supervise`/`endrun`/`reset`; the FE
+   as a pipe client (bounded reconnect, bounded backpressure, the
+   take-on-first-input transaction, checkpoint restore, ONE quit
+   dispatcher issuing EndRun); the `fe_down` attach marker;
+   `initial_command`; the teardown-script rewrite to the pinned order;
+   the upgrade transaction. Half of this does not ship: an FE that still
+   owns its own PTY plus a supervisor that spawns capsules is two
+   sessions, so the cutover is one flag.
 7. Acceptance on a real Windows machine, the full matrix: exit-75
    relaunch reattaches with screen restored and no ritual; FE hard
    crash; supervisor hard death then adoption; capsule hard kill →
@@ -1171,13 +1289,16 @@ unconditionally. The release pipeline packages the capsule binary.
    local user; logout/login and reboot ACL access; AV rename-retry;
    disk-full visible; forced-reboot recovery (the voyage survives: open
    tip recovered, all acknowledged input preserved, only a provable
-   unpublished tail discarded, a new epoch, verify green); converging
-   supervisor race; breakaway-denied degraded path; alternate-screen
+   unpublished tail discarded, a new epoch, verify green); the supervisor
+   election (the loser exits 0, never a second spawner); an upgrade that
+   ends the run and comes back clean; breakaway-denied degraded path;
+   alternate-screen
    attach fidelity roundtrip; the NIGHTLY COMPOSITE (supervisor AND FE
    force-killed AND tunnel torn, no EndRun — the capsule survives
    headless, and the next supervisor start ADOPTS it with the visible
-   announcement, never silently); rewritten `shutdown-sot.ps1` ends the
-   run (EndRun → seal → verify green) before any process dies; the
+   attach notice, never silently); the rewritten teardown script ends
+   the run (EndRun → seal → verify green) before the FE and the tunnel
+   die; the
    `fe_down` marker appears on attach after a respawn and wakes the
    drawer session's Monitor.
 
@@ -1187,11 +1308,11 @@ unconditionally. The release pipeline packages the capsule binary.
   the single most fragile piece of the FE session lifecycle — is
   deleted rather than repaired.
 - OPERATOR NOTE — an intuition inversion: after P3, QUITTING (real quit
-  = EndRun) is what ends the drawer session, while crashes and
-  rebuild-relaunches are harmless to it. Today it is exactly backwards
-  (quit is safe, crashes lose work). The visible adoption announcement
-  and the "run ended — new leg" UX exist to keep this inversion honest
-  at 6pm.
+  = EndRun) and UPGRADING are what end the drawer session, while
+  crashes and rebuild-relaunches are harmless to it. Today it is exactly
+  backwards (quit is safe, crashes lose work). The attach notice's leg
+  time and the "run ended — new leg" UX exist to keep this inversion
+  honest at 6pm.
 - The store becomes genuinely cross-platform with equal guarantees,
   which P4 (bridge) and every later phase inherit for free.
 - The Windows kill domain is SIMPLER than Linux's in the common crash
