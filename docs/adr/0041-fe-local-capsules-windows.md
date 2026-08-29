@@ -645,11 +645,13 @@ FE's client behavior, the unit graph, and the acceptance matrix.
   actionable error offering retry and reset: a `hello` refusal, a
   FOREIGN or access-denied pipe, an absent or corrupt pointer, an
   operator cancel, and — the case a valid pointer would otherwise retry
-  forever — the voyage pipe absent while the supervisor lane is absent
-  OR UNRESPONSIVE (its `status` unanswered within 5 s, since `pipe_win`
-  can keep a name alive over a dead accept path) for 150 s, which is how
-  a supervisor's terminal exit or wedge becomes visible to a process
-  that cannot see exit codes. Everything else retries. Today's
+  forever — a supervisor lane reporting phase ENDED-NO-RESPAWN or
+  TERMINAL, or the voyage pipe absent while that lane is absent OR
+  UNRESPONSIVE (its `status` unanswered within its budget, since
+  `pipe_win` can keep a name alive over a dead accept path) for the
+  HEALTH WINDOW. The phase makes a still-answering authority's terminal
+  state visible immediately; the timeout covers the one that cannot
+  answer at all. Everything else retries. Today's
   permanent dead-flag is deleted; each reattach replaces the screen from
   the new checkpoint, never a silent blank swap. The reader's unbounded
   channel becomes BYTE-ACCOUNTED and bounded at 4 MiB — bytes, not
@@ -745,6 +747,7 @@ paths.
 | backpressure | a stalled FE is evicted rather than buffering without bound |
 | the teardown order | the run ends and the record closes before the FE and tunnel die; an unreachable-but-visible capsule stops the script loudly |
 | upgrade | image replacement after both proofs never hits a sharing violation; a first-ever capsule install rolls back by DELETION; a rollback across the feature boundary is REFUSED; each health-table row decides as written, including READY+1 ms death and a lane that wedges after answering once |
+| lifecycle commands are voyage-fenced | an `end_run` minted against voyage A and delivered after a reset to B is `refused {stale_voyage}` with no mutation; a `status` before the first leg answers with no `leg` and phase STARTING |
 | the lane's own lifecycle | a squatted name loses first-instance bind and exits 69; a present-but-unanswering lane is treated as absent; a mismatched build is refused; a lost `reset` reply retried under the same operation id does not rename twice |
 | the challenge authenticates the SERVER | on a real Windows machine, an OTHER-USER process pre-binds the supervisor name AND the voyage name with a permissive DACL and answers plausibly: every public client entry point classifies it FOREIGN before decoding or trusting a reply, and each target-token lookup failure lands PENDING, never READY or ADOPTED |
 | every classifier row is REACHABLE | a model test drives one case per row, A4 and A3 included |
@@ -879,19 +882,42 @@ here because "reusing `pipe_win`" carries mechanics, not a contract:
   lane rejects the pair it did not. Identity is the belt; the build
   check is the version-skew braces.
 
-**The lane's operations are one command family and one query family.**
+**The lane's operations are one command family, one query family, and one
+stateless request.**
 
-- `command {op, operation_id}` where `op` ∈ { `end_run {reason}`,
-  `reset`, `stop`, `status` }. Every op's success is a typed terminal
+- `command {op, operation_id}` where `op` ∈ { `end_run {reason, voyage}`,
+  `reset {voyage?}`, `stop` }. Every op's success is a typed terminal
   result, not silence: `end_run` → `record_closed` then
   `record_verified`; `reset` → `reset_done {new_voyage}`; `stop` →
   `stopping` and then process exit, which the caller confirms by the
-  handle and fence rather than by a further frame; `status` →
-  `status_ok {leg, ready, build, since}`, which is what the health table
-  reads.
-- `status` is STATELESS AND UNLEDGERED. It mutates nothing, so
-  at-most-once buys it nothing, and polling traffic must never evict a
-  destructive result from the journal below.
+  handle and fence rather than by a further frame.
+- **Lifecycle commands are VOYAGE-FENCED.** `end_run`, and a `reset`
+  aimed at a live pointer, carry the voyage the caller OBSERVED, and it
+  is part of the command digest. A mismatch is
+  `refused {stale_voyage}` with no mutation. Without this, an FE
+  attached to voyage A whose delayed quit arrives after someone else
+  reset to B would be correctly linearized by the one authority — and
+  would end B, a session it never saw. An `operation_id` cannot help: it
+  identifies the request, not its target.
+- `status` is a SEPARATE STATELESS REQUEST — not a `command`, so it
+  carries no `operation_id` to be ignored, mutates nothing, and can
+  never evict a destructive result from the journal. It answers
+  `status_ok {voyage, leg?, phase, build}`. `leg` is optional and
+  voyage-qualified, because the lane binds after the fence and BEFORE
+  any adopt or spawn, so the mandatory first `status` of every client
+  must be able to say "no leg yet". `phase` is total over the
+  authority's own life: STARTING | READY | ENDING | ENDED-NO-RESPAWN |
+  TERMINAL. There is no `ready` flag — it would be derivable from
+  `phase` and a second spelling of one fact — and no `since`: the health
+  monitor and the FE are already polling, already see every
+  build/voyage/leg/phase change in this payload, and a locally owned
+  continuity clock cannot be fooled by a server that computes its own
+  phase start wrongly. Continuous READY is therefore uninterrupted
+  identical observations, measured by the observer.
+- **The FE treats ENDED-NO-RESPAWN and TERMINAL as terminal**, rather
+  than waiting for a responsive lane to disappear. An authority that
+  stays alive to serve `query` is exactly the case its 150 s
+  absent-or-unresponsive rule cannot see.
 - **`operation_id` is durable for MUTATING ops only.** Before the first
   irreversible act of an `end_run`, `reset` or `stop`, the authority
   PUBLISHES a journal record under the owner-protected state subtree —
@@ -938,7 +964,7 @@ here because "reusing `pipe_win`" carries mechanics, not a contract:
   marker; it never becomes a second barrier.
 - **An ended authority stays serviceable.** A supervisor whose run ended
   by request does not exit the instant it knows: it enters the
-  ENDED/NO-RESPAWN phase and keeps serving `query`, `status` and an
+  ENDED-NO-RESPAWN phase and keeps serving `query`, `status` and an
   explicit `stop` — which is what lets a lost-reply client learn its
   outcome and what lets upgrade's acknowledged `stop` happen at all —
   and a RESTARTED authority holding a recovered operation serves that
