@@ -785,40 +785,69 @@ attach-only. Legs are spawned as CHILD PROCESSES and deliberately NOT
 placed in the supervisor's job: the supervisor dying must be harmless to
 the run, which is the whole reason adoption exists.
 
-**Discovery, election and exclusion — three invariants, two files, one
-primitive.** A supervisor cannot probe a voyage it cannot name, and two
-supervisors must not both spawn.
+**Discovery, election and exclusion — two fences and a lease, each named
+to the invariant it serves.** A supervisor cannot probe a voyage it
+cannot name; two supervisors must not both spawn; and a spawn already in
+flight must not escape a teardown.
 
 - `<state-dir>\drawer.voyage` names the drawer's voyage: one canonical
-  UUID, WRITE-ONCE, created `CREATE_NEW` and never replaced, so a lost
-  read-modify-write update cannot exist and two supervisors cannot mint
-  rival ids. The voyage is the SESSION and every capsule run is a LEG
-  (ADR 0039's epoch), so the pointer changes only when there is none: a
-  respawn, an adoption and a next-morning start all reuse it, and
-  therefore reuse the same pipe name — which is why the FE's reconnect
-  target survives a leg boundary it never predicted.
+  UUID, WRITE-ONCE. The voyage is the SESSION and every capsule run is a
+  LEG (ADR 0039's epoch), so a respawn, an adoption and a next-morning
+  start all reuse it, and therefore reuse the same pipe name — which is
+  why the FE's reconnect target survives a leg boundary it never
+  predicted. It is PUBLISHED, not merely created: temp file → write →
+  file flush → NO-REPLACE rename → renamed-file flush → parent-directory
+  flush, the store's own pinned Windows order, reusing that
+  implementation rather than a second one. A bare `CREATE_NEW`-then-write
+  can crash between the two and leave a permanent empty pointer that no
+  later supervisor can win. Publication completes BEFORE any spawn is
+  authorized, so a pointer can never name a voyage nobody can find. A
+  pointer that exists but is empty or not a canonical UUID is CORRUPT: a
+  loud stop naming `reset`, never a silent re-mint.
 - Absence of the store a pointer names is NOT a licence to re-mint. ADR
   0039 pins absence of data as corruption, always, and "missing" can
   equally be an access denial, a transient I/O failure or an interrupted
   move. `NotFound` is distinguished from every other I/O error and both
-  are a LOUD STOP naming the explicit `reset` operation, which requires
-  the election fence, proves no live server by the probe, and RENAMES
-  the pointer aside for diagnosis rather than deleting it.
-- `<state-dir>\supervisor.lock` is the election fence: the same
-  `fsutil` kernel lock the writer fence uses, created `CREATE_NEW` when
-  absent (the writer fence refuses to create because bootstrap owns it;
-  this one has no bootstrap, and an atomic create is what stops two
-  supervisors minting rival inodes), then opened existing and held for
-  the holder's whole life. Kernel-released on any death, so it is never
+  are a LOUD STOP naming the explicit `reset` operation, which takes the
+  spawn gate, proves no live server, and renames the pointer aside under
+  a unique no-replace name with a directory barrier — evidence is never
+  overwritten and never reappears reordered after a crash.
+- `<state-dir>\supervisor.lock` is the ELECTION fence: the same `fsutil`
+  kernel lock the writer fence uses, created `CREATE_NEW` when absent
+  (the writer fence refuses to create because bootstrap owns it; this one
+  has no bootstrap, and an atomic create is what stops two supervisors
+  minting rival inodes), then opened existing and held for the
+  supervisor's whole life. Kernel-released on any death, so it is never
   stale. Acquiring it means you are the sole spawner; failing means a
-  supervisor is already live and the loser EXITS 0 — the converging
-  supervisor race is decided by the kernel rather than by re-probing.
-- The same fence is the teardown's EXCLUSION: `endrun` and `reset` must
-  hold it, which is possible only when no supervisor lives. That turns
-  the teardown ORDER below from a convention into a checked
-  precondition, and makes unconstructible the race where a script
-  observes no capsule, a supervisor concurrently spawns one, and the
-  script then kills everything around it.
+  supervisor is already live and the loser EXITS 0.
+- `<state-dir>\spawn.lock` is the SPAWN GATE, and it is a different
+  fence because it answers a different question. (Amended 2026-08-28: one
+  lifetime fence could not serve both. A teardown caller cannot take a
+  lock the live supervisor holds for life, which is why an earlier
+  revision exempted the FE's quit path — and that exemption was exactly
+  the hole: an FE quitting during a spawn had no mgmt server to reach and
+  no way to stop the capsule that was about to appear.) The supervisor
+  holds it ONLY across a spawn-to-ready critical section; `endrun` and
+  `reset` — the FE's quit path INCLUDED, with no exemption — hold it for
+  their whole operation. So a teardown that arrives mid-spawn simply
+  WAITS for the child to become ready and then ends it properly, and two
+  EndRun callers serialize instead of racing. Acquisition is bounded
+  separately from the probe (below): the probe cannot absorb a failure
+  that happens before the caller is allowed to probe at all.
+- A pre-ready child is held by a PARENT-DEATH LEASE. A capsule is
+  deliberately not in the supervisor's job, so between `CreateProcess`
+  and readiness it would otherwise outlive a supervisor that died, take
+  the writer fence after a teardown had already concluded nothing was
+  running, and reappear headless. The supervisor therefore hands the
+  child an inherited, synchronizable handle to itself; the child checks
+  it immediately before acquiring the writer fence and again immediately
+  before binding its pipe, and EXITS without doing either if the lease is
+  broken. The residual window is not zero — the supervisor can die
+  between the last check and the bind — so it is bounded rather than
+  claimed away: after taking the spawn gate, `endrun` and `reset` must
+  observe ABSENT TWICE, separated by the bind window, before concluding
+  that nothing is running. The lease shrinks the window; the double
+  observation covers what is left.
 
 **The rule: a run is ENDED BY REQUEST only through an explicit
 `EndRun` over the mgmt lane.** (Amended 2026-08-27 — the original
@@ -911,18 +940,24 @@ the tunnel, at most 5 restarts in 60 s, then stop and report. Only a new
 launcher run, an operator act, starts a session that ended cleanly.
 
 **The machine-teardown ORDER is pinned** (the nightly close): supervisor
-stop → EndRun, holding the election fence → capsule ack + seal + lock
+stop → EndRun, holding the spawn gate → capsule ack + seal + lock
 release → FE close → tunnel down. (Amended 2026-08-28: the original put
 EndRun first, so that the script's opening force-kill could not strand a
 run. But the supervisor's entire job is to replace an ended leg, so
 EndRun while it lives races it into spawning a fresh headless capsule
 that the following steps then orphan. Stopping the spawner first costs
 nothing — it holds no handle the capsule depends on — and makes the
-EndRun step's own observation unfalsifiable, because acquiring the fence
-proves nothing can spawn. The invariant is unchanged: THE RUN IS ENDED
+EndRun step's own observation unfalsifiable, because holding the spawn
+gate means nothing can spawn. The invariant is unchanged: THE RUN IS ENDED
 BY REQUEST, AND ITS RECORD SEALED AND VERIFY-GREEN, BEFORE THE FE AND
-THE TUNNEL GO DOWN.) Orphan stop: fence acquired and no capsule found
-means skip EndRun and proceed — a fresh install and a post-crash cleanup
+THE TUNNEL GO DOWN.) "Supervisor stop" is a defined handshake, not a
+force kill: the launcher — the restart owner — is told to stop first so
+it cannot restart what the teardown is about to kill; the supervisor is
+asked to stop, acknowledges, and the caller waits for its PROCESS EXIT
+and then for the election fence to release, on a bound of its own,
+because a kernel lock's post-kill release is documented as having no OS
+bound. Orphan stop: spawn gate held and ABSENT observed twice means skip
+EndRun and proceed — a fresh install and a post-crash cleanup
 must both work. Every wait is bounded and every timeout is LOUD: a
 teardown that cannot reach a capsule it can see STOPS and reports a live
 session rather than tearing the tunnel out from under it. The
