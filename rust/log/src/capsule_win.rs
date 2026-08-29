@@ -1682,6 +1682,65 @@ pub fn run(
         };
     }
 
+    // U1a Codex round-1, Major 6 discharge: the ack-grace window's own
+    // drain -- STOP ADMITTING new connections or new request bytes once
+    // the final ordinary teardown poll is behind us, so a request that
+    // slips in with, say, 50ms left in the grace can never be credited
+    // with the full 2s the "final service poll" guarantee actually
+    // promises. `Sent`/`ConnectionClosed` still drain normally (the whole
+    // POINT of the grace is letting an ALREADY-QUEUED ack finish); a brand
+    // new `ConnectionOpened` or a new `Bytes` payload on an existing
+    // connection is closed outright, WITHOUT ever reaching `attach_proto`
+    // -- no admission, so no new obligation this bounded window cannot
+    // keep.
+    macro_rules! drain_pending_sends_only {
+        () => {
+            let mut quota = TRANSPORT_EVENTS_PER_PASS;
+            while quota > 0 {
+                quota -= 1;
+                let Some(ev) = transport.0.try_recv_event() else { break };
+                match ev {
+                    TransportEvent::ConnectionOpened(conn) => {
+                        // Never admitted: no splitter, no `attach_proto`
+                        // event, just closed.
+                        transport.0.close(conn);
+                    }
+                    TransportEvent::Bytes(conn, _bytes) => {
+                        // A connection admitted during ORDINARY teardown
+                        // (before the grace began) sending more bytes now:
+                        // still no new admission -- close it, purging
+                        // whatever this loop already tracked for it.
+                        transport.0.close(conn);
+                        splitters.remove(&conn);
+                        pending_sends.retain(|&(c, _), _| c != conn);
+                        execute_teardown_actions!(attach_proto.connection_closed(conn, Instant::now()));
+                    }
+                    TransportEvent::ConnectionClosed(conn) => {
+                        splitters.remove(&conn);
+                        pending_sends.retain(|&(c, _), _| c != conn);
+                        execute_teardown_actions!(attach_proto.connection_closed(conn, Instant::now()));
+                    }
+                    TransportEvent::Sent(conn, id) => {
+                        match pending_sends.remove(&(conn, id)) {
+                            Some(marker) => execute_teardown_actions!(attach_proto.sent(conn, marker, Instant::now())),
+                            None => assert!(
+                                !splitters.contains_key(&conn),
+                                "Transport reported Sent({conn:?}, {id}) for an ACTIVE connection with no \
+                                 matching outstanding send"
+                            ),
+                        }
+                    }
+                    TransportEvent::TransportFatal(detail) => {
+                        eprintln!(
+                            "sot-capsule: transport reported a terminal failure during the shutdown-ack grace: {detail}"
+                        );
+                        shutdown_reason.get_or_insert_with(|| "transport-accept-failed".to_string());
+                    }
+                }
+            }
+        };
+    }
+
     // One producer-output handler, used identically pre-teardown AND
     // during BOTH teardown phases — so "the handshake keeps answering
     // through the drain" (ADR 0041) can't be missed by one call site and
@@ -1936,16 +1995,26 @@ pub fn run(
     // admitted a NEW mgmt `shutdown` and queued its `ShutdownAck` — give
     // that specific send up to `SHUTDOWN_ACK_GRACE` to be reported
     // physically written (removing its entry from `pending_sends`) before
-    // this capsule's own transport goes away. A concurrent request accepted
-    // during THIS window is covered too: the loop condition re-checks
-    // `pending_sends` on every pass, not just once.
+    // this capsule's own transport goes away.
+    //
+    // U1a Codex round-1, Major 6 discharge: this window drains ONLY what
+    // is ALREADY pending (`Sent`/`ConnectionClosed`, via
+    // `drain_pending_sends_only!`) — it admits NOTHING new
+    // (`ConnectionOpened`/fresh `Bytes` are closed outright, never reaching
+    // `attach_proto`). A request newly accepted with, say, 50ms left in
+    // this window would have almost no time to get its own ack physically
+    // written, contradicting the "final service poll" guarantee this grace
+    // exists to honor — so after the ordinary teardown drain ends, no
+    // request is newly admitted at all; only what is already outstanding
+    // (the ack this grace exists for, or any other send already queued
+    // when the drain ended) gets to finish.
     let shutdown_ack_deadline = Instant::now() + SHUTDOWN_ACK_GRACE;
     while pending_sends
         .values()
         .any(|m| matches!(m, Some(SentMarker::ShutdownAck { .. })))
         && Instant::now() < shutdown_ack_deadline
     {
-        service_transport_events_teardown!();
+        drain_pending_sends_only!();
         execute_teardown_actions!(attach_proto.tick(Instant::now()));
         std::thread::sleep(SHUTDOWN_ACK_GRACE_POLL);
     }

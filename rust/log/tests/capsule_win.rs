@@ -117,7 +117,11 @@ struct TestInner {
     hold_for: std::collections::HashSet<ConnId>,
     held: Vec<(ConnId, u64)>,
     closed: Vec<ConnId>,
-    shutdown_all_called: bool,
+    /// U1a Codex round-1, minor cluster: a COUNT, not a bool -- proves
+    /// `run`'s explicit call (once the ack grace resolves) AND
+    /// `ShutdownGuard::drop`'s own unconditional call both actually
+    /// happen, rather than merely "at least once".
+    shutdown_all_call_count: u32,
 }
 
 impl TestTransport {
@@ -191,7 +195,14 @@ impl TestTransport {
         self.inner.lock().unwrap().closed.clone()
     }
     fn shutdown_all_was_called(&self) -> bool {
-        self.inner.lock().unwrap().shutdown_all_called
+        self.inner.lock().unwrap().shutdown_all_call_count > 0
+    }
+    /// U1a Codex round-1, minor cluster: the exact call count, so a test
+    /// can prove BOTH the explicit ack-grace call and `ShutdownGuard::
+    /// drop`'s own later call happened (`== 2`), not merely that
+    /// `shutdown_all` ran at least once.
+    fn shutdown_all_call_count(&self) -> u32 {
+        self.inner.lock().unwrap().shutdown_all_call_count
     }
 }
 
@@ -224,7 +235,7 @@ impl Transport for TestTransport {
         self.inner.lock().unwrap().closed.push(conn);
     }
     fn shutdown_all(&mut self) {
-        self.inner.lock().unwrap().shutdown_all_called = true;
+        self.inner.lock().unwrap().shutdown_all_call_count += 1;
     }
 }
 
@@ -1420,6 +1431,14 @@ fn shutdown_ack_sent_before_teardown() {
 /// the test thread's writes and whichever loop iteration observes them
 /// first, without adding coverage `execute_teardown_actions!`'s own
 /// `unreachable!` arms don't already give at compile time.
+///
+/// U1a Codex round-1, minor cluster: asserts the exact count (2), not
+/// merely "at least once" -- `run` now calls `shutdown_all` explicitly
+/// once the (zero-iteration, on these paths) ack grace resolves, AND
+/// `ShutdownGuard::drop` calls it again unconditionally afterward. Proving
+/// the count is exactly 2 is what actually exercises `Transport::
+/// shutdown_all`'s documented idempotent contract, rather than merely
+/// trusting it.
 #[test]
 fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
     let _serial = serial();
@@ -1434,9 +1453,10 @@ fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
         let mut run_transport = transport.clone();
         let summary = capsule_win::run(cfg, rx, &mut run_transport).unwrap();
         assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
-        assert!(
-            transport.shutdown_all_was_called(),
-            "shutdown_all must be called even on a natural producer exit"
+        assert_eq!(
+            transport.shutdown_all_call_count(),
+            2,
+            "shutdown_all must be called exactly twice (the explicit ack-grace call, then ShutdownGuard::drop) even on a natural producer exit"
         );
     }
 
@@ -1469,7 +1489,11 @@ fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
             .expect("run did not return within the teardown bound")
             .unwrap();
         assert_eq!(summary.exit_kind, ExitKind::Requested);
-        assert!(transport.shutdown_all_was_called(), "shutdown_all must be called on a requested kill too");
+        assert_eq!(
+            transport.shutdown_all_call_count(),
+            2,
+            "shutdown_all must be called exactly twice on a requested kill too"
+        );
     }
 }
 
@@ -1480,6 +1504,26 @@ fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
 /// holding that ack's completion and observing `run` genuinely blocks
 /// rather than tearing the pipe down out from under it, then releasing it
 /// and observing `run` completes promptly.
+///
+/// U1a Codex round-1, Blocker 3 discharge: an EARLIER version of this test
+/// held the ack while running a persistent `cmd.exe` but never sent
+/// `Command::Kill` -- since `AttachAction::Shutdown` (which sets
+/// `shutdown_requested`) is only emitted once THIS SAME held ack is
+/// reported physically written, `run` never reached teardown AT ALL, let
+/// alone the grace loop, and the test could only time out. A SEPARATE
+/// cause (here, `Command::Kill`) must drive the primary into teardown
+/// independently of the held connection.
+///
+/// U1a Codex round-1, minor cluster: the "still blocked" observation is a
+/// CONTINUOUS poll against `shutdown_all_call_count` (the actual
+/// mechanism-relevant signal), not one sleep-then-check at an arbitrary
+/// point -- a single check at, say, 500ms can pass merely because
+/// ordinary Phase A/B teardown itself hadn't finished yet, proving
+/// nothing about the grace specifically. Polling continuously up to a
+/// GENEROUS floor (1.5s, safely under the 2s grace and safely over the
+/// sub-second teardown a trivial killed `cmd.exe` takes) means ANY early
+/// firing is caught the instant it happens, regardless of how long
+/// ordinary teardown took to get there.
 #[test]
 fn shutdown_ack_grace_defers_transport_shutdown_until_the_late_ack_completes() {
     let _serial = serial();
@@ -1510,17 +1554,26 @@ fn shutdown_ack_grace_defers_transport_shutdown_until_the_late_ack_completes() {
     // The ack's bytes are already QUEUED (proven above via `wait_for`, which
     // watches queued bytes, not completions) but its physical-write
     // completion is HELD -- `run` must not let its transport disappear
-    // while that is true.
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(!handle.is_finished(), "the ack grace must hold the transport open until the late ack completes");
-    assert!(!transport.shutdown_all_was_called(), "shutdown_all must not run before the grace resolves");
+    // while that is true. Continuous poll, not one snapshot: an ORDER
+    // assertion that holds regardless of how long ordinary teardown itself
+    // happens to take.
+    let floor = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < floor {
+        assert!(!transport.shutdown_all_was_called(), "shutdown_all must not run before the grace resolves");
+        assert!(!handle.is_finished(), "the ack grace must hold the transport open until the late ack completes");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     transport.release_held();
     let summary = wait_for_join(handle, Duration::from_secs(10))
         .expect("run did not return after the late ack was released")
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
-    assert!(transport.shutdown_all_was_called());
+    assert_eq!(
+        transport.shutdown_all_call_count(),
+        2,
+        "shutdown_all must run exactly twice: the explicit ack-grace call, then ShutdownGuard::drop"
+    );
 
     let frames = sealed_frames(&dir.path().join("ackgrace1"), "ackgrace1");
     let dead = assert_producer_dead_is_last(&frames);
@@ -1531,14 +1584,29 @@ fn shutdown_ack_grace_defers_transport_shutdown_until_the_late_ack_completes() {
 /// late ack's completion never arrives, `run` still completes once
 /// `SHUTDOWN_ACK_GRACE` (2s) elapses, and `shutdown_all` still runs
 /// afterward.
+///
+/// U1a Codex round-1, Blocker 3 discharge: as in the test above, a
+/// SEPARATE `Command::Kill` drives teardown -- the held connection's own
+/// `shutdown` request never completes its ack, so it can never itself
+/// trigger `AttachAction::Shutdown`/`shutdown_requested`.
+///
+/// U1a Codex round-1, minor cluster: no clock-injection seam exists for
+/// `SHUTDOWN_ACK_GRACE` inside `run` (it is a real integration test
+/// against a real ConPTY producer, so real time is unavoidable at this
+/// level regardless) — the continuous pre-deadline poll below is the
+/// ORDER assertion the review asked for, layered ON TOP of (not instead
+/// of) confirming the pinned 2s bound itself: the lower-bound duration
+/// check only fires if the deadline expired too early, which real-clock
+/// scheduler jitter can only ever make LARGER, never smaller, so it is
+/// not a source of flake in this direction.
 #[test]
 fn shutdown_ack_grace_expires_and_teardown_still_completes() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string()];
+    let argv = vec!["cmd.exe".to_string()]; // stays open until killed
     let cfg = config(dir.path(), "ackgrace2", argv, 80, 25);
     let transport = TestTransport::new();
-    let (_tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
@@ -1553,15 +1621,90 @@ fn shutdown_ack_grace_expires_and_teardown_still_completes() {
     watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
     });
-    // This connection's own accepted `shutdown` is itself what ends the
-    // run (an ordinary EndRun) -- no separate `Command::Kill` needed.
+    tx.send(Command::Kill).unwrap();
 
     let started = Instant::now();
+    // ORDER assertion: continuously poll a floor safely under the 2s
+    // grace, asserting it has NOT expired early.
+    let floor = started + Duration::from_millis(1500);
+    while Instant::now() < floor {
+        assert!(!transport.shutdown_all_was_called(), "must not expire the grace early");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
     let summary = wait_for_join(handle, Duration::from_secs(15))
         .expect("run did not return even after the ack grace should have expired")
         .unwrap();
     let elapsed = started.elapsed();
     assert!(elapsed >= Duration::from_secs(2), "must honor the full grace before giving up: {elapsed:?}");
     assert_eq!(summary.exit_kind, ExitKind::Requested);
-    assert!(transport.shutdown_all_was_called());
+    assert_eq!(
+        transport.shutdown_all_call_count(),
+        2,
+        "shutdown_all must run exactly twice even when the grace expires unattended"
+    );
+}
+
+/// Test 15 (U1a Codex round-1, Major 6 discharge): the grace drains only
+/// what is ALREADY pending — a brand new connection arriving squarely
+/// inside the grace window must be closed outright, with NO reply ever
+/// sent for its request, rather than admitted and given almost none of
+/// the 2s the "final service poll" guarantee actually promises.
+#[test]
+fn shutdown_ack_grace_admits_no_new_connections_or_bytes() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec!["cmd.exe".to_string()]; // stays open until killed
+    let cfg = config(dir.path(), "ackgrace3", argv, 80, 25);
+    let transport = TestTransport::new();
+    let (tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule_win::run(cfg, rx, &mut t)
+    });
+
+    const LATE_MGMT: ConnId = 1;
+    transport.open(LATE_MGMT);
+    transport.set_hold_for(LATE_MGMT, true); // held throughout -- keeps the grace open for this whole test
+    transport.feed(LATE_MGMT, frame::mgmt_shutdown("late-in-teardown"));
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+    tx.send(Command::Kill).unwrap();
+
+    // Confirm we are GENUINELY mid-grace (not merely "still doing ordinary
+    // Phase A/B teardown") before probing the new-admission behavior --
+    // the same continuous-poll proof the other ack-grace tests use.
+    let floor = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < floor {
+        assert!(!handle.is_finished(), "the ack grace must still be holding at this point");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // A brand NEW connection, opened squarely inside the confirmed-active
+    // grace window: it must be closed outright, and no reply may ever be
+    // sent to it.
+    const NEW_CONN: ConnId = 2;
+    transport.open(NEW_CONN);
+    transport.feed(NEW_CONN, frame::mgmt_probe());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && !transport.closed_conns().contains(&NEW_CONN) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        transport.closed_conns().contains(&NEW_CONN),
+        "a connection opened during the ack grace must be closed, never left admitted"
+    );
+    assert!(
+        transport.sent_frames().iter().all(|(c, _)| *c != NEW_CONN),
+        "no reply may ever be sent to a connection admitted during the ack grace"
+    );
+
+    transport.release_held();
+    let summary = wait_for_join(handle, Duration::from_secs(10))
+        .expect("run did not return after the late ack was released")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
 }
