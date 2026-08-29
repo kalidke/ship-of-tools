@@ -1259,8 +1259,8 @@ past these points the honest report is "outcome unknown".
 Let **B** be the SUPPORTED HISTORY BOUND — the time a legitimate
 `open_for_writing` may take inside the envelope below. B is PROVISIONAL
 UNTIL MEASURED and is 60 s today. The table above is the ONE derivation
-graph: every DERIVED row is a formula over B, every other row is a
-pinned literal with a named role, and no consumer restates either.
+graph: every DERIVED row is a formula over B, every pinned literal has
+a named role, and no consumer restates either.
 
 Probe and readiness are the same number because they bound the SAME
 window from two sides: a supervisor that owns the child gives up at
@@ -1529,10 +1529,10 @@ owns its own PTY is two sessions, so U2 and U3 stay off until U4.
 
 Archive membership — the capsule in the artifact, the manifest, the
 required-file list, and a `--version` line in the shape the smoke job
-asserts — may land before the transaction; apply policy may not. The
-DEVELOPMENT build-and-stage path is bound by the same rule: a dev loop
-that stages only the frontend runs yesterday's capsule against today's
-protocol.
+asserts — may land before U4's upgrade transaction; apply policy may
+not. The DEVELOPMENT build-and-stage path is bound by the same rule: a
+dev loop that stages only the frontend runs yesterday's capsule against
+today's protocol.
 
 ## Consequences
 
