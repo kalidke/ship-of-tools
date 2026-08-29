@@ -50,9 +50,28 @@ pub trait IdentityExchange {
 /// exchange: a `StatusOk` bundled with trailing malformed bytes, or two
 /// complete replies in one read, is `Foreign`, never the first frame
 /// alone (ADR 0041 U0 round-1 finding 5).
-#[derive(Default)]
+///
+/// TERMINAL after one conclusive answer (round-2 finding 1): `done`
+/// latches on the FIRST `Identity` or `Foreign` this exchange ever
+/// reaches, and every later `feed` call — regardless of what bytes it
+/// carries, including none of its own — returns `Foreign` without
+/// touching the splitter again. This closes two leaks the round-1
+/// version had: a second complete `status_ok` arriving in a LATER `feed`
+/// call (the splitter alone has no memory that this exchange already
+/// answered) and a single trailing partial-header byte riding along with
+/// a valid reply in the SAME call (`frames.len() == 1` looks identical
+/// whether or not the splitter is also carrying leftover bytes, so
+/// [`wire::FrameSplitter::has_pending_bytes`] is the one way to tell them
+/// apart).
 pub struct VoyageMgmtExchange {
     splitter: wire::FrameSplitter,
+    done: bool,
+}
+
+impl Default for VoyageMgmtExchange {
+    fn default() -> Self {
+        Self { splitter: wire::FrameSplitter::new(), done: false }
+    }
 }
 
 impl IdentityExchange for VoyageMgmtExchange {
@@ -62,22 +81,41 @@ impl IdentityExchange for VoyageMgmtExchange {
     }
 
     fn feed(&mut self, bytes: &[u8]) -> ExchangeDecode {
+        if self.done {
+            // Anything after a conclusive answer is corruption, never a
+            // "next" reply — this lane's protocol is exactly one round
+            // trip.
+            return ExchangeDecode::Foreign;
+        }
         let (frames, err) = self.splitter.feed(bytes);
         // Finding 5: error takes precedence over any frame decoded in the
         // SAME call, and more than one complete frame is corruption too —
         // both checked BEFORE ever looking at frame contents.
         if err.is_some() {
+            self.done = true;
             return ExchangeDecode::Foreign;
         }
         match frames.len() {
             0 => ExchangeDecode::Incomplete,
-            1 => match &frames[0] {
-                DecodedFrame::MgmtReply(MgmtReply::StatusOk { pid, created, .. }) => {
-                    ExchangeDecode::Identity { pid: *pid, created: *created }
+            1 => {
+                self.done = true; // conclusive either way, from here on
+                if self.splitter.has_pending_bytes() {
+                    // A trailing byte (or more) rode along with the ONE
+                    // reply this exchange is entitled to — corruption,
+                    // never silently carried past.
+                    return ExchangeDecode::Foreign;
                 }
-                _ => ExchangeDecode::Foreign, // well-formed, wrong opcode
-            },
-            _ => ExchangeDecode::Foreign, // two-or-more complete replies in one read
+                match &frames[0] {
+                    DecodedFrame::MgmtReply(MgmtReply::StatusOk { pid, created, .. }) => {
+                        ExchangeDecode::Identity { pid: *pid, created: *created }
+                    }
+                    _ => ExchangeDecode::Foreign, // well-formed, wrong opcode
+                }
+            }
+            _ => {
+                self.done = true;
+                ExchangeDecode::Foreign // two-or-more complete replies in one read
+            }
         }
     }
 }
@@ -144,20 +182,44 @@ mod tests {
         assert!(matches!(ex.feed(&bytes), ExchangeDecode::Foreign));
     }
 
+    /// Round-2 finding 1: the round-1 version of this test fed the "bad
+    /// second" bytes to a FRESH exchange, which proves nothing about
+    /// whether THIS SAME instance would still accept them after already
+    /// answering once -- Codex reproduced exactly that gap (a second
+    /// complete `status_ok` fed to the SAME instance in a later `feed`
+    /// call returned `Identity` again). Rewritten to drive one instance
+    /// throughout: a good reply, then a second complete reply arriving
+    /// in a LATER `feed` call, must be `Foreign`.
     #[test]
-    fn good_first_reply_stops_the_exchange_before_a_later_bad_frame_is_ever_seen() {
-        // "good-first/bad-second": the good reply decodes and STOPS the
-        // exchange (challenge::challenge's read loop never calls `feed`
-        // again once it sees `Identity`), so a bad frame arriving after
-        // it on the wire is never fed to THIS instance at all. What
-        // matters is that nothing in this lane's own decoder would treat
-        // that later corruption as benign if it ever were reached -- a
-        // FRESH exchange (modeling "the next thing on the wire") fed only
-        // the bad bytes is refused, never silently accepted.
+    fn good_first_reply_then_a_later_complete_reply_on_the_same_instance_is_foreign() {
         let mut ex = VoyageMgmtExchange::default();
         assert!(matches!(ex.feed(&status_ok_bytes(1, 2)), ExchangeDecode::Identity { pid: 1, created: 2 }));
-        let mut ex2 = VoyageMgmtExchange::default();
-        assert!(matches!(ex2.feed(&[0xff; 16]), ExchangeDecode::Foreign));
+        // A second, otherwise-perfectly-well-formed reply, fed to the
+        // SAME already-answered instance in a separate call.
+        assert!(matches!(ex.feed(&status_ok_bytes(3, 4)), ExchangeDecode::Foreign));
+    }
+
+    /// Round-2 finding 1 (the other reproduced leak): a single trailing
+    /// byte riding along with a valid reply in the SAME `feed` call —
+    /// not even enough to determine a magic, so the OLD code's
+    /// `frames.len() == 1` check alone could not distinguish this from
+    /// "nothing left over" and returned `Identity`.
+    #[test]
+    fn status_ok_plus_one_trailing_partial_header_byte_is_foreign() {
+        let mut ex = VoyageMgmtExchange::default();
+        let mut bytes = status_ok_bytes(1, 2);
+        bytes.push(0xAB); // a single byte: not even a full header's worth
+        assert!(matches!(ex.feed(&bytes), ExchangeDecode::Foreign));
+    }
+
+    /// Round-2 finding 1: once terminal, ANY further byte in a LATER
+    /// call is Foreign, even bytes that on their own would be
+    /// `Incomplete` for a fresh exchange (e.g. a lone partial byte).
+    #[test]
+    fn any_byte_at_all_after_a_conclusive_answer_is_foreign() {
+        let mut ex = VoyageMgmtExchange::default();
+        assert!(matches!(ex.feed(&status_ok_bytes(1, 2)), ExchangeDecode::Identity { .. }));
+        assert!(matches!(ex.feed(&[0xAB]), ExchangeDecode::Foreign));
     }
 
     #[test]
