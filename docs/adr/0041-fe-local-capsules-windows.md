@@ -583,7 +583,7 @@ capsule integration suite runs serialized because two real ConPTY
 floods on a two-core runner starve each other — additive, not
 adversarial, by design.
 
-### Step 6 as specified (2026-08-28, pre-implementation review, round 3)
+### Step 6 as specified (2026-08-28, pre-implementation review)
 
 The contract is the "Lifecycle", "Upgrade and version skew" and "Build
 order" sections BELOW. This section carries only what those do not: the
@@ -696,8 +696,11 @@ still owns its own PTY is two sessions, so U2 and U3 stay off until U4.
   `open_for_writing` split that puts the writer fence and the lease
   check ahead of history traversal. **U1b (durable):** the
   `sot.capsule.run-end-requested-v1` registration with bidirectional
-  verifier enforcement, the reader-first rollout, the marker frame and
-  its latch, and the aggregate teardown deadline. Every existing test
+  verifier enforcement (amending ADR 0039's own displayed registry and
+  lifecycle grammar in the same change, so the older normative document
+  does not stay at two entries), the reader-first rollout with its
+  installed-capability gate, the marker frame and its latch, and the
+  aggregate teardown deadline. Every existing test
   stays; new ones cover marker-before-ack, ack-stall-after-marker,
   final-poll concurrent shutdown, early name disappearance, idle-mgmt
   expiry, a probe across the whole occupancy window, and a rollback
@@ -1075,18 +1078,13 @@ summary and exits after `run` returns; only upgrade needs it, and
 whoever performed EndRun already holds a challenged handle to wait on.
 
 **Respawn is gated by the typed marker, read from the LATEST LEG AFTER
-RECONCILIATION.** "Highest sealed epoch" was the wrong key: `.open` and
-`.recovering` segments are states the store already treats as
-authoritative — `open_for_writing` enumerates all three before choosing
-the next epoch — so a leg that was hard-killed with its segment still
-open is newer than the last sealed one and must not inherit that one's
-verdict. Concretely, the hole this closes: a requested end seals epoch
-E, an upgrade starts E+1 with `--start`, E+1 is hard-killed with an open
-tip, the supervisor then crashes, and a `--resume` restart that looked
-only at sealed epochs would find E's marker and exit 0 — abandoning a
-newer crashed leg that needs recovery. So the decision is taken under
-the fence, on the latest leg of ANY state, and a marker governs only its
-OWN epoch. `producer_dead.detail.reason` remains a free-form DIAGNOSTIC
+RECONCILIATION.** `.open` and `.recovering` are states the store already
+treats as authoritative — `open_for_writing` enumerates all three before
+choosing the next epoch — so a leg hard-killed with its segment still
+open is NEWER than the last sealed one and must not inherit that one's
+verdict. The decision is taken under the fence, on the latest leg of ANY
+state, and a marker governs only its OWN epoch.
+`producer_dead.detail.reason` remains a free-form DIAGNOSTIC
 and is never a discriminator: the shipped capsule writes it for spawn
 failures and for `transport-accept-failed`, the two ends that must be
 RECOVERED from.
@@ -1128,11 +1126,9 @@ restart is ever added, this row is what must be revisited.
 **Respawn is bounded at BOTH ends.** A child that never reaches READY —
 holding the writer fence AND answering the challenge — is a STARTUP
 failure however long it took, killed-at-the-cutoff included; a leg that
-reaches READY and ends within 60 s is a RUNTIME failure. Three
-consecutive failures of either kind stop the loop, and only a leg
-running 60 s past READY resets it. Counting startup alone was not
-bounded: a shell surviving one in-memory status challenge and exiting a
-millisecond later resets the counter forever. Diagnosis is whatever
+reaches READY and ends inside the STABILITY INTERVAL is a RUNTIME
+failure. Three consecutive failures of either kind stop the loop, and
+only a leg outliving that interval resets it. Diagnosis is whatever
 exists — the sealed `producer_dead` detail, or the child's exit code and
 stderr tail when the store never opened.
 
@@ -1170,15 +1166,9 @@ next-morning attach to yesterday's session is still a visible event: the
 leg time is yesterday's, on screen, in the drawer.
 
 **The probe.** One episode, one monotonic deadline, evaluated as a typed
-transition table in TWO stages. An earlier revision put the deadline and
-the owned-child rows first and shadowed two of its own outcomes: an
-alive child matched "PENDING" before its pipe was ever observed, so a
-healthy `status_ok` could not make it READY, and at the cutoff the
-deadline row returned WEDGED before the kill row ran, leaving a live
-child able to bind against the next operator's launch. So the owned
-child is resolved FIRST AND COMPLETELY, including its own challenge, and
-the episode deadline governs only observations that leave nothing to
-clean up.
+transition table in TWO stages: the owned child is resolved FIRST AND
+COMPLETELY, including its own challenge, and the episode deadline
+governs only observations that leave nothing to clean up.
 
 **Stage A — an owned spawn attempt exists** (evaluated before any
 deadline, because every terminal answer here has a child to dispose of):
@@ -1289,14 +1279,14 @@ whose working set has been evicted, asserted rather than assumed), and
 only then measures the open, so it cannot accidentally time
 just-generated hot files.
 
-The teardown aggregate replaces a per-thread bound that could not
-compose. "5 s each" over an acceptor, a reaper, up to sixteen connection
-workers and the capsule's own threads sums far past both the probe
-episode and the FE cutoff, while the writer fence stays held — so a
-healthy bounded teardown could be classified WEDGED. Cancellation is
-issued to every worker FIRST; the joins then share ONE absolute
-deadline, and each wait receives the remaining budget rather than a
-fresh 5 s. 20 s sits inside both outer cutoffs with room for the seal.
+The teardown aggregate is one absolute deadline, not a per-thread one:
+over an acceptor, a reaper, up to sixteen connection workers and the
+capsule's own threads, per-thread bounds sum past both the probe episode
+and the FE cutoff while the writer fence stays held, so a healthy
+bounded teardown would be classified WEDGED. Cancellation is issued to
+every worker FIRST; the joins then share ONE deadline, each wait taking
+the remaining budget. 20 s sits inside both outer cutoffs with room for
+the seal.
 
 **The challenge**, with its ORDER load-bearing: (1) read the server pid P
 via `GetNamedPipeServerProcessId` on the live connection; (2)
@@ -1387,11 +1377,11 @@ CAPABILITY: a capsule may not open a feature-bearing segment until the
 recorded rollback target can read one. Publication adjacency is not
 installation history.
 
-First-boot health cannot stay FE-only: a supervisor that exits terminal
-or crash-loops while the FE stays up would never trip it. Nor may it
-COMMIT at first READY, which this ADR itself calls insufficient — a leg
-that dies one millisecond after answering one status challenge is a
-RUNTIME failure by the anti-flap rule. So the window is `readiness +
+First-boot health covers the supervisor as well as the FE — a
+supervisor that exits terminal while the FE stays up would otherwise
+never trip it — and it may not COMMIT at first READY, which the
+anti-flap rule already calls a runtime failure if the leg then dies. So
+the window is `readiness +
 stability + 30 s` from apply (150 s at today's provisional values, and
 RE-DERIVED WITH THEM), and any rollback observation before commit WINS,
 whenever it occurs:
@@ -1446,18 +1436,14 @@ binary.
 6. The supervisor and the attach-only FE, which ACTIVATE TOGETHER —
    contract in this section and the two above it, unit graph and
    acceptance in "Step 6 as specified".
-7. Acceptance on a real Windows machine — everything step 6's matrix
-   proves in CI, re-run where CI cannot go, plus the rows that only a
-   real machine has: ACL denial for a second local user; logout/login
-   and reboot ACL access; AV rename-retry; disk-full visible;
-   forced-reboot recovery (the voyage survives: open tip recovered, all
-   acknowledged input preserved, only a provable unpublished tail
-   discarded, a new epoch, verify green); exit-75 relaunch reattaching
-   with the screen restored and no ritual; the breakaway-denied degraded
-   path; and the NIGHTLY COMPOSITE (supervisor AND FE force-killed AND
-   tunnel torn, no EndRun — the capsule survives headless, and the next
-   supervisor start ADOPTS it with the visible attach notice, never
-   silently).
+7. Acceptance on a real Windows machine — step 6's matrix re-run where
+   CI cannot go, plus the rows only a real machine has: multi-user ACL
+   denial; logout/login and reboot ACL access; AV rename-retry;
+   disk-full; forced-reboot recovery; exit-75 relaunch with the screen
+   restored and no ritual; the breakaway-denied degraded path; and the
+   NIGHTLY COMPOSITE (supervisor AND FE force-killed AND tunnel torn, no
+   EndRun — the capsule survives headless and the next start ADOPTS it,
+   never silently).
 
 ## Consequences
 
