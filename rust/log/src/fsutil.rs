@@ -710,6 +710,21 @@ pub struct WriterLock {
     file: File,
 }
 
+/// A `Duration` clamped to a Win32 wait-call millisecond parameter,
+/// NEVER `INFINITE` (`u32::MAX`, 0xFFFFFFFF) — a caller-supplied duration
+/// long enough to round to that exact value would silently wait forever
+/// instead of the bounded wait it asked for (ADR 0041 U0 round-1 finding
+/// 8). Shared by every bounded Win32 process wait in this crate
+/// (`conpty::PrimaryProcess::wait`, `challenge::wait_handle` — used by
+/// both `ChallengedProcess` and `probe::SpawnedChild`) so the guard
+/// exists exactly once, not once per call site.
+#[cfg(windows)]
+pub(crate) fn duration_to_wait_ms(timeout: std::time::Duration) -> u32 {
+    u32::try_from(timeout.as_millis())
+        .unwrap_or(u32::MAX)
+        .min(u32::MAX - 1)
+}
+
 pub fn lock_writer(lock_path: &Path) -> Result<WriterLock> {
     let file = open_lock_file(lock_path)?;
     // Bounded retry on WouldBlock: a just-dead writer's lock can outlive it
