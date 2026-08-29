@@ -29,6 +29,10 @@ pub mod pipe_win;
 // -- one bridge, reused by both, rather than duplicated or made
 // unreachable from the test crate.
 pub mod pipe_transport;
+// ADR 0041 step 6, unit U0: fault-injection scaffolding for the probe
+// classifier's own (later) model test. NO classifier logic lives here —
+// see the module's own doc.
+pub mod probe;
 // Crate-private (Codex review finding, capsule_win.rs round): ADR 0041's
 // "one private machine" ruling means this module's items are not part of
 // the crate's public API — `capsule_win.rs` is the only real caller and
