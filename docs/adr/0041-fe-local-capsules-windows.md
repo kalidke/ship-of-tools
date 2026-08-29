@@ -599,7 +599,7 @@ FE's client behavior, the unit graph, and the acceptance matrix.
   on the supervisor lane and holds its window open in a visible "ending
   session" state until the lane's `end_run` reply — which arrives at
   `record_closed`, with `record_verified` following through `query`, on
-  the 90 s cutoff. On expiry the window STAYS UP and says
+  the FE QUIT cutoff. On expiry the window STAYS UP and says
   **"ending the session did not complete — outcome unknown"**: by then
   the job may already be terminated and the capsule mid-seal.
 - **Take-on-first-input is a transaction.** Auto-take on attach stays
@@ -730,7 +730,7 @@ paths.
 | what it settles | the test |
 |---|---|
 | the step-5 cross-process residual | a real child `sot-capsule run`: reply-pid ≠ the test's own pid, reply-pid == the pipe's server pid, creation time == an independently opened handle's |
-| the classifier is total AND every row reachable | one case per row, including malformed frames, wrong opcodes, ACCESS_DENIED, `CreateProcess` failure, `WAIT_FAILED` and kill failure; the Stage-B deadline wedges every Stage-B PENDING row, while an A5 child at its readiness cutoff (the t=0 A5 → t=60 A3 sequence) reaches KILL+WAIT — NO Stage-A terminal result may leave a live child |
+| the classifier is total AND every row reachable | one case per row, including malformed frames, wrong opcodes, ACCESS_DENIED, `CreateProcess` failure, `WAIT_FAILED` and kill failure; the Stage-B deadline wedges every Stage-B PENDING row, while an A5 child at its readiness cutoff (A5 at t=0 → A3 at the cutoff) reaches KILL+WAIT — NO Stage-A terminal result may leave a live child; and a Stage-B observer of a fence-held/name-absent history walk AT THE MEASURED BOUNDARY does not expire before the child binds |
 | the marker is the acceptance barrier | an ack stalled after a durable marker still tears down; a failed append yields no ack, no marker, an unsealed exit, `failed {record_append}`, a released hold and a replaced leg; two concurrent callers get one marker and two acks; the frame is refused by the verifier in an undeclaring segment, and a declaring segment is refused by a pre-feature reader |
 | a spawn failure is recovered, not obeyed | a missing shell and a transport fatal both respawn; only `run_end_requested` suppresses |
 | start modes | `--resume` after a requested end exits 0; `--start` after the same end spawns; an ADOPTED leg ends correctly; a provable torn tail is REPAIRED and replaced while a complete corruption exits 69 without spawning |
@@ -751,7 +751,7 @@ paths.
 | the lane's own lifecycle | a squatted name loses first-instance bind and exits 69; a present-but-unanswering lane is treated as absent; a mismatched build is refused; a lost `reset` reply retried under the same operation id does not rename twice |
 | the challenge authenticates the SERVER | on a real Windows machine, an OTHER-USER process pre-binds the supervisor name AND the voyage name with a permissive DACL and answers plausibly: every public client entry point classifies it FOREIGN before decoding or trusting a reply, and each target-token lookup failure lands PENDING, never READY or ADOPTED |
 | every classifier row is REACHABLE | a model test drives one case per row, A4 and A3 included |
-| the supported history envelope composes | a release-mode cold-history open at the named boundary publishes its measured time, and the gate fails unless `measured × 3` fits readiness and every derived budget is recomputed with it |
+| the supported history envelope composes | a release-mode cold-history open at the named boundary publishes its measured time, and the gate fails unless `B >= measured × 3` and EVERY formula and consumer is recomputed with it in the same change |
 | rollback is safe under a live release | a supervisor-69 rollback with the new FE alive quiesces it first and never touches a locked image; a feature-boundary refusal mutates nothing, keeps the health state and reaches a terminal recovery surface; a pre-reader install cannot activate the writer at all |
 | health is total | exit 75 at the deadline with no live FE ROLLS BACK; `just-applied` is never left armed |
 | teardown composes | worst-case worker fan-out completes inside the 20 s aggregate and the fence is free before the probe episode expires; a probe during the tail, and against four idle mgmt clients, never reaches WEDGED |
@@ -990,7 +990,8 @@ path that must stay responsive; slow work — an O(history) open, a kill
 and wait, a seal, a `verify_voyage` — is delegated, and only its
 COMPLETION re-enters the ordered state machine under the fence. Without
 that split, `status` cannot distinguish a busy authority from a dead
-one, and an accepted `end_run` could starve behind a 60 s spawn.
+one, and an accepted `end_run` could starve behind a whole readiness
+cutoff of spawn.
 
 **The no-supervisor path is the same TRANSITION, not the same
 CAPABILITIES.** When no supervisor is running, `sot-capsule endrun` and
@@ -1297,35 +1298,57 @@ bound for post-kill lock release or for child initialization, and
 `verify_voyage` and `open_for_writing` are both O(retained history), so
 past these points the honest report is "outcome unknown".
 
-| bound                | value                | role                        |
+| bound                | value (`B` = supported history bound, 60 s today) | role |
 |----------------------|----------------------|-----------------------------|
 | connect              | 2 s                  | `connect_voyage_pipe`'s existing deadline |
 | challenge            | 2 s, clamped to the episode's remaining wall time | one `status` answered from memory; retryable |
-| probe episode        | 60 s wall, attempts 500 ms apart — PROVISIONAL UNTIL MEASURED | covers the visible O(history) window within the supported envelope below |
+| probe episode        | DERIVED `= B`, attempts 500 ms apart | the SAME visible O(history) window readiness covers; a shorter probe would wedge on a legitimate walk |
 | ABSENT separation    | 2 s                  | UI pacing only; proves nothing |
-| readiness cutoff     | 60 s from spawn, then KILL + 10 s wait — PROVISIONAL UNTIL MEASURED | availability cutoff over the O(history) walk |
+| readiness cutoff     | DERIVED `= B`, from spawn, then KILL + 10 s wait | availability cutoff over the O(history) walk |
 | fence acquisition    | DERIVED `readiness + kill wait + 20 s` (90 s today) | must exceed a legitimate readiness hold plus kill and wait |
-| anti-flap            | 3 consecutive startup OR runtime failures; STABILITY INTERVAL post-READY resets (60 s today, tracks readiness) | a store that cannot open, and a shell that cannot stay up |
+| anti-flap            | 3 consecutive startup OR runtime failures; stability interval DERIVED `= readiness cutoff` resets | a store that cannot open, and a shell that cannot stay up |
 | launcher restart     | ≤ 5 in 60 s, on the shipped 1/3/7/15/30 s sequence | a crash-looping supervisor |
 | FE quit              | DERIVED `fence acquisition` (90 s today) → "outcome unknown" | availability cutoff; a quit may have to wait out one legitimate fence hold |
 | mgmt idle            | 5 s                  | pool squatting |
 | teardown aggregate   | 20 s TOTAL after the name is gone, one absolute deadline shared by every join | loud on expiry |
 | ack grace            | 2 s                  | a final-poll request still gets its ack |
+| health window        | DERIVED `readiness + stability + 30 s` (150 s today) | the first-boot decision, and the FE's terminal-lane timeout |
 
-The two PROVISIONAL numbers are provisional in a specific, closeable
-sense: 60 s is where the authority gives up, and whether that is
-generous or cruel depends on an `open_for_writing` cost the ADR may not
-assert without evidence. So the SUPPORTED ENVELOPE is named and gated.
-Claimed: **release build, ≤ 2 GiB retained across ≤ 64 segments,
+**One measured bound, and every other deadline is a formula over it.**
+Let **B** be the SUPPORTED HISTORY BOUND — the time a legitimate
+`open_for_writing` may take inside the envelope below. B is PROVISIONAL
+UNTIL MEASURED and is 60 s today. Everything else follows, with no free
+literals anywhere:
+
+```
+B                  >= measured_cold_boundary × 3
+probe episode       = B          readiness cutoff   = B
+stability interval  = readiness cutoff
+fence acquisition   = readiness + 10 s kill wait + 20 s teardown
+FE quit             = fence acquisition
+health window       = readiness + stability + 30 s
+```
+
+Probe and readiness are the same number because they bound the SAME
+window from two sides: a supervisor that owns the child gives up at
+readiness, and a replacement supervisor that owns nothing observes the
+identical fence-held/name-absent walk through Stage B. Letting the probe
+be the shorter of the two is how a healthy child gets declared a wedge
+and then binds anyway, minutes after its authority exited.
+
+Whether 60 s is generous or cruel depends on an `open_for_writing` cost
+the ADR may not assert without evidence. So the SUPPORTED ENVELOPE is
+named and gated. Claimed: **release build, ≤ 2 GiB retained across ≤ 64 segments,
 ≤ 100 000 retained input facts, on the two-core Windows CI runner class,
 cold cache, with the default AV posture.** A release-mode test at
 exactly that boundary is a CI EVIDENCE GATE — and it is a COMPOSITION
 gate, not merely a number publisher, because four other budgets are
 DERIVED from these two: readiness sets fence acquisition, which sets the
 FE quit cutoff; readiness plus the stability interval sets the health
-window. The gate is green only if `measured × 3` fits the chosen
-readiness value AND every derived budget is recomputed from it in the
-same change. If the measurement does not fit, the envelope shrinks or
+window. The gate is green only if `B >= measured × 3` AND every formula
+above and every consumer of it is recomputed in the same change — the
+FE's cutoff, the classifier oracle, the health window, the anti-flap
+interval, all of them. If the measurement does not fit, the envelope shrinks or
 `open_for_writing` gets faster — its quadratic identity collection is a
 known cost inside the envelope and is fixed or measured, never assumed
 away — and beyond the envelope the answer is rotation, not a larger
