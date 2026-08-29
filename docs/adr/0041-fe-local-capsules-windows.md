@@ -656,21 +656,29 @@ FE's client behavior, the unit graph, and the acceptance matrix.
   carries byte vectors and an item count at the same number would permit
   unbounded memory. When it is full the FE STOPS READING THE PIPE, so a
   wedged FE is evicted by the capsule as step 5 designed.
-- **The attach notice is bound to the leg it describes.** Mgmt and
-  attach are separate lane-latched connections, so a leg dying between
-  them would let the FE render leg A's start time over leg B's restored
-  screen. The FE compares the pipe server's pid and creation time on
-  BOTH connections and shows the notice only when they match; on
-  mismatch it re-reads status. No new frame.
+- **The attach notice is bound to the leg it describes, and claims only
+  what its teller can know.** The FE talks to the capsule; only the
+  authority knows whether it spawned or adopted, and `status.created` is
+  the LEG process's creation time, not the session's. So the notice is
+  one truthful message on every attach — "attached to leg started
+  `<time>`" — the spawn-versus-adopt distinction is logged by the
+  authority, where that fact lives, and a next-morning attach to
+  yesterday's session is still a visible event because the leg time is
+  yesterday's, on screen, in the drawer. Mgmt and attach are separate
+  lane-latched connections, so a leg dying between them would let the FE
+  render leg A's start time over leg B's restored screen: the FE
+  compares the pipe server's pid and creation time on BOTH connections
+  and shows the notice only when they match; on mismatch it re-reads
+  status. No new frame.
 - **`fe_down` claims only what it can observe.** The inbox timestamp
   records when a message was relayed, not when a frontend was alive, so
   "no frontend attached from `<t0>` to `<t1>`" was false for any FE that
   ran a day without inbound traffic. The line is
   `{"from":"sot-fe","to":"<handle>","text":"possible relay gap: last
   inbox evidence <t0>, frontend reattached <t1>","ts":"<t1>",
-  "kind":"fe_down","window":{"last_evidence":"<t0>","reattached":
-  "<t1>"}}` — both values ISO-8601 STRINGS, matching the existing `ts`
-  type. `t0` is read at FE PROCESS START, before this run appends
+  "kind":"fe_down","window":{"last_evidence":"<t0>"}}` — the
+  envelope's `ts` IS the reattach time, and both values are ISO-8601
+  STRINGS. `t0` is read at FE PROCESS START, before this run appends
   anything, or the current startup's own traffic becomes the baseline.
   No baseline, no marker. The append path gains a `Result` and a visible
   drawer error: a marker that exists so a failure is not quiet cannot
@@ -707,7 +715,7 @@ still owns its own PTY is two sessions, so U2 and U3 stay off until U4.
   and feature-boundary rows of the acceptance matrix.
 - **U2 — the authority.** `sot-capsule supervise` with its lane, the
   election fence, the classifier, spawn/adopt, the parent lease, start
-  modes, both anti-flap counters, `record_verified`, the exit-code
+  modes, the anti-flap counter, `record_verified`, the exit-code
   contract, and `endrun`/`reset` as fence-acquiring in-process callers.
 - **U3 — the FE client**, behind the same off-by-default flag: the six
   rulings above, checkpoint restore into the drawer's parser, and
@@ -733,7 +741,7 @@ paths.
 | the lease is not a sample | supervisor killed between `CreateProcess` and fence acquisition, and again during the history walk: the child exits or is visible, never both-invisible-then-binding |
 | FE quit during spawn-pending | the request is admitted and latched DURING the spawn and ends the run properly, never leaving a capsule behind |
 | reset under a live authority | mediated, never concurrent; no two-identity state |
-| both flap bounds | a store that never opens, and a shell that dies 1 ms after READY, each reach the threshold |
+| the flap bound | a store that never opens, and a shell that dies 1 ms after READY, each increment the ONE counter to its threshold |
 | pointer durability | a crash between create and write leaves no unusable permanent pointer; reset preserves evidence under a unique name |
 | input across reconnect and across reset | same key resent within a voyage, each of the three outcomes handled; a changed UUID cancels rather than replays |
 | reconnect terminates | version skew, foreign pipe, corrupt pointer, reset, and a supervisor's terminal exit each reach a terminal state |
@@ -896,22 +904,15 @@ stateless request.**
 - `status` is a SEPARATE STATELESS REQUEST — not a `command`, so it
   carries no `operation_id` to be ignored, mutates nothing, and can
   never evict a destructive result from the journal. It answers
-  `status_ok {voyage, leg?, phase, build}`. `leg` is optional and
+  `status_ok {voyage, leg?, phase}` — the connection's accepted
+  handshake already carries the build. `leg` is optional and
   voyage-qualified, because the lane binds after the fence and BEFORE
   any adopt or spawn, so the mandatory first `status` of every client
   must be able to say "no leg yet". `phase` is total over the
   authority's own life: STARTING | READY | ENDING | ENDED-NO-RESPAWN |
-  TERMINAL. There is no `ready` flag — it would be derivable from
-  `phase` and a second spelling of one fact — and no `since`: the health
-  monitor and the FE are already polling, already see every
-  build/voyage/leg/phase change in this payload, and a locally owned
-  continuity clock cannot be fooled by a server that computes its own
-  phase start wrongly. Continuous READY is therefore uninterrupted
-  identical observations, measured by the observer.
-- **The FE treats ENDED-NO-RESPAWN and TERMINAL as terminal**, rather
-  than waiting for a responsive lane to disappear. An authority that
-  stays alive to serve `query` is exactly the case its 150 s
-  absent-or-unresponsive rule cannot see.
+  TERMINAL. CONTINUOUS READY IS THE OBSERVER'S OWN MEASUREMENT:
+  uninterrupted identical observations, over a clock no server can
+  compute wrongly.
 - **`operation_id` is durable for MUTATING ops only.** Before the first
   irreversible act of an `end_run`, `reset` or `stop`, the authority
   PUBLISHES a journal record under the owner-protected state subtree —
@@ -997,7 +998,7 @@ capability matrix is pinned rather than implied:
 | the capsule's mgmt lane | what a no-supervisor caller may do |
 |---|---|
 | healthy | everything: challenge afresh, retain the handle, EndRun, and wait both proofs |
-| proven ABSENT | `reset` only, under the fence and the ABSENT rule |
+| proven ABSENT | `reset` only, on a classifier ABSENT taken while holding the fence |
 | present but invalid | REFUSE LOUDLY, naming the recovery: start a supervisor, or run the explicit recovery procedure. It may never terminate an unauthenticated same-user process, and it may never destroy the pointer while that server lives |
 
 Legs are spawned as CHILD PROCESSES and deliberately NOT placed in the
@@ -1052,12 +1053,11 @@ which is the whole reason adoption exists.
   U1a splits acquisition so the fence and the lease check both precede
   history traversal. What remains invisible is then genuinely small, but
   it is NOT proven small: `CreateProcess` returns before child
-  initialization completes and Windows publishes no upper bound, so the
-  2 s ABSENT separation is UI PACING and a responsiveness heuristic —
-  never proof of process absence or of `image_quiescent`. Any operation
-  needing that proof holds or re-acquires a process handle and waits on
-  it. The safety of the lease comes from the fence ordering, not from
-  two samples.
+  initialization completes and Windows publishes no upper bound, so NO
+  NUMBER OF ABSENT OBSERVATIONS proves process absence or
+  `image_quiescent`. Any operation needing that proof holds or
+  re-acquires a process handle and waits on it. The safety of the lease
+  comes from the fence ordering.
 
 **The rule: a run is ENDED BY REQUEST only through an explicit `EndRun`
 over the mgmt lane.** A producer that EXITS ends its run intrinsically —
@@ -1172,20 +1172,20 @@ launched from a desktop shortcut, not an auto-start service: a reboot
 cannot authorize a start on its own, and if an automatic launcher
 restart is ever added, this row is what must be revisited.
 
-**Respawn is bounded at BOTH ends.** A child that never reaches READY —
-holding the writer fence AND answering the challenge — is a STARTUP
-failure however long it took, killed-at-the-cutoff included; a leg that
-reaches READY and ends inside the STABILITY INTERVAL is a RUNTIME
-failure. Three consecutive failures of either kind stop the loop, and
-only a leg outliving that interval resets it. Diagnosis is whatever
-exists — the sealed `producer_dead` detail, or the child's exit code and
-stderr tail when the store never opened.
+**Respawn is bounded by ONE counter.** `consecutive_unstable_legs`
+increments for a leg that never reaches READY — holding the writer fence
+AND answering the challenge — however long it took, killed-at-the-cutoff
+included, and for a leg that reaches READY and ends inside the STABILITY
+INTERVAL. Only a leg outliving that interval resets it; three stop the
+loop. Which way a leg was unstable is DIAGNOSTIC — the sealed
+`producer_dead` detail, or the child's exit code and stderr tail when the
+store never opened — never a second counter.
 
 **Supervisor exit codes are the launcher's contract.** `0` = clean end
 (the run ended by request, or a stop was requested) — DO NOT restart.
-`69` = terminal (three consecutive failures, a foreign server, a wedge,
-a failed `record_verified`) — DO NOT restart; surface it. Anything else
-is a crash — restart with `--resume` on the launcher's shipped
+`69` = terminal (three consecutive unstable legs, a foreign server, a
+wedge, a failed `record_verified`) — DO NOT restart; surface it.
+Anything else is a crash — restart with `--resume` on the launcher's shipped
 1/3/7/15/30 s sequence, at most 5 restarts in 60 s, then stop and
 report.
 
@@ -1197,22 +1197,13 @@ BEFORE THE FE AND THE TUNNEL GO DOWN. "Supervisor stop" is the lane's
 it cannot restart what the teardown is about to end, then the caller
 waits for process exit and fence release on the fence-acquisition
 budget, because a kernel lock's post-kill release has no documented OS
-bound. Orphan stop: fence held and ABSENT observed twice means skip
-EndRun and proceed — a fresh install and a post-crash cleanup must both
-work. Every wait is bounded and every timeout is LOUD: a teardown that
-cannot reach a capsule it can see STOPS and reports a live session
+bound. Orphan stop: a classifier ABSENT while holding the fence means
+skip EndRun and proceed — a fresh install and a post-crash cleanup must
+both work. Every wait is bounded and every timeout is LOUD: a teardown
+that cannot reach a capsule it can see STOPS and reports a live session
 rather than tearing the tunnel out from under it. The
 daemon-detach-before-tunnel property the current script achieves is
 preserved by this order and asserted by the rewrite's own check.
-
-**The attach notice never claims what its teller cannot know.** The FE
-talks to the capsule; only the authority knows whether it spawned or
-adopted, and `status.created` is the LEG process's creation time, not
-the session's. So the FE shows one truthful message on every attach —
-"attached to leg started `<time>`" — and the spawn-versus-adopt
-distinction is logged by the authority, where that fact lives. A
-next-morning attach to yesterday's session is still a visible event: the
-leg time is yesterday's, on screen, in the drawer.
 
 **The probe.** One episode, one monotonic deadline, evaluated as a typed
 transition table in TWO stages: the owned child is resolved FIRST AND
@@ -1256,7 +1247,7 @@ alive, and A3 is reachable because no deadline precedes it — and it is
 asserted by a model test that drives one case per row, not by reading
 the list. READY and ADOPTED are the same evidence from different
 provenance and both end the episode, as does FOREIGN. KILL+WAIT kills,
-waits on its own bound, counts a startup failure and re-enters; a kill
+waits on its own bound, counts an unstable leg and re-enters; a kill
 failure or expired wait is itself terminal, since a child able to bind
 later is exactly what this row prevents. SPAWN-FAILED counts and
 re-enters. Stage B's WEDGED is terminal with nothing outstanding.
@@ -1290,36 +1281,28 @@ bound for post-kill lock release or for child initialization, and
 `verify_voyage` and `open_for_writing` are both O(retained history), so
 past these points the honest report is "outcome unknown".
 
-| bound                | value (`B` = supported history bound, 60 s today) | role |
+| bound                | value                | role |
 |----------------------|----------------------|-----------------------------|
+| supported history `B` | MEASURED-GATED `>= measured_cold_boundary × 3`; 60 s today | the ONE free number; every DERIVED row is a formula over it |
 | connect              | 2 s                  | `connect_voyage_pipe`'s existing deadline |
 | challenge            | 2 s, clamped to the episode's remaining wall time | one `status` answered from memory; retryable |
 | probe episode        | DERIVED `= B`, attempts 500 ms apart | the SAME visible O(history) window readiness covers; a shorter probe would wedge on a legitimate walk |
-| ABSENT separation    | 2 s                  | UI pacing only; proves nothing |
 | readiness cutoff     | DERIVED `= B`, from spawn, then KILL + 10 s wait | availability cutoff over the O(history) walk |
 | fence acquisition    | DERIVED `readiness + kill wait + 20 s` (90 s today) | must exceed a legitimate readiness hold plus kill and wait |
-| anti-flap            | 3 consecutive startup OR runtime failures; stability interval DERIVED `= readiness cutoff` resets | a store that cannot open, and a shell that cannot stay up |
+| anti-flap            | 3 consecutive unstable legs; stability interval DERIVED `= readiness cutoff` resets | a store that cannot open, and a shell that cannot stay up |
 | launcher restart     | ≤ 5 in 60 s, on the shipped 1/3/7/15/30 s sequence | a crash-looping supervisor |
 | FE quit              | DERIVED `fence acquisition` (90 s today) → "outcome unknown" | availability cutoff; a quit may have to wait out one legitimate fence hold |
 | mgmt idle            | 5 s                  | pool squatting |
 | teardown aggregate   | 20 s TOTAL after the name is gone, one absolute deadline shared by every join | loud on expiry |
 | ack grace            | 2 s                  | a final-poll request still gets its ack |
-| health window        | DERIVED `readiness + stability + 30 s` (150 s today) | the first-boot decision, and the FE's terminal-lane timeout |
+| health window        | DERIVED `readiness + stability` (120 s today) | the first-boot decision, and the FE's terminal-lane timeout |
 
 **One measured bound, and every other deadline is a formula over it.**
 Let **B** be the SUPPORTED HISTORY BOUND — the time a legitimate
 `open_for_writing` may take inside the envelope below. B is PROVISIONAL
-UNTIL MEASURED and is 60 s today. Everything else follows, with no free
-literals anywhere:
-
-```
-B                  >= measured_cold_boundary × 3
-probe episode       = B          readiness cutoff   = B
-stability interval  = readiness cutoff
-fence acquisition   = readiness + 10 s kill wait + 20 s teardown
-FE quit             = fence acquisition
-health window       = readiness + stability + 30 s
-```
+UNTIL MEASURED and is 60 s today. The table above is the ONE derivation
+graph: every DERIVED row is a formula over B, every other row is a
+pinned literal with a named role, and no consumer restates either.
 
 Probe and readiness are the same number because they bound the SAME
 window from two sides: a supervisor that owns the child gives up at
@@ -1336,7 +1319,7 @@ CI runner class, cold cache, with the default AV posture.** A
 release-mode test at exactly that boundary is a CI EVIDENCE GATE — and a
 COMPOSITION gate, not merely a number publisher, because every other
 deadline above is a formula over B. The gate is green only if
-`B >= measured × 3` AND every formula above and every consumer of it is
+`B >= measured × 3` AND every DERIVED row above and every consumer is
 recomputed in the same change — the FE's cutoff, the classifier oracle,
 the health window, the anti-flap interval, all of them. If the
 measurement does not fit, the envelope shrinks or `open_for_writing`
@@ -1487,10 +1470,12 @@ installation history.
 First-boot health covers the supervisor as well as the FE — a
 supervisor that exits terminal while the FE stays up would otherwise
 never trip it — and it may not COMMIT at first READY, which the
-anti-flap rule already calls a runtime failure if the leg then dies. So
-the window is `readiness +
-stability + 30 s` from apply (150 s at today's provisional values, and
-RE-DERIVED WITH THEM), and any rollback observation before commit WINS,
+anti-flap rule already counts unstable if the leg then dies. So the
+window is the HEALTH WINDOW — `readiness + stability`, 120 s at today's
+provisional values and RE-DERIVED WITH THEM — measured from ISSUANCE OF
+THE SUPERVISOR `--start` (the transaction's step 5), since U4 starts
+the FE only after READY and the stability interval therefore already
+covers FE startup. Any rollback observation before commit WINS,
 whenever it occurs:
 
 | observation within the window        | decision       |
@@ -1499,7 +1484,7 @@ whenever it occurs:
 | supervisor exits 69, or crashes past its restart budget | ROLL BACK |
 | supervisor never reaches READY (spawned or adopted) | ROLL BACK |
 | FE exits 75                          | not a health signal; the window continues across the relaunch |
-| FE alive AND supervisor lane answering with the expected build AND the leg READY AND STILL HEALTHY for the stability interval | COMMIT |
+| FE alive AND an ACCEPTED, ANSWERING supervisor lane AND the leg READY AND STILL HEALTHY for the stability interval | COMMIT |
 | the window EXPIRES with no COMMIT — including an exit-75 FE still relaunching at the deadline | ROLL BACK, subject to the typed refusal above |
 
 The last row is what makes the window absolute rather than extensible: a
