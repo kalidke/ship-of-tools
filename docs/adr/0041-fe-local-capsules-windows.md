@@ -597,12 +597,13 @@ FE's client behavior, the unit graph, and the acceptance matrix.
   routes through one `request_quit(reason)`; exit 75, a crash and a
   `--capture` run are excluded by construction. The FE sends `end_run`
   on the supervisor lane and holds its window open in a visible "ending
-  session" state until `record_closed`, on the 90 s availability cutoff.
-  It does NOT wait for `record_verified`: that walk is O(retained
-  history), and its owner is named rather than left implicit — the
-  authority verifies after the leg ends, before answering `end_run` or
-  exiting, and a verify failure is a terminal supervisor state the FE
-  surfaces on its next episode. On expiry the window STAYS UP and says
+  session" state until the `end_run` command reply, which the authority
+  sends at `record_closed`, on the 90 s availability cutoff. It does NOT
+  wait for `record_verified`: that walk is O(retained history) and is
+  reported through `query {operation_id}` afterwards, so a verification
+  failure has somewhere to be reported instead of either blocking the
+  quit or vanishing. A timeout abandons the connection, never the
+  operation. On expiry the window STAYS UP and says
   **"ending the session did not complete — outcome unknown"**: by then
   the job may already be terminated and the capsule mid-seal.
 - **Take-on-first-input is a transaction.** Auto-take on attach stays
@@ -648,9 +649,11 @@ FE's client behavior, the unit graph, and the acceptance matrix.
   actionable error offering retry and reset: a `hello` refusal, a
   FOREIGN or access-denied pipe, an absent or corrupt pointer, an
   operator cancel, and — the case a valid pointer would otherwise retry
-  forever — BOTH the voyage pipe and the supervisor lane absent for
-  150 s, which is how a supervisor's terminal exit 69 becomes visible to
-  a process that cannot see exit codes. Everything else retries. Today's
+  forever — the voyage pipe absent while the supervisor lane is absent
+  OR UNRESPONSIVE (its `status` unanswered within 5 s, since `pipe_win`
+  can keep a name alive over a dead accept path) for 150 s, which is how
+  a supervisor's terminal exit or wedge becomes visible to a process
+  that cannot see exit codes. Everything else retries. Today's
   permanent dead-flag is deleted; each reattach replaces the screen from
   the new checkpoint, never a silent blank swap. The reader's unbounded
   channel becomes BYTE-ACCOUNTED and bounded at 4 MiB — bytes, not
@@ -829,15 +832,84 @@ acquired, cannot be acquired inside a legitimate long hold, and lets
 `reset` run under a live supervisor.
 
 The FE is attach-only and asks; it never acts. Requests reach the
-authority over the **supervisor lane** — a named pipe the supervisor
-serves, reusing `pipe_win`'s server and `wire`'s outer framing with its
-own magic and three lockstep ops: `end_run {reason}`, `reset`, `status`.
-This lane is VERSION-LOCKED TO THE RELEASE, not permanently pinned like
-the capsule's mgmt lane: the upgrade transaction below replaces the FE
-and the supervisor as one image set, so both ends are always the same
-build. When no supervisor is running, `sot-capsule endrun` and
-`sot-capsule reset` acquire the fence and execute the identical code
-path in-process — the degenerate case is the same case.
+authority over the **supervisor lane**, whose whole lifecycle is pinned
+here because "reusing `pipe_win`" carries mechanics, not a contract:
+
+- **Name and identity.** `\\.\pipe\sot-supervisor-<h>`, where `<h>` is a
+  stable hash of the canonicalized state-dir path — the same thing that
+  scopes the pointer and the fence, so two installs on one machine
+  cannot collide and one install cannot address the wrong state.
+- **Security, stated rather than inherited.** The same posture the
+  voyage pipe already proves: an explicit owner-account DACL,
+  `PIPE_REJECT_REMOTE_CLIENTS`, non-inheritable handles, and
+  `FILE_FLAG_FIRST_PIPE_INSTANCE` — a squatter therefore loses the bind
+  loudly instead of silently receiving `end_run` or `reset`.
+- **Lifetime, bracketed by the fence.** Bound only while holding
+  `supervisor.lock`, AFTER the fence and BEFORE any adopt or spawn, and
+  dropped BEFORE the fence releases. So the lane is present exactly when
+  an authority exists, and a failed first-instance bind is terminal
+  (exit 69) rather than a supervisor that runs unreachable.
+- **Liveness, because a present name is not a living service.**
+  `pipe_win` deliberately retains a dead instance and terminalizes
+  acceptance while keeping the name alive, so absence is not the only
+  failure. Every client's first act is a `status` with a 5 s budget; a
+  lane that accepts but does not answer within it is treated exactly as
+  an absent lane. On the server side, a terminal accept failure EXITS
+  the supervisor (69) rather than leaving a misleading live name.
+- **Build boundary.** The first frame of every connection carries the
+  build identity; a mismatch is answered `refused {version_skew}` and
+  closed. File replacement is not process replacement — the launcher is
+  a long-lived process and an old FE can outlive an apply — so the
+  upgrade transaction must quiesce the old FE explicitly (below) AND the
+  lane must reject the pair it did not, rather than decoding an opcode
+  with the wrong shape.
+
+**The lane's operations are one command family and one query family**,
+because the earlier three-op list could not express the semantics that
+depend on it — there was no `stop` despite two flows requiring an
+acknowledged supervisor stop, and no way to answer `end_run` at
+`record_closed` while still reporting a later verification failure.
+
+- `command {op, operation_id}` where `op` ∈ { `end_run {reason}`,
+  `reset`, `stop`, `status` }. `operation_id` is a client-minted UUID
+  and makes every command AT MOST ONCE: the authority keeps a bounded
+  ledger of completed ids, so a retried `reset` whose reply was lost
+  returns the original outcome instead of renaming a pointer twice.
+- `query {operation_id}` returns that operation's current state:
+  `accepted` | `in_progress` | `record_closed` | `record_verified` |
+  `failed {detail}` | `refused {reason}`. This is what resolves the
+  `end_run` timing question: the COMMAND reply arrives at
+  `record_closed`, and `record_verified` is reported through `query` —
+  so the FE never blocks on an O(history) walk, and a verification
+  failure still has a place to be reported rather than vanishing.
+- Every op has one budget: connect 2 s, request write 2 s, reply read
+  5 s, and the client may re-`query` on any timeout. A client timeout
+  ABANDONS THE CONNECTION, NEVER THE OPERATION — accepted intent is the
+  authority's, not the caller's.
+- **Accepted `end_run` and `stop` intent PREEMPTS respawn and outlives
+  the client.** Once accepted, no new leg is spawned whatever happens to
+  the requester. This is what makes a lost reply harmless.
+
+**One authority means one linearized state machine, not one blocking
+thread.** The authority admits, latches and answers on a lane-service
+path that must stay responsive; slow work — an O(history) open, a kill
+and wait, a seal, a `verify_voyage` — is delegated, and only its
+COMPLETION re-enters the ordered state machine under the fence. Without
+that split, `status` cannot distinguish a busy authority from a dead
+one, and an accepted `end_run` could starve behind a 60 s spawn.
+
+**The no-supervisor path is the same TRANSITION, not the same
+CAPABILITIES.** When no supervisor is running, `sot-capsule endrun` and
+`sot-capsule reset` acquire the fence and run the same code — but they
+do not inherit the challenged process handle a live supervisor holds,
+and that handle is what authorizes the invalid-mgmt hard stop. So the
+capability matrix is pinned rather than implied:
+
+| the capsule's mgmt lane | what a no-supervisor caller may do |
+|---|---|
+| healthy | everything: challenge afresh, retain the handle, EndRun, and wait both proofs |
+| proven ABSENT | `reset` only, under the fence and the ABSENT rule |
+| present but invalid | REFUSE LOUDLY, naming the recovery: start a supervisor, or run the explicit recovery procedure. It may never terminate an unauthenticated same-user process, and it may never destroy the pointer while that server lives |
 
 Legs are spawned as CHILD PROCESSES and deliberately NOT placed in the
 supervisor's job: the supervisor dying must be harmless to the run,
@@ -1137,8 +1209,10 @@ from the protocol's caps (`NON_WATCHER_CAP + SUBSCRIBER_CAP`).
 
 `probe`/`status`/`shutdown` ride the pinned v0 mgmt framing — the
 permanently compatible lane; attach-protocol versions negotiate via
-`hello` above it. The supervisor lane is version-locked to the release
-instead, because this transaction replaces both its ends at once.
+`hello` above it. The supervisor lane carries a build identity per
+connection and refuses a mismatched pair; file replacement is not
+process replacement, so step 3 below quiesces the old FE rather than
+assuming the transaction did.
 
 **An upgrade is ONE atomic transaction.** The capsule image IS the
 supervisor image, so no image can be deferred on its own: "no capsule is
@@ -1158,7 +1232,11 @@ running one. The order, and every step's reason:
 2. Wait for `record_verified` AND `image_quiescent`. The record can be
    closed while the image is still open, because `sot-capsule` formats
    its summary and exits after `run` returns.
-3. Stop the supervisor; wait for its process exit and fence release.
+3. Stop the supervisor (lane `stop`, acknowledged); wait for its process
+   exit and fence release. QUIESCE THE OLD FE in the same step — it is a
+   separate long-lived process that a file replacement does not touch,
+   and an old FE reaching a new supervisor is exactly the mixed pair the
+   lane's build check exists to catch rather than to permit.
 4. Apply. 5. Start the supervisor with `--start`, which is what makes
    the fresh leg happen — the requested end just sealed would otherwise
    suppress it.
