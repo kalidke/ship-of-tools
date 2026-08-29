@@ -705,6 +705,32 @@ fn flush_renamed(to: &Path) -> Result<()> {
 /// FAIL_IMMEDIATELY)` on Windows. Released by the kernel when the guard's
 /// handle closes — including on hard kills, with a documented timing
 /// transient on both platforms that the bounded retry absorbs.
+///
+/// SAME-PROCESS SCOPE DIFFERS BY PLATFORM (found via a real windows-latest
+/// CI failure auditing `fence::lock_supervisor`'s own test, ADR 0041 U0
+/// round-3): `flock`'s lock ownership is the OPEN FILE DESCRIPTION, which
+/// Rust's `File::open` mints fresh on every call, so unix enforces mutual
+/// exclusion between two independent opens even from the SAME process —
+/// two threads in one process, each with its OWN handle, correctly
+/// serialize. `LockFileEx`'s exclusivity is NOT documented (and was not
+/// observed) to hold that way: two DIFFERENT handles opened by the SAME
+/// PROCESS, both requesting an exclusive lock on the same file at
+/// genuinely the same instant, can BOTH be granted on Windows — the
+/// mechanism reliably excludes OTHER PROCESSES, not necessarily other
+/// THREADS of the SAME process racing to open+lock concurrently (as
+/// opposed to a lock already held sequentially before a second open is
+/// even attempted, which DOES correctly fail on Windows too — the
+/// difference is specifically about two racing FIRST acquisitions, not a
+/// second acquisition attempted after the first has already succeeded).
+/// This is real for EVERY caller of this type, including the voyage
+/// writer fence itself — but the real topology for both fences is
+/// CROSS-PROCESS (two separate OS processes, e.g. two `sot-capsule`
+/// invocations or two `sot-capsule supervise` instances), where the
+/// kernel-arbitrated guarantee holds on both platforms; only a
+/// same-process, same-instant, MULTI-THREADED race exposes the gap, and
+/// nothing in this crate relies on that shape today. A test proving
+/// mutual exclusion under contention must therefore race real PROCESSES,
+/// not threads, to mean what it claims on Windows.
 pub struct WriterLock {
     #[allow(dead_code)] // held for its Drop (kernel releases the lock)
     file: File,
