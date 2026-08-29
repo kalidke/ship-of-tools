@@ -738,7 +738,9 @@ paths.
 | upgrade | image replacement after both proofs never hits a sharing violation; a first-ever capsule install rolls back by DELETION; a rollback across the feature boundary is REFUSED; each health-table row decides as written, including READY+1 ms death and a lane that wedges after answering once |
 | the lane's own lifecycle | a squatted name loses first-instance bind and exits 69; a present-but-unanswering lane is treated as absent; a mismatched build is refused; a lost `reset` reply retried under the same operation id does not rename twice |
 | every classifier row is REACHABLE | a model test drives one case per row, A4 and A3 included |
-| the supported history envelope | a release-mode cold-history open at the named boundary publishes its measured time and sets the two provisional numbers |
+| the supported history envelope composes | a release-mode cold-history open at the named boundary publishes its measured time, and the gate fails unless `measured × 3` fits readiness and every derived budget is recomputed with it |
+| rollback is safe under a live release | a supervisor-69 rollback with the new FE alive quiesces it first and never touches a locked image; a feature-boundary refusal mutates nothing, keeps the health state and reaches a terminal recovery surface; a pre-reader install cannot activate the writer at all |
+| health is total | exit 75 at the deadline with no live FE ROLLS BACK; `just-applied` is never left armed |
 | teardown composes | worst-case worker fan-out completes inside the 20 s aggregate and the fence is free before the probe episode expires; a probe during the tail, and against four idle mgmt clients, never reaches WEDGED |
 | `fe_down` evidence | baseline captured before this run appends; skipped on a first attach; an append failure is visible |
 
@@ -1256,28 +1258,36 @@ past these points the honest report is "outcome unknown".
 | probe episode        | 60 s wall, attempts 500 ms apart — PROVISIONAL UNTIL MEASURED | covers the visible O(history) window within the supported envelope below |
 | ABSENT separation    | 2 s                  | UI pacing only; proves nothing |
 | readiness cutoff     | 60 s from spawn, then KILL + 10 s wait — PROVISIONAL UNTIL MEASURED | availability cutoff over the O(history) walk |
-| fence acquisition    | 90 s                 | must exceed a legitimate readiness hold plus kill and wait |
-| anti-flap            | 3 consecutive startup OR runtime failures; 60 s post-READY resets | a store that cannot open, and a shell that cannot stay up |
+| fence acquisition    | DERIVED `readiness + kill wait + 20 s` (90 s today) | must exceed a legitimate readiness hold plus kill and wait |
+| anti-flap            | 3 consecutive startup OR runtime failures; STABILITY INTERVAL post-READY resets (60 s today, tracks readiness) | a store that cannot open, and a shell that cannot stay up |
 | launcher restart     | ≤ 5 in 60 s, on the shipped 1/3/7/15/30 s sequence | a crash-looping supervisor |
-| FE quit              | 90 s → "outcome unknown" | availability cutoff |
+| FE quit              | DERIVED `fence acquisition` (90 s today) → "outcome unknown" | availability cutoff; a quit may have to wait out one legitimate fence hold |
 | mgmt idle            | 5 s                  | pool squatting |
 | teardown aggregate   | 20 s TOTAL after the name is gone, one absolute deadline shared by every join | loud on expiry |
 | ack grace            | 2 s                  | a final-poll request still gets its ack |
 
 The two PROVISIONAL numbers are provisional in a specific, closeable
-sense: 60 s is where the authority gives up, and whether it is generous
-or cruel depends on a `open_for_writing` cost the ADR may not assert
-without evidence. So the SUPPORTED ENVELOPE is named and gated. Claimed:
-**release build, ≤ 2 GiB retained across ≤ 64 segments, ≤ 100 000
-retained input facts, on the two-core Windows CI runner class, cold
-cache, with the default AV posture.** A release-mode cold-history test
-at exactly that boundary is a CI EVIDENCE GATE: it publishes the
-measured time, and the two numbers above are whatever that measurement
-plus a 3× margin requires — the ADR pins the METHOD and the envelope,
-and the first green run pins the values. Beyond the envelope the honest
-answer is rotation, not a larger constant; `open_for_writing`'s
-quadratic identity collection is a known cost inside it and is fixed or
-measured, not assumed away.
+sense: 60 s is where the authority gives up, and whether that is
+generous or cruel depends on an `open_for_writing` cost the ADR may not
+assert without evidence. So the SUPPORTED ENVELOPE is named and gated.
+Claimed: **release build, ≤ 2 GiB retained across ≤ 64 segments,
+≤ 100 000 retained input facts, on the two-core Windows CI runner class,
+cold cache, with the default AV posture.** A release-mode test at
+exactly that boundary is a CI EVIDENCE GATE — and it is a COMPOSITION
+gate, not merely a number publisher, because four other budgets are
+DERIVED from these two: readiness sets fence acquisition, which sets the
+FE quit cutoff; readiness plus the stability interval sets the health
+window. The gate is green only if `measured × 3` fits the chosen
+readiness value AND every derived budget is recomputed from it in the
+same change. If the measurement does not fit, the envelope shrinks or
+`open_for_writing` gets faster — its quadratic identity collection is a
+known cost inside the envelope and is fixed or measured, never assumed
+away — and beyond the envelope the answer is rotation, not a larger
+constant. Cold cache is ESTABLISHED, not hoped for: the test writes the
+boundary voyage, drops it from the OS cache (a fresh process on a volume
+whose working set has been evicted, asserted rather than assumed), and
+only then measures the open, so it cannot accidentally time
+just-generated hot files.
 
 The teardown aggregate replaces a per-thread bound that could not
 compose. "5 s each" over an acceptor, a reaper, up to sixteen connection
@@ -1345,30 +1355,46 @@ The consequence is stated rather than hidden: UPGRADING ENDS THE RUN, on
 purpose, once, at a moment the operator chose. The voyage and the
 session persist; it is a leg that ends.
 
-Rollback is ABSENCE-AWARE and FEATURE-AWARE. The applier today saves and
-restores two binaries and leaves a file alone when it has no `.prev`, so
-the first release introducing the capsule would, on a later failure,
-restore the two old images and leave the new one — the mixed release
-this section forbids. Transaction metadata records prior ABSENCE,
-restore DELETES new-only files, and required-file verification is
-all-or-nothing. Rollback across a REQUIRED-FEATURE boundary is refused
-rather than attempted: once a capsule has opened a segment declaring
-`sot.capsule.run-end-requested-v1`, restoring a binary that predates the
-reader release would leave a correctly fail-closed verifier unable to
-reopen the drawer's voyage. The two-phase rollout above is what keeps
-one rollback hop always available; the applier checks the boundary and
-refuses loudly instead of producing an unreadable install.
+Rollback is ABSENCE-AWARE, FEATURE-AWARE, and ITS OWN QUIESCENT
+TRANSACTION. The applier today saves and restores two binaries and
+leaves a file alone when it has no `.prev`, so the first release
+introducing the capsule would, on a later failure, restore the two old
+images and leave the new one — the mixed release this section forbids.
+Transaction metadata records prior ABSENCE and restore DELETES new-only
+files. But absence-awareness alone is not enough, because a health
+rollback runs while the NEW release is live, and a forward apply is
+allowed to assume nothing is:
+
+1. Latch no-respawn, then quiesce the new FE — its image is locked while
+   it runs, and the forward path's "applier runs before anything is
+   spawned" assumption does not hold here.
+2. Stop or end the new supervisor and capsule under the SAME capability
+   matrix the no-supervisor callers use; prove every release image
+   quiescent and the fence free.
+3. Only then restore, all-or-nothing, with required-file verification.
+
+A feature-boundary refusal is a TYPED MACHINE RESULT that performs ZERO
+MUTATION, retains the health and diagnostic state, and sends the
+launcher to a terminal recovery surface — never "rollback complete" via
+a universal exit 0, which would clear the marker and relaunch the broken
+bits. And the reader hop must be REAL, not merely published: release
+discovery jumps to the newest release, so a machine on a pre-reader
+release can skip the reader release entirely and land on the writer,
+whose first segment is unreadable by the only target it could roll back
+to. So transaction metadata records the INSTALLED target's reader
+feature set, and the writer's activation is GATED ON THAT INSTALLED
+CAPABILITY: a capsule may not open a feature-bearing segment until the
+recorded rollback target can read one. Publication adjacency is not
+installation history.
 
 First-boot health cannot stay FE-only: a supervisor that exits terminal
 or crash-loops while the FE stays up would never trip it. Nor may it
 COMMIT at first READY, which this ADR itself calls insufficient — a leg
 that dies one millisecond after answering one status challenge is a
-RUNTIME failure by the anti-flap rule, and committing before that
-interval blesses a release the same document condemns. So the window is
-150 s from apply and the arithmetic is stated: a healthy first attempt
-needs at most the 60 s readiness cutoff plus the 60 s post-READY
-stability interval, which fits with 30 s to spare. ANY rollback
-observation before commit WINS, whenever it occurs in the window:
+RUNTIME failure by the anti-flap rule. So the window is `readiness +
+stability + 30 s` from apply (150 s at today's provisional values, and
+RE-DERIVED WITH THEM), and any rollback observation before commit WINS,
+whenever it occurs:
 
 | observation within the window        | decision       |
 |--------------------------------------|----------------|
@@ -1376,7 +1402,13 @@ observation before commit WINS, whenever it occurs in the window:
 | supervisor exits 69, or crashes past its restart budget | ROLL BACK |
 | supervisor never reaches READY (spawned or adopted) | ROLL BACK |
 | FE exits 75                          | not a health signal; the window continues across the relaunch |
-| FE alive AND supervisor lane answering with the expected build AND the leg READY AND STILL HEALTHY 60 s PAST READY | COMMIT |
+| FE alive AND supervisor lane answering with the expected build AND the leg READY AND STILL HEALTHY for the stability interval | COMMIT |
+| the window EXPIRES with no COMMIT — including an exit-75 FE still relaunching at the deadline | ROLL BACK, subject to the typed refusal above |
+
+The last row is what makes the window absolute rather than extensible: a
+relaunch that has not produced a live FE by the deadline is
+indistinguishable from one that never will, and leaving `just-applied`
+armed forever is the failure mode a total table exists to prevent.
 
 Archive membership — the capsule in the artifact, the manifest, the
 required-file list, and a `--version` line in the shape the smoke job
