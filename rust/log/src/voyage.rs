@@ -383,6 +383,21 @@ impl VoyageStore {
         Self::open_for_writing_with_lease(root, voyage_id, None)
     }
 
+    /// LAUNCHING-side preparation (ADR 0041 Codex round-1, Major 5
+    /// discharge): resolves `root` to its canonical, symlink-free absolute
+    /// path — exactly the FIRST thing this store used to do internally on
+    /// every open, now split out so a spawning authority (U2's supervisor)
+    /// can perform this UNBOUNDED-COST resolution itself, BEFORE
+    /// `CreateProcess`, and pass the already-canonical result to the
+    /// child. That is what actually bounds the child's own invisible
+    /// window (`CreateProcess` -> fence acquisition) to "open + try_lock"
+    /// alone — see [`Self::open_prepared`]'s own doc for the child-side
+    /// half of this split. Requires `root` to already exist (every
+    /// in-tree caller follows `bootstrap`, or its own exists-check).
+    pub fn prepare_root(root: &Path) -> Result<PathBuf> {
+        Ok(std::fs::canonicalize(root)?)
+    }
+
     /// As [`Self::open_for_writing`], with the ADR 0041 Lifecycle
     /// "Discovery, and the two windows" parent-death lease check folded in:
     /// `lease_broken`, if supplied, is called EXACTLY ONCE, immediately
@@ -397,56 +412,57 @@ impl VoyageStore {
     /// is already released by the time this returns, and the caller must
     /// exit without binding — never retry, never repair.
     ///
-    /// **Order, and why it changed (U1a):** canonicalize → LOCK (the
-    /// fence) → the lease check → volume preflight → the two directory
-    /// flushes → history traversal (enumerate/reconcile every segment
-    /// identity, fold the dedupe index). Before U1a, preflight and both
-    /// flushes ran BEFORE the fence — real durability I/O with no bound,
-    /// inflating the spawned child's INVISIBLE window (`CreateProcess` →
-    /// fence acquisition) past "process start plus an open and a
-    /// `try_lock`" for no protective reason, since none of that I/O
-    /// needs to precede the fence for correctness. Canonicalize itself
-    /// still precedes the lock — that ordering is a SEPARATE invariant
-    /// (the symlink-retarget escape below) unrelated to the window this
-    /// unit closes, and moving it would reopen that escape instead.
+    /// A thin WRAPPER composing [`Self::prepare_root`] then
+    /// [`Self::open_prepared`] in one call, for every single-process
+    /// caller today — their end-to-end behavior and operation order are
+    /// UNCHANGED by the split below (ADR 0041 Codex round-1, Major 5:
+    /// "today's single-process callers keep working via a wrapper that
+    /// prepares-then-opens").
     pub fn open_for_writing_with_lease(
         root: &Path,
         voyage_id: &str,
         lease_broken: Option<&dyn Fn() -> bool>,
     ) -> Result<Self> {
-        // Canonicalize FIRST — before the lock, before preflight, before
-        // anchoring — and use the resolved path for everything after,
-        // including what `self.root` stores. The order is load-bearing:
-        // locking or fsyncing the UNRESOLVED path and canonicalizing only
-        // afterward leaves exactly the window a demonstrated escape used —
-        // bootstrap A and B, point a symlink `alias` at A, open via `alias`
-        // (the lock and the reconciliation below land on A), then retarget
-        // `alias` -> B: a writer that kept re-resolving the unresolved
-        // `alias` STRING at each later syscall would still hold A's lock
-        // but write `open_segment`'s next segment into B, because the OS
-        // re-follows the symlink fresh on every call. Canonicalizing once,
-        // here, and storing the result closes it — `self.root` is never a
-        // symlink afterward, so a later retarget has nothing left in this
-        // store to redirect. This is independent of, and precedes, U1a's
-        // own reordering below: the escape this closes is about what a
-        // symlink resolves to on EACH call, not about I/O volume ahead of
-        // the fence.
-        //
-        // No in-tree caller passes a nonexistent root (every call follows
-        // `bootstrap`, or the caller's own exists-check already ran), so
-        // requiring existence here is safe.
-        //
-        // (This is the OWNER'S OWN root symlink, retargeted after this
-        // writer already opened it — not the ancestor-junction-retargeted-
-        // by-another-PRINCIPAL case the note below excludes: the voyage
-        // container's ancestors are owner-controlled and the ADR's DACL
-        // step protects that subtree, but that scope was never meant to
-        // cover the root's own alias, which is what canonicalizing here
-        // closes.)
-        let root = std::fs::canonicalize(root)?;
-        let root = root.as_path();
+        let canonical_root = Self::prepare_root(root)?;
+        Self::open_prepared(&canonical_root, voyage_id, lease_broken)
+    }
 
-        // U1a: the fence, moved ahead of preflight/fsync/history — see this
+    /// The CHILD-side entry point (ADR 0041 Codex round-1, Major 5
+    /// discharge): `canonical_root` MUST already be the resolved,
+    /// symlink-free path [`Self::prepare_root`] returns — the launching
+    /// authority's own job, done BEFORE spawning this process. Performs
+    /// ONLY: open the writer.lock file + `try_lock` (the fence) -> the
+    /// lease check -> a CHEAP re-canonicalize proving the path has not
+    /// been retargeted since preparation (safe to run only NOW, since it
+    /// executes UNDER the fence, in the ADR's own VISIBLE window — a probe
+    /// can see this, unlike the invisible one before the fence) -> volume
+    /// preflight -> the two directory flushes -> history traversal
+    /// (enumerate/reconcile every segment identity, fold the dedupe
+    /// index). [`Self::open_for_writing_with_lease`] is the WRAPPER every
+    /// single-process caller uses today, composing [`Self::prepare_root`]
+    /// with this in one call — their end-to-end order is unchanged.
+    ///
+    /// **Why this is safe despite skipping the canonicalize-before-lock
+    /// step:** the symlink-retarget escape that step closes is about
+    /// re-resolving an alias STRING on every later syscall; `canonical_root`
+    /// here is never an alias to begin with (by construction — it is
+    /// `prepare_root`'s OWN resolved output), and this function never
+    /// re-derives a path from anything else, so nothing here can rediscover
+    /// a symlink to follow. The re-canonicalize check below is a SEPARATE,
+    /// additional defense: it catches the rarer case of the resolved path
+    /// ITSELF being replaced (its directory entry removed and recreated as
+    /// a symlink/reparse point) in the gap between preparation and this
+    /// process acquiring the fence — proving the once-resolved path still
+    /// resolves to itself, rather than assuming preparation and acquisition
+    /// happening in different processes changes nothing in between.
+    pub fn open_prepared(
+        canonical_root: &Path,
+        voyage_id: &str,
+        lease_broken: Option<&dyn Fn() -> bool>,
+    ) -> Result<Self> {
+        let root = canonical_root;
+
+        // U1a: the fence, ahead of preflight/fsync/history — see this
         // method's own doc for why. `lock_writer` itself does no directory
         // enumeration or unbounded I/O: open-existing plus one bounded
         // `try_lock` retry (ADR 0041 store port), exactly the primitive the
@@ -459,6 +475,18 @@ impl VoyageStore {
         // touches the segment directory.
         if lease_broken.is_some_and(|f| f()) {
             return Err(Error::LeaseBroken);
+        }
+
+        // Major 5's own re-verification: re-resolving `root` must yield
+        // the SAME path — proving no retarget slipped in between
+        // preparation and this process acquiring the fence. Cheap (path
+        // depth only, not O(history)) and now safely inside the fence, so
+        // it costs nothing toward the invisible window this split exists
+        // to bound.
+        if std::fs::canonicalize(root)?.as_path() != root {
+            return Err(Error::State(
+                "voyage root was retargeted between preparation and fence acquisition".into(),
+            ));
         }
 
         // Re-run the volume preflight on the resolved voyage dir (ADR 0041):
@@ -1195,6 +1223,37 @@ mod tests {
         );
     }
 
+    /// U1a Codex round-1, minor cluster: the EARLIER lease tests prove
+    /// error ORDERING (lease-broken beats history corruption) and
+    /// post-release availability, but neither actually proves the
+    /// callback runs WHILE the fence is held — it could, in principle, run
+    /// after `open_for_writing_with_lease` released it and still pass
+    /// those tests. This one proves it directly: the callback ITSELF
+    /// attempts a second concurrent open on the SAME root and must observe
+    /// lock contention, then reports the lease as intact so the OUTER open
+    /// still succeeds — proving both that the fence was genuinely held
+    /// at the moment of the call, and that the overall function still
+    /// works end to end once the callback returns.
+    #[test]
+    fn lease_callback_runs_while_the_fence_is_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voyleasefence");
+        VoyageStore::bootstrap(&root, "voyleasefence", RetentionClass::Discard).unwrap();
+
+        let root_for_probe = root.clone();
+        let probe = move || {
+            let second = VoyageStore::open_for_writing(&root_for_probe, "voyleasefence");
+            assert!(
+                matches!(second, Err(Error::State(_))),
+                "the fence must still be held while the lease callback runs: {:?}",
+                second.err()
+            );
+            false // lease intact -- let the outer open proceed
+        };
+        let store = VoyageStore::open_for_writing_with_lease(&root, "voyleasefence", Some(&probe));
+        assert!(store.is_ok(), "{:?}", store.err());
+    }
+
     /// A lease supplied but reporting itself intact is a pure no-op —
     /// `open_for_writing_with_lease(..., Some(&|| false))` must behave
     /// identically to `open_for_writing`'s own no-lease default.
@@ -1305,6 +1364,60 @@ mod tests {
         };
         assert!(has_sealed(&a), "writer must operate on A, resolved at open time");
         assert!(!has_sealed(&b), "writer must NOT follow a post-open retarget into B");
+    }
+
+    /// ADR 0041 Codex round-1, Major 5 discharge: `prepare_root` +
+    /// `open_prepared` composed manually (the SAME composition
+    /// `open_for_writing` performs internally) reproduces an ordinary
+    /// open end to end — proving the split itself changes nothing
+    /// observable for a caller that performs both halves itself.
+    #[test]
+    fn prepare_root_then_open_prepared_reproduces_an_ordinary_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voysplit");
+        VoyageStore::bootstrap(&root, "voysplit", RetentionClass::Discard).unwrap();
+
+        let canonical = VoyageStore::prepare_root(&root).unwrap();
+        assert_eq!(canonical, std::fs::canonicalize(&root).unwrap());
+
+        let mut store = VoyageStore::open_prepared(&canonical, "voysplit", None).unwrap();
+        let mut w = store.open_segment(0).unwrap();
+        w.append(&lc(1, 1), Commit::Immediate).unwrap();
+        w.seal(None).unwrap();
+        crate::verify::verify_voyage(&root, "voysplit").unwrap();
+    }
+
+    /// ADR 0041 Codex round-1, Major 5 discharge: the cheap re-canonicalize
+    /// `open_prepared` runs under the fence catches the resolved path
+    /// ITSELF being retargeted (its directory entry removed and replaced
+    /// by a symlink) in the gap between `prepare_root` and this process
+    /// acquiring the fence — the scenario the split's own safety
+    /// reasoning depends on, distinct from `root_alias_cannot_escape_
+    /// fence_after_open` above (which retargets an ALIAS TO the resolved
+    /// path, never the resolved path itself, and so never triggers this
+    /// check at all).
+    #[test]
+    #[cfg(unix)]
+    fn open_prepared_refuses_when_the_canonical_root_itself_is_retargeted_before_the_fence() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        VoyageStore::bootstrap(&a, "voy", RetentionClass::Discard).unwrap();
+        VoyageStore::bootstrap(&b, "voy", RetentionClass::Discard).unwrap();
+
+        let prepared = VoyageStore::prepare_root(&a).unwrap();
+
+        // Retarget the PREPARED PATH ITSELF (not merely an alias to it) --
+        // A's own directory entry now resolves into B.
+        std::fs::remove_dir_all(&a).unwrap();
+        std::os::unix::fs::symlink(&b, &a).unwrap();
+
+        let result = VoyageStore::open_prepared(&prepared, "voy", None);
+        assert!(
+            matches!(result, Err(Error::State(_))),
+            "open_prepared must refuse when the prepared path resolves differently under the fence: {:?}",
+            result.err()
+        );
     }
 
     /// Part 3 finding: the CAS `dest.exists()` replay path must restate the
