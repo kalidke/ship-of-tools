@@ -3,7 +3,7 @@
 //! Windows arms (ADR 0041 §store port); the codec itself is portable.
 
 use crate::envelope::{Digest, InputFactKind, Seq};
-use crate::fsutil::{self, DirIdentity, WriterLock};
+use crate::fsutil::{self, DirIdentity, PinnedDir, WriterLock};
 use crate::recovery::{self, Reconciled};
 use crate::segment::{
     HeaderBody, RetentionClass, SegmentIdentity, SegmentReader, SegmentState, SegmentWriter,
@@ -232,6 +232,14 @@ pub struct VoyageStore {
     root: PathBuf,
     voyage_id: String,
     _lock: WriterLock,
+    /// ADR 0041 Codex round-2b: held for the STORE's whole open lifetime,
+    /// not merely through `open_prepared`'s own return — on Windows this
+    /// is what keeps the root's rename/delete refused at the OS level for
+    /// as long as the store stays open (see `PinnedDir`'s own doc); on
+    /// every other platform it keeps the `/proc/self/fd` alias (or,
+    /// where neither applies, simply the handle) alive.
+    #[allow(dead_code)] // held for its Drop (releases the pin)
+    _root_pin: PinnedDir,
     /// The epoch THIS writer allocated at open.
     pub epoch: u64,
     /// Chain state after reconciliation: last sealed digest + next index.
@@ -459,84 +467,93 @@ impl VoyageStore {
     }
 
     /// The CHILD-side entry point (ADR 0041 Codex round-1 Major 5 / round-2
-    /// discharge): `prepared` MUST be exactly what [`Self::prepare_root`]
-    /// returned — the launching authority's own job, done BEFORE spawning
-    /// this process. Performs ONLY: open the writer.lock file + `try_lock`
-    /// (the fence) -> the lease check -> a CHEAP kernel-identity
-    /// verification proving the directory this process actually opened is
-    /// the SAME OBJECT `prepare_root` recorded, not merely a path that
-    /// still reads the same (safe to run only NOW, since it executes
-    /// UNDER the fence, in the ADR's own VISIBLE window — a probe can see
-    /// this, unlike the invisible one before the fence) -> volume
+    /// / round-2b discharge): `prepared` MUST be exactly what
+    /// [`Self::prepare_root`] returned — the launching authority's own
+    /// job, done BEFORE spawning this process. Performs, IN ORDER: open
+    /// and PIN the prepared directory (before anything else — the pin
+    /// itself is the first thing acquired) -> verify the pin's kernel
+    /// identity against the token -> the writer-lock open + `try_lock`
+    /// (the fence), taken THROUGH the pin -> the lease check -> volume
     /// preflight -> the two directory flushes -> history traversal
     /// (enumerate/reconcile every segment identity, fold the dedupe
-    /// index). [`Self::open_for_writing_with_lease`] is the WRAPPER every
-    /// single-process caller uses today, composing [`Self::prepare_root`]
-    /// with this in one call — their end-to-end order is unchanged.
+    /// index), ALSO through the pin. [`Self::open_for_writing_with_lease`]
+    /// is the WRAPPER every single-process caller uses today, composing
+    /// [`Self::prepare_root`] with this in one call — their end-to-end
+    /// order is unchanged.
     ///
-    /// **Why identity, not a path-text re-canonicalize (Codex round-2):**
-    /// an earlier version of this check re-`canonicalize`d the path and
-    /// compared STRINGS — which only ever catches a NEW symlink/reparse
-    /// point appearing at this exact path; a live reproducer proved it
-    /// blind to the actual reported threat, a same-pathname directory-entry
-    /// REPLACEMENT (bootstrap two stores, `prepare_root` one, rename it
-    /// aside and rename the other into its place — the canonicalized
-    /// string is identical before and after, because canonicalization only
-    /// follows symlinks and a plain `rename()` swap involves none).
-    /// [`DirIdentity`] — `(st_dev, st_ino)` on unix, `(volume serial, file
-    /// index)` on Windows, read off the HANDLE this function itself opens,
-    /// never a second stat-by-path — subsumes the symlink case too (a
-    /// reparse point planted at this path resolves to a DIFFERENT
-    /// identity, exactly like the swap does), so nothing of the old
-    /// path-text check needs to survive alongside it: identity is a
-    /// strictly stronger statement of the same "is this still what I
-    /// prepared" question, and keeping both would only restate the weaker
-    /// one for no additional coverage.
+    /// **Why the pin, and not merely a one-time identity check (Codex
+    /// round-2b):** round-2's fix verified identity once, via a transient
+    /// open, and then proceeded to re-open by PATH for everything after —
+    /// the writer lock, preflight, both flushes, the segment directory
+    /// enumeration. A live repro proved the gap that leaves: a tight
+    /// `RENAME_EXCHANGE` loop against the prepared root let a store open
+    /// with a REPLACEMENT's `retention_class`, because a swap landing
+    /// AFTER the (correct, at the time) identity check but BEFORE (or
+    /// between) those later path-based opens redirects every one of them
+    /// exactly as easily as it would have redirected the check itself —
+    /// checking the path and then TRUSTING it for everything afterward is
+    /// still a check-then-use gap, merely a narrower one. Pinning closes
+    /// it structurally: every operation below resolves through the SAME
+    /// held object (`PinnedDir::pinned_path`), never by re-deriving a path
+    /// from the original argument again, so there is no LATER re-open left
+    /// for a swap to land in front of. See [`fsutil::PinnedDir`]'s own doc
+    /// for the per-platform mechanism (Windows: the OS itself refuses the
+    /// rename/exchange while the handle is held; Linux: the
+    /// `/proc/self/fd` alias is immune to one regardless).
     ///
-    /// This is also why `canonical_root` being a non-alias path (by
-    /// construction — `prepare_root`'s own resolved output, never
-    /// re-derived from anything else here) is not, on its own, a complete
-    /// safety argument: it rules out re-following a stale ALIAS string,
-    /// but says nothing about the OBJECT at that fixed string being
-    /// swapped out from under it, which is exactly what the identity check
-    /// now closes.
+    /// The identity check itself is UNCHANGED in spirit from round 2 —
+    /// [`DirIdentity`] still subsumes the symlink-retarget case a
+    /// path-text comparison alone could not — only WHERE it reads from
+    /// changes: off the pin's own handle, not a second transient open.
+    ///
+    /// `fsync_dir(parent)` is the one exception that stays on the REAL
+    /// path: it flushes the root's PARENT directory (anchoring the root's
+    /// own directory entry within it), a different object the pin was
+    /// never opened on and has no fd-relative alias for — and it is not
+    /// what the reported race targets (the swap replaces the ROOT's
+    /// identity at a fixed pathname; the parent itself is untouched).
     pub fn open_prepared(
         prepared: &PreparedRoot,
         voyage_id: &str,
         lease_broken: Option<&dyn Fn() -> bool>,
     ) -> Result<Self> {
-        let root = prepared.path.as_path();
+        // The pin: the FIRST thing acquired, before the fence, before the
+        // lease check, before any other I/O -- everything below flows
+        // from it (Codex round-2b).
+        let pin = PinnedDir::open(&prepared.path)?;
 
-        // U1a: the fence, ahead of preflight/fsync/history — see this
-        // method's own doc for why. `lock_writer` itself does no directory
-        // enumeration or unbounded I/O: open-existing plus one bounded
-        // `try_lock` retry (ADR 0041 store port), exactly the primitive the
-        // spawned child's INVISIBLE window is defined in terms of.
+        // Verify-on-the-handle, not re-stat-by-path -- `pin.identity()`
+        // reads off the SAME handle the pin holds, so nothing can slip
+        // between this check and the pin's own opening the way a second,
+        // independent stat-by-path call could. Cheap (one metadata call,
+        // not O(history)) and safely inside the pin's own protection, so
+        // it costs nothing toward the invisible window this split exists
+        // to bound.
+        if pin.identity()? != prepared.identity {
+            return Err(Error::State(format!(
+                "voyage root {:?} does not match its prepared kernel identity -- \
+                 the directory at this path was replaced (a rename-swap or a retarget) \
+                 between preparation and fence acquisition",
+                prepared.path
+            )));
+        }
+        let root = pin.pinned_path();
+
+        // U1a: the fence, ahead of preflight/fsync/history, and now taken
+        // THROUGH the pin -- see this method's own doc for why.
+        // `lock_writer` itself does no directory enumeration or unbounded
+        // I/O: open-existing plus one bounded `try_lock` retry (ADR 0041
+        // store port), exactly the primitive the spawned child's
+        // INVISIBLE window is defined in terms of.
         let lock = fsutil::lock_writer(&root.join("writer.lock"))?;
 
         // The lease check: the fence's FIRST act, before any other durable
         // I/O or history traversal. `lock` (and the fence it holds) drops
         // here on the early return, releasing it before this function ever
-        // touches the segment directory.
+        // touches the segment directory; `pin` drops too, releasing the
+        // pin.
         if lease_broken.is_some_and(|f| f()) {
             return Err(Error::LeaseBroken);
-        }
-
-        // Codex round-2: verify-on-the-handle, not re-stat-by-path --
-        // `dir_identity` OPENS `root` itself and reads the identity off
-        // THAT handle (fstat/GetFileInformationByHandle), so nothing can
-        // slip between this check and the opens immediately below it the
-        // way a second, independent stat-by-path call could. Cheap (one
-        // open plus one metadata call, not O(history)) and now safely
-        // inside the fence, so it costs nothing toward the invisible
-        // window this split exists to bound.
-        let observed = fsutil::dir_identity(root)?;
-        if observed != prepared.identity {
-            return Err(Error::State(format!(
-                "voyage root {root:?} does not match its prepared kernel identity -- \
-                 the directory at this path was replaced (a rename-swap or a retarget) \
-                 between preparation and fence acquisition"
-            )));
         }
 
         // Re-run the volume preflight on the resolved voyage dir (ADR 0041):
@@ -553,7 +570,9 @@ impl VoyageStore {
         // no separate call is needed there — every open already re-flushes
         // root plus its parent, unconditionally, before anything else.)
         fsutil::fsync_dir(root)?;
-        if let Some(parent) = root.parent() {
+        // The one exception that stays on the REAL path -- see this
+        // method's own doc.
+        if let Some(parent) = prepared.path.parent() {
             fsutil::fsync_dir(parent)?;
         }
         let seg_dir = root.join("seg");
@@ -634,10 +653,18 @@ impl VoyageStore {
             }
         }
 
+        // `root` (borrowed from `pin`) is done being read here -- capture
+        // it as an owned path BEFORE moving `pin` itself into the
+        // returned store, so the pin's own protection covers every LATER
+        // self.root-based operation (open_segment, publish_blob, ...) for
+        // the store's whole remaining lifetime, on the same terms as
+        // everything open_prepared itself just did.
+        let root_owned = root.to_path_buf();
         Ok(Self {
-            root: root.to_path_buf(),
+            root: root_owned,
             voyage_id: voyage_id.to_string(),
             _lock: lock,
+            _root_pin: pin,
             epoch: my_epoch,
             prev_seal_digest: prev,
             next_segment_index: next_index,
@@ -1520,6 +1547,116 @@ mod tests {
         let prepared = VoyageStore::prepare_root(&root).unwrap();
         let store = VoyageStore::open_prepared(&prepared, "voyintact", None);
         assert!(store.is_ok(), "{:?}", store.err());
+    }
+
+    /// ADR 0041 Codex round-2b: the reported gap, reproduced. A live repro
+    /// proved round-2's check-once-then-reopen-by-path design blind to an
+    /// ONGOING `RENAME_EXCHANGE` storm: it verified identity once, via a
+    /// transient open, then re-opened by PATH for the writer lock,
+    /// preflight, both flushes, and the segment directory -- any of which
+    /// a swap landing AFTER the check could still redirect. `seed_segments`
+    /// gives A and B a RELIABLE discriminator (`next_segment_index`, a
+    /// `pub` field on `VoyageStore`) -- NOT `retention_class`, which the
+    /// original repro used: `VoyageStore::bootstrap`'s own `retention`
+    /// parameter is not yet threaded into a fresh voyage's genesis segment
+    /// (a separate, pre-existing gap, unrelated to this fix -- see that
+    /// function's own `let _ = (voyage_id, retention)`), so EVERY freshly
+    /// opened store defaults to `RetentionClass::Archive` regardless of
+    /// what `bootstrap` was asked for, making that field unable to tell
+    /// the two stores apart at all.
+    ///
+    /// Bounded runtime (a fixed WALL-CLOCK window, not a fixed iteration
+    /// count like the original repro's `0..20_000`): the storm keeps
+    /// racing for 1.5s. This value is empirically motivated, not a round
+    /// guess: reverting this fix and running this exact test against the
+    /// resulting (round-2) code, a 300ms window was NOT reliably long
+    /// enough to observe the wrong-store open at all on this development
+    /// machine, while 3s reliably was — 1.5s is a deliberately generous
+    /// middle ground so this test would actually CATCH a reintroduced
+    /// version of the bug, not merely fail to prove one that happens to
+    /// dodge a too-short window.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn open_prepared_refuses_under_a_sustained_rename_exchange_storm() {
+        fn seed_segments(root: &Path, count: u64) {
+            VoyageStore::bootstrap(root, "voy", RetentionClass::Discard).unwrap();
+            let mut store = VoyageStore::open_for_writing(root, "voy").unwrap();
+            for _ in 0..count {
+                let w = store.open_segment(0).unwrap();
+                let digest = w.seal(None).unwrap();
+                store.advance_chain(digest);
+            }
+        }
+
+        // `renameat2(RENAME_EXCHANGE)`: atomically swaps what `a` and `b`
+        // each name, over and over -- the exact primitive the reported
+        // repro used.
+        fn exchange(a: &Path, b: &Path) -> std::io::Result<()> {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+            let a = CString::new(a.as_os_str().as_bytes()).unwrap();
+            let b = CString::new(b.as_os_str().as_bytes()).unwrap();
+            let rc = unsafe {
+                libc::syscall(
+                    libc::SYS_renameat2,
+                    libc::AT_FDCWD,
+                    a.as_ptr(),
+                    libc::AT_FDCWD,
+                    b.as_ptr(),
+                    libc::RENAME_EXCHANGE,
+                )
+            };
+            if rc == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        seed_segments(&a, 1);
+        seed_segments(&b, 3);
+        let prepared = VoyageStore::prepare_root(&a).unwrap();
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_stop = std::sync::Arc::clone(&stop);
+        let (thread_a, thread_b) = (a.clone(), b.clone());
+        let swapper = std::thread::spawn(move || {
+            while !thread_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = exchange(&thread_a, &thread_b);
+            }
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+        let mut attempts: u32 = 0;
+        let mut refusals: u32 = 0;
+        let mut wrong_store_opened = false;
+        while std::time::Instant::now() < deadline {
+            attempts += 1;
+            match VoyageStore::open_prepared(&prepared, "voy", None) {
+                Ok(store) if store.next_segment_index != 1 => {
+                    wrong_store_opened = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => refusals += 1,
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        swapper.join().unwrap();
+
+        assert!(
+            !wrong_store_opened,
+            "open_prepared must never succeed with the replacement store's history"
+        );
+        assert!(attempts > 0, "the storm loop never even ran once");
+        assert!(
+            refusals > 0,
+            "the storm never actually raced the check within {attempts} attempts -- \
+             widen the window or the loop is not exercising the race at all"
+        );
     }
 
     /// Part 3 finding: the CAS `dest.exists()` replay path must restate the

@@ -6,7 +6,7 @@
 
 use crate::{Error, Result};
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Bounded-retry deadline shared by every transient-absorbing loop here:
 /// long enough to outlive an AV/indexer hold or a just-released kernel
@@ -96,26 +96,25 @@ pub struct DirIdentity {
     file_index: u64,
 }
 
-/// Capture `dir`'s kernel identity by OPENING it and reading the identity
-/// off the resulting HANDLE (`fstat`/`GetFileInformationByHandle` — the
-/// object actually opened), never by a second, independent stat-by-path
-/// call, which would just reintroduce the same TOCTOU a path-only check
-/// cannot close.
+/// Read `f`'s kernel identity off the HANDLE ITSELF
+/// (`fstat`/`GetFileInformationByHandle`) — never by a second,
+/// independent stat-by-path call, which would just reintroduce the same
+/// TOCTOU a path-only check cannot close. Shared by [`dir_identity`]
+/// (opens a transient handle, for `prepare_root`'s one-shot snapshot) and
+/// [`PinnedDir::identity`] (reads the SAME handle the pin itself holds).
 #[cfg(unix)]
-pub fn dir_identity(dir: &Path) -> Result<DirIdentity> {
+fn identity_of_open_handle(f: &File) -> Result<DirIdentity> {
     use std::os::unix::fs::MetadataExt;
-    let f = File::open(dir)?;
     let m = f.metadata()?; // fstat on the OPEN fd, not stat(2) on the path
     Ok(DirIdentity { dev: m.dev(), ino: m.ino() })
 }
 
 #[cfg(windows)]
-pub fn dir_identity(dir: &Path) -> Result<DirIdentity> {
+fn identity_of_open_handle(f: &File) -> Result<DirIdentity> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
     };
-    let f = open_dir_handle(dir)?;
     // SAFETY: `info` is a stack-local out-param, valid to write into
     // regardless of the call's outcome; `f`'s handle stays open (and thus
     // valid) for the whole call.
@@ -123,13 +122,146 @@ pub fn dir_identity(dir: &Path) -> Result<DirIdentity> {
     let ok = unsafe { GetFileInformationByHandle(f.as_raw_handle(), &mut info) };
     if ok == 0 {
         let e = std::io::Error::last_os_error();
-        return Err(io_ctx(e, format_args!("GetFileInformationByHandle {dir:?}")));
+        return Err(io_ctx(e, format_args!("GetFileInformationByHandle")));
     }
     let file_index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
     Ok(DirIdentity {
         volume_serial: info.dwVolumeSerialNumber,
         file_index,
     })
+}
+
+/// Capture `dir`'s kernel identity via a TRANSIENT open — for
+/// `VoyageStore::prepare_root`'s one-shot snapshot, taken (possibly) in a
+/// different process from the one that later verifies it, so there is
+/// nothing useful to hold open here. [`PinnedDir::open`] is the sibling
+/// entry point that holds its handle instead, for a caller that needs the
+/// object PINNED, not merely sampled.
+#[cfg(unix)]
+pub fn dir_identity(dir: &Path) -> Result<DirIdentity> {
+    let f = File::open(dir)?;
+    identity_of_open_handle(&f)
+}
+
+#[cfg(windows)]
+pub fn dir_identity(dir: &Path) -> Result<DirIdentity> {
+    let f = open_dir_handle(dir)?;
+    identity_of_open_handle(&f)
+}
+
+/// A directory handle PINNED against rename/delete for as long as it is
+/// held (ADR 0041 Codex round-2b). The round-2 identity check closed the
+/// gap for the CHECK itself, but everything after it — the writer-lock
+/// open, volume preflight, the two directory flushes, the segment
+/// directory enumeration for history reconciliation — still re-opened by
+/// PATH, and a live repro proved the actual exploit: a tight
+/// `RENAME_EXCHANGE` loop against the prepared root let `open_prepared`
+/// observe a REPLACEMENT store's `retention_class`, because a swap landing
+/// AFTER the identity check but BEFORE (or between) those later opens
+/// redirects every one of them just as easily as it would have redirected
+/// the check itself.
+///
+/// The fix pins the OBJECT, not the path — every operation that must be
+/// immune to a LATER swap resolves through [`pinned_path`](Self::pinned_path)
+/// instead of the original argument:
+///
+/// - **Windows**: the pin IS the handle. Opened with
+///   `FILE_FLAG_BACKUP_SEMANTICS` (required to open a directory via
+///   `CreateFileW` at all) and a share mode that OMITS `FILE_SHARE_DELETE`
+///   (std's own default share mode includes it — see [`open_dir_handle`],
+///   which deliberately does NOT get this treatment, since its own callers
+///   only ever hold their handle transiently). Microsoft's documented
+///   behavior for `MoveFileExW`/`RemoveDirectoryW` is
+///   `ERROR_SHARING_VIOLATION` against any object with an open handle
+///   lacking that share right, and this applies to a directory opened
+///   with `FILE_FLAG_BACKUP_SEMANTICS` exactly as it does to an ordinary
+///   file — the IDENTICAL technique `open_lock_file`'s own writer.lock
+///   handle already relies on, one level up, now applied to the
+///   CONTAINING directory. A rename or an exchange targeting this
+///   directory's current pathname therefore fails AT THE OS LEVEL for as
+///   long as the handle stays open, so `pinned_path` here is simply the
+///   real path — the OS itself is what makes reusing it safe, not a path
+///   substitution. **This claim is argued from documented share-mode
+///   semantics; it is not, and cannot be, exercised on this Linux
+///   development machine — the windows-2022 CI leg is the standing
+///   referee.**
+/// - **Linux**: holding an fd does NOT block `rename(2)`/`renameat2(2)` —
+///   POSIX carries no such guarantee, so the handle alone cannot protect
+///   the real path the way it does on Windows. The pin is instead the
+///   fd's OWN identity: `/proc/self/fd/<fd>/` is a magic symlink the
+///   kernel resolves directly against the descriptor's inode, immune to
+///   any later rename/exchange of the pathname that reached it.
+///   `pinned_path` is exactly that string.
+/// - **Every other unix**: this store already fails closed there (no
+///   atomic no-replace rename — see `rename_noreplace_raw`'s own doc), so
+///   `pinned_path` here is just the real path, unprotected against this
+///   SPECIFIC race — not a new gap, the pre-existing one.
+pub struct PinnedDir {
+    handle: File,
+    #[cfg(not(target_os = "linux"))]
+    real_path: PathBuf,
+    #[cfg(target_os = "linux")]
+    proc_path: PathBuf,
+}
+
+impl PinnedDir {
+    /// Open and pin `dir` — the FIRST thing a caller acquires (before the
+    /// writer fence, before the lease check, before any other I/O), so
+    /// nothing downstream can ever run in an unpinned window.
+    #[cfg(unix)]
+    pub fn open(dir: &Path) -> Result<Self> {
+        let handle = File::open(dir)?;
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = handle.as_raw_fd();
+            let proc_path = PathBuf::from(format!("/proc/self/fd/{fd}/"));
+            Ok(Self { handle, proc_path })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(Self { handle, real_path: dir.to_path_buf() })
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn open(dir: &Path) -> Result<Self> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            // Deliberately OMITS FILE_SHARE_DELETE (std's default includes
+            // it) -- see this type's own doc for the share-mode argument.
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(dir)
+            .map_err(|e| io_ctx(e, format_args!("open+pin dir handle {dir:?}")))?;
+        Ok(Self { handle, real_path: dir.to_path_buf() })
+    }
+
+    /// The path every subsequent operation on this directory (or anything
+    /// inside it) must resolve through — see this type's own doc for why
+    /// this is the real path on Windows/non-Linux-unix and the
+    /// `/proc/self/fd` alias on Linux.
+    pub fn pinned_path(&self) -> &Path {
+        #[cfg(target_os = "linux")]
+        {
+            &self.proc_path
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            &self.real_path
+        }
+    }
+
+    /// This object's kernel identity, read off the SAME handle this type
+    /// holds — never a fresh, independent stat-by-path.
+    pub fn identity(&self) -> Result<DirIdentity> {
+        identity_of_open_handle(&self.handle)
+    }
 }
 
 #[cfg(unix)]
