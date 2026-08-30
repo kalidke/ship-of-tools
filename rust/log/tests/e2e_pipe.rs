@@ -58,9 +58,10 @@ fn config(
         cols,
         rows,
         survival: Survival::Normal,
-        // No release-apply transaction in a test: the reader-first
-        // rollout gate is a no-op (see `rollout::gate`'s doc).
-        installed_reader_features: None,
+        // Codex round-1 Major 9: typed evidence, not `None` -- a test
+        // asserts "nothing to protect" the same way a real first-install
+        // transaction would (see `rollout::RolloutEvidence`'s own doc).
+        rollout_evidence: sot_log::rollout::RolloutEvidence::NoRollbackTarget,
     }
 }
 

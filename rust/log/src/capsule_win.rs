@@ -165,6 +165,11 @@ use crate::attach_proto::{
 use crate::conpty::{observe_spawning_process_jobbed, ConptySpawn};
 use crate::envelope::*;
 use crate::host_handshake::{self, HostHandshake};
+// Codex round-1 Blocker 3 discharge: the SAME shared-deadline poll-join
+// primitive and the SAME pinned aggregate bound `pipe_win.rs` uses for its
+// own worker joins -- one mechanism, one constant, reused here for this
+// module's closer/reader thread joins rather than a second bespoke copy.
+use crate::pipe_win::{join_within, TEARDOWN_AGGREGATE_DEADLINE};
 use crate::segment::{Commit, RetentionClass, SegmentWriter};
 use crate::voyage::{DedupeEntry, DedupeState, VoyageStore};
 use crate::wire::{self, Survival};
@@ -321,7 +326,20 @@ pub trait Transport {
     /// this to run twice, and an implementation that panics or double-frees
     /// on a repeat call breaks every exit path, not merely the one that
     /// exercises the ack grace.
-    fn shutdown_all(&mut self);
+    ///
+    /// Codex round-1 Blocker 3 discharge: `deadline` is the SAME absolute
+    /// aggregate deadline `run` shares with its own closer/reader thread
+    /// joins (ADR 0041 "the joins share ONE 20 s absolute deadline") — a
+    /// real transport must issue cancellation to every worker it owns
+    /// FIRST (so the pipe name and every connection handle are gone
+    /// before any blocking wait), THEN join everything against `deadline`
+    /// rather than a budget it invents itself. Returns `true` iff every
+    /// one of ITS OWN joins finished within `deadline`; `false` — LOUD,
+    /// and the caller MUST treat this as terminal (no seal, no fence
+    /// release past it), since this crate cannot force an OS thread to
+    /// stop. A synthetic test transport with nothing to bound returns
+    /// `true` unconditionally.
+    fn shutdown_all(&mut self, deadline: Instant) -> bool;
 }
 
 /// ADR 0041 "Terminal state" resource budget — the geometry a resize (or
@@ -398,14 +416,17 @@ pub struct CapsuleWinConfig {
     /// verbatim in mgmt `status`.
     pub survival: Survival,
     /// The reader-first rollout gate's input (ADR 0041 "Upgrade and
-    /// version skew"; see `crate::rollout`): the installed rollback
-    /// target's reader feature set, or `None` when no release-apply
-    /// transaction has ever recorded one. `run` refuses to open a
-    /// segment declaring `sot.capsule.run-end-requested-v1` unless this
-    /// set already contains it. The SPAWNER resolves this (today, the
-    /// `sot-capsule` bin, via `rollout::read_installed_reader_features`
-    /// against the state dir) — `run` only enforces it.
-    pub installed_reader_features: Option<Vec<String>>,
+    /// version skew"; see `crate::rollout`) — TYPED, identity-bound
+    /// evidence, never an `Option` a caller could pass `None` into as an
+    /// implicit "no rollback target" (Codex round-1 Major 9): `run`
+    /// refuses to open a segment declaring
+    /// `sot.capsule.run-end-requested-v1` unless this evidence
+    /// affirmatively clears it. The SPAWNER constructs this — a real
+    /// supervisor (U2/U4) from its own release-apply transaction; this
+    /// crate's manual testing harness (`sot-capsule.rs`) hardcodes
+    /// `RolloutEvidence::NoRollbackTarget` directly, never reading a
+    /// stopgap file that could quietly become load-bearing.
+    pub rollout_evidence: crate::rollout::RolloutEvidence,
 }
 
 /// The ADR 0039 registry entry a step-6 capsule's segments declare
@@ -1013,7 +1034,20 @@ pub fn run(
     struct ShutdownGuard<'a>(&'a mut dyn Transport);
     impl Drop for ShutdownGuard<'_> {
         fn drop(&mut self) {
-            self.0.shutdown_all();
+            // This Drop is the FALLBACK path only (an early `?` return
+            // before the designed, explicit call at real teardown time
+            // ever runs, or that call's own redundant second pass) -- it
+            // has no outer aggregate deadline to share, so it computes a
+            // fresh one. `run` has ALREADY returned by the time this
+            // executes (it is dropping `run`'s own locals during
+            // unwind/return), so a `false` here can only be reported
+            // loudly (stderr), never turned into `run`'s result.
+            if !self.0.shutdown_all(Instant::now() + TEARDOWN_AGGREGATE_DEADLINE) {
+                eprintln!(
+                    "sot-capsule: ShutdownGuard's fallback teardown did not complete within its \
+                     aggregate deadline; a worker thread may still be running"
+                );
+            }
         }
     }
     let transport = ShutdownGuard(transport);
@@ -1044,7 +1078,7 @@ pub fn run(
     // are its own commitment for its whole life, not renegotiated
     // segment to segment).
     crate::rollout::gate(
-        config.installed_reader_features.as_deref(),
+        &config.rollout_evidence,
         RUN_END_REQUESTED_FEATURE,
     )?;
     // Every segment a step-6 capsule opens declares the EndRun-marker
@@ -1558,11 +1592,20 @@ pub fn run(
                         queue.extend(attach_proto.resize_outcome(conn, ok, request_id, Instant::now()));
                     }
                     AttachAction::RunEndRequested { reason } => {
+                        // Codex round-1 Blocker 1 discharge: record the
+                        // reason HERE, from the marker's own commit -- not
+                        // only from `Action::Shutdown` (ack-completion-
+                        // driven), which may never fire at all (a stalled
+                        // ack, a lost connection). `get_or_insert_with`
+                        // matches "first commit wins" (step 4): a
+                        // concurrent second request's reason never
+                        // overwrites the one that actually got latched.
+                        shutdown_reason.get_or_insert_with(|| reason.clone());
                         commit_run_end_marker(&mut ctx, &mut w, &mut frames_written, &mut run_end_latched, reason)?;
                     }
                     AttachAction::Shutdown { reason } => {
                         shutdown_requested = true;
-                        shutdown_reason = Some(reason);
+                        shutdown_reason.get_or_insert(reason);
                     }
                 }
             }
@@ -1683,7 +1726,9 @@ pub fn run(
                         // way -- mgmt keeps being serviced through both
                         // teardown phases (finding 7), and this is the one
                         // place that knows whether the marker already
-                        // committed.
+                        // committed. Same reason-recording discipline as
+                        // the main loop's own arm (Codex round-1 Blocker 1).
+                        shutdown_reason.get_or_insert_with(|| reason.clone());
                         commit_run_end_marker(&mut ctx, &mut w, &mut frames_written, &mut run_end_latched, reason)?;
                     }
                     AttachAction::Shutdown { reason } => {
@@ -1695,8 +1740,12 @@ pub fn run(
                         // here was dead. `shutdown_reason` still matters: a
                         // second, teardown-time `Shutdown` (a racing EndRun
                         // request) still gets its own reason string folded
-                        // into `producer_dead`'s eventual detail.
-                        shutdown_reason = Some(reason);
+                        // into `producer_dead`'s eventual detail -- UNLESS
+                        // an earlier request's reason (via
+                        // `RunEndRequested`, above) already won (first
+                        // commit wins, ADR 0041 step 4): `get_or_insert`,
+                        // not an unconditional overwrite.
+                        shutdown_reason.get_or_insert(reason);
                     }
                     other @ (AttachAction::CommitTake { .. }
                     | AttachAction::ForwardInput { .. }
@@ -1924,11 +1973,40 @@ pub fn run(
         service_transport_events!();
         execute_actions!(attach_proto.tick(Instant::now()));
         eager_ground_check!();
-        if shutdown_requested {
+        // ADR 0041 EndRun step 2 / Codex round-1 Blocker 1 discharge: the
+        // LATCH drives teardown, not the ack -- "ack completion only
+        // ACCELERATES teardown". `shutdown_requested` alone (the OLD,
+        // ack-completion-only trigger via `AttachAction::Shutdown`, and the
+        // transport-fatal self-end path) is not enough: a stalled ack, a
+        // client that stops reading, a progress-deadline close, or a lost
+        // connection must still tear this run down once the marker is
+        // durable, exactly the cases ADR 0041 lists as unable to unlatch
+        // it. The ack remains a courtesy -- serviced normally through
+        // teardown (still tracked via `pending_sends`/the ack-grace window)
+        // but never a precondition for STARTING it.
+        if shutdown_requested || run_end_latched {
             break 'main ExitKind::Requested;
         }
         match commands.try_recv() {
-            Ok(Command::Kill) => break 'main ExitKind::Requested,
+            // Major 6 discharge: `Command::Kill` is the direct-caller/
+            // supervisor own-behalf EndRun primitive (this module's own
+            // doc on `Command`) -- it must carry a reason and route
+            // through the SAME commit/latch transition as a wire
+            // `shutdown`, or a resume could respawn a run that a caller
+            // deliberately ended. Idempotent like every other caller of
+            // `commit_run_end_marker`: a concurrent wire shutdown racing
+            // this Kill still writes only one marker.
+            Ok(Command::Kill) => {
+                shutdown_reason.get_or_insert_with(|| "operator_kill".to_string());
+                commit_run_end_marker(
+                    &mut ctx,
+                    &mut w,
+                    &mut frames_written,
+                    &mut run_end_latched,
+                    "operator_kill".to_string(),
+                )?;
+                break 'main ExitKind::Requested;
+            }
             Err(mpsc::TryRecvError::Empty) => {}
             // The caller dropped its `Sender` — NOT a kill (ADR: no
             // channel-disconnect-as-kill, "no exit code, no FE event, no
@@ -2122,10 +2200,36 @@ pub fn run(
     // an actual close at THIS point, not a hope that returning soon is soon
     // enough. `shutdown_all` is idempotent (U1a): `ShutdownGuard`'s own
     // `Drop`, still ahead on every path, is a safe no-op the second time.
-    transport.0.shutdown_all();
-
-    let _ = closer_handle.join();
-    let _ = reader_handle.join();
+    //
+    // Codex round-1 Blocker 3 discharge: ONE absolute aggregate deadline,
+    // shared by the transport's OWN internal joins (accepted/reaper/every
+    // connection worker, all cancellation-first per `Transport::
+    // shutdown_all`'s own doc) AND this module's closer/reader threads —
+    // "over an acceptor, a reaper, up to sixteen connection workers and
+    // the capsule's own threads" (ADR 0041 bounds table). Cancellation for
+    // THIS module's own threads already happened earlier in this same
+    // function (Phase A's `job.terminate()`, Phase B's `pty.close_pty()`
+    // on `closer_handle`) — by this point both threads are expected to be
+    // at or near their own natural return, so `join_within` (never the
+    // raw blocking `.join()`) is what actually bounds the residual gap
+    // between "signalled EOF/exit" and "the thread function returned".
+    // Expiry is TERMINAL: `run` must not seal-and-succeed, nor release the
+    // writer fence (via `store`'s own drop), past a teardown that could
+    // not prove every worker stopped — an `Err` here propagates before
+    // `w.seal`/`store.advance_chain` are ever reached, and `store` (the
+    // fence) still drops via its own destructor on this return path,
+    // exactly as any other early `?` in this function already does.
+    let teardown_deadline = Instant::now() + TEARDOWN_AGGREGATE_DEADLINE;
+    let transport_ok = transport.0.shutdown_all(teardown_deadline);
+    let closer_ok = join_within(closer_handle, teardown_deadline);
+    let reader_ok = join_within(reader_handle, teardown_deadline);
+    if !(transport_ok && closer_ok && reader_ok) {
+        return Err(Error::State(format!(
+            "capsule_win: aggregate teardown did not complete within its {TEARDOWN_AGGREGATE_DEADLINE:?} \
+             deadline (transport ok={transport_ok}, closer ok={closer_ok}, reader ok={reader_ok}); \
+             refusing to seal or report success past an unproven teardown"
+        )));
+    }
 
     // Step 5: the primary's own exit status, raw and unsigned end-to-end
     // (review finding: a Unix-style `i32` cast would turn a high-bit
@@ -2337,5 +2441,53 @@ mod tests {
         assert!(format!("{err}").contains("non-contiguous"), "got: {err}");
         assert!(!latched, "a failed append must never latch");
         assert_eq!(frames_written, 0);
+    }
+
+    /// Codex round-1 Major 5 discharge: a post-write, fsync-reported
+    /// failure (the write itself already durable — see
+    /// `SegmentWriter::inject_fault_on_next_append_sync`'s own doc) must
+    /// still propagate as a failure to THIS caller (no latch, ADR 0039's
+    /// crash shape from `commit_run_end_marker`'s own perspective) —
+    /// but, per ADR 0041's one-fact-one-barrier rule, the marker is
+    /// ALREADY visible on disk regardless, and the typed accessor a
+    /// later unit's respawn decision reads
+    /// (`verify::leg_carries_run_end_marker`) must report it as present.
+    /// A requester's pessimistic report can never make a real marker
+    /// disappear; treating the visible byte as authoritative is what
+    /// keeps "one fact, one barrier" true even when the ONE frame commit
+    /// step itself is split into a write and a separate fsync outcome.
+    #[test]
+    fn fsync_failure_after_a_durable_write_still_leaves_the_marker_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, mut w) = run_end_marker_writer(dir.path(), "rem4");
+        let mut ctx = run_end_marker_ctx();
+        let mut frames_written = 0u64;
+        let mut latched = false;
+        w.inject_fault_on_next_append_sync();
+        let err = commit_run_end_marker(
+            &mut ctx,
+            &mut w,
+            &mut frames_written,
+            &mut latched,
+            "quit".into(),
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("injected fsync failure"), "got: {err}");
+        // The caller's own view: no latch, no bookkeeping credit -- ADR
+        // 0039's crash shape from this function's own perspective.
+        assert!(!latched);
+        assert_eq!(frames_written, 0);
+
+        // The world's view: the bytes are genuinely on disk. Drop the
+        // writer (releases the file, no further writes) and read the
+        // STILL-OPEN segment fresh, exactly as a crashed leg's
+        // reconciliation/accessor would.
+        drop(w);
+        let seg_dir = dir.path().join("rem4").join("seg");
+        assert!(
+            crate::verify::leg_carries_run_end_marker(&seg_dir, "rem4", 1).unwrap(),
+            "a marker whose write succeeded (only its fsync report lied) must still be visible \
+             to the accessor -- a requester's pessimistic report can never erase a real byte"
+        );
     }
 }

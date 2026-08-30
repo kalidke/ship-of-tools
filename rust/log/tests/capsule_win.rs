@@ -58,9 +58,10 @@ fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows:
         cols,
         rows,
         survival: Survival::Normal,
-        // No release-apply transaction in a test: the reader-first
-        // rollout gate is a no-op (see `rollout::gate`'s doc).
-        installed_reader_features: None,
+        // Codex round-1 Major 9: typed evidence, not `None` -- a test
+        // asserts "nothing to protect" the same way a real first-install
+        // transaction would (see `rollout::RolloutEvidence`'s own doc).
+        rollout_evidence: sot_log::rollout::RolloutEvidence::NoRollbackTarget,
     }
 }
 
@@ -79,7 +80,9 @@ impl Transport for NoopTransport {
         0
     }
     fn close(&mut self, _conn: ConnId) {}
-    fn shutdown_all(&mut self) {}
+    fn shutdown_all(&mut self, _deadline: Instant) -> bool {
+        true
+    }
 }
 
 /// A `NoopTransport` in one call, for the common "just run it, the wire
@@ -125,6 +128,12 @@ struct TestInner {
     /// `ShutdownGuard::drop`'s own unconditional call both actually
     /// happen, rather than merely "at least once".
     shutdown_all_call_count: u32,
+    /// Codex round-1 Blocker 3 discharge: when set, `shutdown_all`
+    /// reports EXPIRY (`false`) instead of success -- simulates a real
+    /// transport's own aggregate join failing, so `capsule_win::run`'s
+    /// "expiry is terminal" contract is testable without needing to
+    /// genuinely wedge a real OS thread.
+    force_shutdown_expiry: bool,
 }
 
 impl TestTransport {
@@ -207,6 +216,13 @@ impl TestTransport {
     fn shutdown_all_call_count(&self) -> u32 {
         self.inner.lock().unwrap().shutdown_all_call_count
     }
+    /// Codex round-1 Blocker 3 discharge: make every future `shutdown_all`
+    /// call on this transport report expiry (`false`), simulating a real
+    /// transport whose own aggregate join could not prove every worker
+    /// stopped in time.
+    fn force_shutdown_expiry(&self) {
+        self.inner.lock().unwrap().force_shutdown_expiry = true;
+    }
 }
 
 impl Transport for TestTransport {
@@ -237,8 +253,10 @@ impl Transport for TestTransport {
     fn close(&mut self, conn: ConnId) {
         self.inner.lock().unwrap().closed.push(conn);
     }
-    fn shutdown_all(&mut self) {
-        self.inner.lock().unwrap().shutdown_all_call_count += 1;
+    fn shutdown_all(&mut self, _deadline: Instant) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        inner.shutdown_all_call_count += 1;
+        !inner.force_shutdown_expiry
     }
 }
 
@@ -591,7 +609,11 @@ fn refuses_when_the_installed_rollback_target_cannot_read_the_marker() {
     let dir = tempfile::tempdir().unwrap();
     let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
     let mut cfg = config(dir.path(), "rolloutgate1", argv, 80, 25);
-    cfg.installed_reader_features = Some(vec!["sot.producer.json-f64-v1".to_string()]);
+    cfg.rollout_evidence = sot_log::rollout::RolloutEvidence::Installed {
+        release: "0.5.9".to_string(),
+        target: "rolloutgate1-target".to_string(),
+        reader_features: vec!["sot.producer.json-f64-v1".to_string()],
+    };
     let (_tx, rx) = mpsc::channel();
     let mut transport = no_transport();
     let err = capsule_win::run(cfg, rx, &mut transport).unwrap_err();
@@ -1395,16 +1417,34 @@ fn hello_refusal_leaves_mgmt_and_later_attach_working() {
     assert_eq!(summary.exit_kind, ExitKind::Requested);
 }
 
-/// Test 11: the mgmt `shutdown_ok` ack is physically written BEFORE
-/// teardown begins -- proven by holding its send completion and observing
-/// `run` is still blocked, then releasing it and observing EndRun actually
-/// proceeds. The reason string travels into `producer_dead`'s detail.
+/// Test 11 (REWRITTEN, Codex round-1 Blocker 1 discharge): the durable
+/// MARKER — not the ack — drives teardown. "Ack completion only
+/// ACCELERATES teardown" (ADR 0041 EndRun step 2): a stalled ack, a
+/// client that stops reading, a progress-deadline close, or a lost
+/// connection cannot unlatch it. Proven by holding the `shutdown_ok`
+/// ack's physical-send completion and NEVER RELEASING IT — confirming
+/// the marker is already durable on the still-open leg while the ack is
+/// held, then confirming `run` still completes and seals within a
+/// bounded time regardless (the ack-grace window still expires
+/// normally, exactly as `shutdown_ack_grace_expires_and_teardown_still_
+/// completes` proves for a Kill-driven teardown; this is the SAME
+/// mechanism with the wire request itself as the ONLY driver, no
+/// separate cause). The reason string still lands in `producer_dead`'s
+/// detail — recorded from the marker's own commit (see
+/// `commit_run_end_marker`'s call sites), never from the ack's
+/// completion, which here never happens at all.
+///
+/// The ORIGINAL version of this test asserted the opposite
+/// (`!handle.is_finished()` while the ack was held, released later) —
+/// that encoded the design Blocker 1 identifies as wrong: a stalled ack
+/// must never be able to leave a durable marker coexisting with a shell
+/// running on.
 #[test]
-fn shutdown_ack_sent_before_teardown() {
+fn teardown_completes_even_when_the_shutdown_ack_is_never_delivered() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv = vec!["cmd.exe".to_string()]; // stays open until EndRun
-    let cfg = config(dir.path(), "shutdownseq1", argv, 80, 25);
+    let cfg = config(dir.path(), "neverack1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let transport = TestTransport::new();
     let (_tx, rx) = mpsc::channel();
@@ -1416,41 +1456,56 @@ fn shutdown_ack_sent_before_teardown() {
 
     const MGMT: ConnId = 1;
     transport.open(MGMT);
-    transport.set_hold_for(MGMT, true); // hold BEFORE the request that matters
-    transport.feed(MGMT, frame::mgmt_shutdown("integration-test-reason"));
+    transport.set_hold_for(MGMT, true); // held FOREVER -- never released below
+    transport.feed(MGMT, frame::mgmt_shutdown("never-delivered-ack"));
 
     // The ack's bytes are constructed and queued...
     let mut watcher = FrameWatcher::new(&transport);
-    watcher.wait_for("mgmt shutdown_ok", MGMT, Duration::from_secs(10), |f| {
+    watcher.wait_for("mgmt shutdown_ok queued", MGMT, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
     });
-    // ...but `run` must NOT have begun tearing down yet: nothing has
-    // reported it physically sent.
-    std::thread::sleep(Duration::from_millis(200));
-    assert!(!handle.is_finished(), "EndRun must not begin before the shutdown ack is reported sent");
 
-    transport.release_held();
+    // ...and the marker is ALREADY durable on the still-open leg, even
+    // though that ack's physical completion will NEVER be reported.
+    let seg_dir = root.join("seg");
+    let marker_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if leg_carries_run_end_marker(&seg_dir, "neverack1", 1).unwrap_or(false) {
+            break;
+        }
+        assert!(Instant::now() < marker_deadline, "marker never became visible on the still-open leg");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // `transport.release_held()` is deliberately NEVER called -- the
+    // whole point is that teardown does not need it.
     let summary = wait_for_join(handle, Duration::from_secs(30))
-        .expect("run did not return within the teardown bound after the ack was released")
+        .expect(
+            "run did not complete even though the durable marker should drive teardown \
+             regardless of the never-delivered ack",
+        )
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
-    verify_voyage(&root, "shutdownseq1").unwrap();
+    verify_voyage(&root, "neverack1").unwrap();
+    assert!(leg_carries_run_end_marker(&seg_dir, "neverack1", 1).unwrap());
 
-    let frames = sealed_frames(&root, "shutdownseq1");
+    let frames = sealed_frames(&root, "neverack1");
     let dead = assert_producer_dead_is_last(&frames);
-    assert_eq!(dead["reason"], "integration-test-reason");
+    assert_eq!(dead["reason"], "never-delivered-ack");
 }
 
 /// ADR 0041 step 6 U1b, acceptance matrix "the marker is the acceptance
-/// barrier": an ack stalled after the durable marker committed still
-/// tears down — the marker's own irrevocable latch does not depend on
-/// the ack ever completing. Proven directly against the STILL-OPEN
-/// segment via `verify::leg_carries_run_end_marker` (the typed accessor
-/// a later unit's respawn decision reads), polled WHILE the ack is held
-/// — before `run` has sealed anything — then confirmed again once
-/// teardown actually finishes.
+/// barrier": the marker is durable on the STILL-OPEN leg (before `run`
+/// has sealed anything) essentially as soon as the request is processed
+/// — and, distinctly from `teardown_completes_even_when_the_shutdown_
+/// ack_is_never_delivered` above (which proves teardown does NOT need
+/// the ack), this test proves the ack is still a working COURTESY when
+/// nothing prevents it: released promptly, its bytes still show up as a
+/// well-formed `ShutdownOk` reply on the same connection. "Ack completion
+/// only accelerates teardown" cuts both ways — it must never be
+/// REQUIRED, but it must still WORK.
 #[test]
-fn ack_stalled_after_durable_marker_still_tears_down() {
+fn marker_is_durable_before_the_ack_completes_and_the_ack_still_works() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv = vec!["cmd.exe".to_string()]; // stays open until EndRun
@@ -1476,7 +1531,8 @@ fn ack_stalled_after_durable_marker_still_tears_down() {
 
     // The ack is QUEUED but its physical-write completion is HELD -- the
     // marker must already be durable regardless. Nothing is sealed yet
-    // (run is blocked on the ack), so poll the STILL-OPEN leg directly.
+    // (teardown may already be under way), so poll the STILL-OPEN leg
+    // directly.
     let seg_dir = root.join("seg");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -1486,7 +1542,6 @@ fn ack_stalled_after_durable_marker_still_tears_down() {
         assert!(Instant::now() < deadline, "marker never became visible on the still-open leg");
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(!handle.is_finished(), "teardown must still be waiting on the held ack");
 
     transport.release_held();
     let summary = wait_for_join(handle, Duration::from_secs(30))
@@ -1495,6 +1550,11 @@ fn ack_stalled_after_durable_marker_still_tears_down() {
     assert_eq!(summary.exit_kind, ExitKind::Requested);
     verify_voyage(&root, "markerstall1").unwrap();
     assert!(leg_carries_run_end_marker(&seg_dir, "markerstall1", 1).unwrap());
+    // The courtesy still worked: the EARLIER `wait_for` already decoded a
+    // well-formed `ShutdownOk` reply queued for this connection, and
+    // `release_held` + the successful `wait_for_join` above prove its
+    // physical-send completion was processed normally through teardown --
+    // the ack is not required, but it is not broken either.
 }
 
 /// ADR 0041 step 6 U1b, acceptance matrix "the marker is the acceptance
@@ -1634,6 +1694,51 @@ fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
             "shutdown_all must be called exactly twice on a requested kill too"
         );
     }
+}
+
+/// Codex round-1 Blocker 3 discharge: aggregate-teardown expiry is
+/// TERMINAL, not a "loud but successful" return. `run` must not seal the
+/// voyage or report `Ok(ExitSummary)` past a teardown whose transport
+/// could not prove every worker stopped within the shared deadline — the
+/// writer fence (`store`, dropped via this same early return) is the
+/// only thing that may release past it. Simulated via `TestTransport::
+/// force_shutdown_expiry` (a real Windows stalled-worker scenario is
+/// proven separately, at the transport level, by `pipe_win.rs`'s own
+/// `stalled_worker_does_not_block_teardown_of_healthy_connections` and
+/// the pure `join_within` expiry tests) — this test's job is specifically
+/// `capsule_win::run`'s OWN reaction to that report.
+#[test]
+fn aggregate_teardown_expiry_is_terminal_not_a_silent_seal() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
+    let cfg = config(dir.path(), "expiryterminal1", argv, 80, 25);
+    let root = cfg.voyage_root.clone();
+    let transport = TestTransport::new();
+    transport.force_shutdown_expiry();
+    let (_tx, rx) = mpsc::channel();
+    let mut run_transport = transport.clone();
+    let err = capsule_win::run(cfg, rx, &mut run_transport).unwrap_err();
+    assert!(
+        format!("{err}").contains("aggregate teardown"),
+        "expected a named aggregate-teardown failure, got: {err}"
+    );
+    // No seal, ever: the segment stays `.open`, never `.sotseg`, and the
+    // final `producer_dead` frame this path would otherwise have written
+    // never lands.
+    let seg_dir = root.join("seg");
+    let names: Vec<String> = std::fs::read_dir(&seg_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names.iter().all(|n| !n.ends_with(".sotseg")),
+        "a terminal teardown failure must never seal a segment: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n.ends_with(".open")),
+        "the survivor segment must remain unsealed: {names:?}"
+    );
 }
 
 /// Test 13 (U1a, ADR 0041 EndRun state machine item 4 / "ack grace"): a

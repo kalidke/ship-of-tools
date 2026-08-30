@@ -511,30 +511,30 @@ fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
 }
 
 /// ADR 0041 step 6 U1b, Lifecycle "the pipe NAME disappears before any
-/// blocking join": `disconnect_listener` ALONE — never `join_workers`,
-/// never `Drop` — must free the name for a `FIRST_PIPE_INSTANCE` rival
-/// probe. A connect/close cycle first puts one instance in `recycled`
-/// (not just the accept loop's own pending one), so this proves
-/// `disconnect_listener` closes BOTH kinds. Polled with a short bound
-/// rather than asserted instantly: the accept loop's own in-flight
-/// instance is reclaimed on ITS thread, asynchronously — a small,
-/// acknowledged window (see that method's own doc) — but the bound here
-/// (2s) is a tiny fraction of the 20s aggregate this property exists to
-/// front-run, and no join is EVER attempted in this test.
+/// blocking join" — Codex round-1 Blocker 2 discharge: `disconnect_listener`
+/// ALONE — never `join_workers`, never `Drop` — must free the name for a
+/// `FIRST_PIPE_INSTANCE` rival probe WHILE A CONNECTION IS STILL LIVE, not
+/// only after it has already closed. The client's own handle is left open
+/// throughout (never dropped before the probe): the SERVER-side instance
+/// disconnect_listener closes is what a squat probe actually checks for,
+/// so a still-open client handle must not keep the name held. Polled with
+/// a short bound rather than asserted instantly: the accept loop's own
+/// in-flight instance is reclaimed on ITS thread, asynchronously — a
+/// small, acknowledged window (see that method's own doc) — but the bound
+/// here (2s) is a tiny fraction of the 20s aggregate this property exists
+/// to front-run, and no join is EVER attempted in this test.
 #[test]
-fn disconnect_listener_alone_frees_the_name_before_any_join() {
-    if !run_isolated("disconnect_listener_alone_frees_the_name_before_any_join") {
+fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
+    if !run_isolated("disconnect_listener_frees_the_name_even_with_a_live_connection") {
         return;
     }
     let id = fresh_voyage_id();
-    let max_instances = 1;
+    let max_instances = 2;
     let mut server = PipeServer::bind(&id, max_instances).unwrap();
 
+    // A LIVE connection: never closed by either side before the probe.
     let client = connect_voyage_pipe(&id).unwrap();
-    let conn_id = expect_accepted(&server, TIMEOUT);
-    server.close(conn_id);
-    assert_eq!(expect_closed(&server, conn_id, TIMEOUT), ClosedReason::Closed);
-    drop(client);
+    expect_accepted(&server, TIMEOUT);
 
     server.disconnect_listener();
 
@@ -546,12 +546,14 @@ fn disconnect_listener_alone_frees_the_name_before_any_join() {
                 assert_squat_check_failed(e);
                 assert!(
                     Instant::now() < deadline,
-                    "name still held 2s after disconnect_listener, with no join ever attempted"
+                    "name still held 2s after disconnect_listener, WITH a live connection and \
+                     no join ever attempted"
                 );
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
     }
+    drop(client);
     drop(server);
 }
 
@@ -580,12 +582,107 @@ fn worst_case_worker_fan_out_completes_well_inside_the_aggregate_budget() {
 
     server.disconnect_listener();
     let started = Instant::now();
-    let ok = server.join_workers(Duration::from_secs(5));
+    let ok = server.join_workers(started + Duration::from_secs(5));
     assert!(
         ok,
         "real teardown of {max_instances} live connections did not finish within a 5s budget \
          (took at least {:?})",
         started.elapsed()
+    );
+    drop(clients);
+}
+
+/// ADR 0041 step 6 U1b, acceptance matrix "teardown composes" — Codex
+/// round-1 Blocker 3 discharge: a GENUINELY STALLED connection worker
+/// (one whose peer never drains, never closes, and whose own I/O the
+/// server side cannot otherwise unstick) must not prevent the OTHER
+/// connections from being cancelled and torn down, and the AGGREGATE
+/// join must still resolve (loud on expiry) within a small bound rather
+/// than hanging on the one stuck worker. `flooded_never_reading_client_
+/// close_completes_within_bound` (below) already proves a single
+/// never-reading watcher's OWN close completes bounded; this test proves
+/// the WHOLE-SERVER teardown composes the same way when one connection
+/// is stalled and several healthy ones are live alongside it.
+#[test]
+fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
+    if !run_isolated("stalled_worker_does_not_block_teardown_of_healthy_connections") {
+        return;
+    }
+    let id = fresh_voyage_id();
+    let max_instances = 4;
+    let mut server = PipeServer::bind(&id, max_instances).unwrap();
+
+    // One connection whose CLIENT never reads and never writes again --
+    // outbound bytes queued for it will sit until the server side closes
+    // the handle out from under it (exactly what `disconnect_listener`
+    // now does). A few healthy connections alongside it.
+    let stalled_client = connect_voyage_pipe(&id).unwrap();
+    let stalled_conn = expect_accepted(&server, TIMEOUT);
+    // Fill its outbound direction so the writer thread has something
+    // in-flight when teardown begins, not an idle connection.
+    let _ = server.send(stalled_conn, vec![0xAB; 4096], None);
+
+    let mut healthy_clients = Vec::new();
+    for _ in 0..2 {
+        let c = connect_voyage_pipe(&id).unwrap();
+        expect_accepted(&server, TIMEOUT);
+        healthy_clients.push(c);
+    }
+
+    server.disconnect_listener();
+    let started = Instant::now();
+    // A budget an order of magnitude under the pinned 20s: teardown must
+    // not need to wait out the stalled connection's own I/O at all --
+    // closing its handle (disconnect_listener, above) is what unsticks
+    // it, so healthy AND stalled connections alike tear down promptly.
+    let ok = server.join_workers(started + Duration::from_secs(5));
+    assert!(
+        ok,
+        "teardown with one stalled connection among several live ones did not finish within a \
+         5s budget (took at least {:?})",
+        started.elapsed()
+    );
+    drop(stalled_client);
+    drop(healthy_clients);
+}
+
+/// ADR 0041 step 6 U1b, acceptance matrix "teardown composes" — Codex
+/// round-1 Blocker 3 discharge, "total-deadline propagation": the shared
+/// deadline is REAL and honored against REAL OS threads, not merely a
+/// number `join_within`'s own pure unit tests exercise against fully
+/// controlled fake threads. `disconnect_listener`'s own redesign makes a
+/// worker un-unstickable by ORDINARY means hard to construct (closing
+/// every handle is specifically what unsticks them) — so this proves
+/// deadline ENFORCEMENT itself is real and workload-independent: an
+/// essentially-zero budget against otherwise-healthy, real connections
+/// still returns promptly (never hangs out to the pinned 20s), and the
+/// natural race (some threads may still finish before the first
+/// `is_finished` poll) means this asserts BOUNDED total time, not a
+/// specific `true`/`false` outcome — either is legitimate, a HANG is not.
+#[test]
+fn join_workers_deadline_is_enforced_against_real_threads_not_merely_computed() {
+    if !run_isolated("join_workers_deadline_is_enforced_against_real_threads_not_merely_computed") {
+        return;
+    }
+    let id = fresh_voyage_id();
+    let max_instances = 4;
+    let mut server = PipeServer::bind(&id, max_instances).unwrap();
+
+    let mut clients = Vec::new();
+    for _ in 0..3 {
+        let c = connect_voyage_pipe(&id).unwrap();
+        expect_accepted(&server, TIMEOUT);
+        clients.push(c);
+    }
+
+    server.disconnect_listener();
+    let started = Instant::now();
+    let _ok = server.join_workers(started + Duration::from_millis(1));
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "join_workers with an essentially-zero budget must return promptly, not silently wait \
+         out the full aggregate regardless of outcome (took {elapsed:?})"
     );
     drop(clients);
 }

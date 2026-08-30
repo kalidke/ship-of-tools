@@ -784,6 +784,13 @@ pub struct PipeServer {
     events_rx: Receiver<TransportEvent>,
     accept_jh: Option<JoinHandle<()>>,
     reaper_jh: Option<JoinHandle<()>>,
+    /// Reader/writer `JoinHandle`s for every connection
+    /// [`PipeServer::disconnect_listener`] closed directly (Codex round-1
+    /// Blocker 2/3 discharge) — their `ConnHandle` never reaches the
+    /// reaper (it drained `shared.conns` itself), so nothing else would
+    /// ever join them. [`PipeServer::join_workers`] joins every entry here
+    /// under the SAME shared deadline as the acceptor and reaper.
+    detached_workers: Vec<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for PipeServer {
@@ -875,6 +882,7 @@ impl PipeServer {
             events_rx,
             accept_jh: Some(accept_jh),
             reaper_jh: Some(reaper_jh),
+            detached_workers: Vec::new(),
         })
     }
 
@@ -960,8 +968,11 @@ const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// that call cannot then block — and return `true`) or `deadline` passes
 /// (`false`: LOUD, since this crate cannot force an OS thread to stop —
 /// the handle is simply dropped here, which detaches rather than kills
-/// it; the thread keeps running in the background).
-fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
+/// it; the thread keeps running in the background). `pub(crate)`:
+/// `capsule_win.rs` reuses this SAME mechanism (Codex round-1 Blocker 3)
+/// to join its own closer/reader threads under the identical aggregate
+/// deadline, rather than a second bespoke poll loop.
+pub(crate) fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
     loop {
         if jh.is_finished() {
             let _ = jh.join();
@@ -975,46 +986,81 @@ fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
 }
 
 impl PipeServer {
-    /// Phase one of teardown: make the pipe NAME disappear — synchronous,
-    /// no blocking join, nothing left for a probing client to connect
-    /// to and never have serviced. Latches [`ServerShared::dropping`]
-    /// FIRST (see its doc for why), cancels a pending accept (if any),
-    /// and — the ADR 0041 step 6 U1b change — CLOSES every instance
+    /// Phase one of teardown: make the pipe NAME disappear AND issue
+    /// cancellation to every worker — synchronous, no blocking join.
+    /// Latches [`ServerShared::dropping`] FIRST (see its doc for why),
+    /// cancels a pending accept (if any), closes every instance
     /// currently sitting idle in [`AcceptState::recycled`] /
-    /// [`AcceptState::retained_dead`] right now, rather than leaving
-    /// them open per the module doc's "Continuous name hold" policy:
-    /// that policy exists to keep the name held for FUTURE reuse, and
-    /// once `dropping` is set there is no future reuse — the accept loop
-    /// is stopping for good, so holding them open only keeps a
-    /// never-to-be-serviced instance connectable. [`recycle_instance`]
-    /// makes the SAME call for every instance still torn down from here
-    /// on (a live connection's own instance, or the accept loop's own
-    /// just-cancelled one): once `dropping`, it closes rather than
-    /// recycles. Idempotent — safe to call more than once (a test
-    /// proving this phase in isolation, then the eventual real `Drop`).
+    /// [`AcceptState::retained_dead`] (per the module doc's "Continuous
+    /// name hold" revision), and — Codex round-1 Blocker 2 discharge —
+    /// drains `shared.conns` and closes EVERY live connection's instance
+    /// handle too, not only the idle ones: a `FIRST_PIPE_INSTANCE` probe
+    /// must be able to win the INSTANT this method returns, live
+    /// connections or not ("never live while nothing can answer it" —
+    /// once this returns, this capsule cannot answer regardless of
+    /// worker state). For each live connection: cancel both I/O
+    /// directions first (the documented, clean cancellation request),
+    /// drop the sender (unblocks a writer idle-waiting on nothing
+    /// queued), then close the handle (`CloseHandle` on a named-pipe
+    /// instance forces any outstanding `ReadFile`/`WriteFile` on it to
+    /// complete or error — exactly what "workers then see their handles
+    /// die and cancel naturally" describes; their existing
+    /// cancelled/closed-pipe error arms already treat this as an
+    /// ordinary close, see `deliver_bytes`/the writer loop's own error
+    /// handling). The reader/writer threads themselves are NOT joined
+    /// here — `disconnect_listener` never blocks — they are stashed in
+    /// `detached_workers` for [`PipeServer::join_workers`] to join under
+    /// the shared deadline. [`recycle_instance`] makes the same
+    /// close-not-recycle call for any instance the REAPER thread still
+    /// wins the race for (a connection whose ordinary, pre-teardown
+    /// close was already in flight) — safe and non-overlapping, since
+    /// `shared.conns`' mutex is the single arbiter of which side
+    /// actually removes a given entry.
+    ///
+    /// Idempotent — safe to call more than once (a test proving this
+    /// phase in isolation, then the eventual real `Drop`; a second call
+    /// finds `conns`/`recycled`/`retained_dead` already empty).
     pub fn disconnect_listener(&mut self) {
         self.shared.dropping.store(true, Ordering::Release);
         stop_accept_loop(&self.shared);
         self.shared.accept_cv.notify_all();
-        let mut st = self.shared.accept.lock().unwrap();
-        st.recycled.clear();
-        st.retained_dead.clear();
+        {
+            let mut st = self.shared.accept.lock().unwrap();
+            st.recycled.clear();
+            st.retained_dead.clear();
+        }
+        let drained: Vec<ConnHandle> = {
+            let mut map = self.shared.conns.lock().unwrap();
+            map.drain().map(|(_, conn)| conn).collect()
+        };
+        for conn in drained {
+            conn.read_slot.cancel(conn.raw.0);
+            conn.write_slot.cancel(conn.raw.0);
+            drop(conn.sender);
+            drop(conn.owned); // CloseHandle -- forces any pending I/O to complete/error
+            self.detached_workers.push(conn.reader_jh);
+            self.detached_workers.push(conn.writer_jh);
+        }
     }
 
-    /// Phase two: tell the reaper to drain and tear down every remaining
-    /// connection (each one's own reader/writer join, plus — now that
-    /// `dropping` is set — an immediate close instead of a recycle), then
-    /// wait for the accept thread and the reaper thread, sharing ONE
-    /// `budget`-derived absolute deadline (ADR 0041 "the joins share ONE
-    /// 20 s absolute deadline, each wait taking the remaining budget").
-    /// `true` iff both finished within budget; `false` (LOUD — the
-    /// caller must report it) on expiry. Call [`disconnect_listener`]
-    /// first — this method does not call it, so the two phases stay
-    /// independently observable (and independently testable).
+    /// Phase two: tell the reaper to drain (a no-op for any connection
+    /// `disconnect_listener` already claimed; harmless for the rare one
+    /// it lost the race for, see that method's doc), then wait for the
+    /// accept thread, the reaper thread, AND every detached connection
+    /// worker `disconnect_listener` stashed — ALL sharing ONE absolute
+    /// `deadline` (ADR 0041 "the joins share ONE 20 s absolute deadline,
+    /// each wait taking the remaining budget"; Codex round-1 Blocker 3:
+    /// an externally supplied absolute `Instant`, not a budget this
+    /// method computes itself, so `capsule_win::run` can fold its OWN
+    /// closer/reader threads into the identical deadline). `true` iff
+    /// every one finished within budget; `false` (LOUD — the caller MUST
+    /// treat this as terminal, never seal-and-succeed past it) on
+    /// expiry. Call [`disconnect_listener`] first — this method does not
+    /// call it, so the two phases stay independently observable (and
+    /// independently testable).
     ///
     /// [`disconnect_listener`]: Self::disconnect_listener
-    pub fn join_workers(&mut self, budget: Duration) -> bool {
-        let deadline = Instant::now() + budget;
+    pub fn join_workers(&mut self, deadline: Instant) -> bool {
         let mut ok = true;
         if let Some(jh) = self.accept_jh.take() {
             ok = join_within(jh, deadline) && ok;
@@ -1023,22 +1069,33 @@ impl PipeServer {
         if let Some(jh) = self.reaper_jh.take() {
             ok = join_within(jh, deadline) && ok;
         }
+        for jh in self.detached_workers.drain(..) {
+            ok = join_within(jh, deadline) && ok;
+        }
         ok
     }
 }
 
 impl Drop for PipeServer {
-    /// The two teardown phases in order, with the pinned 20 s aggregate
-    /// budget — see [`PipeServer::disconnect_listener`] and
-    /// [`PipeServer::join_workers`]. Every thread this module ever
-    /// spawned is joined by the time this returns, UNLESS the deadline
-    /// expired, in which case it is loudly reported (stderr — `Drop`
-    /// cannot return a `Result`) and simply abandoned: a still-running
-    /// worker thread outlives this `PipeServer` value, but not the
-    /// process, which is exiting through this same teardown regardless.
+    /// The two teardown phases in order, with a FRESH pinned 20 s budget
+    /// computed here — see [`PipeServer::disconnect_listener`] and
+    /// [`PipeServer::join_workers`]. This is the SAFETY-NET path (a bare
+    /// `drop(server)`, or an early-return `?` before the explicit
+    /// `Transport::shutdown_all` call ever runs) — the designed path
+    /// computes ONE deadline in `capsule_win::run` and calls both methods
+    /// explicitly with it, folding the capsule's own closer/reader
+    /// threads into the SAME budget; this `Drop` still works standalone
+    /// for every caller that never does that. Every thread this module
+    /// ever spawned is joined by the time this returns, UNLESS the
+    /// deadline expired, in which case it is loudly reported (stderr —
+    /// `Drop` cannot return a `Result`) and simply abandoned: a
+    /// still-running worker thread outlives this `PipeServer` value, but
+    /// not the process, which is exiting through this same teardown
+    /// regardless.
     fn drop(&mut self) {
         self.disconnect_listener();
-        if !self.join_workers(TEARDOWN_AGGREGATE_DEADLINE) {
+        let deadline = Instant::now() + TEARDOWN_AGGREGATE_DEADLINE;
+        if !self.join_workers(deadline) {
             eprintln!(
                 "sot-pipe: teardown did not complete within its {TEARDOWN_AGGREGATE_DEADLINE:?} \
                  aggregate deadline; a worker thread may still be running"
