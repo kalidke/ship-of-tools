@@ -31,6 +31,17 @@
 //! completion is always consumed by exactly the one thread that got past
 //! this check.
 //!
+//! [`IoSlot::submit_and_wait`] is the CLIENT-facing primitive: it takes a
+//! plain `HANDLE` the caller already owns outright. Every SERVER-side
+//! instance handle instead goes through
+//! [`IoSlot::submit_and_wait_registered`]/[`IoSlot::cancel_registered`]
+//! (ADR 0041 step 6 U1b, Codex round-4), which additionally proves the
+//! handle is still registered — via [`InstanceRegistry::live`] — for
+//! exactly the moment it is handed to the OS, never merely inferring
+//! liveness from some other, staler signal. See [`LiveHandle`]'s own doc
+//! for the invariant this establishes and the "One registry, one closer"
+//! section below for why it is necessary.
+//!
 //! # Reaping: one thread owns every join
 //!
 //! A single dedicated REAPER thread (started in [`PipeServer::bind`],
@@ -126,46 +137,83 @@
 //! stopping (rather than merely losing one slot's worth of capacity and
 //! continuing) is the safer default.
 //!
-//! # One registry, one closer (ADR 0041 step 6 U1b, Codex round-3)
+//! # One registry, one closer, one live-use guard (ADR 0041 step 6 U1b,
+//! Codex rounds 3-4)
 //!
 //! `recycle_instance` never itself calls `CloseHandle` — not on
 //! recycle, not on retain-dead, not once teardown is under way. EVERY
-//! instance handle this module ever creates is registered exactly once,
-//! at creation, in `ServerShared::instances` ([`InstanceRegistry`]) and
-//! stays registered — through any number of recycle/reuse cycles,
-//! through becoming a live connection, through sitting in
-//! `retained_dead` — until [`InstanceRegistry::close_all`] (called
-//! exactly once, from [`PipeServer::disconnect_listener`]) finds and
-//! closes it. Because no OTHER code path ever individually removes an
-//! id from the registry, there is no "removed here, but the remover
-//! assumed someone else would close it" gap for a competing thread to
-//! land in: whichever of this module's several buckets (the accept
+//! instance handle this module ever creates is created AND registered
+//! ATOMICALLY, in [`InstanceRegistry::create_and_register`] (round-4:
+//! creation and registration share ONE lock section with
+//! [`InstanceRegistry::close_all`], so a handle can never come into
+//! existence — or be recreated — in a window `close_all` has already
+//! passed), and stays registered — through any number of recycle/reuse
+//! cycles, through becoming a live connection, through sitting in
+//! `retained_dead` — until `close_all` (called exactly once, from
+//! [`PipeServer::disconnect_listener`]) finds and closes it. Because no
+//! OTHER code path ever individually removes an id from the registry,
+//! there is no "removed here, but the remover assumed someone else would
+//! close it" gap: whichever of this module's several buckets (the accept
 //! loop's own pending instance, `recycled`, `retained_dead`, or a live
 //! `ConnHandle` in `conns`) an id's instance currently sits in, at the
 //! instant `close_all` runs it is found and closed — independent of
-//! `conns`' own, unrelated Rust-level bookkeeping timing. This directly
-//! kills the whole class of races Codex's round-3 pass found in the
-//! previous, `ServerShared::dropping`-checked-per-call-site design: an
-//! accept iteration that clears `AcceptState::current` before observing
-//! teardown no longer matters (the registry, not `current`, is what
-//! `close_all` consults); a connection the reaper claims from `conns`
-//! moments before `disconnect_listener`'s own (now merely bookkeeping)
-//! drain no longer matters either (its id was never tied to `conns`
-//! membership in the first place). Every remaining
-//! `ServerShared::dropping` check in `recycle_instance`/`accept_loop` is
-//! now a pure CLEANLINESS optimization (skip a pointless
-//! `DisconnectNamedPipe`/`ConnectNamedPipe` follow-up and a possible
-//! spurious `AcceptError` once teardown is under way) — never a safety
-//! decision; a stale read there can at worst waste one OS call, never
-//! leak or double-close a handle.
+//! `conns`' own, unrelated Rust-level bookkeeping timing.
+//!
+//! That closes the NAME-leak races (round 3). It does NOT, by itself,
+//! make USING a handle safe: `close_all` can run at any instant, and
+//! Windows can and does reuse a closed handle's numeric value for an
+//! unrelated object soon after — so a stale raw `HANDLE` passed to
+//! `CancelIoEx`/`DisconnectNamedPipe`/a fresh `ConnectNamedPipe`/
+//! `ReadFile`/`WriteFile` SUBMISSION is a genuine use-after-close, not
+//! merely a harmless failed call (round 4). The fix: [`InstanceRegistry`]
+//! is a `RwLock`, and [`InstanceRegistry::live`] hands back a
+//! [`LiveHandle`] that holds the READ side for exactly the span of ONE
+//! such call — `close_all` needs the WRITE side, which cannot be granted
+//! while any `LiveHandle` (for any id) is outstanding, so a handle is
+//! NEVER closed while it is mid-use, and never used once closed. This is
+//! deliberately narrow: a `LiveHandle` is NEVER held across
+//! [`wait_overlapped`]'s own blocking wait (only reads/writes that are
+//! themselves fast, non-blocking Win32 calls run under it), so
+//! `disconnect_listener`'s "never blocks" contract survives — see
+//! `LiveHandle`'s own doc.
+//!
+//! Every remaining `ServerShared::dropping` check in
+//! `recycle_instance`/`accept_loop` is now a pure CLEANLINESS
+//! optimization (skip a pointless `DisconnectNamedPipe`/`ConnectNamedPipe`
+//! follow-up and a possible spurious `AcceptError` once teardown is under
+//! way) — never a safety decision; a stale read there can at worst waste
+//! one OS call, never leak, double-close, or use-after-close a handle.
 //!
 //! This is also what makes the pipe NAME actually disappear promptly on
 //! teardown (ADR 0041 Lifecycle: "the pipe NAME disappears before any
 //! blocking join") instead of only when the whole `ServerShared` finally
-//! drops — `close_all` never blocks (every entry is one `CloseHandle`,
-//! not a join), so `disconnect_listener` can call it synchronously and
-//! return with every instance already gone. See [`InstanceRegistry`]'s
-//! own doc for the ownership invariant stated on the type itself.
+//! drops — `close_all` never blocks on anything but its own lock (every
+//! entry is one `CloseHandle`, not a join), so `disconnect_listener` can
+//! call it synchronously and return with every instance already gone.
+//!
+//! # Pending-I/O completion proof
+//!
+//! `CancelIoEx` only REQUESTS cancellation, and an external `CloseHandle`
+//! only forces a pending op to complete or error — neither WAITS for
+//! that to actually happen. Microsoft's own overlapped-I/O rules require
+//! the `OVERLAPPED` structure, its event, and any I/O buffer to remain
+//! valid until the kernel is DONE with a GENUINELY submitted (i.e.
+//! `ERROR_IO_PENDING`) op — an error return from `GetOverlappedResult`
+//! alone is not that proof, since an external close can race the call
+//! itself. [`wait_overlapped`] additionally waits on the OVERLAPPED's own
+//! event in that case (bounded, never Win32 `INFINITE`); a
+//! SYNCHRONOUSLY-completed op (the OS call itself returned success) needs
+//! no such wait — there is nothing left pending for the kernel to still
+//! be doing, so a later `GetOverlappedResult` failure there just means
+//! the handle is no longer valid for querying the byte count, not that
+//! memory safety is at risk. If a GENUINELY pending op's completion is
+//! still not observed within the bound, this module can never safely
+//! return normally — [`CompletionUnproven`] is the marker every caller
+//! must react to by leaking (never freeing) whatever storage it handed
+//! to the OS, or, where that storage is caller-owned and cannot be
+//! leaked on the caller's behalf ([`PipeClient::write_all`]/
+//! [`PipeClient::read`]), aborting the process. See that marker's own
+//! doc.
 //!
 //! # Byte-bounded both directions
 //!
@@ -187,7 +235,7 @@ use std::collections::{HashMap, VecDeque};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, RwLock, RwLockReadGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -436,6 +484,49 @@ fn is_concurrent_submit(e: &std::io::Error) -> bool {
         .is_some_and(|inner| inner.is::<ConcurrentSubmitMarker>())
 }
 
+/// Marker error (ADR 0041 step 6 U1b, Codex round-4 "pending-I/O
+/// completion proof"): a GENUINELY PENDING overlapped op's completion
+/// could not be affirmatively observed within
+/// [`OVERLAPPED_COMPLETION_PROOF_TIMEOUT`]. `CancelIoEx` only REQUESTS
+/// cancellation; Microsoft's synchronous/asynchronous I/O rules require
+/// the `OVERLAPPED`, its event, and any I/O buffer to remain valid until
+/// the kernel is DONE with them — an error return alone is not that
+/// proof. This module cannot safely return normally in that case:
+///
+/// - Every SERVER-side caller ([`accept_loop`], [`reader_loop`],
+///   [`writer_loop`]) owns the buffer/slot it handed to the OS outright
+///   and MUST permanently leak it — `std::mem::forget` an extra
+///   `Arc<IoSlot>` clone (so the underlying allocation, including the
+///   `OVERLAPPED` and its event, is never freed) and `std::mem::forget`
+///   the I/O buffer — then treat the connection (or the accept loop
+///   itself) as unrecoverably gone, reported loudly (`eprintln!`), never
+///   silently. This matches `join_within`'s own abandonment philosophy:
+///   never silently unsafe, but also never a process-wide abort for a
+///   condition scoped to one connection.
+/// - [`PipeClient::write_all`]/[`PipeClient::read`] receive a BORROWED
+///   buffer from their own caller — this module cannot leak memory it
+///   does not own, and the caller may free or reuse that memory the
+///   instant this call returns. The only safe response left is to abort
+///   the whole process (`std::process::abort()`) rather than risk the
+///   kernel writing into (or reading stale bytes from) memory that has
+///   already been freed or reused.
+#[derive(Debug)]
+struct CompletionUnproven;
+impl std::fmt::Display for CompletionUnproven {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "a genuinely pending overlapped op's completion could not be affirmatively \
+             observed; its storage must be leaked, never reused",
+        )
+    }
+}
+impl std::error::Error for CompletionUnproven {}
+
+fn is_completion_unproven(e: &std::io::Error) -> bool {
+    e.get_ref()
+        .is_some_and(|inner| inner.is::<CompletionUnproven>())
+}
+
 /// The Win32 error codes that mean "the pipe is disconnected, broken, or
 /// being closed" — the family both a live connection's read/write AND an
 /// in-flight `ConnectNamedPipe` can report when a peer vanishes.
@@ -493,20 +584,24 @@ impl IoSlot {
     }
 
     /// Attempt to submit one overlapped op (`issue`, returning the raw
-    /// `BOOL` of `ConnectNamedPipe`/`ReadFile`/`WriteFile`) and block for
-    /// its definitive result. Refuses WITHOUT ever calling `issue` if this
-    /// slot is `Closing` (`Err(aborted)`) or already `Pending`
+    /// `BOOL` of `ReadFile`/`WriteFile`) against a handle THIS CALLER
+    /// already owns outright, and block for its definitive result.
+    /// CLIENT-facing only — see the module doc's "I/O slot" section for
+    /// why server-side instances go through
+    /// [`submit_and_wait_registered`](Self::submit_and_wait_registered)
+    /// instead. Refuses WITHOUT ever calling `issue` if this slot is
+    /// `Closing` (`Err(aborted)`) or already `Pending`
     /// (`Err(ConcurrentSubmitMarker)`) — both checked under the same lock
     /// `cancel` uses, so neither race is possible. `synchronous_ok` names
     /// a synchronous-failure `GetLastError` code that actually means
-    /// success (`ConnectNamedPipe`'s `ERROR_PIPE_CONNECTED`); pass
-    /// `|_| false` for plain reads/writes.
+    /// success; pass `|_| false` for plain reads/writes.
     fn submit_and_wait(
         &self,
         handle: HANDLE,
         issue: impl FnOnce(*mut OVERLAPPED) -> i32,
         synchronous_ok: impl Fn(i32) -> bool,
     ) -> std::io::Result<u32> {
+        let mut genuinely_pending = false;
         {
             let mut st = self.state.lock().unwrap();
             if *st == SlotState::Closing {
@@ -526,6 +621,7 @@ impl IoSlot {
                 let code = err.raw_os_error().unwrap_or(0);
                 if code == ERROR_IO_PENDING as i32 {
                     *st = SlotState::Pending;
+                    genuinely_pending = true;
                 } else if synchronous_ok(code) {
                     return Ok(0);
                 } else {
@@ -535,7 +631,78 @@ impl IoSlot {
                 *st = SlotState::Pending;
             }
         } // lock released BEFORE the (possibly long) wait below.
-        let result = wait_overlapped(handle, self.ptr());
+        let result = wait_overlapped(handle, self.ptr(), genuinely_pending);
+        if let Err(e) = &result {
+            if is_completion_unproven(e) {
+                // Never touch this slot's state again -- see
+                // `CompletionUnproven`'s own doc. The caller MUST leak
+                // whatever storage it owns.
+                return result;
+            }
+        }
+        let mut st = self.state.lock().unwrap();
+        if *st != SlotState::Closing {
+            *st = SlotState::Idle;
+        }
+        result
+    }
+
+    /// Same contract as [`submit_and_wait`](Self::submit_and_wait), for a
+    /// REGISTERED server-side instance (ADR 0041 step 6 U1b, Codex
+    /// round-4): `issue` receives the raw handle only once a
+    /// [`LiveHandle`] proves `id` is still registered in `registry` —
+    /// held for exactly the duration of the `issue` call itself, never
+    /// across the subsequent blocking wait (see [`LiveHandle`]'s own
+    /// doc). If `id` is already gone (closed by
+    /// [`InstanceRegistry::close_all`]), this behaves exactly like this
+    /// module's own cancellation: `Err(aborted_error())`, without ever
+    /// calling `issue` — a torn-down instance is, from every caller's
+    /// perspective, indistinguishable from one THIS module cancelled.
+    fn submit_and_wait_registered(
+        &self,
+        registry: &InstanceRegistry,
+        id: u64,
+        issue: impl FnOnce(HANDLE, *mut OVERLAPPED) -> i32,
+        synchronous_ok: impl Fn(i32) -> bool,
+    ) -> std::io::Result<u32> {
+        let mut genuinely_pending = false;
+        let handle = {
+            let mut st = self.state.lock().unwrap();
+            if *st == SlotState::Closing {
+                return Err(aborted_error());
+            }
+            if *st == SlotState::Pending {
+                return Err(std::io::Error::other(ConcurrentSubmitMarker));
+            }
+            let Some(live) = registry.live(id) else {
+                return Err(aborted_error());
+            };
+            let handle = live.get();
+            self.reset();
+            let ok = issue(handle, self.ptr());
+            drop(live);
+            if ok == 0 {
+                let err = std::io::Error::last_os_error();
+                let code = err.raw_os_error().unwrap_or(0);
+                if code == ERROR_IO_PENDING as i32 {
+                    *st = SlotState::Pending;
+                    genuinely_pending = true;
+                } else if synchronous_ok(code) {
+                    return Ok(0);
+                } else {
+                    return Err(err);
+                }
+            } else {
+                *st = SlotState::Pending;
+            }
+            handle
+        };
+        let result = wait_overlapped(handle, self.ptr(), genuinely_pending);
+        if let Err(e) = &result {
+            if is_completion_unproven(e) {
+                return result;
+            }
+        }
         let mut st = self.state.lock().unwrap();
         if *st != SlotState::Closing {
             *st = SlotState::Idle;
@@ -547,6 +714,9 @@ impl IoSlot {
     /// `CancelIoEx`; either way, latch `Closing` so every FUTURE
     /// `submit_and_wait` call refuses before ever touching the OS again.
     /// Idempotent — safe to call more than once, from any thread.
+    /// CLIENT-facing only — see
+    /// [`cancel_registered`](Self::cancel_registered) for server-side
+    /// instances.
     fn cancel(&self, handle: HANDLE) {
         let mut st = self.state.lock().unwrap();
         if *st == SlotState::Pending {
@@ -555,8 +725,34 @@ impl IoSlot {
         *st = SlotState::Closing;
     }
 
+    /// Same contract as [`cancel`](Self::cancel), for a REGISTERED
+    /// server-side instance: `CancelIoEx` is issued only while a
+    /// [`LiveHandle`] proves `id` is still registered. If `id` is
+    /// already gone, there is nothing to cancel against — its
+    /// `CloseHandle` already forced the pending op to complete/error —
+    /// so this just latches `Closing`, exactly like the plain `cancel`
+    /// always does.
+    fn cancel_registered(&self, registry: &InstanceRegistry, id: u64) {
+        let mut st = self.state.lock().unwrap();
+        if *st == SlotState::Pending {
+            if let Some(live) = registry.live(id) {
+                unsafe { CancelIoEx(live.get(), self.ptr()) };
+            }
+        }
+        *st = SlotState::Closing;
+    }
+
     fn is_closing(&self) -> bool {
         *self.state.lock().unwrap() == SlotState::Closing
+    }
+
+    /// `true` iff an overlapped op has GENUINELY been issued (`issue`
+    /// has run and returned) and this slot has not yet settled back to
+    /// `Idle`/`Closing`. TEST-ONLY consumer: see
+    /// `PipeServer::assert_accept_parked_then_disconnect_listener_for_test`/
+    /// `PipeServer::conn_write_pending_for_test`.
+    fn is_pending(&self) -> bool {
+        *self.state.lock().unwrap() == SlotState::Pending
     }
 }
 
@@ -566,8 +762,8 @@ impl Drop for IoSlot {
     }
 }
 
-/// Bound on the affirmative post-error wait for a pending overlapped op's
-/// OWN completion signal (Codex round-3, "pending-I/O completion
+/// Bound on the affirmative wait for a GENUINELY PENDING overlapped op's
+/// OWN completion signal (Codex round-4, "pending-I/O completion
 /// proof"): Microsoft documents `CancelIoEx` as REQUESTING cancellation,
 /// never waiting for it, and `GetOverlappedResult`'s error return alone
 /// is not itself proof the kernel is done with this `OVERLAPPED` — if
@@ -577,54 +773,79 @@ impl Drop for IoSlot {
 /// `GetOverlappedResult`, that call can fail IMMEDIATELY against the
 /// now-invalid handle without ever having waited on anything. The
 /// completion EVENT's own lifetime is independent of `handle` (this
-/// `IoSlot` owns the event; see `IoSlot::new`/`Drop`), so on ANY error
-/// [`wait_overlapped`] additionally waits on the event directly, to
-/// affirmatively observe the kernel's own completion signal before this
-/// module lets a caller reuse or drop the slot's `OVERLAPPED`/event/I-O
-/// buffer. Bounded, never Win32 `INFINITE` — this crate's own rule (see
+/// `IoSlot` owns the event; see `IoSlot::new`/`Drop`), so on error
+/// [`wait_overlapped`] additionally waits on the event directly — but
+/// ONLY when the op was genuinely submitted asynchronously
+/// (`ERROR_IO_PENDING`); a synchronously-completed op has nothing left
+/// pending and may never signal the event at all (Microsoft's named-pipe
+/// overlapped example notes exactly this), so waiting on it
+/// unconditionally would manufacture a FALSE timeout. Bounded, never
+/// Win32 `INFINITE` — this crate's own rule (see
 /// `fsutil::duration_to_wait_ms`'s doc); in the ordinary case (the error
 /// came from a properly-waited cancellation) the event is ALREADY
-/// signalled, so this returns effectively instantly. A genuine expiry
-/// here would mean the kernel itself never released a submitted op —
-/// reported loudly, never silently assumed safe.
+/// signalled, so this returns effectively instantly.
 const OVERLAPPED_COMPLETION_PROOF_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Block for the definitive result of an overlapped op already submitted
-/// on `handle`/`ov`. On error, additionally waits on the OVERLAPPED's own
-/// event (see [`OVERLAPPED_COMPLETION_PROOF_TIMEOUT`]'s doc) before
-/// returning, so a caller never reuses or drops this slot's storage
-/// before the kernel has affirmatively finished with it.
-fn wait_overlapped(handle: HANDLE, ov: *const OVERLAPPED) -> std::io::Result<u32> {
+/// on `handle`/`ov`. `genuinely_pending` MUST be `true` iff `issue`
+/// itself returned `ERROR_IO_PENDING` (an actual asynchronous
+/// submission) rather than a synchronous result — see
+/// [`OVERLAPPED_COMPLETION_PROOF_TIMEOUT`]'s own doc for why that
+/// distinction is load-bearing. On a GENUINELY pending op whose
+/// completion cannot be affirmatively observed within the bound, this
+/// returns [`CompletionUnproven`] rather than an ordinary error — every
+/// caller MUST react to that marker per its own doc, never treat it as a
+/// normal I/O failure.
+fn wait_overlapped(
+    handle: HANDLE,
+    ov: *const OVERLAPPED,
+    genuinely_pending: bool,
+) -> std::io::Result<u32> {
     let mut transferred: u32 = 0;
     let ok = unsafe { GetOverlappedResult(handle, ov, &mut transferred, 1) };
     if ok == 0 {
         let err = std::io::Error::last_os_error();
+        if !genuinely_pending {
+            // This op completed SYNCHRONOUSLY (`issue` itself returned
+            // success) -- there is nothing left for the kernel to still
+            // be doing with this OVERLAPPED. A failure here means only
+            // that `handle` is no longer valid for QUERYING the result
+            // (e.g. an external close raced this exact call), never that
+            // a pending kernel operation might still touch this memory.
+            // Nothing to prove; return the plain error.
+            return Err(err);
+        }
         let event = unsafe { (*ov).hEvent };
         let ms = crate::fsutil::duration_to_wait_ms(OVERLAPPED_COMPLETION_PROOF_TIMEOUT);
-        match unsafe { WaitForSingleObject(event, ms) } {
-            WAIT_OBJECT_0 => {}
+        return match unsafe { WaitForSingleObject(event, ms) } {
+            WAIT_OBJECT_0 => Err(err),
             WAIT_TIMEOUT => {
                 eprintln!(
-                    "sot-pipe: overlapped completion not affirmatively observed within \
-                     {OVERLAPPED_COMPLETION_PROOF_TIMEOUT:?} of an error return; proceeding \
-                     without that proof (see wait_overlapped's own doc)"
+                    "sot-pipe: a genuinely pending overlapped op's completion was not \
+                     affirmatively observed within {OVERLAPPED_COMPLETION_PROOF_TIMEOUT:?}; its \
+                     OVERLAPPED/event/buffer must be leaked, never reused (see \
+                     CompletionUnproven's own doc)"
                 );
+                Err(std::io::Error::other(CompletionUnproven))
             }
             WAIT_FAILED => {
                 eprintln!(
                     "sot-pipe: WaitForSingleObject on the overlapped completion event failed \
-                     ({:?}) while establishing the completion proof",
+                     ({:?}) while establishing the completion proof; leaking rather than risking \
+                     a use-after-free",
                     std::io::Error::last_os_error()
                 );
+                Err(std::io::Error::other(CompletionUnproven))
             }
             other => {
                 eprintln!(
                     "sot-pipe: WaitForSingleObject on the overlapped completion event returned \
-                     an unexpected result ({other:#x}) while establishing the completion proof"
+                     an unexpected result ({other:#x}) while establishing the completion proof; \
+                     leaking rather than risking a use-after-free"
                 );
+                Err(std::io::Error::other(CompletionUnproven))
             }
-        }
-        return Err(err);
+        };
     }
     Ok(transferred)
 }
@@ -755,72 +976,161 @@ impl StartGate {
     }
 }
 
-/// Every pipe-instance HANDLE this server ever creates is registered
-/// here exactly once, at creation, and stays registered — through any
+/// A registry-verified, temporarily-live view of one instance's raw
+/// `HANDLE` — the ONLY way any code in this module may pass a raw
+/// SERVER-side instance handle to a Win32 call that submits new work
+/// against it (`ConnectNamedPipe`/`ReadFile`/`WriteFile`) or cancels/
+/// disconnects it (`CancelIoEx`/`DisconnectNamedPipe`).
+///
+/// INVARIANT: a handle is DEREFERENCED (passed to any such Win32 call)
+/// only while THIS guard proves the registry still considers it live.
+/// The guard holds [`InstanceRegistry`]'s `RwLock` READ side for its
+/// whole lifetime, and [`InstanceRegistry::close_all`] cannot acquire
+/// the WRITE side — and therefore cannot run `CloseHandle` on ANY
+/// instance — while even ONE `LiveHandle` (for any id) is outstanding
+/// anywhere. Take it, use its `HANDLE` for exactly ONE Win32 call, then
+/// drop it immediately: NEVER hold it across [`wait_overlapped`]'s own
+/// blocking wait — the kernel already has an established I/O context
+/// tied to the handle value used at submission time, so the wait itself
+/// needs no further guarding, and holding a guard across it would let a
+/// single stalled connection's read/write block `close_all` (and
+/// therefore `disconnect_listener`) indefinitely, exactly the "never
+/// blocks" contract this module promises elsewhere.
+struct LiveHandle<'a> {
+    _read: RwLockReadGuard<'a, RegistryState>,
+    handle: SendableHandle,
+}
+
+impl LiveHandle<'_> {
+    fn get(&self) -> HANDLE {
+        self.handle.0
+    }
+}
+
+/// [`InstanceRegistry`]'s internal state: either open (mapping ids to
+/// their currently-live handle) or permanently closed.
+enum RegistryState {
+    Open(HashMap<u64, SendableHandle>),
+    /// [`InstanceRegistry::close_all`] has run — permanently; never
+    /// reopened.
+    Closed,
+}
+
+/// The outcome of [`InstanceRegistry::create_and_register`].
+enum CreateOutcome {
+    Created(u64, SendableHandle),
+    CreateFailed(std::io::Error),
+    /// The registry was already `Closed` — `make` was never called.
+    ShuttingDown,
+}
+
+/// Every pipe-instance HANDLE this server ever creates is created AND
+/// registered here ATOMICALLY (see [`create_and_register`]
+/// (Self::create_and_register)), and stays registered — through any
 /// number of recycle/reuse cycles, through becoming a live connection,
 /// through sitting in `AcceptState::retained_dead` — until
-/// [`close_all`](Self::close_all) finds and closes it. INVARIANT: every
-/// instance handle has exactly one closer. In this module's own normal
-/// operation (see the module doc's "Continuous name hold" section) that
-/// closer is NEVER invoked — an instance is recycled or retained-dead
-/// forever, never actually closed, while the server intends to keep
-/// accepting. The ONE exception is `close_all`, called EXACTLY once,
-/// from [`PipeServer::disconnect_listener`]: it atomically drains every
-/// currently-registered id and closes each one directly, then
-/// permanently refuses ([`register`](Self::register) closes-on-arrival
-/// instead of admitting) any later registration. Because no OTHER code
-/// path ever individually removes an id, there is no "removed here, but
-/// the remover assumed someone else would close it" gap: whichever
-/// bucket (the accept loop's own pending instance, `recycled`,
-/// `retained_dead`, or a live `ConnHandle` in `conns`) an id's instance
-/// currently sits in, at the instant `close_all` runs it is found and
-/// closed — independent of `conns`' own, unrelated bookkeeping timing.
+/// [`close_all`](Self::close_all) finds and closes it.
+///
+/// INVARIANT: every instance handle has exactly one closer, AND a
+/// handle is only ever passed to an OS call while a [`LiveHandle`]
+/// proves it live (see that type's own doc). In this module's own
+/// normal operation (see the module doc's "Continuous name hold"
+/// section) the closer is NEVER invoked — an instance is recycled or
+/// retained-dead forever, never actually closed, while the server
+/// intends to keep accepting. The ONE exception is `close_all`, called
+/// EXACTLY once, from [`PipeServer::disconnect_listener`]: it atomically
+/// drains every currently-registered id and closes each one directly,
+/// then permanently refuses (`create_and_register` reports
+/// `ShuttingDown` instead of ever calling its `make` closure) any later
+/// creation. Because no OTHER code path ever individually removes an id,
+/// there is no "removed here, but the remover assumed someone else would
+/// close it" gap: whichever bucket (the accept loop's own pending
+/// instance, `recycled`, `retained_dead`, or a live `ConnHandle` in
+/// `conns`) an id's instance currently sits in, at the instant
+/// `close_all` runs it is found and closed — independent of `conns`'
+/// own, unrelated bookkeeping timing.
 struct InstanceRegistry {
     next_id: AtomicU64,
-    /// `None` once `close_all` has run — permanently; this registry is
-    /// never reopened.
-    live: Mutex<Option<HashMap<u64, SendableHandle>>>,
+    state: RwLock<RegistryState>,
 }
 
 impl InstanceRegistry {
     fn new() -> Self {
         Self {
             next_id: AtomicU64::new(0),
-            live: Mutex::new(Some(HashMap::new())),
+            state: RwLock::new(RegistryState::Open(HashMap::new())),
         }
     }
 
-    /// Register a freshly created (or first-bound) instance handle,
-    /// returning its id. If `close_all` has ALREADY run, this closes
-    /// `handle` itself, synchronously, right here, and returns `None` —
-    /// the caller must treat the handle as already gone: never recycle
-    /// it, never hand it to a new connection, never touch it again.
-    fn register(&self, handle: SendableHandle) -> Option<u64> {
-        let mut live = self.live.lock().unwrap();
-        match live.as_mut() {
-            Some(map) => {
-                let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-                map.insert(id, handle);
-                Some(id)
-            }
-            None => {
-                drop(live);
-                unsafe { CloseHandle(handle.0) };
-                None
-            }
+    /// Create a NEW instance and register it, ATOMICALLY with respect to
+    /// [`close_all`](Self::close_all) (Codex round-4 finding 1): both this
+    /// method and `close_all` take the SAME lock's WRITE side, so either
+    /// `make` runs to completion and its handle is inserted BEFORE
+    /// `close_all` can ever observe this registry as fully drained, or
+    /// the registry is ALREADY `Closed` and `make` never runs at all —
+    /// there is no window where a handle exists, holds (or is about to
+    /// recreate) the pipe NAME, and is not yet in the map for
+    /// `close_all` to find. `make` is `CreateNamedPipeW` wrapped by the
+    /// caller — a local syscall, not expected to block meaningfully —
+    /// held under this write lock as a deliberate, rare-and-bounded
+    /// exception to this module's usual "never block disconnect_listener"
+    /// rule, exactly because instance CREATION and teardown's
+    /// `close_all` must never interleave.
+    fn create_and_register(
+        &self,
+        make: impl FnOnce() -> std::io::Result<OwnedHandle>,
+    ) -> CreateOutcome {
+        let mut state = self.state.write().unwrap();
+        match &mut *state {
+            RegistryState::Closed => CreateOutcome::ShuttingDown,
+            RegistryState::Open(map) => match make() {
+                Ok(owned) => {
+                    let raw = SendableHandle(owned.as_raw_handle() as HANDLE);
+                    // From this point, THIS registry is the sole future
+                    // closer -- never Rust's own `Drop`.
+                    std::mem::forget(owned);
+                    let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+                    map.insert(id, raw);
+                    CreateOutcome::Created(id, raw)
+                }
+                Err(e) => CreateOutcome::CreateFailed(e),
+            },
         }
     }
 
-    /// The one atomic drain: close EVERY instance currently registered —
-    /// regardless of which of this module's several buckets currently
-    /// references it — then permanently close any FUTURE registration on
-    /// arrival instead. Never blocks: every entry is a single
+    /// Take a temporarily-live view of `id`'s handle for exactly ONE
+    /// Win32 call — see [`LiveHandle`]'s own doc for the invariant this
+    /// establishes. `None` if `id` is not currently registered (already
+    /// closed by `close_all`).
+    fn live(&self, id: u64) -> Option<LiveHandle<'_>> {
+        let read = self.state.read().unwrap();
+        match &*read {
+            RegistryState::Open(map) => {
+                let handle = *map.get(&id)?;
+                Some(LiveHandle { _read: read, handle })
+            }
+            RegistryState::Closed => None,
+        }
+    }
+
+    /// The one atomic drain-and-shutdown: close EVERY instance currently
+    /// registered — regardless of which of this module's several
+    /// buckets currently references it — then permanently transition to
+    /// `Closed` (future `create_and_register`/`live` calls report
+    /// `ShuttingDown`/`None`). Takes the WRITE side of the SAME lock
+    /// `live`/`create_and_register` use, so this cannot run concurrently
+    /// with (or interleave into the middle of) either — see
+    /// [`LiveHandle`]'s and `create_and_register`'s own docs. Never
+    /// blocks on anything but that lock: every entry is one
     /// `CloseHandle`, not a join.
     fn close_all(&self) {
-        let map = self.live.lock().unwrap().take().unwrap_or_default();
-        for (_, handle) in map {
-            unsafe { CloseHandle(handle.0) };
+        let mut state = self.state.write().unwrap();
+        if let RegistryState::Open(map) = &mut *state {
+            for (_, handle) in map.drain() {
+                unsafe { CloseHandle(handle.0) };
+            }
         }
+        *state = RegistryState::Closed;
     }
 }
 
@@ -831,7 +1141,7 @@ impl InstanceRegistry {
 /// entirely [`InstanceRegistry`]'s job (`registry_id` is this
 /// connection's persistent id there, registered once at creation and
 /// never released individually) — this struct's own `raw` is a
-/// non-owning reference for I/O calls only.
+/// non-owning reference, usable only through a [`LiveHandle`].
 struct ConnHandle {
     raw: SendableHandle,
     registry_id: u64,
@@ -875,12 +1185,13 @@ struct AcceptState {
     /// down. See the module doc's "Continuous name hold" section.
     retained_dead: Vec<(u64, SendableHandle)>,
     /// The accept loop's currently in-flight `ConnectNamedPipe` attempt,
-    /// if any — consulted so [`stop_accept_loop`] can [`IoSlot::cancel`]
-    /// exactly the operation that's actually pending, from whichever
-    /// thread discovers a reason to stop (the caller dropping the
-    /// server, or the reaper thread finding a `DisconnectNamedPipe`
-    /// failure while tearing down an unrelated connection).
-    current: Option<(SendableHandle, Arc<IoSlot>)>,
+    /// if any — consulted so [`stop_accept_loop`] can
+    /// [`IoSlot::cancel_registered`] exactly the operation that's
+    /// actually pending, from whichever thread discovers a reason to
+    /// stop (the caller dropping the server, or the reaper thread
+    /// finding a `DisconnectNamedPipe` failure while tearing down an
+    /// unrelated connection).
+    current: Option<(u64, SendableHandle, Arc<IoSlot>)>,
 }
 
 /// A message to [`reaper_loop`] — the only thread that ever removes a
@@ -913,11 +1224,11 @@ struct ServerShared {
     /// `accept_loop` also read it, purely as a CLEANLINESS optimization
     /// (skip a pointless OS call once teardown is under way) — never a
     /// safety decision; see [`InstanceRegistry`]'s own doc for why actual
-    /// instance closing no longer depends on this flag at all.
+    /// instance closing/use no longer depends on this flag at all.
     dropping: AtomicBool,
     /// Every pipe-instance handle this server has ever created, and the
-    /// SOLE mechanism that ever closes one — see [`InstanceRegistry`]'s
-    /// own doc for the ownership invariant.
+    /// SOLE mechanism that ever closes one or proves one live — see
+    /// [`InstanceRegistry`]'s own doc for the ownership invariant.
     instances: InstanceRegistry,
 }
 
@@ -964,20 +1275,17 @@ impl std::fmt::Debug for PipeServer {
 impl PipeServer {
     /// Create `\\.\pipe\sot-voyage-<voyage_id>` (squat-detected via
     /// `FILE_FLAG_FIRST_PIPE_INSTANCE` on this, its first instance,
-    /// created synchronously so a squat is a loud, immediate `bind`
-    /// failure) and start the reaper and accept threads. `max_instances`
-    /// must be in Win32's own documented `1..=255` range.
+    /// created AND REGISTERED synchronously — Codex round-4 finding 1 —
+    /// so a squat is a loud, immediate `bind` failure and no unregistered
+    /// handle can ever outlive this constructor) and start the reaper
+    /// and accept threads. `max_instances` must be in Win32's own
+    /// documented `1..=255` range.
     pub fn bind(voyage_id: &str, max_instances: u32) -> Result<Self, PipeError> {
         validate_voyage_id(voyage_id)?;
         if !(1..=255).contains(&max_instances) {
             return Err(PipeError::InvalidMaxInstances);
         }
         let name = pipe_name_wide(voyage_id);
-        let first =
-            create_pipe_instance(&name, true, max_instances).map_err(|e| PipeError::Io {
-                op: "CreateNamedPipeW(first instance)",
-                source: e,
-            })?;
 
         let (events_tx, events_rx) = mpsc::sync_channel(EVENTS_CHANNEL_CAP);
         let (reaper_tx, reaper_rx) =
@@ -987,7 +1295,7 @@ impl PipeServer {
             next_id: AtomicU64::new(0),
             accept: Mutex::new(AcceptState {
                 accept_stopping: false,
-                created: 1,
+                created: 0,
                 recycled: VecDeque::new(),
                 retained_dead: Vec::new(),
                 current: None,
@@ -1000,6 +1308,32 @@ impl PipeServer {
             dropping: AtomicBool::new(false),
             instances: InstanceRegistry::new(),
         });
+
+        // Create AND register the squat-detecting first instance
+        // synchronously, before this constructor ever returns (Codex
+        // round-4 finding 1): `shared` is a brand-new `Arc` no other
+        // code has a reference to yet, so `disconnect_listener` cannot
+        // possibly have run against it -- `ShuttingDown` here would mean
+        // this module's own invariant is broken, not a real runtime
+        // condition.
+        let (first_id, first_raw) = match shared
+            .instances
+            .create_and_register(|| create_pipe_instance(&shared.name, true, max_instances))
+        {
+            CreateOutcome::Created(id, raw) => {
+                shared.accept.lock().unwrap().created = 1;
+                (id, raw)
+            }
+            CreateOutcome::CreateFailed(e) => {
+                return Err(PipeError::Io {
+                    op: "CreateNamedPipeW(first instance)",
+                    source: e,
+                })
+            }
+            CreateOutcome::ShuttingDown => {
+                unreachable!("a brand-new PipeServer's registry cannot already be torn down")
+            }
+        };
 
         // Spawn the reaper FIRST. If the accept thread then fails to
         // spawn, unwind the reaper (it has nothing queued yet, so its
@@ -1015,10 +1349,17 @@ impl PipeServer {
         let reaper_jh = match reaper_jh {
             Ok(jh) => jh,
             Err(e) => {
+                // The first instance was already created AND registered
+                // above (Codex round-4: `mem::forget`'d into
+                // `shared.instances`, no longer under Rust's own Drop) --
+                // with no `PipeServer` ever coming into existence to call
+                // `disconnect_listener`, nothing else will ever close it.
+                // `close_all` here is this failure path's ONLY chance.
+                shared.instances.close_all();
                 return Err(PipeError::Io {
                     op: "spawn reaper thread",
                     source: e,
-                })
+                });
             }
         };
 
@@ -1026,11 +1367,13 @@ impl PipeServer {
             .name("sot-pipe-accept".into())
             .spawn({
                 let shared = Arc::clone(&shared);
-                move || accept_loop(shared, first)
+                move || accept_loop(shared, first_id, first_raw)
             });
         let accept_jh = match accept_jh {
             Ok(jh) => jh,
             Err(e) => {
+                // Same reasoning as the reaper-spawn-failure arm above.
+                shared.instances.close_all();
                 let _ = shared.reaper_tx.send(ReaperMsg::Shutdown);
                 reaper_jh.join().ok();
                 return Err(PipeError::Io {
@@ -1110,26 +1453,69 @@ impl PipeServer {
     }
 }
 
-/// TEST-ONLY (ADR 0041 step 6 U1b, Codex round-3 test premise-gap fix).
-/// Not compiled into a production build — `feature = "test-support"`
-/// only (see `Cargo.toml`'s own doc on that feature).
+/// TEST-ONLY (ADR 0041 step 6 U1b, Codex round-3/4 test premise-gap
+/// fixes). Not compiled into a production build — `feature =
+/// "test-support"` only (see `Cargo.toml`'s own doc on that feature).
 #[cfg(any(test, feature = "test-support"))]
 impl PipeServer {
-    /// Block until the accept loop has genuinely issued its CURRENT
-    /// `ConnectNamedPipe` and is waiting on it — i.e. until
-    /// `AcceptState::current` is observed populated — or `timeout`
-    /// elapses. Turns "a pending accept handle existed at teardown" from
-    /// a hoped-for race outcome (the previous version of this test just
-    /// called `disconnect_listener` right after `expect_accepted`, with
-    /// no guarantee the accept loop had even started its NEXT iteration)
-    /// into a deterministically PROVEN precondition: a caller that
-    /// asserts this returns `true` before tearing down KNOWS a second
-    /// instance was genuinely pending, not merely hopes the timing
-    /// worked out.
-    pub fn accept_parked_for_test(&self, timeout: Duration) -> bool {
+    /// Poll until the accept loop's CURRENT `ConnectNamedPipe` has
+    /// GENUINELY been issued (`IoSlot`'s own `SlotState::Pending`, set
+    /// only once `issue` has actually run and returned — NOT
+    /// `AcceptState::current.is_some()`, which is populated BEFORE
+    /// `ConnectNamedPipe` is ever called and so cannot prove submission
+    /// happened at all — Codex round-4 finding 3) or `timeout` elapses,
+    /// then — in this SAME call, so no caller can ever interleave
+    /// anything into the gap between "proven parked" and "torn down"
+    /// (closing the round-4 "poll-to-teardown TOCTOU") — calls
+    /// `disconnect_listener` while still holding that proof. Returns
+    /// `true` iff the parked state was observed (and `disconnect_listener`
+    /// was therefore called); `false` on timeout (`disconnect_listener`
+    /// NOT called — the caller must decide what to do).
+    pub fn assert_accept_parked_then_disconnect_listener_for_test(
+        &mut self,
+        timeout: Duration,
+    ) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            if self.shared.accept.lock().unwrap().current.is_some() {
+            let slot = self
+                .shared
+                .accept
+                .lock()
+                .unwrap()
+                .current
+                .as_ref()
+                .map(|(_, _, slot)| Arc::clone(slot));
+            if let Some(slot) = slot {
+                if slot.is_pending() {
+                    self.disconnect_listener();
+                    return true;
+                }
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(JOIN_POLL_INTERVAL);
+        }
+    }
+
+    /// Poll until `conn_id`'s writer has genuinely issued a pending
+    /// `WriteFile` (its own `IoSlot`'s `SlotState::Pending`) or `timeout`
+    /// elapses. `PipeError::QueueFull` alone only proves the outbound
+    /// BYTE budget is reserved — not that the writer thread has actually
+    /// reached the point of submitting a `WriteFile` against a peer that
+    /// never drains (Codex round-4 finding 3).
+    pub fn conn_write_pending_for_test(&self, conn_id: ConnId, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let pending = self
+                .shared
+                .conns
+                .lock()
+                .unwrap()
+                .get(&conn_id)
+                .map(|c| c.write_slot.is_pending())
+                .unwrap_or(false);
+            if pending {
                 return true;
             }
             if Instant::now() >= deadline {
@@ -1200,27 +1586,29 @@ impl PipeServer {
     /// Phase one of teardown: make the pipe NAME disappear AND issue
     /// cancellation to every worker — synchronous, no blocking join.
     /// Latches [`ServerShared::dropping`] FIRST (see its doc for why),
-    /// cancels a pending accept (if any -- [`stop_accept_loop`]),
-    /// requests cancellation on every currently-live connection's I/O
-    /// (the documented, clean cancellation request; drops each one's
-    /// `sender` too, unblocking a writer idle-waiting on nothing
-    /// queued), then — Codex round-3 discharge of the accept-ownership
-    /// leak and the reaper-outlives-return race — calls
-    /// [`InstanceRegistry::close_all`]: the ONE atomic sweep that closes
-    /// EVERY instance handle still registered ANYWHERE (the accept-
-    /// pending one, every idle `recycled`/`retained_dead` one, and every
-    /// live connection's), independent of whether `shared.conns` still
-    /// holds that connection's `ConnHandle` at this exact instant. A
+    /// cancels a pending accept (if any -- [`stop_accept_loop`]), THEN —
+    /// Codex round-4 finding 1's second bullet: BEFORE touching `conns`
+    /// at all, not after — calls [`InstanceRegistry::close_all`]: the
+    /// ONE atomic sweep that closes EVERY instance handle still
+    /// registered ANYWHERE (the accept-pending one, every idle
+    /// `recycled`/`retained_dead` one, and every live connection's),
+    /// independent of whether `shared.conns` still holds that
+    /// connection's `ConnHandle` at this exact instant. A
     /// `FIRST_PIPE_INSTANCE` probe can win the INSTANT this method
-    /// returns, live connections or not ("never live while nothing can
-    /// answer it" — once this returns, this capsule cannot answer
-    /// regardless of worker state) — see [`InstanceRegistry`]'s own doc
-    /// for why no instance can ever be closed twice or missed, no matter
-    /// which of the accept loop / reaper / this method wins whatever
-    /// race. The reader/writer threads themselves are NOT joined here —
-    /// `disconnect_listener` never blocks — they are stashed in
-    /// `detached_workers` for [`PipeServer::join_workers`] to join under
-    /// the shared deadline.
+    /// returns, live connections or not — see [`InstanceRegistry`]'s own
+    /// doc for why no instance can ever be closed twice or missed, no
+    /// matter which of the accept loop / reaper / this method wins
+    /// whatever race, and [`LiveHandle`]'s own doc for why no OTHER
+    /// thread can be mid-use of a handle when `close_all` closes it.
+    /// Draining `conns` AFTER `close_all` is now pure Rust-level
+    /// bookkeeping — every reader/writer thread for a drained connection
+    /// will find its handle already closed the moment it next touches
+    /// the pipe (via `IoSlot::submit_and_wait_registered`'s own guard),
+    /// which is what actually unblocks it; no separate cancellation
+    /// request is needed here. The reader/writer threads themselves are
+    /// NOT joined here — `disconnect_listener` never blocks — they are
+    /// stashed in `detached_workers` for [`PipeServer::join_workers`] to
+    /// join under the shared deadline.
     ///
     /// Idempotent — safe to call more than once (a test proving this
     /// phase in isolation, then the eventual real `Drop`; a second call
@@ -1230,22 +1618,18 @@ impl PipeServer {
         self.shared.dropping.store(true, Ordering::Release);
         stop_accept_loop(&self.shared);
         self.shared.accept_cv.notify_all();
-        let drained: Vec<ConnHandle> = {
-            let mut map = self.shared.conns.lock().unwrap();
-            map.drain().map(|(_, conn)| conn).collect()
-        };
-        for conn in &drained {
-            conn.read_slot.cancel(conn.raw.0);
-            conn.write_slot.cancel(conn.raw.0);
-        }
         // THE atomic close -- see this method's own doc and
-        // `InstanceRegistry`'s.
+        // `InstanceRegistry`'s. Runs BEFORE the `conns` drain below.
         self.shared.instances.close_all();
         {
             let mut st = self.shared.accept.lock().unwrap();
             st.recycled.clear();
             st.retained_dead.clear();
         }
+        let drained: Vec<ConnHandle> = {
+            let mut map = self.shared.conns.lock().unwrap();
+            map.drain().map(|(_, conn)| conn).collect()
+        };
         for conn in drained {
             drop(conn.sender);
             self.detached_workers.push(conn.reader_jh);
@@ -1335,8 +1719,8 @@ impl Drop for PipeServer {
 fn stop_accept_loop(shared: &Arc<ServerShared>) {
     let mut st = shared.accept.lock().unwrap();
     st.accept_stopping = true;
-    if let Some((h, slot)) = st.current.take() {
-        slot.cancel(h.0);
+    if let Some((id, _raw, slot)) = st.current.take() {
+        slot.cancel_registered(&shared.instances, id);
     }
 }
 
@@ -1363,22 +1747,20 @@ fn terminalize_accept_loop(shared: &Arc<ServerShared>, message: String) {
 /// the dead handle, rather than replacing or closing it, is the correct
 /// response.
 ///
-/// This function itself NEVER calls `CloseHandle` — see
-/// [`InstanceRegistry`]'s own doc: `id` stays registered either way, and
-/// [`InstanceRegistry::close_all`] is the only thing that ever actually
-/// closes it. Once [`ServerShared::dropping`] is set, this function just
-/// returns immediately, touching neither `DisconnectNamedPipe` nor
-/// either queue — a pure CLEANLINESS optimization (a handle that might
-/// already be closed by a racing `close_all` would make
-/// `DisconnectNamedPipe` fail confusingly, and pushing it into a queue
-/// nothing will ever pop from again is pointless); it is never a safety
-/// requirement, since `close_all` finds and closes `id` regardless of
-/// which queue (or neither) it ends up in.
+/// This function itself NEVER calls `CloseHandle`, and NEVER touches the
+/// raw handle except through a [`LiveHandle`] (Codex round-4 finding 3):
+/// `id` stays registered either way, and [`InstanceRegistry::close_all`]
+/// is the only thing that ever actually closes it. If `id` is already
+/// gone (`InstanceRegistry::live` returns `None` — `close_all` already
+/// closed it, or is closing it this instant), this returns immediately,
+/// touching neither `DisconnectNamedPipe` nor either queue: not a
+/// cleanliness nicety here but the load-bearing check that prevents a
+/// stale-handle `DisconnectNamedPipe` call racing `close_all`.
 fn recycle_instance(shared: &Arc<ServerShared>, id: u64, raw: SendableHandle) {
-    if shared.dropping.load(Ordering::Acquire) {
-        return;
-    }
-    let disconnected = unsafe { DisconnectNamedPipe(raw.0) } != 0;
+    let disconnected = match shared.instances.live(id) {
+        Some(live) => (unsafe { DisconnectNamedPipe(live.get()) }) != 0,
+        None => return,
+    };
     if disconnected {
         shared.accept.lock().unwrap().recycled.push_back((id, raw));
         shared.accept_cv.notify_all();
@@ -1459,26 +1841,23 @@ fn report_registration_failure(shared: &Arc<ServerShared>, what: &str, e: impl s
 fn teardown_if_present(shared: &Arc<ServerShared>, conn_id: ConnId, reason: Option<ClosedReason>) {
     let conn = shared.conns.lock().unwrap().remove(&conn_id);
     let Some(conn) = conn else { return };
-    conn.read_slot.cancel(conn.raw.0);
-    conn.write_slot.cancel(conn.raw.0);
+    conn.read_slot.cancel_registered(&shared.instances, conn.registry_id);
+    conn.write_slot.cancel_registered(&shared.instances, conn.registry_id);
     drop(conn.sender); // unblocks a writer idle-waiting on `recv` with nothing queued
     conn.reader_jh.join().ok();
     conn.writer_jh.join().ok();
-    // Codex round-3 discharge ("a reaper-owned connection can survive
-    // the return boundary"): this connection's instance HANDLE is
+    // Codex round-3/4 discharge: this connection's instance HANDLE is
     // closed entirely through `InstanceRegistry` (`conn.registry_id`
     // stayed registered this whole connection's life, independent of
     // `conns` map membership) -- `disconnect_listener`'s own
     // `close_all` finds and closes it correctly regardless of whether
     // that runs before, during, or after THIS function, and regardless
     // of whether the reaper (here) or `disconnect_listener`'s own drain
-    // is what removed the `ConnHandle` from `conns`. This `dropping`
-    // check is therefore a pure CLEANLINESS optimization, not a safety
-    // decision (see `recycle_instance`'s own doc) -- skip a pointless
-    // `DisconnectNamedPipe` attempt once teardown is under way.
-    if !shared.dropping.load(Ordering::Acquire) {
-        recycle_instance(shared, conn.registry_id, conn.raw);
-    }
+    // is what removed the `ConnHandle` from `conns`. `recycle_instance`
+    // itself now checks liveness before touching the handle (round-4),
+    // so calling it unconditionally is safe -- it is a no-op if
+    // `close_all` already claimed this id.
+    recycle_instance(shared, conn.registry_id, conn.raw);
     if let Some(reason) = reason {
         send_lifecycle_event(shared, TransportEvent::Closed(conn_id, reason));
     }
@@ -1504,34 +1883,19 @@ fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
     }
 }
 
-/// Register a just-created (or first-bound) instance with
-/// `shared.instances` and forget its Rust-level `OwnedHandle`-ness —
-/// from this point, [`InstanceRegistry`] is the SOLE future closer (see
-/// its own doc). Returns `None` if `disconnect_listener` already ran:
-/// `register` itself closed `owned`'s handle on arrival, so there is
-/// nothing left to do with it here either way.
-fn register_fresh_instance(
-    shared: &Arc<ServerShared>,
-    owned: OwnedHandle,
-) -> Option<(u64, SendableHandle)> {
-    let raw = SendableHandle(owned.as_raw_handle() as HANDLE);
-    let id = shared.instances.register(raw);
-    std::mem::forget(owned);
-    id.map(|id| (id, raw))
-}
-
 /// Obtain the next instance to listen on: a recycled one (SAME
 /// registered id it was given at its own original creation — see
-/// [`InstanceRegistry`]'s own doc for why recycling never
-/// re-registers) in preference to creating a fresh one (registered here,
-/// via [`register_fresh_instance`]), blocking at the instance cap with
-/// nothing recycled yet. Waits on the plain condvar — every state
-/// change that could satisfy this predicate (`Drop`, a recycle) already
-/// `notify_all`s, so a polling wait would buy nothing. `None` means:
-/// stop accepting — shutdown, a persistent creation failure already
-/// reported via `TransportEvent::AcceptError`, or (rarely) a freshly
-/// created instance that arrived to find the registry already torn
-/// down.
+/// [`InstanceRegistry`]'s own doc for why recycling never re-registers)
+/// in preference to creating a fresh one (via
+/// [`InstanceRegistry::create_and_register`], Codex round-4 finding 1),
+/// blocking at the instance cap with nothing recycled yet. Waits on the
+/// plain condvar — every state change that could satisfy this predicate
+/// (`Drop`, a recycle) already `notify_all`s, so a polling wait would
+/// buy nothing. `None` means: stop accepting — shutdown, a persistent
+/// creation failure already reported via `TransportEvent::AcceptError`,
+/// or (rarely) a creation attempt that found the registry already torn
+/// down (`create_and_register` never even called `CreateNamedPipeW` in
+/// that case).
 fn obtain_instance(shared: &Arc<ServerShared>) -> Option<(u64, SendableHandle)> {
     loop {
         let mut st = shared.accept.lock().unwrap();
@@ -1544,15 +1908,19 @@ fn obtain_instance(shared: &Arc<ServerShared>) -> Option<(u64, SendableHandle)> 
         if st.created < shared.max_instances {
             st.created += 1;
             drop(st);
-            return match create_pipe_instance(&shared.name, false, shared.max_instances) {
-                Ok(owned) => register_fresh_instance(shared, owned),
-                Err(e) => {
+            return match shared
+                .instances
+                .create_and_register(|| create_pipe_instance(&shared.name, false, shared.max_instances))
+            {
+                CreateOutcome::Created(id, raw) => Some((id, raw)),
+                CreateOutcome::CreateFailed(e) => {
                     let mut st = shared.accept.lock().unwrap();
                     st.created -= 1;
                     drop(st);
                     terminalize_accept_loop(shared, e.to_string());
                     None
                 }
+                CreateOutcome::ShuttingDown => None,
             };
         }
         st = shared.accept_cv.wait(st).unwrap();
@@ -1561,21 +1929,15 @@ fn obtain_instance(shared: &Arc<ServerShared>) -> Option<(u64, SendableHandle)> 
 }
 
 /// The accept loop, one dedicated thread for the server's whole life.
-/// `first_instance` is the already-created (with
+/// `(first_id, first_raw)` is the already-created-and-registered (with
 /// `FILE_FLAG_FIRST_PIPE_INSTANCE`) instance from `bind`; every later
 /// instance comes from [`obtain_instance`] (recycled or freshly created,
-/// never carrying that flag). Every instance is registered with
-/// `shared.instances` exactly once — see [`InstanceRegistry`]'s own doc
-/// — for its WHOLE life, independent of how many times it is recycled or
-/// what becomes of the connection it eventually serves.
-fn accept_loop(shared: Arc<ServerShared>, first_instance: OwnedHandle) {
-    let mut pending_first = Some(first_instance);
+/// never carrying that flag).
+fn accept_loop(shared: Arc<ServerShared>, first_id: u64, first_raw: SendableHandle) {
+    let mut pending_first = Some((first_id, first_raw));
     loop {
         let (id, raw) = match pending_first.take() {
-            Some(owned) => match register_fresh_instance(&shared, owned) {
-                Some(entry) => entry,
-                None => return,
-            },
+            Some(entry) => entry,
             None => match obtain_instance(&shared) {
                 Some(entry) => entry,
                 None => return,
@@ -1600,16 +1962,40 @@ fn accept_loop(shared: Arc<ServerShared>, first_instance: OwnedHandle) {
                 recycle_instance(&shared, id, raw);
                 return;
             }
-            st.current = Some((raw, Arc::clone(&slot)));
+            st.current = Some((id, raw, Arc::clone(&slot)));
         }
-        let connect_result = slot.submit_and_wait(
-            raw.0,
-            |ov| unsafe { ConnectNamedPipe(raw.0, ov) },
+        let connect_result = slot.submit_and_wait_registered(
+            &shared.instances,
+            id,
+            |h, ov| unsafe { ConnectNamedPipe(h, ov) },
             |code| code == ERROR_PIPE_CONNECTED as i32,
         );
         shared.accept.lock().unwrap().current = None;
 
-        // Codex round-3: `id`/`raw` stay correctly owned by
+        if let Err(e) = &connect_result {
+            if is_completion_unproven(e) {
+                // Codex round-4 finding 2: never reuse or drop this
+                // slot's OVERLAPPED/event again -- leak an extra
+                // reference to it forever (see `CompletionUnproven`'s
+                // own doc) and stop accepting entirely. The instance's
+                // OWN handle stays registered and will be closed
+                // normally, safely, whenever the server actually tears
+                // down (`CloseHandle` on a handle with genuinely pending
+                // I/O is well documented as safe; it is only THIS
+                // module's own OVERLAPPED/event/buffer memory that must
+                // never be freed early).
+                std::mem::forget(Arc::clone(&slot));
+                terminalize_accept_loop(
+                    &shared,
+                    "a pending ConnectNamedPipe's completion could not be affirmatively observed; \
+                     the accept loop stopped rather than risk a use-after-free"
+                        .to_string(),
+                );
+                return;
+            }
+        }
+
+        // Codex round-3/4: `id`/`raw` stay correctly owned by
         // `InstanceRegistry` regardless of this check's own timing (see
         // that type's doc, and `recycle_instance`'s) -- this is a pure
         // CLEANLINESS optimization, not a safety decision. Once
@@ -1694,7 +2080,7 @@ fn handle_new_connection(
                 if !gate.wait_for_start() {
                     return;
                 }
-                reader_loop(raw, read_slot, conn_id, shared2, torn)
+                reader_loop(read_slot, conn_id, shared2, id, torn)
             })
     };
     let reader_jh = match reader_jh {
@@ -1718,7 +2104,7 @@ fn handle_new_connection(
                 if !gate.wait_for_start() {
                     return;
                 }
-                writer_loop(raw, write_slot, conn_id, rx, shared2, outbound, torn)
+                writer_loop(write_slot, conn_id, rx, shared2, id, outbound, torn)
             })
     };
     let writer_jh = match writer_jh {
@@ -1803,24 +2189,19 @@ fn classify_terminal_error(e: std::io::Error) -> ClosedReason {
 /// time. On any terminal condition this thread does NOT touch `conns` or
 /// join anything itself — it only [`request_teardown`]s and returns.
 fn reader_loop(
-    handle: SendableHandle,
     slot: Arc<IoSlot>,
     conn_id: ConnId,
     shared: Arc<ServerShared>,
+    registry_id: u64,
     torn_down_requested: Arc<AtomicBool>,
 ) {
     let mut buf = vec![0u8; READ_BUF_LEN];
     let reason = loop {
-        let result = slot.submit_and_wait(
-            handle.0,
-            |ov| unsafe {
-                ReadFile(
-                    handle.0,
-                    buf.as_mut_ptr(),
-                    buf.len() as u32,
-                    std::ptr::null_mut(),
-                    ov,
-                )
+        let result = slot.submit_and_wait_registered(
+            &shared.instances,
+            registry_id,
+            |h, ov| unsafe {
+                ReadFile(h, buf.as_mut_ptr(), buf.len() as u32, std::ptr::null_mut(), ov)
             },
             |_| false,
         );
@@ -1835,6 +2216,19 @@ fn reader_loop(
                         "events channel saturated for longer than {BYTES_ABANDON_AFTER:?}; Bytes delivery abandoned"
                     ));
                 }
+            }
+            Err(e) if is_completion_unproven(&e) => {
+                // Codex round-4 finding 2: leak this slot and the
+                // in-flight read buffer forever rather than let either
+                // be freed/reused while the kernel might still write
+                // into them -- see `CompletionUnproven`'s own doc.
+                std::mem::forget(Arc::clone(&slot));
+                std::mem::forget(buf);
+                break ClosedReason::Error(
+                    "a pending read's completion could not be affirmatively observed; its \
+                     buffer was leaked rather than risk a use-after-free"
+                        .to_string(),
+                );
             }
             Err(e) => break classify_terminal_error(e),
         }
@@ -1853,26 +2247,21 @@ fn reader_loop(
 /// the connection torn down. Never touches `shared.conns` — teardown is
 /// always the reaper's.
 fn writer_loop(
-    handle: SendableHandle,
     slot: Arc<IoSlot>,
     conn_id: ConnId,
     rx: Receiver<WriteCmd>,
     shared: Arc<ServerShared>,
+    registry_id: u64,
     outbound: Arc<OutboundBudget>,
     torn_down_requested: Arc<AtomicBool>,
 ) {
     while let Ok(cmd) = rx.recv() {
         let len = cmd.bytes.len();
-        let result = slot.submit_and_wait(
-            handle.0,
-            |ov| unsafe {
-                WriteFile(
-                    handle.0,
-                    cmd.bytes.as_ptr(),
-                    cmd.bytes.len() as u32,
-                    std::ptr::null_mut(),
-                    ov,
-                )
+        let result = slot.submit_and_wait_registered(
+            &shared.instances,
+            registry_id,
+            |h, ov| unsafe {
+                WriteFile(h, cmd.bytes.as_ptr(), cmd.bytes.len() as u32, std::ptr::null_mut(), ov)
             },
             |_| false,
         );
@@ -1882,6 +2271,24 @@ fn writer_loop(
                 if let Some(marker) = cmd.marker {
                     send_lifecycle_event(&shared, TransportEvent::Sent(conn_id, marker));
                 }
+            }
+            Err(e) if is_completion_unproven(&e) => {
+                // Codex round-4 finding 2: leak this slot and the
+                // in-flight write buffer forever -- see
+                // `CompletionUnproven`'s own doc.
+                std::mem::forget(Arc::clone(&slot));
+                std::mem::forget(cmd.bytes);
+                request_teardown(
+                    &shared,
+                    conn_id,
+                    &torn_down_requested,
+                    ClosedReason::Error(
+                        "a pending write's completion could not be affirmatively observed; its \
+                         buffer was leaked rather than risk a use-after-free"
+                            .to_string(),
+                    ),
+                );
+                break;
             }
             Err(e) => {
                 request_teardown(
@@ -2048,6 +2455,13 @@ impl PipeClient {
     /// `Err(PipeError::ConcurrentSubmit)` rather than corrupting the
     /// shared `OVERLAPPED`. Named pipes complete a `WriteFile` as one
     /// atomic operation (byte-mode, no partial writes to retry-loop over).
+    ///
+    /// `bytes` is BORROWED from the caller — if a genuinely pending
+    /// write's completion cannot be affirmatively observed
+    /// ([`CompletionUnproven`]), this module cannot safely leak it on
+    /// the caller's behalf (the caller may free/reuse it the instant
+    /// this call returns), so it aborts the process instead — see
+    /// `CompletionUnproven`'s own doc.
     pub fn write_all(&self, bytes: &[u8]) -> Result<(), PipeError> {
         if bytes.is_empty() {
             return Err(PipeError::EmptyPayload);
@@ -2055,22 +2469,30 @@ impl PipeClient {
         if bytes.len() > u32::MAX as usize {
             return Err(PipeError::PayloadTooLarge(bytes.len()));
         }
-        self.write_slot
-            .submit_and_wait(
-                self.raw.0,
-                |ov| unsafe {
-                    WriteFile(
-                        self.raw.0,
-                        bytes.as_ptr(),
-                        bytes.len() as u32,
-                        std::ptr::null_mut(),
-                        ov,
-                    )
-                },
-                |_| false,
-            )
-            .map(|_| ())
-            .map_err(map_client_io_error("WriteFile"))
+        let result = self.write_slot.submit_and_wait(
+            self.raw.0,
+            |ov| unsafe {
+                WriteFile(
+                    self.raw.0,
+                    bytes.as_ptr(),
+                    bytes.len() as u32,
+                    std::ptr::null_mut(),
+                    ov,
+                )
+            },
+            |_| false,
+        );
+        if let Err(e) = &result {
+            if is_completion_unproven(e) {
+                eprintln!(
+                    "sot-pipe: a pending client WriteFile's completion could not be affirmatively \
+                     observed and its buffer is caller-owned and cannot be safely leaked; \
+                     aborting the process rather than risk a use-after-free"
+                );
+                std::process::abort();
+            }
+        }
+        result.map(|_| ()).map_err(map_client_io_error("WriteFile"))
     }
 
     /// Blocking read into `buf`, cancellable from another thread via
@@ -2084,6 +2506,10 @@ impl PipeClient {
     /// its end (ordered EOF) — NEVER a successful zero-byte completion,
     /// which this method silently retries past (this transport's own
     /// `send`/`write_all` never produce one).
+    ///
+    /// `buf` is BORROWED from the caller — see `write_all`'s own doc for
+    /// why a [`CompletionUnproven`] result here aborts the process
+    /// instead of returning.
     pub fn read(&self, buf: &mut [u8]) -> Result<usize, PipeError> {
         if buf.is_empty() {
             return Err(PipeError::EmptyPayload);
@@ -2108,6 +2534,14 @@ impl PipeClient {
             match result {
                 Ok(0) => continue,
                 Ok(n) => return Ok(n as usize),
+                Err(e) if is_completion_unproven(&e) => {
+                    eprintln!(
+                        "sot-pipe: a pending client ReadFile's completion could not be \
+                         affirmatively observed and its buffer is caller-owned and cannot be \
+                         safely leaked; aborting the process rather than risk a use-after-free"
+                    );
+                    std::process::abort();
+                }
                 Err(e) if matches!(e.raw_os_error(), Some(c) if is_disconnect_family(c)) => {
                     return Ok(0)
                 }

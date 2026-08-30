@@ -534,9 +534,17 @@ fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
 /// with no guarantee that race had resolved, so it exercised live-
 /// connection closure but did NOT deterministically prove a pending
 /// accept handle existed at teardown too (the actual defect this test
-/// exists to catch — Codex round-3 finding 1). `accept_parked_for_test`
-/// blocks until `AcceptState::current` is genuinely populated, turning
-/// that into a proven precondition instead of a hoped-for race outcome.
+/// exists to catch — Codex round-3 finding 1).
+///
+/// Codex round-4 finding 3: `AcceptState::current` alone is populated
+/// BEFORE `ConnectNamedPipe` is ever issued, so polling it cannot prove
+/// submission happened at all — and a separate "poll, then call
+/// `disconnect_listener`" pair leaves a TOCTOU gap between the two calls.
+/// `assert_accept_parked_then_disconnect_listener_for_test` polls the
+/// accept slot's OWN `SlotState::Pending` (set only once `issue` has
+/// actually run) and, in the SAME call with no gap to interleave
+/// anything into, invokes `disconnect_listener` while still holding that
+/// proof.
 #[test]
 fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
     if !run_isolated("disconnect_listener_frees_the_name_even_with_a_live_connection") {
@@ -551,12 +559,10 @@ fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
     expect_accepted(&server, TIMEOUT);
 
     assert!(
-        server.accept_parked_for_test(TIMEOUT),
-        "expected a second pending accept instance (max_instances=2) to be parked \
-         before teardown"
+        server.assert_accept_parked_then_disconnect_listener_for_test(TIMEOUT),
+        "expected a second pending accept instance (max_instances=2) to be genuinely parked \
+         (ConnectNamedPipe issued) before teardown"
     );
-
-    server.disconnect_listener();
 
     try_create_first_instance(&id, max_instances)
         .unwrap_or_else(|e| panic!("expected the name to be immediately winnable: {e}"));
@@ -647,6 +653,15 @@ fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
     assert!(
         saw_full,
         "expected the outbound budget to report full against a stalled peer"
+    );
+    // Codex round-4 finding 3: `QueueFull` alone only proves the
+    // outbound BYTE budget is reserved -- the producer can fill that
+    // budget before the writer thread has actually reached a pending
+    // `WriteFile`. Prove the writer itself is genuinely stuck there
+    // before tearing down.
+    assert!(
+        server.conn_write_pending_for_test(stalled_conn, TIMEOUT),
+        "expected the stalled connection's writer to reach a genuinely pending WriteFile"
     );
 
     let mut healthy_clients = Vec::new();
