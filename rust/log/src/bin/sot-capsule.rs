@@ -110,6 +110,22 @@ fn main() {
     }
     let argv: Vec<String> = rest[1..].to_vec();
 
+    // ADR 0041 "Upgrade and version skew" reader-first rollout gate: this
+    // manual-testing harness has no supervisor/applier yet (U2/U4), so it
+    // reads the SAME file the real transaction will eventually write
+    // (`crate::rollout`'s own doc) — absent today on every machine, which
+    // reads as "no rollback target to protect" rather than a bypass.
+    let installed_reader_features = match sot_log::state_dir::sot_state_dir() {
+        Some(dir) => match sot_log::rollout::read_installed_reader_features(&dir) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("sot-capsule: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+
     let config = sot_log::capsule_win::CapsuleWinConfig {
         voyage_root,
         voyage_id,
@@ -121,6 +137,7 @@ fn main() {
         // Step 6's breakaway attempt is the real source (ADR 0041 decision
         // 11) — this bin has none yet, so it states the honest default.
         survival: sot_log::wire::Survival::Normal,
+        installed_reader_features,
     };
     // No command source yet (Ctrl+C kills the process instead — see the
     // doc above). The pipe IS real now (U3 round 2): `PipeTransport::bind`

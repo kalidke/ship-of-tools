@@ -634,9 +634,25 @@ pub enum Action {
         rows: u16,
         request_id: RequestId,
     },
-    /// Begin `EndRun`: the mgmt `shutdown_ok` ack has already been reported
-    /// physically written. `reason` is the client-supplied string, to be
-    /// recorded in `producer_dead`'s detail.
+    /// ADR 0041 EndRun steps 1-2 (the durable marker + its irrevocable
+    /// latch) — emitted alongside (BEFORE, in the same returned `Vec`) the
+    /// mgmt `shutdown_ok` ack's `Send`, from the SAME `shutdown` request
+    /// that produced it, so the writer loop appends and fsyncs one
+    /// `run_end_requested {reason}` lifecycle frame and IRREVOCABLY
+    /// latches EndRun before that ack is ever queued for the transport. A
+    /// concurrent second `shutdown` (this epoch already latched) writes
+    /// no second marker — the loop is the one place that knows whether it
+    /// already has (step 4: first commit wins, every later request is
+    /// acked regardless). `reason` is the client-supplied string,
+    /// verbatim — also recorded in `producer_dead`'s detail.
+    RunEndRequested { reason: String },
+    /// Begin THE TEARDOWN ITSELF: the mgmt `shutdown_ok` ack has already
+    /// been reported physically written. Distinct from
+    /// `RunEndRequested` — the durable marker is committed at REQUEST
+    /// time (above); this fires only once its ack has physically
+    /// shipped, and is what the loop's own `shutdown_requested` flag
+    /// (teardown start) reacts to. `reason` is the client-supplied
+    /// string, to be recorded in `producer_dead`'s detail.
     Shutdown { reason: String },
     /// Diagnostic only — log why `conn` (`None` for a cap refusal with no
     /// connection yet, though today every caller has one) was refused or
@@ -1258,7 +1274,17 @@ impl AttachProto {
             }
             MgmtRequest::Shutdown { reason } => {
                 let bytes = wire::encode_mgmt_reply(&MgmtReply::ShutdownOk).expect("fixed-shape body");
-                vec![self.make_send(conn, bytes, Some(SentMarker::ShutdownAck { request_id: rid, reason }), now)]
+                // ADR 0041 EndRun steps 1-2: the durable marker is
+                // appended and IRREVOCABLY LATCHED in the SAME
+                // writer-loop step, BEFORE the ack is queued —
+                // `RunEndRequested` sits first in this batch, and the
+                // loop processes a batch in order (finding 7's own
+                // established discipline), so the marker append always
+                // runs before this `Send` even reaches the transport.
+                vec![
+                    Action::RunEndRequested { reason: reason.clone() },
+                    self.make_send(conn, bytes, Some(SentMarker::ShutdownAck { request_id: rid, reason }), now),
+                ]
             }
         }
     }
@@ -1812,6 +1838,37 @@ mod tests {
         let a = p.take_committed(conn, epoch, request_id, now);
         assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
         p.sent(conn, a[0].send_marker(), now);
+    }
+
+    // -- mgmt shutdown / ADR 0041 EndRun ------------------------------------
+
+    /// ADR 0041 EndRun steps 1-2: `handle_mgmt`'s `shutdown` branch returns
+    /// the durable-marker action FIRST, then the ack `Send` -- in THAT
+    /// order, since the writer loop processes a returned batch in order
+    /// and must append+latch the marker before ever queuing the ack (see
+    /// `Action::RunEndRequested`'s own doc). Both carry the SAME
+    /// client-supplied reason, verbatim.
+    #[test]
+    fn shutdown_request_returns_run_end_requested_before_the_ack_send() {
+        let mut p = proto();
+        let now = t0();
+        p.connection_opened(1, now);
+        let req = decode_one(
+            &encode_mgmt_request(&MgmtRequest::Shutdown { reason: "quit".into() }).unwrap(),
+        );
+        let a = p.frame(1, req, now);
+        assert_eq!(a.len(), 2, "expected [RunEndRequested, Send]: {a:?}");
+        match &a[0] {
+            Action::RunEndRequested { reason } => assert_eq!(reason, "quit"),
+            other => panic!("expected RunEndRequested first: {other:?}"),
+        }
+        match &a[1] {
+            Action::Send {
+                marker: Some(SentMarker::ShutdownAck { reason, .. }),
+                ..
+            } => assert_eq!(reason, "quit"),
+            other => panic!("expected the ack Send second: {other:?}"),
+        }
     }
 
     // -- lockstep ---------------------------------------------------------

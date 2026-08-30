@@ -27,7 +27,7 @@
 use sot_log::attach_proto::ConnId;
 use sot_log::capsule_win::{self, CapsuleWinConfig, Command, ExitKind, Transport, TransportEvent};
 use sot_log::segment::{RetentionClass, SegmentReader};
-use sot_log::verify::verify_voyage;
+use sot_log::verify::{leg_carries_run_end_marker, verify_voyage};
 use sot_log::wire::{self, Survival};
 use sot_log::{Class, Envelope, RefKind};
 use std::sync::{mpsc, Arc, Mutex};
@@ -58,6 +58,9 @@ fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows:
         cols,
         rows,
         survival: Survival::Normal,
+        // No release-apply transaction in a test: the reader-first
+        // rollout gate is a no-op (see `rollout::gate`'s doc).
+        installed_reader_features: None,
     }
 }
 
@@ -574,6 +577,25 @@ fn spawn_failure_from_out_of_budget_initial_geometry() {
     let frames = sealed_frames(&root, "fail2");
     let dead = assert_producer_dead_is_last(&frames);
     assert_eq!(dead["spawn_failed"], true);
+}
+
+/// ADR 0041 "Upgrade and version skew" reader-first rollout gate (step 6
+/// U1b, `rollout::gate`): `run` refuses BEFORE opening any segment —
+/// and therefore before ever spawning the producer, unlike every OTHER
+/// refusal above, which still bootstraps a voyage and seals a
+/// `producer_dead` — when the configured installed rollback target's
+/// reader cannot decode a segment declaring the EndRun-marker feature.
+#[test]
+fn refuses_when_the_installed_rollback_target_cannot_read_the_marker() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
+    let mut cfg = config(dir.path(), "rolloutgate1", argv, 80, 25);
+    cfg.installed_reader_features = Some(vec!["sot.producer.json-f64-v1".to_string()]);
+    let (_tx, rx) = mpsc::channel();
+    let mut transport = no_transport();
+    let err = capsule_win::run(cfg, rx, &mut transport).unwrap_err();
+    assert!(format!("{err}").contains("cannot decode"), "got: {err}");
 }
 
 /// Test 3: a requested kill (`Command::Kill`) tears down a still-running
@@ -1417,6 +1439,123 @@ fn shutdown_ack_sent_before_teardown() {
     let frames = sealed_frames(&root, "shutdownseq1");
     let dead = assert_producer_dead_is_last(&frames);
     assert_eq!(dead["reason"], "integration-test-reason");
+}
+
+/// ADR 0041 step 6 U1b, acceptance matrix "the marker is the acceptance
+/// barrier": an ack stalled after the durable marker committed still
+/// tears down — the marker's own irrevocable latch does not depend on
+/// the ack ever completing. Proven directly against the STILL-OPEN
+/// segment via `verify::leg_carries_run_end_marker` (the typed accessor
+/// a later unit's respawn decision reads), polled WHILE the ack is held
+/// — before `run` has sealed anything — then confirmed again once
+/// teardown actually finishes.
+#[test]
+fn ack_stalled_after_durable_marker_still_tears_down() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec!["cmd.exe".to_string()]; // stays open until EndRun
+    let cfg = config(dir.path(), "markerstall1", argv, 80, 25);
+    let root = cfg.voyage_root.clone();
+    let transport = TestTransport::new();
+    let (_tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule_win::run(cfg, rx, &mut t)
+    });
+
+    const MGMT: ConnId = 1;
+    transport.open(MGMT);
+    transport.set_hold_for(MGMT, true); // held BEFORE the request that matters
+    transport.feed(MGMT, frame::mgmt_shutdown("marker-before-ack"));
+
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("mgmt shutdown_ok queued", MGMT, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+
+    // The ack is QUEUED but its physical-write completion is HELD -- the
+    // marker must already be durable regardless. Nothing is sealed yet
+    // (run is blocked on the ack), so poll the STILL-OPEN leg directly.
+    let seg_dir = root.join("seg");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if leg_carries_run_end_marker(&seg_dir, "markerstall1", 1).unwrap_or(false) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "marker never became visible on the still-open leg");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!handle.is_finished(), "teardown must still be waiting on the held ack");
+
+    transport.release_held();
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return after the ack was released")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+    verify_voyage(&root, "markerstall1").unwrap();
+    assert!(leg_carries_run_end_marker(&seg_dir, "markerstall1", 1).unwrap());
+}
+
+/// ADR 0041 step 6 U1b, acceptance matrix "the marker is the acceptance
+/// barrier", step 4: two concurrent callers get ONE marker and TWO acks.
+/// Real concurrency at the wire level (two mgmt connections, both
+/// requesting before either's ack physically completes) — the end-to-end
+/// proof that the WIRING (`attach_proto`'s `Action::RunEndRequested`
+/// ordering, `execute_actions!`'s dispatch) actually delivers the
+/// guarantee `commit_run_end_marker`'s own unit tests already prove in
+/// isolation against the pure function.
+#[test]
+fn two_concurrent_shutdown_requests_write_one_marker_and_ack_both() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec!["cmd.exe".to_string()];
+    let cfg = config(dir.path(), "concurrentshutdown1", argv, 80, 25);
+    let root = cfg.voyage_root.clone();
+    let transport = TestTransport::new();
+    let (_tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule_win::run(cfg, rx, &mut t)
+    });
+
+    const MGMT_A: ConnId = 1;
+    const MGMT_B: ConnId = 2;
+    transport.open(MGMT_A);
+    transport.open(MGMT_B);
+    // Hold BOTH acks until both requests are already queued -- a genuine
+    // race between the two callers, not two sequential round trips.
+    transport.set_hold_for(MGMT_A, true);
+    transport.set_hold_for(MGMT_B, true);
+    transport.feed(MGMT_A, frame::mgmt_shutdown("caller-a"));
+    transport.feed(MGMT_B, frame::mgmt_shutdown("caller-b"));
+
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("A shutdown_ok queued", MGMT_A, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+    watcher.wait_for("B shutdown_ok queued", MGMT_B, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+
+    transport.release_held();
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return after both acks were released")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+    verify_voyage(&root, "concurrentshutdown1").unwrap();
+
+    let frames = sealed_frames(&root, "concurrentshutdown1");
+    let marker_count = frames
+        .iter()
+        .filter(|f| {
+            f.class == Class::Lifecycle
+                && f.payload.as_ref().and_then(|p| p.get("kind")).and_then(|k| k.as_str())
+                    == Some("run_end_requested")
+        })
+        .count();
+    assert_eq!(marker_count, 1, "two concurrent callers must write exactly one marker");
 }
 
 /// Test 12 (finding 7, Codex review rework): `Transport::shutdown_all` is

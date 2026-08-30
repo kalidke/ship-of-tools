@@ -397,7 +397,23 @@ pub struct CapsuleWinConfig {
     /// observation stays diagnostics, never authority). Transported
     /// verbatim in mgmt `status`.
     pub survival: Survival,
+    /// The reader-first rollout gate's input (ADR 0041 "Upgrade and
+    /// version skew"; see `crate::rollout`): the installed rollback
+    /// target's reader feature set, or `None` when no release-apply
+    /// transaction has ever recorded one. `run` refuses to open a
+    /// segment declaring `sot.capsule.run-end-requested-v1` unless this
+    /// set already contains it. The SPAWNER resolves this (today, the
+    /// `sot-capsule` bin, via `rollout::read_installed_reader_features`
+    /// against the state dir) — `run` only enforces it.
+    pub installed_reader_features: Option<Vec<String>>,
 }
+
+/// The ADR 0039 registry entry a step-6 capsule's segments declare
+/// unconditionally at creation (ADR 0041 Lifecycle: "the marker's timing
+/// is not knowable in advance"). One name, one home — every
+/// `open_segment_with_features` call site in this module names this
+/// constant rather than the literal string.
+const RUN_END_REQUESTED_FEATURE: &str = "sot.capsule.run-end-requested-v1";
 
 /// The caller-owned command surface `run` services, alongside the wire
 /// protocol. Step 5 DELETES this channel's raw `Input`/`Resize` variants
@@ -740,6 +756,49 @@ impl FrameCtx {
     }
 }
 
+/// ADR 0041 EndRun steps 1-2: append + fsync the ONE
+/// `run_end_requested {reason}` lifecycle frame and IRREVOCABLY latch
+/// EndRun — idempotent past the first (step 4: first commit wins, a
+/// concurrent later request writes no second marker). Shared by BOTH of
+/// `run`'s action executors (`execute_actions!` and
+/// `execute_teardown_actions!`) since a `shutdown` arriving during the
+/// final teardown poll must latch exactly the same way as one arriving
+/// mid-run — see this crate's `verify::leg_carries_run_end_marker` for
+/// the READ half a later unit's respawn decision uses.
+///
+/// A real function, not a macro, specifically so it is independently
+/// testable against a plain `SegmentWriter`/`FrameCtx` pair (this
+/// module's own `tests`), with no real ConPTY run needed to exercise the
+/// one property that matters here: on an append failure, `?` propagates
+/// with `run_end_latched` left false — no ack ever reached (it sits
+/// AFTER this call in the same action batch, unreached once `?` returns)
+/// and nothing is latched, exactly ADR 0039's crash shape ("no ack, no
+/// marker, unsealed process exit"). Why the append could fail is not
+/// this function's concern — a real storage fault and a plain
+/// contiguity/schema violation reach the identical `Err` path, which is
+/// the only property a capsule-side test can honestly claim (this
+/// crate's fault harness is explicit that storage-level fault injection
+/// itself is a separate, unclaimed follow-up — see `tests/fault_kill.rs`'s
+/// own doc).
+fn commit_run_end_marker(
+    ctx: &mut FrameCtx,
+    w: &mut SegmentWriter,
+    frames_written: &mut u64,
+    run_end_latched: &mut bool,
+    reason: String,
+) -> Result<()> {
+    if !*run_end_latched {
+        let f = ctx.capsule_frame(
+            Class::Lifecycle,
+            json!({"kind": "run_end_requested", "reason": reason}),
+        );
+        w.append(&f, Commit::Immediate)?;
+        *frames_written += 1;
+        *run_end_latched = true;
+    }
+    Ok(())
+}
+
 /// Executes the ADR 0039 input WAL for one wire `input` frame, using the
 /// store's dedupe index (folded once at open, kept live here) to fold a
 /// duplicate `idem_key` per the lattice exactly, and returns the outcome
@@ -977,7 +1036,23 @@ pub fn run(
         holder: None,
         attached: None,
     };
-    let mut w = store.open_segment(wall_ms())?;
+    // ADR 0041 "Upgrade and version skew" reader-first rollout gate (see
+    // `crate::rollout`): refuse to open ANY segment for this run if the
+    // installed rollback target's reader cannot decode one declaring the
+    // EndRun-marker feature. Checked once, before the first segment
+    // (rotation reuses the SAME declared set — a run's declared features
+    // are its own commitment for its whole life, not renegotiated
+    // segment to segment).
+    crate::rollout::gate(
+        config.installed_reader_features.as_deref(),
+        RUN_END_REQUESTED_FEATURE,
+    )?;
+    // Every segment a step-6 capsule opens declares the EndRun-marker
+    // feature UNCONDITIONALLY (ADR 0041 Lifecycle: "a feature cannot be
+    // added to an immutable header later and the marker's timing is not
+    // knowable in advance").
+    let segment_features = vec![RUN_END_REQUESTED_FEATURE.to_string()];
+    let mut w = store.open_segment_with_features(wall_ms(), segment_features.clone())?;
     let mut seg_bytes: u64 = 0;
     let mut frames_written: u64 = 0;
     let mut segments_sealed: u64 = 0;
@@ -1009,6 +1084,14 @@ pub fn run(
     let mut pending_sends: HashMap<(ConnId, u64), Option<SentMarker>> = HashMap::new();
     let mut shutdown_requested = false;
     let mut shutdown_reason: Option<String> = None;
+    // ADR 0041 EndRun step 2: IRREVOCABLE once true — never unset by
+    // anything past this point (a stalled ack, a stopped-reading client,
+    // a progress-deadline close, or a lost connection). Distinct from
+    // `shutdown_requested`, which governs when TEARDOWN starts (only
+    // once the ack ships); this one governs whether the durable marker
+    // has already been committed, so a second concurrent `shutdown`
+    // request writes no second frame (step 4).
+    let mut run_end_latched = false;
 
     // producer_attached: the raw-terminal redaction profile, content-hashed
     // — identical to capsule.rs (this is a cross-platform semantic, not a
@@ -1315,7 +1398,7 @@ pub fn run(
                 let digest = $w.seal(None)?;
                 store.advance_chain(digest);
                 segments_sealed += 1;
-                $w = store.open_segment(wall_ms())?;
+                $w = store.open_segment_with_features(wall_ms(), segment_features.clone())?;
                 seg_bytes = 0;
             }
         };
@@ -1378,7 +1461,7 @@ pub fn run(
 
     // The full action set -- everything `execute_light_actions!` handles,
     // delegated one line at a time (never re-expanding `flush_output!`
-    // itself), PLUS the four action kinds only an inbound CLIENT frame can
+    // itself), PLUS the five action kinds only an inbound CLIENT frame can
     // ever produce.
     macro_rules! execute_actions {
         ($seed:expr) => {{
@@ -1473,6 +1556,9 @@ pub fn run(
                         frames_written += 1;
                         maybe_rotate!(w);
                         queue.extend(attach_proto.resize_outcome(conn, ok, request_id, Instant::now()));
+                    }
+                    AttachAction::RunEndRequested { reason } => {
+                        commit_run_end_marker(&mut ctx, &mut w, &mut frames_written, &mut run_end_latched, reason)?;
                     }
                     AttachAction::Shutdown { reason } => {
                         shutdown_requested = true;
@@ -1571,8 +1657,9 @@ pub fn run(
     // is the teardown-safe action executor: every "light" action
     // (Send/Close/RecordRefusal/BeginCheckpoint -- none of which need
     // `pty`, already moved into the Phase-B closer thread by the time this
-    // runs there) delegates to `execute_light_actions!`; `Shutdown` (a
-    // second EndRun request racing the first) is harmless; `CommitTake`/
+    // runs there) delegates to `execute_light_actions!`; `RunEndRequested`/
+    // `Shutdown` (a second EndRun request racing the first) are harmless
+    // (idempotent past the first marker); `CommitTake`/
     // `ForwardInput`/`ApplyResize` are asserted UNREACHABLE --
     // `begin_teardown` guarantees `AttachProto` never emits them again at
     // the SOURCE, so this is a documented invariant enforced loudly, not a
@@ -1588,6 +1675,16 @@ pub fn run(
                     | AttachAction::RecordRefusal { .. }
                     | AttachAction::BeginCheckpoint { .. }) => {
                         execute_light_actions!(vec![light]);
+                    }
+                    AttachAction::RunEndRequested { reason } => {
+                        // A `shutdown` admitted during the final teardown
+                        // poll (ADR 0041 EndRun step 4's "accepted in the
+                        // final service poll" case) still latches the SAME
+                        // way -- mgmt keeps being serviced through both
+                        // teardown phases (finding 7), and this is the one
+                        // place that knows whether the marker already
+                        // committed.
+                        commit_run_end_marker(&mut ctx, &mut w, &mut frames_written, &mut run_end_latched, reason)?;
                     }
                     AttachAction::Shutdown { reason } => {
                         // Round-2 review deletion residue: `shutdown_requested`
@@ -2158,5 +2255,87 @@ mod tests {
             .expect("parked reserve never returned after cancel"));
         worker.join().unwrap();
         assert!(!budget.reserve(1), "a cancelled budget must refuse every future reserve");
+    }
+
+    // -- commit_run_end_marker: ADR 0041 EndRun steps 1-2, proven directly
+    // against a plain SegmentWriter/FrameCtx pair -- no real ConPTY run
+    // needed for the one property this function owns (the lane operation
+    // semantics -- `failed {record_append}`, the hold release, the leg
+    // replacement -- are U2's; `tests/capsule_win.rs` proves the ack
+    // ordering end to end against a real capsule run).
+
+    fn run_end_marker_writer(dir: &std::path::Path, name: &str) -> (VoyageStore, SegmentWriter) {
+        let root = dir.join(name);
+        VoyageStore::bootstrap(&root, name, RetentionClass::Discard).unwrap();
+        let mut store = VoyageStore::open_for_writing(&root, name).unwrap();
+        let w = store
+            .open_segment_with_features(0, vec!["sot.capsule.run-end-requested-v1".to_string()])
+            .unwrap();
+        (store, w)
+    }
+
+    fn run_end_marker_ctx() -> FrameCtx {
+        FrameCtx {
+            epoch: 1,
+            next_n: 1,
+            t0: Instant::now(),
+            take_epoch: 0,
+            holder: None,
+            attached: None,
+        }
+    }
+
+    #[test]
+    fn commit_run_end_marker_appends_and_latches_on_first_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, mut w) = run_end_marker_writer(dir.path(), "rem1");
+        let mut ctx = run_end_marker_ctx();
+        let mut frames_written = 0u64;
+        let mut latched = false;
+        commit_run_end_marker(&mut ctx, &mut w, &mut frames_written, &mut latched, "quit".into())
+            .unwrap();
+        assert!(latched);
+        assert_eq!(frames_written, 1);
+    }
+
+    /// Step 4: concurrent requests -- the first commit wins and writes the
+    /// only marker; a later one is a no-op (its own ack still ships, at
+    /// the call site, regardless of what this function does).
+    #[test]
+    fn commit_run_end_marker_second_call_writes_no_second_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, mut w) = run_end_marker_writer(dir.path(), "rem2");
+        let mut ctx = run_end_marker_ctx();
+        let mut frames_written = 0u64;
+        let mut latched = false;
+        commit_run_end_marker(&mut ctx, &mut w, &mut frames_written, &mut latched, "first".into())
+            .unwrap();
+        commit_run_end_marker(&mut ctx, &mut w, &mut frames_written, &mut latched, "second".into())
+            .unwrap();
+        assert_eq!(frames_written, 1, "a second concurrent request must write no second marker");
+    }
+
+    /// A failed append (forced here via a contiguity violation — the SAME
+    /// `?`-propagation path a real storage fault reaches; see
+    /// `commit_run_end_marker`'s own doc for why the CAUSE of the failure
+    /// is not this function's concern) leaves the latch false and
+    /// propagates the error, exactly ADR 0039's crash shape: no marker,
+    /// no latch — and, at the real call site, the ack action sitting
+    /// after this one in the same batch is never reached either, since
+    /// `run` returns before continuing the action queue.
+    #[test]
+    fn commit_run_end_marker_failed_append_leaves_the_latch_false_and_propagates() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, mut w) = run_end_marker_writer(dir.path(), "rem3");
+        let mut ctx = run_end_marker_ctx();
+        ctx.next_n = 5; // breaks contiguity: this segment expects n=1 first
+        let mut frames_written = 0u64;
+        let mut latched = false;
+        let err =
+            commit_run_end_marker(&mut ctx, &mut w, &mut frames_written, &mut latched, "quit".into())
+                .unwrap_err();
+        assert!(format!("{err}").contains("non-contiguous"), "got: {err}");
+        assert!(!latched, "a failed append must never latch");
+        assert_eq!(frames_written, 0);
     }
 }
