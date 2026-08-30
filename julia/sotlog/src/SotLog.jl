@@ -278,8 +278,21 @@ Base.:(==)(a::Seq, b::Seq) = a.epoch == b.epoch && a.n == b.n
 
 const RETENTION_CLASSES = ("archive", "discard", "distill")
 
-"ADR 0039 feature registry (amended 2026-08-24) — unknown features FAIL CLOSED."
-const REGISTERED_FEATURES = ("sot.producer.json-f64-v1", "sot.capsule.cgroup-fence-v1")
+"""
+ADR 0039 feature registry (amended 2026-08-24, ADR 0040; 2026-08-30, ADR
+0041 step 6 U1b) — unknown features FAIL CLOSED. `sot.capsule.
+run-end-requested-v1` marks a `lifecycle.kind="run_end_requested"` frame
+legal in a segment (ADR 0041's EndRun latch); this reader validates only
+segment/header/class identity (see `validate_frame`), not the lifecycle
+cross-field matrix, so registering the name is what the cross-language
+golden gate requires — the marker frame itself round-trips as an opaque
+`JSON3.Object`, exactly like every other lifecycle kind already does.
+"""
+const REGISTERED_FEATURES = (
+    "sot.producer.json-f64-v1",
+    "sot.capsule.cgroup-fence-v1",
+    "sot.capsule.run-end-requested-v1",
+)
 
 """
     HeaderBody

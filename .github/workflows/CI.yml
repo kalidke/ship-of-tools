@@ -87,9 +87,17 @@ jobs:
         run: julia --project=julia/plugins/pdf-file -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
       - name: Test ShipToolsVideoFile
         run: julia --project=julia/plugins/video-file -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
+      # ADR 0039's cross-language golden gate (Codex round-1 Blocker 4,
+      # ADR 0041 step 6 U1b): SotLog.jl is the SECOND reader of the same
+      # permanent-format bytes rust/log's own goldens pin, including the
+      # `sot.capsule.run-end-requested-v1` fixture — this is what proves
+      # a segment valid under the amended ADR and the Rust reader is ALSO
+      # valid under the conformance reader, not merely claimed so.
+      - name: Test SotLog
+        run: julia --project=julia/sotlog -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
       - uses: julia-actions/julia-processcoverage@v1
         with:
-          directories: core/src,julia/kernel/src,julia/repl/src,julia/plugins/pdf-file/src,julia/plugins/video-file/src
+          directories: core/src,julia/kernel/src,julia/repl/src,julia/plugins/pdf-file/src,julia/plugins/video-file/src,julia/sotlog/src
       - uses: codecov/codecov-action@v7
         with:
           files: lcov.info
