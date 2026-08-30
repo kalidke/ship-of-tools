@@ -31,12 +31,19 @@
 //! PREFLIGHT: "transaction metadata records the INSTALLED target's
 //! reader feature set") is step 6 unit U4's work and does not exist in
 //! this crate yet. Its file name and JSON shape are NOT frozen — U4 owns
-//! the final shape once the real transaction exists — and, per Major 9,
-//! it is NOT wired into any real binary's startup path: `sot-capsule.rs`
-//! (a manual testing harness with no installation history to prove
-//! anything against) constructs [`RolloutEvidence::NoRollbackTarget`]
-//! directly rather than reading this file, so a stopgap read can never
-//! quietly become load-bearing on the real binary.
+//! the final shape once the real transaction exists — and it is NOT
+//! wired into any real binary's startup path.
+//!
+//! `sot-capsule.rs` (a manual testing harness with no installation
+//! history to prove anything against) FAILS CLOSED by default (Codex
+//! round-2b Blocker 4 discharge, superseding round-1 Major 9's
+//! hardcoded `NoRollbackTarget` default): with no real evidence to
+//! construct, the honest pre-U4 posture is refusing to run at all,
+//! naming U4 as the reason. `--assume-no-rollback-target` is the one
+//! explicit, honestly-named operator override that constructs
+//! [`RolloutEvidence::NoRollbackTarget`] anyway — the ONLY way this
+//! binary runs before U4 exists, and never something a real supervisor
+//! may pass.
 
 use crate::{Error, Result};
 use std::path::Path;
