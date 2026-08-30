@@ -243,6 +243,166 @@ fn recover_from_quarantine(
     Ok(Reconciled::Recovered)
 }
 
+/// U2's own read-only need (ADR 0041 Lifecycle "Respawn is gated by the
+/// typed marker, read from the LATEST LEG AFTER RECONCILIATION"): without
+/// ever taking the writer fence (a live capsule may hold it), what is the
+/// aggregate state of the highest-epoch leg present under `seg_dir`? A
+/// leg can span several segment INDICES at the same epoch (rotation
+/// within one leg); it is `Unsealed` if ANY of them still carries an
+/// `.open`/`.recovering`/`.recovering-out` file at that epoch — "an
+/// unfinished leg is never a requested end" governs regardless of what a
+/// sealed sibling in the SAME epoch says — and `Sealed` only when every
+/// file at that epoch is `.sotseg`.
+///
+/// Performs NO reconciliation: [`reconcile`] mutates and must run under
+/// the writer lock, which the supervisor does not hold merely to decide
+/// a start mode. This is the supervisor's own classification of what it
+/// SEES; a `--resume`/`--start` that goes on to spawn a fresh leg lets
+/// that child's own `VoyageStore::open_for_writing` perform the real,
+/// authoritative reconciliation the ADR's table already accounts for
+/// ("open or recovering, no live capsule -> RECOVER and spawn a new
+/// leg").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LatestLegState {
+    /// `seg_dir` does not exist, or names no segment identity at all.
+    NoLeg,
+    /// Every file at the highest epoch present is `.sotseg`.
+    Sealed { epoch: u64 },
+    /// At least one file at the highest epoch present is `.open`,
+    /// `.recovering`, or `.recovering-out`.
+    Unsealed { epoch: u64 },
+}
+
+pub fn latest_leg_state(seg_dir: &Path) -> std::io::Result<LatestLegState> {
+    let mut max_epoch: Option<u64> = None;
+    let mut sealed_at_max = false;
+    let mut unsealed_at_max = false;
+    let entries = match std::fs::read_dir(seg_dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(LatestLegState::NoLeg),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some((_, epoch, state)) = SegmentIdentity::parse_file_name(name) else { continue };
+        match max_epoch {
+            Some(m) if epoch < m => continue,
+            Some(m) if epoch == m => {}
+            _ => {
+                // A strictly higher epoch supersedes every prior
+                // max-epoch observation.
+                max_epoch = Some(epoch);
+                sealed_at_max = false;
+                unsealed_at_max = false;
+            }
+        }
+        match state {
+            SegmentState::Sealed => sealed_at_max = true,
+            SegmentState::Open | SegmentState::Recovering | SegmentState::RecoveringOut => {
+                unsealed_at_max = true;
+            }
+        }
+    }
+    Ok(match max_epoch {
+        None => LatestLegState::NoLeg,
+        Some(epoch) if unsealed_at_max => LatestLegState::Unsealed { epoch },
+        Some(epoch) => {
+            debug_assert!(sealed_at_max, "an epoch with no unsealed file must have a sealed one");
+            LatestLegState::Sealed { epoch }
+        }
+    })
+}
+
+#[cfg(test)]
+mod latest_leg_state_tests {
+    use super::*;
+
+    fn seg_dir_for(id: &SegmentIdentity, state: SegmentState, seg_dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(seg_dir).unwrap();
+        id.path(seg_dir, state)
+    }
+
+    #[test]
+    fn no_seg_dir_at_all_is_no_leg() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            latest_leg_state(&dir.path().join("seg")).unwrap(),
+            LatestLegState::NoLeg
+        );
+    }
+
+    #[test]
+    fn empty_seg_dir_is_no_leg() {
+        let dir = tempfile::tempdir().unwrap();
+        let seg_dir = dir.path().join("seg");
+        std::fs::create_dir_all(&seg_dir).unwrap();
+        assert_eq!(latest_leg_state(&seg_dir).unwrap(), LatestLegState::NoLeg);
+    }
+
+    #[test]
+    fn a_lone_sealed_segment_is_sealed_at_its_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let seg_dir = dir.path().join("seg");
+        let id = SegmentIdentity { voyage_id: "v".into(), segment_index: 0, epoch: 3 };
+        std::fs::write(seg_dir_for(&id, SegmentState::Sealed, &seg_dir), b"x").unwrap();
+        assert_eq!(latest_leg_state(&seg_dir).unwrap(), LatestLegState::Sealed { epoch: 3 });
+    }
+
+    #[test]
+    fn a_lone_open_segment_is_unsealed_at_its_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let seg_dir = dir.path().join("seg");
+        let id = SegmentIdentity { voyage_id: "v".into(), segment_index: 0, epoch: 3 };
+        std::fs::write(seg_dir_for(&id, SegmentState::Open, &seg_dir), b"x").unwrap();
+        assert_eq!(latest_leg_state(&seg_dir).unwrap(), LatestLegState::Unsealed { epoch: 3 });
+    }
+
+    #[test]
+    fn a_recovering_scratch_file_alone_is_unsealed() {
+        let dir = tempfile::tempdir().unwrap();
+        let seg_dir = dir.path().join("seg");
+        let id = SegmentIdentity { voyage_id: "v".into(), segment_index: 0, epoch: 3 };
+        std::fs::write(seg_dir_for(&id, SegmentState::Recovering, &seg_dir), b"x").unwrap();
+        assert_eq!(latest_leg_state(&seg_dir).unwrap(), LatestLegState::Unsealed { epoch: 3 });
+    }
+
+    #[test]
+    fn a_sealed_predecessor_plus_an_open_tip_in_the_same_epoch_is_unsealed() {
+        let dir = tempfile::tempdir().unwrap();
+        let seg_dir = dir.path().join("seg");
+        let sealed = SegmentIdentity { voyage_id: "v".into(), segment_index: 0, epoch: 5 };
+        let open = SegmentIdentity { voyage_id: "v".into(), segment_index: 1, epoch: 5 };
+        std::fs::write(seg_dir_for(&sealed, SegmentState::Sealed, &seg_dir), b"x").unwrap();
+        std::fs::write(seg_dir_for(&open, SegmentState::Open, &seg_dir), b"x").unwrap();
+        assert_eq!(latest_leg_state(&seg_dir).unwrap(), LatestLegState::Unsealed { epoch: 5 });
+    }
+
+    #[test]
+    fn only_the_highest_epoch_is_considered() {
+        let dir = tempfile::tempdir().unwrap();
+        let seg_dir = dir.path().join("seg");
+        let old_open = SegmentIdentity { voyage_id: "v".into(), segment_index: 0, epoch: 1 };
+        let new_sealed = SegmentIdentity { voyage_id: "v".into(), segment_index: 0, epoch: 2 };
+        // An OLDER epoch left unsealed (impossible in practice once a
+        // newer epoch exists, but the classification must still ignore
+        // it rather than let a stale leg's shape leak into "latest").
+        std::fs::write(seg_dir_for(&old_open, SegmentState::Open, &seg_dir), b"x").unwrap();
+        std::fs::write(seg_dir_for(&new_sealed, SegmentState::Sealed, &seg_dir), b"x").unwrap();
+        assert_eq!(latest_leg_state(&seg_dir).unwrap(), LatestLegState::Sealed { epoch: 2 });
+    }
+
+    #[test]
+    fn non_segment_files_are_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let seg_dir = dir.path().join("seg");
+        std::fs::create_dir_all(&seg_dir).unwrap();
+        std::fs::write(seg_dir.join("writer.lock"), b"{}").unwrap();
+        assert_eq!(latest_leg_state(&seg_dir).unwrap(), LatestLegState::NoLeg);
+    }
+}
+
 // The STORE (not the codec) is Linux-only AS OF THIS COMMIT: publication
 // needs an atomic no-clobber rename, and `rename_noreplace_raw` fails closed
 // off Linux (ADR 0039). These tests therefore run where the store runs;
