@@ -146,3 +146,62 @@ fn golden_f64_segment_bytes_are_pinned() {
     r.verify_seal().unwrap();
     assert_eq!(r.frames.len(), 3);
 }
+
+/// Third golden: `sot.capsule.run-end-requested-v1` (ADR 0041 step 6
+/// U1b) — the ordinary fixture content plus the EndRun marker frame
+/// (`lifecycle.kind=run_end_requested`, carrying its `reason` verbatim)
+/// a step-6 capsule appends last, in a segment that declares the
+/// feature. Regenerate: UPDATE_GOLDEN=1.
+#[test]
+fn golden_run_end_requested_segment_bytes_are_pinned() {
+    let dir = tempfile::tempdir().unwrap();
+    let header = HeaderBody {
+        version: 1,
+        required_features: vec!["sot.capsule.run-end-requested-v1".into()],
+        voyage_id: "01900000-0000-7000-8000-0000000000e4".into(),
+        segment_index: 0,
+        epoch: 1,
+        prev_seal_digest: None,
+        created_wall_ms: 1_756_000_000_000,
+        retention_class: Some(RetentionClass::Archive),
+    };
+    let mut w = SegmentWriter::create(dir.path(), header).unwrap();
+    let mut frames = fixture_frames();
+    frames.push(Envelope {
+        seq: Seq { epoch: 1, n: 4 },
+        class: Class::Lifecycle,
+        source: Source {
+            emitter: Emitter::Capsule,
+            actor: Actor {
+                kind: ActorKind::Unknown,
+                controller_id: None,
+                take_epoch: None,
+            },
+            derivation: Derivation::Synthetic,
+        },
+        t_wall_ms: 1_756_000_000_004,
+        t_mono_us: 4_000,
+        stream: None,
+        transformed: None,
+        refs: vec![],
+        payload: Some(serde_json::json!({"kind": "run_end_requested", "reason": "operator quit"})),
+        payload_ref: None,
+    });
+    for f in frames {
+        w.append(&f, Commit::Buffered).unwrap();
+    }
+    w.commit().unwrap();
+    w.seal(None).unwrap();
+    let generated = std::fs::read(dir.path().join("00000000-00000000000001.sotseg")).unwrap();
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/golden-run-end-requested-v1.sotseg");
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, &generated).unwrap();
+    }
+    let committed = std::fs::read(&path).expect("fixture missing — run with UPDATE_GOLDEN=1 once");
+    assert_eq!(committed, generated, "wire bytes changed — format event");
+    let r = SegmentReader::read(&path, true).unwrap();
+    r.verify_seal().unwrap();
+    assert_eq!(r.frames.len(), 4);
+}

@@ -230,6 +230,13 @@ pub enum LifecycleKind {
     TakeState,
     CaptureOptin,
     InputFact,
+    /// ADR 0041's EndRun latch (`sot.capsule.run-end-requested-v1`,
+    /// registered ADR 0039): the ONE discriminator between a leg ended BY
+    /// REQUEST and every other end. Carries `reason` (the client-supplied
+    /// EndRun reason, verbatim — may be empty); requires its own segment
+    /// to declare the feature (`verify.rs`), which every segment a step-6
+    /// capsule opens does unconditionally.
+    RunEndRequested,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
