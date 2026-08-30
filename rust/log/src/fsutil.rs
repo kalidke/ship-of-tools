@@ -69,6 +69,69 @@ pub fn preflight_volume(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The kernel's own identity for a directory — NOT its path. Two opens of
+/// the SAME underlying object (however many path strings lead to it,
+/// including a symlink/reparse-point chain) yield the same identity; two
+/// opens of DIFFERENT objects yield different ones EVEN AT THE EXACT SAME
+/// PATHNAME — e.g. after a rename-swap replaced whatever that pathname
+/// used to name. ADR 0041 Codex round-2 (`voyage::VoyageStore::
+/// prepare_root`/`open_prepared`): a canonicalized PATH STRING cannot tell
+/// a same-pathname directory-entry replacement apart from an unchanged
+/// directory — re-canonicalizing after such a swap returns the identical
+/// string, because canonicalization only follows symlinks, and a plain
+/// `rename()` swap involves none. Kernel identity is the only thing that
+/// actually distinguishes the two: `(st_dev, st_ino)` on unix,
+/// `(volume serial, 64-bit file index)` on Windows — both stable for the
+/// lifetime of the underlying file/directory regardless of which name(s)
+/// currently point at it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirIdentity {
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(windows)]
+    volume_serial: u32,
+    #[cfg(windows)]
+    file_index: u64,
+}
+
+/// Capture `dir`'s kernel identity by OPENING it and reading the identity
+/// off the resulting HANDLE (`fstat`/`GetFileInformationByHandle` — the
+/// object actually opened), never by a second, independent stat-by-path
+/// call, which would just reintroduce the same TOCTOU a path-only check
+/// cannot close.
+#[cfg(unix)]
+pub fn dir_identity(dir: &Path) -> Result<DirIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let f = File::open(dir)?;
+    let m = f.metadata()?; // fstat on the OPEN fd, not stat(2) on the path
+    Ok(DirIdentity { dev: m.dev(), ino: m.ino() })
+}
+
+#[cfg(windows)]
+pub fn dir_identity(dir: &Path) -> Result<DirIdentity> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let f = open_dir_handle(dir)?;
+    // SAFETY: `info` is a stack-local out-param, valid to write into
+    // regardless of the call's outcome; `f`'s handle stays open (and thus
+    // valid) for the whole call.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetFileInformationByHandle(f.as_raw_handle(), &mut info) };
+    if ok == 0 {
+        let e = std::io::Error::last_os_error();
+        return Err(io_ctx(e, format_args!("GetFileInformationByHandle {dir:?}")));
+    }
+    let file_index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Ok(DirIdentity {
+        volume_serial: info.dwVolumeSerialNumber,
+        file_index,
+    })
+}
+
 #[cfg(unix)]
 pub fn fsync_dir(dir: &Path) -> Result<()> {
     let f = File::open(dir)?;

@@ -3,7 +3,7 @@
 //! Windows arms (ADR 0041 §store port); the codec itself is portable.
 
 use crate::envelope::{Digest, InputFactKind, Seq};
-use crate::fsutil::{self, WriterLock};
+use crate::fsutil::{self, DirIdentity, WriterLock};
 use crate::recovery::{self, Reconciled};
 use crate::segment::{
     HeaderBody, RetentionClass, SegmentIdentity, SegmentReader, SegmentState, SegmentWriter,
@@ -257,6 +257,32 @@ pub struct VoyageStore {
     pub dedupe_index: HashMap<IdemKey, DedupeEntry>,
 }
 
+/// A resolved voyage root, captured together with its KERNEL identity —
+/// not merely its canonical path text (ADR 0041 Codex round-2 discharge).
+/// Produced by [`VoyageStore::prepare_root`]; consumed by
+/// [`VoyageStore::open_prepared`], which verifies this identity against
+/// what it ACTUALLY opens, under the fence, before trusting the path any
+/// further. A canonicalized path STRING alone cannot make that promise: a
+/// same-pathname directory-entry replacement (a rename-swap; see
+/// `open_prepared`'s own doc) leaves the string unchanged while the
+/// underlying object differs, and only the OS's own object identity
+/// (`fsutil::DirIdentity`) tells the two apart.
+#[derive(Debug, Clone)]
+pub struct PreparedRoot {
+    path: PathBuf,
+    identity: DirIdentity,
+}
+
+impl PreparedRoot {
+    /// The resolved, canonical path — still needed for every ordinary
+    /// path-based operation `open_prepared` performs (the lock file,
+    /// preflight, the segment directory, ...); `identity` is what actually
+    /// authenticates it.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 impl VoyageStore {
     /// Bootstrap a new voyage: build under `<root>.creating/`, fsync
     /// bottom-up, publish by no-clobber rename (ADR 0039 §lifecycle 1).
@@ -383,19 +409,24 @@ impl VoyageStore {
         Self::open_for_writing_with_lease(root, voyage_id, None)
     }
 
-    /// LAUNCHING-side preparation (ADR 0041 Codex round-1, Major 5
+    /// LAUNCHING-side preparation (ADR 0041 Codex round-1 Major 5 / round-2
     /// discharge): resolves `root` to its canonical, symlink-free absolute
-    /// path — exactly the FIRST thing this store used to do internally on
-    /// every open, now split out so a spawning authority (U2's supervisor)
-    /// can perform this UNBOUNDED-COST resolution itself, BEFORE
-    /// `CreateProcess`, and pass the already-canonical result to the
-    /// child. That is what actually bounds the child's own invisible
-    /// window (`CreateProcess` -> fence acquisition) to "open + try_lock"
-    /// alone — see [`Self::open_prepared`]'s own doc for the child-side
-    /// half of this split. Requires `root` to already exist (every
-    /// in-tree caller follows `bootstrap`, or its own exists-check).
-    pub fn prepare_root(root: &Path) -> Result<PathBuf> {
-        Ok(std::fs::canonicalize(root)?)
+    /// path AND captures its kernel identity — exactly the FIRST thing
+    /// this store used to do internally on every open, now split out so a
+    /// spawning authority (U2's supervisor) can perform this
+    /// UNBOUNDED-COST resolution itself, BEFORE `CreateProcess`, and pass
+    /// the already-prepared [`PreparedRoot`] token to the child. That is
+    /// what actually bounds the child's own invisible window
+    /// (`CreateProcess` -> fence acquisition) to "open + try_lock" alone —
+    /// see [`Self::open_prepared`]'s own doc for the child-side half of
+    /// this split, and [`PreparedRoot`]'s own doc for why the token
+    /// carries identity, not merely a path. Requires `root` to already
+    /// exist (every in-tree caller follows `bootstrap`, or its own
+    /// exists-check).
+    pub fn prepare_root(root: &Path) -> Result<PreparedRoot> {
+        let path = std::fs::canonicalize(root)?;
+        let identity = fsutil::dir_identity(&path)?;
+        Ok(PreparedRoot { path, identity })
     }
 
     /// As [`Self::open_for_writing`], with the ADR 0041 Lifecycle
@@ -423,44 +454,58 @@ impl VoyageStore {
         voyage_id: &str,
         lease_broken: Option<&dyn Fn() -> bool>,
     ) -> Result<Self> {
-        let canonical_root = Self::prepare_root(root)?;
-        Self::open_prepared(&canonical_root, voyage_id, lease_broken)
+        let prepared = Self::prepare_root(root)?;
+        Self::open_prepared(&prepared, voyage_id, lease_broken)
     }
 
-    /// The CHILD-side entry point (ADR 0041 Codex round-1, Major 5
-    /// discharge): `canonical_root` MUST already be the resolved,
-    /// symlink-free path [`Self::prepare_root`] returns — the launching
-    /// authority's own job, done BEFORE spawning this process. Performs
-    /// ONLY: open the writer.lock file + `try_lock` (the fence) -> the
-    /// lease check -> a CHEAP re-canonicalize proving the path has not
-    /// been retargeted since preparation (safe to run only NOW, since it
-    /// executes UNDER the fence, in the ADR's own VISIBLE window — a probe
-    /// can see this, unlike the invisible one before the fence) -> volume
+    /// The CHILD-side entry point (ADR 0041 Codex round-1 Major 5 / round-2
+    /// discharge): `prepared` MUST be exactly what [`Self::prepare_root`]
+    /// returned — the launching authority's own job, done BEFORE spawning
+    /// this process. Performs ONLY: open the writer.lock file + `try_lock`
+    /// (the fence) -> the lease check -> a CHEAP kernel-identity
+    /// verification proving the directory this process actually opened is
+    /// the SAME OBJECT `prepare_root` recorded, not merely a path that
+    /// still reads the same (safe to run only NOW, since it executes
+    /// UNDER the fence, in the ADR's own VISIBLE window — a probe can see
+    /// this, unlike the invisible one before the fence) -> volume
     /// preflight -> the two directory flushes -> history traversal
     /// (enumerate/reconcile every segment identity, fold the dedupe
     /// index). [`Self::open_for_writing_with_lease`] is the WRAPPER every
     /// single-process caller uses today, composing [`Self::prepare_root`]
     /// with this in one call — their end-to-end order is unchanged.
     ///
-    /// **Why this is safe despite skipping the canonicalize-before-lock
-    /// step:** the symlink-retarget escape that step closes is about
-    /// re-resolving an alias STRING on every later syscall; `canonical_root`
-    /// here is never an alias to begin with (by construction — it is
-    /// `prepare_root`'s OWN resolved output), and this function never
-    /// re-derives a path from anything else, so nothing here can rediscover
-    /// a symlink to follow. The re-canonicalize check below is a SEPARATE,
-    /// additional defense: it catches the rarer case of the resolved path
-    /// ITSELF being replaced (its directory entry removed and recreated as
-    /// a symlink/reparse point) in the gap between preparation and this
-    /// process acquiring the fence — proving the once-resolved path still
-    /// resolves to itself, rather than assuming preparation and acquisition
-    /// happening in different processes changes nothing in between.
+    /// **Why identity, not a path-text re-canonicalize (Codex round-2):**
+    /// an earlier version of this check re-`canonicalize`d the path and
+    /// compared STRINGS — which only ever catches a NEW symlink/reparse
+    /// point appearing at this exact path; a live reproducer proved it
+    /// blind to the actual reported threat, a same-pathname directory-entry
+    /// REPLACEMENT (bootstrap two stores, `prepare_root` one, rename it
+    /// aside and rename the other into its place — the canonicalized
+    /// string is identical before and after, because canonicalization only
+    /// follows symlinks and a plain `rename()` swap involves none).
+    /// [`DirIdentity`] — `(st_dev, st_ino)` on unix, `(volume serial, file
+    /// index)` on Windows, read off the HANDLE this function itself opens,
+    /// never a second stat-by-path — subsumes the symlink case too (a
+    /// reparse point planted at this path resolves to a DIFFERENT
+    /// identity, exactly like the swap does), so nothing of the old
+    /// path-text check needs to survive alongside it: identity is a
+    /// strictly stronger statement of the same "is this still what I
+    /// prepared" question, and keeping both would only restate the weaker
+    /// one for no additional coverage.
+    ///
+    /// This is also why `canonical_root` being a non-alias path (by
+    /// construction — `prepare_root`'s own resolved output, never
+    /// re-derived from anything else here) is not, on its own, a complete
+    /// safety argument: it rules out re-following a stale ALIAS string,
+    /// but says nothing about the OBJECT at that fixed string being
+    /// swapped out from under it, which is exactly what the identity check
+    /// now closes.
     pub fn open_prepared(
-        canonical_root: &Path,
+        prepared: &PreparedRoot,
         voyage_id: &str,
         lease_broken: Option<&dyn Fn() -> bool>,
     ) -> Result<Self> {
-        let root = canonical_root;
+        let root = prepared.path.as_path();
 
         // U1a: the fence, ahead of preflight/fsync/history — see this
         // method's own doc for why. `lock_writer` itself does no directory
@@ -477,16 +522,21 @@ impl VoyageStore {
             return Err(Error::LeaseBroken);
         }
 
-        // Major 5's own re-verification: re-resolving `root` must yield
-        // the SAME path — proving no retarget slipped in between
-        // preparation and this process acquiring the fence. Cheap (path
-        // depth only, not O(history)) and now safely inside the fence, so
-        // it costs nothing toward the invisible window this split exists
-        // to bound.
-        if std::fs::canonicalize(root)?.as_path() != root {
-            return Err(Error::State(
-                "voyage root was retargeted between preparation and fence acquisition".into(),
-            ));
+        // Codex round-2: verify-on-the-handle, not re-stat-by-path --
+        // `dir_identity` OPENS `root` itself and reads the identity off
+        // THAT handle (fstat/GetFileInformationByHandle), so nothing can
+        // slip between this check and the opens immediately below it the
+        // way a second, independent stat-by-path call could. Cheap (one
+        // open plus one metadata call, not O(history)) and now safely
+        // inside the fence, so it costs nothing toward the invisible
+        // window this split exists to bound.
+        let observed = fsutil::dir_identity(root)?;
+        if observed != prepared.identity {
+            return Err(Error::State(format!(
+                "voyage root {root:?} does not match its prepared kernel identity -- \
+                 the directory at this path was replaced (a rename-swap or a retarget) \
+                 between preparation and fence acquisition"
+            )));
         }
 
         // Re-run the volume preflight on the resolved voyage dir (ADR 0041):
@@ -1377,25 +1427,24 @@ mod tests {
         let root = dir.path().join("voysplit");
         VoyageStore::bootstrap(&root, "voysplit", RetentionClass::Discard).unwrap();
 
-        let canonical = VoyageStore::prepare_root(&root).unwrap();
-        assert_eq!(canonical, std::fs::canonicalize(&root).unwrap());
+        let prepared = VoyageStore::prepare_root(&root).unwrap();
+        assert_eq!(prepared.path(), std::fs::canonicalize(&root).unwrap());
 
-        let mut store = VoyageStore::open_prepared(&canonical, "voysplit", None).unwrap();
+        let mut store = VoyageStore::open_prepared(&prepared, "voysplit", None).unwrap();
         let mut w = store.open_segment(0).unwrap();
         w.append(&lc(1, 1), Commit::Immediate).unwrap();
         w.seal(None).unwrap();
         crate::verify::verify_voyage(&root, "voysplit").unwrap();
     }
 
-    /// ADR 0041 Codex round-1, Major 5 discharge: the cheap re-canonicalize
-    /// `open_prepared` runs under the fence catches the resolved path
-    /// ITSELF being retargeted (its directory entry removed and replaced
-    /// by a symlink) in the gap between `prepare_root` and this process
-    /// acquiring the fence — the scenario the split's own safety
-    /// reasoning depends on, distinct from `root_alias_cannot_escape_
-    /// fence_after_open` above (which retargets an ALIAS TO the resolved
-    /// path, never the resolved path itself, and so never triggers this
-    /// check at all).
+    /// ADR 0041 Codex round-2 discharge: `open_prepared`'s kernel-identity
+    /// check catches the resolved path ITSELF being retargeted (its
+    /// directory entry removed and replaced by a symlink) in the gap
+    /// between `prepare_root` and this process acquiring the fence — the
+    /// scenario the split's own safety reasoning depends on, distinct from
+    /// `root_alias_cannot_escape_fence_after_open` above (which retargets
+    /// an ALIAS TO the resolved path, never the resolved path itself, and
+    /// so never triggers this check at all).
     #[test]
     #[cfg(unix)]
     fn open_prepared_refuses_when_the_canonical_root_itself_is_retargeted_before_the_fence() {
@@ -1415,9 +1464,62 @@ mod tests {
         let result = VoyageStore::open_prepared(&prepared, "voy", None);
         assert!(
             matches!(result, Err(Error::State(_))),
-            "open_prepared must refuse when the prepared path resolves differently under the fence: {:?}",
+            "open_prepared must refuse when the prepared path's kernel identity no longer matches: {:?}",
             result.err()
         );
+    }
+
+    /// ADR 0041 Codex round-2 discharge: the reported gap, reproduced
+    /// exactly. A live reproducer proved the ORIGINAL check (re-canonicalize
+    /// and compare path TEXT) blind to this: bootstrap two stores, prepare
+    /// ONE of them, rename it aside, then rename the OTHER into its exact
+    /// former pathname -- `std::fs::canonicalize` on a plain directory
+    /// (no symlink anywhere in the chain) returns the identical string
+    /// before and after, so a path-text check sees nothing wrong and
+    /// `open_prepared` would silently open the WRONG STORE. The
+    /// kernel-identity check (`(st_dev, st_ino)`, read off the handle this
+    /// function itself opens) catches it: the directory now at that path
+    /// is a genuinely different object, identity differs, and the open is
+    /// refused.
+    #[test]
+    #[cfg(unix)]
+    fn open_prepared_refuses_a_same_pathname_directory_swap() {
+        let dir = tempfile::tempdir().unwrap();
+        let prepared_path = dir.path().join("a");
+        let replacement_source = dir.path().join("b");
+        let original_moved = dir.path().join("a-original");
+        VoyageStore::bootstrap(&prepared_path, "voy", RetentionClass::Discard).unwrap();
+        VoyageStore::bootstrap(&replacement_source, "voy", RetentionClass::Discard).unwrap();
+
+        let prepared = VoyageStore::prepare_root(&prepared_path).unwrap();
+
+        // The swap: move A aside, then move B into A's exact former
+        // pathname. No symlink anywhere -- re-canonicalizing `prepared`'s
+        // own path string would return the SAME string it always did.
+        std::fs::rename(&prepared_path, &original_moved).unwrap();
+        std::fs::rename(&replacement_source, &prepared_path).unwrap();
+
+        let result = VoyageStore::open_prepared(&prepared, "voy", None);
+        assert!(
+            matches!(result, Err(Error::State(_))),
+            "a same-pathname directory swap must be refused via kernel identity, not silently opened: {:?}",
+            result.err()
+        );
+    }
+
+    /// The happy path, unchanged: `prepare_root` then `open_prepared` with
+    /// NOTHING disturbed in between still succeeds -- the identity check
+    /// is a genuine verification, not a check that merely always fails or
+    /// always passes regardless of what actually happened.
+    #[test]
+    fn open_prepared_succeeds_when_nothing_is_disturbed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("voyintact");
+        VoyageStore::bootstrap(&root, "voyintact", RetentionClass::Discard).unwrap();
+
+        let prepared = VoyageStore::prepare_root(&root).unwrap();
+        let store = VoyageStore::open_prepared(&prepared, "voyintact", None);
+        assert!(store.is_ok(), "{:?}", store.err());
     }
 
     /// Part 3 finding: the CAS `dest.exists()` replay path must restate the
