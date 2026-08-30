@@ -230,6 +230,13 @@ pub enum LifecycleKind {
     TakeState,
     CaptureOptin,
     InputFact,
+    /// ADR 0041's EndRun latch (`sot.capsule.run-end-requested-v1`,
+    /// registered ADR 0039): the ONE discriminator between a leg ended BY
+    /// REQUEST and every other end. Carries `reason` (the client-supplied
+    /// EndRun reason, verbatim — may be empty); requires its own segment
+    /// to declare the feature (`verify.rs`), which every segment a step-6
+    /// capsule opens does unconditionally.
+    RunEndRequested,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +292,9 @@ impl Envelope {
                 return Err(schema("actor.take_epoch exceeds u53".into()));
             }
         }
+        if let Some(cid) = &self.source.actor.controller_id {
+            validate_str128(cid, "actor.controller_id")?;
+        }
         if let Some(s) = &self.stream {
             if s.mode == StreamMode::Append && s.complete {
                 return Err(schema("stream append+complete is illegal".into()));
@@ -292,6 +302,23 @@ impl Envelope {
         }
         Ok(())
     }
+}
+
+/// ADR 0039 encoding atom `str128`: UTF-8, at most 128 BYTES (not chars
+/// — a shortest-decimal-form-style bound over the wire representation).
+/// ONE shared validator for every `str128` site the format names —
+/// `Actor.controller_id`, `take.holder`, `profile_def.id`, and
+/// `run_end_requested.reason` — so the bound is enforced identically
+/// everywhere rather than documented in some places and silently
+/// unchecked in others (Codex round-1 Minor 10).
+pub fn validate_str128(s: &str, field: &str) -> crate::Result<()> {
+    if s.len() > 128 {
+        return Err(crate::Error::Schema(format!(
+            "{field} exceeds str128 (128 UTF-8 bytes): got {} bytes",
+            s.len()
+        )));
+    }
+    Ok(())
 }
 
 pub fn validate_blob_ref(b: &BlobRef) -> crate::Result<()> {

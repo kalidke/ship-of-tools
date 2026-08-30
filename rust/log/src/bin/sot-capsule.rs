@@ -73,7 +73,8 @@ const MAX_PIPE_INSTANCES: u32 = 8;
 #[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--cols <n>] [--rows <n>] -- <cmd> [args...]";
+    let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--cols <n>] [--rows <n>] \
+[--assume-no-rollback-target] -- <cmd> [args...]";
     if args.len() < 4 || args[0] != "run" {
         eprintln!("{usage}");
         std::process::exit(2);
@@ -85,6 +86,11 @@ fn main() {
     // harness default, not an ADR-pinned one.
     let mut cols: u16 = 80;
     let mut rows: u16 = 24;
+    // Codex round-2b Blocker 4: the ONE explicit, honestly-named operator
+    // override that lets this manual-testing harness run at all before
+    // U4's release-apply transaction exists — see the refusal message
+    // below for what it actually asserts.
+    let mut assume_no_rollback_target = false;
     loop {
         match rest.first().map(String::as_str) {
             Some("--cols") if rest.len() > 1 => {
@@ -101,6 +107,10 @@ fn main() {
                 });
                 rest = &rest[2..];
             }
+            Some("--assume-no-rollback-target") => {
+                assume_no_rollback_target = true;
+                rest = &rest[1..];
+            }
             _ => break,
         }
     }
@@ -109,6 +119,30 @@ fn main() {
         std::process::exit(2);
     }
     let argv: Vec<String> = rest[1..].to_vec();
+
+    // ADR 0041 "Upgrade and version skew" reader-first rollout gate
+    // (Codex round-2b Blocker 4 discharge, superseding round-1 Major 9's
+    // hardcoded default): this manual-testing harness has no supervisor/
+    // release-apply transaction (U2/U4) and therefore NO REAL evidence to
+    // construct. The honest pre-U4 posture is FAIL CLOSED, naming U4 as
+    // the reason — hardcoding `NoRollbackTarget` fabricated evidence and
+    // recreated exactly the "missing means first install" default-through
+    // Major 9 was supposed to remove, only under a typed name. Absent the
+    // explicit override, this binary refuses before ever constructing a
+    // config or opening a segment.
+    if !assume_no_rollback_target {
+        eprintln!(
+            "sot-capsule: no rollout evidence available -- this binary cannot open a \
+             feature-bearing segment until U4's release-apply transaction supplies real \
+             evidence (ADR 0041 \"Upgrade and version skew\"). Pass \
+             --assume-no-rollback-target to override for manual testing -- that flag \
+             ASSERTS, without proof, that there is no installed rollback target to \
+             protect; a real supervisor must never pass it, and must construct real \
+             evidence from its own transaction instead."
+        );
+        std::process::exit(2);
+    }
+    let rollout_evidence = sot_log::rollout::RolloutEvidence::NoRollbackTarget;
 
     let config = sot_log::capsule_win::CapsuleWinConfig {
         voyage_root,
@@ -121,6 +155,7 @@ fn main() {
         // Step 6's breakaway attempt is the real source (ADR 0041 decision
         // 11) — this bin has none yet, so it states the honest default.
         survival: sot_log::wire::Survival::Normal,
+        rollout_evidence,
     };
     // No command source yet (Ctrl+C kills the process instead — see the
     // doc above). The pipe IS real now (U3 round 2): `PipeTransport::bind`

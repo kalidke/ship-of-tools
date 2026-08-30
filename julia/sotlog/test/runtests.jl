@@ -204,7 +204,20 @@ end
         @test Int64(f3.payload.edge) == 9007199254740991
     end
 
-    @testset "7. unknown required feature fails closed" begin
+    @testset "7. run-end-requested golden (Codex round-1 Blocker 4 discharge): registered feature accepted, marker frame round-trips" begin
+        rer_path = joinpath(REPO_ROOT, "rust", "log", "tests", "fixtures", "golden-run-end-requested-v1.sotseg")
+        @assert isfile(rer_path)
+        seg = read_segment(rer_path)
+        @test seg.header.required_features == ["sot.capsule.run-end-requested-v1"]
+        @test verify_seal(rer_path) === true
+        @test length(seg.frames) == 4
+        marker = seg.frames[4]
+        @test String(marker.class) == "lifecycle"
+        @test String(marker.payload.kind) == "run_end_requested"
+        @test String(marker.payload.reason) == "operator quit"
+    end
+
+    @testset "8. unknown required feature fails closed" begin
         bytes0 = read(FIXTURE_PATH)
         hdr, _, _ = SL.parse_records(bytes0)
         body_str = String(copy(hdr.body))

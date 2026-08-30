@@ -132,12 +132,14 @@ control_exchange = { phase: "request"/"response"/"outcome",
                scope?: str, target?: str, precondition?: str, body?: any }
 artifact_ref = { blob: BlobRef, origin?: str }
 lifecycle  = { kind: "producer_spawn"/"producer_ready"/"producer_dead"/
-                     "take_state"/"capture_optin"/"input_fact",
+                     "take_state"/"capture_optin"/"input_fact"/
+                     "run_end_requested",
                take?: { take_epoch: u53, holder: str128 / null },
                fact?: { input: Ref,
                         fact: "forward_intent"/"forwarded"/
                               "producer_observed"/"refused_stale_epoch",
-                        intent?: Ref } }
+                        intent?: Ref },
+               reason?: str128 }
 producer_attached = { producer_kind: str, version: str, schema_hash?: hex64,
                profile_def: { id: str128, sha256: hex64, rules: object }
                             / { blob: BlobRef },
@@ -152,6 +154,14 @@ producer_attached = { producer_kind: str, version: str, schema_hash?: hex64,
   `input_fact` ⇒ `fact` required, `take` forbidden; other kinds ⇒ both
   forbidden. `fact.intent` is required for `forwarded`/`producer_observed`
   (it names the forward_intent it completes).
+- `lifecycle.kind=run_end_requested` ⇒ `reason` required (str128, empty
+  string legal — the client-supplied EndRun reason carried verbatim),
+  `take`/`fact` forbidden; the frame's own segment must declare
+  `sot.capsule.run-end-requested-v1` (registry below) or the verifier
+  fails it closed. ADR 0041's EndRun latch: at most this discriminates a
+  leg ended BY REQUEST from every other end: irrevocable once committed,
+  and the first one committed per epoch is the only one — a second
+  request in the same epoch is acknowledged but writes no second frame.
 - `control_exchange`: request ⇒ `to` required, `responds_to` forbidden;
   response ⇒ exactly one `responds_to`, `to`/`scope`/`target` forbidden;
   outcome ⇒ `scope` and `target` required, `responds_to` forbidden.
@@ -343,7 +353,8 @@ exists.
   segment using a feature lists it. A registry entry is required to extend
   any closed enum above or introduce an authority-changing field; readers
   refuse segments whose features they don't implement. Unknown plain JSON
-  fields remain ignorable. **Registry (amended 2026-08-24, ADR 0040):**
+  fields remain ignorable. **Registry (amended 2026-08-24, ADR 0040;
+  2026-08-30, ADR 0041 step 6 U1b):**
   - `sot.producer.json-f64-v1` — producer-class payload numbers may be any
     finite IEEE-754 binary64 value in ordinary valid JSON spelling
     (exponents permitted); control and envelope fields remain u53/i53.
@@ -356,6 +367,21 @@ exists.
     enforced since the wiring PR); `{"scheme": "none"}` (an explicitly
     unfenced test rig) and an absent `kill_domain` (the P1 PTY capsule)
     claim no authority and need no feature; any other scheme fails closed.
+  - `sot.capsule.run-end-requested-v1` — a `lifecycle.kind=run_end_requested`
+    frame is legal in this segment. Records ADR 0041's EndRun latch: the
+    ONE authority-changing fact that a run ended BY REQUEST rather than by
+    the producer exiting on its own, which a later leg's respawn decision
+    reads back. Every segment a step-6 capsule opens declares it
+    UNCONDITIONALLY at creation — the marker's timing is never knowable
+    when an immutable header is written, so declaring it only once the
+    frame is about to be written is not an option. Enforced bidirectionally
+    like the two entries above: the verifier fails the frame closed in a
+    segment that does not declare it, and a pre-feature reader — one built
+    before this entry existed — fails the WHOLE segment closed on the
+    unknown feature name, before it would ever reach the frame. Rollout is
+    reader-first: the writer that declares this feature may not activate
+    until every installed rollback target can read a segment declaring it
+    (see ADR 0041 "Upgrade and version skew").
 - **Wrapper/header versions** cover everything else. Migration is only ever
   by derived copies or new linked segments — never in-place rewriting.
 

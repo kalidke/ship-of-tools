@@ -219,6 +219,15 @@ pub struct SegmentWriter {
     first_seq: Option<Seq>,
     last_seq: Option<Seq>,
     sealed: bool,
+    /// Codex round-1 Major 5 discharge: test-only fault injection at the
+    /// write-succeeded/fsync-failed boundary. `#[cfg(test)]` only — it
+    /// exists purely to prove the ADR 0041 one-fact-one-barrier claim
+    /// (a post-write fsync failure can still leave a complete, durable
+    /// marker; the accessor must then see it) without needing a real,
+    /// unreliable OS-level disk fault. See
+    /// [`SegmentWriter::inject_fault_on_next_append_sync`].
+    #[cfg(test)]
+    fault_next_append_sync: bool,
 }
 
 impl SegmentWriter {
@@ -263,7 +272,29 @@ impl SegmentWriter {
             first_seq: None,
             last_seq: None,
             sealed: false,
+            #[cfg(test)]
+            fault_next_append_sync: false,
         })
+    }
+
+    /// Codex round-1 Major 5 discharge: make the NEXT `append` with
+    /// `Commit::Immediate` report failure AFTER its write and its real
+    /// `sync_all` have already both genuinely succeeded — the record is
+    /// truly, durably on disk; only the RETURN VALUE lies. Models "the
+    /// write succeeded, the requester's own fsync-failure report was
+    /// pessimistic" — the exact boundary ADR 0041's one-fact-one-barrier
+    /// rule pins: a visible marker is authoritative regardless of what
+    /// the writer reported. One-shot: consumed by the next qualifying
+    /// `append` call, never armed twice by accident. Its only real
+    /// caller (`capsule_win.rs`'s own test module) is Windows-only, so a
+    /// non-Windows test build has no caller at all for this item —
+    /// `cfg_attr` suppresses the resulting dead_code warning there
+    /// specifically, matching `host_handshake`/`deadline`'s identical
+    /// reasoning in `lib.rs`.
+    #[cfg(test)]
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn inject_fault_on_next_append_sync(&mut self) {
+        self.fault_next_append_sync = true;
     }
 
     pub fn identity(&self) -> &SegmentIdentity {
@@ -294,6 +325,15 @@ impl SegmentWriter {
         self.file.write_all(&wire)?;
         if commit == Commit::Immediate {
             self.file.sync_all()?;
+            #[cfg(test)]
+            if self.fault_next_append_sync {
+                self.fault_next_append_sync = false;
+                return Err(Error::State(
+                    "injected fsync failure (test): the write is genuinely durable on disk; \
+                     only this Result lies (ADR 0041 one-fact-one-barrier)"
+                        .into(),
+                ));
+            }
         }
         self.hasher.update(&wire);
         self.frame_count += 1;

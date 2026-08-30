@@ -17,8 +17,8 @@
 //! recovery paths, not this reader-side pass.
 
 use crate::envelope::{
-    validate_blob_ref, ActorKind, BlobRef, Class, ExchangePhase, InputContent, InputFactKind,
-    LifecycleKind, RefKind, Seq,
+    validate_blob_ref, validate_str128, ActorKind, BlobRef, Class, ExchangePhase, InputContent,
+    InputFactKind, LifecycleKind, RefKind, Seq,
 };
 use crate::segment::{SegmentIdentity, SegmentReader, SegmentState};
 use crate::{Error, Result};
@@ -53,15 +53,26 @@ enum FactState {
     Refused,
 }
 
-/// The two registered required features (ADR 0039 registry, 2026-08-24).
-/// `json-f64-v1` is enforced bidirectionally (undeclared + fractional =
-/// loud, inline or spilled). `cgroup-fence-v1` is likewise bidirectional
-/// since the wiring PR fixed the spawn-detail schema: a `producer_spawn`
-/// whose `kill_domain` bears authority (scheme "cgroup") must sit in a
-/// segment declaring the feature; scheme "none" and an absent
-/// `kill_domain` claim no authority; unknown schemes fail closed.
-pub const REGISTERED_FEATURES: [&str; 2] =
-    ["sot.producer.json-f64-v1", "sot.capsule.cgroup-fence-v1"];
+/// The three registered required features (ADR 0039 registry, 2026-08-24;
+/// third entry 2026-08-30, ADR 0041 step 6 U1b). `json-f64-v1` is enforced
+/// bidirectionally (undeclared + fractional = loud, inline or spilled).
+/// `cgroup-fence-v1` is likewise bidirectional since the wiring PR fixed
+/// the spawn-detail schema: a `producer_spawn` whose `kill_domain` bears
+/// authority (scheme "cgroup") must sit in a segment declaring the
+/// feature; scheme "none" and an absent `kill_domain` claim no authority;
+/// unknown schemes fail closed. `run-end-requested-v1` is bidirectional
+/// the same way: a `run_end_requested` frame requires its segment to
+/// declare it (below), and a reader built before this constant grew a
+/// third entry refuses ANY segment that declares an unknown feature name
+/// (the loop just below this one) before it would ever decode the frame
+/// — the ADR 0041 "reader lands one release before the writer" property,
+/// for free, from the SAME mechanism the two existing entries already
+/// use.
+pub const REGISTERED_FEATURES: [&str; 3] = [
+    "sot.producer.json-f64-v1",
+    "sot.capsule.cgroup-fence-v1",
+    "sot.capsule.run-end-requested-v1",
+];
 
 /// Turn-closure predicate (ADR 0039 §Verifier, ADR 0040).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +156,13 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
     let mut committed_take_epoch: u64 = 0;
     let mut take_state_seen_epochs: HashSet<u64> = HashSet::new();
 
+    // Codex round-1 Major 7: at most one `run_end_requested` per writer
+    // epoch — a marker governs only its own epoch (ADR 0041), and the
+    // capsule's own first-commit-wins latch is a promise about ITS
+    // process lifetime, not a proof a crafted or corrupted voyage can't
+    // carry two. The verifier must refuse what the writer never would.
+    let mut run_end_seen_epochs: HashSet<u64> = HashSet::new();
+
     for (expected_index, (idx, epoch, state)) in entries.iter().enumerate() {
         if *idx != expected_index as u64 {
             return Err(Error::State(format!(
@@ -197,6 +215,11 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
             .required_features
             .iter()
             .any(|f| f == "sot.capsule.cgroup-fence-v1");
+        let run_end_requested_ok = reader
+            .header
+            .required_features
+            .iter()
+            .any(|f| f == "sot.capsule.run-end-requested-v1");
         // Chain.
         let header_prev = reader.header.prev_seal_digest.as_ref().map(|d| d.value.clone());
         if header_prev != prev_digest {
@@ -365,6 +388,37 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
                                 )));
                             }
                         }
+                        LifecycleKind::RunEndRequested => {
+                            if has_take || has_fact {
+                                return Err(Error::Schema(format!(
+                                    "lifecycle {:?}: run_end_requested forbids take and fact",
+                                    env.seq
+                                )));
+                            }
+                            let reason = payload
+                                .get("reason")
+                                .and_then(|r| r.as_str())
+                                .ok_or_else(|| {
+                                    Error::Schema(format!(
+                                        "lifecycle {:?}: run_end_requested needs a string reason",
+                                        env.seq
+                                    ))
+                                })?;
+                            validate_str128(reason, "run_end_requested.reason")
+                                .map_err(|e| Error::Schema(format!("lifecycle {:?}: {e}", env.seq)))?;
+                            // Major 7: at most one marker per writer
+                            // epoch -- a second well-formed marker in the
+                            // SAME epoch is loud, matching ADR 0039's
+                            // amended cross-field matrix and the
+                            // first-commit-wins rule it documents.
+                            if !run_end_seen_epochs.insert(env.seq.epoch) {
+                                return Err(Error::Schema(format!(
+                                    "lifecycle {:?}: a second run_end_requested in writer epoch {} \
+                                     (first-commit-wins forbids two)",
+                                    env.seq, env.seq.epoch
+                                )));
+                            }
+                        }
                         _ => {
                             if has_take || has_fact {
                                 return Err(Error::Schema(format!(
@@ -376,6 +430,16 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
                     }
                     if kind == LifecycleKind::CaptureOptin {
                         capture_enabled = true;
+                    }
+                    if kind == LifecycleKind::RunEndRequested && !run_end_requested_ok {
+                        // ADR 0039 registry (bidirectional, like
+                        // cgroup-fence-v1's locator-must-declare): the
+                        // frame is only legal in a segment that declared
+                        // the feature at creation.
+                        return Err(Error::Schema(format!(
+                            "lifecycle {:?}: run_end_requested in a segment that does not declare sot.capsule.run-end-requested-v1",
+                            env.seq
+                        )));
                     }
                     if kind == LifecycleKind::ProducerSpawn {
                         // Locator-must-declare (ADR 0039 registry): an
@@ -426,6 +490,10 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
                         .map_err(|e| {
                             Error::Schema(format!("lifecycle {:?}: take malformed: {e}", env.seq))
                         })?;
+                        if let Some(holder) = &take.holder {
+                            validate_str128(holder, "take.holder")
+                                .map_err(|e| Error::Schema(format!("lifecycle {:?}: {e}", env.seq)))?;
+                        }
                         if take.take_epoch <= committed_take_epoch {
                             return Err(Error::Schema(format!(
                                 "lifecycle {:?}: take_epoch {} does not strictly increase past {committed_take_epoch}",
@@ -503,6 +571,19 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
                             }
                         };
                         idem_state.insert(idem_key, new_state);
+                    }
+                }
+            }
+
+            // Codex round-1 Minor 10: `profile_def.id`'s str128 bound —
+            // one of the four shared-validator sites. Only checked when
+            // present as a string (the inline `profile_def` shape);
+            // `{blob: ...}` carries no `id` and is untouched here.
+            if env.class == Class::ProducerAttached {
+                if let Some(payload) = &env.payload {
+                    if let Some(id) = payload.get("profile_def").and_then(|pd| pd.get("id")).and_then(|v| v.as_str()) {
+                        validate_str128(id, "profile_def.id")
+                            .map_err(|e| Error::Schema(format!("producer_attached {:?}: {e}", env.seq)))?;
                     }
                 }
             }
@@ -781,6 +862,140 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
     Ok(())
 }
 
+/// The READ half of ADR 0041's "Respawn is gated by the typed marker,
+/// read from the LATEST LEG AFTER RECONCILIATION" — a small typed
+/// accessor for "does this leg's own epoch carry the `run_end_requested`
+/// marker", exposed so a later unit's respawn decision has something to
+/// call rather than groping the JSON itself. The DECISION (which leg is
+/// "latest", what to do about it) is that later unit's job; this
+/// function only answers the one question about ONE already-selected
+/// epoch.
+///
+/// Scans every segment file under `seg_dir` whose header names `epoch`
+/// exactly, in `.open` or `.sotseg` state — a hard-killed leg's tail
+/// segment can remain `.open` and the marker still governs it, per the
+/// ADR ("a marker governs only its OWN epoch"). `.recovering`/
+/// `.recovering-out` are deliberately NOT read here: those are
+/// mid-transaction scratch states reconciliation resolves before this
+/// leg's epoch is stable enough to answer "latest" about, matching the
+/// ADR's own "after reconciliation" qualifier. Not a certifying pass —
+/// no chain, no full cross-field walk; but (Codex round-1 Major 8) it is
+/// NOT a bare string grope either: filename identity is cross-checked
+/// against the header's OWN claim (the same rule `verify_voyage_mode`
+/// enforces), `kind` is decoded through the TYPED closed enum (an
+/// unrecognized value is not silently "not a marker" the way a raw
+/// string compare would treat it — it is simply not this kind, exactly
+/// as the typed decode says), and a CANDIDATE marker frame is verified
+/// feature-declared with a well-formed, bounded `reason` before it
+/// counts. Every one of those failure shapes — mismatched identity, an
+/// authority-changing frame in an undeclaring segment, a malformed
+/// reason, or two markers in one epoch — errs LOUD rather than
+/// returning `false`: a filename naming epoch E whose header disagrees,
+/// or a marker that fails its own shape, must never be silently treated
+/// as "no marker", which is exactly the failure mode that could suppress
+/// U2's respawn on a genuinely broken record instead of stopping for an
+/// operator. A torn or corrupt segment (of any other kind) simply errs
+/// too, since only the caller's own already-reconciled leg is ever
+/// handed to this function.
+pub fn leg_carries_run_end_marker(seg_dir: &Path, voyage_id: &str, epoch: u64) -> Result<bool> {
+    let mut found: Option<Seq> = None;
+    for entry in std::fs::read_dir(seg_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name == ".tmp" {
+            continue;
+        }
+        let Some((idx, seg_epoch, state)) = SegmentIdentity::parse_file_name(name) else {
+            continue;
+        };
+        if seg_epoch != epoch || !matches!(state, SegmentState::Open | SegmentState::Sealed) {
+            continue;
+        }
+        let id = SegmentIdentity {
+            voyage_id: voyage_id.to_string(),
+            segment_index: idx,
+            epoch: seg_epoch,
+        };
+        let sealed = state == SegmentState::Sealed;
+        let reader = SegmentReader::read(&id.path(seg_dir, state), sealed)?;
+        if reader.header.segment_index != idx
+            || reader.header.epoch != seg_epoch
+            || reader.header.voyage_id != voyage_id
+        {
+            return Err(Error::State(format!(
+                "segment {name}: filename and header identity disagree"
+            )));
+        }
+        let feature_ok = reader
+            .header
+            .required_features
+            .iter()
+            .any(|f| f == "sot.capsule.run-end-requested-v1");
+        for env in &reader.frames {
+            if env.class != Class::Lifecycle {
+                continue;
+            }
+            // Codex round-2b Blocker 3 ("the accessor still silently
+            // accepts invalid paths"): a missing/unknown lifecycle kind
+            // is a HARD SCHEMA ERROR here, exactly as the full verifier
+            // treats it -- never a `continue` that lets a corrupt frame
+            // slide past as merely "not this kind". `payload` itself is
+            // like`Envelope::validate()`'s own payload/payload_ref XOR
+            // (already enforced by `SegmentReader::read`, which runs
+            // `env.validate()` on every frame) already guarantees a
+            // Lifecycle-class frame carries an inline `payload` --
+            // checked again here defensively, still loud if it somehow
+            // didn't.
+            let payload = env.payload.as_ref().ok_or_else(|| {
+                Error::State(format!("lifecycle {:?}: missing payload", env.seq))
+            })?;
+            let kind: LifecycleKind = payload
+                .get("kind")
+                .and_then(|k| serde_json::from_value::<LifecycleKind>(k.clone()).ok())
+                .ok_or_else(|| {
+                    Error::State(format!("lifecycle {:?}: invalid/missing kind", env.seq))
+                })?;
+            if kind != LifecycleKind::RunEndRequested {
+                continue;
+            }
+            // A marker frame carrying the take/fact fields the cross-
+            // field matrix forbids for run_end_requested is corrupt in
+            // exactly the way the full verifier refuses -- must not be
+            // silently counted as a valid marker.
+            if payload.get("take").is_some() || payload.get("fact").is_some() {
+                return Err(Error::State(format!(
+                    "lifecycle {:?}: run_end_requested forbids take and fact",
+                    env.seq
+                )));
+            }
+            if !feature_ok {
+                return Err(Error::State(format!(
+                    "lifecycle {:?}: run_end_requested in a segment that does not declare \
+                     sot.capsule.run-end-requested-v1",
+                    env.seq
+                )));
+            }
+            let reason = payload.get("reason").and_then(|r| r.as_str()).ok_or_else(|| {
+                Error::State(format!(
+                    "lifecycle {:?}: run_end_requested missing a string reason",
+                    env.seq
+                ))
+            })?;
+            validate_str128(reason, "run_end_requested.reason")
+                .map_err(|e| Error::State(format!("lifecycle {:?}: {e}", env.seq)))?;
+            if let Some(prior) = found {
+                return Err(Error::State(format!(
+                    "epoch {epoch} carries two run_end_requested markers ({prior:?} and {:?})",
+                    env.seq
+                )));
+            }
+            found = Some(env.seq);
+        }
+    }
+    Ok(found.is_some())
+}
+
 /// Producer payloads without the f64 feature: every number must be an
 /// integer with |v| <= 2^53-1 (the §3 atoms), recursively.
 fn check_integer_numbers(v: &serde_json::Value) -> std::result::Result<(), String> {
@@ -959,6 +1174,278 @@ mod tests {
         // Unknown scheme and empty path fail closed even when declared.
         assert!(run("l5", fence(), json!({"kill_domain": {"scheme": "jail"}})).is_err());
         assert!(run("l6", fence(), json!({"kill_domain": {"scheme": "cgroup", "path": ""}})).is_err());
+    }
+
+    /// ADR 0041 step 6 U1b: `run_end_requested`'s registered feature,
+    /// enforced bidirectionally like `cgroup-fence-v1` above — refused in
+    /// a segment that doesn't declare it; a declared, present, string
+    /// `reason` (empty legal) verifies green; a missing/non-string reason
+    /// or a take/fact alongside it fails closed even when declared.
+    #[test]
+    fn run_end_requested_needs_its_declared_feature() {
+        let run = |name: &str, features: Vec<String>, payload: serde_json::Value| {
+            let dir = tempfile::tempdir().unwrap();
+            let mut s = store(dir.path(), name);
+            let mut w = s.open_segment_with_features(0, features).unwrap();
+            let mut e = test_env(1, 1);
+            e.class = Class::Lifecycle;
+            e.payload = Some(payload);
+            w.append(&e, Commit::Immediate).unwrap();
+            w.seal(None).unwrap();
+            verify_voyage(&dir.path().join(name), name).map(|_| ())
+        };
+        let feat = || vec!["sot.capsule.run-end-requested-v1".to_string()];
+        let err = run("re1", vec![], json!({"kind": "run_end_requested", "reason": "quit"}))
+            .unwrap_err();
+        assert!(format!("{err}").contains("does not declare"), "got: {err}");
+        run("re2", feat(), json!({"kind": "run_end_requested", "reason": "quit"})).unwrap();
+        // The wire's shutdown.reason permits empty (require_nonempty=false
+        // in wire.rs) — the marker carries it verbatim.
+        run("re3", feat(), json!({"kind": "run_end_requested", "reason": ""})).unwrap();
+        assert!(run("re4", feat(), json!({"kind": "run_end_requested"})).is_err());
+        assert!(run("re5", feat(), json!({"kind": "run_end_requested", "reason": 1})).is_err());
+        assert!(run(
+            "re6",
+            feat(),
+            json!({"kind": "run_end_requested", "reason": "quit",
+                   "take": {"take_epoch": 1, "holder": null}})
+        )
+        .is_err());
+        // Codex round-1 Minor 10: reason obeys str128 (128 UTF-8 bytes)
+        // like every other ADR 0039 str128 site -- exactly at the bound
+        // verifies green, one byte over fails closed.
+        run("re7", feat(), json!({"kind": "run_end_requested", "reason": "a".repeat(128)})).unwrap();
+        assert!(run("re8", feat(), json!({"kind": "run_end_requested", "reason": "a".repeat(129)})).is_err());
+    }
+
+    /// Codex round-1 Major 7: at most one `run_end_requested` per writer
+    /// epoch -- a second well-formed marker in the SAME epoch, in a
+    /// segment that declares the feature, must fail verification even
+    /// though each frame is individually well-formed.
+    #[test]
+    fn verifier_refuses_two_run_end_markers_in_one_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "dup1");
+        let mut w = s
+            .open_segment_with_features(0, vec!["sot.capsule.run-end-requested-v1".to_string()])
+            .unwrap();
+        let mut e1 = test_env(1, 1);
+        e1.class = Class::Lifecycle;
+        e1.payload = Some(json!({"kind": "run_end_requested", "reason": "first"}));
+        w.append(&e1, Commit::Immediate).unwrap();
+        let mut e2 = test_env(1, 2);
+        e2.class = Class::Lifecycle;
+        e2.payload = Some(json!({"kind": "run_end_requested", "reason": "second"}));
+        w.append(&e2, Commit::Immediate).unwrap();
+        w.seal(None).unwrap();
+        let err = verify_voyage(&dir.path().join("dup1"), "dup1").unwrap_err();
+        assert!(format!("{err}").contains("second run_end_requested"), "got: {err}");
+    }
+
+    /// The bidirectional half `run_end_requested_needs_its_declared_feature`
+    /// doesn't reach: a segment declaring a feature name this build's
+    /// `REGISTERED_FEATURES` doesn't know is refused WHOLESALE, before any
+    /// frame inside it is even decoded — the exact mechanism a reader
+    /// shipped before an entry existed relies on to refuse a writer's
+    /// segment it cannot safely interpret (ADR 0041 "reader lands one
+    /// release before the writer"). A fictitious name stands in for "not
+    /// yet in this build" since `REGISTERED_FEATURES` is a compile-time
+    /// const.
+    #[test]
+    fn unknown_feature_name_refuses_the_whole_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "unk1");
+        let mut w = s
+            .open_segment_with_features(0, vec!["sot.capsule.not-yet-registered-v1".to_string()])
+            .unwrap();
+        let mut e = test_env(1, 1);
+        e.class = Class::Lifecycle;
+        e.payload = Some(json!({"kind": "producer_ready"}));
+        w.append(&e, Commit::Immediate).unwrap();
+        w.seal(None).unwrap();
+        let err = verify_voyage(&dir.path().join("unk1"), "unk1").unwrap_err();
+        assert!(format!("{err}").contains("unknown feature"), "got: {err}");
+    }
+
+    /// `leg_carries_run_end_marker` — the small typed accessor a later
+    /// unit's respawn decision reads. Must see the marker on a leg's OWN
+    /// epoch whether the segment is still `.open` (a hard-killed leg's
+    /// tail) or `.sotseg`, and must not see it on a different epoch or an
+    /// ordinary lifecycle frame.
+    #[test]
+    fn leg_carries_run_end_marker_reads_open_and_sealed_legs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "mk1");
+        let mut w = s
+            .open_segment_with_features(0, vec!["sot.capsule.run-end-requested-v1".to_string()])
+            .unwrap();
+        let mut e = test_env(1, 1);
+        e.class = Class::Lifecycle;
+        e.payload = Some(json!({"kind": "run_end_requested", "reason": "quit"}));
+        w.append(&e, Commit::Immediate).unwrap();
+        let seg_dir = dir.path().join("mk1").join("seg");
+        // Still .open (never sealed yet): the marker must already be
+        // readable — a hard-killed leg's tail segment stays .open.
+        assert!(leg_carries_run_end_marker(&seg_dir, "mk1", 1).unwrap());
+        assert!(!leg_carries_run_end_marker(&seg_dir, "mk1", 2).unwrap());
+        w.seal(None).unwrap();
+        assert!(leg_carries_run_end_marker(&seg_dir, "mk1", 1).unwrap());
+    }
+
+    /// Codex round-1 Major 8: a marker frame present in a segment that
+    /// does NOT declare the feature must fail LOUD (`Err`), never
+    /// silently `false` -- an authority-changing frame smuggled past its
+    /// own registry rule is corrupt, not "no marker".
+    #[test]
+    fn leg_carries_run_end_marker_errs_on_undeclared_feature() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "mk3");
+        let mut w = s.open_segment(0).unwrap(); // no features declared
+        let mut e = test_env(1, 1);
+        e.class = Class::Lifecycle;
+        e.payload = Some(json!({"kind": "run_end_requested", "reason": "quit"}));
+        w.append(&e, Commit::Immediate).unwrap();
+        let seg_dir = dir.path().join("mk3").join("seg");
+        let err = leg_carries_run_end_marker(&seg_dir, "mk3", 1).unwrap_err();
+        assert!(format!("{err}").contains("does not declare"), "got: {err}");
+    }
+
+    /// Codex round-1 Major 8: a malformed reason (missing, or over the
+    /// str128 bound) on an otherwise feature-declared marker also errs
+    /// loud rather than silently reporting "no marker".
+    #[test]
+    fn leg_carries_run_end_marker_errs_on_malformed_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "mk4");
+        let mut w = s
+            .open_segment_with_features(0, vec!["sot.capsule.run-end-requested-v1".to_string()])
+            .unwrap();
+        let mut e = test_env(1, 1);
+        e.class = Class::Lifecycle;
+        e.payload = Some(json!({"kind": "run_end_requested", "reason": "a".repeat(200)}));
+        w.append(&e, Commit::Immediate).unwrap();
+        let seg_dir = dir.path().join("mk4").join("seg");
+        let err = leg_carries_run_end_marker(&seg_dir, "mk4", 1).unwrap_err();
+        assert!(format!("{err}").contains("str128"), "got: {err}");
+    }
+
+    /// Codex round-1 Major 8: two well-formed markers in the SAME epoch
+    /// (the writer's own first-commit-wins latch is a promise about ITS
+    /// process lifetime, not a proof a crafted/corrupted voyage can't
+    /// carry two) must err loud, matching the main verifier's own
+    /// per-epoch uniqueness rule (Major 7) rather than reporting the
+    /// FIRST one found and silently ignoring the second.
+    #[test]
+    fn leg_carries_run_end_marker_errs_on_duplicate_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "mk5");
+        let mut w = s
+            .open_segment_with_features(0, vec!["sot.capsule.run-end-requested-v1".to_string()])
+            .unwrap();
+        let mut e1 = test_env(1, 1);
+        e1.class = Class::Lifecycle;
+        e1.payload = Some(json!({"kind": "run_end_requested", "reason": "first"}));
+        w.append(&e1, Commit::Immediate).unwrap();
+        let mut e2 = test_env(1, 2);
+        e2.class = Class::Lifecycle;
+        e2.payload = Some(json!({"kind": "run_end_requested", "reason": "second"}));
+        w.append(&e2, Commit::Immediate).unwrap();
+        let seg_dir = dir.path().join("mk5").join("seg");
+        let err = leg_carries_run_end_marker(&seg_dir, "mk5", 1).unwrap_err();
+        assert!(format!("{err}").contains("carries two"), "got: {err}");
+    }
+
+    /// Codex round-1 Major 8: the FILENAME'S epoch is not trusted on its
+    /// own — a segment renamed to claim a DIFFERENT epoch than its own
+    /// header still carries must err loud rather than silently answering
+    /// against the wrong epoch's identity.
+    #[test]
+    fn leg_carries_run_end_marker_errs_on_filename_header_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "mk6");
+        let mut w = s
+            .open_segment_with_features(0, vec!["sot.capsule.run-end-requested-v1".to_string()])
+            .unwrap();
+        let mut e = test_env(1, 1);
+        e.class = Class::Lifecycle;
+        e.payload = Some(json!({"kind": "run_end_requested", "reason": "quit"}));
+        w.append(&e, Commit::Immediate).unwrap();
+        drop(w);
+        let seg_dir = dir.path().join("mk6").join("seg");
+        // The real (unsealed) file is named for epoch 1; rename it to
+        // CLAIM epoch 2 on disk while its header still says 1.
+        let real_name = std::fs::read_dir(&seg_dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .file_name();
+        let renamed = SegmentIdentity {
+            voyage_id: "mk6".to_string(),
+            segment_index: 0,
+            epoch: 2,
+        }
+        .path(&seg_dir, SegmentState::Open);
+        std::fs::rename(seg_dir.join(&real_name), &renamed).unwrap();
+        let err = leg_carries_run_end_marker(&seg_dir, "mk6", 2).unwrap_err();
+        assert!(format!("{err}").contains("identity disagree"), "got: {err}");
+    }
+
+    /// Codex round-2b Blocker 3: a missing/unknown lifecycle `kind` on
+    /// ANY lifecycle frame in the scanned epoch must err loud -- exactly
+    /// as the full verifier treats it -- never silently `continue` as
+    /// "not this kind" the way a bare-string-compare accessor would.
+    #[test]
+    fn leg_carries_run_end_marker_errs_on_invalid_lifecycle_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "mk7");
+        let mut w = s
+            .open_segment_with_features(0, vec!["sot.capsule.run-end-requested-v1".to_string()])
+            .unwrap();
+        let mut e = test_env(1, 1);
+        e.class = Class::Lifecycle;
+        e.payload = Some(json!({"kind": "not_a_real_lifecycle_kind"}));
+        w.append(&e, Commit::Immediate).unwrap();
+        let seg_dir = dir.path().join("mk7").join("seg");
+        let err = leg_carries_run_end_marker(&seg_dir, "mk7", 1).unwrap_err();
+        assert!(format!("{err}").contains("invalid/missing kind"), "got: {err}");
+    }
+
+    /// Codex round-2b Blocker 3: a `run_end_requested` frame that ALSO
+    /// carries `take` or `fact` (forbidden by the cross-field matrix)
+    /// must err loud rather than being counted as a valid marker.
+    #[test]
+    fn leg_carries_run_end_marker_errs_on_marker_with_forbidden_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "mk8");
+        let mut w = s
+            .open_segment_with_features(0, vec!["sot.capsule.run-end-requested-v1".to_string()])
+            .unwrap();
+        let mut e = test_env(1, 1);
+        e.class = Class::Lifecycle;
+        e.payload = Some(json!({
+            "kind": "run_end_requested",
+            "reason": "quit",
+            "take": {"take_epoch": 1, "holder": null}
+        }));
+        w.append(&e, Commit::Immediate).unwrap();
+        let seg_dir = dir.path().join("mk8").join("seg");
+        let err = leg_carries_run_end_marker(&seg_dir, "mk8", 1).unwrap_err();
+        assert!(format!("{err}").contains("forbids take and fact"), "got: {err}");
+    }
+
+    #[test]
+    fn leg_without_the_marker_reads_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "mk2");
+        let mut w = s.open_segment(0).unwrap();
+        let mut e = test_env(1, 1);
+        e.class = Class::Lifecycle;
+        e.payload = Some(json!({"kind": "producer_dead", "detail": {"exit_code": 0}}));
+        w.append(&e, Commit::Immediate).unwrap();
+        w.seal(None).unwrap();
+        let seg_dir = dir.path().join("mk2").join("seg");
+        assert!(!leg_carries_run_end_marker(&seg_dir, "mk2", 1).unwrap());
     }
 
     /// Review pin: payload_ref is producer-class only — a spilled

@@ -71,6 +71,10 @@ pub mod exchange;
 pub mod pointer;
 pub mod record;
 pub mod recovery;
+// ADR 0041 step 6, unit U1b: the reader-first rollout gate for a
+// feature-bearing segment (ADR 0039 registry) -- portable (no OS
+// dependency), like `pointer`/`exchange`.
+pub mod rollout;
 pub mod segment;
 // ADR 0041 step 6, unit U0 (promoted from the frontend's own paths.rs):
 // the per-machine state-dir resolution rule, owned here so every process

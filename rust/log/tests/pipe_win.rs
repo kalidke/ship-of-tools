@@ -37,6 +37,7 @@ use sot_log::challenge::{challenge, ChallengeOutcome};
 use sot_log::exchange::VoyageMgmtExchange;
 use sot_log::pipe_win::{
     connect_voyage_pipe, ClosedReason, ConnId, PipeError, PipeServer, TransportEvent,
+    TEARDOWN_AGGREGATE_DEADLINE,
 };
 use sot_log::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::sync::Arc;
@@ -507,6 +508,253 @@ fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
     drop(server);
     try_create_first_instance(&id, max_instances)
         .unwrap_or_else(|e| panic!("expected the freed name to bind again: {e}"));
+}
+
+/// ADR 0041 step 6 U1b, Lifecycle "the pipe NAME disappears before any
+/// blocking join" — Codex round-2b Blocker 1 discharge: `disconnect_listener`
+/// ALONE — never `join_workers`, never `Drop` — must free the name for a
+/// `FIRST_PIPE_INSTANCE` rival probe the INSTANT it returns, WHILE A
+/// CONNECTION IS STILL LIVE, not only after it has already closed. The
+/// client's own handle is left open throughout (never dropped before the
+/// probe): the SERVER-side instance `disconnect_listener` closes is what a
+/// squat probe actually checks for, so a still-open client handle must not
+/// keep the name held. NO POLL LOOP inside `disconnect_listener` itself:
+/// it closes the live connection's handle synchronously (round 1) and the
+/// pending accept's own listening instance handle synchronously too
+/// (round 2b — cancelling alone only REQUESTS cancellation, asynchronously;
+/// closing the handle directly is what actually makes the instance stop
+/// existing) — a poll THERE would silently tolerate exactly the residual
+/// delay this round's fix exists to remove.
+///
+/// Codex round-3 test-premise-gap fix: `max_instances = 2` means a SECOND
+/// instance becomes the accept loop's own pending `ConnectNamedPipe` the
+/// moment the first connection is accepted, but the accept loop reaching
+/// that point is a RACE against this test thread — the previous version
+/// of this test called `disconnect_listener` right after `expect_accepted`
+/// with no guarantee that race had resolved, so it exercised live-
+/// connection closure but did NOT deterministically prove a pending
+/// accept handle existed at teardown too (the actual defect this test
+/// exists to catch — Codex round-3 finding 1).
+///
+/// Codex round-4 finding 3: `AcceptState::current` alone is populated
+/// BEFORE `ConnectNamedPipe` is ever issued, so polling it cannot prove
+/// submission happened at all — and a separate "poll, then call
+/// `disconnect_listener`" pair leaves a TOCTOU gap between the two calls.
+///
+/// Codex round-5 fix 2a/2b/2c: plain `SlotState::Pending` is ALSO set for
+/// a synchronously-completed op still awaiting result collection, so
+/// even polling THAT is not proof of a genuine `ERROR_IO_PENDING`
+/// submission — and merely being in one function does not itself close
+/// a TOCTOU between a pre-check and a later act.
+/// `assert_accept_parked_then_disconnect_listener_for_test` polls the
+/// accept slot's OWN genuine-async-pending signal (set only when `issue`
+/// actually returns `ERROR_IO_PENDING`) purely to decide WHEN to call
+/// `disconnect_listener`, then returns the TOCTOU-free LATCH that
+/// `disconnect_listener`'s own synchronized cancellation records at the
+/// exact instant it cancels — the proof and the act share one critical
+/// section, so nothing can go stale in between.
+#[test]
+fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
+    if !run_isolated("disconnect_listener_frees_the_name_even_with_a_live_connection") {
+        return;
+    }
+    let id = fresh_voyage_id();
+    let max_instances = 2;
+    let mut server = PipeServer::bind(&id, max_instances).unwrap();
+
+    // A LIVE connection: never closed by either side before the probe.
+    let client = connect_voyage_pipe(&id).unwrap();
+    expect_accepted(&server, TIMEOUT);
+
+    assert!(
+        server.assert_accept_parked_then_disconnect_listener_for_test(TIMEOUT),
+        "expected a second pending accept instance (max_instances=2) to be genuinely parked \
+         (ConnectNamedPipe issued) before teardown"
+    );
+
+    try_create_first_instance(&id, max_instances)
+        .unwrap_or_else(|e| panic!("expected the name to be immediately winnable: {e}"));
+    drop(client);
+    drop(server);
+}
+
+/// ADR 0041 step 6 U1b, acceptance matrix "teardown composes": real
+/// worker fan-out (several live connections torn down at once, none of
+/// them having disconnected on their own) completes well inside the
+/// pinned aggregate deadline — proven against a budget a full order of
+/// magnitude smaller than [`TEARDOWN_AGGREGATE_DEADLINE`], which is
+/// exactly the margin that constant claims to have.
+#[test]
+fn worst_case_worker_fan_out_completes_well_inside_the_aggregate_budget() {
+    if !run_isolated("worst_case_worker_fan_out_completes_well_inside_the_aggregate_budget") {
+        return;
+    }
+    assert!(Duration::from_secs(5) < TEARDOWN_AGGREGATE_DEADLINE);
+    let id = fresh_voyage_id();
+    let max_instances = 8;
+    let mut server = PipeServer::bind(&id, max_instances).unwrap();
+
+    let mut clients = Vec::new();
+    for _ in 0..max_instances {
+        let client = connect_voyage_pipe(&id).unwrap();
+        expect_accepted(&server, TIMEOUT);
+        clients.push(client); // every connection stays LIVE -- worst case
+    }
+
+    server.disconnect_listener();
+    let started = Instant::now();
+    let ok = server.join_workers(started + Duration::from_secs(5));
+    assert!(
+        ok,
+        "real teardown of {max_instances} live connections did not finish within a 5s budget \
+         (took at least {:?})",
+        started.elapsed()
+    );
+    drop(clients);
+}
+
+/// ADR 0041 step 6 U1b, acceptance matrix "teardown composes" — Codex
+/// round-1 Blocker 3 discharge: a GENUINELY STALLED connection worker
+/// (one whose peer never drains, never closes, and whose own I/O the
+/// server side cannot otherwise unstick) must not prevent the OTHER
+/// connections from being cancelled and torn down, and the AGGREGATE
+/// join must still resolve (loud on expiry) within a small bound rather
+/// than hanging on the one stuck worker. `flooded_never_reading_client_
+/// close_completes_within_bound` (below) already proves a single
+/// never-reading watcher's OWN close completes bounded; this test proves
+/// the WHOLE-SERVER teardown composes the same way when one connection
+/// is stalled and several healthy ones are live alongside it.
+#[test]
+fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
+    if !run_isolated("stalled_worker_does_not_block_teardown_of_healthy_connections") {
+        return;
+    }
+    let id = fresh_voyage_id();
+    let max_instances = 4;
+    let mut server = PipeServer::bind(&id, max_instances).unwrap();
+
+    // One connection whose CLIENT never reads and never writes again --
+    // outbound bytes queued for it will sit until the server side closes
+    // the handle out from under it. A few healthy connections alongside
+    // it, established BEFORE the final pending-at-teardown proof below
+    // (Codex round-5 fix 3), so the whole scenario is real by the time
+    // that proof runs.
+    let stalled_client = connect_voyage_pipe(&id).unwrap();
+    let stalled_conn = expect_accepted(&server, TIMEOUT);
+    // Codex round-3 test-premise-gap fix: a single 4 KiB send into a pipe
+    // configured with 64 KiB buffers never actually stalls -- flood until
+    // the outbound budget genuinely reports full (the SAME pattern
+    // `flooded_never_reading_client_close_completes_within_bound` uses),
+    // proving the writer thread has real in-flight/backed-up work when
+    // teardown begins, not an idle connection.
+    let payload = vec![0xABu8; 65_536];
+    let mut saw_full = false;
+    for _ in 0..128 {
+        match server.send(stalled_conn, payload.clone(), None) {
+            Ok(()) => {}
+            Err(PipeError::QueueFull(cid)) => {
+                assert_eq!(cid, stalled_conn);
+                saw_full = true;
+                break;
+            }
+            Err(other) => panic!("unexpected send error: {other}"),
+        }
+    }
+    assert!(
+        saw_full,
+        "expected the outbound budget to report full against a stalled peer"
+    );
+
+    let mut healthy_clients = Vec::new();
+    for _ in 0..2 {
+        let c = connect_voyage_pipe(&id).unwrap();
+        expect_accepted(&server, TIMEOUT);
+        healthy_clients.push(c);
+    }
+
+    // Codex round-4 finding 3 / round-5 finding 2: `QueueFull` alone only
+    // proves the outbound BYTE budget is reserved, and plain
+    // `SlotState::Pending` is ALSO set for a synchronously-completed
+    // write still awaiting result collection -- neither proves the
+    // writer thread has reached a GENUINE `ERROR_IO_PENDING` `WriteFile`.
+    // This poll is a best-effort PRE-check deciding WHEN it is worth
+    // proceeding to teardown; it is NOT the proof (ignoring a timeout
+    // here just means the fused proof below will legitimately fail
+    // instead, with a clearer message about what was actually observed).
+    let _ = server.conn_write_pending_for_test(stalled_conn, TIMEOUT);
+
+    // Codex round-5 fix 2b/2c/3: fuse the proof with the act. Real
+    // Windows CI diagnosis (this round): relying on `close_all`'s
+    // `CloseHandle` alone to unstick a write genuinely stalled on full-
+    // buffer backpressure was NOT observed to complete within this
+    // test's 5s teardown budget -- `disconnect_listener` now issues an
+    // explicit `CancelIoEx` per connection FIRST, which is what actually
+    // and promptly unsticks it; the assert below reads the TOCTOU-free
+    // latch that SAME cancellation recorded, not a stale pre-check.
+    server.disconnect_listener();
+    assert_eq!(
+        server.conn_write_was_genuinely_pending_at_teardown_for_test(stalled_conn),
+        Some(true),
+        "expected the stalled connection's writer to be GENUINELY pending (ERROR_IO_PENDING) \
+         at the exact instant disconnect_listener cancelled it"
+    );
+
+    let started = Instant::now();
+    // A budget an order of magnitude under the pinned 20s: teardown must
+    // not need to wait out the stalled connection's own I/O at all --
+    // cancelling then closing its handle (disconnect_listener, above) is
+    // what unsticks it, so healthy AND stalled connections alike tear
+    // down promptly.
+    let ok = server.join_workers(started + Duration::from_secs(5));
+    assert!(
+        ok,
+        "teardown with one stalled connection among several live ones did not finish within a \
+         5s budget (took at least {:?})",
+        started.elapsed()
+    );
+    drop(stalled_client);
+    drop(healthy_clients);
+}
+
+/// ADR 0041 step 6 U1b, acceptance matrix "teardown composes" — Codex
+/// round-1 Blocker 3 discharge, "total-deadline propagation": the shared
+/// deadline is REAL and honored against REAL OS threads, not merely a
+/// number `join_within`'s own pure unit tests exercise against fully
+/// controlled fake threads. `disconnect_listener`'s own redesign makes a
+/// worker un-unstickable by ORDINARY means hard to construct (closing
+/// every handle is specifically what unsticks them) — so this proves
+/// deadline ENFORCEMENT itself is real and workload-independent: an
+/// essentially-zero budget against otherwise-healthy, real connections
+/// still returns promptly (never hangs out to the pinned 20s), and the
+/// natural race (some threads may still finish before the first
+/// `is_finished` poll) means this asserts BOUNDED total time, not a
+/// specific `true`/`false` outcome — either is legitimate, a HANG is not.
+#[test]
+fn join_workers_deadline_is_enforced_against_real_threads_not_merely_computed() {
+    if !run_isolated("join_workers_deadline_is_enforced_against_real_threads_not_merely_computed") {
+        return;
+    }
+    let id = fresh_voyage_id();
+    let max_instances = 4;
+    let mut server = PipeServer::bind(&id, max_instances).unwrap();
+
+    let mut clients = Vec::new();
+    for _ in 0..3 {
+        let c = connect_voyage_pipe(&id).unwrap();
+        expect_accepted(&server, TIMEOUT);
+        clients.push(c);
+    }
+
+    server.disconnect_listener();
+    let started = Instant::now();
+    let _ok = server.join_workers(started + Duration::from_millis(1));
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "join_workers with an essentially-zero budget must return promptly, not silently wait \
+         out the full aggregate regardless of outcome (took {elapsed:?})"
+    );
+    drop(clients);
 }
 
 /// Test 4: the pipe's own security descriptor, queried on a LIVE HANDLE

@@ -107,6 +107,7 @@ use crate::capsule_win::{Transport, TransportEvent as CapsuleEvent};
 use crate::pipe_win::{ConnId, PipeServer, TransportEvent as PipeEvent};
 use crate::Result;
 use std::collections::HashSet;
+use std::time::Instant;
 
 /// A `Transport` over a real `PipeServer`. Constructed UNBOUND (see
 /// [`PipeTransport::new`]); `Transport::bind` is what `capsule_win::run`
@@ -185,16 +186,28 @@ impl Transport for PipeTransport {
         }
     }
 
-    fn shutdown_all(&mut self) {
-        // Dropping `PipeServer` closes every connection and stops
-        // accepting new ones (its own `Drop` impl) -- no actor thread to
-        // signal or join any more. The closing latch is cleared with it:
+    fn shutdown_all(&mut self, deadline: Instant) -> bool {
+        // Codex round-1 Blocker 2/3 discharge: explicit cancellation-first
+        // teardown against the SHARED `deadline` -- `disconnect_listener`
+        // makes the pipe name (and every live connection's handle) gone
+        // synchronously, THEN `join_workers` waits out every thread this
+        // transport owns against `deadline`, never a budget it invents
+        // itself. Dropping `PipeServer` afterward (its own `Drop`) is then
+        // a documented no-op: both methods are idempotent, and everything
+        // is already joined/cleared. The closing latch is cleared with it:
         // shutdown emits no Closed events to clear entries, and a later
         // bind's fresh PipeServer restarts conn ids at zero -- a stale
         // latch would silently drop the new server's sends (review
         // finding).
+        let ok = if let Some(server) = &mut self.server {
+            server.disconnect_listener();
+            server.join_workers(deadline)
+        } else {
+            true
+        };
         self.server = None;
         self.closing.clear();
+        ok
     }
 }
 

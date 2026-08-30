@@ -1038,11 +1038,15 @@ prerequisite:
 2. On successful commit the capsule IRREVOCABLY LATCHES EndRun, in the
    same writer-loop step, before the ack is queued. Ack completion only
    accelerates teardown; a stalled ack, a client that stops reading, a
-   progress-deadline close or a lost connection cannot unlatch it. The
-   shipped machine starts teardown only when the ack reports physically
-   sent and a close emits no replacement action, so without the latch a
-   durable marker could coexist with a shell running on under a record
-   saying this run must never be replaced.
+   progress-deadline close or a lost connection cannot unlatch it — and
+   because the ack cannot unlatch it, the ack cannot be what STARTS
+   teardown either: the latch itself is what drives it, the instant it
+   commits, so every one of those loss modes still reaches a torn-down,
+   sealed leg rather than a shell running on under a record saying this
+   run must never be replaced. The ack remains serviced normally
+   throughout (still tracked for its own physical-write completion, the
+   ack-grace window unchanged) — a courtesy attempted alongside
+   teardown, never a precondition for it.
 3. If the append FAILS there is NO REFUSAL FRAME, because the pinned v0
    lane has none to send: every reply tag means success, and inventing
    one would break the compatibility promise that lane exists to keep.
@@ -1052,6 +1056,14 @@ prerequisite:
    mgmt client sees EOF; the lane operation terminalizes
    `failed {record_append}` per the acceptance barrier above, releasing
    its provisional hold, and the authority repairs and replaces the leg.
+   ONE-FACT-ONE-BARRIER: this failure shape covers the write itself
+   failing; if the write succeeds and only a LATER fsync report lies
+   (the bytes are genuinely durable, the call merely returned an error),
+   a VISIBLE marker is authoritative regardless of what the requester
+   was told — reconciliation and the accessor both read the byte, not
+   the stale report, and a pessimistic report is safe precisely because
+   it can never contradict the request's own intent: the caller wanted
+   this run to end.
 4. Concurrent requests: the first commit wins and writes the only
    marker; every later `shutdown` is acked without a second marker. A
    request accepted in the final service poll has its ack queued and the
