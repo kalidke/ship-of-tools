@@ -310,6 +310,22 @@ pub enum PipeError {
     /// caller.
     #[error("another operation is already pending on this client's same direction")]
     ConcurrentSubmit,
+    /// U1a: `connect_voyage_pipe`'s own SID authentication (ADR 0041
+    /// Lifecycle "The challenge", steps 1-3 via
+    /// `challenge::authenticate_server` — NOT the full five-step
+    /// `challenge()`, see that function's own doc) answered with a
+    /// WELL-FORMED WRONG proof — a different token-user SID behind the
+    /// pipe. A loud, typed failure: never retried as if the peer might
+    /// still turn out legitimate.
+    #[error("connect_voyage_pipe: the peer failed SID authentication (a different account's process is behind this pipe)")]
+    Foreign,
+    /// U1a: SID authentication could not be completed at all — an OS-call
+    /// failure (`GetNamedPipeServerProcessId`, `OpenProcess`,
+    /// `OpenProcessToken`, `GetTokenInformation`, `GetProcessTimes`).
+    /// Never silently treated as either authenticated or foreign (ADR
+    /// 0041: "a failure... is PENDING, never READY and never ADOPTED").
+    #[error("connect_voyage_pipe: SID authentication could not be completed (peer identity undetermined)")]
+    Undetermined,
 }
 
 /// A raw Windows `HANDLE`, asserted `Send` AND `Sync`. `Send`: exactly one
@@ -1448,12 +1464,79 @@ impl std::fmt::Debug for PipeClient {
     }
 }
 
-/// Connect to `\\.\pipe\sot-voyage-<voyage_id>`. Retries `CreateFileW`
-/// (bounded, 2s total) on `ERROR_PIPE_BUSY` (all instances currently
-/// connected — waits on `WaitNamedPipeW` between attempts) and
-/// `ERROR_FILE_NOT_FOUND` (the server has not called `bind` yet) — both
-/// are ordinary races in a healthy multi-client server, not failures.
+/// Maps [`crate::challenge::SidAuthOutcome`] to this module's own
+/// `Result` — the exact logic [`connect_voyage_pipe`] runs, pulled out so
+/// it is directly unit-testable (U1a Codex round-1, minor cluster: "a
+/// constructor-level failure-mapping test") without needing an OS-level
+/// SID mismatch or OS-call failure through a live pipe, neither of which
+/// is constructible in CI (a genuine Foreign result needs a second real
+/// account; the ADR itself scopes that proof to step 7's real-machine
+/// suite).
+fn map_sid_auth_outcome(outcome: crate::challenge::SidAuthOutcome) -> Result<(), PipeError> {
+    match outcome {
+        crate::challenge::SidAuthOutcome::Authenticated(_) => Ok(()),
+        crate::challenge::SidAuthOutcome::Foreign => Err(PipeError::Foreign),
+        crate::challenge::SidAuthOutcome::Undetermined => Err(PipeError::Undetermined),
+    }
+}
+
+/// Connect to `\\.\pipe\sot-voyage-<voyage_id>` AND authenticate the
+/// server behind it (ADR 0041 Lifecycle "The challenge", steps 1-3 —
+/// U1a) before handing the connection back — the shared,
+/// step-5-client-facing constructor every ordinary caller (tests, the
+/// e2e harness, and any future mgmt/attach client) uses. A pipe's DACL is
+/// directional (governs who may CONNECT, not who MADE the object), so a
+/// raw successful `CreateFileW` here proves nothing about who is on the
+/// other end; this function runs
+/// [`crate::challenge::authenticate_server`] (identify the peer process,
+/// compare its token-user SID to this account's — NOT the full five-step
+/// `challenge()`, which additionally binds a reply's own pid/creation to
+/// this connection and needs a lane-specific request to get one) before
+/// returning `Ok(_)` — the MINIMAL SAFE CALL for a connection whose lane
+/// is not yet known here (the caller's own first frame —
+/// `status`/`probe`/`shutdown` for mgmt, `hello` for attach — decides
+/// that, and this function must not consume either by sending a
+/// lane-specific request of its own; see `authenticate_server`'s own doc
+/// for why the full proof does not apply at this layer). A failed
+/// authentication is a loud, typed [`PipeError::Foreign`] or
+/// [`PipeError::Undetermined`] — never a silent retry. A caller that
+/// needs the FULL proof (mgmt lane; the probe classifier) runs
+/// `challenge::challenge` itself on top of this — see
+/// `probe::RealProbeOps` for exactly that composition.
+///
+/// Retries `CreateFileW` (bounded, 2s total) on `ERROR_PIPE_BUSY` (all
+/// instances currently connected — waits on `WaitNamedPipeW` between
+/// attempts) and `ERROR_FILE_NOT_FOUND` (the server has not called `bind`
+/// yet) — both are ordinary races in a healthy multi-client server, not
+/// failures.
 pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, PipeError> {
+    let client = connect_voyage_pipe_unchallenged(voyage_id)?;
+    map_sid_auth_outcome(crate::challenge::authenticate_server(&client))?;
+    Ok(client)
+}
+
+/// The raw connect, with NO authentication — every step-5 client must go
+/// through [`connect_voyage_pipe`] instead. `pub(crate)`, and MUST STAY
+/// `pub(crate)` (U1a Codex round-1, Blocker 2): the only in-crate consumer
+/// is `probe::RealProbeOps::connect`, which is itself `pub(crate)` for
+/// exactly this reason — an unchallenged `PipeClient` reachable through a
+/// PUBLIC type would be a public path to raw pipe I/O on an unauthenticated
+/// connection, defeating this whole module's own enforcement. See
+/// `probe.rs`'s module doc for why making `RealProbeOps` crate-private
+/// costs nothing today (no production code instantiates it yet) and stays
+/// architecturally sound once U2's classifier lands (a public function
+/// in THIS crate, reachable from `sot-capsule`'s separate bin target,
+/// wrapping this crate-private plumbing).
+///
+/// This exists ONLY for the probe classifier's own `ProbeOps::connect` (a
+/// later unit, ADR 0041 "The probe"), which deliberately keeps "connect"
+/// and "challenge" as two separately-observed steps — Stage B's own
+/// transition table (B1-B6) is defined in terms of a raw connect outcome
+/// followed by a SEPARATELY timed challenge (a bespoke deadline clamped to
+/// the probe episode's remaining wall time), so folding authentication
+/// into the connect itself here would collapse rows the classifier needs
+/// to tell apart.
+pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeClient, PipeError> {
     validate_voyage_id(voyage_id)?;
     let name = pipe_name_wide(voyage_id);
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -1642,5 +1725,45 @@ fn map_client_io_error(op: &'static str) -> impl Fn(std::io::Error) -> PipeError
         } else {
             PipeError::Io { op, source: e }
         }
+    }
+}
+
+/// U1a Codex round-1, minor cluster: a constructor-level failure-mapping
+/// test for `connect_voyage_pipe`'s own `map_sid_auth_outcome`, proving
+/// the mapping code the constructor actually runs -- not `challenge`/
+/// `authenticate_server` directly, and not through a live pipe (a genuine
+/// OS-level Foreign/Undetermined through a real connection needs either a
+/// second real account or an unreliable timing race, neither
+/// constructible deterministically in CI; see `authenticate_server_is_
+/// undetermined_when_step_one_itself_fails` in the integration test for
+/// the OS-call-failure case proven against a real, deliberately invalid
+/// handle instead). Lives here (not in `tests/pipe_win.rs`) because
+/// `map_sid_auth_outcome` is a private implementation detail with no
+/// reason to be `pub` merely for testability, and a pure mapping over
+/// already-constructed `SidAuthOutcome` values needs no real pipe --
+/// exactly the kind of test this crate's OTHER pure-logic modules
+/// (`attach_proto`, `wire`, `exchange`) already keep inline.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::challenge::{SidAuthOutcome, SidAuthenticated};
+
+    #[test]
+    fn map_sid_auth_outcome_authenticated_is_ok() {
+        let outcome = SidAuthOutcome::Authenticated(SidAuthenticated { pid: 4242, created: 7 });
+        assert!(map_sid_auth_outcome(outcome).is_ok());
+    }
+
+    #[test]
+    fn map_sid_auth_outcome_foreign_is_the_typed_pipe_error() {
+        assert!(matches!(map_sid_auth_outcome(SidAuthOutcome::Foreign), Err(PipeError::Foreign)));
+    }
+
+    #[test]
+    fn map_sid_auth_outcome_undetermined_is_the_typed_pipe_error() {
+        assert!(matches!(
+            map_sid_auth_outcome(SidAuthOutcome::Undetermined),
+            Err(PipeError::Undetermined)
+        ));
     }
 }

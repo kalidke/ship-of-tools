@@ -1228,3 +1228,92 @@ fn cross_process_challenge_proves_a_real_child_server() {
     }
     guard.0 = None;
 }
+
+// ---------------------------------------------------------------------
+// U1a: SID authentication enforcement in the shared `connect_voyage_pipe`
+// constructor. Every step-5 client — mgmt or attach, tests and the e2e
+// harness included — now gets steps 1-3 of ADR 0041's same-connection
+// challenge (`challenge::authenticate_server`) as PART of connecting, not
+// as a separate call the caller has to remember to make. This is
+// DELIBERATELY WEAKER than the full five-step `challenge()` (Codex round-1
+// Blocker 1): no reply round trip happens here, so no liveness/pid-binding
+// proof is claimed at this layer — see `connect_voyage_pipe`'s own doc for
+// the full reasoning and why the attach lane's `hello` still gets to be
+// the connection's first frame.
+// ---------------------------------------------------------------------
+
+/// The pass case: against a genuine same-account server,
+/// `connect_voyage_pipe`'s SID authentication is a transparent
+/// pass-through — the connection it hands back is fully usable for the
+/// caller's own intended protocol (an ordinary mgmt round trip here), not
+/// merely "connected". This exercises the ENFORCED CONSTRUCTOR ITSELF
+/// (`connect_voyage_pipe`, not `authenticate_server` or `challenge`
+/// directly), so a regression that stopped calling `authenticate_server`
+/// at all would still pass this test (nothing here proves enforcement
+/// happened) -- that is exactly why the failure-mapping unit tests in
+/// `pipe_win.rs` itself (`map_sid_auth_outcome`) exist alongside it: they
+/// prove the CONSTRUCTOR's mapping logic in isolation, and this test
+/// proves the happy path stays usable end to end.
+#[test]
+fn connect_voyage_pipe_sid_authentication_enforced_pass_against_a_genuine_server() {
+    if !run_isolated("connect_voyage_pipe_sid_authentication_enforced_pass_against_a_genuine_server") {
+        return;
+    }
+    let voyage_id = fresh_voyage_id();
+    let server = PipeServer::bind(&voyage_id, 1).expect("bind");
+    let client = connect_voyage_pipe(&voyage_id)
+        .expect("SID-authentication-enforced connect must pass against a genuine same-account server");
+
+    let conn_id = expect_accepted(&server, TIMEOUT);
+    let probe = wire::encode_mgmt_request(&MgmtRequest::Probe).unwrap();
+    client.write_all(&probe).expect("the connection must still be fully usable after authentication");
+    let expected = wire::encode_mgmt_request(&MgmtRequest::Probe).unwrap();
+    let got = accumulate_bytes(&server, conn_id, expected.len(), TIMEOUT);
+    assert_eq!(got, expected);
+
+    let reply = wire::encode_mgmt_reply(&MgmtReply::ProbeOk).unwrap();
+    server.send(conn_id, reply.clone(), None).expect("send probe_ok");
+    let mut buf = [0u8; 512];
+    let n = client.read(&mut buf).expect("read probe_ok");
+    assert_eq!(&buf[..n], reply.as_slice());
+}
+
+/// A `ChallengeableConnection` whose `raw_handle()` is deliberately
+/// invalid (`INVALID_HANDLE_VALUE`, the exact value a failed `CreateFileW`
+/// itself would have produced) — proves `authenticate_server`'s own
+/// typed-failure surface with NO real pipe, process, or account boundary
+/// needed: step 1 (`GetNamedPipeServerProcessId`) itself fails against
+/// this handle, deterministically, on every run. `write_all`/`read`/
+/// `cancel` are never reached (`authenticate_server` never touches
+/// `IdentityExchange`, unlike the full `challenge()`) — `unreachable!()`
+/// makes that a loud, checked assumption rather than a silent one.
+///
+/// A genuine WRONG-SID server (an other-user process winning the pipe
+/// name first) is the ADR's own step-7 REAL-MACHINE acceptance row ("on a
+/// real Windows machine, an OTHER-USER process pre-binds... every public
+/// client entry point classifies it FOREIGN") — not constructible in CI
+/// without a second real account, so it is deliberately not attempted
+/// here; this test instead proves the OTHER typed failure — `Undetermined`
+/// — that steps 1-3 alone can already produce.
+struct InvalidHandleConn;
+impl sot_log::challenge::ChallengeableConnection for InvalidHandleConn {
+    fn raw_handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+    }
+    fn write_all(&self, _bytes: &[u8]) -> std::io::Result<()> {
+        unreachable!("authenticate_server never sends a request")
+    }
+    fn read(&self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        unreachable!("authenticate_server never reads a reply")
+    }
+    fn cancel(&self) {
+        unreachable!("authenticate_server never arms a reply watchdog")
+    }
+}
+
+#[test]
+fn authenticate_server_is_undetermined_when_step_one_itself_fails() {
+    use sot_log::challenge::{authenticate_server, SidAuthOutcome};
+    let outcome = authenticate_server(&InvalidHandleConn);
+    assert!(matches!(outcome, SidAuthOutcome::Undetermined), "{outcome:?}");
+}

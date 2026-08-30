@@ -303,15 +303,24 @@ pub trait Transport {
     /// Sever `conn` at the transport level. Idempotent: closing an
     /// already-closed or unknown connection is a no-op.
     fn close(&mut self, conn: ConnId);
-    /// Close EVERY connection and stop accepting new ones — called exactly
-    /// once, at the very end of `run` (via an RAII guard, so every exit
-    /// path reaches it, not only the success one), so the pipe is
+    /// Close EVERY connection and stop accepting new ones, so the pipe is
     /// guaranteed closed BEFORE the writer lock releases (finding 7: "the
     /// capsule can enforce pipe-closed-before-lock-release"). U3's real
     /// named-pipe server already closes everything on `Drop`; this method
     /// exists so the writer loop can trigger that deterministically at the
     /// right moment rather than relying on cross-type drop ordering
     /// between the transport and the `VoyageStore` holding the lock.
+    ///
+    /// MUST BE IDEMPOTENT (U1a): `run` now calls this explicitly once the
+    /// ack-grace window resolves (see the `SHUTDOWN_ACK_GRACE` call site),
+    /// promptly disposing of the pipe rather than leaving it live through
+    /// the remaining process-exit wait and seal — and `ShutdownGuard`'s own
+    /// `Drop`, reached on EVERY exit path including that one, calls this
+    /// again unconditionally afterward. A SECOND call, on an already
+    /// shut-down transport, must be a safe no-op: it is not an error for
+    /// this to run twice, and an implementation that panics or double-frees
+    /// on a repeat call breaks every exit path, not merely the one that
+    /// exercises the ack grace.
     fn shutdown_all(&mut self);
 }
 
@@ -353,6 +362,22 @@ const TEARDOWN_REAP_POLL: Duration = Duration::from_millis(20);
 /// `ClosePseudoConsole` itself no longer prevents this deadline from firing.
 const TEARDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const TEARDOWN_DRAIN_POLL: Duration = Duration::from_millis(200);
+
+/// ADR 0041 bounds table ("ack grace", role "a final-poll request still
+/// gets its ack") / EndRun state machine item 4: a mgmt `shutdown` accepted
+/// in teardown's own FINAL service poll (the one Phase B runs the instant
+/// EOF ends the drain — see that call site's own doc) has its `ShutdownAck`
+/// queued but not yet reported physically written by the time the drain
+/// loop itself is done. This capsule's transport must not disappear out
+/// from under that unconfirmed ack — U1a defers the pipe's own teardown by
+/// up to this long, polling for the completion, before proceeding.
+const SHUTDOWN_ACK_GRACE: Duration = Duration::from_secs(2);
+/// Poll interval while waiting out [`SHUTDOWN_ACK_GRACE`] — no output
+/// channel to block on at this point (Phase B's own drain already reached
+/// reader EOF), so this is a plain sleep between non-blocking
+/// `Transport::try_recv_event` drains, the same granularity as
+/// [`TEARDOWN_REAP_POLL`].
+const SHUTDOWN_ACK_GRACE_POLL: Duration = Duration::from_millis(20);
 
 pub struct CapsuleWinConfig {
     pub voyage_root: PathBuf,
@@ -915,6 +940,17 @@ pub fn run(
     // pipe still live. Every fallible operation from this point on that
     // runs while the lock is held must stay AFTER the guard, not before
     // it.
+    //
+    // U1a: this guard is never explicitly DISARMED. The ack-grace call site
+    // below calls `transport.0.shutdown_all()` directly once its window
+    // resolves, so the pipe disappears promptly rather than staying live
+    // through the remaining process-exit wait and seal; THIS Drop then
+    // calls it again regardless, on every exit path, exactly as before.
+    // That second call is safe only because `Transport::shutdown_all` is
+    // now a documented idempotent contract (see that method's own doc) --
+    // disarming this guard with a boolean flag would be the OTHER way to
+    // make the double call safe, but it is strictly more machinery for the
+    // same guarantee an idempotent method already gives for free.
     struct ShutdownGuard<'a>(&'a mut dyn Transport);
     impl Drop for ShutdownGuard<'_> {
         fn drop(&mut self) {
@@ -1646,6 +1682,65 @@ pub fn run(
         };
     }
 
+    // U1a Codex round-1, Major 6 discharge: the ack-grace window's own
+    // drain -- STOP ADMITTING new connections or new request bytes once
+    // the final ordinary teardown poll is behind us, so a request that
+    // slips in with, say, 50ms left in the grace can never be credited
+    // with the full 2s the "final service poll" guarantee actually
+    // promises. `Sent`/`ConnectionClosed` still drain normally (the whole
+    // POINT of the grace is letting an ALREADY-QUEUED ack finish); a brand
+    // new `ConnectionOpened` or a new `Bytes` payload on an existing
+    // connection is closed outright, WITHOUT ever reaching `attach_proto`
+    // -- no admission, so no new obligation this bounded window cannot
+    // keep.
+    macro_rules! drain_pending_sends_only {
+        () => {
+            let mut quota = TRANSPORT_EVENTS_PER_PASS;
+            while quota > 0 {
+                quota -= 1;
+                let Some(ev) = transport.0.try_recv_event() else { break };
+                match ev {
+                    TransportEvent::ConnectionOpened(conn) => {
+                        // Never admitted: no splitter, no `attach_proto`
+                        // event, just closed.
+                        transport.0.close(conn);
+                    }
+                    TransportEvent::Bytes(conn, _bytes) => {
+                        // A connection admitted during ORDINARY teardown
+                        // (before the grace began) sending more bytes now:
+                        // still no new admission -- close it, purging
+                        // whatever this loop already tracked for it.
+                        transport.0.close(conn);
+                        splitters.remove(&conn);
+                        pending_sends.retain(|&(c, _), _| c != conn);
+                        execute_teardown_actions!(attach_proto.connection_closed(conn, Instant::now()));
+                    }
+                    TransportEvent::ConnectionClosed(conn) => {
+                        splitters.remove(&conn);
+                        pending_sends.retain(|&(c, _), _| c != conn);
+                        execute_teardown_actions!(attach_proto.connection_closed(conn, Instant::now()));
+                    }
+                    TransportEvent::Sent(conn, id) => {
+                        match pending_sends.remove(&(conn, id)) {
+                            Some(marker) => execute_teardown_actions!(attach_proto.sent(conn, marker, Instant::now())),
+                            None => assert!(
+                                !splitters.contains_key(&conn),
+                                "Transport reported Sent({conn:?}, {id}) for an ACTIVE connection with no \
+                                 matching outstanding send"
+                            ),
+                        }
+                    }
+                    TransportEvent::TransportFatal(detail) => {
+                        eprintln!(
+                            "sot-capsule: transport reported a terminal failure during the shutdown-ack grace: {detail}"
+                        );
+                        shutdown_reason.get_or_insert_with(|| "transport-accept-failed".to_string());
+                    }
+                }
+            }
+        };
+    }
+
     // One producer-output handler, used identically pre-teardown AND
     // during BOTH teardown phases — so "the handshake keeps answering
     // through the drain" (ADR 0041) can't be missed by one call site and
@@ -1894,6 +1989,44 @@ pub fn run(
         }
     }
     flush_output!(w);
+
+    // U1a, EndRun state machine item 4 / ack grace: the FINAL service poll
+    // just above (the one at the exact EOF instant) can itself have
+    // admitted a NEW mgmt `shutdown` and queued its `ShutdownAck` — give
+    // that specific send up to `SHUTDOWN_ACK_GRACE` to be reported
+    // physically written (removing its entry from `pending_sends`) before
+    // this capsule's own transport goes away.
+    //
+    // U1a Codex round-1, Major 6 discharge: this window drains ONLY what
+    // is ALREADY pending (`Sent`/`ConnectionClosed`, via
+    // `drain_pending_sends_only!`) — it admits NOTHING new
+    // (`ConnectionOpened`/fresh `Bytes` are closed outright, never reaching
+    // `attach_proto`). A request newly accepted with, say, 50ms left in
+    // this window would have almost no time to get its own ack physically
+    // written, contradicting the "final service poll" guarantee this grace
+    // exists to honor — so after the ordinary teardown drain ends, no
+    // request is newly admitted at all; only what is already outstanding
+    // (the ack this grace exists for, or any other send already queued
+    // when the drain ended) gets to finish.
+    let shutdown_ack_deadline = Instant::now() + SHUTDOWN_ACK_GRACE;
+    while pending_sends
+        .values()
+        .any(|m| matches!(m, Some(SentMarker::ShutdownAck { .. })))
+        && Instant::now() < shutdown_ack_deadline
+    {
+        drain_pending_sends_only!();
+        execute_teardown_actions!(attach_proto.tick(Instant::now()));
+        std::thread::sleep(SHUTDOWN_ACK_GRACE_POLL);
+    }
+    // The pipe's own disappearance: explicit HERE, rather than only
+    // whenever `run` happens to return next (the exit-status wait and the
+    // seal below need no pipe at all) — ADR 0041's grace is specifically
+    // about DEFERRING that disappearance until it resolves, which requires
+    // an actual close at THIS point, not a hope that returning soon is soon
+    // enough. `shutdown_all` is idempotent (U1a): `ShutdownGuard`'s own
+    // `Drop`, still ahead on every path, is a safe no-op the second time.
+    transport.0.shutdown_all();
+
     let _ = closer_handle.join();
     let _ = reader_handle.join();
 

@@ -324,6 +324,21 @@ const PRE_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 const GROUND_TIMEOUT: Duration = Duration::from_secs(5);
 const KEEPALIVE_IDLE_TRIGGER: Duration = Duration::from_secs(30);
 const KEEPALIVE_REPLY_DEADLINE: Duration = Duration::from_secs(30);
+/// ADR 0041 bounds table ("mgmt idle", role "pool squatting") / Lifecycle
+/// "Two capsule-side changes": an ADMITTED mgmt connection (`Role::Mgmt` —
+/// classified by its first frame, not the pre-classification
+/// `PRE_ADMISSION_TIMEOUT` above) that sends nothing for this long is
+/// closed. Before this, four idle mgmt clients could hold a healthy
+/// capsule at [`NON_WATCHER_CAP`] forever while every new probe was
+/// refused outright — nothing legitimate holds an idle mgmt connection
+/// open now that the death signal is the retained challenged-process
+/// handle (U1a), not a live pipe a prober can lean on. Measured off the
+/// SAME `last_activity` clock every inbound frame and outbound completion
+/// already resets (U1a introduces no second clock) — an ACTIVE mgmt
+/// client, one that sends a request at least this often, is never
+/// touched (out of scope per the ADR: it is the owner, whom the threat
+/// model excludes).
+const MGMT_IDLE_DEADLINE: Duration = Duration::from_secs(5);
 /// The generic write-progress deadline (finding 5): ANY connection with a
 /// nonempty outstanding-sends count must see a completion within this
 /// window, covering every kind of send — not only live output.
@@ -526,6 +541,10 @@ pub enum RefusalReason {
     ProgressStall,
     KeepaliveDeath,
     UnexpectedKeepalive,
+    /// U1a: an admitted mgmt connection went silent past
+    /// [`MGMT_IDLE_DEADLINE`] (ADR 0041 bounds table, "mgmt idle" — "pool
+    /// squatting").
+    MgmtIdleTimeout,
 }
 
 /// The dedupe-chain outcome the loop reports back after executing
@@ -748,7 +767,20 @@ impl AttachProto {
                 return self.close_with_refusal(conn, RefusalReason::LockstepViolation, now);
             }
             if c.reply_queued {
+                // Codex round-2b: a HELD frame is still a genuinely valid,
+                // arrived frame -- exactly the race the comment above
+                // describes, not a stalled connection -- so it must count
+                // as activity. Before this fix, holding never touched
+                // `last_activity`, so a compliant client whose valid
+                // request arrived a moment before the mgmt idle deadline
+                // was evicted anyway (`tick`'s own scan is the only
+                // consumer of this clock the held-frame path could ever
+                // have satisfied). `outstanding_sends` stays whatever it
+                // already was -- this frame does not itself queue a send,
+                // its eventual replay does, once `clear_outstanding_and_
+                // replay` runs.
                 c.held_frame = Some(decoded);
+                c.last_activity = now;
                 return vec![];
             }
             return self.close_with_refusal(conn, RefusalReason::LockstepViolation, now);
@@ -940,6 +972,50 @@ impl AttachProto {
         }
         for (id, rid) in ground_timed_out {
             actions.extend(self.ground_timeout(id, rid, now));
+        }
+
+        // U1a Codex round-1, Major 4 discharge: the effective mgmt bound is
+        // the EARLIER of `MGMT_IDLE_DEADLINE` (5s) and the generic
+        // `PROGRESS_DEADLINE` (30s) below, not the later one. Round 1
+        // shipped this gated on `outstanding_sends == 0`, which let a
+        // client that stopped reading its OWN unconfirmed reply squat on
+        // the non-watcher pool for the full 30s — exactly the "outstanding
+        // server send expands the management bound" escape review found:
+        // a tiny mgmt reply nobody drains for 5s is squatting, not
+        // legitimate write progress.
+        //
+        // Codex round-2b: the clock this check reads is the MORE RECENT of
+        // `last_activity` and `last_send_progress` — not a choice between
+        // the two based on `outstanding_sends`, which round-1's own fix
+        // shipped and which a live repro then broke: the transport can
+        // report a peer's next lockstep request (a HELD frame, held
+        // because THIS reply's own `Sent` completion has not arrived yet —
+        // see `frame`'s own doc on the round-2 e2e review race) while
+        // `outstanding_sends` is still nonzero, so reading ONLY
+        // `last_send_progress` in that state ignored the held frame's own
+        // freshly-refreshed `last_activity` entirely and evicted a
+        // genuinely active, compliant client. Taking the max keeps BOTH
+        // properties true at once: a client that stays silent (both clocks
+        // stale) is still evicted at 5s exactly as round-1 intended, and a
+        // client that keeps sending valid requests — even while our own
+        // reply write is independently stuck — is not penalized for
+        // activity `last_send_progress` alone cannot see. This scan runs
+        // BEFORE the generic stalled scan below so a connection matching
+        // BOTH gets the mgmt-specific label and eviction, never the
+        // generic one — the two bounds would otherwise race for whichever
+        // scan's `RefusalReason` a single large clock jump happens to see
+        // first.
+        let mut mgmt_idle = Vec::new();
+        for (id, c) in &self.conns {
+            if matches!(c.role, Role::Mgmt) {
+                let last_progress = c.last_activity.max(c.last_send_progress);
+                if now.saturating_duration_since(last_progress) >= MGMT_IDLE_DEADLINE {
+                    mgmt_idle.push(*id);
+                }
+            }
+        }
+        for id in mgmt_idle {
+            actions.extend(self.close_with_refusal(id, RefusalReason::MgmtIdleTimeout, now));
         }
 
         let mut stalled = Vec::new();
@@ -2628,19 +2704,27 @@ mod tests {
 
     // -- progress deadline (finding 5) ------------------------------------
 
-    /// The generic deadline covers EVERY kind of outstanding send (here: an
-    /// unconfirmed mgmt reply, not live output) and resets at the
-    /// empty→nonempty transition: a connection that sat idle for a LONG
-    /// time before anything was ever queued must not be penalized for that
-    /// idle stretch the instant something finally is.
+    /// The generic 30s deadline covers a watcher's own outstanding
+    /// live-output send and resets at the empty→nonempty transition: a
+    /// connection that sat idle for a LONG time before anything was ever
+    /// queued must not be penalized for that idle stretch the instant
+    /// something finally is.
+    ///
+    /// U1a Codex round-1, Major 4 discharge: this test's ORIGINAL vehicle
+    /// was an unconfirmed MGMT reply — which now has its own tighter,
+    /// mgmt-specific 5s bound (see the "mgmt idle deadline" tests above),
+    /// so an mgmt connection can no longer reach 29s/31s without the
+    /// mgmt-specific check firing first at 5s. A watcher's own outstanding
+    /// `output` send is unaffected by that mgmt-only rule and still proves
+    /// the SAME generic-30s / empty-to-nonempty-reset property this test
+    /// exists for.
     #[test]
     fn progress_deadline_covers_every_kind_of_outstanding_send_and_resets_at_the_empty_to_nonempty_transition() {
         let mut p = proto();
         let now = t0();
-        p.connection_opened(1, now);
+        attach_to_done(&mut p, 1, now);
         let much_later = now + Duration::from_secs(1000);
-        let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
-        let a = p.frame(1, probe, much_later);
+        let a = p.output_committed(b"hi", much_later);
         assert!(matches!(a.as_slice(), [Action::Send { .. }]));
 
         let a = p.tick(much_later + Duration::from_secs(29));
@@ -2664,6 +2748,164 @@ mod tests {
         assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::OutputBytes { n: 2 }), .. }]));
         let a = p.tick(now + Duration::from_secs(31));
         assert!(a.iter().any(|x| matches!(x, Action::Close(1))));
+    }
+
+    // -- mgmt idle deadline (U1a, ADR 0041 bounds table "mgmt idle") -----
+
+    /// An admitted mgmt connection (classified by its first frame) that
+    /// never sends again past `MGMT_IDLE_DEADLINE` is evicted — the "pool
+    /// squatting" row: four such connections could otherwise pin the
+    /// capsule at `NON_WATCHER_CAP` forever while every new probe was
+    /// refused.
+    #[test]
+    fn idle_mgmt_connection_is_evicted_at_the_deadline() {
+        let mut p = proto();
+        let now = t0();
+        assert_eq!(p.connection_opened(1, now), vec![]);
+        let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
+        let a = p.frame(1, probe, now);
+        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
+        p.sent(1, a[0].send_marker(), now); // reply confirmed sent -- last_activity == now
+
+        // Just under the deadline: untouched.
+        let a = p.tick(now + MGMT_IDLE_DEADLINE - Duration::from_millis(1));
+        assert!(a.is_empty(), "must not evict before the deadline: {a:?}");
+
+        // At the deadline: evicted, with the U1a-specific reason.
+        let a = p.tick(now + MGMT_IDLE_DEADLINE);
+        assert!(a.iter().any(|x| matches!(x, Action::Close(1))), "{a:?}");
+        assert!(
+            a.iter()
+                .any(|x| matches!(x, Action::RecordRefusal { reason: RefusalReason::MgmtIdleTimeout, .. })),
+            "{a:?}"
+        );
+    }
+
+    /// The ADR's own carve-out: "ACTIVE occupancy... is out of scope" — a
+    /// connection that keeps sending requests at least once per interval
+    /// is never evicted, because every inbound frame resets the SAME
+    /// `last_activity` clock the deadline reads.
+    #[test]
+    fn active_mgmt_connection_is_never_evicted() {
+        let mut p = proto();
+        let now = t0();
+        assert_eq!(p.connection_opened(1, now), vec![]);
+        let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
+        let a = p.frame(1, probe, now);
+        p.sent(1, a[0].send_marker(), now);
+
+        // A second request just inside the deadline resets the clock.
+        let t1 = now + MGMT_IDLE_DEADLINE - Duration::from_millis(1);
+        let status = decode_one(&encode_mgmt_request(&MgmtRequest::Status).unwrap());
+        let a = p.frame(1, status, t1);
+        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
+        p.sent(1, a[0].send_marker(), t1);
+
+        // Ticking to what would have been the FIRST request's own deadline
+        // must not evict -- the clock reset at t1.
+        let a = p.tick(now + MGMT_IDLE_DEADLINE);
+        assert!(a.is_empty(), "activity must reset the idle clock: {a:?}");
+
+        // The watcher/driver machinery (NON_WATCHER_CAP, admission) is
+        // untouched by this connection staying open across the interval.
+        assert_eq!(p.non_watcher_count, 1);
+    }
+
+    /// U1a Codex round-1, Major 4 discharge: an mgmt connection that stops
+    /// draining its OWN unconfirmed reply is evicted at the tighter 5s
+    /// bound, never the generic 30s `PROGRESS_DEADLINE` -- squatting on an
+    /// outstanding send is not legitimate write progress for this role.
+    /// The send is never confirmed (`p.sent` is deliberately not called),
+    /// so `outstanding_sends` stays 1 throughout.
+    #[test]
+    fn mgmt_connection_with_a_stalled_outbound_reply_is_evicted_at_the_tighter_bound() {
+        let mut p = proto();
+        let now = t0();
+        assert_eq!(p.connection_opened(1, now), vec![]);
+        let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
+        let a = p.frame(1, probe, now);
+        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
+
+        // Just under the tighter bound: untouched (proving it isn't ALSO
+        // firing prematurely off some other clock).
+        let a = p.tick(now + MGMT_IDLE_DEADLINE - Duration::from_millis(1));
+        assert!(a.is_empty(), "must not evict before the tighter bound: {a:?}");
+
+        // At the tighter bound (well before the generic 30s deadline could
+        // ever apply): evicted, with the mgmt-specific reason, never
+        // ProgressStall.
+        let a = p.tick(now + MGMT_IDLE_DEADLINE);
+        assert!(a.iter().any(|x| matches!(x, Action::Close(1))), "{a:?}");
+        assert!(
+            a.iter()
+                .any(|x| matches!(x, Action::RecordRefusal { reason: RefusalReason::MgmtIdleTimeout, .. })),
+            "{a:?}"
+        );
+    }
+
+    /// Codex round-2b discharge (a live repro confirmed this before the
+    /// fix): a valid HELD frame is still activity. Models the documented
+    /// transport race `frame`'s own doc names -- the peer physically read
+    /// the first reply and sent its next lockstep request, but the
+    /// reader's `Bytes` event reaches this module before the writer's
+    /// `Sent` completion does, so `outstanding_sends` is still 1 when the
+    /// second, entirely valid request arrives and is legitimately HELD
+    /// (not a lockstep violation). Before this fix, the mgmt idle scan
+    /// read ONLY `last_send_progress` while `outstanding_sends > 0`,
+    /// which the held frame never touches -- so a client demonstrably
+    /// still talking to us, a millisecond before the deadline, was evicted
+    /// anyway. The fix: `frame` now refreshes `last_activity` when it
+    /// holds a frame, and the scan reads the MORE RECENT of `last_activity`
+    /// and `last_send_progress` (see both sites' own doc).
+    #[test]
+    fn a_valid_held_mgmt_frame_resets_the_idle_clock_and_is_not_evicted() {
+        let mut p = proto();
+        let now = t0();
+        assert_eq!(p.connection_opened(1, now), vec![]);
+        let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
+        let a = p.frame(1, probe, now);
+        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
+        // Deliberately never confirmed (`p.sent` not called): models the
+        // writer's own `Sent` completion not having arrived yet.
+
+        // The peer's next lockstep request, arriving just before the
+        // deadline, while the first reply is still outstanding.
+        let active_at = now + MGMT_IDLE_DEADLINE - Duration::from_millis(1);
+        let status = decode_one(&encode_mgmt_request(&MgmtRequest::Status).unwrap());
+        assert!(p.frame(1, status, active_at).is_empty(), "a legitimately held frame returns no action yet");
+
+        // At what would have been the ORIGINAL deadline (measured from the
+        // first request, ignoring the held frame): must NOT evict -- the
+        // held frame proved the client active.
+        let a = p.tick(now + MGMT_IDLE_DEADLINE);
+        assert!(
+            a.is_empty(),
+            "a valid held frame must reset the idle clock, not be silently ignored by it: {a:?}"
+        );
+
+        // The connection is still genuinely subject to the SAME bound,
+        // measured from the held frame's own arrival: silence after that
+        // point still evicts.
+        let a = p.tick(active_at + MGMT_IDLE_DEADLINE);
+        assert!(a.iter().any(|x| matches!(x, Action::Close(1))), "{a:?}");
+        assert!(
+            a.iter()
+                .any(|x| matches!(x, Action::RecordRefusal { reason: RefusalReason::MgmtIdleTimeout, .. })),
+            "{a:?}"
+        );
+    }
+
+    /// Watchers and the driver are a different `Role` entirely — the mgmt
+    /// idle deadline must never reach them, however long they sit with no
+    /// live output to send.
+    #[test]
+    fn idle_deadline_does_not_touch_a_watcher_or_the_driver() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done(&mut p, 1, now);
+        drive_take(&mut p, 1, "alice", 1, now);
+        let a = p.tick(now + MGMT_IDLE_DEADLINE + Duration::from_secs(1));
+        assert!(a.is_empty(), "a watcher/driver connection must never be mgmt-idle-evicted: {a:?}");
     }
 
     // -- queue accounting -------------------------------------------------

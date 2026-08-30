@@ -107,6 +107,15 @@ pub enum Error {
     Schema(String),
     #[error("state: {0}")]
     State(String),
+    /// U1a (ADR 0041 Lifecycle "Discovery, and the two windows"):
+    /// `VoyageStore::open_for_writing_with_lease`'s caller-supplied
+    /// parent-death lease reported itself already broken, checked as the
+    /// FIRST act after the writer fence is acquired and before any history
+    /// traversal. The fence has already been released by the time this
+    /// error returns — the caller (a spawned child whose supervisor is
+    /// already gone) must exit without binding, never retry or repair.
+    #[error("parent-death lease broken; exiting without binding the voyage")]
+    LeaseBroken,
     /// The voyage store requires OS durability primitives this platform
     /// lacks (Linux and Windows have real arms; others fail closed).
     #[error("unsupported on this platform: {0}")]
