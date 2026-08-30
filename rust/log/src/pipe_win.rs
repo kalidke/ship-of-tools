@@ -972,6 +972,24 @@ const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// `capsule_win.rs` reuses this SAME mechanism (Codex round-1 Blocker 3)
 /// to join its own closer/reader threads under the identical aggregate
 /// deadline, rather than a second bespoke poll loop.
+///
+/// **The exact boundary semantic (Codex round-2b, ruling on finding 2,
+/// a reasoned deviation from literal strictness):** expiry is terminal
+/// IFF a thread REMAINS UNFINISHED at the instant the budget is
+/// exhausted — `is_finished` is checked FIRST on every poll, including
+/// the one that observes the expired deadline, so a thread that
+/// genuinely finished at or before that exact instant is accepted
+/// (`true`) even though the deadline has ALSO passed by the time this
+/// function notices. This is deliberate, not a race: the invariant this
+/// bound exists to serve is "never proceed past an UNFINISHED worker",
+/// and a thread that has ALREADY finished leaves nothing dangling — it
+/// satisfies that invariant regardless of which check this function
+/// happened to run first. Flagging it as failed would be a false alarm,
+/// not a safety property. There is no "acceptance after the decision"
+/// hazard either way: once this function returns, its `bool` is the
+/// decision, made exactly once, from the caller's own single call site —
+/// nothing later re-evaluates or overturns it, whether the answer was
+/// `true` or `false`.
 pub(crate) fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
     loop {
         if jh.is_finished() {
@@ -1022,7 +1040,20 @@ impl PipeServer {
     /// finds `conns`/`recycled`/`retained_dead` already empty).
     pub fn disconnect_listener(&mut self) {
         self.shared.dropping.store(true, Ordering::Release);
-        stop_accept_loop(&self.shared);
+        // Codex round-2b Blocker 1: `stop_accept_loop`'s own `slot.cancel`
+        // only REQUESTS cancellation -- asynchronous, and it does not by
+        // itself make the pending instance's HANDLE stop existing, which
+        // is what a `FIRST_PIPE_INSTANCE` probe actually observes. Close
+        // it HERE, synchronously, from this thread: Win32 permits closing
+        // a handle with pending overlapped I/O from another thread, and
+        // the blocked `ConnectNamedPipe` completes with an error as a
+        // result. The accept thread's own `dropping` check (see
+        // `accept_loop`) is what stops it from ALSO closing this same
+        // handle once its blocked call unblocks -- `mem::forget`, never a
+        // second `CloseHandle`.
+        if let Some((h, _slot)) = stop_accept_loop(&self.shared) {
+            unsafe { CloseHandle(h.0) };
+        }
         self.shared.accept_cv.notify_all();
         {
             let mut st = self.shared.accept.lock().unwrap();
@@ -1105,29 +1136,39 @@ impl Drop for PipeServer {
 }
 
 /// Mark the accept loop stopped and cancel its currently in-flight
-/// `ConnectNamedPipe`, if any. Shared by `PipeServer::drop` (planned
+/// `ConnectNamedPipe`, if any -- returning the cancelled instance's raw
+/// handle + slot (if there was one) so a caller that ALSO needs to CLOSE
+/// it (`disconnect_listener`, Codex round-2b Blocker 1) can, without a
+/// second lock acquisition racing whatever the accept thread does once
+/// its blocked call unblocks. Shared by `PipeServer::drop` (planned
 /// shutdown) and [`terminalize_accept_loop`] (a persistent resource
-/// failure) — both need the SAME cross-thread-safe cancellation, since
-/// either can be triggered by a thread other than the accept thread
-/// itself (`Drop` runs on the caller's thread; a resource failure can be
-/// discovered on the reaper thread while tearing down an unrelated
-/// connection's instance). Without this, a failure discovered off the
-/// accept thread could leave a pending accept to linger — or even admit
-/// one more client — after the consumer was already told no more
-/// connections are coming.
-fn stop_accept_loop(shared: &Arc<ServerShared>) {
+/// failure, which discards the returned value -- that path only ever
+/// cancels, never closes) — both need the SAME cross-thread-safe
+/// cancellation, since either can be triggered by a thread other than
+/// the accept thread itself (`Drop` runs on the caller's thread; a
+/// resource failure can be discovered on the reaper thread while
+/// tearing down an unrelated connection's instance). Without this, a
+/// failure discovered off the accept thread could leave a pending
+/// accept to linger — or even admit one more client — after the
+/// consumer was already told no more connections are coming.
+fn stop_accept_loop(shared: &Arc<ServerShared>) -> Option<(SendableHandle, Arc<IoSlot>)> {
     let mut st = shared.accept.lock().unwrap();
     st.accept_stopping = true;
-    if let Some((h, slot)) = st.current.take() {
+    let current = st.current.take();
+    if let Some((h, slot)) = &current {
         slot.cancel(h.0);
     }
+    current
 }
 
 /// Stop the accept loop for good and report why — the ONE place every
 /// persistent-resource-failure path routes through, regardless of which
-/// thread discovers the failure.
+/// thread discovers the failure. Cancels only -- never closes the
+/// pending instance's handle, unlike `disconnect_listener`'s own call:
+/// a resource failure is not a whole-server teardown, and the accept
+/// thread itself still owns and will dispose of that handle normally.
 fn terminalize_accept_loop(shared: &Arc<ServerShared>, message: String) {
-    stop_accept_loop(shared);
+    let _ = stop_accept_loop(shared);
     shared.accept_cv.notify_all();
     send_lifecycle_event(shared, TransportEvent::AcceptError(message));
 }
@@ -1239,9 +1280,28 @@ fn teardown_if_present(shared: &Arc<ServerShared>, conn_id: ConnId, reason: Opti
     conn.read_slot.cancel(conn.raw.0);
     conn.write_slot.cancel(conn.raw.0);
     drop(conn.sender); // unblocks a writer idle-waiting on `recv` with nothing queued
-    conn.reader_jh.join().ok();
-    conn.writer_jh.join().ok();
-    recycle_instance(shared, conn.owned);
+    // Codex round-2b Blocker 1 ("a reaper-owned connection can likewise
+    // survive the return boundary"): if this connection's teardown is
+    // racing `PipeServer::disconnect_listener` (this thread won the
+    // `conns` removal before that method's own drain saw the entry),
+    // close the handle BEFORE joining, not after -- the pipe NAME must
+    // stop existing at the same moment cancellation is issued, not
+    // whenever this (possibly slow) blocking join happens to finish.
+    // The join still runs (this reaper thread itself is bounded by the
+    // SHARED aggregate deadline in `PipeServer::join_workers`, which
+    // joins the reaper thread too, so a hang here is still caught), just
+    // after the handle is already gone. `recycle_instance` is skipped
+    // entirely here (not merely relied on for its own dropping check):
+    // there is no handle left to hand it once dropped.
+    if shared.dropping.load(Ordering::Acquire) {
+        drop(conn.owned); // CloseHandle now, before any join
+        conn.reader_jh.join().ok();
+        conn.writer_jh.join().ok();
+    } else {
+        conn.reader_jh.join().ok();
+        conn.writer_jh.join().ok();
+        recycle_instance(shared, conn.owned);
+    }
     if let Some(reason) = reason {
         send_lifecycle_event(shared, TransportEvent::Closed(conn_id, reason));
     }
@@ -1345,6 +1405,24 @@ fn accept_loop(shared: Arc<ServerShared>, first_instance: OwnedHandle) {
             |code| code == ERROR_PIPE_CONNECTED as i32,
         );
         shared.accept.lock().unwrap().current = None;
+
+        // Codex round-2b Blocker 1: once `dropping` is set,
+        // `disconnect_listener` already closed (or is in the process of
+        // closing) THIS exact handle itself, synchronously, from its own
+        // thread -- whatever `connect_result` carries (the cancellation's
+        // own ABORTED, or some other error entirely from the close racing
+        // it, or even a spuriously-successful connect that raced in at
+        // the last instant), this thread must never touch `inst` again:
+        // not recycle it (a second `CloseHandle` on an already-closed
+        // handle is a real double-close/handle-reuse hazard), not treat
+        // it as a new connection. `mem::forget` (never call its `Drop`,
+        // since the real close already happened or is happening
+        // elsewhere) and return, unconditionally, before dispatching on
+        // the specific error code at all.
+        if shared.dropping.load(Ordering::Acquire) {
+            std::mem::forget(inst);
+            return;
+        }
 
         match connect_result {
             Ok(_) => handle_new_connection(&shared, inst, raw, slot),
@@ -2003,6 +2081,38 @@ mod tests {
             !join_within(jh2, deadline),
             "the second join must not get a fresh budget after the first consumed most of it"
         );
+        drop(tx);
+    }
+
+    /// Codex round-2b, ruling on finding 2: the boundary test proving
+    /// expiry with a GENUINELY UNFINISHED thread is terminal, even
+    /// though that same thread finishes moments later -- "no acceptance
+    /// after the decision". Deterministic, not a race: BOTH preconditions
+    /// (the thread is still unfinished, AND the deadline has already
+    /// passed) are independently confirmed BEFORE `join_within` is ever
+    /// called, so this is not racing the exact expiry instant -- it
+    /// proves the DECISION itself (`false`), captured once, is never
+    /// revisited by the thread's later completion.
+    #[test]
+    fn expiry_with_a_genuinely_unfinished_thread_is_terminal_even_though_it_finishes_moments_later() {
+        let (tx, rx) = mpsc::channel::<()>();
+        let jh = thread::spawn(move || {
+            let _ = rx.recv(); // blocks until released below, AFTER the decision is made
+        });
+        let budget = Duration::from_millis(30);
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            !jh.is_finished(),
+            "the thread must be genuinely unfinished at the deadline for this test to mean              anything -- confirmed BEFORE join_within is ever called"
+        );
+        let decision = join_within(jh, deadline);
+        assert!(!decision, "an unfinished thread at expiry must be terminal (false)");
+        // Release the thread now, strictly AFTER the decision was made --
+        // it finishing here must not (and structurally cannot: `decision`
+        // is a plain bool already captured) retroactively flip anything.
         drop(tx);
     }
 }

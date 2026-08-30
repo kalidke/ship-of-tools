@@ -511,18 +511,20 @@ fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
 }
 
 /// ADR 0041 step 6 U1b, Lifecycle "the pipe NAME disappears before any
-/// blocking join" — Codex round-1 Blocker 2 discharge: `disconnect_listener`
+/// blocking join" — Codex round-2b Blocker 1 discharge: `disconnect_listener`
 /// ALONE — never `join_workers`, never `Drop` — must free the name for a
-/// `FIRST_PIPE_INSTANCE` rival probe WHILE A CONNECTION IS STILL LIVE, not
-/// only after it has already closed. The client's own handle is left open
-/// throughout (never dropped before the probe): the SERVER-side instance
-/// disconnect_listener closes is what a squat probe actually checks for,
-/// so a still-open client handle must not keep the name held. Polled with
-/// a short bound rather than asserted instantly: the accept loop's own
-/// in-flight instance is reclaimed on ITS thread, asynchronously — a
-/// small, acknowledged window (see that method's own doc) — but the bound
-/// here (2s) is a tiny fraction of the 20s aggregate this property exists
-/// to front-run, and no join is EVER attempted in this test.
+/// `FIRST_PIPE_INSTANCE` rival probe the INSTANT it returns, WHILE A
+/// CONNECTION IS STILL LIVE, not only after it has already closed. The
+/// client's own handle is left open throughout (never dropped before the
+/// probe): the SERVER-side instance `disconnect_listener` closes is what a
+/// squat probe actually checks for, so a still-open client handle must not
+/// keep the name held. NO POLL LOOP: `disconnect_listener` now closes the
+/// live connection's handle synchronously (round 1) and the pending
+/// accept's own listening instance handle synchronously too (round 2b —
+/// cancelling alone only REQUESTS cancellation, asynchronously; closing
+/// the handle directly is what actually makes the instance stop existing)
+/// — a poll here would silently tolerate exactly the residual delay this
+/// round's fix exists to remove.
 #[test]
 fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
     if !run_isolated("disconnect_listener_frees_the_name_even_with_a_live_connection") {
@@ -538,21 +540,8 @@ fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
 
     server.disconnect_listener();
 
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        match try_create_first_instance(&id, max_instances) {
-            Ok(()) => break,
-            Err(e) => {
-                assert_squat_check_failed(e);
-                assert!(
-                    Instant::now() < deadline,
-                    "name still held 2s after disconnect_listener, WITH a live connection and \
-                     no join ever attempted"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    }
+    try_create_first_instance(&id, max_instances)
+        .unwrap_or_else(|e| panic!("expected the name to be immediately winnable: {e}"));
     drop(client);
     drop(server);
 }
