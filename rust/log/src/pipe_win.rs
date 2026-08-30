@@ -102,28 +102,43 @@
 //!
 //! # Continuous name hold
 //!
-//! An instance is never actually closed while the server lives. Once
-//! `DisconnectNamedPipe`'d, a torn-down instance is RECYCLED — pushed onto
-//! `AcceptState::recycled` — rather than dropped and later re-created. If
-//! `DisconnectNamedPipe` itself fails, the instance is in an unknown
-//! state and unsafe to hand back for a future `ConnectNamedPipe` — but it
-//! is deliberately RETAINED anyway (`AcceptState::retained_dead`), never
-//! closed, for the rest of the server's life. This looks wasteful — that
-//! instance's capacity is gone for good — but the alternative is worse:
-//! creating a replacement here would need to exceed `max_instances` while
-//! the failed instance is still open (at `max_instances == 1` this is not
-//! merely awkward, it is impossible — `CreateNamedPipeW` fails with
-//! `ERROR_PIPE_BUSY` every time, since the OS still counts the open,
-//! merely-broken handle against the cap), and closing the failed instance
-//! to make room is exactly the name-hold lapse this design exists to
-//! prevent. The invariant this module promises is that the NAME stays
-//! held, not that every instance stays usable — a held name and a dead
-//! handle both satisfy it; a closed handle does not. `recycle_instance`
-//! remains the ONLY way an instance is ever set aside short of the whole
-//! server's `Drop`, and a `DisconnectNamedPipe` failure there also
-//! terminalizes the accept loop via [`terminalize_accept_loop`] — see
-//! that function's doc for why stopping (rather than merely losing one
-//! slot's worth of capacity and continuing) is the safer default.
+//! An instance is never actually closed while the server lives AND
+//! intends to keep accepting. Once `DisconnectNamedPipe`'d, a torn-down
+//! instance is RECYCLED — pushed onto `AcceptState::recycled` — rather
+//! than dropped and later re-created. If `DisconnectNamedPipe` itself
+//! fails, the instance is in an unknown state and unsafe to hand back
+//! for a future `ConnectNamedPipe` — but it is deliberately RETAINED
+//! anyway (`AcceptState::retained_dead`), never closed, for the rest of
+//! the server's life. This looks wasteful — that instance's capacity is
+//! gone for good — but the alternative is worse: creating a replacement
+//! here would need to exceed `max_instances` while the failed instance
+//! is still open (at `max_instances == 1` this is not merely awkward, it
+//! is impossible — `CreateNamedPipeW` fails with `ERROR_PIPE_BUSY` every
+//! time, since the OS still counts the open, merely-broken handle
+//! against the cap), and closing the failed instance to make room is
+//! exactly the name-hold lapse this design exists to prevent. The
+//! invariant this module promises is that the NAME stays held, not that
+//! every instance stays usable — a held name and a dead handle both
+//! satisfy it; a closed handle does not. `recycle_instance` remains the
+//! ONLY way an instance is ever set aside short of teardown, and a
+//! `DisconnectNamedPipe` failure there also terminalizes the accept loop
+//! via [`terminalize_accept_loop`] — see that function's doc for why
+//! stopping (rather than merely losing one slot's worth of capacity and
+//! continuing) is the safer default.
+//!
+//! ADR 0041 step 6 U1b revises the ONE exception this section's own
+//! title used to have none of: once [`PipeServer::disconnect_listener`]
+//! has run (`ServerShared::dropping` latched), holding the name for a
+//! FUTURE accept buys nothing — there is no future accept, the accept
+//! loop is stopping for good — so `recycle_instance` closes rather than
+//! recycles from that point on, and every instance already sitting idle
+//! in `recycled`/`retained_dead` is closed immediately, synchronously,
+//! by `disconnect_listener` itself. This is what makes the pipe NAME
+//! actually disappear promptly on teardown (ADR 0041 Lifecycle: "the
+//! pipe NAME disappears before any blocking join") instead of only when
+//! the whole `ServerShared` finally drops — an open-but-never-serviced
+//! "available" instance is exactly what would let a probing client
+//! connect to nothing.
 //!
 //! # Byte-bounded both directions
 //!
@@ -731,12 +746,16 @@ struct ServerShared {
     events_tx: SyncSender<TransportEvent>,
     max_instances: u32,
     name: Vec<u16>,
-    /// Set exactly once, by `PipeServer::drop`, at the very START of
-    /// `drop` — before anything else, including the accept-thread join —
+    /// Set exactly once, by `PipeServer::disconnect_listener` (which
+    /// `Drop::drop` always calls first), at the very START of that
+    /// call — before anything else, including the accept-thread join —
     /// because it is the one escape for [`send_lifecycle_event`]'s
     /// otherwise-indefinite retry loop, and that loop can be running on
     /// the very thread `drop` is about to join. See the module doc's
-    /// "Reliable lifecycle delivery" section.
+    /// "Reliable lifecycle delivery" section. ADR 0041 step 6 U1b:
+    /// [`recycle_instance`] reads it too — once true, "Continuous name
+    /// hold" no longer applies (there is no future accept left to hold
+    /// the name for), so it closes the instance instead of recycling it.
     dropping: AtomicBool,
 }
 
@@ -920,24 +939,110 @@ impl PipeServer {
     }
 }
 
-impl Drop for PipeServer {
-    /// Latch [`ServerShared::dropping`] FIRST (see its doc for why this
-    /// must be the very first thing `drop` does); cancel a pending accept
-    /// (if any) and join the accept thread; tell the reaper to drain and
-    /// tear down every remaining connection, then join it. Every thread
-    /// this module ever spawned is joined by the time this returns.
-    fn drop(&mut self) {
-        self.shared.dropping.store(true, Ordering::Release);
+/// ADR 0041 Lifecycle "the pipe NAME disappears before any blocking
+/// join" / the bounds table's "teardown aggregate": 20 s TOTAL after the
+/// listener is gone, one absolute deadline shared by every join
+/// (acceptor, reaper, and — inside the reaper's own drain — every
+/// connection worker), loud on expiry.
+pub const TEARDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_secs(20);
 
+/// [`join_within`]'s poll granularity — small enough that a fast, healthy
+/// teardown (the ordinary case) never visibly waits for it, and small
+/// enough that a test proving "loud on expiry" against a short injected
+/// budget stays fast too.
+const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// Wait for `jh` to finish without ever calling the BLOCKING
+/// `JoinHandle::join` — std gives that call no timeout, which is exactly
+/// what "each wait taking the remaining budget" (ADR 0041) rules out.
+/// Polls [`JoinHandle::is_finished`] (never blocks) until either it
+/// reports true (join it for real — `is_finished() == true` guarantees
+/// that call cannot then block — and return `true`) or `deadline` passes
+/// (`false`: LOUD, since this crate cannot force an OS thread to stop —
+/// the handle is simply dropped here, which detaches rather than kills
+/// it; the thread keeps running in the background).
+fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
+    loop {
+        if jh.is_finished() {
+            let _ = jh.join();
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(JOIN_POLL_INTERVAL);
+    }
+}
+
+impl PipeServer {
+    /// Phase one of teardown: make the pipe NAME disappear — synchronous,
+    /// no blocking join, nothing left for a probing client to connect
+    /// to and never have serviced. Latches [`ServerShared::dropping`]
+    /// FIRST (see its doc for why), cancels a pending accept (if any),
+    /// and — the ADR 0041 step 6 U1b change — CLOSES every instance
+    /// currently sitting idle in [`AcceptState::recycled`] /
+    /// [`AcceptState::retained_dead`] right now, rather than leaving
+    /// them open per the module doc's "Continuous name hold" policy:
+    /// that policy exists to keep the name held for FUTURE reuse, and
+    /// once `dropping` is set there is no future reuse — the accept loop
+    /// is stopping for good, so holding them open only keeps a
+    /// never-to-be-serviced instance connectable. [`recycle_instance`]
+    /// makes the SAME call for every instance still torn down from here
+    /// on (a live connection's own instance, or the accept loop's own
+    /// just-cancelled one): once `dropping`, it closes rather than
+    /// recycles. Idempotent — safe to call more than once (a test
+    /// proving this phase in isolation, then the eventual real `Drop`).
+    pub fn disconnect_listener(&mut self) {
+        self.shared.dropping.store(true, Ordering::Release);
         stop_accept_loop(&self.shared);
         self.shared.accept_cv.notify_all();
-        if let Some(jh) = self.accept_jh.take() {
-            jh.join().ok();
-        }
+        let mut st = self.shared.accept.lock().unwrap();
+        st.recycled.clear();
+        st.retained_dead.clear();
+    }
 
+    /// Phase two: tell the reaper to drain and tear down every remaining
+    /// connection (each one's own reader/writer join, plus — now that
+    /// `dropping` is set — an immediate close instead of a recycle), then
+    /// wait for the accept thread and the reaper thread, sharing ONE
+    /// `budget`-derived absolute deadline (ADR 0041 "the joins share ONE
+    /// 20 s absolute deadline, each wait taking the remaining budget").
+    /// `true` iff both finished within budget; `false` (LOUD — the
+    /// caller must report it) on expiry. Call [`disconnect_listener`]
+    /// first — this method does not call it, so the two phases stay
+    /// independently observable (and independently testable).
+    ///
+    /// [`disconnect_listener`]: Self::disconnect_listener
+    pub fn join_workers(&mut self, budget: Duration) -> bool {
+        let deadline = Instant::now() + budget;
+        let mut ok = true;
+        if let Some(jh) = self.accept_jh.take() {
+            ok = join_within(jh, deadline) && ok;
+        }
         let _ = self.shared.reaper_tx.send(ReaperMsg::Shutdown);
         if let Some(jh) = self.reaper_jh.take() {
-            jh.join().ok();
+            ok = join_within(jh, deadline) && ok;
+        }
+        ok
+    }
+}
+
+impl Drop for PipeServer {
+    /// The two teardown phases in order, with the pinned 20 s aggregate
+    /// budget — see [`PipeServer::disconnect_listener`] and
+    /// [`PipeServer::join_workers`]. Every thread this module ever
+    /// spawned is joined by the time this returns, UNLESS the deadline
+    /// expired, in which case it is loudly reported (stderr — `Drop`
+    /// cannot return a `Result`) and simply abandoned: a still-running
+    /// worker thread outlives this `PipeServer` value, but not the
+    /// process, which is exiting through this same teardown regardless.
+    fn drop(&mut self) {
+        self.disconnect_listener();
+        if !self.join_workers(TEARDOWN_AGGREGATE_DEADLINE) {
+            eprintln!(
+                "sot-pipe: teardown did not complete within its {TEARDOWN_AGGREGATE_DEADLINE:?} \
+                 aggregate deadline; a worker thread may still be running"
+            );
         }
     }
 }
@@ -976,7 +1081,23 @@ fn terminalize_accept_loop(shared: &Arc<ServerShared>, message: String) {
 /// and the accept loop is terminalized — see the module doc's "Continuous
 /// name hold" section for why retaining the dead handle, rather than
 /// replacing or closing it, is the correct response.
+///
+/// ADR 0041 step 6 U1b: once [`ServerShared::dropping`] is set, this
+/// function does neither — it just closes `inst` (a plain `return`; the
+/// `OwnedHandle` drops at the end of this call, which is `CloseHandle`).
+/// "Continuous name hold" exists so a FUTURE `ConnectNamedPipe` always
+/// has something to bind; once the accept loop is stopping for good
+/// there is no future to hold it for, and an open-but-never-serviced
+/// instance is exactly what would let a probing client connect to
+/// nothing (see [`PipeServer::disconnect_listener`]'s doc). Every
+/// instance this function EVER sets aside funnels through here — a live
+/// connection's own instance (via [`teardown_if_present`]) or the accept
+/// loop's own just-cancelled one — so this one check is sufficient; no
+/// second gate is needed at either call site.
 fn recycle_instance(shared: &Arc<ServerShared>, inst: OwnedHandle) {
+    if shared.dropping.load(Ordering::Acquire) {
+        return;
+    }
     let disconnected = unsafe { DisconnectNamedPipe(inst.as_raw_handle() as HANDLE) } != 0;
     if disconnected {
         shared.accept.lock().unwrap().recycled.push_back(inst);
@@ -1765,5 +1886,66 @@ mod tests {
             map_sid_auth_outcome(SidAuthOutcome::Undetermined),
             Err(PipeError::Undetermined)
         ));
+    }
+
+    // -- join_within: the ADR 0041 step 6 U1b teardown-deadline mechanism,
+    // proven directly against plain `std::thread::spawn` closures this
+    // module fully controls -- no real pipe needed for the shared-deadline
+    // / loud-on-expiry properties themselves (`tests/pipe_win.rs` proves
+    // the same mechanism composed with real workers).
+
+    #[test]
+    fn join_within_true_when_the_thread_already_finished() {
+        let jh = thread::spawn(|| {});
+        // Real time for the thread to actually finish before polling
+        // starts -- this asserts the HAPPY path, not a race against it.
+        thread::sleep(Duration::from_millis(50));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        assert!(join_within(jh, deadline));
+    }
+
+    #[test]
+    fn join_within_false_on_expiry_and_never_blocks_past_the_deadline() {
+        let (tx, rx) = mpsc::channel::<()>();
+        let jh = thread::spawn(move || {
+            let _ = rx.recv(); // never sent: blocks until this process exits
+        });
+        let budget = Duration::from_millis(50);
+        let deadline = Instant::now() + budget;
+        let started = Instant::now();
+        let ok = join_within(jh, deadline);
+        let elapsed = started.elapsed();
+        assert!(!ok);
+        // Bounded, not merely eventually false -- the whole point of never
+        // calling the blocking `JoinHandle::join`.
+        assert!(
+            elapsed < budget + Duration::from_secs(2),
+            "took {elapsed:?} against a {budget:?} budget"
+        );
+        drop(tx);
+    }
+
+    #[test]
+    fn one_shared_deadline_not_a_fresh_budget_per_join() {
+        // Two joins against the SAME deadline: the first consumes most of
+        // the budget by construction (a thread that finishes only after
+        // most of it has elapsed), so the second must see a near-zero
+        // REMAINING budget -- proving the deadline is shared, not reset
+        // per call (ADR 0041: "each wait taking the remaining budget").
+        let budget = Duration::from_millis(150);
+        let deadline = Instant::now() + budget;
+
+        let jh1 = thread::spawn(move || thread::sleep(Duration::from_millis(100)));
+        assert!(join_within(jh1, deadline), "the first join should still fit its share");
+
+        let (tx, rx) = mpsc::channel::<()>();
+        let jh2 = thread::spawn(move || {
+            let _ = rx.recv();
+        });
+        assert!(
+            !join_within(jh2, deadline),
+            "the second join must not get a fresh budget after the first consumed most of it"
+        );
+        drop(tx);
     }
 }

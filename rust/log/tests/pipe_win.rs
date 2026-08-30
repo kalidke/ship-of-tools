@@ -37,6 +37,7 @@ use sot_log::challenge::{challenge, ChallengeOutcome};
 use sot_log::exchange::VoyageMgmtExchange;
 use sot_log::pipe_win::{
     connect_voyage_pipe, ClosedReason, ConnId, PipeError, PipeServer, TransportEvent,
+    TEARDOWN_AGGREGATE_DEADLINE,
 };
 use sot_log::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::sync::Arc;
@@ -507,6 +508,86 @@ fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
     drop(server);
     try_create_first_instance(&id, max_instances)
         .unwrap_or_else(|e| panic!("expected the freed name to bind again: {e}"));
+}
+
+/// ADR 0041 step 6 U1b, Lifecycle "the pipe NAME disappears before any
+/// blocking join": `disconnect_listener` ALONE — never `join_workers`,
+/// never `Drop` — must free the name for a `FIRST_PIPE_INSTANCE` rival
+/// probe. A connect/close cycle first puts one instance in `recycled`
+/// (not just the accept loop's own pending one), so this proves
+/// `disconnect_listener` closes BOTH kinds. Polled with a short bound
+/// rather than asserted instantly: the accept loop's own in-flight
+/// instance is reclaimed on ITS thread, asynchronously — a small,
+/// acknowledged window (see that method's own doc) — but the bound here
+/// (2s) is a tiny fraction of the 20s aggregate this property exists to
+/// front-run, and no join is EVER attempted in this test.
+#[test]
+fn disconnect_listener_alone_frees_the_name_before_any_join() {
+    if !run_isolated("disconnect_listener_alone_frees_the_name_before_any_join") {
+        return;
+    }
+    let id = fresh_voyage_id();
+    let max_instances = 1;
+    let mut server = PipeServer::bind(&id, max_instances).unwrap();
+
+    let client = connect_voyage_pipe(&id).unwrap();
+    let conn_id = expect_accepted(&server, TIMEOUT);
+    server.close(conn_id);
+    assert_eq!(expect_closed(&server, conn_id, TIMEOUT), ClosedReason::Closed);
+    drop(client);
+
+    server.disconnect_listener();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match try_create_first_instance(&id, max_instances) {
+            Ok(()) => break,
+            Err(e) => {
+                assert_squat_check_failed(e);
+                assert!(
+                    Instant::now() < deadline,
+                    "name still held 2s after disconnect_listener, with no join ever attempted"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+    drop(server);
+}
+
+/// ADR 0041 step 6 U1b, acceptance matrix "teardown composes": real
+/// worker fan-out (several live connections torn down at once, none of
+/// them having disconnected on their own) completes well inside the
+/// pinned aggregate deadline — proven against a budget a full order of
+/// magnitude smaller than [`TEARDOWN_AGGREGATE_DEADLINE`], which is
+/// exactly the margin that constant claims to have.
+#[test]
+fn worst_case_worker_fan_out_completes_well_inside_the_aggregate_budget() {
+    if !run_isolated("worst_case_worker_fan_out_completes_well_inside_the_aggregate_budget") {
+        return;
+    }
+    assert!(Duration::from_secs(5) < TEARDOWN_AGGREGATE_DEADLINE);
+    let id = fresh_voyage_id();
+    let max_instances = 8;
+    let mut server = PipeServer::bind(&id, max_instances).unwrap();
+
+    let mut clients = Vec::new();
+    for _ in 0..max_instances {
+        let client = connect_voyage_pipe(&id).unwrap();
+        expect_accepted(&server, TIMEOUT);
+        clients.push(client); // every connection stays LIVE -- worst case
+    }
+
+    server.disconnect_listener();
+    let started = Instant::now();
+    let ok = server.join_workers(Duration::from_secs(5));
+    assert!(
+        ok,
+        "real teardown of {max_instances} live connections did not finish within a 5s budget \
+         (took at least {:?})",
+        started.elapsed()
+    );
+    drop(clients);
 }
 
 /// Test 4: the pipe's own security descriptor, queried on a LIVE HANDLE
