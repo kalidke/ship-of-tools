@@ -936,17 +936,38 @@ pub fn leg_carries_run_end_marker(seg_dir: &Path, voyage_id: &str, epoch: u64) -
             if env.class != Class::Lifecycle {
                 continue;
             }
-            let Some(payload) = &env.payload else { continue };
-            let Some(kind_v) = payload.get("kind") else { continue };
-            // Typed decode: an unrecognized/malformed `kind` value is
-            // simply not this kind (it fails the SAME closed-enum
-            // decode the main verifier would refuse the segment on) --
-            // never mistaken for a marker by a raw string compare.
-            let Ok(kind) = serde_json::from_value::<LifecycleKind>(kind_v.clone()) else {
-                continue;
-            };
+            // Codex round-2b Blocker 3 ("the accessor still silently
+            // accepts invalid paths"): a missing/unknown lifecycle kind
+            // is a HARD SCHEMA ERROR here, exactly as the full verifier
+            // treats it -- never a `continue` that lets a corrupt frame
+            // slide past as merely "not this kind". `payload` itself is
+            // like`Envelope::validate()`'s own payload/payload_ref XOR
+            // (already enforced by `SegmentReader::read`, which runs
+            // `env.validate()` on every frame) already guarantees a
+            // Lifecycle-class frame carries an inline `payload` --
+            // checked again here defensively, still loud if it somehow
+            // didn't.
+            let payload = env.payload.as_ref().ok_or_else(|| {
+                Error::State(format!("lifecycle {:?}: missing payload", env.seq))
+            })?;
+            let kind: LifecycleKind = payload
+                .get("kind")
+                .and_then(|k| serde_json::from_value::<LifecycleKind>(k.clone()).ok())
+                .ok_or_else(|| {
+                    Error::State(format!("lifecycle {:?}: invalid/missing kind", env.seq))
+                })?;
             if kind != LifecycleKind::RunEndRequested {
                 continue;
+            }
+            // A marker frame carrying the take/fact fields the cross-
+            // field matrix forbids for run_end_requested is corrupt in
+            // exactly the way the full verifier refuses -- must not be
+            // silently counted as a valid marker.
+            if payload.get("take").is_some() || payload.get("fact").is_some() {
+                return Err(Error::State(format!(
+                    "lifecycle {:?}: run_end_requested forbids take and fact",
+                    env.seq
+                )));
             }
             if !feature_ok {
                 return Err(Error::State(format!(
@@ -1368,6 +1389,49 @@ mod tests {
         std::fs::rename(seg_dir.join(&real_name), &renamed).unwrap();
         let err = leg_carries_run_end_marker(&seg_dir, "mk6", 2).unwrap_err();
         assert!(format!("{err}").contains("identity disagree"), "got: {err}");
+    }
+
+    /// Codex round-2b Blocker 3: a missing/unknown lifecycle `kind` on
+    /// ANY lifecycle frame in the scanned epoch must err loud -- exactly
+    /// as the full verifier treats it -- never silently `continue` as
+    /// "not this kind" the way a bare-string-compare accessor would.
+    #[test]
+    fn leg_carries_run_end_marker_errs_on_invalid_lifecycle_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "mk7");
+        let mut w = s
+            .open_segment_with_features(0, vec!["sot.capsule.run-end-requested-v1".to_string()])
+            .unwrap();
+        let mut e = test_env(1, 1);
+        e.class = Class::Lifecycle;
+        e.payload = Some(json!({"kind": "not_a_real_lifecycle_kind"}));
+        w.append(&e, Commit::Immediate).unwrap();
+        let seg_dir = dir.path().join("mk7").join("seg");
+        let err = leg_carries_run_end_marker(&seg_dir, "mk7", 1).unwrap_err();
+        assert!(format!("{err}").contains("invalid/missing kind"), "got: {err}");
+    }
+
+    /// Codex round-2b Blocker 3: a `run_end_requested` frame that ALSO
+    /// carries `take` or `fact` (forbidden by the cross-field matrix)
+    /// must err loud rather than being counted as a valid marker.
+    #[test]
+    fn leg_carries_run_end_marker_errs_on_marker_with_forbidden_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = store(dir.path(), "mk8");
+        let mut w = s
+            .open_segment_with_features(0, vec!["sot.capsule.run-end-requested-v1".to_string()])
+            .unwrap();
+        let mut e = test_env(1, 1);
+        e.class = Class::Lifecycle;
+        e.payload = Some(json!({
+            "kind": "run_end_requested",
+            "reason": "quit",
+            "take": {"take_epoch": 1, "holder": null}
+        }));
+        w.append(&e, Commit::Immediate).unwrap();
+        let seg_dir = dir.path().join("mk8").join("seg");
+        let err = leg_carries_run_end_marker(&seg_dir, "mk8", 1).unwrap_err();
+        assert!(format!("{err}").contains("forbids take and fact"), "got: {err}");
     }
 
     #[test]
