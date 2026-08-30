@@ -804,11 +804,19 @@ impl AttachProto {
         c.last_activity = now;
         match decoded {
             DecodedFrame::MgmtRequest(req) => self.handle_mgmt(conn, req, now),
-            DecodedFrame::MgmtReply(_) | DecodedFrame::AttachServer(_) => {
-                // A client sending server-shaped bytes: wire.rs decodes by
-                // tag alone, so this is reachable from adversarial input,
-                // not merely "impossible" — reject it here, not with a
-                // panic.
+            DecodedFrame::MgmtReply(_)
+            | DecodedFrame::AttachServer(_)
+            | DecodedFrame::SupervisorRequest(_)
+            | DecodedFrame::SupervisorReply(_) => {
+                // A client sending server-shaped bytes, or a frame from the
+                // ADR 0041 step 6 U2 supervisor lane's own third magic — the
+                // voyage pipe's `FrameSplitter` decodes by tag/magic alone
+                // with no notion of which pipe it is bound to, so both are
+                // reachable from adversarial input on THIS pipe, not merely
+                // "impossible" — reject them here, not with a panic. A
+                // supervisor-lane frame can never legitimately arrive on
+                // the voyage pipe: that lane lives on its own, separate
+                // named pipe with its own `FrameSplitter` instance.
                 self.close_with_refusal(conn, RefusalReason::LaneSequenceViolation, now)
             }
             DecodedFrame::AttachClient(ac) => self.handle_attach_client(conn, ac, now),
