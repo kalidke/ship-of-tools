@@ -540,11 +540,19 @@ fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
 /// BEFORE `ConnectNamedPipe` is ever issued, so polling it cannot prove
 /// submission happened at all — and a separate "poll, then call
 /// `disconnect_listener`" pair leaves a TOCTOU gap between the two calls.
+///
+/// Codex round-5 fix 2a/2b/2c: plain `SlotState::Pending` is ALSO set for
+/// a synchronously-completed op still awaiting result collection, so
+/// even polling THAT is not proof of a genuine `ERROR_IO_PENDING`
+/// submission — and merely being in one function does not itself close
+/// a TOCTOU between a pre-check and a later act.
 /// `assert_accept_parked_then_disconnect_listener_for_test` polls the
-/// accept slot's OWN `SlotState::Pending` (set only once `issue` has
-/// actually run) and, in the SAME call with no gap to interleave
-/// anything into, invokes `disconnect_listener` while still holding that
-/// proof.
+/// accept slot's OWN genuine-async-pending signal (set only when `issue`
+/// actually returns `ERROR_IO_PENDING`) purely to decide WHEN to call
+/// `disconnect_listener`, then returns the TOCTOU-free LATCH that
+/// `disconnect_listener`'s own synchronized cancellation records at the
+/// exact instant it cancels — the proof and the act share one critical
+/// section, so nothing can go stale in between.
 #[test]
 fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
     if !run_isolated("disconnect_listener_frees_the_name_even_with_a_live_connection") {
@@ -627,8 +635,10 @@ fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
 
     // One connection whose CLIENT never reads and never writes again --
     // outbound bytes queued for it will sit until the server side closes
-    // the handle out from under it (exactly what `disconnect_listener`
-    // now does). A few healthy connections alongside it.
+    // the handle out from under it. A few healthy connections alongside
+    // it, established BEFORE the final pending-at-teardown proof below
+    // (Codex round-5 fix 3), so the whole scenario is real by the time
+    // that proof runs.
     let stalled_client = connect_voyage_pipe(&id).unwrap();
     let stalled_conn = expect_accepted(&server, TIMEOUT);
     // Codex round-3 test-premise-gap fix: a single 4 KiB send into a pipe
@@ -654,15 +664,6 @@ fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
         saw_full,
         "expected the outbound budget to report full against a stalled peer"
     );
-    // Codex round-4 finding 3: `QueueFull` alone only proves the
-    // outbound BYTE budget is reserved -- the producer can fill that
-    // budget before the writer thread has actually reached a pending
-    // `WriteFile`. Prove the writer itself is genuinely stuck there
-    // before tearing down.
-    assert!(
-        server.conn_write_pending_for_test(stalled_conn, TIMEOUT),
-        "expected the stalled connection's writer to reach a genuinely pending WriteFile"
-    );
 
     let mut healthy_clients = Vec::new();
     for _ in 0..2 {
@@ -671,12 +672,39 @@ fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
         healthy_clients.push(c);
     }
 
+    // Codex round-4 finding 3 / round-5 finding 2: `QueueFull` alone only
+    // proves the outbound BYTE budget is reserved, and plain
+    // `SlotState::Pending` is ALSO set for a synchronously-completed
+    // write still awaiting result collection -- neither proves the
+    // writer thread has reached a GENUINE `ERROR_IO_PENDING` `WriteFile`.
+    // This poll is a best-effort PRE-check deciding WHEN it is worth
+    // proceeding to teardown; it is NOT the proof (ignoring a timeout
+    // here just means the fused proof below will legitimately fail
+    // instead, with a clearer message about what was actually observed).
+    let _ = server.conn_write_pending_for_test(stalled_conn, TIMEOUT);
+
+    // Codex round-5 fix 2b/2c/3: fuse the proof with the act. Real
+    // Windows CI diagnosis (this round): relying on `close_all`'s
+    // `CloseHandle` alone to unstick a write genuinely stalled on full-
+    // buffer backpressure was NOT observed to complete within this
+    // test's 5s teardown budget -- `disconnect_listener` now issues an
+    // explicit `CancelIoEx` per connection FIRST, which is what actually
+    // and promptly unsticks it; the assert below reads the TOCTOU-free
+    // latch that SAME cancellation recorded, not a stale pre-check.
     server.disconnect_listener();
+    assert_eq!(
+        server.conn_write_was_genuinely_pending_at_teardown_for_test(stalled_conn),
+        Some(true),
+        "expected the stalled connection's writer to be GENUINELY pending (ERROR_IO_PENDING) \
+         at the exact instant disconnect_listener cancelled it"
+    );
+
     let started = Instant::now();
     // A budget an order of magnitude under the pinned 20s: teardown must
     // not need to wait out the stalled connection's own I/O at all --
-    // closing its handle (disconnect_listener, above) is what unsticks
-    // it, so healthy AND stalled connections alike tear down promptly.
+    // cancelling then closing its handle (disconnect_listener, above) is
+    // what unsticks it, so healthy AND stalled connections alike tear
+    // down promptly.
     let ok = server.join_workers(started + Duration::from_secs(5));
     assert!(
         ok,

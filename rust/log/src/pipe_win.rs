@@ -447,6 +447,19 @@ enum SlotState {
 struct IoSlot {
     state: Mutex<SlotState>,
     ov: UnsafeCell<OVERLAPPED>,
+    /// `true` iff the CURRENT (or most recently settled) submission on
+    /// this slot genuinely went `ERROR_IO_PENDING` at the OS level —
+    /// DISTINCT from `SlotState::Pending`, which is ALSO set for a
+    /// synchronously-completed op still awaiting `GetOverlappedResult`
+    /// collection (Codex round-5 finding: the two are not the same
+    /// observable state — a test polling `SlotState::Pending` alone can
+    /// pass during that synchronous-completion window without ever
+    /// proving a genuine kernel-level pending op existed). Reset to
+    /// `false` at the START of every submission (before its outcome is
+    /// known) and set `true` only in the actual `ERROR_IO_PENDING`
+    /// branch, so it always reflects the CURRENT attempt, never a stale
+    /// one.
+    genuinely_async: AtomicBool,
 }
 // SAFETY: `ov`'s contents are only ever touched (reset, issued, or read
 // via `GetOverlappedResult`) by the ONE thread that got past
@@ -564,6 +577,7 @@ impl IoSlot {
         Ok(Self {
             state: Mutex::new(SlotState::Idle),
             ov: UnsafeCell::new(ov),
+            genuinely_async: AtomicBool::new(false),
         })
     }
 
@@ -610,18 +624,21 @@ impl IoSlot {
             if *st == SlotState::Pending {
                 return Err(std::io::Error::other(ConcurrentSubmitMarker));
             }
+            self.genuinely_async.store(false, Ordering::Release);
             // Reset AND issue while holding the lock: a concurrent
             // `cancel` cannot observe a half-reset `OVERLAPPED`, and
             // cannot call `CancelIoEx` in the gap between this reset and
             // the `issue` call below.
             self.reset();
             let ok = issue(self.ptr());
+            let sync_err = (ok == 0).then(std::io::Error::last_os_error);
             if ok == 0 {
-                let err = std::io::Error::last_os_error();
+                let err = sync_err.unwrap();
                 let code = err.raw_os_error().unwrap_or(0);
                 if code == ERROR_IO_PENDING as i32 {
                     *st = SlotState::Pending;
                     genuinely_pending = true;
+                    self.genuinely_async.store(true, Ordering::Release);
                 } else if synchronous_ok(code) {
                     return Ok(0);
                 } else {
@@ -640,6 +657,7 @@ impl IoSlot {
                 return result;
             }
         }
+        self.genuinely_async.store(false, Ordering::Release);
         let mut st = self.state.lock().unwrap();
         if *st != SlotState::Closing {
             *st = SlotState::Idle;
@@ -678,15 +696,26 @@ impl IoSlot {
                 return Err(aborted_error());
             };
             let handle = live.get();
+            self.genuinely_async.store(false, Ordering::Release);
             self.reset();
             let ok = issue(handle, self.ptr());
+            // Codex round-5 finding 1: capture `GetLastError` IMMEDIATELY
+            // after `issue` returns, BEFORE `drop(live)` -- dropping the
+            // `LiveHandle` releases the registry's `RwLock` read side,
+            // and this crate never assumes an intervening call (however
+            // unlikely to actually touch it) leaves the thread's last-
+            // error value alone. A real `ERROR_IO_PENDING` misread as an
+            // ordinary failure here would free an `OVERLAPPED`/buffer
+            // the kernel still owns.
+            let sync_err = (ok == 0).then(std::io::Error::last_os_error);
             drop(live);
             if ok == 0 {
-                let err = std::io::Error::last_os_error();
+                let err = sync_err.unwrap();
                 let code = err.raw_os_error().unwrap_or(0);
                 if code == ERROR_IO_PENDING as i32 {
                     *st = SlotState::Pending;
                     genuinely_pending = true;
+                    self.genuinely_async.store(true, Ordering::Release);
                 } else if synchronous_ok(code) {
                     return Ok(0);
                 } else {
@@ -700,9 +729,13 @@ impl IoSlot {
         let result = wait_overlapped(handle, self.ptr(), genuinely_pending);
         if let Err(e) = &result {
             if is_completion_unproven(e) {
+                // Never touch this slot's state again -- see
+                // `CompletionUnproven`'s own doc. The caller MUST leak
+                // whatever storage it owns.
                 return result;
             }
         }
+        self.genuinely_async.store(false, Ordering::Release);
         let mut st = self.state.lock().unwrap();
         if *st != SlotState::Closing {
             *st = SlotState::Idle;
@@ -732,27 +765,45 @@ impl IoSlot {
     /// `CloseHandle` already forced the pending op to complete/error —
     /// so this just latches `Closing`, exactly like the plain `cancel`
     /// always does.
-    fn cancel_registered(&self, registry: &InstanceRegistry, id: u64) {
+    ///
+    /// Returns whether the op THIS CALL cancelled (if any) was
+    /// GENUINELY asynchronously pending, decided under the SAME lock
+    /// acquisition that performs the cancellation (Codex round-5 fix
+    /// 2b/2c) — this is the TOCTOU-free proof a caller needing to KNOW
+    /// (not merely poll-and-hope) must use: a separate prior check of
+    /// [`is_genuinely_pending`](Self::is_genuinely_pending) can always
+    /// go stale between the check and this call; this return value
+    /// cannot, because both the read and the cancellation happen inside
+    /// one critical section.
+    fn cancel_registered(&self, registry: &InstanceRegistry, id: u64) -> bool {
         let mut st = self.state.lock().unwrap();
+        let was_genuinely_pending =
+            *st == SlotState::Pending && self.genuinely_async.load(Ordering::Acquire);
         if *st == SlotState::Pending {
             if let Some(live) = registry.live(id) {
                 unsafe { CancelIoEx(live.get(), self.ptr()) };
             }
         }
         *st = SlotState::Closing;
+        was_genuinely_pending
     }
 
     fn is_closing(&self) -> bool {
         *self.state.lock().unwrap() == SlotState::Closing
     }
 
-    /// `true` iff an overlapped op has GENUINELY been issued (`issue`
-    /// has run and returned) and this slot has not yet settled back to
-    /// `Idle`/`Closing`. TEST-ONLY consumer: see
-    /// `PipeServer::assert_accept_parked_then_disconnect_listener_for_test`/
-    /// `PipeServer::conn_write_pending_for_test`.
-    fn is_pending(&self) -> bool {
-        *self.state.lock().unwrap() == SlotState::Pending
+    /// `true` iff the CURRENT submission genuinely went `ERROR_IO_PENDING`
+    /// at the OS level right now — see [`IoSlot::genuinely_async`]'s own
+    /// doc for why this is NOT the same thing as `SlotState::Pending`.
+    /// A caller that needs a race-free ANSWER (not merely a heuristic
+    /// "is it probably time to act") must use
+    /// [`cancel_registered`](Self::cancel_registered)'s own return value
+    /// instead, which decides this under the same lock that performs
+    /// the cancellation. This accessor is a best-effort PRE-check only
+    /// — e.g. "has the writer plausibly reached a pending write yet, so
+    /// it is worth proceeding to teardown" — never itself the proof.
+    fn is_genuinely_pending(&self) -> bool {
+        self.genuinely_async.load(Ordering::Acquire)
     }
 }
 
@@ -1230,6 +1281,22 @@ struct ServerShared {
     /// SOLE mechanism that ever closes one or proves one live — see
     /// [`InstanceRegistry`]'s own doc for the ownership invariant.
     instances: InstanceRegistry,
+    /// TEST-OBSERVABLE (Codex round-5 fix 2b/2c), written unconditionally
+    /// by production code: `stop_accept_loop` sets this to whatever
+    /// [`IoSlot::cancel_registered`] returned for the accept loop's own
+    /// pending `ConnectNamedPipe`, if any — the TOCTOU-free proof that a
+    /// genuinely async op existed at the EXACT instant `disconnect_listener`
+    /// cancelled it, as opposed to a separate pre-check that could go
+    /// stale before teardown actually runs. Left `false` if there was
+    /// nothing pending to cancel.
+    accept_cancel_observed_genuine_pending: AtomicBool,
+    /// TEST-OBSERVABLE (Codex round-5 fix 2b/2c), written unconditionally
+    /// by `disconnect_listener`: for every connection still live at
+    /// teardown, whether its WRITE slot's cancellation observed a
+    /// genuinely async pending `WriteFile` — same TOCTOU-free reasoning
+    /// as `accept_cancel_observed_genuine_pending`, scoped per
+    /// connection since several can be torn down at once.
+    write_cancel_observed_genuine_pending: Mutex<HashMap<ConnId, bool>>,
 }
 
 /// The server side of one voyage's pipe: `bind` creates the pipe (with the
@@ -1307,6 +1374,8 @@ impl PipeServer {
             name,
             dropping: AtomicBool::new(false),
             instances: InstanceRegistry::new(),
+            accept_cancel_observed_genuine_pending: AtomicBool::new(false),
+            write_cancel_observed_genuine_pending: Mutex::new(HashMap::new()),
         });
 
         // Create AND register the squat-detecting first instance
@@ -1453,24 +1522,29 @@ impl PipeServer {
     }
 }
 
-/// TEST-ONLY (ADR 0041 step 6 U1b, Codex round-3/4 test premise-gap
+/// TEST-ONLY (ADR 0041 step 6 U1b, Codex round-3/4/5 test premise-gap
 /// fixes). Not compiled into a production build — `feature =
 /// "test-support"` only (see `Cargo.toml`'s own doc on that feature).
 #[cfg(any(test, feature = "test-support"))]
 impl PipeServer {
     /// Poll until the accept loop's CURRENT `ConnectNamedPipe` has
-    /// GENUINELY been issued (`IoSlot`'s own `SlotState::Pending`, set
-    /// only once `issue` has actually run and returned — NOT
-    /// `AcceptState::current.is_some()`, which is populated BEFORE
-    /// `ConnectNamedPipe` is ever called and so cannot prove submission
-    /// happened at all — Codex round-4 finding 3) or `timeout` elapses,
-    /// then — in this SAME call, so no caller can ever interleave
-    /// anything into the gap between "proven parked" and "torn down"
-    /// (closing the round-4 "poll-to-teardown TOCTOU") — calls
-    /// `disconnect_listener` while still holding that proof. Returns
-    /// `true` iff the parked state was observed (and `disconnect_listener`
-    /// was therefore called); `false` on timeout (`disconnect_listener`
-    /// NOT called — the caller must decide what to do).
+    /// GENUINELY gone `ERROR_IO_PENDING` at the OS level
+    /// (`IoSlot::is_genuinely_pending`, set only once `issue` has
+    /// actually returned that code — NOT `AcceptState::current.is_some()`,
+    /// populated BEFORE `ConnectNamedPipe` is ever called, and NOT plain
+    /// `SlotState::Pending`, which is ALSO set for a synchronously-
+    /// completed op still awaiting result collection — Codex round-4
+    /// finding 3 / round-5 finding 2) or `timeout` elapses. This poll is
+    /// a best-effort PRE-check only, deciding WHEN it is worth calling
+    /// `disconnect_listener` — the actual PROOF returned is the TOCTOU-
+    /// free latch `stop_accept_loop`'s own synchronized cancellation
+    /// records in `ServerShared::accept_cancel_observed_genuine_pending`
+    /// (Codex round-5 fix 2b/2c: being in one function does not itself
+    /// eliminate a TOCTOU between a pre-check and a later act — the
+    /// PROOF must come from the SAME critical section that performs the
+    /// cancellation, which this method's call to `disconnect_listener`
+    /// triggers). Returns that latch's value; `false` on timeout
+    /// (`disconnect_listener` NOT called at all).
     pub fn assert_accept_parked_then_disconnect_listener_for_test(
         &mut self,
         timeout: Duration,
@@ -1486,9 +1560,12 @@ impl PipeServer {
                 .as_ref()
                 .map(|(_, _, slot)| Arc::clone(slot));
             if let Some(slot) = slot {
-                if slot.is_pending() {
+                if slot.is_genuinely_pending() {
                     self.disconnect_listener();
-                    return true;
+                    return self
+                        .shared
+                        .accept_cancel_observed_genuine_pending
+                        .load(Ordering::Acquire);
                 }
             }
             if Instant::now() >= deadline {
@@ -1498,12 +1575,19 @@ impl PipeServer {
         }
     }
 
-    /// Poll until `conn_id`'s writer has genuinely issued a pending
-    /// `WriteFile` (its own `IoSlot`'s `SlotState::Pending`) or `timeout`
+    /// Poll until `conn_id`'s writer has genuinely gone `ERROR_IO_PENDING`
+    /// at the OS level (`IoSlot::is_genuinely_pending`) or `timeout`
     /// elapses. `PipeError::QueueFull` alone only proves the outbound
-    /// BYTE budget is reserved — not that the writer thread has actually
-    /// reached the point of submitting a `WriteFile` against a peer that
-    /// never drains (Codex round-4 finding 3).
+    /// BYTE budget is reserved, and plain `SlotState::Pending` is ALSO
+    /// set for a synchronously-completed write still awaiting result
+    /// collection (Codex round-4 finding 3 / round-5 finding 2) — neither
+    /// proves the writer thread has actually reached a GENUINE pending
+    /// `WriteFile` against a peer that never drains. This is a
+    /// best-effort PRE-check only, deciding WHEN it is worth proceeding
+    /// to teardown — see
+    /// `conn_write_was_genuinely_pending_at_teardown_for_test` for the
+    /// actual, TOCTOU-free proof, which must be read AFTER
+    /// `disconnect_listener` has run.
     pub fn conn_write_pending_for_test(&self, conn_id: ConnId, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
@@ -1513,7 +1597,7 @@ impl PipeServer {
                 .lock()
                 .unwrap()
                 .get(&conn_id)
-                .map(|c| c.write_slot.is_pending())
+                .map(|c| c.write_slot.is_genuinely_pending())
                 .unwrap_or(false);
             if pending {
                 return true;
@@ -1523,6 +1607,26 @@ impl PipeServer {
             }
             thread::sleep(JOIN_POLL_INTERVAL);
         }
+    }
+
+    /// The TOCTOU-free proof (Codex round-5 fix 2b/2c) that `conn_id`'s
+    /// WRITE slot was GENUINELY asynchronously pending at the exact
+    /// synchronized instant `disconnect_listener`'s own cancellation
+    /// pass touched it — decided under the SAME lock acquisition that
+    /// performed the cancellation, so (unlike a separate pre-check) it
+    /// cannot go stale between being observed and being acted on. Call
+    /// AFTER `disconnect_listener`, never before. `None` if `conn_id`
+    /// was never live at any `disconnect_listener` call.
+    pub fn conn_write_was_genuinely_pending_at_teardown_for_test(
+        &self,
+        conn_id: ConnId,
+    ) -> Option<bool> {
+        self.shared
+            .write_cancel_observed_genuine_pending
+            .lock()
+            .unwrap()
+            .get(&conn_id)
+            .copied()
     }
 }
 
@@ -1586,12 +1690,38 @@ impl PipeServer {
     /// Phase one of teardown: make the pipe NAME disappear AND issue
     /// cancellation to every worker — synchronous, no blocking join.
     /// Latches [`ServerShared::dropping`] FIRST (see its doc for why),
-    /// cancels a pending accept (if any -- [`stop_accept_loop`]), THEN —
-    /// Codex round-4 finding 1's second bullet: BEFORE touching `conns`
-    /// at all, not after — calls [`InstanceRegistry::close_all`]: the
-    /// ONE atomic sweep that closes EVERY instance handle still
-    /// registered ANYWHERE (the accept-pending one, every idle
-    /// `recycled`/`retained_dead` one, and every live connection's),
+    /// cancels a pending accept (if any -- [`stop_accept_loop`]), THEN
+    /// requests cancellation on every currently-live connection's read
+    /// AND write I/O.
+    ///
+    /// **Real-Windows correction (this round's own CI diagnosis):** an
+    /// earlier revision of this method relied on
+    /// [`InstanceRegistry::close_all`]'s `CloseHandle` ALONE to unstick
+    /// a connection's I/O, reasoning that closing the handle "forces any
+    /// outstanding ReadFile/WriteFile to complete or error" and made an
+    /// explicit per-connection `CancelIoEx` redundant. Real Windows CI
+    /// proved that reasoning wrong for a WRITE genuinely stalled on
+    /// full-buffer backpressure (a stalled reader has no pending write
+    /// to unstick; the write test case does): `CancelIoEx` TARGETS and
+    /// cancels the exact pending I/O request at the driver level and is
+    /// the documented, prompt way to unstick it; `CloseHandle` alone was
+    /// observed NOT to complete that unstick within this suite's 5s
+    /// teardown budget. The explicit cancellation pass is restored here,
+    /// BEFORE `close_all`, and is not merely a nicety.
+    ///
+    /// Each connection's cancellation ALSO latches (Codex round-5 fix
+    /// 2b/2c) whether its WRITE slot was observed GENUINELY
+    /// asynchronously pending at that exact synchronized instant, into
+    /// [`ServerShared::write_cancel_observed_genuine_pending`] — the
+    /// TOCTOU-free proof a test needs, decided under the SAME lock
+    /// acquisition that performs the cancellation rather than a separate
+    /// pre-check that could go stale before this method actually runs.
+    ///
+    /// THEN — Codex round-4 finding 1's second bullet: BEFORE touching
+    /// `conns` for detached-worker bookkeeping, not after — calls
+    /// `close_all`: the ONE atomic sweep that closes EVERY instance
+    /// handle still registered ANYWHERE (the accept-pending one, every
+    /// idle `recycled`/`retained_dead` one, and every live connection's),
     /// independent of whether `shared.conns` still holds that
     /// connection's `ConnHandle` at this exact instant. A
     /// `FIRST_PIPE_INSTANCE` probe can win the INSTANT this method
@@ -1599,16 +1729,11 @@ impl PipeServer {
     /// doc for why no instance can ever be closed twice or missed, no
     /// matter which of the accept loop / reaper / this method wins
     /// whatever race, and [`LiveHandle`]'s own doc for why no OTHER
-    /// thread can be mid-use of a handle when `close_all` closes it.
-    /// Draining `conns` AFTER `close_all` is now pure Rust-level
-    /// bookkeeping — every reader/writer thread for a drained connection
-    /// will find its handle already closed the moment it next touches
-    /// the pipe (via `IoSlot::submit_and_wait_registered`'s own guard),
-    /// which is what actually unblocks it; no separate cancellation
-    /// request is needed here. The reader/writer threads themselves are
-    /// NOT joined here — `disconnect_listener` never blocks — they are
-    /// stashed in `detached_workers` for [`PipeServer::join_workers`] to
-    /// join under the shared deadline.
+    /// thread can be mid-use of a handle when `close_all` closes it. The
+    /// reader/writer threads themselves are NOT joined here —
+    /// `disconnect_listener` never blocks — they are stashed in
+    /// `detached_workers` for [`PipeServer::join_workers`] to join under
+    /// the shared deadline.
     ///
     /// Idempotent — safe to call more than once (a test proving this
     /// phase in isolation, then the eventual real `Drop`; a second call
@@ -1618,6 +1743,16 @@ impl PipeServer {
         self.shared.dropping.store(true, Ordering::Release);
         stop_accept_loop(&self.shared);
         self.shared.accept_cv.notify_all();
+        {
+            let map = self.shared.conns.lock().unwrap();
+            let mut write_latches = self.shared.write_cancel_observed_genuine_pending.lock().unwrap();
+            for (&conn_id, conn) in map.iter() {
+                conn.read_slot.cancel_registered(&self.shared.instances, conn.registry_id);
+                let write_was_pending =
+                    conn.write_slot.cancel_registered(&self.shared.instances, conn.registry_id);
+                write_latches.insert(conn_id, write_was_pending);
+            }
+        }
         // THE atomic close -- see this method's own doc and
         // `InstanceRegistry`'s. Runs BEFORE the `conns` drain below.
         self.shared.instances.close_all();
@@ -1720,7 +1855,16 @@ fn stop_accept_loop(shared: &Arc<ServerShared>) {
     let mut st = shared.accept.lock().unwrap();
     st.accept_stopping = true;
     if let Some((id, _raw, slot)) = st.current.take() {
-        slot.cancel_registered(&shared.instances, id);
+        // Codex round-5 fix 2b/2c: latch whether THIS cancellation
+        // observed a genuinely async pending `ConnectNamedPipe`, decided
+        // under the same lock acquisition `cancel_registered` uses to
+        // perform the cancellation -- see
+        // `ServerShared::accept_cancel_observed_genuine_pending`'s own
+        // doc for why this is the TOCTOU-free proof a test needs.
+        let was_pending = slot.cancel_registered(&shared.instances, id);
+        shared
+            .accept_cancel_observed_genuine_pending
+            .store(was_pending, Ordering::Release);
     }
 }
 
