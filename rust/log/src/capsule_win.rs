@@ -2432,7 +2432,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (_store, mut w) = run_end_marker_writer(dir.path(), "rem3");
         let mut ctx = run_end_marker_ctx();
-        ctx.next_n = 5; // breaks contiguity: this segment expects n=1 first
+        // Test-bug fix (CI: windows-latest caught this; the code path is
+        // portable, not platform-divergent — see the commit message). A
+        // FRESH `SegmentWriter`'s `last_seq` is `None`, and `append`'s own
+        // contiguity check only fires once a PRIOR frame exists (see
+        // `SegmentWriter::append`): `ctx.next_n` alone cannot violate
+        // contiguity on the very first frame, so the original version of
+        // this test never actually reached the error path it claimed to
+        // test — it happened to type-check (this module only compiles on
+        // Windows) but was never RUN until real Windows CI executed it.
+        // Seed one real frame directly via `w.append` (NOT
+        // `commit_run_end_marker`, which would latch and short-circuit the
+        // second call this test actually exercises) so the writer has a
+        // real last_seq (n=1) to violate.
+        let seed = ctx.capsule_frame(Class::Lifecycle, json!({"kind": "producer_ready"}));
+        w.append(&seed, Commit::Immediate).unwrap();
+        ctx.next_n = 5; // breaks contiguity: the segment's last n is 1, expects 2 next
         let mut frames_written = 0u64;
         let mut latched = false;
         let err =
