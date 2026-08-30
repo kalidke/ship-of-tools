@@ -518,13 +518,25 @@ fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
 /// client's own handle is left open throughout (never dropped before the
 /// probe): the SERVER-side instance `disconnect_listener` closes is what a
 /// squat probe actually checks for, so a still-open client handle must not
-/// keep the name held. NO POLL LOOP: `disconnect_listener` now closes the
-/// live connection's handle synchronously (round 1) and the pending
-/// accept's own listening instance handle synchronously too (round 2b —
-/// cancelling alone only REQUESTS cancellation, asynchronously; closing
-/// the handle directly is what actually makes the instance stop existing)
-/// — a poll here would silently tolerate exactly the residual delay this
-/// round's fix exists to remove.
+/// keep the name held. NO POLL LOOP inside `disconnect_listener` itself:
+/// it closes the live connection's handle synchronously (round 1) and the
+/// pending accept's own listening instance handle synchronously too
+/// (round 2b — cancelling alone only REQUESTS cancellation, asynchronously;
+/// closing the handle directly is what actually makes the instance stop
+/// existing) — a poll THERE would silently tolerate exactly the residual
+/// delay this round's fix exists to remove.
+///
+/// Codex round-3 test-premise-gap fix: `max_instances = 2` means a SECOND
+/// instance becomes the accept loop's own pending `ConnectNamedPipe` the
+/// moment the first connection is accepted, but the accept loop reaching
+/// that point is a RACE against this test thread — the previous version
+/// of this test called `disconnect_listener` right after `expect_accepted`
+/// with no guarantee that race had resolved, so it exercised live-
+/// connection closure but did NOT deterministically prove a pending
+/// accept handle existed at teardown too (the actual defect this test
+/// exists to catch — Codex round-3 finding 1). `accept_parked_for_test`
+/// blocks until `AcceptState::current` is genuinely populated, turning
+/// that into a proven precondition instead of a hoped-for race outcome.
 #[test]
 fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
     if !run_isolated("disconnect_listener_frees_the_name_even_with_a_live_connection") {
@@ -537,6 +549,12 @@ fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
     // A LIVE connection: never closed by either side before the probe.
     let client = connect_voyage_pipe(&id).unwrap();
     expect_accepted(&server, TIMEOUT);
+
+    assert!(
+        server.accept_parked_for_test(TIMEOUT),
+        "expected a second pending accept instance (max_instances=2) to be parked \
+         before teardown"
+    );
 
     server.disconnect_listener();
 
@@ -607,9 +625,29 @@ fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
     // now does). A few healthy connections alongside it.
     let stalled_client = connect_voyage_pipe(&id).unwrap();
     let stalled_conn = expect_accepted(&server, TIMEOUT);
-    // Fill its outbound direction so the writer thread has something
-    // in-flight when teardown begins, not an idle connection.
-    let _ = server.send(stalled_conn, vec![0xAB; 4096], None);
+    // Codex round-3 test-premise-gap fix: a single 4 KiB send into a pipe
+    // configured with 64 KiB buffers never actually stalls -- flood until
+    // the outbound budget genuinely reports full (the SAME pattern
+    // `flooded_never_reading_client_close_completes_within_bound` uses),
+    // proving the writer thread has real in-flight/backed-up work when
+    // teardown begins, not an idle connection.
+    let payload = vec![0xABu8; 65_536];
+    let mut saw_full = false;
+    for _ in 0..128 {
+        match server.send(stalled_conn, payload.clone(), None) {
+            Ok(()) => {}
+            Err(PipeError::QueueFull(cid)) => {
+                assert_eq!(cid, stalled_conn);
+                saw_full = true;
+                break;
+            }
+            Err(other) => panic!("unexpected send error: {other}"),
+        }
+    }
+    assert!(
+        saw_full,
+        "expected the outbound budget to report full against a stalled peer"
+    );
 
     let mut healthy_clients = Vec::new();
     for _ in 0..2 {
