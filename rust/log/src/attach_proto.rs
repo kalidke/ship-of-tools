@@ -767,7 +767,20 @@ impl AttachProto {
                 return self.close_with_refusal(conn, RefusalReason::LockstepViolation, now);
             }
             if c.reply_queued {
+                // Codex round-2b: a HELD frame is still a genuinely valid,
+                // arrived frame -- exactly the race the comment above
+                // describes, not a stalled connection -- so it must count
+                // as activity. Before this fix, holding never touched
+                // `last_activity`, so a compliant client whose valid
+                // request arrived a moment before the mgmt idle deadline
+                // was evicted anyway (`tick`'s own scan is the only
+                // consumer of this clock the held-frame path could ever
+                // have satisfied). `outstanding_sends` stays whatever it
+                // already was -- this frame does not itself queue a send,
+                // its eventual replay does, once `clear_outstanding_and_
+                // replay` runs.
                 c.held_frame = Some(decoded);
+                c.last_activity = now;
                 return vec![];
             }
             return self.close_with_refusal(conn, RefusalReason::LockstepViolation, now);
@@ -969,12 +982,24 @@ impl AttachProto {
         // the non-watcher pool for the full 30s — exactly the "outstanding
         // server send expands the management bound" escape review found:
         // a tiny mgmt reply nobody drains for 5s is squatting, not
-        // legitimate write progress. The clock this check reads now
-        // follows WHICH kind of quiet the connection is in: `last_activity`
-        // (no reply outstanding — a genuinely silent client) or
-        // `last_send_progress` (a reply queued but not yet confirmed
-        // physically written — the same clock `PROGRESS_DEADLINE` reads,
-        // just against the tighter mgmt-specific bound). This scan runs
+        // legitimate write progress.
+        //
+        // Codex round-2b: the clock this check reads is the MORE RECENT of
+        // `last_activity` and `last_send_progress` — not a choice between
+        // the two based on `outstanding_sends`, which round-1's own fix
+        // shipped and which a live repro then broke: the transport can
+        // report a peer's next lockstep request (a HELD frame, held
+        // because THIS reply's own `Sent` completion has not arrived yet —
+        // see `frame`'s own doc on the round-2 e2e review race) while
+        // `outstanding_sends` is still nonzero, so reading ONLY
+        // `last_send_progress` in that state ignored the held frame's own
+        // freshly-refreshed `last_activity` entirely and evicted a
+        // genuinely active, compliant client. Taking the max keeps BOTH
+        // properties true at once: a client that stays silent (both clocks
+        // stale) is still evicted at 5s exactly as round-1 intended, and a
+        // client that keeps sending valid requests — even while our own
+        // reply write is independently stuck — is not penalized for
+        // activity `last_send_progress` alone cannot see. This scan runs
         // BEFORE the generic stalled scan below so a connection matching
         // BOTH gets the mgmt-specific label and eviction, never the
         // generic one — the two bounds would otherwise race for whichever
@@ -983,7 +1008,7 @@ impl AttachProto {
         let mut mgmt_idle = Vec::new();
         for (id, c) in &self.conns {
             if matches!(c.role, Role::Mgmt) {
-                let last_progress = if c.outstanding_sends > 0 { c.last_send_progress } else { c.last_activity };
+                let last_progress = c.last_activity.max(c.last_send_progress);
                 if now.saturating_duration_since(last_progress) >= MGMT_IDLE_DEADLINE {
                     mgmt_idle.push(*id);
                 }
@@ -2810,6 +2835,58 @@ mod tests {
         // ever apply): evicted, with the mgmt-specific reason, never
         // ProgressStall.
         let a = p.tick(now + MGMT_IDLE_DEADLINE);
+        assert!(a.iter().any(|x| matches!(x, Action::Close(1))), "{a:?}");
+        assert!(
+            a.iter()
+                .any(|x| matches!(x, Action::RecordRefusal { reason: RefusalReason::MgmtIdleTimeout, .. })),
+            "{a:?}"
+        );
+    }
+
+    /// Codex round-2b discharge (a live repro confirmed this before the
+    /// fix): a valid HELD frame is still activity. Models the documented
+    /// transport race `frame`'s own doc names -- the peer physically read
+    /// the first reply and sent its next lockstep request, but the
+    /// reader's `Bytes` event reaches this module before the writer's
+    /// `Sent` completion does, so `outstanding_sends` is still 1 when the
+    /// second, entirely valid request arrives and is legitimately HELD
+    /// (not a lockstep violation). Before this fix, the mgmt idle scan
+    /// read ONLY `last_send_progress` while `outstanding_sends > 0`,
+    /// which the held frame never touches -- so a client demonstrably
+    /// still talking to us, a millisecond before the deadline, was evicted
+    /// anyway. The fix: `frame` now refreshes `last_activity` when it
+    /// holds a frame, and the scan reads the MORE RECENT of `last_activity`
+    /// and `last_send_progress` (see both sites' own doc).
+    #[test]
+    fn a_valid_held_mgmt_frame_resets_the_idle_clock_and_is_not_evicted() {
+        let mut p = proto();
+        let now = t0();
+        assert_eq!(p.connection_opened(1, now), vec![]);
+        let probe = decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap());
+        let a = p.frame(1, probe, now);
+        assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
+        // Deliberately never confirmed (`p.sent` not called): models the
+        // writer's own `Sent` completion not having arrived yet.
+
+        // The peer's next lockstep request, arriving just before the
+        // deadline, while the first reply is still outstanding.
+        let active_at = now + MGMT_IDLE_DEADLINE - Duration::from_millis(1);
+        let status = decode_one(&encode_mgmt_request(&MgmtRequest::Status).unwrap());
+        assert!(p.frame(1, status, active_at).is_empty(), "a legitimately held frame returns no action yet");
+
+        // At what would have been the ORIGINAL deadline (measured from the
+        // first request, ignoring the held frame): must NOT evict -- the
+        // held frame proved the client active.
+        let a = p.tick(now + MGMT_IDLE_DEADLINE);
+        assert!(
+            a.is_empty(),
+            "a valid held frame must reset the idle clock, not be silently ignored by it: {a:?}"
+        );
+
+        // The connection is still genuinely subject to the SAME bound,
+        // measured from the held frame's own arrival: silence after that
+        // point still evicts.
+        let a = p.tick(active_at + MGMT_IDLE_DEADLINE);
         assert!(a.iter().any(|x| matches!(x, Action::Close(1))), "{a:?}");
         assert!(
             a.iter()
