@@ -65,6 +65,11 @@ pub mod fence;
 // exchange (encode request, decode reply) -- the one thing
 // challenge::challenge delegates per-lane. Portable, like `deadline`.
 pub mod exchange;
+// ADR 0041 step 6, unit U2: the supervisor's own durable operation
+// journal (`operation_id`/`.active`/`.terminal`, recovery-first
+// reconciliation) — portable, like `pointer`/`rollout`, since it reuses
+// `fsutil::publish_noreplace` rather than any OS-specific primitive.
+pub mod journal;
 // ADR 0041 step 6, unit U0: `drawer.voyage` publication + validation.
 // Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
 // which already has both platform arms.
