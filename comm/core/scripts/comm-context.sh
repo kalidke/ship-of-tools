@@ -8,7 +8,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 ensure_home
 
-HOST="$(hostname -s 2>/dev/null || hostname)"
+# SOT_COMM_TEST_HOST lets a caller pin HOST directly, bypassing `hostname -s`
+# — mirrors the $SOT_COMM_SELF_FILE test seam below. A test must be hermetic
+# in HOST exactly as it is in HOME: the real host's name is unpredictable
+# (short/clean on a dev box, but a CI runner's hostname can be long and,
+# once it exceeds sot_sanitize_component's clamp, gets rewritten by
+# sot_derive_handle's host-alias guard — comm-lib.sh, ADR 0028 addendum
+# "host aliasing"). A test that computes its own expected handle from the
+# raw hostname without going through that same transformation silently
+# diverges on any host long enough to trigger it — this is exactly what
+# happened: 8/13 cases (every one asserting a derived handle) failed on a
+# GitHub Actions runner while passing locally, because the runner's
+# hostname is longer than a dev box's. Pinning through this seam removes
+# the dependency entirely, on both the scripts' side and the test's own
+# expectations. Unset in normal use.
+if [ -n "${SOT_COMM_TEST_HOST:-}" ]; then
+    HOST="$SOT_COMM_TEST_HOST"
+else
+    HOST="$(hostname -s 2>/dev/null || hostname)"
+fi
 
 PANE_ID=""
 TMUX_TARGET=""
