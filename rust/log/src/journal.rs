@@ -371,6 +371,11 @@ mod tests {
         );
     }
 
+    // macOS's `fsutil::rename_noreplace_raw` fails closed by design (see
+    // the module doc, and `pointer.rs`'s own tests for the same gate) --
+    // `mark_closed` is routed through `publish_json`/`publish_noreplace`
+    // exactly like `begin`/`finish`, so it needs the identical gate.
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn is_closed_is_false_before_mark_closed_and_true_after() {
         let dir = tempfile::tempdir().unwrap();
@@ -379,6 +384,7 @@ mod tests {
         assert!(is_closed(dir.path(), "op-1").unwrap());
     }
 
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn mark_closed_twice_is_a_no_op() {
         let dir = tempfile::tempdir().unwrap();
