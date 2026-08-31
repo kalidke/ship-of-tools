@@ -13,8 +13,10 @@
 
 use sot_log::wire::{
     encode_attach_client, encode_attach_server, encode_keepalive, encode_mgmt_reply,
-    encode_mgmt_request, AttachClient, AttachRefusedReason, AttachServer, DecodedFrame,
-    FrameSplitter, MgmtReply, MgmtRequest, ResizeRefusedReason, Survival, TakeRefusedReason,
+    encode_mgmt_request, encode_supervisor_reply, encode_supervisor_request, AttachClient,
+    AttachRefusedReason, AttachServer, DecodedFrame, FrameSplitter, MgmtReply, MgmtRequest,
+    ResizeRefusedReason, SupervisorOp, SupervisorOperationState, SupervisorPhase,
+    SupervisorRefusedReason, SupervisorReply, SupervisorRequest, Survival, TakeRefusedReason,
     WireError, MGMT_MAGIC,
 };
 
@@ -83,6 +85,8 @@ enum GeneratedFrame {
     AttachClient(AttachClient),
     AttachServer(AttachServer),
     Keepalive(u64),
+    SupervisorRequest(SupervisorRequest),
+    SupervisorReply(SupervisorReply),
 }
 
 impl GeneratedFrame {
@@ -93,6 +97,8 @@ impl GeneratedFrame {
             Self::AttachClient(f) => encode_attach_client(f).expect("generator stays in-bounds"),
             Self::AttachServer(f) => encode_attach_server(f).expect("generator stays in-bounds"),
             Self::Keepalive(nonce) => encode_keepalive(*nonce),
+            Self::SupervisorRequest(f) => encode_supervisor_request(f).expect("generator stays in-bounds"),
+            Self::SupervisorReply(f) => encode_supervisor_reply(f).expect("generator stays in-bounds"),
         }
     }
 
@@ -103,6 +109,8 @@ impl GeneratedFrame {
             Self::AttachClient(f) => DecodedFrame::AttachClient(f.clone()),
             Self::AttachServer(f) => DecodedFrame::AttachServer(f.clone()),
             Self::Keepalive(nonce) => DecodedFrame::Keepalive { nonce: *nonce },
+            Self::SupervisorRequest(f) => DecodedFrame::SupervisorRequest(f.clone()),
+            Self::SupervisorReply(f) => DecodedFrame::SupervisorReply(f.clone()),
         }
     }
 }
@@ -213,14 +221,107 @@ fn random_attach_frame(rng: &mut Rng) -> GeneratedFrame {
     }
 }
 
-fn random_sequence(rng: &mut Rng, mgmt_lane: bool, count: usize) -> Vec<GeneratedFrame> {
+/// A random `end_run | reset | stop`. `voyage`/`operation_id` fields
+/// elsewhere are generated via `random_nonempty_ascii_string`, which only
+/// ever emits lowercase `a`-`z` — already a subset of `operation_id`'s
+/// own `[A-Za-z0-9._-]` charset, so no separate generator is needed for
+/// THAT bound; `operation_id`'s LENGTH bound (64, not the general 128) is
+/// what callers must pass explicitly.
+fn random_supervisor_op(rng: &mut Rng) -> SupervisorOp {
+    match rng.below(3) {
+        0 => SupervisorOp::EndRun {
+            reason: random_ascii_string(rng, 128),
+            voyage: random_nonempty_ascii_string(rng, 128),
+        },
+        1 => SupervisorOp::Reset {
+            voyage: if rng.bool() { Some(random_nonempty_ascii_string(rng, 128)) } else { None },
+        },
+        _ => SupervisorOp::Stop,
+    }
+}
+
+fn random_supervisor_operation_state(rng: &mut Rng) -> SupervisorOperationState {
+    match rng.below(8) {
+        0 => SupervisorOperationState::Accepted,
+        1 => SupervisorOperationState::RecordClosed,
+        2 => SupervisorOperationState::RecordVerified,
+        3 => SupervisorOperationState::ResetDone { new_voyage: random_nonempty_ascii_string(rng, 128) },
+        4 => SupervisorOperationState::Stopping,
+        5 => SupervisorOperationState::Failed { detail: random_ascii_string(rng, 128) },
+        6 => SupervisorOperationState::Refused {
+            reason: if rng.bool() { SupervisorRefusedReason::StaleVoyage } else { SupervisorRefusedReason::IdConflict },
+        },
+        _ => SupervisorOperationState::UnknownOperation,
+    }
+}
+
+fn random_supervisor_frame(rng: &mut Rng) -> GeneratedFrame {
+    if rng.bool() {
+        let f = match rng.below(4) {
+            0 => SupervisorRequest::Hello { proto: rng.next_u32(), build: random_ascii_string(rng, 128) },
+            1 => SupervisorRequest::Command {
+                operation_id: random_nonempty_ascii_string(rng, 64),
+                op: random_supervisor_op(rng),
+            },
+            2 => SupervisorRequest::Status,
+            _ => SupervisorRequest::Query { operation_id: random_nonempty_ascii_string(rng, 64) },
+        };
+        GeneratedFrame::SupervisorRequest(f)
+    } else {
+        let f = match rng.below(4) {
+            0 => SupervisorReply::HelloOk {
+                proto: rng.next_u32(),
+                build: random_ascii_string(rng, 128),
+                pid: rng.next_u32(),
+                created: (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
+            },
+            1 => SupervisorReply::Refused {
+                reason: if rng.bool() { SupervisorRefusedReason::StaleVoyage } else { SupervisorRefusedReason::VersionSkew },
+            },
+            2 => SupervisorReply::Operation(random_supervisor_operation_state(rng)),
+            _ => SupervisorReply::StatusOk {
+                pid: rng.next_u32(),
+                created: (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
+                voyage: if rng.bool() { Some(random_nonempty_ascii_string(rng, 128)) } else { None },
+                leg: if rng.bool() { Some((u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32())) } else { None },
+                phase: match rng.below(5) {
+                    0 => SupervisorPhase::Starting,
+                    1 => SupervisorPhase::Ready,
+                    2 => SupervisorPhase::Ending,
+                    3 => SupervisorPhase::EndedNoRespawn,
+                    _ => SupervisorPhase::Terminal,
+                },
+            },
+        };
+        GeneratedFrame::SupervisorReply(f)
+    }
+}
+
+/// Which lane a generated sequence rides — every frame in one call comes
+/// from the SAME lane, matching the real protocol's own "latched by the
+/// first frame's magic" rule (a mixed-lane sequence is exactly what
+/// `LaneMismatch` exists to reject, a DIFFERENT, already-covered test).
+#[derive(Debug, Clone, Copy)]
+enum Lane {
+    Mgmt,
+    Attach,
+    Supervisor,
+}
+
+fn random_lane(rng: &mut Rng) -> Lane {
+    match rng.below(3) {
+        0 => Lane::Mgmt,
+        1 => Lane::Attach,
+        _ => Lane::Supervisor,
+    }
+}
+
+fn random_sequence(rng: &mut Rng, lane: Lane, count: usize) -> Vec<GeneratedFrame> {
     (0..count)
-        .map(|_| {
-            if mgmt_lane {
-                random_mgmt_frame(rng)
-            } else {
-                random_attach_frame(rng)
-            }
+        .map(|_| match lane {
+            Lane::Mgmt => random_mgmt_frame(rng),
+            Lane::Attach => random_attach_frame(rng),
+            Lane::Supervisor => random_supervisor_frame(rng),
         })
         .collect()
 }
@@ -274,7 +375,7 @@ fn accumulate_feed(chunks: &[&[u8]]) -> (Vec<DecodedFrame>, Option<WireError>) {
 #[test]
 fn splitter_decodes_identically_at_every_two_way_split_point() {
     let mut rng = Rng(0xC0FF_EE00_D15E_A5E1);
-    let frames = random_sequence(&mut rng, false, 12);
+    let frames = random_sequence(&mut rng, Lane::Attach, 12);
     let bytes: Vec<u8> = frames.iter().flat_map(|f| f.encode()).collect();
     let expected = decode_all_at_once(&bytes);
     assert_eq!(expected.len(), frames.len());
@@ -292,7 +393,7 @@ fn splitter_decodes_identically_at_every_two_way_split_point() {
 #[test]
 fn splitter_decodes_identically_at_every_two_way_split_point_mgmt_lane() {
     let mut rng = Rng(0x5EED_1234_5678_9ABC);
-    let frames = random_sequence(&mut rng, true, 10);
+    let frames = random_sequence(&mut rng, Lane::Mgmt, 10);
     let bytes: Vec<u8> = frames.iter().flat_map(|f| f.encode()).collect();
     let expected = decode_all_at_once(&bytes);
 
@@ -309,7 +410,7 @@ fn splitter_decodes_identically_at_every_two_way_split_point_mgmt_lane() {
 #[test]
 fn splitter_decodes_identically_fed_one_byte_at_a_time() {
     let mut rng = Rng(0x1111_2222_3333_4444);
-    let frames = random_sequence(&mut rng, false, 15);
+    let frames = random_sequence(&mut rng, Lane::Attach, 15);
     let bytes: Vec<u8> = frames.iter().flat_map(|f| f.encode()).collect();
     let expected = decode_all_at_once(&bytes);
 
@@ -328,7 +429,7 @@ fn splitter_reports_identical_frames_and_error_at_every_split_point() {
     // A few valid mgmt-lane frames, then one with an unknown tag on the
     // SAME lane (so the error is `UnknownTag`, never a lane mismatch).
     let mut rng = Rng(0x0FA1_1ED0_FA11_ED00);
-    let good_frames = random_sequence(&mut rng, true, 5);
+    let good_frames = random_sequence(&mut rng, Lane::Mgmt, 5);
     let mut bytes: Vec<u8> = good_frames.iter().flat_map(|f| f.encode()).collect();
     let bad_body = vec![0x99u8];
     bytes.extend_from_slice(&MGMT_MAGIC);
@@ -365,9 +466,9 @@ fn fuzz_random_valid_sequences_roundtrip_through_random_chunk_boundaries() {
     ] {
         let mut rng = Rng(seed);
         for iteration in 0..40 {
-            let mgmt_lane = rng.bool();
+            let lane = random_lane(&mut rng);
             let count = 1 + rng.below(10) as usize;
-            let frames = random_sequence(&mut rng, mgmt_lane, count);
+            let frames = random_sequence(&mut rng, lane, count);
             let bytes: Vec<u8> = frames.iter().flat_map(|f| f.encode()).collect();
             let expected: Vec<DecodedFrame> = frames.iter().map(GeneratedFrame::as_decoded).collect();
 
@@ -403,9 +504,9 @@ fn fuzz_random_mutations_of_valid_streams_never_panic() {
     for seed in [0x5117_5117_5117_5117u64, 0xabad_1dea_abad_1dea, 0x0102_0304_0506_0708] {
         let mut rng = Rng(seed);
         for iteration in 0..200 {
-            let mgmt_lane = rng.bool();
+            let lane = random_lane(&mut rng);
             let count = 1 + rng.below(8) as usize;
-            let frames = random_sequence(&mut rng, mgmt_lane, count);
+            let frames = random_sequence(&mut rng, lane, count);
             let mut bytes: Vec<u8> = frames.iter().flat_map(|f| f.encode()).collect();
             if bytes.is_empty() {
                 continue;

@@ -197,12 +197,49 @@ const _: () = assert!(MAX_SHUTDOWN_REASON_LEN <= u8::MAX as usize);
 pub const MAX_INPUT_PAYLOAD_LEN: usize = 8192;
 const _: () = assert!(MAX_INPUT_PAYLOAD_LEN <= u16::MAX as usize);
 
-/// The supervisor lane's `build`/`operation_id`/`reason`/`detail`/voyage-id
-/// string fields all share this one bound (like `MAX_CONTROLLER_ID_LEN`,
+/// The supervisor lane's `build`/`reason`/`detail`/voyage-id string
+/// fields all share this one bound (like `MAX_CONTROLLER_ID_LEN`,
 /// generous enough for a UUID or a short diagnostic, never a data
-/// payload).
+/// payload). `operation_id` does NOT use this bound — see
+/// [`MAX_OPERATION_ID_LEN`] and [`validate_operation_id`].
 pub const MAX_SUPERVISOR_STRING_LEN: usize = 128;
 const _: () = assert!(MAX_SUPERVISOR_STRING_LEN <= u8::MAX as usize);
+
+/// `operation_id`'s own, TIGHTER bound (ADR 0041 step 6 U2, Codex review
+/// finding 6): it is interpolated directly into a filesystem path
+/// (`<state_dir>/supervisor-journal/<id>.*`), never merely displayed, so
+/// its charset is restricted to `[A-Za-z0-9._-]` (see
+/// [`validate_operation_id`]) and its length to a conservative 64 bytes
+/// — ample for a UUID or a short caller-chosen token, far short of any
+/// filesystem component limit.
+pub const MAX_OPERATION_ID_LEN: usize = 64;
+const _: () = assert!(MAX_OPERATION_ID_LEN <= u8::MAX as usize);
+
+/// `true` iff every byte of `s` is `[A-Za-z0-9._-]` — the only characters
+/// [`validate_operation_id`] ever allows through.
+fn is_operation_id_charset(s: &str) -> bool {
+    s.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+}
+
+/// `operation_id` is used as a Windows filesystem path component with no
+/// further sanitization downstream (`journal.rs` interpolates it
+/// directly into `<id>.active`/`<id>.terminal`/`<id>.closed`) — this is
+/// the ONE place that must refuse everything a path component must never
+/// be: separators (rejected by the charset itself, which excludes `/`
+/// and `\`), an absolute-path prefix (likewise, no `:` or leading
+/// separator in the allowed set), and the two reserved relative-path
+/// names `.`/`..`, which the charset alone cannot exclude since both are
+/// built entirely from otherwise-legal characters. Called at WIRE DECODE
+/// time (`decode_supervisor_body`'s `command`/`query` arms) so the
+/// journal itself never sees an unvalidated id — length is already
+/// bounded by [`MAX_OPERATION_ID_LEN`] before this runs.
+fn validate_operation_id(field: &'static str, s: String) -> Result<String, WireError> {
+    if s == "." || s == ".." || !is_operation_id_charset(&s) {
+        return Err(WireError::InvalidOperationId { field, value: s });
+    }
+    Ok(s)
+}
 
 /// The only supervisor-lane protocol version this build speaks — there is
 /// no negotiation (unlike the attach lane's `hello`): a mismatch is a
@@ -293,7 +330,10 @@ const TAG_SV_OP_STOP: u8 = 0x03;
 /// in_progress | record_closed | record_verified | reset_done | stopping
 /// | failed | refused | unknown_operation").
 const TAG_SV_OPSTATE_ACCEPTED: u8 = 0x01;
-const TAG_SV_OPSTATE_IN_PROGRESS: u8 = 0x02;
+// 0x02 ("in_progress") is retired -- see `SupervisorOperationState`'s own
+// doc; never emitted, so decoding it now correctly falls into the
+// generic `UnknownTag` arm rather than being reserved for a value this
+// authority can never produce.
 const TAG_SV_OPSTATE_RECORD_CLOSED: u8 = 0x03;
 const TAG_SV_OPSTATE_RECORD_VERIFIED: u8 = 0x04;
 const TAG_SV_OPSTATE_RESET_DONE: u8 = 0x05;
@@ -362,6 +402,17 @@ pub enum WireError {
     /// minimums" in the module doc) was zero bytes.
     #[error("field {0} must not be empty")]
     FieldEmpty(&'static str),
+    /// A supervisor-lane `operation_id` was well-formed as a bounded
+    /// string but not a legal id: it must match `[A-Za-z0-9._-]{1,64}`
+    /// and be neither `.` nor `..` (ADR 0041 step 6 U2, Codex review
+    /// finding 6). `operation_id` is interpolated directly into a
+    /// Windows filesystem path (`<state_dir>/supervisor-journal/<id>.*`)
+    /// with no further sanitization downstream, so this is where the
+    /// journal is protected from path traversal, absolute paths, and
+    /// separator/reserved-name confusion — the journal itself must never
+    /// see an unvalidated id.
+    #[error("field {field} is not a legal operation_id: {value:?}")]
+    InvalidOperationId { field: &'static str, value: String },
 }
 
 // ---------------------------------------------------------------------
@@ -659,10 +710,18 @@ pub enum SupervisorReply {
 /// durably journaled) rather than blocking for a later state — "the FE
 /// never blocks on an O(history) walk" — so `command` and `query` share
 /// one wire shape instead of two that could drift.
+///
+/// `in_progress` is DELETED from this implementation (Codex review round
+/// 1, simplicity audit): this crate never emits a distinction between
+/// "accepted, not yet acted on" and "accepted, currently being acted
+/// on" finer than `Accepted` itself — inventing a second wire value this
+/// authority can never actually produce would only be a state nothing
+/// tests or exercises. The ADR's own vocabulary lists `in_progress` as
+/// available to a future, richer authority; this one has no caller of
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SupervisorOperationState {
     Accepted,
-    InProgress,
     RecordClosed,
     RecordVerified,
     ResetDone { new_voyage: String },
@@ -1002,13 +1061,29 @@ fn push_supervisor_op(body: &mut Vec<u8>, op: &SupervisorOp) -> Result<(), WireE
     Ok(())
 }
 
+/// The canonical, stable byte encoding of a supervisor-lane `op` — the
+/// SAME tag/length-prefixed encoding `command`'s own wire body already
+/// carries it in (`push_supervisor_op`), reused here rather than a
+/// second, divergent encoding of the same data. This is what the
+/// journal's own `id_conflict` digest is computed over (ADR 0041 step 6
+/// U2, Codex review finding 6: `format!("{op:?}")` is a `Debug` string,
+/// "neither a digest nor a stable durable encoding across builds" —
+/// `Debug`'s own output format is not part of any stability contract).
+/// Stable across builds because it is exactly the bytes this crate must
+/// already keep stable for the wire protocol itself; the caller hashes
+/// this (SHA-256 today) rather than storing or comparing it raw.
+pub fn canonical_supervisor_op_bytes(op: &SupervisorOp) -> Result<Vec<u8>, WireError> {
+    let mut body = Vec::new();
+    push_supervisor_op(&mut body, op)?;
+    Ok(body)
+}
+
 fn push_supervisor_operation_state(
     body: &mut Vec<u8>,
     state: &SupervisorOperationState,
 ) -> Result<(), WireError> {
     match state {
         SupervisorOperationState::Accepted => body.push(TAG_SV_OPSTATE_ACCEPTED),
-        SupervisorOperationState::InProgress => body.push(TAG_SV_OPSTATE_IN_PROGRESS),
         SupervisorOperationState::RecordClosed => body.push(TAG_SV_OPSTATE_RECORD_CLOSED),
         SupervisorOperationState::RecordVerified => body.push(TAG_SV_OPSTATE_RECORD_VERIFIED),
         SupervisorOperationState::ResetDone { new_voyage } => {
@@ -1041,13 +1116,13 @@ pub fn encode_supervisor_request(frame: &SupervisorRequest) -> Result<Vec<u8>, W
         }
         SupervisorRequest::Command { operation_id, op } => {
             body.push(TAG_SV_REQ_COMMAND);
-            push_bounded_string(&mut body, operation_id, MAX_SUPERVISOR_STRING_LEN, "command.operation_id", true)?;
+            push_bounded_string(&mut body, operation_id, MAX_OPERATION_ID_LEN, "command.operation_id", true)?;
             push_supervisor_op(&mut body, op)?;
         }
         SupervisorRequest::Status => body.push(TAG_SV_REQ_STATUS),
         SupervisorRequest::Query { operation_id } => {
             body.push(TAG_SV_REQ_QUERY);
-            push_bounded_string(&mut body, operation_id, MAX_SUPERVISOR_STRING_LEN, "query.operation_id", true)?;
+            push_bounded_string(&mut body, operation_id, MAX_OPERATION_ID_LEN, "query.operation_id", true)?;
         }
     }
     wrap(SUPERVISOR_MAGIC, body)
@@ -1277,7 +1352,6 @@ fn read_supervisor_operation_state(r: &mut Reader) -> Result<SupervisorOperation
     let tag = r.u8("operation.tag")?;
     Ok(match tag {
         TAG_SV_OPSTATE_ACCEPTED => SupervisorOperationState::Accepted,
-        TAG_SV_OPSTATE_IN_PROGRESS => SupervisorOperationState::InProgress,
         TAG_SV_OPSTATE_RECORD_CLOSED => SupervisorOperationState::RecordClosed,
         TAG_SV_OPSTATE_RECORD_VERIFIED => SupervisorOperationState::RecordVerified,
         TAG_SV_OPSTATE_RESET_DONE => {
@@ -1309,7 +1383,8 @@ fn decode_supervisor_body(body: &[u8]) -> Result<DecodedFrame, WireError> {
             DecodedFrame::SupervisorRequest(SupervisorRequest::Hello { proto, build })
         }
         TAG_SV_REQ_COMMAND => {
-            let operation_id = r.bounded_string(MAX_SUPERVISOR_STRING_LEN, "command.operation_id", true)?;
+            let operation_id = r.bounded_string(MAX_OPERATION_ID_LEN, "command.operation_id", true)?;
+            let operation_id = validate_operation_id("command.operation_id", operation_id)?;
             let op = read_supervisor_op(&mut r)?;
             r.finish("command")?;
             DecodedFrame::SupervisorRequest(SupervisorRequest::Command { operation_id, op })
@@ -1319,7 +1394,8 @@ fn decode_supervisor_body(body: &[u8]) -> Result<DecodedFrame, WireError> {
             DecodedFrame::SupervisorRequest(SupervisorRequest::Status)
         }
         TAG_SV_REQ_QUERY => {
-            let operation_id = r.bounded_string(MAX_SUPERVISOR_STRING_LEN, "query.operation_id", true)?;
+            let operation_id = r.bounded_string(MAX_OPERATION_ID_LEN, "query.operation_id", true)?;
+            let operation_id = validate_operation_id("query.operation_id", operation_id)?;
             r.finish("query")?;
             DecodedFrame::SupervisorRequest(SupervisorRequest::Query { operation_id })
         }
@@ -2912,7 +2988,6 @@ mod tests {
     fn supervisor_operation_state_every_variant_round_trips() {
         let states = [
             SupervisorOperationState::Accepted,
-            SupervisorOperationState::InProgress,
             SupervisorOperationState::RecordClosed,
             SupervisorOperationState::RecordVerified,
             SupervisorOperationState::ResetDone { new_voyage: "voy-2".to_string() },
@@ -2943,6 +3018,81 @@ mod tests {
             }),
             Err(WireError::FieldTooLarge { field: "command.operation_id", .. })
         ));
+    }
+
+    #[test]
+    fn operation_id_at_exactly_the_64_byte_bound_is_legal_and_one_over_is_refused() {
+        let at_bound = "a".repeat(MAX_OPERATION_ID_LEN);
+        let over_bound = "a".repeat(MAX_OPERATION_ID_LEN + 1);
+        let wire = encode_supervisor_request(&SupervisorRequest::Query { operation_id: at_bound.clone() }).unwrap();
+        let mut s = FrameSplitter::new();
+        assert_eq!(
+            feed_ok(&mut s, &wire),
+            vec![DecodedFrame::SupervisorRequest(SupervisorRequest::Query { operation_id: at_bound })]
+        );
+        assert!(matches!(
+            encode_supervisor_request(&SupervisorRequest::Query { operation_id: over_bound }),
+            Err(WireError::FieldTooLarge { field: "query.operation_id", .. })
+        ));
+    }
+
+    /// ADR 0041 step 6 U2, Codex review finding 6: `operation_id` is
+    /// interpolated directly into a Windows filesystem path with no
+    /// further sanitization downstream, so the wire itself must refuse
+    /// separators, `..`, and anything outside `[A-Za-z0-9._-]` at DECODE
+    /// time -- the journal must never see an unvalidated id. Every
+    /// rejected id here is well-formed enough to pass `bounded_string`'s
+    /// own length/emptiness checks first, so this exercises the
+    /// CHARSET/reserved-name check specifically, not length.
+    #[test]
+    fn illegal_operation_ids_are_refused_at_decode_not_merely_at_the_journal() {
+        for illegal in ["..", ".", "../escape", "a/b", r"a\b", "a b", "a:b", "", ] {
+            if illegal.is_empty() {
+                // Empty is refused by `FieldEmpty`, a separate, already-
+                // covered check -- skip it here to keep this loop's own
+                // assertion about `InvalidOperationId` precise.
+                continue;
+            }
+            let wire = wrap(SUPERVISOR_MAGIC, {
+                let mut body = vec![TAG_SV_REQ_QUERY];
+                push_bounded_string(&mut body, illegal, MAX_OPERATION_ID_LEN, "query.operation_id", true).unwrap();
+                body
+            })
+            .unwrap();
+            let mut s = FrameSplitter::new();
+            let err = feed_err(&mut s, &wire);
+            assert!(
+                matches!(&err, WireError::InvalidOperationId { field: "query.operation_id", value } if value == illegal),
+                "expected InvalidOperationId for {illegal:?}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn legal_operation_ids_cover_the_whole_allowed_charset() {
+        for legal in ["op-1", "op_2", "op.3", "ABC123", "a", "UUID-like-9f8e7d6c"] {
+            let wire = encode_supervisor_request(&SupervisorRequest::Query { operation_id: legal.to_string() }).unwrap();
+            let mut s = FrameSplitter::new();
+            assert_eq!(
+                feed_ok(&mut s, &wire),
+                vec![DecodedFrame::SupervisorRequest(SupervisorRequest::Query { operation_id: legal.to_string() })]
+            );
+        }
+    }
+
+    /// The digest input is the SAME canonical bytes `command`'s own wire
+    /// body carries `op` in — never `format!("{op:?}")` (Codex review
+    /// finding 6: "neither a digest nor a stable durable encoding across
+    /// builds").
+    #[test]
+    fn canonical_supervisor_op_bytes_is_stable_and_distinguishes_ops() {
+        let a = SupervisorOp::EndRun { reason: "r".into(), voyage: "v".into() };
+        let b = SupervisorOp::EndRun { reason: "r".into(), voyage: "v".into() };
+        let c = SupervisorOp::EndRun { reason: "different".into(), voyage: "v".into() };
+        let d = SupervisorOp::Stop;
+        assert_eq!(canonical_supervisor_op_bytes(&a).unwrap(), canonical_supervisor_op_bytes(&b).unwrap());
+        assert_ne!(canonical_supervisor_op_bytes(&a).unwrap(), canonical_supervisor_op_bytes(&c).unwrap());
+        assert_ne!(canonical_supervisor_op_bytes(&a).unwrap(), canonical_supervisor_op_bytes(&d).unwrap());
     }
 
     #[test]
