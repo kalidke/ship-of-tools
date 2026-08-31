@@ -14,6 +14,11 @@ pub mod capsule_win;
 // process-handle wrapper it returns. `pub`, matching `pipe_win`/
 // `capsule_win`: Windows-only (see the module's own `#![cfg(windows)]`).
 pub mod challenge;
+// ADR 0041 step 6, unit U2: the probe classifier (Stage A/B transition
+// table) `probe.rs` deliberately ships without — see that module's own
+// doc. `pub`, matching `challenge`/`probe`: Windows-only, and
+// `tests/supervisor_win.rs` needs to reach it.
+pub mod classify;
 pub mod claude;
 pub mod conpty;
 // ADR 0041 step 5, unit U3: the Windows named-pipe transport (server +
