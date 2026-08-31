@@ -1308,6 +1308,48 @@ impl Drop for PendingGuard<'_> {
     }
 }
 
+/// Send one `figure.get` request. Extracted from the `OutgoingReq::FigureGet`
+/// arm of `run_protocol`'s dispatch loop so the ordering that fixes a
+/// round-2 review finding is a) shared, not duplicated, and b) directly
+/// testable with a writer that fails, independent of the full connection/
+/// handshake machinery `run_protocol` otherwise requires.
+///
+/// `pending` is updated BEFORE the write below, not after: `write_frame`
+/// awaits a fallible `write_all`/`flush`, and on that error this function's
+/// `?` propagates out of `run_protocol` entirely — the exact case
+/// `PendingGuard`'s `Drop` exists to catch, but only for entries the map
+/// already contains. Inserting first is safe: a reply cannot arrive before
+/// the request even reaches the backend, and `id` is a freshly allocated,
+/// never-reused key (`take_id`), so there's no live entry this could
+/// collide with.
+async fn send_figure_get<W: AsyncWrite + Unpin>(
+    tx: &mut W,
+    pending: &mut HashMap<u64, PendingKind>,
+    id: u64,
+    url: String,
+    node_id: String,
+    workspace_id: Option<String>,
+) -> Result<()> {
+    pending.insert(id, PendingKind::FigureGet { url });
+    codec::write_frame(
+        tx,
+        &Frame::req(
+            id,
+            op::PREVIEW_GET,
+            serde_json::to_value(PreviewGetReq {
+                node_id,
+                workspace_id,
+                page: None,
+                fit_w: None,
+                fit_h: None,
+            })?,
+        ),
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Create the outgoing-request channel paired with the transport task. The
 /// sender lives on the GPU thread; the receiver gets handed to `spawn`. Both
 /// sides drop their handle on shutdown — that's how the writer half of the
@@ -2151,23 +2193,8 @@ where
                     }
                     OutgoingReq::FigureGet { url, node_id, workspace_id } => {
                         tracing::debug!(%url, %node_id, ?workspace_id, id, "→ figure.get (preview.get)");
-                        codec::write_frame(
-                            &mut tx,
-                            &Frame::req(
-                                id,
-                                op::PREVIEW_GET,
-                                serde_json::to_value(PreviewGetReq {
-                                    node_id,
-                                    workspace_id,
-                                    page: None,
-                                    fit_w: None,
-                                    fit_h: None,
-                                })?,
-                            ),
-                            None,
-                        )
-                        .await?;
-                        pending.insert(id, PendingKind::FigureGet { url });
+                        send_figure_get(&mut tx, &mut pending, id, url, node_id, workspace_id)
+                            .await?;
                     }
                     OutgoingReq::FunctionMethods { module, name, workspace_id } => {
                         tracing::debug!(%module, %name, ?workspace_id, id, "→ kernel.request function.methods");
@@ -3919,5 +3946,80 @@ mod tests {
             urls,
             vec!["figures/a.png".to_string(), "figures/b.png".to_string()]
         );
+    }
+
+    /// Minimal `AsyncWrite` that fails every write — simulates the
+    /// transport socket breaking mid-request without a real socket pair.
+    struct FailingWriter;
+
+    impl AsyncWrite for FailingWriter {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "simulated write failure",
+            )))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Round-2 review finding: `pending.insert` used to run AFTER the
+    /// fallible write, so a write failure stranded the request — the
+    /// guard's Drop found nothing to flush because the entry was never
+    /// added. This drives the REAL send path (`send_figure_get`, the same
+    /// function `run_protocol` calls) against a writer that always fails,
+    /// then drops the guard exactly as `run_protocol` does on that `?`
+    /// exit, and asserts the request still reaches `FigureGetFailed` —
+    /// proving the insert-before-write ordering, not a reimplementation
+    /// of it.
+    #[tokio::test]
+    async fn write_failure_flushes_via_guard_because_insert_precedes_the_write() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut writer = FailingWriter;
+        {
+            let mut guard = PendingGuard {
+                map: HashMap::new(),
+                evt_tx: &evt_tx,
+            };
+            let result = send_figure_get(
+                &mut writer,
+                &mut guard,
+                42,
+                "figures/never-sent.png".to_string(),
+                "files:a/b.md".to_string(),
+                None,
+            )
+            .await;
+            assert!(result.is_err(), "the simulated write must fail");
+            assert!(
+                guard.contains_key(&42),
+                "the entry must already be in the map when the write fails"
+            );
+            // `guard` drops here — the same `?` exit `run_protocol` takes.
+        }
+        let events: Vec<IncomingEvt> = evt_rx.try_iter().collect();
+        assert_eq!(
+            events.len(),
+            1,
+            "the stranded request must flush exactly once, got {events:?}"
+        );
+        assert!(matches!(
+            &events[0],
+            IncomingEvt::FigureGetFailed { url } if url == "figures/never-sent.png"
+        ));
     }
 }
