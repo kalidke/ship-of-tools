@@ -121,61 +121,19 @@ printf '%s\nrepo=%s\nroot=%s\n' "$NAME" "$REPO" "$PROJECT_ROOT" > "$SELF_FILE"
 # so an existing inbox is never truncated.
 : >> "$INBOX_DIR/$NAME.jsonl"
 
-# Sweep LEGACY (pre-root=, pre-provenance) self-files: one-line files that
-# predate `repo=` entirely, AND two-line `repo=`-only files that predate
-# `root=` (Codex review F1: comm-context's own guard now discards these on
-# READ regardless, but this sweep is what actually UPGRADES a rightful
-# owner's file to full v2 — without it, a two-line file would sit there
-# failing the read-side guard on every single read forever, "permanently
-# skipped as already migrated" as the review put it, instead of getting
-# fixed). A stale legacy file's owner is gone — it never upgrades itself,
-# so each one is a mine: any fresh session whose pane id happens to match
-# inherits that identity (three sessions hit this in one day once pane ids
-# recycled after a tmux server restart — wrong Step-0 verdicts, one session
-# SENDING as another's handle). Ground truth is the REGISTRY row, which its
-# owner's every join refreshes with the real host/pane: a legacy file whose
-# name's row points at this exact file is the rightful owner's — upgrade it
-# to v2 in place (with the row's repo, and root when the row has one — a
-# row that ALSO predates root= leaves the file at two lines, re-swept next
-# time, until that row's own session rejoins and records one); any other
-# legacy file (no row, or the row lives at another pane) is stale — delete
-# it. Full v2 (three lines, root= present) files are never touched; the
-# whole sweep runs under the registry lock and is idempotent, so concurrent
-# joins are safe. Runs on every join — after the first sweep per install
-# it's a no-op scan.
-sweep_legacy_selffiles() {
-    local rows f key name row_key row_repo row_root migrated=0 removed=0
-    rows="$(jq -r '.agents | to_entries[]
-        | [.key, (.value.host // ""), ((.value.pane_id // "") | ltrimstr("%")), (.value.repo // ""), (.value.root // "")]
-        | @tsv' "$REGISTRY" 2>/dev/null)" || return 0
-    for f in "$SELF_DIR"/*.txt; do
-        [ -f "$f" ] || continue
-        [ "$(wc -l < "$f")" -ge 3 ] && continue   # full v2 (has root=) — not ours to touch
-        key="$(basename "$f" .txt)"
-        name="$(sed -n '1p' "$f")"
-        row_key=""; row_repo=""; row_root=""
-        while IFS=$'\t' read -r rname rhost rpane rrepo rroot; do
-            [ "$rname" = "$name" ] || continue
-            row_key="${rhost}__${rpane:-nopane}"; row_repo="$rrepo"; row_root="$rroot"; break
-        done <<< "$rows"
-        if [ -n "$row_key" ] && [ "$row_key" = "$key" ]; then
-            if [ -n "$row_root" ]; then
-                printf '%s\nrepo=%s\nroot=%s\n' "$name" "$row_repo" "$row_root" > "$f"
-            else
-                printf '%s\nrepo=%s\n' "$name" "$row_repo" > "$f"
-            fi
-            migrated=$((migrated + 1))
-        else
-            rm -f "$f"
-            removed=$((removed + 1))
-        fi
-    done
-    [ $((migrated + removed)) -gt 0 ] &&
-        echo "comm-join: legacy self-file sweep — upgraded $migrated rightful identities, removed $removed stale ones" >&2
-    return 0
-}
-with_lock sweep_legacy_selffiles
-
+# No legacy self-file sweep (Codex review PR #148 round 2, simplicity
+# audit — deleted ~50 lines that used to live here). It's redundant, not
+# merely simplifiable: comm-context.sh's read-side guard already rejects
+# ANY self-file with no (or a mismatched) `root=` line, unconditionally,
+# on every single read — a legacy file is therefore ALREADY inert; it
+# grants no trust whether or not anything ever sweeps it. And a rightful
+# owner's self-file self-heals the moment that owner rejoins: this
+# script's own write, just above, always emits the full v2 three-line
+# form. The sweep's only remaining job was pure disk hygiene (deleting
+# ABANDONED files nobody will ever rejoin), bought at the cost of a
+# directory glob + a stat/read per file, done EAGERLY on every join, while
+# holding the single global registry lock — the wrong trade for a
+# non-safety-load-bearing cleanup.
 have="$(jq -r '.protocol_version // 0' "$REGISTRY")"
 if [ "$have" != "$PROTOCOL_VERSION" ]; then
     echo "WARNING: registry protocol v$have != client v$PROTOCOL_VERSION — run ShipTools.update_comm() on all machines" >&2
