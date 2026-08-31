@@ -26,8 +26,18 @@ REPO="$(basename "$RAW_ROOT")"
 # a symlinked leaf directory can't shift existing repo-slug behavior.
 PROJECT_ROOT="$(sot_canonical_path "$RAW_ROOT")"
 
-PANE_SAFE="${PANE_ID//%/}"
-SELF_FILE="$SELF_DIR/${HOST}__${PANE_SAFE:-nopane}.txt"
+# SOT_COMM_SELF_FILE lets a caller pin the self-file path directly, bypassing
+# the HOST/PANE_ID keying below — a test harness has no real tmux pane to key
+# on (a fake $TMUX_PANE still fails the `tmux display-message` call and
+# collapses to the same "nopane" key for every simulated session), so this is
+# the seam that lets it give each simulated session its own identity slot.
+# Unset in normal use; mirrors the existing $SOT_COMM_HOME override.
+if [ -n "${SOT_COMM_SELF_FILE:-}" ]; then
+    SELF_FILE="$SOT_COMM_SELF_FILE"
+else
+    PANE_SAFE="${PANE_ID//%/}"
+    SELF_FILE="$SELF_DIR/${HOST}__${PANE_SAFE:-nopane}.txt"
+fi
 # The self-file is keyed by PANE ID, and tmux REUSES pane ids (%1, %2, …)
 # after a server restart — so a fresh session in a recycled pane can inherit
 # a DIFFERENT session's identity. That poisons everything downstream: the
