@@ -14,9 +14,12 @@
 #                 when omitted, the handle is DERIVED from the repo-path
 #                 basename + host and auto-disambiguated against the registry
 #                 (same algorithm as a plain comm-join.sh — see
-#                 docs/adr/0028-remote-comm-autoconnect.md). The legacy
-#                 two-positional form (`<name> <repo-path>`) still works and
-#                 is equivalent to passing --name.
+#                 docs/adr/0028-remote-comm-autoconnect.md), in FRESH mode: an
+#                 existing row for the resolved name is a REFUSAL, never a
+#                 reclaim — comm-spawn creates a NEW agent, so it must not
+#                 silently absorb an existing one even if it shares a project
+#                 root. The legacy two-positional form (`<name> <repo-path>`)
+#                 still works and is equivalent to passing --name.
 #   --label       FE workspace label (default: basename of repo-path); guarded to
 #                 the repo basename so a session stays findable next to its repo.
 #   --display-label  FE label that deliberately DIFFERS from the repo basename
@@ -30,6 +33,27 @@
 #
 # Env: SOT_COMM_SPAWN_WAIT (boot wait, default 6s)
 #      SOT_COMM_LAUNCH (default 'claude --dangerously-skip-permissions')
+#
+# Rollback contract (Codex review F9): once a provisional registry row
+# exists (claim_derived_handle for a derived name, or the explicit-name
+# registry_put below), an EXIT trap removes it again on any SYNCHRONOUS
+# failure this script itself detects from there on — nc missing, the
+# daemon endpoint not resolving, the new same-label refusal (F5), a
+# rejected/failed workspace.create, tmux session verification failing. No
+# phantom registry rows from a spawn that never actually stood up.
+#
+# NOT covered, and not coverable from here: the daemon boots claude
+# ASYNCHRONOUSLY after workspace.create already returned success (a
+# throwaway boot-pty, ADR 0023 §3) — if THAT fails or hangs after this
+# script has already reported success and exited, the provisional row
+# (tmux:"" — never updated, because the real /sot-session-start join never
+# ran) is left behind, and since a derived NAME generally differs from the
+# workspace slug (it carries "-HOST"; the slug doesn't), `comm-despawn.sh`
+# cannot recover the slug from the handle to clean up the orphaned
+# workspace/TOML either. This is a real, currently-unfixed gap for that one
+# failure mode; there is no synchronous signal in this script's control
+# flow to hook a rollback to. `comm-despawn.sh <slug-or-label>` (not the
+# handle) still reaches it manually.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
@@ -86,7 +110,13 @@ REPO_PATH="${REPO_PATH/#\~/$HOME}"
 # Canonical root — recorded on the provisional registry row below regardless
 # of whether NAME ends up derived or explicit (ADR 0028 addendum point 1:
 # every claimed handle records its root), and reused for derivation itself.
-CANON_ROOT="$(sot_canonical_path "$REPO_PATH")"
+# Canonicalized ONCE, here, before any claim/lock (Codex review F8) —
+# sot_canonical_path fails loudly rather than ever handing back a relative
+# path, and that failure must not be swallowed.
+if ! CANON_ROOT="$(sot_canonical_path "$REPO_PATH")"; then
+    echo "ERROR: could not establish a canonical project root for '$REPO_PATH' — see reason above" >&2
+    exit 1
+fi
 [ -z "$LABEL" ] && LABEL="$(basename "$REPO_PATH")"
 
 # Sessions are named after the REPO (maintainer decision, 2026-06-12): the label drives the
@@ -98,6 +128,21 @@ CANON_ROOT="$(sot_canonical_path "$REPO_PATH")"
 # --task / --expertise, never in the label.
 REPO_BASE="$(basename "$REPO_PATH")"
 REPO_NAME="$REPO_BASE"
+
+# Validate an EXPLICITLY user-supplied --label BEFORE any registry claim
+# (Codex review F9): this format check depends only on args already parsed
+# above, never on NAME/derivation — there is no reason to defer it past a
+# point where a provisional row could exist, and an invalid --label used
+# to write one anyway (claim first, validate after). --display-label
+# bypasses this guard entirely (deliberately differing label), same as
+# before; an AUTO-composed one (from a derivation qualifier, set below
+# once NAME is known) is by construction always "<repo-base>-<qualifier>"
+# and always satisfies the pattern, so it needs no separate re-check.
+if [ -z "$DISPLAY_LABEL" ] && [ "$LABEL" != "$REPO_BASE" ] && [[ "$LABEL" != "$REPO_BASE"-* ]]; then
+    echo "ERROR: --label '$LABEL' must be the repo name '$REPO_BASE' (or '${REPO_BASE}-<suffix>' for a second workspace on the same repo)." >&2
+    echo "       Sessions are named after the repo; put task identity in --task (or --display-label for deliberate grouping)." >&2
+    exit 1
+fi
 
 # The provisional registry row (see the "addressable FROM SPAWN TIME" note
 # below) — built here, independent of NAME, so a DERIVED name can be
@@ -112,34 +157,44 @@ PROV_OBJ="$(jq -n --arg host "$HOST" --arg repo "$REPO_BASE" --arg root "$CANON_
 
 # NAME omitted -> derive it AND write the provisional row atomically, same
 # algorithm + same locked-claim path as a plain comm-join.sh (ADR 0028
-# addendum; comm-lib.sh: sot_derive_handle / claim_derived_handle). When the
-# derivation had to qualify past the bare <repo>-<host> tier, also give the
-# new FE workspace a qualified --display-label (<basename>-<qualifier>) so
-# the session-strip rows for the two same-named repos stay visually
-# distinguishable — unless the caller already gave an explicit
-# --display-label, which wins.
+# addendum; comm-lib.sh: sot_derive_handle / claim_derived_handle) — but in
+# FRESH mode (Codex review F3): an existing row for the resolved candidate,
+# even one sharing my own root, is a REFUSAL at that tier, not a reclaim.
+# comm-spawn creates a NEW agent; silently absorbing an existing row would
+# erase a LIVE agent's tmux/pane/status fields. `set -e` makes an outright
+# derivation failure (every tier already taken by something else; Codex
+# review F6) abort here with sot_derive_handle's own clear stderr reason.
+#
+# When the derivation had to qualify past the bare <repo>-<host> tier, also
+# give the new FE workspace a qualified --display-label
+# (<basename>-<qualifier>) so the session-strip rows for the two same-named
+# repos stay visually distinguishable — unless the caller already gave an
+# explicit --display-label, which wins. AUTO_DISPLAY_LABEL tracks whether
+# THIS script composed it (vs. the caller), because only a composed one
+# needs the same-workspace-label refusal below (Codex review F5) — an
+# explicit --display-label is the caller's own informed choice.
 DERIVED_CLAIM=false
+AUTO_DISPLAY_LABEL=false
 if [ -z "$NAME" ]; then
     DERIVED_CLAIM=true
-    claim_derived_handle "$CANON_ROOT" "$HOST" "$PROV_OBJ"
+    claim_derived_handle fresh "$CANON_ROOT" "$HOST" "$PROV_OBJ"
     NAME="$CLAIMED_NAME"
     if [ -n "$CLAIMED_QUALIFIER" ] && [ -z "$DISPLAY_LABEL" ]; then
         DISPLAY_LABEL="${REPO_BASE}-${CLAIMED_QUALIFIER}"
+        AUTO_DISPLAY_LABEL=true
     fi
 fi
 
 if [ -n "$DISPLAY_LABEL" ]; then
     # Explicit FE label that deliberately differs from the repo basename — e.g.
-    # the /worktree tool's '.SoT-wt-<short>' grouping prefix. It becomes the
-    # workspace label (driving slug + sort + tmux name) while the comm HANDLE
-    # ($NAME) stays repo-based, so status/clean/sync still group by repo. Bypasses
-    # the repo-base guard below, which exists to stop *task*-named labels (e.g.
-    # 'edge-classify') from hiding a session — not structured grouping labels.
+    # the /worktree tool's '.SoT-wt-<short>' grouping prefix, or the
+    # qualifier-composed one just above. It becomes the workspace label
+    # (driving slug + sort + tmux name) while the comm HANDLE ($NAME) stays
+    # repo-based, so status/clean/sync still group by repo. Bypasses the
+    # repo-base guard (already checked above, before any claim) — that
+    # guard exists to stop *task*-named labels (e.g. 'edge-classify') from
+    # hiding a session, not structured grouping labels.
     LABEL="$DISPLAY_LABEL"
-elif [ "$LABEL" != "$REPO_BASE" ] && [[ "$LABEL" != "$REPO_BASE"-* ]]; then
-    echo "ERROR: --label '$LABEL' must be the repo name '$REPO_BASE' (or '${REPO_BASE}-<suffix>' for a second workspace on the same repo)." >&2
-    echo "       Sessions are named after the repo; put task identity in --task (or --display-label for deliberate grouping)." >&2
-    exit 1
 fi
 
 # A DERIVED name was already atomically claimed above (registry row + all)
@@ -157,10 +212,20 @@ fi
 # ABSOLUTE path because the daemon-created tmux session runs a login shell
 # whose PATH may not include ~/.local/bin — a bare `ccb` silently falls
 # through to bash. SOT_COMM_LAUNCH remains the escape hatch.
+#
+# %q-quoted (Codex review F4): this string is later TYPED into a shell pane
+# via `tmux send-keys` (the --no-workspace path below) and re-parsed by
+# that shell. NAME reaching here has been through sot_sanitize_component
+# when derived (safe already), but an EXPLICIT --name is verbatim by
+# contract and could contain shell metacharacters — unquoted interpolation
+# into a string that gets typed as keystrokes is a command-injection vector
+# regardless of where NAME came from, so this is fixed unconditionally.
 if [ -n "${SOT_COMM_LAUNCH:-}" ]; then
     LAUNCH="$SOT_COMM_LAUNCH"
 else
-    LAUNCH="SOT_COMM_NAME=${NAME}${EXPERTISE:+ SOT_COMM_EXPERTISE=\"${EXPERTISE}\"} $HOME/.local/bin/ccb"
+    LAUNCH="SOT_COMM_NAME=$(printf '%q' "$NAME")"
+    [ -n "$EXPERTISE" ] && LAUNCH="$LAUNCH SOT_COMM_EXPERTISE=$(printf '%q' "$EXPERTISE")"
+    LAUNCH="$LAUNCH $HOME/.local/bin/ccb"
 fi
 WAIT="${SOT_COMM_SPAWN_WAIT:-6}"
 BIN="$COMM_HOME/bin"
@@ -214,6 +279,20 @@ if [ "$DERIVED_CLAIM" = false ]; then
 fi
 : >> "$INBOX_DIR/$NAME.jsonl"
 
+# Rollback (Codex review F9): from here on, NAME definitely has a
+# provisional row (either path above). An EXIT trap removes it on any
+# SYNCHRONOUS failure below, so `set -e` can't leave a phantom registry
+# entry the way a caller's `set -e` could leak with_lock's own lock (same
+# trap-based fix, same reasoning) — cleared once the spawn actually
+# succeeds (SPAWN_SUCCEEDED, set below), never fired after that point.
+SPAWN_SUCCEEDED=false
+trap '
+    if [ "$SPAWN_SUCCEEDED" != true ]; then
+        with_lock registry_del "$NAME" 2>/dev/null || true
+        echo "comm-spawn: rolled back provisional registry row for @$NAME after a failed spawn" >&2
+    fi
+' EXIT
+
 if [ "$NO_WS" = true ]; then
     SESSION="$NAME"
     if tmux -S "$SOT_TMUX_SOCK" has-session -t "$SESSION" 2>/dev/null; then
@@ -228,6 +307,29 @@ else
     fi
     if ! ENDPOINT="$(resolve_endpoint)"; then
         echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT, or use --no-workspace." >&2; exit 1
+    fi
+    # Same-label refusal (Codex review F5): an auto-composed display label
+    # (base-qualifier) must not be able to collide with an EXISTING
+    # workspace's label — e.g. a worktree's '<repo>-wt-<short>' grouping
+    # label happening to equal our qualifier-composed one. workspace.create
+    # itself gives no usable signal for this: same-slug is, BY DESIGN, an
+    # id-preserving metadata refresh (`Workspaces::insert`,
+    # `rust/backend/src/workspaces.rs`) that boot/spawn flows rely on for
+    # idempotence, and the duplicate-root gate explicitly treats a same-slug
+    # match as invisible (`find_other_workspace_with_root`'s doc comment,
+    # `rust/backend/src/handlers.rs`) — a colliding create would silently
+    # rebind the existing workspace's project_root/tmux_session rather than
+    # erroring. So this is a pre-check, not a reply-reaction: list existing
+    # workspaces and refuse before ever calling workspace.create if our
+    # composed label is already someone else's. Only for an AUTO-composed
+    # label — an explicit --display-label is the caller's own informed
+    # choice and keeps today's behavior.
+    if [ "$AUTO_DISPLAY_LABEL" = true ]; then
+        LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list || true)"
+        if printf '%s' "$LIST" | jq -e --arg l "$LABEL" '.payload.workspaces[]? | select(.label==$l)' >/dev/null 2>&1; then
+            echo "ERROR: the auto-derived display label '$LABEL' already names an existing workspace — refusing to risk rebinding it. Pass --name or --display-label to pick a distinct one." >&2
+            exit 1
+        fi
     fi
     # task:"" — no brief on the wire; the FE has nothing to paste on attach. Any
     # --task is sent below as an ordinary durable comm message instead.
@@ -248,6 +350,13 @@ else
     echo "Created workspace '$LABEL' (slug=$SLUG, tmux=$TARGET) via $ENDPOINT"
     tmux -S "$SOT_TMUX_SOCK" has-session -t "$TARGET" 2>/dev/null || { echo "ERROR: daemon reported $TARGET but tmux session is missing" >&2; exit 1; }
 fi
+
+# Past this point the spawn is considered to have SUCCEEDED (the tmux
+# session/workspace genuinely exists) — the rollback trap above stands
+# down. Anything after this is best-effort reporting/delivery with its own
+# failure handling (WARN, not exit), matching the async-boot gap documented
+# at the top of this file: nothing past here can roll back a claim anyway.
+SPAWN_SUCCEEDED=true
 
 if [ "$NO_WS" = true ]; then
     # Headless / no daemon: launch ccb directly. No brief paste — the agent reads
