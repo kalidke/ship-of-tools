@@ -39,8 +39,8 @@
 #![cfg(windows)]
 
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
-use windows_sys::Win32::System::Threading::{CreateMutexW, OpenMutexW, ReleaseMutex, WaitForSingleObject};
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, HANDLE, WAIT_ABANDONED_0, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::System::Threading::{CreateMutexW, MUTEX_MODIFY_STATE, OpenMutexW, ReleaseMutex, WaitForSingleObject};
 
 /// The standard `SYNCHRONIZE` access right (WinNT.h) — the one
 /// `OpenMutexW` needs here. Inlined rather than pulled from
@@ -123,9 +123,16 @@ pub fn create(name: &str) -> std::io::Result<Lease> {
 /// ever passed" (a caller that was never GIVEN a lease name in the first
 /// place is a different, `None`-shaped case this module has no opinion
 /// on — see `voyage::VoyageStore::open_prepared`'s own `Option`).
+///
+/// Opened with `SYNCHRONIZE | MUTEX_MODIFY_STATE`, not `SYNCHRONIZE`
+/// alone: [`LeaseCheck::is_broken`] must call `ReleaseMutex` on the rare
+/// accidental-ownership outcomes (see its own table), and `ReleaseMutex`
+/// needs `MUTEX_MODIFY_STATE` — a handle opened with only `SYNCHRONIZE`
+/// can wait on the mutex but silently fails to release it, since that
+/// call's own `Err` had nowhere to go (Codex review round 1, finding 9).
 pub fn open(name: &str) -> std::io::Result<LeaseCheck> {
     let wide = wide_null(name);
-    let raw = unsafe { OpenMutexW(SYNCHRONIZE, 0, wide.as_ptr()) };
+    let raw = unsafe { OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, 0, wide.as_ptr()) };
     let err = std::io::Error::last_os_error();
     if raw.is_null() {
         return Err(err);
@@ -155,9 +162,18 @@ impl LeaseCheck {
     /// | outcome            | meaning                                                                 | `is_broken` |
     /// |--------------------|--------------------------------------------------------------------------|-------------|
     /// | `WAIT_TIMEOUT`     | still owned by a live thread — a zero-length wait times out rather than completing | `false` |
-    /// | `WAIT_ABANDONED_0` | the owning thread terminated without releasing — the death signal itself | `true` |
+    /// | `WAIT_ABANDONED_0` | the owning thread terminated without releasing — the death signal itself, AND this call itself now OWNS the mutex (Windows grants ownership to the thread that observes the abandonment). Released immediately, same as the row below, so a LATER independent checker (a different handle, thread, or process) still observes the true state instead of this checker's own now-held ownership masking it as `WAIT_TIMEOUT`. | `true` |
     /// | `WAIT_OBJECT_0`    | this call itself just ACQUIRED a mutex nobody currently holds — UNREACHABLE in the real cross-process topology (the supervisor holds it, unreleased, for its whole process life); only reachable via a caller checking from the SAME THREAD that also owns it, since Windows mutexes are recursively acquirable per-thread — a caller bug, never a supervisor-death signal. Released immediately (`ReleaseMutex`, never left extra-owned by the mere act of checking) and reported broken: an unexpected acquisition is not proof of a live supervisor. | `true` |
     /// | `WAIT_FAILED`      | the OS call itself failed                                                | `true` |
+    ///
+    /// Both ownership-granting outcomes (`WAIT_ABANDONED_0` and
+    /// `WAIT_OBJECT_0`) release before returning, for the same reason:
+    /// this is a CHECK, not a claim — leaving the mutex held by the
+    /// checker's own thread would corrupt every subsequent check on this
+    /// same lease, including the same checker's own next call. Release
+    /// requires `MUTEX_MODIFY_STATE`, which [`open`] now requests
+    /// alongside `SYNCHRONIZE` (Codex review round 1, finding 9: a
+    /// `SYNCHRONIZE`-only handle makes `ReleaseMutex` silently fail).
     ///
     /// **Cross-context contract**: correct only when called from a thread
     /// that never itself acquires this same mutex — guaranteed by
@@ -169,16 +185,16 @@ impl LeaseCheck {
         // SAFETY: `raw` is this struct's own live, owned handle.
         match unsafe { WaitForSingleObject(raw, 0) } {
             WAIT_TIMEOUT => false,
-            WAIT_OBJECT_0 => {
-                // Never leave the mutex extra-owned by this accidental
-                // acquisition (see the table above) — release, then
-                // report broken.
+            WAIT_OBJECT_0 | WAIT_ABANDONED_0 => {
+                // Never leave the mutex extra-owned by this checker's own
+                // accidental/abandonment-granted acquisition (see the
+                // table above) — release, then report broken.
                 unsafe {
                     ReleaseMutex(raw);
                 }
                 true
             }
-            _ => true, // WAIT_ABANDONED_0, WAIT_FAILED, or anything else
+            _ => true, // WAIT_FAILED, or anything else
         }
     }
 }
