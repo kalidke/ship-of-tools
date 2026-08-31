@@ -95,3 +95,64 @@ and keep setting `SOT_RELAY_ENDPOINT` inline in git-bash.
   as a restart loop in `systemctl --user status`.
 - `scripts/restart-backend.sh` now restarts the systemd `sotd` when the unit is
   enabled; the legacy `--check` staleness report is unchanged.
+
+## Addendum: derived-handle disambiguation ("derived vs explicit")
+
+**Problem.** A session's default sot-comm handle is `<repo-basename>-<host>`
+(`comm-join.sh`, `comm-spawn.sh`). Two *different* projects that happen to
+share a basename — e.g. `courseA/instructor-materials` and
+`courseB/instructor-materials` — derive the identical default handle. The
+registry has no collision check, so the second join silently overwrote the
+first's row: both sessions ended up sharing one inbox, and routing/status
+aliased two unrelated sessions onto one identity.
+
+**The contract: derived names are smart, explicit names are verbatim.**
+Every claimed handle — derived or explicit — records its canonical project
+root on the registry row (`"root"`) and on the v2 self-file (`root=` line).
+This is additive: a row or self-file without `root` predates the feature
+and reads back as *unknown root*, which the algorithm below treats as a
+collision, not a free pass.
+
+Only a name that comes from **derivation** (nothing else was supplied) runs
+the disambiguation algorithm. A name from `--name`, `$SOT_COMM_NAME`, or an
+already-joined self-file identity is always used **verbatim** — no
+escalation, no rewriting, same overwrite-on-collision behavior as before.
+
+The derived-name algorithm, checked against the registry's current state
+(each tier "claim if free, or already mine — else escalate"):
+
+1. `<basename>-<host>` — claim if unclaimed, or if the existing row's root
+   already equals mine (today's same-root reclaim/rejoin, unchanged).
+2. Else `<basename>-<parentdir>-<host>` — `parentdir` is the basename of
+   the project root's *parent* directory (human-meaningful: the
+   course/collection/workspace name), same free-or-mine check. Example:
+   `courseB/instructor-materials` becomes `instructor-materials-courseB-<host>`.
+3. Else `<basename>-<hash6>-<host>` — `hash6` is the first 6 hex characters
+   of `sha256(canonical root path)`, claimed unconditionally. Reached only
+   when two *different* projects also collide on the same parent-directory
+   name (e.g. two course repos both nested one level under a directory
+   literally named `materials`).
+
+Each escalation prints one line to stderr naming the handle that was
+already held, by which root, and what was joined instead; the final
+`Joined sot-comm as @<handle>` line stays the authoritative confirmation.
+
+**Liveness is deliberately not consulted.** The comparison is root-only —
+a stale registry row (its session long gone) still holds its claim until
+an existing cleanup path removes it. This keeps the rule one-dimensional
+and prevents a handle from flip-flopping between two projects depending on
+which one happens to have a live session at any given moment.
+
+**`comm-spawn.sh`'s `<name>` is optional.** Omitted, it derives and
+disambiguates the same way (one positional argument = `<repo-path>`; the
+legacy two-positional `<name> <repo-path>` form, and `--name`, remain
+verbatim). When derivation had to qualify past the bare tier, the spawn
+also passes a qualified `--display-label` (`<basename>-<qualifier>`) so
+the two session-strip rows in the frontend stay visually distinguishable.
+
+**Implementation.** One shared helper, `sot_derive_handle` (`comm-lib.sh`),
+is the single home for the algorithm; `comm-join.sh` and `comm-spawn.sh`
+both call it rather than deriving `<repo>-<host>` themselves. Tests:
+`comm/core/tests/test-join-disambiguation.sh` (hermetic — a temp
+`$SOT_COMM_HOME` and a temp self-file per simulated session; never touches
+a real install).
