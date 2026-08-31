@@ -216,23 +216,32 @@ ensure_home() {
 # bash has one EXIT trap per shell, not a stack, and a caller may already
 # have its own (e.g. comm-spawn.sh's provisional-row rollback) active
 # around a with_lock call — blindly clearing it here would silently
-# disarm the caller's cleanup for the rest of the script. Residual gap:
-# if "$@" itself triggers a `set -e` abort (the scenario this trap-based
-# release exists for), everything after "$@" in THIS function — including
-# the restore — is skipped too, same as the plain `rmdir` used to be; only
-# the trap active AT THAT INSTANT (this function's own lock-release one)
-# fires. The lock still always comes off; a caller with its own EXIT trap
-# whose cleanup needs to run in that exact combination would not currently
-# see it. No caller in this codebase relies on that today (checked: none
-# calls with_lock from inside a window where its own EXIT trap is armed
-# and the callee can fail via `set -e`) — flagged here for whoever adds one.
+# disarm the caller's cleanup for the rest of the script. This restore now
+# runs on EVERY path, including a directly-failing "$@" (Codex review PR
+# #148 round 2, finding 4): a bare `"$@"` statement under the caller's
+# `set -e` used to abort the WHOLE SCRIPT right there, skipping every line
+# below it in this function — the lock still came off (its own release
+# trap fired on that abort), but the restore of the CALLER's prior trap
+# never ran, silently losing it for the rest of the script. Capturing the
+# callee's status via `if "$@"; then :; else rc=$?; fi` — the standard
+# idiom for "run this and don't let -e kill us on failure" — means release
+# and restore always execute before this function returns, on every path.
 SOT_LOCK_MAX_TRIES=200   # ~10s at the 0.05s poll below
 with_lock() {
     local tries=0
     # Test seam (F10): let a test PROVE a background waiter has reached its
     # first lock attempt, instead of racing it with a sleep. Touched once,
     # right before that attempt; unset (the default) this is a no-op.
-    [ -n "${SOT_COMM_TEST_LOCK_BARRIER:-}" ] && : > "$SOT_COMM_TEST_LOCK_BARRIER"
+    #
+    # `touch --`, NOT `: > FILE` (Codex review round 2, finding 6): a bare
+    # `>` redirect TRUNCATES whatever already sits at that path — if this
+    # var ever leaked into a production environment pointed at a real
+    # file, every with_lock call would zero it. `touch` only updates/
+    # creates, and unlike `>` it doesn't attempt to OPEN-FOR-WRITE (which
+    # would block forever against a FIFO with no reader, right here in the
+    # lock's own hot path) — and `|| true` keeps a bad path from tripping
+    # this function's own `set -e`-sensitive callers.
+    [ -n "${SOT_COMM_TEST_LOCK_BARRIER:-}" ] && { touch -- "$SOT_COMM_TEST_LOCK_BARRIER" 2>/dev/null || true; }
     while ! mkdir "$LOCKDIR" 2>/dev/null; do
         tries=$((tries + 1))
         if [ "$tries" -gt "$SOT_LOCK_MAX_TRIES" ]; then
@@ -246,10 +255,14 @@ with_lock() {
     done
     # Lock acquired — guarantee release via EXIT trap (see header comment),
     # preserving whatever EXIT trap the caller already had.
-    local prev_trap; prev_trap="$(trap -p EXIT)"
+    local prev_trap rc=0
+    prev_trap="$(trap -p EXIT)"
     trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT
-    "$@"
-    local rc=$?
+    if "$@"; then
+        :
+    else
+        rc=$?
+    fi
     rmdir "$LOCKDIR" 2>/dev/null || true
     if [ -n "$prev_trap" ]; then
         eval "$prev_trap"
@@ -280,6 +293,35 @@ registry_touch() {  # name — bump last_seen if present
     jq --arg n "$1" --arg t "$ts" \
         'if .agents[$n] then .agents[$n].last_seen = $t else . end' \
         "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+}
+
+# registry_del_if_provisional NAME WANT_ROOT WANT_NONCE — conditionally
+# delete NAME's row, but ONLY if it's STILL provably the exact provisional
+# row identified by WANT_ROOT + WANT_NONCE (status "spawning" is implied —
+# a provisional row is always spawning; a real join or an explicit
+# claimant always overwrites both root and status/removes the nonce as it
+# writes a normal row). Call under with_lock. Exists so a spawn's rollback
+# can never delete a NEWER row that has since replaced the provisional one
+# (Codex review PR #148 round 2, finding 1 — reproduced by the reviewer:
+# an unconditional `registry_del "$NAME"` deleted a live `status:"idle"`
+# row the child had already written for real, turning a successful join
+# into `null`). Returns:
+#   0 — deleted (it was still ours)
+#   1 — deletion itself failed (registry_del's jq/mv step)
+#   2 — NOT deleted: the row no longer matches what was claimed (or
+#       WANT_NONCE/NAME is empty) — left untouched; this is the common,
+#       expected outcome once a real join has happened, not an error
+registry_del_if_provisional() {
+    local name="$1" want_root="$2" want_nonce="$3"
+    local cur_status cur_root cur_nonce
+    [ -n "$name" ] && [ -n "$want_nonce" ] || return 2
+    cur_status="$(jq -r --arg n "$name" '.agents[$n].status // ""' "$REGISTRY" 2>/dev/null)"
+    cur_root="$(jq -r --arg n "$name" '.agents[$n].root // ""' "$REGISTRY" 2>/dev/null)"
+    cur_nonce="$(jq -r --arg n "$name" '.agents[$n].nonce // ""' "$REGISTRY" 2>/dev/null)"
+    if [ "$cur_status" != "spawning" ] || [ "$cur_root" != "$want_root" ] || [ "$cur_nonce" != "$want_nonce" ]; then
+        return 2
+    fi
+    registry_del "$name"
 }
 
 # --- derived-handle disambiguation (ADR 0028 addendum: "derived vs
@@ -321,17 +363,73 @@ sot_canonical_path() {
 # hash6 — installing sha256sum later would silently change that root's
 # tier-3 handle. Fail loudly instead; the caller surfaces this as a hard
 # error asking for an explicit --name.
+#
+# Both the pipeline's exit status AND the shape of its output are checked
+# (Codex review PR #148 round 2, finding 5): the previous version ran
+# `return 0` unconditionally after each pipeline, so an INSTALLED-but-
+# FAILING sha256sum (confirmed: one that exits 23) still "succeeded" with
+# an EMPTY hash, producing a `<base>--<host>` handle instead of a loud
+# failure. `rc=$?` right after the pipeline reflects its real exit status
+# under this shell's `pipefail` (both callers set it); the regex is the
+# stronger, direct check — it also catches a tool that exits 0 but emits
+# garbage, which an exit-code check alone would miss.
 sot_hash6() {
+    local out rc
     if command -v sha256sum >/dev/null 2>&1; then
-        printf '%s' "$1" | sha256sum | cut -c1-6
-        return 0
+        out="$(printf '%s' "$1" | sha256sum | cut -c1-6)"; rc=$?
+        if [ "$rc" -eq 0 ] && [[ "$out" =~ ^[0-9a-f]{6}$ ]]; then
+            printf '%s\n' "$out"
+            return 0
+        fi
     fi
     if command -v shasum >/dev/null 2>&1; then
-        printf '%s' "$1" | shasum -a 256 | cut -c1-6
-        return 0
+        out="$(printf '%s' "$1" | shasum -a 256 | cut -c1-6)"; rc=$?
+        if [ "$rc" -eq 0 ] && [[ "$out" =~ ^[0-9a-f]{6}$ ]]; then
+            printf '%s\n' "$out"
+            return 0
+        fi
     fi
-    echo "sot_hash6: no sha256sum or shasum available — cannot compute a stable tier-3 handle qualifier" >&2
+    echo "sot_hash6: no working sha256sum/shasum produced a valid 6-hex-character digest — cannot compute a stable tier-3 handle qualifier" >&2
     return 1
+}
+
+# sot_slug LABEL — bash mirror of rust/backend/src/paths.rs::slug (Codex
+# review PR #148 round 2, finding 3): lowercase; '.' -> '_' BEFORE the
+# keep-check; a RUN of characters outside [a-z0-9_-] collapses to a single
+# '-' (a LITERAL '-'/'_'/alnum in the input is pushed as-is and never
+# collapsed, even if repeated — matching Rust's keep/else branch split
+# exactly, not a blanket dash-collapse); trailing '-' trimmed; empty ->
+# "default". Verified against every example in that function's own doc
+# comment (MyPackage.jl -> mypackage_jl, "Foo Bar" -> foo-bar, /abs/path
+# -> abs-path, "  " -> default) plus literal-repeated-dash and leading-
+# junk cases. Needed because workspace.create's same-slug path is an
+# intentional metadata-refresh idempotence, not an error — two labels
+# that only differ by case, or by a dot vs underscore, resolve to the
+# SAME workspace and must be caught as a collision too, not just a
+# byte-identical label match.
+sot_slug() {
+    local label="$1" out="" last_dash=false i len ch c
+    len=${#label}
+    for (( i = 0; i < len; i++ )); do
+        ch="${label:i:1}"
+        c="$(printf '%s' "$ch" | tr '[:upper:]' '[:lower:]')"
+        [ "$c" = "." ] && c="_"
+        case "$c" in
+            [a-z0-9_-])
+                out="${out}${c}"
+                if [ "$c" = "-" ]; then last_dash=true; else last_dash=false; fi
+                ;;
+            *)
+                if [ "$last_dash" = false ] && [ -n "$out" ]; then
+                    out="${out}-"
+                    last_dash=true
+                fi
+                ;;
+        esac
+    done
+    while [[ "$out" == *- ]]; do out="${out%-}"; done
+    [ -z "$out" ] && out="default"
+    printf '%s\n' "$out"
 }
 
 # sot_sanitize_component STR [MAXLEN=20] — reduce STR to the
@@ -417,14 +515,27 @@ _sot_tier_claimable() {
 # (sot_sanitize_component) BEFORE composing any candidate (Codex review
 # F4), so a derived handle can never diverge from what workspace.create
 # will accept, and no raw path text reaches a shell command unsanitized.
+# HOST gets an extra step (Codex review PR #148 round 2, finding 7): if
+# sanitizing/clamping CHANGES it at all — a long or characters-outside-
+# charset hostname got truncated/rewritten — a short digest of the RAW
+# host is appended. Without this, two DIFFERENT real hosts whose names
+# happen to sanitize/truncate to the IDENTICAL string would, if they ever
+# shared a root (an NFS-shared repo, exactly this cluster's own shape),
+# alias onto one tier-1 "reclaim" — root matches, and the (now-identical)
+# host component can no longer tell them apart. An untouched host (the
+# overwhelmingly common case: short, already-valid hostnames) gets no
+# suffix, so today's handles are unchanged. HOST_RAW_MAX=12 leaves room
+# for "-" + a 6-hex digest without the host component threatening
+# sot_sanitize_component's 20-char default budget the other components
+# still use (12 + 1 + 6 = 19 worst case).
 #
 # On success, prints ONE tab-separated line: "<handle>\t<qualifier>"
 # (qualifier empty at tier 1, "<parentdir>" at tier 2, "<hash6>" at tier
 # 3). A caller that only wants the handle:
 #   `IFS=$'\t' read -r NAME _ <<< "$(sot_derive_handle reclaim "$ROOT" "$HOST")"`
 sot_derive_handle() {
-    local mode="$1" root="$2" host="$3"
-    local base parent hash6 tier1 tier2 tier3
+    local mode="$1" root="$2" raw_host="$3"
+    local base parent hash6 tier1 tier2 tier3 host host_digest
     local status1 held1 status2 held2 status3 held3 shown1 shown2 shown3
 
     case "$mode" in
@@ -433,7 +544,11 @@ sot_derive_handle() {
     esac
 
     base="$(sot_sanitize_component "$(basename "$root")")"
-    host="$(sot_sanitize_component "$host")"
+    host="$(sot_sanitize_component "$raw_host" 12)"
+    if [ "$host" != "$raw_host" ]; then
+        host_digest="$(sot_hash6 "$raw_host")" || return 1
+        host="${host}-${host_digest}"
+    fi
 
     tier1="${base}-${host}"
     IFS=$'\t' read -r status1 held1 <<< "$(sot_registry_entry_status "$tier1")"
