@@ -731,21 +731,28 @@ fn figure_already_handled(
     cache_hit || pending.contains(url) || failed.contains(url)
 }
 
-/// Pure resolution behind `State::previewed_files_path`: `pinned` wins over
-/// `installed` — never a merely-REQUESTED node id, which is the field
-/// report round-2 bug (`o`/`W`/`O` pressed between firing a new preview
-/// request and its reply landing used to act on the file about to be
-/// shown, not the one on screen). Callers pass `State::preview_src_node_id`
-/// — the node the currently-installed `preview_src` reply answered — as
-/// `installed`; this function's signature has no room for a "fired but not
-/// yet replied" id at all, which is what makes that class of bug
-/// structurally unreachable here rather than merely avoided.
-fn resolve_previewed_path(
-    pinned: Option<&str>,
-    installed: Option<&str>,
-    root: Option<&str>,
-) -> Option<String> {
-    let id = pinned.or(installed)?;
+/// Pure resolution behind `State::previewed_files_path`: routes from
+/// `installed` alone — never a merely-REQUESTED node id, which is the
+/// field report round-2 bug (`o`/`W`/`O` pressed between firing a new
+/// preview request and its reply landing used to act on the file about to
+/// be shown, not the one on screen). Callers pass
+/// `State::preview_src_node_id` — the node the currently-installed
+/// `preview_src` reply answered — as `installed`; this function's
+/// signature has no room for a "fired but not yet replied" id at all,
+/// which is what makes that class of bug structurally unreachable here
+/// rather than merely avoided.
+///
+/// Round-2 review ruling: does NOT also check a pin. `pinned_preview_node_id`
+/// is stamped straight from the CURSOR row (`toggle_pin`), not from an
+/// installed reply — pinning a row before its preview arrives (cursor
+/// moved fast, or `maybe_fire_preview`'s pinned-preview guard means it
+/// never will) would let a pin outrun what's on screen exactly like a
+/// fired-but-not-replied request does, and persistently since a pin
+/// suppresses the normal refetch. `o`/`W`/`O` act on what is VISIBLE,
+/// period — when a pinned preview IS what's installed, `installed`
+/// already equals it, so nothing is lost in the common case.
+fn resolve_previewed_path(installed: Option<&str>, root: Option<&str>) -> Option<String> {
+    let id = installed?;
     let rel = id.strip_prefix("files:")?;
     if rel.is_empty() {
         return None;
@@ -7713,22 +7720,24 @@ impl State {
     }
 
     /// Preview-pane analogue of `cursored_files_path`: the path of the file
-    /// whose preview is currently SHOWING (pinned wins over the installed
-    /// reply). This can differ from the nav cursor — pinned previews,
-    /// badge-consumed previews — so open-style keys pressed with preview
-    /// focus act on what the user is LOOKING AT. Callers fall back to the
-    /// cursored row when the shown preview isn't a files-mode node.
+    /// whose preview is currently SHOWING. This can differ from the nav
+    /// cursor — badge-consumed previews, or a cursor that's outrun its own
+    /// preview reply — so open-style keys pressed with preview focus act
+    /// on what the user is LOOKING AT. Callers fall back to the cursored
+    /// row when the shown preview isn't a files-mode node.
     ///
     /// Deliberately reads `preview_src_node_id` (the node the INSTALLED
-    /// reply answered), not `preview_node_id_fired` (the node the most
-    /// recent REQUEST asked for) — field report round 2: between firing a
-    /// request for a new file and its reply landing, `fired` already names
-    /// the new file while `preview_src` (what's actually painted) is still
-    /// the old one. A key pressed in that window must act on what's on
-    /// screen.
+    /// reply answered) alone — not `preview_node_id_fired` (the node the
+    /// most recent REQUEST asked for: field report round 2, a request
+    /// racing ahead of its own reply) and not `pinned_preview_node_id`
+    /// (round-2 ruling: a pin is stamped from the cursor row, not from an
+    /// installed reply, so it can equally outrun what's shown — and
+    /// persistently, since `maybe_fire_preview` refuses to fetch anything
+    /// while pinned). `o`/`W`/`O` act on what is VISIBLE, period; when a
+    /// pinned preview IS what's installed, `preview_src_node_id` already
+    /// equals it.
     fn previewed_files_path(&self) -> Option<String> {
         resolve_previewed_path(
-            self.pinned_preview_node_id.as_deref(),
             self.preview_src_node_id.as_deref(),
             self.active_project_root().as_deref(),
         )
@@ -20015,37 +20024,28 @@ mod tests {
     }
 
     // --- Bug 2 / round 2 provenance fix: `o`/`W`/`O` must route against
-    // the node the INSTALLED preview reply answered, never the most
-    // recently REQUESTED one (which can outrun its own reply). ---
+    // the node the INSTALLED preview reply answered — never the most
+    // recently REQUESTED one (which can outrun its own reply), and never
+    // a pin either (round-2 ruling: a pin is stamped from the cursor row,
+    // not from an installed reply, so it can equally outrun what's
+    // shown). ---
 
     #[test]
     fn previewed_path_routes_by_installed_node_not_a_fired_one() {
-        // The function doesn't even take a "fired" id — its signature is
-        // the proof that a request racing ahead of its reply structurally
-        // cannot leak into the routed path.
+        // The function doesn't even take a "fired" id (or a "pinned" one
+        // — round-2 ruling) — its signature is the proof that neither can
+        // leak into the routed path.
         assert_eq!(
-            resolve_previewed_path(None, Some("files:a/index.html"), Some("/proj")),
+            resolve_previewed_path(Some("files:a/index.html"), Some("/proj")),
             Some("/proj/a/index.html".to_string())
         );
     }
 
     #[test]
-    fn previewed_path_pin_wins_over_installed() {
-        assert_eq!(
-            resolve_previewed_path(
-                Some("files:pinned.md"),
-                Some("files:installed.md"),
-                Some("/proj")
-            ),
-            Some("/proj/pinned.md".to_string())
-        );
-    }
-
-    #[test]
     fn previewed_path_none_when_nothing_resolves_to_a_files_node() {
-        assert_eq!(resolve_previewed_path(None, None, Some("/proj")), None);
+        assert_eq!(resolve_previewed_path(None, Some("/proj")), None);
         assert_eq!(
-            resolve_previewed_path(None, Some("modules:Foo"), Some("/proj")),
+            resolve_previewed_path(Some("modules:Foo"), Some("/proj")),
             None
         );
     }
