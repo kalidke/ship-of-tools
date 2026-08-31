@@ -2,12 +2,29 @@
 # test-join-disambiguation.sh — self-contained test for the derived-handle
 # disambiguation feature (ADR 0028 addendum: "derived vs explicit"). No bats
 # dependency. HERMETIC: runs against a temp $SOT_COMM_HOME, a temp self-file
-# per simulated session (via $SOT_COMM_SELF_FILE), and an isolated tmux
-# server (via $SOT_TMUX_SOCK) for the comm-spawn.sh case — never touches the
-# real ~/.sot-comm or the real per-user tmux socket (a comm-spawn.sh smoke
-# run during this feature's development that omitted the tmux isolation
-# created real stray sessions on the shared production socket; every
+# per simulated session (via $SOT_COMM_SELF_FILE), a PINNED host (via
+# $SOT_COMM_TEST_HOST — see below), and an isolated tmux server (via
+# $SOT_TMUX_SOCK) for the comm-spawn.sh case — never touches the real
+# ~/.sot-comm or the real per-user tmux socket (a comm-spawn.sh smoke run
+# during this feature's development that omitted the tmux isolation created
+# real stray sessions on the shared production socket; every
 # spawn-exercising case here sets it).
+#
+# HOST must be hermetic too, not just HOME (CI incident): this script used
+# to build its EXPECTED handles from the real `hostname -s`. That's fine on
+# a short-hostnamed dev box, but a CI runner's hostname can be long enough
+# to trip sot_derive_handle's F7 host-alias guard (comm-lib.sh) — the guard
+# then appends a digest suffix the test's naively-built expectation didn't
+# account for, and every case asserting a DERIVED handle mismatches (8/13
+# failed this way on GitHub Actions while 13/13 passed locally). Pinning
+# HOST through $SOT_COMM_TEST_LOCK_BARRIER's sibling seam,
+# $SOT_COMM_TEST_HOST (comm-context.sh), removes the dependency on both
+# sides — the scripts' actual host and this test's expected-handle host are
+# now the SAME fixed, short, already-clean string, regardless of what box
+# runs the suite. case_host_alias_guard_triggers_on_long_host below
+# separately routes a deliberately long/dirty host through the SAME seam
+# for ONE case, so the guard itself still gets positive coverage rather
+# than being dodged everywhere.
 #
 # case_lock_closes_derive_write_gap also covers claim_derived_handle's
 # atomicity (derive + registry_put as one locked step): it deterministically
@@ -60,7 +77,14 @@ LOCKDIR="$SOT_COMM_HOME/.registry.lock"
 export SOT_TMUX_SOCK="$WORK/tmux.sock"
 trap 'tmux -S "$SOT_TMUX_SOCK" kill-server >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
 
-HOST="$(hostname -s 2>/dev/null || hostname)"
+# Pinned, hermetic HOST — see the file header. Deliberately short and
+# already within the allowed charset so it is NEVER transformed by
+# sot_sanitize_component/the F7 host-alias guard: every case except
+# case_host_alias_guard_triggers_on_long_host expects an UNTRANSFORMED
+# host in its derived handles, and this value must hold that invariant
+# regardless of what machine or CI runner executes this script.
+HOST="testhost"
+export SOT_COMM_TEST_HOST="$HOST"
 
 PASS=0
 FAIL=0
@@ -535,6 +559,45 @@ FAKESHA
     return 0
 }
 
+case_host_alias_guard_triggers_on_long_host() {
+    # CI incident follow-up (round 3): every OTHER case pins HOST short and
+    # clean specifically so the F7 host-alias guard never fires — which
+    # means the guard itself would otherwise have ZERO positive coverage in
+    # this suite. Deliberately route a long host through the SAME
+    # $SOT_COMM_TEST_HOST seam for just this one call, and confirm the
+    # digest-suffix transformation actually happens.
+    #
+    # The expected value here necessarily mirrors sot_sanitize_component's
+    # clamp + sot_hash6's algorithm — that's not "a parallel implementation
+    # that can drift" in the sense the fix direction warned against (that
+    # warning was about NOT computing per-host expectations for the OTHER,
+    # host-agnostic cases — the fix there is pinning the input, not
+    # replicating the transform). Here the transform IS the thing under
+    # test, so asserting its exact output requires computing what it
+    # should produce — using the SAME sha256sum tool, not a hand-rolled
+    # hash.
+    local root long_host sanitized_prefix hash6 expected_handle saved_host
+    mkdir -p "$WORK/hosttest/proj-host"
+    root="$(realpath "$WORK/hosttest/proj-host")"
+    long_host="ci-runner-with-a-long-dirty-hostname-example"
+
+    sanitized_prefix="${long_host:0:12}"
+    hash6="$(printf '%s' "$long_host" | sha256sum | cut -c1-6)"
+    expected_handle="proj-host-${sanitized_prefix}-${hash6}"
+
+    saved_host="$SOT_COMM_TEST_HOST"
+    export SOT_COMM_TEST_HOST="$long_host"
+    join_in "$root"
+    export SOT_COMM_TEST_HOST="$saved_host"
+
+    [ "$JOIN_RC" -eq 0 ] || { echo "  exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    contains "$JOIN_OUT" "Joined sot-comm as @$expected_handle" \
+        || { echo "  stdout: $JOIN_OUT (want @$expected_handle — sanitized-prefix + '-' + digest-of-raw-host)"; return 1; }
+    [ "$(registry_root "$expected_handle")" = "$root" ] \
+        || { echo "  root=$(registry_root "$expected_handle"), want $root"; return 1; }
+    return 0
+}
+
 # --- run, in order (later cases depend on earlier ones' registry state) --
 
 check "fresh claim records root"                            case_fresh_claim
@@ -550,6 +613,7 @@ check "concurrent claim landing mid-wait is not clobbered (lock closes the deriv
 check "rollback never deletes a row that replaced the provisional one (F1 round 2)" case_rollback_survives_replacement_row
 check "with_lock restores the caller's prior EXIT trap after a direct callee failure (F2 round 2)" case_with_lock_restores_prior_trap_on_failure
 check "a failing hash command fails loudly instead of an empty-hash handle (F5 round 2)" case_hash_command_failure_fails_loudly
+check "a long/dirty host triggers the F7 host-alias digest suffix" case_host_alias_guard_triggers_on_long_host
 
 echo ""
 echo "$PASS passed, $FAIL failed"
