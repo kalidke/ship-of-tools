@@ -62,6 +62,9 @@ fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows:
         // asserts "nothing to protect" the same way a real first-install
         // transaction would (see `rollout::RolloutEvidence`'s own doc).
         rollout_evidence: sot_log::rollout::RolloutEvidence::NoRollbackTarget,
+        // No supervisor in this harness -- see
+        // `CapsuleWinConfig::parent_lease_name`'s own doc.
+        parent_lease_name: None,
     }
 }
 

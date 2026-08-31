@@ -427,6 +427,16 @@ pub struct CapsuleWinConfig {
     /// `RolloutEvidence::NoRollbackTarget` directly, never reading a
     /// stopgap file that could quietly become load-bearing.
     pub rollout_evidence: crate::rollout::RolloutEvidence,
+    /// ADR 0041 Lifecycle "Discovery, and the two windows a spawn passes
+    /// through": `Some(name)` when a supervisor spawned this process and
+    /// wants its parent-death lease checked as the writer fence's own
+    /// first act (`crate::lease`) — a named, kernel-brokered mutex `run`
+    /// opens and polls EXACTLY ONCE, immediately after the fence is
+    /// acquired, via `VoyageStore::open_for_writing_with_lease`. `None`
+    /// (this crate's own manual-testing harness, and every existing
+    /// capsule_win test) is the U1a wrapper's own no-lease behavior,
+    /// unchanged — every in-tree caller before U2.
+    pub parent_lease_name: Option<String>,
 }
 
 /// The ADR 0039 registry entry a step-6 capsule's segments declare
@@ -1004,7 +1014,26 @@ pub fn run(
     if !voyage_root.exists() {
         VoyageStore::bootstrap(&voyage_root, &config.voyage_id, config.retention)?;
     }
-    let mut store = VoyageStore::open_for_writing(&voyage_root, &config.voyage_id)?;
+    // The lease OPEN itself is deferred to inside this closure, so it
+    // happens lazily at the exact point `open_prepared` calls it EXACTLY
+    // ONCE -- immediately after the writer fence is acquired, before any
+    // other pre-fence-adjacent I/O -- never before. A name that cannot
+    // even be opened (the supervisor already exited before this child
+    // got this far) is folded to `true` (broken) here, matching
+    // `crate::lease::open`'s own documented contract: an unopenable
+    // lease name is reported identically to an opened-but-broken one,
+    // never treated as "no lease was ever passed" (that is `None` below).
+    let lease_broken_fn = {
+        let name = config.parent_lease_name.clone();
+        move || match &name {
+            Some(name) => crate::lease::open(name).map(|c| c.is_broken()).unwrap_or(true),
+            None => false,
+        }
+    };
+    let lease_broken: Option<&dyn Fn() -> bool> =
+        config.parent_lease_name.is_some().then_some(&lease_broken_fn);
+    let mut store =
+        VoyageStore::open_for_writing_with_lease(&voyage_root, &config.voyage_id, lease_broken)?;
 
     // Finding 7 (round-1) / round-2 finding 4: `shutdown_all` must run
     // before the writer lock releases (`store`'s own drop) on EVERY exit
