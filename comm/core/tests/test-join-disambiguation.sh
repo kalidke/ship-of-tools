@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 # test-join-disambiguation.sh — self-contained test for the derived-handle
 # disambiguation feature (ADR 0028 addendum: "derived vs explicit"). No bats
-# dependency. HERMETIC: runs against a temp $SOT_COMM_HOME and a temp
-# self-file per simulated session (via $SOT_COMM_SELF_FILE); never touches
-# the real ~/.sot-comm.
+# dependency. HERMETIC: runs against a temp $SOT_COMM_HOME, a temp self-file
+# per simulated session (via $SOT_COMM_SELF_FILE), and an isolated tmux
+# server (via $SOT_TMUX_SOCK) for the comm-spawn.sh case — never touches the
+# real ~/.sot-comm or the real per-user tmux socket (a comm-spawn.sh smoke
+# run during this feature's development that omitted the tmux isolation
+# created real stray sessions on the shared production socket; every
+# spawn-exercising case here sets it).
 #
-# The last case, case_lock_closes_derive_write_gap, also covers
-# claim_derived_handle's atomicity (derive + registry_put as one locked
-# step): it deterministically interleaves a registry mutation into a
-# backgrounded derived join's wait-for-lock window by controlling the
-# registry lock directly, rather than racing on timing (see its comment).
+# case_lock_closes_derive_write_gap also covers claim_derived_handle's
+# atomicity (derive + registry_put as one locked step): it deterministically
+# interleaves a registry mutation into a backgrounded derived join's
+# wait-for-lock window, synchronized via with_lock's own
+# $SOT_COMM_TEST_LOCK_BARRIER test seam (a file touched right before its
+# first mkdir attempt) rather than a sleep, with bounded waits throughout so
+# a genuinely stuck child fails the test instead of hanging it.
 #
 # Usage: comm/core/tests/test-join-disambiguation.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -18,9 +24,18 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 JOIN="$SCRIPTS_DIR/comm-join.sh"
+SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-test-XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+# Codex review (PR #148, test notes): an unchecked mktemp failure leaves
+# WORK="", and every "$WORK/..." path below silently becomes an absolute
+# path rooted at "/" (e.g. "$WORK/home" -> "/home") — checked explicitly,
+# not just via `|| exit`, since a bizarre mktemp could exit 0 with empty
+# stdout too.
+if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
+    echo "FATAL: mktemp did not produce a usable work directory (got: '$WORK')" >&2
+    exit 1
+fi
 
 export SOT_COMM_HOME="$WORK/home"
 mkdir -p "$SOT_COMM_HOME"
@@ -29,6 +44,12 @@ REGISTRY="$SOT_COMM_HOME/registry.json"
 # case_lock_closes_derive_write_gap below to simulate a concurrent claim
 # landing WHILE a derived join is blocked waiting for the lock.
 LOCKDIR="$SOT_COMM_HOME/.registry.lock"
+# Isolated tmux server for comm-spawn.sh's --no-workspace path
+# (case_spawn_fresh_only_refusal) — exported globally so every comm-spawn.sh
+# invocation in this file picks it up; comm-join.sh never touches tmux, so
+# this is a harmless no-op for every other case.
+export SOT_TMUX_SOCK="$WORK/tmux.sock"
+trap 'tmux -S "$SOT_TMUX_SOCK" kill-server >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
 
 HOST="$(hostname -s 2>/dev/null || hostname)"
 
@@ -88,13 +109,21 @@ next_self_file() {
 # (no inherited identity) unless ARGS/env explicitly supply one. Sets
 # JOIN_OUT / JOIN_ERR / JOIN_RC. JOIN_ENV_NAME, when non-empty, is exported
 # as $SOT_COMM_NAME for that one call (used by the env-verbatim case).
+# JOIN_SELF_FILE_OVERRIDE, when non-empty, pins the self-file to an
+# EXISTING crafted path instead of a fresh one (used by the self-file
+# root-validation case, which needs to pre-populate the file's contents).
 JOIN_OUT=""; JOIN_ERR=""; JOIN_RC=0
 JOIN_ENV_NAME=""
+JOIN_SELF_FILE_OVERRIDE=""
 join_in() {
     local root="$1"; shift
     local self errfile
-    next_self_file
-    self="$NEXT_SELF_FILE"
+    if [ -n "$JOIN_SELF_FILE_OVERRIDE" ]; then
+        self="$JOIN_SELF_FILE_OVERRIDE"
+    else
+        next_self_file
+        self="$NEXT_SELF_FILE"
+    fi
     errfile="$WORK/stderr.tmp"
     JOIN_OUT="$(cd "$root" && SOT_COMM_SELF_FILE="$self" SOT_COMM_NAME="$JOIN_ENV_NAME" \
         "$JOIN" "$@" 2>"$errfile")"
@@ -102,8 +131,25 @@ join_in() {
     JOIN_ERR="$(cat "$errfile" 2>/dev/null || true)"
 }
 
+# spawn_in ROOT [ARGS...] — run comm-spawn.sh in --no-workspace mode (no
+# daemon needed) against ROOT. Sets SPAWN_OUT / SPAWN_ERR / SPAWN_RC.
+SPAWN_OUT=""; SPAWN_ERR=""; SPAWN_RC=0
+spawn_in() {
+    local root="$1"; shift
+    local errfile="$WORK/spawn-stderr.tmp"
+    SPAWN_OUT="$("$SPAWN" "$root" --no-workspace "$@" 2>"$errfile")"
+    SPAWN_RC=$?
+    SPAWN_ERR="$(cat "$errfile" 2>/dev/null || true)"
+}
+
 registry_root() {  # NAME -> prints its `root`, or MISSING if unset/absent
     jq -r --arg n "$1" '.agents[$n].root // "MISSING"' "$REGISTRY" 2>/dev/null
+}
+registry_field() {  # NAME FIELD -> prints the field, or MISSING if unset/absent
+    jq -r --arg n "$1" --arg f "$2" '.agents[$n][$f] // "MISSING"' "$REGISTRY" 2>/dev/null
+}
+registry_has_root_key() {  # NAME -> "yes" if the row has a `root` KEY at all (even ""), "no" otherwise
+    jq -r --arg n "$1" 'if (.agents[$n] // {}) | has("root") then "yes" else "no" end' "$REGISTRY" 2>/dev/null
 }
 
 contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
@@ -180,6 +226,103 @@ case_env_name_verbatim() {
     return 0
 }
 
+case_self_file_root_validation() {
+    # Codex review F1: a self-file with no root= line must be discarded as
+    # stale UNCONDITIONALLY, forcing fresh derivation — never trusted
+    # verbatim just because a repo= line happens to match (the old,
+    # insufficient check).
+    local root base h1 crafted
+    mkdir -p "$WORK/selftest/proj2"
+    root="$(realpath "$WORK/selftest/proj2")"
+    base="proj2"
+    h1="${base}-${HOST}"
+
+    crafted="$WORK/crafted-self.txt"
+    # A LEGACY two-line self-file (repo= but no root=) claiming a handle
+    # that collides with nothing. If comm-context trusted it verbatim (the
+    # old repo=-only check), the join below would print exactly this name
+    # — no derivation at all.
+    printf 'stale-claimed-name\nrepo=%s\n' "$base" > "$crafted"
+
+    JOIN_SELF_FILE_OVERRIDE="$crafted"
+    join_in "$root"
+    JOIN_SELF_FILE_OVERRIDE=""
+
+    [ "$JOIN_RC" -eq 0 ] || { echo "  exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    contains "$JOIN_ERR" "stale" || { echo "  missing staleness notice: $JOIN_ERR"; return 1; }
+    contains "$JOIN_OUT" "Joined sot-comm as @$h1" \
+        || { echo "  stdout: $JOIN_OUT (want fresh derivation to @$h1, NOT the stale 'stale-claimed-name')"; return 1; }
+    [ "$(registry_root "$h1")" = "$root" ] || { echo "  root=$(registry_root "$h1"), want $root"; return 1; }
+
+    # The self-file must now have been rewritten to full v2 (root= present).
+    local lines; lines="$(wc -l < "$crafted")"
+    [ "$lines" -ge 3 ] || { echo "  self-file not upgraded to v2 with root=: $(cat "$crafted")"; return 1; }
+    return 0
+}
+
+case_legacy_unknown_root_row() {
+    # Codex review F1 / simplicity audit: a registry row that predates this
+    # feature (no `root` key at all) must count as a COLLISION for the
+    # derivation algorithm, not a free pass — same fail-safe stance as the
+    # self-file case above, at the registry layer instead.
+    local root base parent h1 h2 legacy_obj
+    mkdir -p "$WORK/legacytest/grpL/proj3"
+    root="$(realpath "$WORK/legacytest/grpL/proj3")"
+    base="proj3"; parent="grpL"
+    h1="${base}-${HOST}"
+    h2="${base}-${parent}-${HOST}"
+
+    legacy_obj="$(jq -n --arg repo "$base" \
+        '{host:"other",tmux:"",pane_id:"",repo:$repo,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
+    jq --arg n "$h1" --argjson o "$legacy_obj" '.agents[$n] = $o' "$REGISTRY" > "$REGISTRY.tmp" \
+        && mv "$REGISTRY.tmp" "$REGISTRY"
+
+    join_in "$root"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    contains "$JOIN_OUT" "Joined sot-comm as @$h2" \
+        || { echo "  stdout: $JOIN_OUT (want escalation to @$h2 — an unknown root must not be a free pass)"; return 1; }
+    [ "$(registry_root "$h2")" = "$root" ] || { echo "  h2 root=$(registry_root "$h2"), want $root"; return 1; }
+    [ "$(registry_has_root_key "$h1")" = "no" ] \
+        || { echo "  legacy row for @$h1 was mutated (now has a root key): $(registry_root "$h1")"; return 1; }
+    return 0
+}
+
+case_spawn_fresh_only_refusal() {
+    # Codex review F3: comm-spawn.sh must NEVER reclaim an existing row —
+    # even one sharing its own project root — the way comm-join.sh does.
+    # Set up a LIVE-looking row via an ordinary join (status "idle", as a
+    # real join sets), then spawn against the same root with no --name:
+    # the live row must survive untouched, and the new agent must land on
+    # a DIFFERENT (escalated) handle instead of clobbering it.
+    local root base parent h1 h2
+    mkdir -p "$WORK/spawntest/grpS/proj"
+    root="$(realpath "$WORK/spawntest/grpS/proj")"
+    base="proj"; parent="grpS"
+    h1="${base}-${HOST}"
+    h2="${base}-${parent}-${HOST}"
+
+    join_in "$root"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    contains "$JOIN_OUT" "Joined sot-comm as @$h1" || { echo "  setup join stdout: $JOIN_OUT"; return 1; }
+
+    spawn_in "$root"
+    [ "$SPAWN_RC" -eq 0 ] || { echo "  comm-spawn.sh exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
+    contains "$SPAWN_OUT" "Spawned (raw) @$h2" \
+        || { echo "  spawn stdout: $SPAWN_OUT (want escalation to @$h2, not a reclaim of @$h1)"; return 1; }
+
+    [ "$(registry_field "$h1" status)" = "idle" ] \
+        || { echo "  @$h1 (the live row) was overwritten by spawn: status=$(registry_field "$h1" status)"; return 1; }
+    [ "$(registry_root "$h1")" = "$root" ] \
+        || { echo "  @$h1 root changed by spawn: $(registry_root "$h1")"; return 1; }
+
+    [ "$(registry_root "$h2")" = "$root" ] || { echo "  @$h2 root=$(registry_root "$h2"), want $root"; return 1; }
+    [ "$(registry_field "$h2" status)" = "spawning" ] \
+        || { echo "  @$h2 status=$(registry_field "$h2" status), want spawning"; return 1; }
+    tmux -S "$SOT_TMUX_SOCK" has-session -t "$h2" 2>/dev/null \
+        || { echo "  no isolated tmux session for @$h2"; return 1; }
+    return 0
+}
+
 case_lock_closes_derive_write_gap() {
     # Deterministic simulation of the race claim_derived_handle exists to
     # close: two derived joins for DIFFERENT roots that would both decide on
@@ -189,11 +332,16 @@ case_lock_closes_derive_write_gap() {
     # point instead of timing:
     #   1. We seize $LOCKDIR ourselves (standing in for "another process
     #      already holds the claim critical section").
-    #   2. We start a second derived join (root B) in the BACKGROUND. It
-    #      cannot proceed past its own `with_lock` until we release —
-    #      guaranteed by mkdir semantics, not by scheduling luck.
-    #   3. While it is blocked, we mutate the registry as if a THIRD,
-    #      already-locked claim (root A) just landed and release the lock.
+    #   2. We start a second derived join (root B) in the BACKGROUND, with
+    #      $SOT_COMM_TEST_LOCK_BARRIER pointed at a file with_lock touches
+    #      right before its first mkdir attempt (Codex review F10 — this
+    #      is the REAL handshake; a sleep, no matter how generous, could
+    #      only ever make the failure mode LESS likely to reproduce, never
+    #      prove the fix).
+    #   3. We wait for that barrier file — bounded, so a child that never
+    #      reaches its lock attempt fails the test instead of hanging it —
+    #      then mutate the registry as if a THIRD, already-locked claim
+    #      (root A) just landed, and release the lock.
     #   4. The backgrounded join can only ever observe the registry AFTER
     #      that mutation once it finally acquires the lock. If derive+put
     #      were not atomic (the pre-fix shape: decide the name, unlocked,
@@ -201,11 +349,7 @@ case_lock_closes_derive_write_gap() {
     #      ever touching the lock and clobbered root A's row regardless of
     #      what happened while it waited. With the fix, it must re-derive
     #      under the lock and see the collision.
-    # No sleep is load-bearing for correctness here — only for giving the
-    # background job a moment to reach the spin loop before we act; if it
-    # hasn't yet, our mkdir/mutate/rmdir still happen before it can ever
-    # acquire the lock, so the assertion holds either way.
-    local rootA rootB rbase="racer" rh1 rh2 mutate_obj self out errfile pid rc
+    local rootA rootB rbase="racer" rh1 rh2 mutate_obj self out errfile pid rc barrier deadline
     mkdir -p "$WORK/lockrace-a/grp/racer"
     mkdir -p "$WORK/lockrace-b/grp/racer"
     rootA="$(realpath "$WORK/lockrace-a/grp/racer")"
@@ -217,10 +361,23 @@ case_lock_closes_derive_write_gap() {
 
     next_self_file; self="$NEXT_SELF_FILE"
     out="$WORK/lockrace.out"; errfile="$WORK/lockrace.err"
-    ( cd "$rootB" && SOT_COMM_SELF_FILE="$self" SOT_COMM_NAME="" "$JOIN" >"$out" 2>"$errfile" ) &
+    barrier="$WORK/lockrace.barrier"
+    rm -f "$barrier"
+    ( cd "$rootB" && SOT_COMM_SELF_FILE="$self" SOT_COMM_NAME="" \
+        SOT_COMM_TEST_LOCK_BARRIER="$barrier" "$JOIN" >"$out" 2>"$errfile" ) &
     pid=$!
 
-    sleep 0.2   # let it reach the spin loop; not required for correctness (see above)
+    deadline=$(( $(date +%s) + 10 ))
+    until [ -e "$barrier" ]; do
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "  timed out waiting for the backgrounded join to reach its lock attempt"
+            kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            rmdir "$LOCKDIR" 2>/dev/null || true
+            return 1
+        fi
+        sleep 0.02
+    done
 
     mutate_obj="$(jq -n --arg root "$rootA" \
         '{host:"other",tmux:"",pane_id:"",repo:"racer",root:$root,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
@@ -228,6 +385,19 @@ case_lock_closes_derive_write_gap() {
         && mv "$REGISTRY.tmp" "$REGISTRY"
 
     rmdir "$LOCKDIR"
+
+    # Bounded wait on the child too (Codex review F10): a live-stuck child
+    # must fail the test, not hang it forever.
+    deadline=$(( $(date +%s) + 10 ))
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "  backgrounded join did not finish within 10s after the lock was released"
+            kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 1
+        fi
+        sleep 0.05
+    done
     wait "$pid"; rc=$?
 
     local bg_out bg_err
@@ -252,6 +422,9 @@ check "different-root collision -> parentdir-qualified, first entry intact" case
 check "three-way collision -> hash-qualified handle"         case_three_way_collision
 check "explicit --name is verbatim even when it collides"    case_explicit_name_verbatim
 check "SOT_COMM_NAME env is verbatim even when it collides"  case_env_name_verbatim
+check "self-file with no root= is discarded as stale (F1)"   case_self_file_root_validation
+check "legacy registry row with no root= is a collision, not a free pass" case_legacy_unknown_root_row
+check "comm-spawn.sh fresh-mode refuses to reclaim a live row (F3)" case_spawn_fresh_only_refusal
 check "concurrent claim landing mid-wait is not clobbered (lock closes the derive/write gap)" case_lock_closes_derive_write_gap
 
 echo ""
