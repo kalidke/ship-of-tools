@@ -96,6 +96,11 @@ pub mod segment;
 // that needs it (today: the frontend) shares one rule instead of
 // drifting copies.
 pub mod state_dir;
+// ADR 0041 step 6, unit U2: the authority -- `sot-capsule supervise`,
+// and `endrun`/`reset` as fence-acquiring in-process callers. `pub`,
+// matching `challenge`/`classify`/`lease`/`probe`: Windows-only, and
+// `tests/supervisor_win.rs` needs to reach it.
+pub mod supervisor;
 pub mod verify;
 pub mod voyage;
 pub mod wire;

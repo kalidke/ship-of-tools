@@ -63,25 +63,42 @@ fn main() {
 #[cfg(windows)]
 const MAX_PIPE_INSTANCES: u32 = 8;
 
-/// Temporary harness for the Windows capsule runtime (ADR 0041 steps 4-5,
-/// U2/U3). No stdin-forwarding thread (the wire lane replaces it — real
-/// input/resize now arrive over the pipe, from whatever attaches to it)
-/// and no `--echo` (pipe fan-out is the real subscriber path; a bare
-/// stdout mirror duplicated that for no one). Ctrl+C still simply kills
-/// this whole process — FE-loss, not EndRun (ADR 0041 Lifecycle) — until a
-/// real supervisor exists.
+/// `run`, plus (ADR 0041 step 6 U2) `supervise`/`endrun`/`reset` — see
+/// each subcommand's own function for its usage line.
 #[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let top_usage = "usage: sot-capsule <run|supervise|endrun|reset> ...";
+    match args.first().map(String::as_str) {
+        Some("run") => cmd_run(&args[1..]),
+        Some("supervise") => cmd_supervise(&args[1..]),
+        Some("endrun") => cmd_endrun(&args[1..]),
+        Some("reset") => cmd_reset(&args[1..]),
+        _ => {
+            eprintln!("{top_usage}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Temporary harness for the Windows capsule runtime (ADR 0041 steps 4-5;
+/// U2 adds `--parent-lease-name`, the flag ONLY a supervisor passes). No
+/// stdin-forwarding thread (the wire lane replaces it — real input/resize
+/// now arrive over the pipe, from whatever attaches to it) and no
+/// `--echo` (pipe fan-out is the real subscriber path). Ctrl+C still
+/// simply kills this whole process when run bare (no supervisor) — FE-loss,
+/// not EndRun (ADR 0041 Lifecycle).
+#[cfg(windows)]
+fn cmd_run(args: &[String]) {
     let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--cols <n>] [--rows <n>] \
-[--assume-no-rollback-target] -- <cmd> [args...]";
-    if args.len() < 4 || args[0] != "run" {
+[--parent-lease-name <name>] [--assume-no-rollback-target] -- <cmd> [args...]";
+    if args.len() < 3 {
         eprintln!("{usage}");
         std::process::exit(2);
     }
-    let voyage_root = std::path::PathBuf::from(&args[1]);
-    let voyage_id = args[2].clone();
-    let mut rest = &args[3..];
+    let voyage_root = std::path::PathBuf::from(&args[0]);
+    let voyage_id = args[1].clone();
+    let mut rest = &args[2..];
     // Matches vt100_ctt::Parser's own Default (80x24) — a reasonable
     // harness default, not an ADR-pinned one.
     let mut cols: u16 = 80;
@@ -91,6 +108,9 @@ fn main() {
     // U4's release-apply transaction exists — see the refusal message
     // below for what it actually asserts.
     let mut assume_no_rollback_target = false;
+    // ADR 0041 step 6 U2: `Some(name)` only when a supervisor spawned
+    // this process — see `CapsuleWinConfig::parent_lease_name`'s own doc.
+    let mut parent_lease_name: Option<String> = None;
     loop {
         match rest.first().map(String::as_str) {
             Some("--cols") if rest.len() > 1 => {
@@ -105,6 +125,10 @@ fn main() {
                     eprintln!("{usage}");
                     std::process::exit(2);
                 });
+                rest = &rest[2..];
+            }
+            Some("--parent-lease-name") if rest.len() > 1 => {
+                parent_lease_name = Some(rest[1].clone());
                 rest = &rest[2..];
             }
             Some("--assume-no-rollback-target") => {
@@ -123,13 +147,15 @@ fn main() {
     // ADR 0041 "Upgrade and version skew" reader-first rollout gate
     // (Codex round-2b Blocker 4 discharge, superseding round-1 Major 9's
     // hardcoded default): this manual-testing harness has no supervisor/
-    // release-apply transaction (U2/U4) and therefore NO REAL evidence to
+    // release-apply transaction (U4) and therefore NO REAL evidence to
     // construct. The honest pre-U4 posture is FAIL CLOSED, naming U4 as
     // the reason — hardcoding `NoRollbackTarget` fabricated evidence and
     // recreated exactly the "missing means first install" default-through
     // Major 9 was supposed to remove, only under a typed name. Absent the
     // explicit override, this binary refuses before ever constructing a
-    // config or opening a segment.
+    // config or opening a segment. `sot-capsule supervise` (U2) is in the
+    // exact same "no real evidence" position and passes the SAME flag
+    // down to every leg it spawns — see that subcommand's own doc.
     if !assume_no_rollback_target {
         eprintln!(
             "sot-capsule: no rollout evidence available -- this binary cannot open a \
@@ -156,6 +182,7 @@ fn main() {
         // 11) — this bin has none yet, so it states the honest default.
         survival: sot_log::wire::Survival::Normal,
         rollout_evidence,
+        parent_lease_name,
     };
     // No command source yet (Ctrl+C kills the process instead — see the
     // doc above). The pipe IS real now (U3 round 2): `PipeTransport::bind`
@@ -190,6 +217,135 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// `sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
+/// [--rows <n>] --assume-no-rollback-target -- <cmd> [args...]` (ADR
+/// 0041 step 6 U2): the authority. `--assume-no-rollback-target` is
+/// mandatory here for the exact reason `run`'s own copy of it is — see
+/// `sot_log::supervisor`'s own module doc.
+#[cfg(windows)]
+fn cmd_supervise(args: &[String]) {
+    let usage = "usage: sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
+[--rows <n>] --assume-no-rollback-target -- <cmd> [args...]";
+    if args.len() < 3 {
+        eprintln!("{usage}");
+        std::process::exit(2);
+    }
+    let state_dir = std::path::PathBuf::from(&args[0]);
+    let mode = match args[1].as_str() {
+        "--start" => sot_log::supervisor::StartMode::Start,
+        "--resume" => sot_log::supervisor::StartMode::Resume,
+        _ => {
+            eprintln!("{usage}");
+            std::process::exit(2);
+        }
+    };
+    let mut rest = &args[2..];
+    let mut cols: u16 = 80;
+    let mut rows: u16 = 24;
+    let mut assume_no_rollback_target = false;
+    loop {
+        match rest.first().map(String::as_str) {
+            Some("--cols") if rest.len() > 1 => {
+                cols = rest[1].parse().unwrap_or_else(|_| {
+                    eprintln!("{usage}");
+                    std::process::exit(2);
+                });
+                rest = &rest[2..];
+            }
+            Some("--rows") if rest.len() > 1 => {
+                rows = rest[1].parse().unwrap_or_else(|_| {
+                    eprintln!("{usage}");
+                    std::process::exit(2);
+                });
+                rest = &rest[2..];
+            }
+            Some("--assume-no-rollback-target") => {
+                assume_no_rollback_target = true;
+                rest = &rest[1..];
+            }
+            _ => break,
+        }
+    }
+    if rest.first().map(String::as_str) != Some("--") || rest.len() < 2 {
+        eprintln!("{usage}");
+        std::process::exit(2);
+    }
+    let producer_argv: Vec<String> = rest[1..].to_vec();
+    let config = sot_log::supervisor::SuperviseConfig {
+        state_dir,
+        mode,
+        producer_argv,
+        cols,
+        rows,
+        assume_no_rollback_target,
+    };
+    std::process::exit(sot_log::supervisor::supervise(config));
+}
+
+/// `sot-capsule endrun <state_dir> [--voyage <id>] [--reason <text>]`
+/// (ADR 0041 step 6 U2): the no-supervisor path's own fence-acquiring
+/// EndRun. Fails loudly (never terminates blind) if a real supervisor is
+/// already the authority — see `sot_log::supervisor::endrun`'s own doc.
+#[cfg(windows)]
+fn cmd_endrun(args: &[String]) {
+    let usage = "usage: sot-capsule endrun <state_dir> [--voyage <id>] [--reason <text>]";
+    if args.is_empty() {
+        eprintln!("{usage}");
+        std::process::exit(2);
+    }
+    let state_dir = std::path::PathBuf::from(&args[0]);
+    let mut rest = &args[1..];
+    let mut voyage: Option<String> = None;
+    let mut reason = String::new();
+    loop {
+        match rest.first().map(String::as_str) {
+            Some("--voyage") if rest.len() > 1 => {
+                voyage = Some(rest[1].clone());
+                rest = &rest[2..];
+            }
+            Some("--reason") if rest.len() > 1 => {
+                reason = rest[1].clone();
+                rest = &rest[2..];
+            }
+            _ => break,
+        }
+    }
+    if !rest.is_empty() {
+        eprintln!("{usage}");
+        std::process::exit(2);
+    }
+    std::process::exit(sot_log::supervisor::endrun(&state_dir, voyage, reason));
+}
+
+/// `sot-capsule reset <state_dir> [--voyage <id>]` (ADR 0041 step 6 U2):
+/// the no-supervisor path's own fence-acquiring reset — proceeds ONLY on
+/// a classifier ABSENT taken while holding the fence.
+#[cfg(windows)]
+fn cmd_reset(args: &[String]) {
+    let usage = "usage: sot-capsule reset <state_dir> [--voyage <id>]";
+    if args.is_empty() {
+        eprintln!("{usage}");
+        std::process::exit(2);
+    }
+    let state_dir = std::path::PathBuf::from(&args[0]);
+    let mut rest = &args[1..];
+    let mut voyage: Option<String> = None;
+    loop {
+        match rest.first().map(String::as_str) {
+            Some("--voyage") if rest.len() > 1 => {
+                voyage = Some(rest[1].clone());
+                rest = &rest[2..];
+            }
+            _ => break,
+        }
+    }
+    if !rest.is_empty() {
+        eprintln!("{usage}");
+        std::process::exit(2);
+    }
+    std::process::exit(sot_log::supervisor::reset(&state_dir, voyage));
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
