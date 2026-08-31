@@ -751,6 +751,12 @@ mod prefix_serve_tests {
     /// `(status_code, content_type, body)`. Minimal hand-rolled HTTP/1.1
     /// client — mirrors the server's own hand-rolled parsing, no crate needed
     /// for a handful of headers over loopback.
+    ///
+    /// `read_to_end` is bounded by a timeout (codex review): every response
+    /// here closes the connection (`Connection: close`), so a healthy server
+    /// always hits EOF quickly — a server-side regression that stops writing
+    /// or stops closing should fail this test fast, not hang the CI job
+    /// until its overall timeout.
     async fn get(addr: std::net::SocketAddr, path: &str) -> (u16, Option<String>, Vec<u8>) {
         let mut stream = TcpStream::connect(addr).await.unwrap();
         stream
@@ -758,7 +764,13 @@ mod prefix_serve_tests {
             .await
             .unwrap();
         let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream.read_to_end(&mut raw),
+        )
+        .await
+        .expect("server did not close the connection within 5s")
+        .unwrap();
         let split = raw
             .windows(4)
             .position(|w| w == b"\r\n\r\n")
