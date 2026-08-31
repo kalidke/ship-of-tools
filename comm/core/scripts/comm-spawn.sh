@@ -97,18 +97,34 @@ CANON_ROOT="$(sot_canonical_path "$REPO_PATH")"
 # deliberate second workspace on the same repo. Task identity belongs in
 # --task / --expertise, never in the label.
 REPO_BASE="$(basename "$REPO_PATH")"
+REPO_NAME="$REPO_BASE"
 
-# NAME omitted -> derive it, same algorithm as a plain comm-join.sh (ADR
-# 0028 addendum; comm-lib.sh: sot_derive_handle). When the derivation had to
-# qualify past the bare <repo>-<host> tier, also give the new FE workspace a
-# qualified --display-label (<basename>-<qualifier>) so the session-strip
-# rows for the two same-named repos stay visually distinguishable — unless
-# the caller already gave an explicit --display-label, which wins.
+# The provisional registry row (see the "addressable FROM SPAWN TIME" note
+# below) — built here, independent of NAME, so a DERIVED name can be
+# decided and written in ONE atomic step (claim_derived_handle) rather than
+# derived now and only written later: that gap is exactly the read-then-
+# write race the whole feature exists to close, and comm-spawn drives many
+# joins back-to-back (bulk workspace bring-up), so the window is real.
+PROV_TS="$(now_iso)"
+PROV_OBJ="$(jq -n --arg host "$HOST" --arg repo "$REPO_BASE" --arg root "$CANON_ROOT" --arg ts "$PROV_TS" \
+    '{host:$host, tmux:"", pane_id:"", repo:$repo, root:$root, expertise:[],
+      status:"spawning", joined:$ts, last_seen:$ts}')"
+
+# NAME omitted -> derive it AND write the provisional row atomically, same
+# algorithm + same locked-claim path as a plain comm-join.sh (ADR 0028
+# addendum; comm-lib.sh: sot_derive_handle / claim_derived_handle). When the
+# derivation had to qualify past the bare <repo>-<host> tier, also give the
+# new FE workspace a qualified --display-label (<basename>-<qualifier>) so
+# the session-strip rows for the two same-named repos stay visually
+# distinguishable — unless the caller already gave an explicit
+# --display-label, which wins.
+DERIVED_CLAIM=false
 if [ -z "$NAME" ]; then
-    QUALIFIER=""
-    IFS=$'\t' read -r NAME QUALIFIER <<< "$(sot_derive_handle "$CANON_ROOT" "$HOST")"
-    if [ -n "$QUALIFIER" ] && [ -z "$DISPLAY_LABEL" ]; then
-        DISPLAY_LABEL="${REPO_BASE}-${QUALIFIER}"
+    DERIVED_CLAIM=true
+    claim_derived_handle "$CANON_ROOT" "$HOST" "$PROV_OBJ"
+    NAME="$CLAIMED_NAME"
+    if [ -n "$CLAIMED_QUALIFIER" ] && [ -z "$DISPLAY_LABEL" ]; then
+        DISPLAY_LABEL="${REPO_BASE}-${CLAIMED_QUALIFIER}"
     fi
 fi
 
@@ -126,11 +142,14 @@ elif [ "$LABEL" != "$REPO_BASE" ] && [[ "$LABEL" != "$REPO_BASE"-* ]]; then
     exit 1
 fi
 
-if jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
+# A DERIVED name was already atomically claimed above (registry row + all)
+# — checking "already in registry" again here would always fire (it's
+# there because we just put it) and abort every derived spawn. The
+# duplicate check only applies to an EXPLICIT name, where the row hasn't
+# been written yet.
+if [ "$DERIVED_CLAIM" = false ] && jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
     echo "ERROR: agent '@$NAME' already in registry — pick another name or comm-leave it first" >&2; exit 1
 fi
-
-REPO_NAME="$(basename "$REPO_PATH")"
 # The agent launches via ccb (maintainer decision, 2026-06-12): its first turn is
 # /sot-session-start, so the session joins + listens + arms its own inbox
 # Monitor with no hand-rolled join instructions. The handle is pinned by
@@ -187,12 +206,12 @@ TARGET=""   # tmux target to launch claude into
 # and the agent's /sot-session-start bootstrap reads the backlog (comm-poll,
 # step 4) and replies once it's up (~1 min). The real join later overwrites
 # this row with full pane/expertise info; comm-despawn cleans it if the spawn
-# never boots.
-ts="$(now_iso)"
-prov="$(jq -n --arg host "$HOST" --arg repo "$REPO_NAME" --arg root "$CANON_ROOT" --arg ts "$ts" \
-    '{host:$host, tmux:"", pane_id:"", repo:$repo, root:$root, expertise:[],
-      status:"spawning", joined:$ts, last_seen:$ts}')"
-with_lock registry_put "$NAME" "$prov"
+# never boots. For a DERIVED name, PROV_OBJ was already written atomically
+# above (claim_derived_handle) — only an EXPLICIT name still needs the
+# write here (its collision, if any, was already ruled out above).
+if [ "$DERIVED_CLAIM" = false ]; then
+    with_lock registry_put "$NAME" "$PROV_OBJ"
+fi
 : >> "$INBOX_DIR/$NAME.jsonl"
 
 if [ "$NO_WS" = true ]; then

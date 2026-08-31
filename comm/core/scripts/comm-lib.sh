@@ -328,6 +328,43 @@ sot_derive_handle() {
     printf '%s\t%s\n' "$tier3" "$hash6"
 }
 
+# --- atomic derive + claim (closes the read-then-write race) -----------
+# sot_derive_handle above only DECIDES a name by reading the registry; a
+# caller that derives and only LATER locks to registry_put leaves a window
+# between the two where a second, concurrent derived join (a DIFFERENT
+# root, same basename+host) can observe that exact same "still free" state
+# and also decide on tier 1 — whichever registry_put lands second then
+# silently clobbers the first. That is the aliasing bug this whole feature
+# exists to close, so it must not survive as a race window. The window is
+# not theoretical: comm-spawn.sh is driven programmatically for bulk
+# workspace bring-up, joining many sessions back-to-back.
+#
+# claim_derived_handle ROOT HOST OBJ_JSON — derive AND registry_put the
+# result as ONE critical section under the registry lock, so no other
+# claim can observe registry state in between. Sets globals CLAIMED_NAME
+# and CLAIMED_QUALIFIER (mirrors sot_derive_handle's two outputs) for the
+# caller to read after this returns. Both comm-join.sh (a plain join) and
+# comm-spawn.sh (the provisional row) route a derived name through this —
+# one shared locked claim path, not two copies of "derive, then lock to
+# write" that could each get this wrong.
+#
+# _sot_claim_derived_handle is the with_lock callee; it must NEVER be
+# invoked directly, and never as `X=$(with_lock ...)`. with_lock runs its
+# command directly ("$@", no subshell) specifically so a callee's global
+# assignment survives past its return — capturing it via command
+# substitution would fork a subshell and lose CLAIMED_NAME exactly the way
+# the test harness's own next_self_file() lost its counter (see
+# comm/core/tests/test-join-disambiguation.sh) — the same lesson, twice.
+_sot_claim_derived_handle() {  # ROOT HOST OBJ_JSON — call only via with_lock
+    local root="$1" host="$2" obj="$3" qualifier
+    IFS=$'\t' read -r CLAIMED_NAME qualifier <<< "$(sot_derive_handle "$root" "$host")"
+    CLAIMED_QUALIFIER="$qualifier"
+    registry_put "$CLAIMED_NAME" "$obj"
+}
+claim_derived_handle() {  # ROOT HOST OBJ_JSON
+    with_lock _sot_claim_derived_handle "$1" "$2" "$3"
+}
+
 
 # sot_oneshot_request FRAME OP — one-shot request/response on a fresh daemon
 # connection: send hello + FRAME, return (stdout) the first COMPLETE line

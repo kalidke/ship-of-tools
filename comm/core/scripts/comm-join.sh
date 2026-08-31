@@ -66,24 +66,34 @@ ensure_home
 [ -z "$EXPERTISE" ] && EXPERTISE="${SOT_COMM_EXPERTISE:-}"
 # Reached only when NAME came from none of the verbatim sources above
 # (--name, $SOT_COMM_NAME, an already-joined self-file identity) — this is
-# the DERIVED case, so it alone runs the disambiguation algorithm
-# (comm-lib.sh: sot_derive_handle; ADR 0028 addendum).
-if [ -z "$NAME" ]; then
-    IFS=$'\t' read -r NAME _ <<< "$(sot_derive_handle "$PROJECT_ROOT" "$HOST")"
-fi
+# the DERIVED case. Note what does NOT happen here: the name is NOT decided
+# yet. Deciding it now (sot_derive_handle) and only later locking to write
+# it would reopen the exact read-then-write race the feature exists to
+# close — a concurrent derived join for a different root could observe the
+# same "still free" registry state in between. The decision and the write
+# happen together, atomically, below (claim_derived_handle).
+NEED_DERIVE=false
+[ -z "$NAME" ] && NEED_DERIVE=true
 
 ts="$(now_iso)"
 exp_json="$(printf '%s' "$EXPERTISE" \
     | jq -R 'split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$";"")) | map(select(length > 0))')"
 [ -z "$exp_json" ] && exp_json="[]"
 
+# Independent of NAME (the row's contents don't name themselves) — safe to
+# build before NAME is finalized either way.
 obj="$(jq -n \
     --arg host "$HOST" --arg tmux "$TMUX_TARGET" --arg pane "$PANE_ID" \
     --arg repo "$REPO" --arg root "$PROJECT_ROOT" --argjson exp "$exp_json" --arg ts "$ts" \
     '{host:$host, tmux:$tmux, pane_id:$pane, repo:$repo, root:$root, expertise:$exp,
       status:"idle", joined:$ts, last_seen:$ts}')"
 
-with_lock registry_put "$NAME" "$obj"
+if [ "$NEED_DERIVE" = true ]; then
+    claim_derived_handle "$PROJECT_ROOT" "$HOST" "$obj"
+    NAME="$CLAIMED_NAME"
+else
+    with_lock registry_put "$NAME" "$obj"
+fi
 # v2 self-file: identity + the repo it was claimed for, plus the canonical
 # project root (ADR 0028 addendum — additive; a self-file without a root=
 # line predates this feature and is treated as unknown-root on read). The
