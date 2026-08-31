@@ -24,7 +24,15 @@ REPO="$(basename "$RAW_ROOT")"
 # (ADR 0028 addendum). Kept separate from REPO (which stays the RAW
 # basename, unchanged, to avoid perturbing every other consumer of REPO) so
 # a symlinked leaf directory can't shift existing repo-slug behavior.
-PROJECT_ROOT="$(sot_canonical_path "$RAW_ROOT")"
+# Canonicalized ONCE, here, outside any lock (Codex review F8) — every
+# downstream consumer (self-file validation below, comm-join.sh,
+# comm-spawn.sh) trusts this value as-is rather than re-resolving it.
+# sot_canonical_path fails loudly rather than ever handing back a relative
+# path; that failure must not be swallowed into an empty PROJECT_ROOT.
+if ! PROJECT_ROOT="$(sot_canonical_path "$RAW_ROOT")"; then
+    echo "comm-context: could not establish a canonical project root for '$RAW_ROOT' — see the reason above; aborting rather than proceeding with an unknown identity" >&2
+    exit 1
+fi
 
 # SOT_COMM_SELF_FILE lets a caller pin the self-file path directly, bypassing
 # the HOST/PANE_ID keying below — a test harness has no real tmux pane to key
@@ -44,19 +52,36 @@ fi
 # session-start Step-0 watcher check pgreps the wrong handle (finds the other
 # session's live watcher → false "survived compaction" → stays deaf), and a
 # no-args rejoin keeps the stolen name (two sessions executing as one handle).
-# Guard: v2 self-files carry a `repo=` line (written by comm-join); when it
-# mismatches the CURRENT repo, the identity is stale — discard it (read-side
-# only; the file is left for the join that will rewrite it). A legacy
-# one-line file has no repo to check and is trusted as before; it upgrades on
-# its session's next join. NB a session merely cd'd into another repo also
-# mismatches — that costs a transient no-op status update, which is the safe
-# side of the trade (a stolen identity is worse).
+#
+# Guard: validated against `root=` (Codex review F1), NOT `repo=` — two
+# DIFFERENT projects sharing a repo basename (e.g. two same-named repos in
+# different directories, exactly what the derived-handle disambiguation
+# exists to tell apart) would pass a `repo=`-only check and recreate the
+# very alias this feature closes: `/a/foo` joins, a reused pane (or another
+# non-tmux shell sharing the same "nopane" key) in `/b/foo` would read back
+# `repo=foo` matching and inherit `/a/foo`'s identity verbatim — including
+# overriding a spawn-pinned $SOT_COMM_NAME, since a valid self-file identity
+# is read into NAME before comm-join.sh even looks at the env (see its
+# precedence comment). Root comparison closes that: two different roots
+# never match regardless of shared basename.
+#
+# A self-file with NO `root=` line — legacy, predating this feature, be it
+# the older one-line format or a two-line `repo=`-only file — is discarded
+# as stale UNCONDITIONALLY, not trusted "as before": same fail-safe
+# transition stance ADR 0028 already applies to registry rows (unknown
+# root is a collision, not a free pass), extended to self-files. This costs
+# a one-time re-derivation on that pane's first join after upgrading (the
+# join then rewrites the self-file WITH root=, so every join after that is
+# fully validated again) — a small, one-time inconvenience preferred over
+# convenience-by-default aliasing. A session merely cd'd into another repo
+# also mismatches — that costs a transient no-op status update, which is
+# the safe side of the trade (a stolen identity is worse).
 NAME=""
 if [ -f "$SELF_FILE" ]; then
     NAME="$(sed -n '1p' "$SELF_FILE")"
-    SELF_REPO="$(sed -n '2p' "$SELF_FILE" | sed -n 's/^repo=//p')"
-    if [ -n "$SELF_REPO" ] && [ "$SELF_REPO" != "$REPO" ]; then
-        echo "comm-context: self-file identity '$NAME' was claimed for repo '$SELF_REPO' but this is '$REPO' — stale (pane id reused); discarding" >&2
+    SELF_ROOT="$(sed -n '3p' "$SELF_FILE" | sed -n 's/^root=//p')"
+    if [ -z "$SELF_ROOT" ] || [ "$SELF_ROOT" != "$PROJECT_ROOT" ]; then
+        echo "comm-context: self-file identity '$NAME' has no root= line, or one that doesn't match this project ('$PROJECT_ROOT') — stale; discarding (forces fresh derivation)" >&2
         NAME=""
     fi
 fi
