@@ -429,15 +429,27 @@ mod tests {
 
     #[test]
     fn b8_fence_probe_error_is_pending() {
+        // `ScriptedProbeOps`'s injected clock only ever advances when the
+        // test tells it to (see its own doc) -- `sleep_until_next_attempt`'s
+        // REAL sleep between attempts never moves it, so a deadline set to
+        // "just past `now`" can never actually be observed as expired on
+        // a later loop iteration: the retry would run forever, consuming
+        // scripted ops past the two pushed below and panicking on the
+        // exhausted queue rather than ever reaching a deadline check that
+        // trips. Proving B8 folds to PENDING (a retry happens at all,
+        // never an immediate terminal return) therefore needs a SECOND
+        // scripted attempt that reaches a real terminal outcome -- if B8
+        // were wrongly treated as terminal, this second pair would never
+        // be consumed and `all_exhausted` would catch it.
         let ops = ScriptedProbeOps::new();
         ops.push_connect(ConnectOutcome::FileNotFound);
         ops.push_writer_fence_probe(crate::probe::FenceProbe::Error(std::io::Error::other("x")));
-        // Deadline hits before the retry -- proves this folded to
-        // PENDING (kept polling) rather than returning immediately.
-        let deadline = ops.now() + ATTEMPT;
+        ops.push_connect(ConnectOutcome::FileNotFound);
+        ops.push_writer_fence_probe(crate::probe::FenceProbe::Free);
+        let deadline = ops.now() + Duration::from_secs(60); // never hit -- the retry itself is the assertion
         let dir = tempfile::tempdir().unwrap();
         let outcome = probe_adopt_only(&ops, "voy", dir.path(), deadline, ATTEMPT);
-        assert!(matches!(outcome, ProbeOutcome::Wedged));
+        assert!(matches!(outcome, ProbeOutcome::Absent));
         assert!(ops.all_exhausted());
     }
 
