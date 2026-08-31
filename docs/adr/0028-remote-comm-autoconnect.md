@@ -113,6 +113,16 @@ This is additive: a row or self-file without `root` predates the feature
 and reads back as *unknown root*, which the algorithm below treats as a
 collision, not a free pass.
 
+**Transition behavior.** A legacy registry row (from before this feature)
+has no `root`, and unknown-root counts as a collision — fail-safe, not
+fail-open. So until a legacy row's own session rejoins (which now records
+`root`, including via the ordinary `/sot-session-start` join), a *fresh*
+session that lands on that same bare handle from a different directory
+gets a qualified name instead, with the stderr notice explaining why. This
+is deliberate: grandfathering an unknown root in as "assume same project"
+would silently re-enable aliasing for exactly the pre-existing collisions
+this feature targets.
+
 Only a name that comes from **derivation** (nothing else was supplied) runs
 the disambiguation algorithm. A name from `--name`, `$SOT_COMM_NAME`, or an
 already-joined self-file identity is always used **verbatim** — no
@@ -152,7 +162,13 @@ the two session-strip rows in the frontend stay visually distinguishable.
 
 **Implementation.** One shared helper, `sot_derive_handle` (`comm-lib.sh`),
 is the single home for the algorithm; `comm-join.sh` and `comm-spawn.sh`
-both call it rather than deriving `<repo>-<host>` themselves. Tests:
+both call it rather than deriving `<repo>-<host>` themselves. Deriving a
+name and registering it are not two separate steps: `claim_derived_handle`
+runs both under the registry's single lock, so a concurrent derived claim
+for a different root can never land in the gap between "decide" and
+"write" — the exact aliasing bug this feature closes, which would
+otherwise survive as a race window (comm-spawn.sh in particular drives
+many joins back-to-back for bulk workspace bring-up). Tests:
 `comm/core/tests/test-join-disambiguation.sh` (hermetic — a temp
 `$SOT_COMM_HOME` and a temp self-file per simulated session; never touches
 a real install).
