@@ -180,19 +180,37 @@ pub fn reset(state_dir: &Path, voyage: Option<String>) -> i32 {
 }
 
 /// Connect to the supervisor lane at `h` and run the FULL same-connection
-/// challenge, returning both the still-open connection (for sending
-/// further requests: `status`/`command`/`query`) and the proof. Gated
-/// behind `test-support` like `probe::ScriptedProbeOps` — a REAL client
-/// (the launcher, the FE) composes this exact sequence itself; this
-/// wrapper exists only so `tests/supervisor_win.rs` (a separate
-/// integration-test crate, which can only ever reach `pub` items) can
-/// exercise the real lane without a second, divergent client
-/// implementation.
+/// challenge with a CALLER-CHOSEN build string, returning both the
+/// still-open connection and the raw outcome — a test's own way to drive
+/// the `hello`/`hello_ok`/`refused{version_skew}` exchange directly
+/// (never by sending a SECOND `hello` after an already-successful
+/// challenge already consumed the connection's one first-frame slot: the
+/// lane closes on a second `hello` exactly as it would on any other
+/// protocol violation). Gated behind `test-support` like
+/// `probe::ScriptedProbeOps` — a REAL client composes this exact sequence
+/// itself; this wrapper exists only so `tests/supervisor_win.rs` (a
+/// separate integration-test crate, which can only ever reach `pub`
+/// items) can exercise it without a second, divergent implementation.
+#[cfg(any(test, feature = "test-support"))]
+pub fn connect_and_challenge_with_build_for_test(
+    h: &str,
+    build: &str,
+) -> crate::Result<(pipe_win::PipeClient, ChallengeOutcome<ChallengedProcess>)> {
+    let conn = pipe_win::connect_supervisor_pipe_unchallenged(h)?;
+    let mut exchange = crate::exchange::SupervisorLaneExchange::new(build.to_string());
+    let outcome = challenge::challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
+    Ok((conn, outcome))
+}
+
+/// As [`connect_and_challenge_with_build_for_test`], using this crate's
+/// own build id (the correct-build, happy-path case every OTHER test
+/// needs) and collapsing the outcome to the connection plus the proof —
+/// `Err` for anything short of `Proven`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(pipe_win::PipeClient, ChallengedProcess)> {
-    let conn = pipe_win::connect_supervisor_pipe_unchallenged(h)?;
-    let mut exchange = crate::exchange::SupervisorLaneExchange::new(crate::exchange::SUPERVISOR_LANE_BUILD_ID);
-    match challenge::challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2)) {
+    let (conn, outcome) =
+        connect_and_challenge_with_build_for_test(h, crate::exchange::SUPERVISOR_LANE_BUILD_ID)?;
+    match outcome {
         ChallengeOutcome::Proven(process) => Ok((conn, process)),
         ChallengeOutcome::Foreign => Err(err_state("supervisor lane challenge: foreign")),
         ChallengeOutcome::Undetermined => Err(err_state("supervisor lane challenge: undetermined")),
@@ -449,18 +467,32 @@ fn end_run_over_mgmt_lane(voyage_id: &str, reason: &str) -> crate::Result<EndRun
 fn reset_pointer(state_dir: &Path, new_voyage: &str) -> crate::Result<()> {
     let live = pointer::pointer_path(state_dir);
     if live.exists() {
+        // Restate the source's own durability before renaming it aside —
+        // the pinned publication order's "source flush BEFORE the publish
+        // rename" (its CONTENT is already durable from its original
+        // publish, since nothing here rewrites it; this is belt-and-
+        // braces restating that fact, matching every other caller's own
+        // discipline rather than being the one that skips it).
+        crate::fsutil::fsync_file(&live).map_err(|e| {
+            err_state(format!("reset_pointer: flushing the live pointer {live:?} before renaming it aside: {e}"))
+        })?;
         let mut nonce_bytes = [0u8; 8];
         getrandom::fill(&mut nonce_bytes).map_err(std::io::Error::from)?;
         let nonce = u64::from_le_bytes(nonce_bytes);
         let aside = state_dir.join(format!("drawer.voyage.reset-{nonce:016x}"));
-        crate::fsutil::publish_noreplace(&live, &aside)?;
+        crate::fsutil::publish_noreplace(&live, &aside).map_err(|e| {
+            err_state(format!("reset_pointer: renaming {live:?} aside to {aside:?}: {e}"))
+        })?;
     }
-    std::fs::create_dir_all(voyages_dir(state_dir))?;
+    std::fs::create_dir_all(voyages_dir(state_dir))
+        .map_err(|e| err_state(format!("reset_pointer: creating {:?}: {e}", voyages_dir(state_dir))))?;
     let root = voyage_root_path(state_dir, new_voyage);
     if !root.exists() {
-        VoyageStore::bootstrap(&root, new_voyage, RetentionClass::Archive)?;
+        VoyageStore::bootstrap(&root, new_voyage, RetentionClass::Archive)
+            .map_err(|e| err_state(format!("reset_pointer: bootstrapping {root:?}: {e}")))?;
     }
-    pointer::publish(state_dir, new_voyage)?;
+    pointer::publish(state_dir, new_voyage)
+        .map_err(|e| err_state(format!("reset_pointer: publishing the new pointer for {new_voyage:?}: {e}")))?;
     Ok(())
 }
 
@@ -557,6 +589,15 @@ struct Conn {
     splitter: wire::FrameSplitter,
     hello_ok: bool,
     last_activity: Instant,
+    /// `true` once a reply meant to be this connection's LAST word (today:
+    /// `hello`'s own `refused {version_skew}`) has been queued via
+    /// `PipeServer::send` — `CloseHandle` does not promptly unstick or
+    /// even wait for an in-flight write, so closing immediately after
+    /// `send` can race the client seeing EOF before ever reading the
+    /// reply (the same discipline `capsule_win.rs`'s own shutdown ack
+    /// already observes). The close itself is deferred to that send's own
+    /// `TransportEvent::Sent` completion — see `service_lane`.
+    close_after_send: bool,
 }
 
 /// Everything the lane's own command/query/status handling needs —
@@ -786,7 +827,10 @@ fn service_lane(
     while let Ok(event) = lane.events().try_recv() {
         match event {
             TransportEvent::Accepted(id) => {
-                conns.insert(id, Conn { splitter: wire::FrameSplitter::new(), hello_ok: false, last_activity: now });
+                conns.insert(
+                    id,
+                    Conn { splitter: wire::FrameSplitter::new(), hello_ok: false, last_activity: now, close_after_send: false },
+                );
             }
             TransportEvent::Bytes(id, bytes) => {
                 handle_lane_bytes(lane, conns, id, &bytes, authority, active_leg_is_ready, now);
@@ -794,7 +838,16 @@ fn service_lane(
             TransportEvent::Closed(id, _reason) => {
                 conns.remove(&id);
             }
-            TransportEvent::Sent(_, _) => {}
+            TransportEvent::Sent(id, _marker) => {
+                // The one send this lane ever tags with a marker is a
+                // reply meant to be the connection's last word (`hello`'s
+                // own `refused {version_skew}`) — now provably physically
+                // written, so it is finally safe to close.
+                if conns.get(&id).is_some_and(|c| c.close_after_send) {
+                    lane.close(id);
+                    conns.remove(&id);
+                }
+            }
             TransportEvent::AcceptError(e) => {
                 eprintln!("sot-capsule supervise: supervisor lane accept error: {e}");
             }
@@ -833,8 +886,16 @@ fn handle_lane_bytes(
                             reason: wire::SupervisorRefusedReason::VersionSkew,
                         })
                         .expect("Refused encodes unconditionally");
-                        let _ = lane.send(id, reply, None);
-                        close_after = true;
+                        // The reply is this connection's last word, so the
+                        // close is deferred to its own physical-write
+                        // completion (`TransportEvent::Sent`, handled in
+                        // `service_lane`) rather than issued immediately
+                        // here — `CloseHandle` does not promptly unstick
+                        // or even wait for an in-flight write, so closing
+                        // right after `send` can race the client seeing
+                        // EOF before ever reading this reply.
+                        let _ = lane.send(id, reply, Some(id));
+                        conn.close_after_send = true;
                         break;
                     }
                     conn.hello_ok = true;
@@ -847,6 +908,17 @@ fn handle_lane_bytes(
                     })
                     .expect("HelloOk's build is this crate's own bounded constant");
                     let _ = lane.send(id, reply, None);
+                }
+                DecodedFrame::SupervisorRequest(SupervisorRequest::Hello { .. }) => {
+                    // `hello_ok` already true: a SECOND Hello is a
+                    // protocol violation ("Hello MUST be the first frame
+                    // of every connection") — close, never fall through
+                    // to `handle_request` below, which treats a `Hello`
+                    // reaching it as an internal invariant violation
+                    // (`unreachable!()`, a real crash on a malformed or
+                    // adversarial client before this arm existed).
+                    close_after = true;
+                    break;
                 }
                 DecodedFrame::SupervisorRequest(_) if !conn.hello_ok => {
                     // Hello must be the first frame of every connection.

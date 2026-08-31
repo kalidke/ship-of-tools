@@ -62,16 +62,6 @@ fn wait_for_lane(h: &str, timeout: Duration) -> sot_log::pipe_win::PipeClient {
     )
 }
 
-fn hello(conn: &sot_log::pipe_win::PipeClient) {
-    let reply = request_for_test(
-        conn,
-        &SupervisorRequest::Hello { proto: sot_log::wire::SUPERVISOR_PROTO_V1, build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string() },
-        Instant::now() + Duration::from_secs(5),
-    )
-    .expect("hello");
-    assert!(matches!(reply, SupervisorReply::HelloOk { .. }), "expected HelloOk, got {reply:?}");
-}
-
 fn status(conn: &sot_log::pipe_win::PipeClient) -> (Option<String>, Option<u64>, SupervisorPhase) {
     match request_for_test(conn, &SupervisorRequest::Status, Instant::now() + Duration::from_secs(5)).expect("status") {
         SupervisorReply::StatusOk { voyage, leg, phase, .. } => (voyage, leg, phase),
@@ -147,8 +137,12 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
     let child = spawn_supervisor(&state_dir, "--start", &["cmd.exe"]); // stays open until EndRun
     let mut guard = KillGuard(Some(child));
 
+    // `wait_for_lane` already ran the FULL same-connection challenge,
+    // whose own `hello`/`hello_ok` round trip IS this connection's hello
+    // — a second, explicit `hello` here would be a protocol violation
+    // (hello_ok is already latched) and the lane would correctly close
+    // the connection on it, not answer it.
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    hello(&conn);
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
     assert_eq!(query(&conn, "unused-op-id"), SupervisorOperationState::UnknownOperation);
@@ -314,25 +308,22 @@ fn a_mismatched_build_id_is_refused_and_the_connection_closes() {
 
     let child = spawn_supervisor(&state_dir, "--start", &["cmd.exe"]);
     let _guard = KillGuard(Some(child));
-    // `connect_and_challenge_for_test` already proves server identity;
-    // once proven, send a Hello with a WRONG build directly to exercise
-    // the version-skew path a real client's own would take.
-    let (conn, _process) = poll_until(
-        || connect_and_challenge_for_test(&h).ok(),
+    // The challenge's OWN `hello` IS the connection's one first frame —
+    // drive it directly with a WRONG build (never send a second, separate
+    // `hello` after a correct-build challenge already latched `hello_ok`;
+    // the lane closes on that as a protocol violation, not a version-skew
+    // refusal — see `full_lifecycle_...`'s own comment on this exact
+    // point).
+    let (_conn, outcome) = poll_until(
+        || sot_log::supervisor::connect_and_challenge_with_build_for_test(&h, "some-other-build").ok(),
         Duration::from_secs(30),
-        "the supervisor lane to accept and answer the challenge",
+        "the supervisor lane to accept a connection",
     );
-    let reply = request_for_test(
-        &conn,
-        &SupervisorRequest::Hello { proto: sot_log::wire::SUPERVISOR_PROTO_V1, build: "some-other-build".into() },
-        Instant::now() + Duration::from_secs(5),
-    )
-    .expect("a refusal is still one well-formed reply");
-    assert_eq!(
-        reply,
-        SupervisorReply::Refused { reason: sot_log::wire::SupervisorRefusedReason::VersionSkew }
+    assert!(
+        matches!(outcome, sot_log::challenge::ChallengeOutcome::Foreign),
+        "a wrong build must be classified Foreign (refused{{version_skew}}), got {outcome:?}"
     );
-    // `guard` reaps the supervisor process on drop below -- this test
+    // `_guard` reaps the supervisor process on drop below -- this test
     // only asserts the refusal itself.
 }
 
