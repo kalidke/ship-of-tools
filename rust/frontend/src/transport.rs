@@ -338,6 +338,21 @@ pub enum IncomingEvt {
         mime: String,
         bytes: Vec<u8>,
     },
+    /// A `figure.get` reached a terminal failure without ever producing
+    /// bytes — either the reply payload didn't parse as `PreviewGetRes`
+    /// (which covers both an explicit `{error, code}` envelope and any
+    /// other malformed reply, since `mime`/`blob` are required fields), or
+    /// the connection dropped before any reply arrived (`PendingGuard`
+    /// flushes outstanding `FigureGet` entries on `run_protocol` exit).
+    /// Field report: before this event existed, either case left `url`
+    /// stuck in `figure_pending` forever — `dispatch_pending_figures`
+    /// never retries anything already pending. The chrome reaches the
+    /// same terminal `figure_failed` state this drives for a decode
+    /// failure, so the layout still collapses instead of holding an empty
+    /// reservation.
+    FigureGetFailed {
+        url: String,
+    },
     /// A MathJax-rendered SVG blob arrived. Carries the `latex` and
     /// `display` flag from the originating `MathRender` request so the
     /// chrome can route it into its `(latex, display)`-keyed cache.
@@ -1243,6 +1258,98 @@ enum PendingKind {
     MonitorHistory,
 }
 
+/// RAII wrapper around `run_protocol`'s per-connection reply-correlation
+/// map. `run_protocol` can exit through many paths — a bad read/write via
+/// `?`, hello rejection, the outer reconnect loop tearing the task down —
+/// and every one of them used to just drop the map in place, silently
+/// discarding whatever requests were still in flight. For most
+/// `PendingKind`s that's harmless (the UI re-fires on the next user
+/// action), but a lost `FigureGet` has no such recovery: the GPU side's
+/// `figure_pending` has no way to learn the reply is never coming, so
+/// `dispatch_pending_figures` treats the url as "still in flight" forever
+/// (field report round 2). `Drop` is the one place that runs on every exit
+/// path without needing to touch each of them, so it carries the
+/// invariant here: every fired `figure.get` terminates in exactly one of
+/// `FigureLoaded` / `FigureGetFailed`, connection loss included.
+///
+/// `Deref`/`DerefMut` to the inner map so every existing `pending.insert`
+/// / `&mut pending` call site in `run_protocol` needs no change.
+struct PendingGuard<'a> {
+    map: HashMap<u64, PendingKind>,
+    evt_tx: &'a StdSender<IncomingEvt>,
+}
+
+impl std::ops::Deref for PendingGuard<'_> {
+    type Target = HashMap<u64, PendingKind>;
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl std::ops::DerefMut for PendingGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.map
+    }
+}
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        let urls: Vec<String> = self
+            .map
+            .drain()
+            .filter_map(|(_, kind)| match kind {
+                PendingKind::FigureGet { url } => Some(url),
+                _ => None,
+            })
+            .collect();
+        for url in urls {
+            let _ = self.evt_tx.send(IncomingEvt::FigureGetFailed { url });
+        }
+    }
+}
+
+/// Send one `figure.get` request. Extracted from the `OutgoingReq::FigureGet`
+/// arm of `run_protocol`'s dispatch loop so the ordering that fixes a
+/// round-2 review finding is a) shared, not duplicated, and b) directly
+/// testable with a writer that fails, independent of the full connection/
+/// handshake machinery `run_protocol` otherwise requires.
+///
+/// `pending` is updated BEFORE the write below, not after: `write_frame`
+/// awaits a fallible `write_all`/`flush`, and on that error this function's
+/// `?` propagates out of `run_protocol` entirely — the exact case
+/// `PendingGuard`'s `Drop` exists to catch, but only for entries the map
+/// already contains. Inserting first is safe: a reply cannot arrive before
+/// the request even reaches the backend, and `id` is a freshly allocated,
+/// never-reused key (`take_id`), so there's no live entry this could
+/// collide with.
+async fn send_figure_get<W: AsyncWrite + Unpin>(
+    tx: &mut W,
+    pending: &mut HashMap<u64, PendingKind>,
+    id: u64,
+    url: String,
+    node_id: String,
+    workspace_id: Option<String>,
+) -> Result<()> {
+    pending.insert(id, PendingKind::FigureGet { url });
+    codec::write_frame(
+        tx,
+        &Frame::req(
+            id,
+            op::PREVIEW_GET,
+            serde_json::to_value(PreviewGetReq {
+                node_id,
+                workspace_id,
+                page: None,
+                fit_w: None,
+                fit_h: None,
+            })?,
+        ),
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Create the outgoing-request channel paired with the transport task. The
 /// sender lives on the GPU thread; the receiver gets handed to `spawn`. Both
 /// sides drop their handle on shutdown — that's how the writer half of the
@@ -1440,7 +1547,14 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut next_id: u64 = 1;
-    let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+    // PendingGuard, not a bare HashMap: its Drop flushes any surviving
+    // FigureGet entries as FigureGetFailed on every exit path this
+    // function has (see the type's doc comment) — the fix for a
+    // connection dropping between a figure.get and its reply.
+    let mut pending = PendingGuard {
+        map: HashMap::new(),
+        evt_tx,
+    };
 
     // Reconnect memory: client_id stays stable across runs; session_id +
     // last_seen_revision feed the backend's replay path. First-ever launch
@@ -2079,23 +2193,8 @@ where
                     }
                     OutgoingReq::FigureGet { url, node_id, workspace_id } => {
                         tracing::debug!(%url, %node_id, ?workspace_id, id, "→ figure.get (preview.get)");
-                        codec::write_frame(
-                            &mut tx,
-                            &Frame::req(
-                                id,
-                                op::PREVIEW_GET,
-                                serde_json::to_value(PreviewGetReq {
-                                    node_id,
-                                    workspace_id,
-                                    page: None,
-                                    fit_w: None,
-                                    fit_h: None,
-                                })?,
-                            ),
-                            None,
-                        )
-                        .await?;
-                        pending.insert(id, PendingKind::FigureGet { url });
+                        send_figure_get(&mut tx, &mut pending, id, url, node_id, workspace_id)
+                            .await?;
                     }
                     OutgoingReq::FunctionMethods { module, name, workspace_id } => {
                         tracing::debug!(%module, %name, ?workspace_id, id, "→ kernel.request function.methods");
@@ -3052,6 +3151,18 @@ fn handle_response_frame(
                 // Same wire shape as PreviewGet, routed to the chrome's
                 // figure cache via a different IncomingEvt so the
                 // active markdown buffer isn't replaced.
+                //
+                // Field report: an early `figure.get` (fired before the
+                // backend has the target PNG yet) answers with `{error,
+                // code}` — this used to warn-and-drop with no event at
+                // all, so `url` never left `figure_pending` and every
+                // later reload skipped it forever (dispatch_pending_figures
+                // treats "pending" as "already in flight, don't refire").
+                // No separate check for the error envelope is needed:
+                // `PreviewGetRes` requires `mime` and `blob`, neither of
+                // which an `{error, code}` payload carries, so it always
+                // falls into the parse-failure arm below — one path,
+                // both causes, both terminate as `FigureGetFailed`.
                 match serde_json::from_value::<PreviewGetRes>(frame.payload) {
                     Ok(res) => {
                         let _ = evt_tx.send(IncomingEvt::FigureLoaded {
@@ -3061,7 +3172,8 @@ fn handle_response_frame(
                         });
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, %url, "figure.get res parse failed");
+                        tracing::warn!(error = %e, %url, "figure.get failed or unparseable");
+                        let _ = evt_tx.send(IncomingEvt::FigureGetFailed { url });
                     }
                 }
                 return;
@@ -3725,4 +3837,189 @@ fn tmux_op_result(payload: &Value) -> Result<String, String> {
         .unwrap_or_default()
         .to_string();
     Ok(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Real-seam regression for the round-1 fix: an `{error, code}` reply to
+    /// a `figure.get` must produce EXACTLY one `FigureGetFailed`, driven
+    /// through the actual `handle_response_frame` dispatcher (not a
+    /// reimplementation of its logic) — and must consume the pending entry
+    /// so nothing is left to strand.
+    #[test]
+    fn figure_get_error_envelope_emits_exactly_one_figure_get_failed() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+        pending.insert(
+            7,
+            PendingKind::FigureGet {
+                url: "figures/dead.png".to_string(),
+            },
+        );
+        let frame = Frame::res(
+            7,
+            op::PREVIEW_GET,
+            serde_json::json!({"error": "not_found", "code": "not_found"}),
+        );
+        handle_response_frame(frame, None, &mut pending, &evt_tx);
+
+        let events: Vec<IncomingEvt> = evt_rx.try_iter().collect();
+        assert_eq!(
+            events.len(),
+            1,
+            "exactly one event for one figure.get error reply, got {events:?}"
+        );
+        match &events[0] {
+            IncomingEvt::FigureGetFailed { url } => assert_eq!(url, "figures/dead.png"),
+            other => panic!("expected FigureGetFailed, got {other:?}"),
+        }
+        assert!(
+            pending.is_empty(),
+            "the reply must consume its pending entry"
+        );
+    }
+
+    /// A malformed-but-not-explicit-error payload (missing the required
+    /// `mime`/`blob` fields without an `error` key either) must ALSO reach
+    /// `FigureGetFailed` through the same parse-failure arm — this is what
+    /// makes the explicit error-envelope pre-check provably redundant
+    /// (deleted per the round-1 simplicity audit).
+    #[test]
+    fn figure_get_unparseable_reply_without_error_key_still_fails_terminal() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+        pending.insert(
+            9,
+            PendingKind::FigureGet {
+                url: "figures/weird.png".to_string(),
+            },
+        );
+        let frame = Frame::res(9, op::PREVIEW_GET, serde_json::json!({"unexpected": true}));
+        handle_response_frame(frame, None, &mut pending, &evt_tx);
+
+        let events: Vec<IncomingEvt> = evt_rx.try_iter().collect();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], IncomingEvt::FigureGetFailed { url } if url == "figures/weird.png"));
+    }
+
+    /// Fix 2 (disconnect strands pending forever): dropping the guard —
+    /// standing in for `run_protocol` returning through any of its exit
+    /// paths — must flush every outstanding `FigureGet` as
+    /// `FigureGetFailed`, and must NOT invent events for other pending
+    /// kinds (those have no permanent-skip state on the GPU side, so
+    /// losing them silently on disconnect is the pre-existing, accepted
+    /// behavior).
+    #[test]
+    fn pending_guard_flushes_figure_gets_on_drop_not_other_kinds() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        {
+            let mut guard = PendingGuard {
+                map: HashMap::new(),
+                evt_tx: &evt_tx,
+            };
+            guard.insert(
+                1,
+                PendingKind::FigureGet {
+                    url: "figures/a.png".to_string(),
+                },
+            );
+            guard.insert(
+                2,
+                PendingKind::FigureGet {
+                    url: "figures/b.png".to_string(),
+                },
+            );
+            guard.insert(3, PendingKind::PtyOpen);
+            // `guard` drops here — the connection-loss scenario.
+        }
+        let mut urls: Vec<String> = evt_rx
+            .try_iter()
+            .map(|evt| match evt {
+                IncomingEvt::FigureGetFailed { url } => url,
+                other => panic!("only FigureGet entries should flush on drop, got {other:?}"),
+            })
+            .collect();
+        urls.sort();
+        assert_eq!(
+            urls,
+            vec!["figures/a.png".to_string(), "figures/b.png".to_string()]
+        );
+    }
+
+    /// Minimal `AsyncWrite` that fails every write — simulates the
+    /// transport socket breaking mid-request without a real socket pair.
+    struct FailingWriter;
+
+    impl AsyncWrite for FailingWriter {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "simulated write failure",
+            )))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Round-2 review finding: `pending.insert` used to run AFTER the
+    /// fallible write, so a write failure stranded the request — the
+    /// guard's Drop found nothing to flush because the entry was never
+    /// added. This drives the REAL send path (`send_figure_get`, the same
+    /// function `run_protocol` calls) against a writer that always fails,
+    /// then drops the guard exactly as `run_protocol` does on that `?`
+    /// exit, and asserts the request still reaches `FigureGetFailed` —
+    /// proving the insert-before-write ordering, not a reimplementation
+    /// of it.
+    #[tokio::test]
+    async fn write_failure_flushes_via_guard_because_insert_precedes_the_write() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut writer = FailingWriter;
+        {
+            let mut guard = PendingGuard {
+                map: HashMap::new(),
+                evt_tx: &evt_tx,
+            };
+            let result = send_figure_get(
+                &mut writer,
+                &mut guard,
+                42,
+                "figures/never-sent.png".to_string(),
+                "files:a/b.md".to_string(),
+                None,
+            )
+            .await;
+            assert!(result.is_err(), "the simulated write must fail");
+            assert!(
+                guard.contains_key(&42),
+                "the entry must already be in the map when the write fails"
+            );
+            // `guard` drops here — the same `?` exit `run_protocol` takes.
+        }
+        let events: Vec<IncomingEvt> = evt_rx.try_iter().collect();
+        assert_eq!(
+            events.len(),
+            1,
+            "the stranded request must flush exactly once, got {events:?}"
+        );
+        assert!(matches!(
+            &events[0],
+            IncomingEvt::FigureGetFailed { url } if url == "figures/never-sent.png"
+        ));
+    }
 }

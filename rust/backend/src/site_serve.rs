@@ -733,3 +733,161 @@ mod bind_fallback_tests {
         assert_ne!(bound, taken, "must not claim the squatted port");
     }
 }
+
+#[cfg(test)]
+mod prefix_serve_tests {
+    use super::*;
+
+    /// Write `contents` at `root/rel`, creating parent directories as needed.
+    fn write_asset(root: &Path, rel: &str, contents: &[u8]) {
+        let full = root.join(rel);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(full, contents).unwrap();
+    }
+
+    /// Issue a raw `GET path` against the prefix server at `addr` and return
+    /// `(status_code, content_type, body)`. Minimal hand-rolled HTTP/1.1
+    /// client — mirrors the server's own hand-rolled parsing, no crate needed
+    /// for a handful of headers over loopback.
+    ///
+    /// `read_to_end` is bounded by a timeout (codex review): every response
+    /// here closes the connection (`Connection: close`), so a healthy server
+    /// always hits EOF quickly — a server-side regression that stops writing
+    /// or stops closing should fail this test fast, not hang the CI job
+    /// until its overall timeout.
+    async fn get(addr: std::net::SocketAddr, path: &str) -> (u16, Option<String>, Vec<u8>) {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(format!("GET {path} HTTP/1.1\r\nConnection: close\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut raw = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream.read_to_end(&mut raw),
+        )
+        .await
+        .expect("server did not close the connection within 5s")
+        .unwrap();
+        let split = raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("response must have a header/body separator");
+        let head = String::from_utf8_lossy(&raw[..split]);
+        let body = raw[split + 4..].to_vec();
+        let mut lines = head.split("\r\n");
+        let status_line = lines.next().unwrap_or("");
+        let status: u16 = status_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let ctype = lines.find_map(|l| {
+            l.split_once(':').and_then(|(k, v)| {
+                k.trim()
+                    .eq_ignore_ascii_case("content-type")
+                    .then(|| v.trim().to_string())
+            })
+        });
+        (status, ctype, body)
+    }
+
+    /// Field-report regression: `docs.open`/`o` need the WHOLE site reachable
+    /// under one root, not just the entry file — a synthetic site with a
+    /// stylesheet, a script, an image, and a nested page all linked
+    /// page-relatively, all served with the right content-type, plus the
+    /// traversal guard refusing an escape past the root.
+    #[tokio::test]
+    async fn serves_index_and_relative_subresources_refuses_traversal() {
+        let base = std::env::temp_dir().join(format!(
+            "sot-site-serve-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = base.join("site");
+        std::fs::create_dir_all(&root).unwrap();
+        write_asset(
+            &root,
+            "index.html",
+            b"<html><head><link rel=stylesheet href=assets/site.css>\
+              <script src=assets/site.js></script></head>\
+              <body><img src=figures/x.png><a href=pages/two.html>two</a></body></html>",
+        );
+        write_asset(&root, "assets/site.css", b"body{}");
+        write_asset(&root, "assets/site.js", b"console.log(1)");
+        write_asset(&root, "figures/x.png", &[0x89, b'P', b'N', b'G']);
+        write_asset(&root, "pages/two.html", b"<html>two</html>");
+        // Outside the root — a canonicalizing traversal target that EXISTS
+        // (so the guard is proven by the root-containment check, not just
+        // by the file happening not to exist).
+        std::fs::write(base.join("secret.txt"), b"nope").unwrap();
+
+        // Serial far outside anything other tests in this file produce
+        // (pool_tests uses 9_000_000_00x) — parallel test runs share the
+        // same static maps.
+        const SERIAL: u64 = 8_000_000_001;
+        let nonce = set_root(SERIAL, root.clone()).expect("set_root");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        tokio::spawn(async move {
+                            let _ = handle_conn(stream, ServeMode::Prefix).await;
+                        });
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let (status, ctype, body) = get(addr, &format!("/{nonce}/")).await;
+        assert_eq!(status, 200, "index via directory-index");
+        assert_eq!(ctype.as_deref(), Some("text/html; charset=utf-8"));
+        assert!(!body.is_empty());
+
+        for (rel, expected_ctype, expected_body) in [
+            (
+                "assets/site.css",
+                "text/css; charset=utf-8",
+                Some(&b"body{}"[..]),
+            ),
+            (
+                "assets/site.js",
+                "text/javascript; charset=utf-8",
+                Some(&b"console.log(1)"[..]),
+            ),
+            ("figures/x.png", "image/png", None),
+            (
+                "pages/two.html",
+                "text/html; charset=utf-8",
+                Some(&b"<html>two</html>"[..]),
+            ),
+        ] {
+            let (status, ctype, body) = get(addr, &format!("/{nonce}/{rel}")).await;
+            assert_eq!(status, 200, "GET {rel} should 200");
+            assert_eq!(
+                ctype.as_deref(),
+                Some(expected_ctype),
+                "GET {rel} content-type"
+            );
+            if let Some(expected) = expected_body {
+                assert_eq!(body, expected, "GET {rel} body");
+            }
+        }
+
+        // A `../` escape past the root is refused even though the target
+        // exists on disk.
+        let (status, _, _) = get(addr, &format!("/{nonce}/../secret.txt")).await;
+        assert_eq!(status, 404, "traversal escape must be refused");
+
+        remove_root(SERIAL);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}

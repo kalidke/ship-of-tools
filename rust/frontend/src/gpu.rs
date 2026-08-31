@@ -352,6 +352,34 @@ struct WorkspaceUiSnapshot {
     /// swap-in we feed this back through `render_preview_source` to
     /// rebuild the preview pane without a fresh `preview.get`.
     preview_src: Option<(String, Vec<u8>)>,
+    /// The node id the `Preview` reply that installed `preview_src`
+    /// actually answered — MUST travel with it (same discipline as
+    /// `preview_scale` below). Distinct from `preview_node_id_fired`,
+    /// which flips the moment a NEW request is dispatched: between firing
+    /// request B and B's reply landing, `preview_node_id_fired` already
+    /// says B while `preview_src` (and this field) still hold A. Field
+    /// report round 2: `previewed_files_path()` used to read
+    /// `preview_node_id_fired`, so `o`/`W`/`O` pressed in that window
+    /// routed against the file that was ABOUT to be shown, not the one
+    /// on screen.
+    preview_src_node_id: Option<String>,
+    /// Terminally-failed figure URLs for the markdown doc in `preview_src`
+    /// — MUST travel with it, alongside `current_md_node_id` and
+    /// `current_md_workspace_id` below. Round-2 review finding: these
+    /// three are provenance companions of the shown doc, not global
+    /// state. Without snapshotting them, a workspace switch let workspace
+    /// B's cursor-driven markdown reload clear workspace A's cached
+    /// failures (a global `figure_failed.clear()`, since the field lived
+    /// only on `State`), switching back to A could refire A's already-
+    /// failed figure, B's surviving failures could wrongly collapse A's
+    /// healthy one, and A's restored figure fetch could resolve against
+    /// B's `current_md_node_id`/`current_md_workspace_id` — the wrong
+    /// directory or project entirely.
+    figure_failed: std::collections::HashSet<String>,
+    /// See `figure_failed` above.
+    current_md_node_id: Option<String>,
+    /// See `figure_failed` above.
+    current_md_workspace_id: Option<String>,
     /// Physical scale (ADR 0034) of the raster in `preview_src`. MUST travel
     /// with it: `preview_scale` is otherwise only ever set by a `preview.get`
     /// wire reply, and swap-in deliberately rebuilds the pane from the cached
@@ -670,6 +698,68 @@ fn resolve_figure_node_id(md_node_id: &Option<String>, url: &str) -> Option<Stri
         return None;
     }
     Some(format!("files:{}", stack.join("/")))
+}
+
+/// Move `url` out of `pending` and into `failed` — the one terminal state
+/// a figure fetch can land in, whether the bytes never arrived at all
+/// (`figure.get` error / parse failure) or arrived but wouldn't decode.
+/// Shared by both so there's a single place that defines "this figure is
+/// done, stop waiting on it."
+fn fail_figure(
+    pending: &mut std::collections::HashSet<String>,
+    failed: &mut std::collections::HashSet<String>,
+    url: String,
+) {
+    pending.remove(&url);
+    failed.insert(url);
+}
+
+/// Whether `dispatch_pending_figures` should skip firing a fetch for
+/// `url` — already resolved (`cache_hit`), already in flight (`pending`),
+/// or terminally failed (`failed`). `failed` membership is the durable
+/// half of this check: it holds until the ONE seam that clears it (a
+/// fresh `IncomingEvt::Preview` markdown reply) runs, which is what makes
+/// a terminal failure actually terminal instead of refiring on every
+/// cached-bytes reflow (field report round 2 — see the note in
+/// `render_preview_source`).
+fn figure_already_handled(
+    cache_hit: bool,
+    pending: &std::collections::HashSet<String>,
+    failed: &std::collections::HashSet<String>,
+    url: &str,
+) -> bool {
+    cache_hit || pending.contains(url) || failed.contains(url)
+}
+
+/// Pure resolution behind `State::previewed_files_path`: routes from
+/// `installed` alone — never a merely-REQUESTED node id, which is the
+/// field report round-2 bug (`o`/`W`/`O` pressed between firing a new
+/// preview request and its reply landing used to act on the file about to
+/// be shown, not the one on screen). Callers pass
+/// `State::preview_src_node_id` — the node the currently-installed
+/// `preview_src` reply answered — as `installed`; this function's
+/// signature has no room for a "fired but not yet replied" id at all,
+/// which is what makes that class of bug structurally unreachable here
+/// rather than merely avoided.
+///
+/// Round-2 review ruling: does NOT also check a pin. `pinned_preview_node_id`
+/// is stamped straight from the CURSOR row (`toggle_pin`), not from an
+/// installed reply — pinning a row before its preview arrives (cursor
+/// moved fast, or `maybe_fire_preview`'s pinned-preview guard means it
+/// never will) would let a pin outrun what's on screen exactly like a
+/// fired-but-not-replied request does, and persistently since a pin
+/// suppresses the normal refetch. `o`/`W`/`O` act on what is VISIBLE,
+/// period — when a pinned preview IS what's installed, `installed`
+/// already equals it, so nothing is lost in the common case.
+fn resolve_previewed_path(installed: Option<&str>, root: Option<&str>) -> Option<String> {
+    let id = installed?;
+    let rel = id.strip_prefix("files:")?;
+    if rel.is_empty() {
+        return None;
+    }
+    let root = root?;
+    let trimmed = root.trim_end_matches(['/', '\\']);
+    Some(format!("{trimmed}/{rel}"))
 }
 
 /// Pull `synced_against: <value>` out of a markdown file's leading YAML
@@ -3394,6 +3484,10 @@ struct State {
     /// change can rebuild the preview at the new scale without a
     /// round-trip back to the backend. Cleared on disconnect.
     preview_src: Option<(String, Vec<u8>)>,
+    /// The node id of the reply that installed `preview_src` — see the
+    /// `WorkspaceUiSnapshot` field of the same name for why this is a
+    /// distinct field from `preview_node_id_fired`.
+    preview_src_node_id: Option<String>,
 }
 
 /// Wire shape for `application/vnd.sot.tokens+json` from the
@@ -4523,6 +4617,7 @@ impl State {
             history_saved: None,
             text_scale_mult: 1.0,
             preview_src: None,
+            preview_src_node_id: None,
         };
         // `--demo-sessions a,b:working,c` (capture harness): seed the
         // workspace strip offline so the bottom session strip renders without
@@ -6283,6 +6378,10 @@ impl State {
                 preview_node_id_fired: self.preview_node_id_fired.clone(),
                 pinned_preview_node_id: self.pinned_preview_node_id.clone(),
                 preview_src: self.preview_src.clone(),
+                preview_src_node_id: self.preview_src_node_id.clone(),
+                figure_failed: self.figure_failed.clone(),
+                current_md_node_id: self.current_md_node_id.clone(),
+                current_md_workspace_id: self.current_md_workspace_id.clone(),
                 preview_scale: self.preview_scale.clone(),
                 concept: self.concept.clone(),
                 file_ast_hashes: self.file_ast_hashes.clone(),
@@ -6348,6 +6447,22 @@ impl State {
         // on it) uses THIS workspace's scale, never the one the departing
         // workspace happened to leave in place.
         self.preview_scale = snap.preview_scale.clone();
+        // Travels with preview_src for the same reason preview_scale does:
+        // the restored bytes are THIS workspace's, and `o`/`W`/`O` must
+        // route against this workspace's file, not whatever the departing
+        // workspace last had in flight.
+        self.preview_src_node_id = snap.preview_src_node_id.clone();
+        // Round-2 review finding: these three are provenance companions of
+        // `preview_src`, not global state — restore them BEFORE
+        // render_preview_source below, since its markdown branch reads all
+        // three (figure_failed via figure_already_handled,
+        // current_md_node_id/current_md_workspace_id to resolve relative
+        // `![](url)`s). Restoring after would let this workspace's figures
+        // dispatch against whichever OTHER workspace happened to leave
+        // these set last.
+        self.figure_failed = snap.figure_failed.clone();
+        self.current_md_node_id = snap.current_md_node_id.clone();
+        self.current_md_workspace_id = snap.current_md_workspace_id.clone();
         if let Some((mime, bytes)) = snap.preview_src.clone() {
             self.preview_src = Some((mime.clone(), bytes.clone()));
             self.render_preview_source(&mime, &bytes);
@@ -6484,6 +6599,16 @@ impl State {
             self.preview_node_id_fired = None;
             self.pinned_preview_node_id = None;
             self.preview_src = None;
+            self.preview_src_node_id = None;
+            // Same invariant as the snapshot restore: a first-visited
+            // workspace must not inherit whatever the departing workspace
+            // left in these — a stale current_md_node_id/workspace_id
+            // would resolve THIS workspace's first figure fetch against
+            // the WRONG project, and a stale figure_failed would collapse
+            // figures that are perfectly healthy here.
+            self.figure_failed.clear();
+            self.current_md_node_id = None;
+            self.current_md_workspace_id = None;
             // Same invariant as the snapshot restore: the calibration belongs
             // to the previewed raster, so clearing the preview must clear the
             // scale. Otherwise a first visit inherits the departing
@@ -7420,10 +7545,12 @@ impl State {
             let crate::preview::markdown::MediaBlock::Figure { url, .. } = block else {
                 continue;
             };
-            if self.figure_cache.contains_key(&url)
-                || self.figure_pending.contains(&url)
-                || self.figure_failed.contains(&url)
-            {
+            if figure_already_handled(
+                self.figure_cache.contains_key(&url),
+                &self.figure_pending,
+                &self.figure_failed,
+                &url,
+            ) {
                 continue;
             }
             let Some(node_id) = resolve_figure_node_id(&md_node_id, &url) else {
@@ -7593,34 +7720,53 @@ impl State {
     }
 
     /// Preview-pane analogue of `cursored_files_path`: the path of the file
-    /// whose preview is currently SHOWING (pinned wins over last-fired).
-    /// This can differ from the nav cursor — pinned previews, badge-consumed
-    /// previews — so open-style keys pressed with preview focus act on what
-    /// the user is LOOKING AT. Callers fall back to the cursored row when
-    /// the shown preview isn't a files-mode node.
+    /// whose preview is currently SHOWING. This can differ from the nav
+    /// cursor — badge-consumed previews, or a cursor that's outrun its own
+    /// preview reply — so open-style keys pressed with preview focus act
+    /// on what the user is LOOKING AT. Callers fall back to the cursored
+    /// row when the shown preview isn't a files-mode node.
+    ///
+    /// Deliberately reads `preview_src_node_id` (the node the INSTALLED
+    /// reply answered) alone — not `preview_node_id_fired` (the node the
+    /// most recent REQUEST asked for: field report round 2, a request
+    /// racing ahead of its own reply) and not `pinned_preview_node_id`
+    /// (round-2 ruling: a pin is stamped from the cursor row, not from an
+    /// installed reply, so it can equally outrun what's shown — and
+    /// persistently, since `maybe_fire_preview` refuses to fetch anything
+    /// while pinned). `o`/`W`/`O` act on what is VISIBLE, period; when a
+    /// pinned preview IS what's installed, `preview_src_node_id` already
+    /// equals it.
     fn previewed_files_path(&self) -> Option<String> {
-        let id = self
-            .pinned_preview_node_id
-            .as_deref()
-            .or(self.preview_node_id_fired.as_deref())?;
-        let rel = id.strip_prefix("files:")?;
-        if rel.is_empty() {
-            return None;
-        }
-        let root = self.active_project_root()?;
-        let trimmed = root.trim_end_matches(['/', '\\']);
-        Some(format!("{trimmed}/{rel}"))
+        resolve_previewed_path(
+            self.preview_src_node_id.as_deref(),
+            self.active_project_root().as_deref(),
+        )
     }
 
-    /// `o` — open `abs` in the right external tool: an html preview body →
-    /// temp file + OS browser; `.jl` → backend `pluto.open` (header-checked
-    /// there); video → backend `video.open` (browser HTML5 playback);
-    /// `.qmd` → quick Quarto render (no execution). Shared by the NavTree
-    /// and Preview key arms (same behavior on the cursored / shown file).
+    /// `o` — open `abs` in the right external tool: an html preview body
+    /// with a real fs source → the same `docs.open` request `W` sends
+    /// (full CSS/JS/image fidelity, via `previewed_files_path`); a
+    /// sourceless html preview → temp file + OS browser (nothing reaches
+    /// this today — `.html`/`.htm` is the only route to `text/html`, and
+    /// the Quarto `--embed-resources` quick-open path is a separate
+    /// `IncomingEvt::QuartoOpened` handler that never sets `preview_src`
+    /// — but the fallback is the honest thing to do if that ever
+    /// changes); `.jl` → backend `pluto.open` (header-checked there);
+    /// video → backend `video.open` (browser HTML5 playback); `.qmd` →
+    /// quick Quarto render (no execution). Shared by the NavTree and
+    /// Preview key arms (same behavior on the cursored / shown file).
     fn open_path_external(&mut self, abs: Option<String>) {
         let preview_mime = self.preview_src.as_ref().map(|(m, _)| m.clone());
         if preview_mime.as_deref() == Some("text/html") {
-            if let Some((_, bytes)) = self.preview_src.as_ref() {
+            // Field report: this used to always write the cached
+            // preview bytes to a temp file — relative CSS/JS/images/
+            // page links then resolve under the temp dir and 404. When
+            // the preview traces to a real on-disk file, route through
+            // `docs.open` instead (ADR 0024's site server, full asset
+            // fidelity) — the same request `W` dispatches today.
+            if let Some(path) = self.previewed_files_path() {
+                self.docs_open_external(path);
+            } else if let Some((_, bytes)) = self.preview_src.as_ref() {
                 if let Err(e) = open_html_in_browser(bytes) {
                     tracing::warn!(error = %e, "failed to open preview in browser");
                 }
@@ -8769,6 +8915,19 @@ impl State {
             self.preview_scroll = 0;
         } else if mime == "text/markdown" || mime == "text/x-markdown" {
             if let Ok(s) = std::str::from_utf8(bytes) {
+                // NOTE: `figure_failed` is deliberately NOT touched here.
+                // This function is also the cached-source REFLOW callback
+                // (apply_text_scale, the needs_md_reflow redraw path,
+                // workspace-switch restore) — none of those are new
+                // evidence a failed figure now exists, only a re-render of
+                // bytes already on hand. Clearing here once caused a
+                // request storm: a failure sets needs_md_reflow, the next
+                // redraw re-entered this function, cleared the failure,
+                // and dispatch_pending_figures refired the same doomed
+                // request every frame, forever (field report round 2).
+                // The clear lives at the actual fresh-reply seam instead —
+                // the `IncomingEvt::Preview` handler, right before it
+                // calls this function.
                 let math_metrics = self.build_math_metrics();
                 let figure_metrics = self.build_figure_metrics();
                 self.preview_md = MarkdownPreview::new(
@@ -10196,6 +10355,13 @@ impl State {
                     // can re-render at the new scale without a
                     // round-trip to the backend.
                     self.preview_src = Some((mime.clone(), bytes.clone()));
+                    // Field report round 2: stamp the node THIS reply
+                    // actually answered, not the last one requested —
+                    // `previewed_files_path()` reads this so `o`/`W`/`O`
+                    // route against what's actually painted even when a
+                    // newer request is already in flight ahead of its
+                    // reply.
+                    self.preview_src_node_id = node_id.clone();
                     // Pagination state (ADR 0021): present only when the
                     // serving plugin reported page extras; anything else
                     // (including a later unpaginated reply for a new
@@ -10257,6 +10423,18 @@ impl State {
                     // (otherwise active_workspace_id drift sends the
                     // request to a project that doesn't have the file).
                     if matches!(mime.as_str(), "text/markdown" | "text/x-markdown") {
+                        // A fresh preview.get REPLY landing here (as
+                        // opposed to a cached-bytes reflow — see the note
+                        // in render_preview_source) is the one genuine
+                        // "this document just reloaded" event: new
+                        // evidence that a figure which failed before
+                        // (fired before its target existed) may exist
+                        // now. Clear the failure set here, once, so the
+                        // walk render_preview_source is about to run
+                        // gets a clean shot at every `![](url)` via
+                        // dispatch_pending_figures. figure_cache hits and
+                        // in-flight figure_pending entries are untouched.
+                        self.figure_failed.clear();
                         if let Some(id) = node_id.as_ref() {
                             self.current_md_node_id = Some(id.clone());
                             self.current_md_workspace_id = workspace_id;
@@ -10354,11 +10532,25 @@ impl State {
                             // compact fallback on the next reflow rather
                             // than leaving an empty box that will never
                             // be painted over.
-                            self.figure_failed.insert(url);
+                            fail_figure(&mut self.figure_pending, &mut self.figure_failed, url);
                             self.needs_md_reflow = true;
                             self.window.request_redraw();
                         }
                     }
+                }
+                crate::transport::IncomingEvt::FigureGetFailed { url } => {
+                    // `figure.get` answered with an `{error, code}`
+                    // envelope or failed to parse — the bytes never
+                    // arrived at all (field report: this used to
+                    // warn-and-drop with no event, leaving `url` stuck
+                    // in `figure_pending` forever since
+                    // `dispatch_pending_figures` never refires anything
+                    // already pending). Same terminal collapse as a
+                    // decode failure above.
+                    tracing::warn!(%url, "figure.get failed — collapsing to compact fallback");
+                    fail_figure(&mut self.figure_pending, &mut self.figure_failed, url);
+                    self.needs_md_reflow = true;
+                    self.window.request_redraw();
                 }
                 crate::transport::IncomingEvt::MathRendered {
                     latex,
@@ -11574,9 +11766,14 @@ impl State {
                 crate::transport::IncomingEvt::QuartoOpened { result } => {
                     match result {
                         Ok(html) => {
-                            // Backend rendered a self-contained HTML; write a
-                            // temp file + OS-open it (same path as a text/html
-                            // preview's `o`).
+                            // Backend rendered a self-contained HTML with no
+                            // backing file of its own (`--embed-resources`
+                            // inlines every asset) — there's no fs path to
+                            // route through `docs.open`, so this is the
+                            // ONE legitimate caller of the temp-byte open
+                            // left; a sourced `text/html` preview's `o`
+                            // goes through `docs.open` instead (see
+                            // `open_path_external`).
                             if let Err(e) = open_html_in_browser(&html) {
                                 tracing::warn!(error = %e, "quarto: open_html_in_browser failed");
                                 self.status = format!("quarto.open browser-launch failed · {e}");
@@ -19785,6 +19982,72 @@ mod tests {
         assert!(!is_raster_preview_mime("image/svg+xml"));
         assert!(!is_raster_preview_mime("text/plain; charset=utf-8"));
         assert!(!is_raster_preview_mime("application/json"));
+    }
+
+    // --- Bug 1: an early `figure.get` failure must reach a terminal state
+    // (not warn-and-drop), and a markdown reload must make a previously-
+    // failed figure URL retryable — but nothing SHORT of that reload (in
+    // particular, a cached-bytes reflow) may clear it, or the failure
+    // refires every frame forever (round-2 field report). ---
+
+    #[test]
+    fn fail_figure_clears_pending_and_marks_failed() {
+        let mut pending: std::collections::HashSet<String> =
+            ["figures/x.png".to_string()].into_iter().collect();
+        let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        fail_figure(&mut pending, &mut failed, "figures/x.png".to_string());
+        assert!(!pending.contains("figures/x.png"));
+        assert!(failed.contains("figures/x.png"));
+    }
+
+    #[test]
+    fn failed_figure_stays_skipped_across_repeated_dispatch_until_seam_clears_it() {
+        // This is the storm regression: `dispatch_pending_figures` calls
+        // `figure_already_handled` on every walk, including the
+        // cached-bytes reflow passes (apply_text_scale, needs_md_reflow,
+        // workspace-switch restore) that `render_preview_source` also
+        // serves. None of those may un-skip a failed url — only clearing
+        // `failed` (which only the fresh IncomingEvt::Preview seam does)
+        // may. Simulating N reflow passes with `failed` untouched must
+        // keep skipping; only an explicit clear (the seam) reopens it.
+        let pending: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        failed.insert("figures/dead.png".to_string());
+        for _ in 0..5 {
+            assert!(
+                figure_already_handled(false, &pending, &failed, "figures/dead.png"),
+                "a terminally-failed url must stay skipped across repeated reflow passes"
+            );
+        }
+        failed.clear(); // the one thing a genuine markdown reload does
+        assert!(!figure_already_handled(false, &pending, &failed, "figures/dead.png"));
+    }
+
+    // --- Bug 2 / round 2 provenance fix: `o`/`W`/`O` must route against
+    // the node the INSTALLED preview reply answered — never the most
+    // recently REQUESTED one (which can outrun its own reply), and never
+    // a pin either (round-2 ruling: a pin is stamped from the cursor row,
+    // not from an installed reply, so it can equally outrun what's
+    // shown). ---
+
+    #[test]
+    fn previewed_path_routes_by_installed_node_not_a_fired_one() {
+        // The function doesn't even take a "fired" id (or a "pinned" one
+        // — round-2 ruling) — its signature is the proof that neither can
+        // leak into the routed path.
+        assert_eq!(
+            resolve_previewed_path(Some("files:a/index.html"), Some("/proj")),
+            Some("/proj/a/index.html".to_string())
+        );
+    }
+
+    #[test]
+    fn previewed_path_none_when_nothing_resolves_to_a_files_node() {
+        assert_eq!(resolve_previewed_path(None, Some("/proj")), None);
+        assert_eq!(
+            resolve_previewed_path(Some("modules:Foo"), Some("/proj")),
+            None
+        );
     }
 
     #[test]
