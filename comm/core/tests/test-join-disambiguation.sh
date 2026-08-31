@@ -5,6 +5,12 @@
 # self-file per simulated session (via $SOT_COMM_SELF_FILE); never touches
 # the real ~/.sot-comm.
 #
+# The last case, case_lock_closes_derive_write_gap, also covers
+# claim_derived_handle's atomicity (derive + registry_put as one locked
+# step): it deterministically interleaves a registry mutation into a
+# backgrounded derived join's wait-for-lock window by controlling the
+# registry lock directly, rather than racing on timing (see its comment).
+#
 # Usage: comm/core/tests/test-join-disambiguation.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
@@ -19,6 +25,10 @@ trap 'rm -rf "$WORK"' EXIT
 export SOT_COMM_HOME="$WORK/home"
 mkdir -p "$SOT_COMM_HOME"
 REGISTRY="$SOT_COMM_HOME/registry.json"
+# Mirrors comm-lib.sh's LOCKDIR="$COMM_HOME/.registry.lock" exactly — used by
+# case_lock_closes_derive_write_gap below to simulate a concurrent claim
+# landing WHILE a derived join is blocked waiting for the lock.
+LOCKDIR="$SOT_COMM_HOME/.registry.lock"
 
 HOST="$(hostname -s 2>/dev/null || hostname)"
 
@@ -170,6 +180,70 @@ case_env_name_verbatim() {
     return 0
 }
 
+case_lock_closes_derive_write_gap() {
+    # Deterministic simulation of the race claim_derived_handle exists to
+    # close: two derived joins for DIFFERENT roots that would both decide on
+    # the bare tier-1 handle if "derive" and "registry_put" were not one
+    # locked step. True concurrency isn't reproducible deterministically in
+    # bash, so this uses the registry lock itself as the synchronization
+    # point instead of timing:
+    #   1. We seize $LOCKDIR ourselves (standing in for "another process
+    #      already holds the claim critical section").
+    #   2. We start a second derived join (root B) in the BACKGROUND. It
+    #      cannot proceed past its own `with_lock` until we release —
+    #      guaranteed by mkdir semantics, not by scheduling luck.
+    #   3. While it is blocked, we mutate the registry as if a THIRD,
+    #      already-locked claim (root A) just landed and release the lock.
+    #   4. The backgrounded join can only ever observe the registry AFTER
+    #      that mutation once it finally acquires the lock. If derive+put
+    #      were not atomic (the pre-fix shape: decide the name, unlocked,
+    #      then lock only to write), it would have "decided" tier 1 before
+    #      ever touching the lock and clobbered root A's row regardless of
+    #      what happened while it waited. With the fix, it must re-derive
+    #      under the lock and see the collision.
+    # No sleep is load-bearing for correctness here — only for giving the
+    # background job a moment to reach the spin loop before we act; if it
+    # hasn't yet, our mkdir/mutate/rmdir still happen before it can ever
+    # acquire the lock, so the assertion holds either way.
+    local rootA rootB rbase="racer" rh1 rh2 mutate_obj self out errfile pid rc
+    mkdir -p "$WORK/lockrace-a/grp/racer"
+    mkdir -p "$WORK/lockrace-b/grp/racer"
+    rootA="$(realpath "$WORK/lockrace-a/grp/racer")"
+    rootB="$(realpath "$WORK/lockrace-b/grp/racer")"
+    rh1="${rbase}-${HOST}"
+    rh2="${rbase}-grp-${HOST}"
+
+    mkdir "$LOCKDIR" || { echo "  could not seize the test lock (already held?)"; return 1; }
+
+    next_self_file; self="$NEXT_SELF_FILE"
+    out="$WORK/lockrace.out"; errfile="$WORK/lockrace.err"
+    ( cd "$rootB" && SOT_COMM_SELF_FILE="$self" SOT_COMM_NAME="" "$JOIN" >"$out" 2>"$errfile" ) &
+    pid=$!
+
+    sleep 0.2   # let it reach the spin loop; not required for correctness (see above)
+
+    mutate_obj="$(jq -n --arg root "$rootA" \
+        '{host:"other",tmux:"",pane_id:"",repo:"racer",root:$root,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
+    jq --arg n "$rh1" --argjson o "$mutate_obj" '.agents[$n] = $o' "$REGISTRY" > "$REGISTRY.tmp" \
+        && mv "$REGISTRY.tmp" "$REGISTRY"
+
+    rmdir "$LOCKDIR"
+    wait "$pid"; rc=$?
+
+    local bg_out bg_err
+    bg_out="$(cat "$out" 2>/dev/null || true)"
+    bg_err="$(cat "$errfile" 2>/dev/null || true)"
+
+    [ "$rc" -eq 0 ] || { echo "  backgrounded comm-join.sh exited $rc: $bg_err"; return 1; }
+    contains "$bg_out" "Joined sot-comm as @$rh2" \
+        || { echo "  stdout: $bg_out (want @$rh2 — a race window let it clobber @$rh1 instead)"; return 1; }
+    [ "$(registry_root "$rh1")" = "$rootA" ] \
+        || { echo "  @$rh1 (the interleaved claim) was clobbered: root=$(registry_root "$rh1")"; return 1; }
+    [ "$(registry_root "$rh2")" = "$rootB" ] \
+        || { echo "  @$rh2 root=$(registry_root "$rh2"), want $rootB"; return 1; }
+    return 0
+}
+
 # --- run, in order (later cases depend on earlier ones' registry state) --
 
 check "fresh claim records root"                            case_fresh_claim
@@ -178,6 +252,7 @@ check "different-root collision -> parentdir-qualified, first entry intact" case
 check "three-way collision -> hash-qualified handle"         case_three_way_collision
 check "explicit --name is verbatim even when it collides"    case_explicit_name_verbatim
 check "SOT_COMM_NAME env is verbatim even when it collides"  case_env_name_verbatim
+check "concurrent claim landing mid-wait is not clobbered (lock closes the derive/write gap)" case_lock_closes_derive_write_gap
 
 echo ""
 echo "$PASS passed, $FAIL failed"
