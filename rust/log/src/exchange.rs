@@ -122,14 +122,25 @@ impl IdentityExchange for VoyageMgmtExchange {
 
 /// This build's own identity, carried in the supervisor lane's `hello`
 /// (ADR 0041 Lifecycle "Build boundary"): "a build identity is
-/// compatibility data, not a credential." The crate's own version is
-/// exactly that — real, always available, and enough to catch "file
-/// replacement is not process replacement" (an old, still-live supervisor
-/// answering under a newly-replaced binary's version must not be treated
-/// as compatible with a client built against the new one). A stronger,
+/// compatibility data, not a credential." A bare crate version is NOT
+/// enough — two different commits can share one `Cargo.toml` version
+/// between releases, and "file replacement is not process replacement"
+/// (an old, still-live supervisor answering under a newly-replaced
+/// binary must not be treated as compatible with a client built against
+/// the new one) needs a value that actually changes commit-to-commit.
+/// `build.rs` stamps `SOT_LOG_BUILD_SHA` from `git rev-parse HEAD` — the
+/// same git-sha-capture pattern `rust/protocol/build.rs` uses for
+/// `app_version` (copied rather than shared: `sot-log` must not depend on
+/// `sot-protocol`, see `build.rs`'s own doc comment). When git or the
+/// repo is unavailable (a release tarball with no `.git`) the stamped
+/// value is empty and this falls back to the bare package version,
+/// matching `app_version`'s own on-tag/no-repo degradation. A stronger,
 /// executable-hash-based identity is explicitly out of scope ("Executable
 /// attestation — excluded by the threat model, not deferred").
-pub const SUPERVISOR_LANE_BUILD_ID: &str = env!("CARGO_PKG_VERSION");
+pub const SUPERVISOR_LANE_BUILD_ID: &str = {
+    let sha = env!("SOT_LOG_BUILD_SHA");
+    if sha.is_empty() { env!("CARGO_PKG_VERSION") } else { sha }
+};
 
 /// The supervisor lane's own `IdentityExchange` (ADR 0041 Lifecycle "The
 /// challenge", steps 4-5): `hello {proto, build}` request, `hello_ok`
@@ -196,8 +207,26 @@ impl IdentityExchange for SupervisorLaneExchange {
                     return ExchangeDecode::Foreign;
                 }
                 match &frames[0] {
-                    DecodedFrame::SupervisorReply(SupervisorReply::HelloOk { pid, created, .. }) => {
-                        ExchangeDecode::Identity { pid: *pid, created: *created }
+                    DecodedFrame::SupervisorReply(SupervisorReply::HelloOk {
+                        proto,
+                        build,
+                        pid,
+                        created,
+                    }) => {
+                        // The boundary is mutual (ADR 0041 Lifecycle "Build
+                        // boundary"): this lane's request already carries
+                        // OUR proto/build for the server to check; a
+                        // `hello_ok` that doesn't echo them back is not
+                        // proof of anything either — it could be a stale
+                        // peer's reply to a DIFFERENT client's `hello`
+                        // (or corruption) surviving just long enough to
+                        // parse. Treat a mismatch exactly like any other
+                        // wrong reply: `Foreign`, not `Identity`.
+                        if *proto == wire::SUPERVISOR_PROTO_V1 && *build == self.build {
+                            ExchangeDecode::Identity { pid: *pid, created: *created }
+                        } else {
+                            ExchangeDecode::Foreign
+                        }
                     }
                     _ => ExchangeDecode::Foreign, // hello_refused, or any other well-formed reply
                 }
@@ -320,10 +349,17 @@ mod tests {
 
     // --- SupervisorLaneExchange ---
 
+    // Matches what `SupervisorLaneExchange::new("b")` sends, so the
+    // "clean" tests below exercise the real mutual check (matching
+    // proto+build) rather than accidentally skipping it.
     fn hello_ok_bytes(pid: u32, created: u64) -> Vec<u8> {
+        hello_ok_bytes_with(wire::SUPERVISOR_PROTO_V1, "b", pid, created)
+    }
+
+    fn hello_ok_bytes_with(proto: u32, build: &str, pid: u32, created: u64) -> Vec<u8> {
         wire::encode_supervisor_reply(&SupervisorReply::HelloOk {
-            proto: wire::SUPERVISOR_PROTO_V1,
-            build: "test-build".into(),
+            proto,
+            build: build.into(),
             pid,
             created,
         })
@@ -406,4 +442,33 @@ mod tests {
         assert!(matches!(ex.feed(&full[..full.len() - 1]), ExchangeDecode::Incomplete));
     }
 
+    // The boundary is mutual (Codex review round 1, finding 7): a
+    // `hello_ok` that doesn't echo THIS client's own proto/build back is
+    // not proof of anything, even though it decodes cleanly — it could be
+    // a stale reply to someone else's `hello`, or a server on a different
+    // build replying without ever checking what it received.
+
+    #[test]
+    fn supervisor_hello_ok_with_wrong_build_is_foreign_not_identity() {
+        let mut ex = SupervisorLaneExchange::new("b");
+        let bytes = hello_ok_bytes_with(wire::SUPERVISOR_PROTO_V1, "different-build", 1, 2);
+        assert!(matches!(ex.feed(&bytes), ExchangeDecode::Foreign));
+    }
+
+    #[test]
+    fn supervisor_hello_ok_with_wrong_proto_is_foreign_not_identity() {
+        let mut ex = SupervisorLaneExchange::new("b");
+        let bytes = hello_ok_bytes_with(wire::SUPERVISOR_PROTO_V1 + 1, "b", 1, 2);
+        assert!(matches!(ex.feed(&bytes), ExchangeDecode::Foreign));
+    }
+
+    #[test]
+    fn supervisor_hello_ok_matching_this_build_id_constant_is_identity() {
+        // Not just a fixture string: a `hello_ok` echoing the crate's
+        // OWN real build id (what a genuine same-build peer would send)
+        // must still be accepted.
+        let mut ex = SupervisorLaneExchange::new(SUPERVISOR_LANE_BUILD_ID);
+        let bytes = hello_ok_bytes_with(wire::SUPERVISOR_PROTO_V1, SUPERVISOR_LANE_BUILD_ID, 9, 10);
+        assert!(matches!(ex.feed(&bytes), ExchangeDecode::Identity { pid: 9, created: 10 }));
+    }
 }
