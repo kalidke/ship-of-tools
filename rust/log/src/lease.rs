@@ -39,8 +39,8 @@
 #![cfg(windows)]
 
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, HANDLE, WAIT_TIMEOUT};
-use windows_sys::Win32::System::Threading::{CreateMutexW, OpenMutexW, WaitForSingleObject};
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::System::Threading::{CreateMutexW, OpenMutexW, ReleaseMutex, WaitForSingleObject};
 
 /// The standard `SYNCHRONIZE` access right (WinNT.h) — the one
 /// `OpenMutexW` needs here. Inlined rather than pulled from
@@ -149,15 +149,37 @@ pub struct LeaseCheck {
 
 impl LeaseCheck {
     /// `true` iff the lease is BROKEN — the supervisor that owns it has
-    /// ended, by any means. Fails closed: only a clean, immediate
-    /// `WAIT_TIMEOUT` (the mutex is still owned, so a zero-length wait
-    /// times out rather than completing) reports "not broken"; an
-    /// abandoned wait, an unexpectedly signaled state, or a wait failure
-    /// are all broken.
+    /// ended, by any means. The full outcome table for
+    /// `WaitForSingleObject(handle, 0)`:
+    ///
+    /// | outcome            | meaning                                                                 | `is_broken` |
+    /// |--------------------|--------------------------------------------------------------------------|-------------|
+    /// | `WAIT_TIMEOUT`     | still owned by a live thread — a zero-length wait times out rather than completing | `false` |
+    /// | `WAIT_ABANDONED_0` | the owning thread terminated without releasing — the death signal itself | `true` |
+    /// | `WAIT_OBJECT_0`    | this call itself just ACQUIRED a mutex nobody currently holds — UNREACHABLE in the real cross-process topology (the supervisor holds it, unreleased, for its whole process life); only reachable via a caller checking from the SAME THREAD that also owns it, since Windows mutexes are recursively acquirable per-thread — a caller bug, never a supervisor-death signal. Released immediately (`ReleaseMutex`, never left extra-owned by the mere act of checking) and reported broken: an unexpected acquisition is not proof of a live supervisor. | `true` |
+    /// | `WAIT_FAILED`      | the OS call itself failed                                                | `true` |
+    ///
+    /// **Cross-context contract**: correct only when called from a thread
+    /// that never itself acquires this same mutex — guaranteed by
+    /// construction in production (the checker is a SEPARATE PROCESS from
+    /// the creator). A same-thread check is a test artifact, never a real
+    /// topology, and lands on the `WAIT_OBJECT_0` row above.
     pub fn is_broken(&self) -> bool {
         let raw = self.handle.as_raw_handle() as HANDLE;
         // SAFETY: `raw` is this struct's own live, owned handle.
-        !matches!(unsafe { WaitForSingleObject(raw, 0) }, WAIT_TIMEOUT)
+        match unsafe { WaitForSingleObject(raw, 0) } {
+            WAIT_TIMEOUT => false,
+            WAIT_OBJECT_0 => {
+                // Never leave the mutex extra-owned by this accidental
+                // acquisition (see the table above) — release, then
+                // report broken.
+                unsafe {
+                    ReleaseMutex(raw);
+                }
+                true
+            }
+            _ => true, // WAIT_ABANDONED_0, WAIT_FAILED, or anything else
+        }
     }
 }
 
@@ -182,22 +204,51 @@ mod tests {
         assert_eq!(lease_name("abc123", 0x2a), r"Local\sot-lease-abc123-2a");
     }
 
+    /// Windows mutex OWNERSHIP is per-THREAD, not per-handle or per-process
+    /// (a thread that already owns a mutex re-acquires it recursively on a
+    /// further wait, returning `WAIT_OBJECT_0` rather than `WAIT_TIMEOUT`
+    /// -- see `LeaseCheck::is_broken`'s own table). `create` and `open`
+    /// called from the SAME thread would therefore make every check see a
+    /// recursive self-acquisition, never the real "still held by someone
+    /// else" case production always is (the checker is a SEPARATE
+    /// PROCESS). Every test below holds the lease on a DEDICATED thread
+    /// and checks from the test's own (different) thread, so a genuine
+    /// `WAIT_TIMEOUT` is what "not broken" actually observes.
+    fn hold_on_a_thread(name: String) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let lease = create(&name).unwrap();
+            ready_tx.send(()).unwrap();
+            let _ = release_rx.recv(); // park until told to finish
+            drop(lease);
+        });
+        (ready_rx, release_tx, holder)
+    }
+
     #[test]
     fn a_freshly_created_lease_is_not_broken_while_held() {
         let name = unique_name("held");
-        let lease = create(&name).unwrap();
+        let (ready_rx, release_tx, holder) = hold_on_a_thread(name.clone());
+        ready_rx.recv().unwrap();
         let check = open(&name).unwrap();
         assert!(!check.is_broken());
-        drop(lease);
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
     }
 
     #[test]
     fn dropping_the_owning_lease_marks_it_broken() {
         let name = unique_name("dropped");
-        let lease = create(&name).unwrap();
+        let (ready_rx, release_tx, holder) = hold_on_a_thread(name.clone());
+        ready_rx.recv().unwrap();
         let check = open(&name).unwrap();
         assert!(!check.is_broken());
-        drop(lease);
+        release_tx.send(()).unwrap();
+        // Abandonment is a property of the OWNING THREAD terminating, not
+        // of the handle merely dropping -- join to be certain the thread
+        // has actually exited before checking.
+        holder.join().unwrap();
         assert!(check.is_broken());
     }
 
@@ -218,12 +269,14 @@ mod tests {
     #[test]
     fn multiple_independent_checks_all_observe_the_same_abandonment() {
         let name = unique_name("multi");
-        let lease = create(&name).unwrap();
+        let (ready_rx, release_tx, holder) = hold_on_a_thread(name.clone());
+        ready_rx.recv().unwrap();
         let check_a = open(&name).unwrap();
         let check_b = open(&name).unwrap();
         assert!(!check_a.is_broken());
         assert!(!check_b.is_broken());
-        drop(lease);
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
         assert!(check_a.is_broken());
         assert!(check_b.is_broken());
     }
