@@ -179,6 +179,45 @@ pub fn reset(state_dir: &Path, voyage: Option<String>) -> i32 {
     }
 }
 
+/// Connect to the supervisor lane at `h` and run the FULL same-connection
+/// challenge, returning both the still-open connection (for sending
+/// further requests: `status`/`command`/`query`) and the proof. Gated
+/// behind `test-support` like `probe::ScriptedProbeOps` — a REAL client
+/// (the launcher, the FE) composes this exact sequence itself; this
+/// wrapper exists only so `tests/supervisor_win.rs` (a separate
+/// integration-test crate, which can only ever reach `pub` items) can
+/// exercise the real lane without a second, divergent client
+/// implementation.
+#[cfg(any(test, feature = "test-support"))]
+pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(pipe_win::PipeClient, ChallengedProcess)> {
+    let conn = pipe_win::connect_supervisor_pipe_unchallenged(h)?;
+    let mut exchange = crate::exchange::SupervisorLaneExchange::new(crate::exchange::SUPERVISOR_LANE_BUILD_ID);
+    match challenge::challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2)) {
+        ChallengeOutcome::Proven(process) => Ok((conn, process)),
+        ChallengeOutcome::Foreign => Err(err_state("supervisor lane challenge: foreign")),
+        ChallengeOutcome::Undetermined => Err(err_state("supervisor lane challenge: undetermined")),
+    }
+}
+
+/// Test-only: send one supervisor-lane request and read exactly one
+/// reply within `deadline` — the same [`read_one_frame`] machinery the
+/// module's own EndRun path uses, exposed so a test can drive the lane's
+/// `status`/`command`/`query` protocol without a second frame-reading
+/// implementation.
+#[cfg(any(test, feature = "test-support"))]
+pub fn request_for_test(
+    conn: &pipe_win::PipeClient,
+    request: &SupervisorRequest,
+    deadline: Instant,
+) -> crate::Result<SupervisorReply> {
+    let bytes = wire::encode_supervisor_request(request).map_err(|e| err_state(format!("{e}")))?;
+    conn.write_all(&bytes)?;
+    match read_one_frame(conn, deadline)? {
+        DecodedFrame::SupervisorReply(reply) => Ok(reply),
+        other => Err(err_state(format!("expected a SupervisorReply, got {other:?}"))),
+    }
+}
+
 // ---------------------------------------------------------------------
 // Small shared helpers
 // ---------------------------------------------------------------------
@@ -194,8 +233,10 @@ fn voyage_root_path(state_dir: &Path, voyage_id: &str) -> PathBuf {
 /// A stable hash of the canonicalized state-dir path (ADR 0041 Lifecycle
 /// "Name and identity") — scopes the supervisor lane's pipe name and the
 /// parent-death lease's own name identically, "the same thing that
-/// scopes the pointer and the fence."
-fn state_dir_hash(state_dir: &Path) -> String {
+/// scopes the pointer and the fence." `pub`: a real client (the launcher,
+/// the FE, or `tests/supervisor_win.rs`) needs this to compute the same
+/// lane name a supervisor for a given state-dir binds.
+pub fn state_dir_hash(state_dir: &Path) -> String {
     use sha2::{Digest as _, Sha256};
     let canonical = std::fs::canonicalize(state_dir).unwrap_or_else(|_| state_dir.to_path_buf());
     let mut hasher = Sha256::new();
@@ -991,20 +1032,29 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                 service_lane(&lane, &mut conns, &mut authority, true, Instant::now());
                 match process.wait(MAIN_LOOP_POLL) {
                     Ok(true) => {
-                        // The leg ended. Stability is measured from when
-                        // it became ready.
-                        if ready_at.elapsed() < STABILITY_INTERVAL {
-                            consecutive_unstable_legs += 1;
-                        } else {
-                            consecutive_unstable_legs = 0;
-                        }
+                        // The leg ended. Which way a leg was unstable is
+                        // DIAGNOSTIC, never a second counter (ADR 0041) —
+                        // and a REQUESTED end is not instability AT ALL:
+                        // `no_respawn` (set only by a completed EndRun)
+                        // is checked FIRST, before the stability/anti-flap
+                        // judgment ever runs, so ending a leg on purpose
+                        // can never itself trip the flap counter.
                         active_leg = ActiveLeg::None;
                         authority.leg_epoch = None;
                         if authority.no_respawn {
                             authority.phase = SupervisorPhase::EndedNoRespawn;
-                        } else if consecutive_unstable_legs >= FLAP_THRESHOLD {
-                            break 'authority EXIT_TERMINAL;
                         } else {
+                            // Stability is measured from when the leg
+                            // became ready; only a leg outliving the
+                            // interval resets the counter.
+                            if ready_at.elapsed() < STABILITY_INTERVAL {
+                                consecutive_unstable_legs += 1;
+                            } else {
+                                consecutive_unstable_legs = 0;
+                            }
+                            if consecutive_unstable_legs >= FLAP_THRESHOLD {
+                                break 'authority EXIT_TERMINAL;
+                            }
                             authority.phase = SupervisorPhase::Starting;
                         }
                     }
