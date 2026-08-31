@@ -855,26 +855,24 @@ fn wide_verbatim(p: &Path) -> Result<Vec<u16>> {
 }
 
 /// AV/indexer transient hold codes worth absorbing (bounded).
+///
+/// `ERROR_PATH_NOT_FOUND` was added here in an earlier round on an AV-scan
+/// hypothesis for a `reconcile_reset` CI failure, then REVERTED (Codex
+/// review round 1, finding 11): that failure reproduced deterministically
+/// across repeated real-CI runs, which disproves a transient/AV cause —
+/// code 3 is PATH not FILE, meaning a real code path was constructing a
+/// path whose parent directory never existed. Broadening the transient
+/// set papered over that with a bounded retry-then-fail-anyway instead of
+/// fixing the actual missing-directory bug (see `supervisor.rs`'s own
+/// fix). `ERROR_SHARING_VIOLATION` and `ERROR_ACCESS_DENIED` remain: both
+/// are genuinely transient AV/indexer holds on a name this process itself
+/// just created (rust-lang/rust#123985), unrelated to path existence.
 #[cfg(windows)]
 fn is_transient_hold(e: &std::io::Error) -> bool {
-    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PATH_NOT_FOUND, ERROR_SHARING_VIOLATION};
-    // ADR 0041 step 6 U2: `ERROR_PATH_NOT_FOUND` joins the set. Discovered
-    // via `reset_pointer`'s own rename-aside of an EXISTING, already-
-    // durable, non-staging FILE -- the first caller anywhere in this
-    // crate to rename+immediately-reflush a bare file that wasn't a
-    // freshly-created temp name or a bootstrap staging directory. Every
-    // OTHER `flush_renamed`/`rename_noreplace_raw` caller re-opens
-    // EXACTLY the name it (or a prior incarnation) just created, which is
-    // exactly what "the fresh name is exactly what AV scans" already
-    // names as a transient-hold source; an AV/EDR minifilter can surface
-    // that interference as PATH_NOT_FOUND rather than SHARING_VIOLATION/
-    // ACCESS_DENIED for a brand-new name, depending on the hook. A
-    // GENUINE missing path degrades no worse than before: it still fails,
-    // just after this bounded retry deadline instead of immediately.
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
     matches!(e.raw_os_error(),
         Some(c) if c == ERROR_SHARING_VIOLATION as i32
-            || c == ERROR_ACCESS_DENIED as i32
-            || c == ERROR_PATH_NOT_FOUND as i32)
+            || c == ERROR_ACCESS_DENIED as i32)
 }
 
 /// Flush a target `finish_publication` is restating the barrier over — the

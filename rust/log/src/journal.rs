@@ -186,7 +186,18 @@ pub fn begin(state_dir: &Path, operation_id: &str, record: &ActiveRecord) -> Res
 /// IDENTICAL record (a retried caller re-deriving the same terminal
 /// state after its own crash); a different record is a caller bug and
 /// errs loudly rather than silently overwriting the durable fact.
+///
+/// Calls [`ensure_dir`] first, exactly like [`begin`] and [`mark_closed`]
+/// — every caller of `finish` in this crate happens to run after a prior
+/// `begin` already created the journal directory, but `finish` had no
+/// business trusting that: it is a public, independently callable
+/// function, and a bare `std::fs::File::create` against a temp name under
+/// a directory that does not yet exist fails PATH-not-FOUND on Windows
+/// (the real cause of a CI failure once diagnosed as AV-transient — Codex
+/// review round 1, CI finding (a) — not a retry-worthy timing window at
+/// all, but a genuinely missing directory).
 pub fn finish(state_dir: &Path, operation_id: &str, record: &TerminalRecord) -> Result<()> {
+    ensure_dir(state_dir)?;
     let target = terminal_path(state_dir, operation_id);
     match publish_json(&journal_dir(state_dir), &target, record) {
         Ok(()) => Ok(()),
@@ -397,6 +408,24 @@ mod tests {
         finish(dir.path(), "op-1", &TerminalRecord::Stopping).unwrap();
         assert_eq!(read_terminal(dir.path(), "op-1").unwrap(), Some(TerminalRecord::Stopping));
         assert!(active_operations(dir.path()).unwrap().is_empty());
+    }
+
+    /// `finish` must not depend on a prior `begin` having already created
+    /// the journal directory: a caller can legitimately reconstruct a
+    /// terminal fact without ever journaling an `.active` record for the
+    /// SAME id first (`supervisor.rs`'s own `reconcile_reset`, resuming a
+    /// reset purely from the pointer's own on-disk state). Regression for
+    /// a real bug (Codex review round 1, CI failure (a)): `finish` used to
+    /// skip `ensure_dir`, so this exact call failed `PATH_NOT_FOUND` on
+    /// Windows — misdiagnosed as an AV-scan transient before the missing
+    /// `create_dir_all` was found.
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn finish_creates_the_journal_directory_with_no_prior_begin() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!journal_dir(dir.path()).exists());
+        finish(dir.path(), "op-never-begun", &TerminalRecord::Stopping).unwrap();
+        assert_eq!(read_terminal(dir.path(), "op-never-begun").unwrap(), Some(TerminalRecord::Stopping));
     }
 
     #[cfg(any(target_os = "linux", windows))]
