@@ -34,13 +34,22 @@
 # Env: SOT_COMM_SPAWN_WAIT (boot wait, default 6s)
 #      SOT_COMM_LAUNCH (default 'claude --dangerously-skip-permissions')
 #
-# Rollback contract (Codex review F9): once a provisional registry row
-# exists (claim_derived_handle for a derived name, or the explicit-name
-# registry_put below), an EXIT trap removes it again on any SYNCHRONOUS
-# failure this script itself detects from there on — nc missing, the
-# daemon endpoint not resolving, the new same-label refusal (F5), a
-# rejected/failed workspace.create, tmux session verification failing. No
-# phantom registry rows from a spawn that never actually stood up.
+# Rollback contract (Codex review F9, hardened in round 2 findings 1 & 2):
+# an EXIT trap is armed BEFORE either write path can happen (right after
+# the provisional row's JSON — including a random nonce — is built, ahead
+# of both the derived-claim write and the explicit-name write), so there
+# is no window — not even the inbox touch, or an invalid explicit --name
+# failing there — where a row can exist unprotected. On any SYNCHRONOUS
+# failure this script itself detects — nc missing, the daemon endpoint not
+# resolving, the same-label refusal (F5), a rejected/failed
+# workspace.create, tmux session verification failing, a synchronous
+# launch failure in --no-workspace mode — the trap CONDITIONALLY deletes
+# the row: only if it still matches this exact provisional write (root +
+# nonce + status:"spawning"), never a row that has since been replaced by
+# a real join or an explicit claimant (comm-lib.sh:
+# registry_del_if_provisional). The outcome — rolled back, left alone
+# because it's no longer ours, or the delete itself failed — is reported
+# honestly in each case, not just claimed.
 #
 # NOT covered, and not coverable from here: the daemon boots claude
 # ASYNCHRONOUSLY after workspace.create already returned success (a
@@ -150,10 +159,48 @@ fi
 # derived now and only written later: that gap is exactly the read-then-
 # write race the whole feature exists to close, and comm-spawn drives many
 # joins back-to-back (bulk workspace bring-up), so the window is real.
+#
+# PROV_NONCE (Codex review PR #148 round 2, finding 1) tags this exact
+# provisional row so rollback (below) can tell "still mine" from "replaced
+# by a real join or an explicit claimant" — root+status alone isn't
+# enough to rule out a coincidence, and an unconditional `registry_del`
+# was proven to delete a genuinely live row the child had already written.
 PROV_TS="$(now_iso)"
-PROV_OBJ="$(jq -n --arg host "$HOST" --arg repo "$REPO_BASE" --arg root "$CANON_ROOT" --arg ts "$PROV_TS" \
+PROV_NONCE="$$-${RANDOM}-${RANDOM}"
+PROV_OBJ="$(jq -n --arg host "$HOST" --arg repo "$REPO_BASE" --arg root "$CANON_ROOT" --arg ts "$PROV_TS" --arg nonce "$PROV_NONCE" \
     '{host:$host, tmux:"", pane_id:"", repo:$repo, root:$root, expertise:[],
-      status:"spawning", joined:$ts, last_seen:$ts}')"
+      status:"spawning", joined:$ts, last_seen:$ts, nonce:$nonce}')"
+
+# Rollback (Codex review PR #148 round 2, finding 2): armed HERE, BEFORE
+# either write path below (a derived claim writes immediately at the next
+# block; an explicit name writes later, at the "Provisional registry row"
+# section) — not after both, which left a window (the inbox touch, an
+# invalid explicit --name whose parent dir doesn't exist) where a row
+# could exist with no rollback protection at all. NAME can still be empty
+# here (the derived path hasn't resolved it yet); the reporter below
+# no-ops until there is something to protect.
+#
+# Deletion is CONDITIONAL (registry_del_if_provisional, comm-lib.sh,
+# finding 1): only a row that still matches root+nonce+status:"spawning"
+# is removed. A row that has since been replaced — the child joined for
+# real, or (for an explicit name) something else claimed it — is left
+# untouched, and that outcome is reported as such, not silently praised as
+# "rolled back". A genuine deletion failure is reported as a failure too;
+# nothing here claims success it didn't verify.
+SPAWN_SUCCEEDED=false
+_spawn_rollback_report() {
+    [ "$SPAWN_SUCCEEDED" = true ] && return 0
+    [ -n "${NAME:-}" ] || return 0
+    local rc
+    with_lock registry_del_if_provisional "$NAME" "$CANON_ROOT" "$PROV_NONCE"
+    rc=$?
+    case "$rc" in
+        0) echo "comm-spawn: rolled back provisional registry row for @$NAME after a failed spawn" >&2 ;;
+        2) echo "comm-spawn: did NOT roll back @$NAME — its row no longer matches what this spawn wrote (something else has since claimed/updated it); left untouched" >&2 ;;
+        *) echo "comm-spawn: FAILED to roll back the provisional row for @$NAME (rc=$rc) — check by hand: jq '.agents[\"$NAME\"]' $REGISTRY" >&2 ;;
+    esac
+}
+trap _spawn_rollback_report EXIT
 
 # NAME omitted -> derive it AND write the provisional row atomically, same
 # algorithm + same locked-claim path as a plain comm-join.sh (ADR 0028
@@ -279,19 +326,9 @@ if [ "$DERIVED_CLAIM" = false ]; then
 fi
 : >> "$INBOX_DIR/$NAME.jsonl"
 
-# Rollback (Codex review F9): from here on, NAME definitely has a
-# provisional row (either path above). An EXIT trap removes it on any
-# SYNCHRONOUS failure below, so `set -e` can't leave a phantom registry
-# entry the way a caller's `set -e` could leak with_lock's own lock (same
-# trap-based fix, same reasoning) — cleared once the spawn actually
-# succeeds (SPAWN_SUCCEEDED, set below), never fired after that point.
-SPAWN_SUCCEEDED=false
-trap '
-    if [ "$SPAWN_SUCCEEDED" != true ]; then
-        with_lock registry_del "$NAME" 2>/dev/null || true
-        echo "comm-spawn: rolled back provisional registry row for @$NAME after a failed spawn" >&2
-    fi
-' EXIT
+# Rollback protection is already armed (see the trap set right after
+# PROV_OBJ was built, above) — before either write path, including this
+# one and the inbox touch just above it.
 
 if [ "$NO_WS" = true ]; then
     SESSION="$NAME"
@@ -308,26 +345,57 @@ else
     if ! ENDPOINT="$(resolve_endpoint)"; then
         echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT, or use --no-workspace." >&2; exit 1
     fi
-    # Same-label refusal (Codex review F5): an auto-composed display label
-    # (base-qualifier) must not be able to collide with an EXISTING
-    # workspace's label — e.g. a worktree's '<repo>-wt-<short>' grouping
-    # label happening to equal our qualifier-composed one. workspace.create
-    # itself gives no usable signal for this: same-slug is, BY DESIGN, an
-    # id-preserving metadata refresh (`Workspaces::insert`,
-    # `rust/backend/src/workspaces.rs`) that boot/spawn flows rely on for
-    # idempotence, and the duplicate-root gate explicitly treats a same-slug
-    # match as invisible (`find_other_workspace_with_root`'s doc comment,
+    # Same-label refusal (Codex review F5, hardened in round 2 finding 3):
+    # an auto-composed display label (base-qualifier) must not be able to
+    # collide with an EXISTING workspace — e.g. a worktree's
+    # '<repo>-wt-<short>' grouping label happening to equal our
+    # qualifier-composed one. workspace.create itself gives no usable
+    # signal for this: same-slug is, BY DESIGN, an id-preserving metadata
+    # refresh (`Workspaces::insert`, `rust/backend/src/workspaces.rs`) that
+    # boot/spawn flows rely on for idempotence, and the duplicate-root gate
+    # explicitly treats a same-slug match as invisible
+    # (`find_other_workspace_with_root`'s doc comment,
     # `rust/backend/src/handlers.rs`) — a colliding create would silently
     # rebind the existing workspace's project_root/tmux_session rather than
     # erroring. So this is a pre-check, not a reply-reaction: list existing
     # workspaces and refuse before ever calling workspace.create if our
-    # composed label is already someone else's. Only for an AUTO-composed
-    # label — an explicit --display-label is the caller's own informed
-    # choice and keeps today's behavior.
+    # composed label would collide. Only for an AUTO-composed label — an
+    # explicit --display-label is the caller's own informed choice and
+    # keeps today's behavior.
+    #
+    # FAILS CLOSED: a workspace.list that doesn't answer, or answers with
+    # something unparseable, refuses the spawn outright rather than
+    # treating "we couldn't check" as "no collision" — the daemon being
+    # down costs nothing extra here since the create below would fail
+    # anyway, but a TRANSIENT list-only hiccup followed by a working
+    # create must not bypass the guard silently.
+    #
+    # Compared by NORMALIZED SLUG (sot_slug, comm-lib.sh — a verified bash
+    # mirror of `rust/backend/src/paths.rs::slug`), not the raw label
+    # string: workspace.create refreshes by slug, so two labels that only
+    # differ by case, or by a dot vs underscore, resolve to the SAME
+    # workspace and must be caught too, not just a byte-identical match.
+    # An existing entry's OWN `.slug` field is used directly (not
+    # re-derived from its label) — the daemon's own computed value is more
+    # trustworthy than re-slugifying it a second time client-side.
+    #
+    # This remains a list-then-create TOCTOU, not an atomic guarantee — a
+    # BEST-EFFORT human-UX guard against the common case (another comm-spawn
+    # or a worktree create landing moments apart), not a correctness
+    # guarantee against true concurrent creates. An atomic daemon
+    # create-if-absent is the real fix for that and is out of scope here.
     if [ "$AUTO_DISPLAY_LABEL" = true ]; then
-        LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list || true)"
-        if printf '%s' "$LIST" | jq -e --arg l "$LABEL" '.payload.workspaces[]? | select(.label==$l)' >/dev/null 2>&1; then
-            echo "ERROR: the auto-derived display label '$LABEL' already names an existing workspace — refusing to risk rebinding it. Pass --name or --display-label to pick a distinct one." >&2
+        if ! LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)"; then
+            echo "ERROR: could not confirm the auto-derived display label '$LABEL' is collision-free (workspace.list did not answer) — refusing to spawn. Pass --name or --display-label, or retry once the daemon answers." >&2
+            exit 1
+        fi
+        if ! printf '%s' "$LIST" | jq -e '.payload.workspaces' >/dev/null 2>&1; then
+            echo "ERROR: workspace.list returned a malformed reply — refusing to spawn with an unverified auto-derived display label '$LABEL'. Pass --name or --display-label, or retry." >&2
+            exit 1
+        fi
+        CANDIDATE_SLUG="$(sot_slug "$LABEL")"
+        if printf '%s' "$LIST" | jq -e --arg s "$CANDIDATE_SLUG" '.payload.workspaces[] | select(.slug == $s)' >/dev/null 2>&1; then
+            echo "ERROR: the auto-derived display label '$LABEL' (slug '$CANDIDATE_SLUG') already names an existing workspace — refusing to risk rebinding it. Pass --name or --display-label to pick a distinct one." >&2
             exit 1
         fi
     fi
@@ -349,14 +417,14 @@ else
     fi
     echo "Created workspace '$LABEL' (slug=$SLUG, tmux=$TARGET) via $ENDPOINT"
     tmux -S "$SOT_TMUX_SOCK" has-session -t "$TARGET" 2>/dev/null || { echo "ERROR: daemon reported $TARGET but tmux session is missing" >&2; exit 1; }
+    # Workspace mode's actionable work is done and verified — nothing left
+    # in this branch can fail (the reporting below is tolerant/WARN-only,
+    # matching the async-boot gap documented at the top of this file). Set
+    # here, not shared with the --no-workspace branch below (Codex review
+    # PR #148 round 2, finding 2): --no-workspace's real "did it launch"
+    # moment is `tmux send-keys`, further down, not tmux session creation.
+    SPAWN_SUCCEEDED=true
 fi
-
-# Past this point the spawn is considered to have SUCCEEDED (the tmux
-# session/workspace genuinely exists) — the rollback trap above stands
-# down. Anything after this is best-effort reporting/delivery with its own
-# failure handling (WARN, not exit), matching the async-boot gap documented
-# at the top of this file: nothing past here can roll back a claim anyway.
-SPAWN_SUCCEEDED=true
 
 if [ "$NO_WS" = true ]; then
     # Headless / no daemon: launch ccb directly. No brief paste — the agent reads
@@ -364,6 +432,9 @@ if [ "$NO_WS" = true ]; then
     # delivered below as a durable comm message, not a startup paste.
     sleep 0.5
     tmux -S "$SOT_TMUX_SOCK" send-keys -t "$TARGET" "$LAUNCH" Enter
+    # Only NOW has --no-workspace's actionable work (the launch itself)
+    # happened — a `send-keys` failure above must still roll back.
+    SPAWN_SUCCEEDED=true
     echo "Launched: $LAUNCH  (waiting ${WAIT}s for boot)"
     echo "Spawned (raw) @${NAME} on ${REPO_NAME} in session '$TARGET'."
 else
