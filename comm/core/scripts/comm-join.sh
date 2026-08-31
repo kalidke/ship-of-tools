@@ -62,6 +62,14 @@ ensure_home
 # /sot-session-start join inside the spawned session lands on the handle the
 # spawner is awaiting. Explicit --name wins; an already-joined NAME (from
 # context) wins over the env (a rejoin keeps its identity).
+#
+# Precedence check (Codex review F1): NAME here can ONLY carry an
+# already-joined self-file identity that comm-context.sh just validated
+# against `root=` — a self-file with no root= line, or a mismatched one,
+# comes back as NAME="" from context (see its guard), so it can never reach
+# this line to wrongly out-rank a spawn-pinned $SOT_COMM_NAME below. A
+# STALE self-file overriding a spawn pin is exactly what that root check
+# closes; this ordering is otherwise unchanged.
 [ -z "$NAME" ] && NAME="${SOT_COMM_NAME:-}"
 [ -z "$EXPERTISE" ] && EXPERTISE="${SOT_COMM_EXPERTISE:-}"
 # Reached only when NAME came from none of the verbatim sources above
@@ -89,7 +97,12 @@ obj="$(jq -n \
       status:"idle", joined:$ts, last_seen:$ts}')"
 
 if [ "$NEED_DERIVE" = true ]; then
-    claim_derived_handle "$PROJECT_ROOT" "$HOST" "$obj"
+    # reclaim mode (Codex review F3): a plain join treats an existing
+    # same-root row as mine to reclaim — today's rejoin behavior. `set -e`
+    # makes a derivation failure (all three tiers taken by other roots;
+    # Codex review F6) abort here with sot_derive_handle's own clear
+    # stderr reason, rather than continuing with an empty/invalid NAME.
+    claim_derived_handle reclaim "$PROJECT_ROOT" "$HOST" "$obj"
     NAME="$CLAIMED_NAME"
 else
     with_lock registry_put "$NAME" "$obj"
@@ -108,19 +121,28 @@ printf '%s\nrepo=%s\nroot=%s\n' "$NAME" "$REPO" "$PROJECT_ROOT" > "$SELF_FILE"
 # so an existing inbox is never truncated.
 : >> "$INBOX_DIR/$NAME.jsonl"
 
-# Sweep LEGACY (one-line, pre-provenance) self-files. The v2 repo-line guard
-# can't validate a legacy file, and a stale legacy file's owner is gone — it
-# never upgrades itself, so each one is a mine: any fresh session whose pane
-# id happens to match inherits that identity (three sessions hit this in one
-# day once pane ids recycled after a tmux server restart — wrong Step-0
-# verdicts, one session SENDING as another's handle). Ground truth is the
-# REGISTRY row, which its owner's every join refreshes with the real
-# host/pane: a legacy file whose name's row points at this exact file is the
-# rightful owner's — upgrade it to v2 in place (with the row's repo); any
-# other legacy file (no row, or the row lives at another pane) is stale —
-# delete it. v2 files are never touched; the whole sweep runs under the
-# registry lock and is idempotent, so concurrent joins are safe. Runs on
-# every join — after the first sweep per install it's a no-op scan.
+# Sweep LEGACY (pre-root=, pre-provenance) self-files: one-line files that
+# predate `repo=` entirely, AND two-line `repo=`-only files that predate
+# `root=` (Codex review F1: comm-context's own guard now discards these on
+# READ regardless, but this sweep is what actually UPGRADES a rightful
+# owner's file to full v2 — without it, a two-line file would sit there
+# failing the read-side guard on every single read forever, "permanently
+# skipped as already migrated" as the review put it, instead of getting
+# fixed). A stale legacy file's owner is gone — it never upgrades itself,
+# so each one is a mine: any fresh session whose pane id happens to match
+# inherits that identity (three sessions hit this in one day once pane ids
+# recycled after a tmux server restart — wrong Step-0 verdicts, one session
+# SENDING as another's handle). Ground truth is the REGISTRY row, which its
+# owner's every join refreshes with the real host/pane: a legacy file whose
+# name's row points at this exact file is the rightful owner's — upgrade it
+# to v2 in place (with the row's repo, and root when the row has one — a
+# row that ALSO predates root= leaves the file at two lines, re-swept next
+# time, until that row's own session rejoins and records one); any other
+# legacy file (no row, or the row lives at another pane) is stale — delete
+# it. Full v2 (three lines, root= present) files are never touched; the
+# whole sweep runs under the registry lock and is idempotent, so concurrent
+# joins are safe. Runs on every join — after the first sweep per install
+# it's a no-op scan.
 sweep_legacy_selffiles() {
     local rows f key name row_key row_repo row_root migrated=0 removed=0
     rows="$(jq -r '.agents | to_entries[]
@@ -128,7 +150,7 @@ sweep_legacy_selffiles() {
         | @tsv' "$REGISTRY" 2>/dev/null)" || return 0
     for f in "$SELF_DIR"/*.txt; do
         [ -f "$f" ] || continue
-        [ "$(wc -l < "$f")" -ge 2 ] && continue   # v2 — has provenance, not ours to touch
+        [ "$(wc -l < "$f")" -ge 3 ] && continue   # full v2 (has root=) — not ours to touch
         key="$(basename "$f" .txt)"
         name="$(sed -n '1p' "$f")"
         row_key=""; row_repo=""; row_root=""
