@@ -42,6 +42,10 @@ fn terminal_path(state_dir: &Path, operation_id: &str) -> PathBuf {
     journal_dir(state_dir).join(format!("{operation_id}.terminal"))
 }
 
+fn closed_path(state_dir: &Path, operation_id: &str) -> PathBuf {
+    journal_dir(state_dir).join(format!("{operation_id}.closed"))
+}
+
 /// What an `.active` record commits to (ADR 0041: "the id, a canonical
 /// digest of the command, its state, and for `reset` the new voyage
 /// identity it intends to publish"). `digest` is the caller's own
@@ -58,6 +62,23 @@ pub struct ActiveRecord {
     /// without minting a second identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intended_new_voyage: Option<String>,
+    /// `reset` only: the voyage the caller OBSERVED (the pointer's value
+    /// at the moment this operation was admitted) — recovery's "pointer
+    /// still names the OLD voyage" case needs this to tell "the rename
+    /// never took, safe to resume from the beginning" apart from
+    /// "pointer names SOMETHING ELSE," which is a loud stop precisely
+    /// because a second identity has appeared that this record never
+    /// named.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_voyage: Option<String>,
+    /// `end_run` only: the leg epoch this operation targeted, recorded
+    /// BEFORE the mgmt-lane shutdown is even sent — recovery's own
+    /// "reads the DURABLE MARKER ... a marker in the leg's own epoch
+    /// means ACCEPTED" needs to know WHICH epoch to ask
+    /// `verify::leg_carries_run_end_marker` about, since a marker
+    /// "governs only its OWN epoch."
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_run_epoch: Option<u64>,
 }
 
 /// The terminal states `query` may report for a mutating operation (ADR
@@ -126,6 +147,38 @@ pub fn finish(state_dir: &Path, operation_id: &str, record: &TerminalRecord) -> 
             }
         }
         Err(e) => Err(e),
+    }
+}
+
+/// Durably mark `operation_id` RECORD CLOSED — the ADR 0041 INTERMEDIATE
+/// state `end_run` alone passes through, between `accepted`/`in_progress`
+/// and the operation's true terminal fact (`record_verified` or
+/// `failed`): "the COMMAND reply arrives at `record_closed`, and
+/// `record_verified` follows through `query`." Unlike [`finish`], this is
+/// NOT the operation's last word — a LATER [`finish`] call for the SAME
+/// id still applies once verification (or its failure) actually
+/// concludes; [`finish`]'s own "never rewritten" rule is unaffected,
+/// because `record_closed` is never itself a [`TerminalRecord`] written
+/// through it in that path (only the operations with nothing left to
+/// verify — an already-absent capsule — reach `TerminalRecord::RecordClosed`
+/// as their true, final terminal fact). Idempotent: marking an
+/// already-closed id again is a no-op, not an error (a retried caller
+/// reporting the same milestone twice).
+pub fn mark_closed(state_dir: &Path, operation_id: &str) -> Result<()> {
+    ensure_dir(state_dir)?;
+    match publish_json(&journal_dir(state_dir), &closed_path(state_dir, operation_id), &serde_json::json!({})) {
+        Ok(()) => Ok(()),
+        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// `true` iff [`mark_closed`] has been called for `operation_id`.
+pub fn is_closed(state_dir: &Path, operation_id: &str) -> Result<bool> {
+    match std::fs::metadata(closed_path(state_dir, operation_id)) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -219,7 +272,7 @@ mod tests {
     #[test]
     fn begin_then_read_active_round_trips() {
         let dir = tempfile::tempdir().unwrap();
-        let record = ActiveRecord { digest: "abc123".into(), intended_new_voyage: None };
+        let record = ActiveRecord { digest: "abc123".into(), intended_new_voyage: None, old_voyage: None, end_run_epoch: None };
         begin(dir.path(), "op-1", &record).unwrap();
         assert_eq!(read_active(dir.path(), "op-1").unwrap(), Some(record));
         assert_eq!(read_terminal(dir.path(), "op-1").unwrap(), None);
@@ -236,8 +289,8 @@ mod tests {
     #[test]
     fn a_second_begin_for_the_same_id_fails_write_once() {
         let dir = tempfile::tempdir().unwrap();
-        let first = ActiveRecord { digest: "first".into(), intended_new_voyage: None };
-        let second = ActiveRecord { digest: "second".into(), intended_new_voyage: None };
+        let first = ActiveRecord { digest: "first".into(), intended_new_voyage: None, old_voyage: None, end_run_epoch: None };
+        let second = ActiveRecord { digest: "second".into(), intended_new_voyage: None, old_voyage: None, end_run_epoch: None };
         begin(dir.path(), "op-1", &first).unwrap();
         let err = begin(dir.path(), "op-1", &second).unwrap_err();
         assert!(matches!(&err, Error::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists), "{err}");
@@ -250,7 +303,7 @@ mod tests {
     #[test]
     fn finish_then_read_terminal_round_trips_and_leaves_the_id_out_of_active_operations() {
         let dir = tempfile::tempdir().unwrap();
-        begin(dir.path(), "op-1", &ActiveRecord { digest: "d".into(), intended_new_voyage: None }).unwrap();
+        begin(dir.path(), "op-1", &ActiveRecord { digest: "d".into(), intended_new_voyage: None, old_voyage: None, end_run_epoch: None }).unwrap();
         assert_eq!(active_operations(dir.path()).unwrap(), vec!["op-1".to_string()]);
         finish(dir.path(), "op-1", &TerminalRecord::RecordClosed).unwrap();
         assert_eq!(read_terminal(dir.path(), "op-1").unwrap(), Some(TerminalRecord::RecordClosed));
@@ -261,7 +314,7 @@ mod tests {
     #[test]
     fn a_repeated_finish_with_the_identical_record_is_tolerated() {
         let dir = tempfile::tempdir().unwrap();
-        begin(dir.path(), "op-1", &ActiveRecord { digest: "d".into(), intended_new_voyage: None }).unwrap();
+        begin(dir.path(), "op-1", &ActiveRecord { digest: "d".into(), intended_new_voyage: None, old_voyage: None, end_run_epoch: None }).unwrap();
         finish(dir.path(), "op-1", &TerminalRecord::Stopping).unwrap();
         finish(dir.path(), "op-1", &TerminalRecord::Stopping).unwrap(); // no error
     }
@@ -270,7 +323,7 @@ mod tests {
     #[test]
     fn a_repeated_finish_with_a_different_record_is_refused_loudly() {
         let dir = tempfile::tempdir().unwrap();
-        begin(dir.path(), "op-1", &ActiveRecord { digest: "d".into(), intended_new_voyage: None }).unwrap();
+        begin(dir.path(), "op-1", &ActiveRecord { digest: "d".into(), intended_new_voyage: None, old_voyage: None, end_run_epoch: None }).unwrap();
         finish(dir.path(), "op-1", &TerminalRecord::RecordClosed).unwrap();
         let err = finish(dir.path(), "op-1", &TerminalRecord::Stopping).unwrap_err();
         assert!(format!("{err}").contains("never rewritten"), "{err}");
@@ -282,8 +335,8 @@ mod tests {
     #[test]
     fn active_operations_lists_only_ids_missing_a_terminal_record() {
         let dir = tempfile::tempdir().unwrap();
-        begin(dir.path(), "still-active", &ActiveRecord { digest: "d".into(), intended_new_voyage: None }).unwrap();
-        begin(dir.path(), "done", &ActiveRecord { digest: "d".into(), intended_new_voyage: None }).unwrap();
+        begin(dir.path(), "still-active", &ActiveRecord { digest: "d".into(), intended_new_voyage: None, old_voyage: None, end_run_epoch: None }).unwrap();
+        begin(dir.path(), "done", &ActiveRecord { digest: "d".into(), intended_new_voyage: None, old_voyage: None, end_run_epoch: None }).unwrap();
         finish(dir.path(), "done", &TerminalRecord::RecordClosed).unwrap();
         assert_eq!(active_operations(dir.path()).unwrap(), vec!["still-active".to_string()]);
     }
@@ -298,7 +351,12 @@ mod tests {
     #[test]
     fn reset_records_carry_the_intended_new_voyage() {
         let dir = tempfile::tempdir().unwrap();
-        let record = ActiveRecord { digest: "reset-digest".into(), intended_new_voyage: Some("new-voyage-id".into()) };
+        let record = ActiveRecord {
+            digest: "reset-digest".into(),
+            intended_new_voyage: Some("new-voyage-id".into()),
+            old_voyage: Some("old-voyage-id".into()),
+            end_run_epoch: None,
+        };
         begin(dir.path(), "op-reset", &record).unwrap();
         assert_eq!(read_active(dir.path(), "op-reset").unwrap(), Some(record));
         finish(
@@ -311,5 +369,43 @@ mod tests {
             read_terminal(dir.path(), "op-reset").unwrap(),
             Some(TerminalRecord::ResetDone { new_voyage: "new-voyage-id".into() })
         );
+    }
+
+    #[test]
+    fn is_closed_is_false_before_mark_closed_and_true_after() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_closed(dir.path(), "op-1").unwrap());
+        mark_closed(dir.path(), "op-1").unwrap();
+        assert!(is_closed(dir.path(), "op-1").unwrap());
+    }
+
+    #[test]
+    fn mark_closed_twice_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        mark_closed(dir.path(), "op-1").unwrap();
+        mark_closed(dir.path(), "op-1").unwrap(); // must not error
+        assert!(is_closed(dir.path(), "op-1").unwrap());
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn closed_then_finished_is_the_end_run_two_phase_shape() {
+        // ADR 0041: "the COMMAND reply arrives at record_closed, and
+        // record_verified follows through query" -- record_closed is an
+        // INTERMEDIATE milestone (mark_closed), not itself the terminal
+        // fact finish() guards; a later finish() for the same id still
+        // applies once verification concludes.
+        let dir = tempfile::tempdir().unwrap();
+        begin(
+            dir.path(),
+            "op-endrun",
+            &ActiveRecord { digest: "d".into(), intended_new_voyage: None, old_voyage: None, end_run_epoch: Some(3) },
+        )
+        .unwrap();
+        mark_closed(dir.path(), "op-endrun").unwrap();
+        assert!(is_closed(dir.path(), "op-endrun").unwrap());
+        assert_eq!(read_terminal(dir.path(), "op-endrun").unwrap(), None);
+        finish(dir.path(), "op-endrun", &TerminalRecord::RecordVerified).unwrap();
+        assert_eq!(read_terminal(dir.path(), "op-endrun").unwrap(), Some(TerminalRecord::RecordVerified));
     }
 }
