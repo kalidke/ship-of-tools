@@ -799,6 +799,33 @@ fn open_html_in_browser(html_bytes: &[u8]) -> std::io::Result<()> {
     open_url_in_browser(&path_str)
 }
 
+/// How `o` should open a currently-previewed `text/html` body.
+#[derive(Debug, PartialEq, Eq)]
+enum HtmlOpenRoute {
+    /// The preview traces to a real backend-side fs path — dispatch
+    /// `docs.open` for it (same request `W` sends), so relative
+    /// CSS/JS/images/page links resolve against the real site root.
+    Docs(String),
+    /// No source path to point `docs.open` at (a synthetic/self-
+    /// contained `text/html` preview, if one ever reaches this call
+    /// site) — fall back to writing the cached bytes to a temp file.
+    TempBytes,
+}
+
+/// Decide the route for `open_path_external`'s `text/html` branch.
+/// `previewed_path` is `Self::previewed_files_path()` — `Some` exactly
+/// when the shown preview came from a real on-disk file (today, the only
+/// way a preview carries `text/html` at all: `files_mode::mime_for_path`
+/// maps `.html`/`.htm` to it). The Quarto `--embed-resources` quick-open
+/// output is a separate code path (`IncomingEvt::QuartoOpened`) that
+/// never sets `preview_src` and so never reaches this decision.
+fn html_open_route(previewed_path: Option<&str>) -> HtmlOpenRoute {
+    match previewed_path {
+        Some(path) => HtmlOpenRoute::Docs(path.to_string()),
+        None => HtmlOpenRoute::TempBytes,
+    }
+}
+
 fn split_frontmatter(s: &str) -> (Option<String>, String) {
     let mut lines = s.split('\n');
     let Some(first) = lines.next() else {
@@ -7638,17 +7665,31 @@ impl State {
         Some(format!("{trimmed}/{rel}"))
     }
 
-    /// `o` — open `abs` in the right external tool: an html preview body →
-    /// temp file + OS browser; `.jl` → backend `pluto.open` (header-checked
-    /// there); video → backend `video.open` (browser HTML5 playback);
-    /// `.qmd` → quick Quarto render (no execution). Shared by the NavTree
-    /// and Preview key arms (same behavior on the cursored / shown file).
+    /// `o` — open `abs` in the right external tool: an html preview body
+    /// with a real fs source → the same `docs.open` request `W` sends
+    /// (full CSS/JS/image fidelity, see `html_open_route`); a sourceless
+    /// html preview → temp file + OS browser; `.jl` → backend
+    /// `pluto.open` (header-checked there); video → backend `video.open`
+    /// (browser HTML5 playback); `.qmd` → quick Quarto render (no
+    /// execution). Shared by the NavTree and Preview key arms (same
+    /// behavior on the cursored / shown file).
     fn open_path_external(&mut self, abs: Option<String>) {
         let preview_mime = self.preview_src.as_ref().map(|(m, _)| m.clone());
         if preview_mime.as_deref() == Some("text/html") {
-            if let Some((_, bytes)) = self.preview_src.as_ref() {
-                if let Err(e) = open_html_in_browser(bytes) {
-                    tracing::warn!(error = %e, "failed to open preview in browser");
+            // Field report: this used to always write the cached
+            // preview bytes to a temp file — relative CSS/JS/images/
+            // page links then resolve under the temp dir and 404. When
+            // the preview traces to a real on-disk file, route through
+            // `docs.open` instead (ADR 0024's site server, full asset
+            // fidelity) — the same request `W` dispatches today.
+            match html_open_route(self.previewed_files_path().as_deref()) {
+                HtmlOpenRoute::Docs(path) => self.docs_open_external(path),
+                HtmlOpenRoute::TempBytes => {
+                    if let Some((_, bytes)) = self.preview_src.as_ref() {
+                        if let Err(e) = open_html_in_browser(bytes) {
+                            tracing::warn!(error = %e, "failed to open preview in browser");
+                        }
+                    }
                 }
             }
         } else if let Some(abs) = abs.as_deref() {
@@ -19874,6 +19915,22 @@ mod tests {
         // an empty set means the next reload's walk will refire it.
         assert!(!failed.contains("figures/x.png"));
         assert!(failed.is_empty());
+    }
+
+    // --- Bug 2: `o` on an on-disk HTML preview must route through
+    // `docs.open` (same as `W`), not a temp-file copy of cached bytes. ---
+
+    #[test]
+    fn html_open_route_prefers_docs_when_source_path_known() {
+        assert_eq!(
+            html_open_route(Some("/proj/docs/build/index.html")),
+            HtmlOpenRoute::Docs("/proj/docs/build/index.html".to_string())
+        );
+    }
+
+    #[test]
+    fn html_open_route_falls_back_to_temp_bytes_when_sourceless() {
+        assert_eq!(html_open_route(None), HtmlOpenRoute::TempBytes);
     }
 
     #[test]
