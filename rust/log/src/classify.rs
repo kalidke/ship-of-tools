@@ -56,10 +56,16 @@ pub enum ProbeOutcome<Process> {
     /// B1: no owned spawn attempt this episode; a proven, already-live
     /// server.
     Adopted(Process),
-    /// B2/B3/B4/B6 (Stage B only — see this module's own doc for why
-    /// Stage A folds an equivalent observation into `Pending` instead):
-    /// a well-formed wrong answer, or an access-denied connect. Never
-    /// retried as if it might still be legitimate.
+    /// B2/B3/B4/B6, or A4's own identity mismatch (Codex review round 1,
+    /// finding 10): a well-formed wrong answer, an access-denied connect,
+    /// or a challenge that proved SOME process but not the one this
+    /// episode's own spawn produced — a stale, orphaned capsule from a
+    /// prior crash, still bound under the same voyage id, answering
+    /// before this new child's own pipe came up. Never retried as if it
+    /// might still be legitimate; the A4 row also terminates the
+    /// now-untracked spawned child before returning this (see
+    /// `probe_owned_spawn`'s own A4 arm) rather than leaving an unproven
+    /// process running with nothing left to supervise it.
     Foreign,
     /// B7: no owned child, connect `FILE_NOT_FOUND`, writer fence FREE.
     Absent,
@@ -134,7 +140,33 @@ pub fn probe_owned_spawn<O: ProbeOps>(
             ConnectOutcome::Connected(conn) => {
                 let deadline = clamped_challenge_deadline(ops.now(), readiness_cutoff);
                 if let ChallengeOutcome::Proven(process) = ops.challenge(&conn, deadline) {
-                    return ProbeOutcome::Ready(process); // A4
+                    // A4's own identity check (Codex review round 1,
+                    // finding 10): a `Proven` challenge only proves the
+                    // reply's pid/creation matched what the OS
+                    // independently observed on THAT connection — it says
+                    // nothing about whether the answering server is the
+                    // process THIS episode itself spawned, versus a
+                    // stale, orphaned capsule from a prior crash still
+                    // bound under the same voyage id while this new
+                    // child's own pipe hadn't come up yet. Compare
+                    // against the owned child's own identity before
+                    // trusting it.
+                    return match ops.spawned_identity(&child) {
+                        Ok(child_identity) if child_identity == ops.proven_identity(&process) => {
+                            ProbeOutcome::Ready(process) // A4
+                        }
+                        _ => {
+                            // Wrong identity, or the child's own identity
+                            // could not even be read: fail closed. The
+                            // spawned child is now UNTRACKED (this
+                            // function is about to return without ever
+                            // handing it back) — terminate it rather than
+                            // leaving an unproven process running with
+                            // nothing left to supervise it.
+                            let _ = ops.kill_child(&child);
+                            ProbeOutcome::Foreign
+                        }
+                    };
                 }
                 // A5 (Foreign or Undetermined): fall through to the poll
                 // sleep and try again.
@@ -300,6 +332,10 @@ mod tests {
         ops.push_wait_child(WaitOutcome::StillRunning);
         ops.push_connect(ConnectOutcome::Connected(DummyConn));
         ops.push_challenge(ChallengeOutcome::Proven(DummyProcess));
+        // The challenged process's identity matches the child this
+        // episode itself spawned -- A4's own identity check passes.
+        ops.push_spawned_identity(Ok((111, 222)));
+        ops.push_proven_identity((111, 222));
         let readiness = ops.now() + Duration::from_secs(60);
         let outcome = probe_owned_spawn(&ops, &mut unused_cmd(), "voy", readiness, KILL_WAIT, ATTEMPT);
         assert!(matches!(outcome, ProbeOutcome::Ready(_)));
@@ -313,13 +349,56 @@ mod tests {
         // First iteration: still running, but not yet bound.
         ops.push_wait_child(WaitOutcome::StillRunning);
         ops.push_connect(ConnectOutcome::FileNotFound);
-        // Second iteration: bound and proven.
+        // Second iteration: bound and proven, and the identity matches.
         ops.push_wait_child(WaitOutcome::StillRunning);
         ops.push_connect(ConnectOutcome::Connected(DummyConn));
         ops.push_challenge(ChallengeOutcome::Proven(DummyProcess));
+        ops.push_spawned_identity(Ok((111, 222)));
+        ops.push_proven_identity((111, 222));
         let readiness = ops.now() + Duration::from_secs(60);
         let outcome = probe_owned_spawn(&ops, &mut unused_cmd(), "voy", readiness, KILL_WAIT, ATTEMPT);
         assert!(matches!(outcome, ProbeOutcome::Ready(_)));
+        assert!(ops.all_exhausted());
+    }
+
+    /// A4's own identity check (Codex review round 1, finding 10): a
+    /// challenge can prove SOME process without that process being the
+    /// one this episode itself spawned — a stale, orphaned capsule from a
+    /// prior crash, still bound under the same voyage id, answering
+    /// before this new child's own pipe came up. A mismatch is `Foreign`,
+    /// and the now-untracked spawned child is terminated rather than left
+    /// running.
+    #[test]
+    fn a4_identity_mismatch_is_foreign_and_kills_the_untracked_child() {
+        let ops = ScriptedProbeOps::new();
+        ops.push_spawn(SpawnOutcome::Spawned(DummySpawnedChild));
+        ops.push_wait_child(WaitOutcome::StillRunning);
+        ops.push_connect(ConnectOutcome::Connected(DummyConn));
+        ops.push_challenge(ChallengeOutcome::Proven(DummyProcess));
+        ops.push_spawned_identity(Ok((111, 222)));
+        ops.push_proven_identity((999, 888)); // a DIFFERENT process answered
+        ops.push_kill_child(Ok(())); // the untracked child must be terminated
+        let readiness = ops.now() + Duration::from_secs(60);
+        let outcome = probe_owned_spawn(&ops, &mut unused_cmd(), "voy", readiness, KILL_WAIT, ATTEMPT);
+        assert!(matches!(outcome, ProbeOutcome::Foreign));
+        assert!(ops.all_exhausted());
+    }
+
+    /// The child's own identity could not even be READ (an OS call
+    /// failed) -- fail closed exactly like a proven mismatch: `Foreign`,
+    /// and the untracked child is still terminated.
+    #[test]
+    fn a4_identity_unreadable_is_foreign_and_kills_the_untracked_child() {
+        let ops = ScriptedProbeOps::new();
+        ops.push_spawn(SpawnOutcome::Spawned(DummySpawnedChild));
+        ops.push_wait_child(WaitOutcome::StillRunning);
+        ops.push_connect(ConnectOutcome::Connected(DummyConn));
+        ops.push_challenge(ChallengeOutcome::Proven(DummyProcess));
+        ops.push_spawned_identity(Err(std::io::Error::other("GetProcessId failed")));
+        ops.push_kill_child(Ok(()));
+        let readiness = ops.now() + Duration::from_secs(60);
+        let outcome = probe_owned_spawn(&ops, &mut unused_cmd(), "voy", readiness, KILL_WAIT, ATTEMPT);
+        assert!(matches!(outcome, ProbeOutcome::Foreign));
         assert!(ops.all_exhausted());
     }
 

@@ -215,8 +215,11 @@ pub(crate) fn terminate_handle(handle: HANDLE) -> std::io::Result<()> {
 }
 
 /// `GetProcessTimes` on an already-open handle, packed to the exact bits
-/// the wire's `status_ok.created` carries.
-fn creation_filetime_bits(handle: HANDLE) -> std::io::Result<u64> {
+/// the wire's `status_ok.created` carries. `pub(crate)`: `probe::SpawnedChild`
+/// reuses this to read its OWN identity (Codex review round 1, finding
+/// 10) — the same packing, over a DIFFERENT handle (the owned, not-yet-
+/// proven child rather than a challenged server's).
+pub(crate) fn creation_filetime_bits(handle: HANDLE) -> std::io::Result<u64> {
     // SAFETY: four stack-local FILETIME out-params, valid to write into
     // regardless of the call's outcome.
     unsafe {
