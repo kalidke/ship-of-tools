@@ -57,13 +57,16 @@ fn closed_path(state_dir: &Path, operation_id: &str) -> PathBuf {
 
 /// What an `.active` record commits to (ADR 0041: "the id, a canonical
 /// digest of the command, its state, and for `reset` the new voyage
-/// identity it intends to publish"). `digest` is the caller's own stable,
-/// canonical encoding of the WIRE command this id names — an id
-/// resubmitted with a DIFFERENT digest is `refused {id_conflict}`, which
-/// the caller (not this module) decides by comparing against
-/// [`read_active`]'s answer. `sot_log::wire` owns the canonical encoding
-/// (see `wire::canonical_supervisor_op_digest`); this module only stores
-/// and compares the resulting hex string.
+/// identity it intends to publish"). `digest` is the caller's own stable
+/// hex digest of the WIRE command this id names — an id resubmitted with
+/// a DIFFERENT digest is `refused {id_conflict}`, which the caller (not
+/// this module) decides by comparing against [`read_active`]'s answer.
+/// `sot_log::wire` owns the canonical BYTE encoding
+/// ([`wire::canonical_supervisor_op_bytes`]); `supervisor.rs` SHA-256s
+/// those bytes into the hex string this module only stores and compares
+/// (Codex review round 1, finding 6 — an earlier version hashed
+/// `format!("{op:?}")`, Rust's `Debug` output, which carries no stability
+/// guarantee across compiler or dependency versions).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveRecord {
     pub digest: String,

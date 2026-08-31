@@ -16,6 +16,39 @@
 //! [`crate::recovery::latest_leg_state`] /
 //! [`crate::verify::leg_carries_run_end_marker`] (the start-mode table).
 //!
+//! # `Lifecycle`: one state machine, not four independent fields
+//!
+//! An earlier version of this module tracked "what phase is the
+//! authority in" across FOUR independently-mutated pieces — a
+//! `SupervisorPhase`, a `no_respawn: bool`, a `stop_requested: bool`, and
+//! a separate `ActiveLeg` enum — plus a SECOND, independently-tracked
+//! voyage id in `supervise_inner` itself that `perform_reset` had to keep
+//! in sync by hand. That combination admitted states this authority can
+//! never actually be in (e.g. "no_respawn but still mid-spawn") and one
+//! it silently forgot to represent (an `end_run` submitted while spawning
+//! had nowhere honest to record "there is no leg yet"). [`Lifecycle`]
+//! replaces all of it: one tag, one shape per phase (Codex review round
+//! 1, simplicity audit).
+//!
+//! # The lane is serviced in EVERY phase (Codex review round 1, finding 1)
+//!
+//! An earlier version blocked the ENTIRE supervisor lane — no `status`,
+//! no `query`, nothing — for as long as an initial adopt-only probe, an
+//! owned spawn attempt, or an `end_run`'s mgmt-lane exchange+wait+verify
+//! took (up to ~70s for the last one), because each ran as a synchronous
+//! call directly inside the one function that also serviced the lane.
+//! Every one of those OS-facing operations now runs on its own
+//! background thread; the main loop polls each thread's result
+//! non-blockingly and services the lane on EVERY iteration regardless of
+//! which phase the authority is in — "one linearized STATE MACHINE, not
+//! one blocking thread." Journal writes for a given operation id stay
+//! confined to whichever thread owns that operation's lifecycle
+//! end-to-end (the pattern this crate's own `record_verified` background
+//! thread already established before this round); at most one mutating
+//! operation is ever in flight at a time (voyage-fenced, single
+//! authority), so no two threads ever contend for the same `.active`/
+//! `.terminal` file pair.
+//!
 //! # Scope notes (resolved ambiguities / documented simplifications)
 //!
 //! - **Rollout evidence stays a U4 concern.** `rollout.rs`'s own doc
@@ -32,22 +65,26 @@
 //!   — "the caller ... decides what 'no drawer yet' means." This module
 //!   decides: `--start` with no pointer at all is a legitimate first-ever
 //!   run (mint one); `--resume` with no pointer at all has nothing to
-//!   resume (a loud, terminal refusal) — see [`discover_or_mint_voyage`].
-//! - **`record_verified`'s O(retained history) walk is delegated to a
-//!   background thread**, matching "never inside an interactive wait" —
-//!   but the supervisor's own exit path joins any still-running verify
-//!   thread before returning, matching "before reporting `record_verified`
-//!   or **exiting 0**."
+//!   resume (a loud, terminal refusal) — see [`discover_or_mint_voyage`],
+//!   which therefore never itself needs an `Option` return: every path
+//!   through it either yields an id or refuses loudly (an earlier
+//!   version's `Option<String>` return type had a `None` arm no branch
+//!   ever actually produced — Codex review round 1, simplicity audit).
+//! - **`record_verified`'s O(retained history) walk, and every other
+//!   OS-facing wait, runs on a background thread**, matching "never
+//!   inside an interactive wait" — but the supervisor's own exit path
+//!   joins every still-running background thread before returning,
+//!   matching "before reporting `record_verified` or **exiting 0**."
 //! - **`reset` while a leg is live** has no dedicated wire refusal reason
 //!   (`SupervisorRefusedReason` has none for it) — this module refuses it
 //!   through the generic `Failed{detail}` shape rather than inventing a
 //!   new wire variant for a single caller.
 //! - **A single pending operation is assumed during journal recovery**
-//!   for resolving which voyage an `end_run` targeted (`ActiveRecord::
-//!   old_voyage`, read once per operation during the recovery sweep) —
-//!   two DIFFERENT unresolved operations racing a crash in the same
-//!   window is not specifically hardened beyond what the journal's own
-//!   per-id atomicity already provides.
+//!   for resolving which voyage an `end_run` targeted (`ActiveOp::EndRun`'s
+//!   own `voyage` field, read once per operation during the recovery
+//!   sweep) — two DIFFERENT unresolved operations racing a crash in the
+//!   same window is not specifically hardened beyond what the journal's
+//!   own per-id atomicity already provides.
 
 #![cfg(windows)]
 
@@ -67,6 +104,7 @@ use crate::wire::{
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------
@@ -97,6 +135,22 @@ const MAX_LANE_INSTANCES: u32 = 8;
 /// The main loop's own poll granularity — comfortably inside every
 /// deadline above, never a source of the numbers themselves.
 const MAIN_LOOP_POLL: Duration = Duration::from_millis(100);
+/// A `hello`'s own `refused {version_skew}` reply is this connection's
+/// last word — closing right after `PipeServer::send` returns would race
+/// the client seeing EOF before ever reading it (a bare `WriteFile`
+/// completing on the server side is not proof the client has DRAINED the
+/// pipe's buffer yet). This bounds how long to wait for
+/// `TransportEvent::Sent` before force-closing anyway (a send that
+/// silently never completes must not leak the connection forever).
+const REFUSAL_SENT_DEADLINE: Duration = Duration::from_secs(2);
+/// AFTER `Sent` fires (the write has physically completed), an
+/// additional grace window before actually closing — giving the client's
+/// own `read()` a chance to drain the reply out of the pipe's buffer
+/// before this end tears the connection down (Codex review round 1, CI
+/// failure (b): a close immediately on `Sent` still occasionally raced
+/// the client into `Undetermined` rather than `Foreign`, which is not
+/// possible if the client already has the bytes in hand).
+const REFUSAL_FLUSH_GRACE: Duration = Duration::from_millis(250);
 
 /// Exit codes are the launcher's own contract (ADR 0041 Lifecycle
 /// "Supervisor exit codes"): `0` = clean end, do not restart; `69` =
@@ -292,22 +346,71 @@ fn err_state(msg: impl Into<String>) -> crate::Error {
     crate::Error::State(msg.into())
 }
 
+/// Truncate `detail` to fit within [`wire::MAX_SUPERVISOR_STRING_LEN`]
+/// bytes, on a UTF-8 boundary. Every `Failed{detail}`/`Failed{detail}`
+/// journal or wire record this module constructs goes through this
+/// (Codex review round 1, finding 8): `detail` strings are built from
+/// arbitrary `Display` output (an OS error, a nested `crate::Error`)
+/// with no length guarantee of their own, and the wire's own encoder
+/// REFUSES an oversized string rather than truncating it — an earlier
+/// version's final `encode_supervisor_reply(&reply).expect(...)` assumed
+/// every field was already bounded without enforcing it anywhere, so a
+/// long enough error message could panic the whole authority.
+fn bounded_detail(detail: impl Into<String>) -> String {
+    let mut s = detail.into();
+    if s.len() > wire::MAX_SUPERVISOR_STRING_LEN {
+        s.truncate(wire::MAX_SUPERVISOR_STRING_LEN);
+        while !s.is_char_boundary(s.len()) {
+            s.pop();
+        }
+    }
+    s
+}
+
+/// A stable hex digest of the WIRE command `operation_id` names (ADR
+/// 0041: "the id, a canonical digest of the command"). SHA-256 over
+/// [`wire::canonical_supervisor_op_bytes`]'s own canonical byte encoding
+/// — never `format!("{op:?}")` (Rust's `Debug` output), which carries no
+/// stability guarantee across compiler or dependency versions and would
+/// make an id's own digest-conflict check spuriously flip across
+/// unrelated toolchain upgrades (Codex review round 1, finding 6).
+fn digest_of(op: &SupervisorOp) -> crate::Result<String> {
+    use sha2::{Digest as _, Sha256};
+    let bytes = wire::canonical_supervisor_op_bytes(op).map_err(|e| err_state(format!("{e}")))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// A fresh `drawer.voyage.reset-<nonce>` evidence filename — used both by
+/// a live `reset` command's own admission (journaled BEFORE the rename it
+/// names, so recovery can verify it happened) and by the no-supervisor
+/// CLI path (which journals nothing, so it mints one for itself).
+fn mint_aside_name() -> crate::Result<String> {
+    let mut nonce_bytes = [0u8; 8];
+    getrandom::fill(&mut nonce_bytes).map_err(std::io::Error::from)?;
+    let nonce = u64::from_le_bytes(nonce_bytes);
+    Ok(format!("drawer.voyage.reset-{nonce:016x}"))
+}
+
 // ---------------------------------------------------------------------
 // Pointer discovery / mint (supervisor startup only)
 // ---------------------------------------------------------------------
 
-/// `Some(voyage_id)` to proceed; `None` means the `--resume` "sealed,
-/// carrying its own `run_end_requested`" row — exit 0, never spawn.
-fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crate::Result<Option<String>> {
+/// Discover the current voyage id, or mint the first-ever one. Every
+/// path either yields an id or refuses loudly — there is no "proceed
+/// with nothing" case here (see the module's own doc on why this is not
+/// an `Option`).
+fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crate::Result<String> {
     match pointer::validate(state_dir) {
-        PointerState::Valid(id) => Ok(Some(id)),
+        PointerState::Valid(id) => Ok(id),
         PointerState::NotFound => match mode {
             StartMode::Start => {
                 std::fs::create_dir_all(voyages_dir(state_dir))?;
                 let id = uuid::Uuid::now_v7().to_string();
                 VoyageStore::bootstrap(&voyage_root_path(state_dir, &id), &id, RetentionClass::Archive)?;
                 pointer::publish(state_dir, &id)?;
-                Ok(Some(id))
+                Ok(id)
             }
             StartMode::Resume => Err(err_state(
                 "--resume with no drawer.voyage pointer at all: nothing to resume",
@@ -321,29 +424,27 @@ fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crate::Result<O
 /// The start-mode table's OWN "what to do about the latest leg" half (ADR
 /// 0041 Lifecycle "Startup authorization is a mode, not an identity"),
 /// consulted ONLY when no live capsule was adopted. Returns `true` to
-/// spawn a fresh leg, `false` for the one row that must not
-/// (`--resume`, sealed, carrying its own marker).
+/// spawn a fresh leg, `false` for the row that must not (`--resume`
+/// finding the current leg already carries its own end-run marker).
+///
+/// Checks the marker on an UNSEALED leg too, not only a sealed one
+/// (Codex review round 1, finding 3): the marker is written as part of a
+/// leg's own graceful-teardown sequence, BEFORE it finishes sealing its
+/// segment — a supervisor that crashes during that window and restarts
+/// would otherwise see `Unsealed` and respawn a SECOND leg while the
+/// first one is still mid-teardown.
 fn should_spawn_after_absent(state_dir: &Path, voyage_id: &str, mode: StartMode) -> crate::Result<bool> {
     if mode == StartMode::Start {
         return Ok(true); // "anything -> adopt if live, else spawn"
     }
     let seg_dir = voyage_root_path(state_dir, voyage_id).join("seg");
     match recovery::latest_leg_state(&seg_dir).map_err(crate::Error::Io)? {
-        LatestLegState::NoLeg | LatestLegState::Unsealed { .. } => Ok(true),
-        LatestLegState::Sealed { epoch } => {
+        LatestLegState::NoLeg => Ok(true),
+        LatestLegState::Sealed { epoch } | LatestLegState::Unsealed { epoch } => {
             let marked = verify::leg_carries_run_end_marker(&seg_dir, voyage_id, epoch)?;
             Ok(!marked)
         }
     }
-}
-
-// ---------------------------------------------------------------------
-// The active leg
-// ---------------------------------------------------------------------
-
-enum ActiveLeg {
-    None,
-    Ready { process: ChallengedProcess, ready_at: Instant },
 }
 
 fn leg_epoch_of(state_dir: &Path, voyage_id: &str) -> Option<u64> {
@@ -393,6 +494,14 @@ enum EndRunOutcome {
     Absent,
     Foreign,
     Pending,
+    /// The challenge succeeded and the shutdown request reached
+    /// `write_all` successfully, but its ack was never read back (a
+    /// write failure past that point, an EOF, or a timeout) — the
+    /// shutdown MAY have been delivered and acted on regardless. Never
+    /// treated as a plain failure: [`finish_end_run`] reconciles via the
+    /// leg's own durable marker before concluding anything (Codex review
+    /// round 1, finding 2).
+    AckUnknown(ChallengedProcess),
     Ended(ChallengedProcess),
 }
 
@@ -445,26 +554,113 @@ fn end_run_over_mgmt_lane(voyage_id: &str, reason: &str) -> crate::Result<EndRun
         ChallengeOutcome::Proven(process) => {
             let request = wire::encode_mgmt_request(&wire::MgmtRequest::Shutdown { reason: reason.to_string() })
                 .map_err(|e| err_state(format!("encoding shutdown request: {e}")))?;
-            conn.write_all(&request)?;
+            if conn.write_all(&request).is_err() {
+                return Ok(EndRunOutcome::AckUnknown(process));
+            }
             // The reply's own content carries no new information (the v0
             // mgmt lane has no refusal shape at all — every reply tag
             // means success); reading it is only proof the ack was
-            // physically delivered before this connection's own EOF.
-            let _ = read_one_frame(&conn, Instant::now() + Duration::from_secs(5))?;
-            Ok(EndRunOutcome::Ended(process))
+            // physically delivered before this connection's own EOF. A
+            // failure reading it does NOT mean the shutdown itself
+            // failed — the request was already written successfully —
+            // so this is `AckUnknown`, reconciled via the leg's own
+            // marker, never an immediate `Failed`.
+            match read_one_frame(&conn, Instant::now() + Duration::from_secs(5)) {
+                Ok(_) => Ok(EndRunOutcome::Ended(process)),
+                Err(_) => Ok(EndRunOutcome::AckUnknown(process)),
+            }
         }
     }
+}
+
+/// Bring an `end_run` to its terminal fact, whether invoked LIVE (a
+/// process handle from `end_run_over_mgmt_lane`'s own `Ended`/
+/// `AckUnknown` outcome is available to wait on) or during STARTUP
+/// RECOVERY (no handle — the prior incarnation that owned it is long
+/// gone; only the leg's own durable marker can attest what happened).
+/// ADR 0041 (Codex review round 1, finding 2): reconciles via
+/// [`verify::leg_carries_run_end_marker`] rather than trusting a
+/// post-send error, or the mgmt pipe's mere absence, as proof either way
+/// — "never fabricate `record_closed` on pipe-absent."
+///
+/// A live process handle's WAIT result gates [`journal::mark_closed`]
+/// (finding 2's third clause): `mark_closed` is only ever called once the
+/// wait has CONFIRMED exit, never merely because a shutdown request was
+/// sent. A wait that times out or fails is itself a `Failed` terminal —
+/// never silently treated as success.
+///
+/// `op_id` is `None` for the no-supervisor CLI path (`endrun_inner`),
+/// which journals nothing at all — `mark_closed`'s own intermediate
+/// milestone exists only for a LATER `query{operation_id}` to observe,
+/// and the CLI path has no such caller. Passing a placeholder id there
+/// instead would leave permanent, meaningless journal residue under a
+/// name no real operation ever owns.
+fn finish_end_run(
+    state_dir: &Path,
+    op_id: Option<&str>,
+    voyage_id: &str,
+    epoch: Option<u64>,
+    process: Option<ChallengedProcess>,
+) -> crate::Result<journal::TerminalRecord> {
+    if let Some(process) = process {
+        match process.wait(SUPPORTED_HISTORY_BOUND + KILL_WAIT_BOUND) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(journal::TerminalRecord::Failed {
+                    detail: bounded_detail("the leg's process did not exit within its own teardown bound"),
+                });
+            }
+            Err(e) => {
+                return Ok(journal::TerminalRecord::Failed {
+                    detail: bounded_detail(format!("waiting for the leg's process to exit: {e}")),
+                });
+            }
+        }
+    }
+    let seg_dir = voyage_root_path(state_dir, voyage_id).join("seg");
+    let epoch = match epoch {
+        Some(e) => e,
+        // "None is a real, recoverable case ... recovery falls back to
+        // the CURRENT voyage's latest leg" (journal.rs's own doc on
+        // `ActiveOp::EndRun::epoch`).
+        None => match recovery::latest_leg_state(&seg_dir).map_err(crate::Error::Io)? {
+            LatestLegState::Sealed { epoch } | LatestLegState::Unsealed { epoch } => epoch,
+            LatestLegState::NoLeg => {
+                return Ok(journal::TerminalRecord::Failed {
+                    detail: bounded_detail("no leg exists for this voyage"),
+                });
+            }
+        },
+    };
+    let marked = verify::leg_carries_run_end_marker(&seg_dir, voyage_id, epoch)?;
+    if !marked {
+        return Ok(journal::TerminalRecord::Failed { detail: bounded_detail("record_append") });
+    }
+    if let Some(op_id) = op_id {
+        journal::mark_closed(state_dir, op_id)?;
+    }
+    let root = voyage_root_path(state_dir, voyage_id);
+    Ok(match verify::verify_voyage(&root, voyage_id) {
+        Ok(()) => journal::TerminalRecord::RecordVerified,
+        Err(e) => journal::TerminalRecord::Failed { detail: bounded_detail(format!("verify_voyage: {e}")) },
+    })
 }
 
 // ---------------------------------------------------------------------
 // Reset
 // ---------------------------------------------------------------------
 
-/// Rename the current pointer aside (evidence-preserving, unique,
-/// no-replace) if one exists, then mint `new_voyage` fresh. Idempotent
-/// enough for recovery's own retry: a `new_voyage` that already has a
-/// bootstrapped store is left alone rather than re-bootstrapped.
-fn reset_pointer(state_dir: &Path, new_voyage: &str) -> crate::Result<()> {
+/// Rename the current pointer aside (evidence-preserving, no-replace) if
+/// one exists, then mint `new_voyage` fresh. `aside_name` is the exact
+/// filename to rename it to: `Some(name)` for the live, journaled path
+/// (chosen and recorded AT ADMISSION time, before the rename — Codex
+/// review round 1, finding 4, "journal the aside pathname"); `None` for
+/// the no-supervisor CLI path, which journals nothing and so mints its
+/// own name here. Idempotent enough for recovery's own retry: a
+/// `new_voyage` that already has a bootstrapped store is left alone
+/// rather than re-bootstrapped, and a call with nothing left to rename
+/// aside just proceeds straight to bootstrap+publish.
+fn reset_pointer(state_dir: &Path, new_voyage: &str, aside_name: Option<&str>) -> crate::Result<()> {
     let live = pointer::pointer_path(state_dir);
     if live.exists() {
         // Restate the source's own durability before renaming it aside —
@@ -476,10 +672,15 @@ fn reset_pointer(state_dir: &Path, new_voyage: &str) -> crate::Result<()> {
         crate::fsutil::fsync_file(&live).map_err(|e| {
             err_state(format!("reset_pointer: flushing the live pointer {live:?} before renaming it aside: {e}"))
         })?;
-        let mut nonce_bytes = [0u8; 8];
-        getrandom::fill(&mut nonce_bytes).map_err(std::io::Error::from)?;
-        let nonce = u64::from_le_bytes(nonce_bytes);
-        let aside = state_dir.join(format!("drawer.voyage.reset-{nonce:016x}"));
+        let owned;
+        let name: &str = match aside_name {
+            Some(n) => n,
+            None => {
+                owned = mint_aside_name()?;
+                &owned
+            }
+        };
+        let aside = state_dir.join(name);
         crate::fsutil::publish_noreplace(&live, &aside).map_err(|e| {
             err_state(format!("reset_pointer: renaming {live:?} aside to {aside:?}: {e}"))
         })?;
@@ -501,22 +702,44 @@ fn reset_pointer(state_dir: &Path, new_voyage: &str) -> crate::Result<()> {
 // the transaction, and it runs FIRST")
 // ---------------------------------------------------------------------
 
-fn reconcile_journal_on_startup(state_dir: &Path) -> crate::Result<()> {
+/// Recovers every active-but-unterminated journal entry. Returns `true`
+/// iff any RECOVERED `end_run` targeted `current_voyage` — the caller
+/// must then start directly in ended-no-respawn service (never spawn a
+/// leg for a voyage this authority already told to end in a prior
+/// incarnation) rather than exiting immediately (Codex review round 1,
+/// finding 3: "never exit-immediately at startup without serving the
+/// recovered query result" — a client polling `query` for that same
+/// operation id right after the crash-restart must still find a
+/// supervisor to ask).
+fn reconcile_journal_on_startup(state_dir: &Path, current_voyage: &str) -> crate::Result<bool> {
+    let mut ended_current_voyage = false;
     for op_id in journal::active_operations(state_dir)? {
         let Some(active) = journal::read_active(state_dir, &op_id)? else { continue };
-        if let Some(new_voyage) = &active.intended_new_voyage {
-            reconcile_reset(state_dir, &op_id, new_voyage, active.old_voyage.as_deref())?;
-        } else if let Some(epoch) = active.end_run_epoch {
-            reconcile_end_run(state_dir, &op_id, active.old_voyage.as_deref(), epoch)?;
-        } else {
-            // `stop`: reaching this line at all means the process
-            // restarted, so the operator already knows the supervisor
-            // cycled — finishing it as stopping is harmless bookkeeping,
-            // never a second destructive act.
-            journal::finish(state_dir, &op_id, &journal::TerminalRecord::Stopping)?;
+        match &active.op {
+            journal::ActiveOp::EndRun { voyage, epoch } => {
+                reconcile_end_run(state_dir, &op_id, voyage, *epoch)?;
+                if voyage == current_voyage {
+                    ended_current_voyage = true;
+                }
+            }
+            journal::ActiveOp::Reset { old_voyage, new_voyage, aside } => {
+                reconcile_reset(state_dir, &op_id, new_voyage, old_voyage.as_deref(), aside.as_deref())?;
+            }
+            journal::ActiveOp::Stop => {
+                // Reaching this line at all means the process restarted,
+                // so the operator already knows the supervisor cycled —
+                // finishing it as stopping is harmless bookkeeping, never
+                // a second destructive act.
+                journal::finish(state_dir, &op_id, &journal::TerminalRecord::Stopping)?;
+            }
         }
     }
-    Ok(())
+    Ok(ended_current_voyage)
+}
+
+fn reconcile_end_run(state_dir: &Path, op_id: &str, voyage_id: &str, epoch: Option<u64>) -> crate::Result<()> {
+    let terminal = finish_end_run(state_dir, Some(op_id), voyage_id, epoch, None)?;
+    journal::finish(state_dir, op_id, &terminal)
 }
 
 fn reconcile_reset(
@@ -524,15 +747,43 @@ fn reconcile_reset(
     op_id: &str,
     new_voyage: &str,
     old_voyage: Option<&str>,
+    aside: Option<&str>,
 ) -> crate::Result<()> {
     match pointer::validate(state_dir) {
-        PointerState::Valid(id) if id == new_voyage => {}
+        PointerState::Valid(id) if id == new_voyage => {} // already fully done
         PointerState::Valid(id) if Some(id.as_str()) == old_voyage => {
-            reset_pointer(state_dir, new_voyage)?;
+            // The rename never took (or this is the very first attempt):
+            // resume from the beginning.
+            reset_pointer(state_dir, new_voyage, aside)?;
         }
-        PointerState::NotFound => {
-            reset_pointer(state_dir, new_voyage)?;
-        }
+        PointerState::NotFound => match (old_voyage, aside) {
+            (Some(_), Some(aside_name)) => {
+                // Verify the evidence rename actually happened before
+                // treating the pointer's absence as "safe to resume from
+                // publication" (Codex review round 1, finding 4): the
+                // pointer being gone, by itself, proves nothing.
+                if !state_dir.join(aside_name).exists() {
+                    return Err(err_state(format!(
+                        "reset {op_id}: the pointer is absent but its recorded evidence rename \
+                         {aside_name:?} does not exist — an operator must investigate before this \
+                         can be resumed"
+                    )));
+                }
+                reset_pointer(state_dir, new_voyage, aside)?;
+            }
+            (Some(_), None) => {
+                return Err(err_state(format!(
+                    "reset {op_id}: a pointer existed at admission but no aside filename was \
+                     journaled for it — cannot verify the pointer's disappearance is this \
+                     operation's own doing"
+                )));
+            }
+            (None, _) => {
+                // Nothing existed to rename aside in the first place —
+                // absence is expected regardless of any aside.
+                reset_pointer(state_dir, new_voyage, None)?;
+            }
+        },
         PointerState::Valid(_) => {
             return Err(err_state(format!(
                 "reset {op_id}: the pointer names a THIRD identity — an operator must investigate; \
@@ -550,88 +801,261 @@ fn reconcile_reset(
     )
 }
 
-fn reconcile_end_run(
-    state_dir: &Path,
-    op_id: &str,
-    voyage_id: Option<&str>,
-    epoch: u64,
-) -> crate::Result<()> {
-    let Some(voyage_id) = voyage_id else {
-        return journal::finish(
-            state_dir,
-            op_id,
-            &journal::TerminalRecord::Failed { detail: "no voyage recorded for this end_run".into() },
-        );
-    };
-    let seg_dir = voyage_root_path(state_dir, voyage_id).join("seg");
-    let marked = verify::leg_carries_run_end_marker(&seg_dir, voyage_id, epoch)?;
-    if !marked {
-        return journal::finish(
-            state_dir,
-            op_id,
-            &journal::TerminalRecord::Failed { detail: "record_append".into() },
-        );
+// ---------------------------------------------------------------------
+// Lifecycle: the authority's own state machine (see module doc)
+// ---------------------------------------------------------------------
+
+enum Lifecycle {
+    /// The ONE initial placement decision (adopt if live, else consult
+    /// the start-mode table) — runs on a background thread so the lane
+    /// is serviced for its own up-to-`PROBE_EPISODE` duration.
+    InitialProbe { rx: mpsc::Receiver<ProbeOutcome<ChallengedProcess>> },
+    /// A fresh owned-spawn attempt in flight on a background thread —
+    /// every respawn after a leg ends reaches this, never
+    /// `InitialProbe` again.
+    Spawning { rx: mpsc::Receiver<ProbeOutcome<ChallengedProcess>> },
+    /// A leg is live and proven; `ready_at` anchors the anti-flap
+    /// stability window.
+    Ready { process: ChallengedProcess, ready_at: Instant },
+    /// An `end_run` is in flight on a background thread — the mgmt-lane
+    /// exchange, the wait for the leg's own exit, and verification all
+    /// happen there; this main loop never blocks on any of it.
+    Ending { operation_id: String, rx: mpsc::Receiver<journal::TerminalRecord> },
+    /// `end_run` completed (verified), or a leg never started because
+    /// this voyage was already told to end (see
+    /// `reconcile_journal_on_startup`'s own return value): no leg, never
+    /// respawn, serve query/status/stop until told otherwise.
+    EndedNoRespawn,
+    /// A loud, non-restartable stop: an `end_run` verification failure or
+    /// unconfirmed exit, a KILL+WAIT that never confirmed exit, an
+    /// identity-mismatched Stage A4 challenge, a permanently dead accept
+    /// loop, or a flap-threshold breach. `detail` is operator-facing
+    /// diagnostic text (never wire-encoded verbatim — see
+    /// `bounded_detail`).
+    Terminal { detail: String },
+}
+
+impl Lifecycle {
+    fn wire_phase(&self) -> SupervisorPhase {
+        match self {
+            Lifecycle::InitialProbe { .. } | Lifecycle::Spawning { .. } => SupervisorPhase::Starting,
+            Lifecycle::Ready { .. } => SupervisorPhase::Ready,
+            Lifecycle::Ending { .. } => SupervisorPhase::Ending,
+            Lifecycle::EndedNoRespawn => SupervisorPhase::EndedNoRespawn,
+            Lifecycle::Terminal { .. } => SupervisorPhase::Terminal,
+        }
     }
-    journal::mark_closed(state_dir, op_id)?;
-    let root = voyage_root_path(state_dir, voyage_id);
-    let terminal = match verify::verify_voyage(&root, voyage_id) {
-        Ok(()) => journal::TerminalRecord::RecordVerified,
-        Err(e) => journal::TerminalRecord::Failed { detail: format!("verify_voyage: {e}") },
-    };
-    journal::finish(state_dir, op_id, &terminal)
 }
 
 // ---------------------------------------------------------------------
 // The supervisor lane's own connection state machine
 // ---------------------------------------------------------------------
 
+/// A refusal reply queued as a connection's LAST word waits through TWO
+/// stages before the connection actually closes (Codex review round 1,
+/// finding 8 / CI failure (b)): first for `TransportEvent::Sent` (the
+/// write has physically completed) or a bounded deadline if it never
+/// arrives, THEN an additional flush-grace window so the client's own
+/// `read()` has a real chance to drain the bytes before this end tears
+/// the connection down.
+enum PendingClose {
+    AwaitingSent { deadline: Instant },
+    FlushGrace { close_at: Instant },
+}
+
 struct Conn {
     splitter: wire::FrameSplitter,
     hello_ok: bool,
     last_activity: Instant,
-    /// `true` once a reply meant to be this connection's LAST word (today:
-    /// `hello`'s own `refused {version_skew}`) has been queued via
-    /// `PipeServer::send` — `CloseHandle` does not promptly unstick or
-    /// even wait for an in-flight write, so closing immediately after
-    /// `send` can race the client seeing EOF before ever reading the
-    /// reply (the same discipline `capsule_win.rs`'s own shutdown ack
-    /// already observes). The close itself is deferred to that send's own
-    /// `TransportEvent::Sent` completion — see `service_lane`.
-    close_after_send: bool,
+    pending_close: Option<PendingClose>,
+}
+
+/// Everything spawning a fresh leg needs, threaded through the lane's
+/// own event handling so a live `reset` — which must respawn IMMEDIATELY
+/// for its brand-new, definitely-empty voyage, never wait out a whole
+/// `PROBE_EPISODE` adopt-only probe against a store nothing has ever
+/// written to — can start one without re-deriving it from
+/// `SuperviseConfig` at the call site.
+struct SpawnCtx {
+    capsule_exe: PathBuf,
+    lease_name: String,
+    cols: u16,
+    rows: u16,
+    producer_argv: Vec<String>,
 }
 
 /// Everything the lane's own command/query/status handling needs —
-/// deliberately separate from the main loop's own leg-supervision
-/// variables so the borrow-checker never has to reason about both at
-/// once inside one giant function.
+/// deliberately separate from the main loop's own `Lifecycle` so the
+/// borrow-checker never has to reason about both at once inside one
+/// giant function.
 struct AuthorityState {
     state_dir: PathBuf,
-    voyage_id: Option<String>,
-    leg_epoch: Option<u64>,
-    phase: SupervisorPhase,
-    no_respawn: bool,
-    stop_requested: bool,
+    voyage_id: String,
     self_pid: u32,
     self_created: u64,
-    verify_handle: Option<std::thread::JoinHandle<()>>,
+}
+
+/// What `handle_command` decided to do — the CALLER (`handle_lane_bytes`)
+/// applies the resulting `Lifecycle` transition inline, immediately
+/// after `handle_command` returns and before processing any further
+/// frame in the same read (this type carries no `Lifecycle` value
+/// directly: `AuthorityState` does not own it) — closing what would
+/// otherwise be a real admission race (two `command` frames landing in
+/// the SAME read, both seeing the pre-transition `Lifecycle` if the
+/// transition were deferred any later).
+enum CommandEffect {
+    /// No lifecycle transition; `reply` is final.
+    Reply(SupervisorOperationState),
+    /// Begin ending the current `Ready` leg: `operation_id`/`epoch`/
+    /// `reason` are what `spawn_end_run` needs; `reply` (always
+    /// `Accepted`) is what goes back on the wire immediately.
+    BeginEndRun { operation_id: String, epoch: Option<u64>, reason: String, reply: SupervisorOperationState },
+    /// The current voyage pointer was reset; `new_voyage` replaces
+    /// `AuthorityState::voyage_id` and the authority must re-enter
+    /// `Lifecycle::InitialProbe` for it (a reset only ever admits while
+    /// no leg is live, so there is nothing else running to reconcile).
+    ResetTo { new_voyage: String, reply: SupervisorOperationState },
+    /// `stop` was accepted; the main loop should exit after replying.
+    Stop { reply: SupervisorOperationState },
 }
 
 impl AuthorityState {
-    fn handle_request(&mut self, active_leg_is_ready: bool, req: SupervisorRequest) -> SupervisorReply {
+    /// `status` and `query` only — never `command`, which
+    /// `handle_lane_bytes` calls directly through [`Self::handle_command`]
+    /// so it can apply the resulting [`CommandEffect`]'s `Lifecycle`
+    /// transition INLINE, before processing any further frame in the
+    /// same read (see that type's own doc for why deferring the
+    /// transition any later would be a real admission race).
+    fn handle_status_or_query(&mut self, lifecycle: &Lifecycle, req: SupervisorRequest) -> SupervisorReply {
         match req {
-            SupervisorRequest::Hello { .. } => unreachable!("handled by the caller before this is reached"),
+            SupervisorRequest::Hello { .. } | SupervisorRequest::Command { .. } => {
+                unreachable!("handled by the caller before this is reached")
+            }
             SupervisorRequest::Status => SupervisorReply::StatusOk {
                 pid: self.self_pid,
                 created: self.self_created,
-                voyage: self.voyage_id.clone(),
-                leg: self.leg_epoch,
-                phase: self.phase,
+                voyage: Some(self.voyage_id.clone()),
+                leg: match lifecycle {
+                    Lifecycle::Ready { .. } | Lifecycle::Ending { .. } => leg_epoch_of(&self.state_dir, &self.voyage_id),
+                    _ => None,
+                },
+                phase: lifecycle.wire_phase(),
             },
-            SupervisorRequest::Command { operation_id, op } => {
-                SupervisorReply::Operation(self.handle_command(active_leg_is_ready, operation_id, op))
-            }
             SupervisorRequest::Query { operation_id } => {
                 SupervisorReply::Operation(self.query_state(&operation_id))
+            }
+        }
+    }
+
+    /// `Err` is a plain reply with no transition (a refusal, a
+    /// query-style answer, or a query-time journal error — the latter a
+    /// LOUD STOP, not folded into an ordinary reply: see the
+    /// `Err(SupervisorOperationState::Failed)` arms below, which the
+    /// caller treats identically to any other journal read failure via
+    /// [`is_journal_unreadable`]). `Ok` is a [`CommandEffect`] the caller
+    /// applies immediately.
+    fn handle_command(
+        &mut self,
+        lifecycle: &Lifecycle,
+        operation_id: String,
+        op: SupervisorOp,
+    ) -> Result<CommandEffect, SupervisorOperationState> {
+        // Lifecycle commands are VOYAGE-FENCED (ADR 0041): a mismatch is
+        // `refused {stale_voyage}` with NO MUTATION — checked before the
+        // journal is ever touched. `Reset{voyage: None}` is legal ONLY
+        // when there is truly no live voyage to fence against, which
+        // never happens once an authority is running with a voyage id at
+        // all (Codex review round 1, finding 4) — so `None` here is
+        // refused exactly like a wrong id would be.
+        let fenced_ok = match &op {
+            SupervisorOp::EndRun { voyage, .. } => *voyage == self.voyage_id,
+            SupervisorOp::Reset { voyage: Some(v) } => *v == self.voyage_id,
+            SupervisorOp::Reset { voyage: None } => false,
+            SupervisorOp::Stop => true,
+        };
+        if !fenced_ok {
+            return Err(SupervisorOperationState::Refused { reason: wire::SupervisorRefusedReason::StaleVoyage });
+        }
+
+        let digest = match digest_of(&op) {
+            Ok(d) => d,
+            Err(e) => return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("{e}")) }),
+        };
+        match journal::read_active(&self.state_dir, &operation_id) {
+            Ok(Some(existing)) if existing.digest != digest => {
+                return Err(SupervisorOperationState::Refused { reason: wire::SupervisorRefusedReason::IdConflict });
+            }
+            Ok(Some(_)) => return Err(self.query_state(&operation_id)), // idempotent resubmit
+            Ok(None) => {}
+            // A query-time journal read failure is a LOUD STOP (Codex
+            // review round 1, finding 5), never silently answered as an
+            // ordinary Failed-and-continue reply — the caller
+            // (`supervise_inner`) matches this exact shape to distinguish
+            // "the operation itself failed" from "the journal itself is
+            // unreadable."
+            Err(e) => return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("journal unreadable: {e}")) }),
+        }
+
+        match op {
+            SupervisorOp::EndRun { reason, .. } => {
+                let Lifecycle::Ready { .. } = lifecycle else {
+                    return Err(SupervisorOperationState::Failed { detail: bounded_detail("no leg is currently running") });
+                };
+                let epoch = leg_epoch_of(&self.state_dir, &self.voyage_id);
+                let record = journal::ActiveRecord {
+                    digest,
+                    op: journal::ActiveOp::EndRun { voyage: self.voyage_id.clone(), epoch },
+                };
+                if let Err(e) = journal::begin(&self.state_dir, &operation_id, &record) {
+                    return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("journal begin failed: {e}")) });
+                }
+                Ok(CommandEffect::BeginEndRun { operation_id, epoch, reason, reply: SupervisorOperationState::Accepted })
+            }
+            SupervisorOp::Reset { .. } => {
+                if matches!(lifecycle, Lifecycle::Ready { .. } | Lifecycle::Ending { .. }) {
+                    return Err(SupervisorOperationState::Failed {
+                        detail: bounded_detail("a leg is currently live; end the run before resetting"),
+                    });
+                }
+                let new_voyage = uuid::Uuid::now_v7().to_string();
+                let old_voyage = Some(self.voyage_id.clone());
+                let aside = Some(mint_aside_name().map_err(|e| SupervisorOperationState::Failed {
+                    detail: bounded_detail(format!("{e}")),
+                })?);
+                let record = journal::ActiveRecord {
+                    digest,
+                    op: journal::ActiveOp::Reset { old_voyage: old_voyage.clone(), new_voyage: new_voyage.clone(), aside: aside.clone() },
+                };
+                if let Err(e) = journal::begin(&self.state_dir, &operation_id, &record) {
+                    return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("journal begin failed: {e}")) });
+                }
+                match reset_pointer(&self.state_dir, &new_voyage, aside.as_deref()) {
+                    Ok(()) => {
+                        self.voyage_id = new_voyage.clone();
+                        let t = journal::TerminalRecord::ResetDone { new_voyage: new_voyage.clone() };
+                        let _ = journal::finish(&self.state_dir, &operation_id, &t);
+                        Ok(CommandEffect::ResetTo { new_voyage, reply: terminal_to_wire(t) })
+                    }
+                    Err(e) => {
+                        // Codex review round 1, finding 4: a half-reset
+                        // failure stays ACTIVE (already journaled above)
+                        // so a future restart's recovery sweep resumes
+                        // it via the SAME idempotent `reset_pointer` —
+                        // never written here as a permanent `Failed`,
+                        // which would strand it (a `.terminal` file is
+                        // never rewritten).
+                        eprintln!(
+                            "sot-capsule supervise: reset_pointer failed ({e}); operation {operation_id} \
+                             remains active for the next restart's recovery sweep to resume"
+                        );
+                        Ok(CommandEffect::Reply(SupervisorOperationState::Accepted))
+                    }
+                }
+            }
+            SupervisorOp::Stop => {
+                let t = journal::TerminalRecord::Stopping;
+                let _ = journal::finish(&self.state_dir, &operation_id, &t);
+                Ok(CommandEffect::Stop { reply: terminal_to_wire(t) })
             }
         }
     }
@@ -640,240 +1064,128 @@ impl AuthorityState {
         match journal::read_terminal(&self.state_dir, operation_id) {
             Ok(Some(t)) => return terminal_to_wire(t),
             Ok(None) => {}
-            Err(e) => return SupervisorOperationState::Failed { detail: format!("journal read failed: {e}") },
+            // Loud stop, not an ordinary reply (Codex review round 1,
+            // finding 5) — `supervise_inner` matches this same shape.
+            Err(e) => return SupervisorOperationState::Failed { detail: bounded_detail(format!("journal unreadable: {e}")) },
         }
         match journal::is_closed(&self.state_dir, operation_id) {
             Ok(true) => return SupervisorOperationState::RecordClosed,
             Ok(false) => {}
-            Err(e) => return SupervisorOperationState::Failed { detail: format!("journal read failed: {e}") },
+            Err(e) => return SupervisorOperationState::Failed { detail: bounded_detail(format!("journal unreadable: {e}")) },
         }
         match journal::read_active(&self.state_dir, operation_id) {
             Ok(Some(_)) => SupervisorOperationState::Accepted,
             Ok(None) => SupervisorOperationState::UnknownOperation,
-            Err(e) => SupervisorOperationState::Failed { detail: format!("journal read failed: {e}") },
-        }
-    }
-
-    fn handle_command(
-        &mut self,
-        active_leg_is_ready: bool,
-        operation_id: String,
-        op: SupervisorOp,
-    ) -> SupervisorOperationState {
-        // Lifecycle commands are VOYAGE-FENCED (ADR 0041): a mismatch is
-        // `refused {stale_voyage}` with NO MUTATION — checked before the
-        // journal is ever touched.
-        let observed = match &op {
-            SupervisorOp::EndRun { voyage, .. } => Some(voyage.clone()),
-            SupervisorOp::Reset { voyage } => voyage.clone(),
-            SupervisorOp::Stop => None,
-        };
-        if let Some(observed) = &observed {
-            if Some(observed) != self.voyage_id.as_ref() {
-                return SupervisorOperationState::Refused { reason: wire::SupervisorRefusedReason::StaleVoyage };
-            }
-        }
-
-        let digest = format!("{op:?}");
-        match journal::read_active(&self.state_dir, &operation_id) {
-            Ok(Some(existing)) if existing.digest != digest => {
-                return SupervisorOperationState::Refused { reason: wire::SupervisorRefusedReason::IdConflict };
-            }
-            Ok(Some(_)) => return self.query_state(&operation_id), // idempotent resubmit
-            Ok(None) => {}
-            Err(e) => return SupervisorOperationState::Failed { detail: format!("journal read failed: {e}") },
-        }
-
-        let intended_new_voyage = match &op {
-            SupervisorOp::Reset { .. } => Some(uuid::Uuid::now_v7().to_string()),
-            _ => None,
-        };
-        let record = journal::ActiveRecord {
-            digest,
-            intended_new_voyage: intended_new_voyage.clone(),
-            old_voyage: self.voyage_id.clone(),
-            end_run_epoch: matches!(&op, SupervisorOp::EndRun { .. }).then_some(self.leg_epoch).flatten(),
-        };
-        if let Err(e) = journal::begin(&self.state_dir, &operation_id, &record) {
-            return SupervisorOperationState::Failed { detail: format!("journal begin failed: {e}") };
-        }
-
-        match op {
-            SupervisorOp::EndRun { reason, .. } => self.perform_end_run(&operation_id, &reason),
-            SupervisorOp::Reset { .. } => {
-                if active_leg_is_ready {
-                    let t = journal::TerminalRecord::Failed {
-                        detail: "a leg is currently live; end the run before resetting".into(),
-                    };
-                    let _ = journal::finish(&self.state_dir, &operation_id, &t);
-                    return terminal_to_wire(t);
-                }
-                self.perform_reset(&operation_id, intended_new_voyage.expect("set above for Reset"))
-            }
-            SupervisorOp::Stop => {
-                self.stop_requested = true;
-                let t = journal::TerminalRecord::Stopping;
-                let _ = journal::finish(&self.state_dir, &operation_id, &t);
-                terminal_to_wire(t)
-            }
-        }
-    }
-
-    fn perform_end_run(&mut self, operation_id: &str, reason: &str) -> SupervisorOperationState {
-        let Some(voyage_id) = self.voyage_id.clone() else {
-            let t = journal::TerminalRecord::Failed { detail: "no leg has ever started".into() };
-            let _ = journal::finish(&self.state_dir, operation_id, &t);
-            return terminal_to_wire(t);
-        };
-        let outcome = match end_run_over_mgmt_lane(&voyage_id, reason) {
-            Ok(o) => o,
-            Err(e) => {
-                let t = journal::TerminalRecord::Failed { detail: format!("{e}") };
-                let _ = journal::finish(&self.state_dir, operation_id, &t);
-                return terminal_to_wire(t);
-            }
-        };
-        match outcome {
-            EndRunOutcome::Absent => {
-                self.no_respawn = true;
-                self.phase = SupervisorPhase::EndedNoRespawn;
-                let t = journal::TerminalRecord::RecordClosed; // nothing left to verify
-                let _ = journal::finish(&self.state_dir, operation_id, &t);
-                terminal_to_wire(t)
-            }
-            EndRunOutcome::Foreign | EndRunOutcome::Pending => {
-                let t = journal::TerminalRecord::Failed {
-                    detail: "the capsule's mgmt lane is foreign or unresponsive".into(),
-                };
-                let _ = journal::finish(&self.state_dir, operation_id, &t);
-                terminal_to_wire(t)
-            }
-            EndRunOutcome::Ended(process) => {
-                self.no_respawn = true;
-                self.phase = SupervisorPhase::Ending;
-                let _ = process.wait(SUPPORTED_HISTORY_BOUND + KILL_WAIT_BOUND);
-                if let Err(e) = journal::mark_closed(&self.state_dir, operation_id) {
-                    let t = journal::TerminalRecord::Failed { detail: format!("mark_closed: {e}") };
-                    let _ = journal::finish(&self.state_dir, operation_id, &t);
-                    return terminal_to_wire(t);
-                }
-                self.phase = SupervisorPhase::EndedNoRespawn;
-                // record_verified: O(retained history) -- delegated to a
-                // background thread (ADR 0041: "never inside an
-                // interactive wait"); `supervise_inner`'s own exit path
-                // joins this handle before returning 0.
-                let root = voyage_root_path(&self.state_dir, &voyage_id);
-                let state_dir = self.state_dir.clone();
-                let op_id = operation_id.to_string();
-                let voyage_id_for_thread = voyage_id.clone();
-                self.verify_handle = Some(std::thread::spawn(move || {
-                    let terminal = match verify::verify_voyage(&root, &voyage_id_for_thread) {
-                        Ok(()) => journal::TerminalRecord::RecordVerified,
-                        Err(e) => journal::TerminalRecord::Failed { detail: format!("verify_voyage: {e}") },
-                    };
-                    let _ = journal::finish(&state_dir, &op_id, &terminal);
-                }));
-                SupervisorOperationState::RecordClosed
-            }
-        }
-    }
-
-    fn perform_reset(&mut self, operation_id: &str, new_voyage: String) -> SupervisorOperationState {
-        match reset_pointer(&self.state_dir, &new_voyage) {
-            Ok(()) => {
-                self.voyage_id = Some(new_voyage.clone());
-                self.leg_epoch = None;
-                let t = journal::TerminalRecord::ResetDone { new_voyage };
-                let _ = journal::finish(&self.state_dir, operation_id, &t);
-                terminal_to_wire(t)
-            }
-            Err(e) => {
-                let t = journal::TerminalRecord::Failed { detail: format!("{e}") };
-                let _ = journal::finish(&self.state_dir, operation_id, &t);
-                terminal_to_wire(t)
-            }
+            Err(e) => SupervisorOperationState::Failed { detail: bounded_detail(format!("journal unreadable: {e}")) },
         }
     }
 }
 
 fn terminal_to_wire(t: journal::TerminalRecord) -> SupervisorOperationState {
     match t {
-        journal::TerminalRecord::RecordClosed => SupervisorOperationState::RecordClosed,
         journal::TerminalRecord::RecordVerified => SupervisorOperationState::RecordVerified,
         journal::TerminalRecord::ResetDone { new_voyage } => SupervisorOperationState::ResetDone { new_voyage },
         journal::TerminalRecord::Stopping => SupervisorOperationState::Stopping,
-        journal::TerminalRecord::Failed { detail } => SupervisorOperationState::Failed { detail },
-        journal::TerminalRecord::Refused { reason } => SupervisorOperationState::Failed {
-            // The journal's own `Refused{reason: String}` is a free-form
-            // diagnostic (it can record ANY refusal, including ones with
-            // no corresponding `SupervisorRefusedReason` variant); wire
-            // refusals are minted directly by `handle_command` before the
-            // journal is ever touched (stale_voyage/id_conflict), so
-            // nothing durable ever needs to round-trip back through this
-            // arm today — kept total rather than `unreachable!()` so a
-            // FUTURE journal-recorded refusal has somewhere honest to go.
-            detail: format!("refused: {reason}"),
-        },
+        journal::TerminalRecord::Failed { detail } => SupervisorOperationState::Failed { detail: bounded_detail(detail) },
     }
 }
 
-fn service_lane(
-    lane: &PipeServer,
-    conns: &mut HashMap<ConnId, Conn>,
-    authority: &mut AuthorityState,
-    active_leg_is_ready: bool,
-    now: Instant,
-) {
+/// A journal-read failure surfacing all the way up to the main loop is a
+/// LOUD STOP (Codex review round 1, finding 5) — `true` iff `reply`'s own
+/// detail text names one (`query_state`/`handle_command`'s own
+/// "journal unreadable: " prefix, minted nowhere else in this module).
+fn is_journal_unreadable(reply: &SupervisorOperationState) -> bool {
+    matches!(reply, SupervisorOperationState::Failed { detail } if detail.starts_with("journal unreadable: "))
+}
+
+fn encode_reply_or_fallback(reply: &SupervisorReply) -> Vec<u8> {
+    wire::encode_supervisor_reply(reply).unwrap_or_else(|e| {
+        // Every `detail` field goes through `bounded_detail` before this
+        // point, so in practice this never fires — kept as a defensive
+        // fallback rather than a panic (Codex review round 1, finding 8)
+        // in case a FUTURE field is added here without going through
+        // that same discipline.
+        eprintln!("sot-capsule supervise: a reply failed to encode ({e}); substituting a minimal failure reply");
+        wire::encode_supervisor_reply(&SupervisorReply::Operation(SupervisorOperationState::Failed {
+            detail: "internal error".into(),
+        }))
+        .expect("this minimal fallback reply is always encodable")
+    })
+}
+
+/// Bundles everything `handle_lane_bytes`/`service_lane` need beyond the
+/// transport and per-connection state itself — keeps both functions'
+/// own argument counts small regardless of how many pieces of authority
+/// state a future finding adds (clippy's own `too_many_arguments`).
+struct LaneCtx<'a> {
+    authority: &'a mut AuthorityState,
+    lifecycle: &'a mut Lifecycle,
+    stop_requested: &'a mut bool,
+    spawn_ctx: &'a SpawnCtx,
+}
+
+/// Services the lane's event queue once. Returns `true` iff the accept
+/// loop has died PERMANENTLY (`TransportEvent::AcceptError` — the
+/// transport's own doc: "stopped accepting new connections FOR GOOD"),
+/// which the caller treats as terminal (Codex review round 1, finding 8:
+/// an earlier version only logged this and kept running with a lane no
+/// new client could ever reach again).
+fn service_lane(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, ctx: &mut LaneCtx, now: Instant) -> bool {
+    let mut accept_loop_dead = false;
     while let Ok(event) = lane.events().try_recv() {
         match event {
             TransportEvent::Accepted(id) => {
                 conns.insert(
                     id,
-                    Conn { splitter: wire::FrameSplitter::new(), hello_ok: false, last_activity: now, close_after_send: false },
+                    Conn { splitter: wire::FrameSplitter::new(), hello_ok: false, last_activity: now, pending_close: None },
                 );
             }
             TransportEvent::Bytes(id, bytes) => {
-                handle_lane_bytes(lane, conns, id, &bytes, authority, active_leg_is_ready, now);
+                handle_lane_bytes(lane, conns, id, &bytes, ctx, now);
             }
             TransportEvent::Closed(id, _reason) => {
                 conns.remove(&id);
             }
             TransportEvent::Sent(id, _marker) => {
-                // The one send this lane ever tags with a marker is a
-                // reply meant to be the connection's last word (`hello`'s
-                // own `refused {version_skew}`) — now provably physically
-                // written, so it is finally safe to close.
-                if conns.get(&id).is_some_and(|c| c.close_after_send) {
-                    lane.close(id);
-                    conns.remove(&id);
+                if let Some(conn) = conns.get_mut(&id) {
+                    if matches!(conn.pending_close, Some(PendingClose::AwaitingSent { .. })) {
+                        conn.pending_close = Some(PendingClose::FlushGrace { close_at: now + REFUSAL_FLUSH_GRACE });
+                    }
                 }
             }
             TransportEvent::AcceptError(e) => {
-                eprintln!("sot-capsule supervise: supervisor lane accept error: {e}");
+                eprintln!("sot-capsule supervise: supervisor lane accept loop failed permanently: {e}");
+                accept_loop_dead = true;
             }
         }
     }
-    let idle: Vec<ConnId> = conns
-        .iter()
-        .filter(|(_, c)| now.saturating_duration_since(c.last_activity) >= LANE_IDLE_DEADLINE)
-        .map(|(id, _)| *id)
-        .collect();
-    for id in idle {
+    let mut to_close: Vec<ConnId> = Vec::new();
+    for (id, conn) in conns.iter() {
+        let idle = now.saturating_duration_since(conn.last_activity) >= LANE_IDLE_DEADLINE;
+        let close_due = match &conn.pending_close {
+            Some(PendingClose::AwaitingSent { deadline }) => {
+                if now >= *deadline {
+                    eprintln!("sot-capsule supervise: a refusal reply was never confirmed sent; closing anyway");
+                }
+                now >= *deadline
+            }
+            Some(PendingClose::FlushGrace { close_at }) => now >= *close_at,
+            None => idle,
+        };
+        if close_due {
+            to_close.push(*id);
+        }
+    }
+    for id in to_close {
         lane.close(id);
         conns.remove(&id);
     }
+    accept_loop_dead
 }
 
-fn handle_lane_bytes(
-    lane: &PipeServer,
-    conns: &mut HashMap<ConnId, Conn>,
-    id: ConnId,
-    bytes: &[u8],
-    authority: &mut AuthorityState,
-    active_leg_is_ready: bool,
-    now: Instant,
-) {
+fn handle_lane_bytes(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, id: ConnId, bytes: &[u8], ctx: &mut LaneCtx, now: Instant) {
     let mut close_after = false;
+    let mut pending: Option<PendingClose> = None;
     {
         let Some(conn) = conns.get_mut(&id) else { return };
         conn.last_activity = now;
@@ -886,16 +1198,14 @@ fn handle_lane_bytes(
                             reason: wire::SupervisorRefusedReason::VersionSkew,
                         })
                         .expect("Refused encodes unconditionally");
-                        // The reply is this connection's last word, so the
-                        // close is deferred to its own physical-write
-                        // completion (`TransportEvent::Sent`, handled in
-                        // `service_lane`) rather than issued immediately
-                        // here — `CloseHandle` does not promptly unstick
-                        // or even wait for an in-flight write, so closing
-                        // right after `send` can race the client seeing
-                        // EOF before ever reading this reply.
-                        let _ = lane.send(id, reply, Some(id));
-                        conn.close_after_send = true;
+                        // Sent, then closed only after BOTH the write
+                        // physically completes AND a flush-grace window
+                        // passes (see `PendingClose`'s own doc / CI
+                        // failure (b)) — never immediately.
+                        match lane.send(id, reply, Some(id)) {
+                            Ok(()) => pending = Some(PendingClose::AwaitingSent { deadline: now + REFUSAL_SENT_DEADLINE }),
+                            Err(_) => close_after = true, // nothing to wait for; the send itself was rejected
+                        }
                         break;
                     }
                     conn.hello_ok = true;
@@ -915,8 +1225,7 @@ fn handle_lane_bytes(
                     // of every connection") — close, never fall through
                     // to `handle_request` below, which treats a `Hello`
                     // reaching it as an internal invariant violation
-                    // (`unreachable!()`, a real crash on a malformed or
-                    // adversarial client before this arm existed).
+                    // (`unreachable!()`).
                     close_after = true;
                     break;
                 }
@@ -925,9 +1234,72 @@ fn handle_lane_bytes(
                     close_after = true;
                     break;
                 }
-                DecodedFrame::SupervisorRequest(req) => {
-                    let reply = authority.handle_request(active_leg_is_ready, req);
-                    let bytes = wire::encode_supervisor_reply(&reply).expect("every reply field is pre-bounded");
+                DecodedFrame::SupervisorRequest(req @ (SupervisorRequest::Status | SupervisorRequest::Query { .. })) => {
+                    let reply = ctx.authority.handle_status_or_query(ctx.lifecycle, req);
+                    // A query-time journal read failure is a LOUD STOP
+                    // for the WHOLE authority (Codex review round 1,
+                    // finding 5), never merely one client's own Failed
+                    // reply while everything else carries on as if
+                    // nothing happened.
+                    if let SupervisorReply::Operation(state) = &reply {
+                        if is_journal_unreadable(state) {
+                            *ctx.lifecycle = Lifecycle::Terminal { detail: "the operation journal became unreadable".into() };
+                        }
+                    }
+                    let bytes = encode_reply_or_fallback(&reply);
+                    let _ = lane.send(id, bytes, None);
+                }
+                DecodedFrame::SupervisorRequest(SupervisorRequest::Command { operation_id, op }) => {
+                    let state = match ctx.authority.handle_command(ctx.lifecycle, operation_id, op) {
+                        Ok(CommandEffect::Reply(r)) => r,
+                        Ok(CommandEffect::BeginEndRun { operation_id, epoch, reason, reply }) => {
+                            let rx = spawn_end_run(
+                                ctx.authority.state_dir.clone(),
+                                operation_id.clone(),
+                                ctx.authority.voyage_id.clone(),
+                                epoch,
+                                reason,
+                            );
+                            *ctx.lifecycle = Lifecycle::Ending { operation_id, rx };
+                            reply
+                        }
+                        Ok(CommandEffect::ResetTo { new_voyage, reply }) => {
+                            // Spawn IMMEDIATELY for the new voyage, never
+                            // an adopt-only probe first: `reset` only
+                            // ever admits while no leg is live, and the
+                            // freshly-minted voyage is definitely empty
+                            // (nothing could possibly answer an adopt
+                            // probe against it) — waiting out a whole
+                            // `PROBE_EPISODE` first would be a pure,
+                            // pointless delay.
+                            let voyage_root = voyage_root_path(&ctx.authority.state_dir, &new_voyage);
+                            let rx = spawn_owned_spawn_attempt(
+                                ctx.spawn_ctx.capsule_exe.clone(),
+                                voyage_root,
+                                new_voyage,
+                                ctx.spawn_ctx.cols,
+                                ctx.spawn_ctx.rows,
+                                ctx.spawn_ctx.lease_name.clone(),
+                                ctx.spawn_ctx.producer_argv.clone(),
+                            );
+                            *ctx.lifecycle = Lifecycle::Spawning { rx };
+                            reply
+                        }
+                        Ok(CommandEffect::Stop { reply }) => {
+                            *ctx.stop_requested = true;
+                            reply
+                        }
+                        Err(state) => state,
+                    };
+                    // See the `Status`/`Query` arm above: a journal read
+                    // failure surfacing here is a loud stop for the whole
+                    // authority (Codex review round 1, finding 5), not
+                    // merely this one client's own Failed reply.
+                    if is_journal_unreadable(&state) {
+                        *ctx.lifecycle = Lifecycle::Terminal { detail: "the operation journal became unreadable".into() };
+                    }
+                    let reply = SupervisorReply::Operation(state);
+                    let bytes = encode_reply_or_fallback(&reply);
                     let _ = lane.send(id, bytes, None);
                 }
                 _ => {
@@ -941,6 +1313,9 @@ fn handle_lane_bytes(
         if err.is_some() {
             close_after = true;
         }
+        if let Some(p) = pending {
+            conn.pending_close = Some(p);
+        }
     }
     if close_after {
         lane.close(id);
@@ -951,6 +1326,84 @@ fn handle_lane_bytes(
 // ---------------------------------------------------------------------
 // The main authority loop
 // ---------------------------------------------------------------------
+
+/// Spawn a background thread running `probe_owned_spawn` (a fresh spawn
+/// attempt) — the whole point of [`Lifecycle::Spawning`]: the lane is
+/// serviced by the caller's own main loop WHILE this runs, never frozen
+/// behind it (Codex review round 1, finding 1).
+fn spawn_owned_spawn_attempt(
+    capsule_exe: PathBuf,
+    voyage_root: PathBuf,
+    voyage_id: String,
+    cols: u16,
+    rows: u16,
+    lease_name: String,
+    producer_argv: Vec<String>,
+) -> mpsc::Receiver<ProbeOutcome<ChallengedProcess>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let readiness_cutoff = Instant::now() + READINESS_CUTOFF;
+        let mut command =
+            build_run_command(&capsule_exe, &voyage_root, &voyage_id, cols, rows, &lease_name, &producer_argv);
+        let outcome = classify::probe_owned_spawn(
+            &RealProbeOps,
+            &mut command,
+            &voyage_id,
+            readiness_cutoff,
+            KILL_WAIT_BOUND,
+            ATTEMPT_INTERVAL,
+        );
+        let _ = tx.send(outcome);
+    });
+    rx
+}
+
+/// Spawn a background thread running the ONE initial adopt-only probe.
+fn spawn_initial_probe(voyage_id: String, voyage_root: PathBuf) -> mpsc::Receiver<ProbeOutcome<ChallengedProcess>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let episode_deadline = Instant::now() + PROBE_EPISODE;
+        let outcome =
+            classify::probe_adopt_only(&RealProbeOps, &voyage_id, &voyage_root, episode_deadline, ATTEMPT_INTERVAL);
+        let _ = tx.send(outcome);
+    });
+    rx
+}
+
+/// Spawn a background thread carrying an `end_run` to its terminal fact
+/// — the mgmt-lane exchange, the wait for the leg's own exit, and
+/// verification all happen here, off the main loop (Codex review round
+/// 1, finding 1). Writes the journal's own terminal record itself before
+/// reporting back, since this thread is this operation id's sole owner
+/// for its whole life.
+fn spawn_end_run(
+    state_dir: PathBuf,
+    operation_id: String,
+    voyage_id: String,
+    epoch: Option<u64>,
+    reason: String,
+) -> mpsc::Receiver<journal::TerminalRecord> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let terminal = match end_run_over_mgmt_lane(&voyage_id, &reason) {
+            Ok(EndRunOutcome::Absent) => finish_end_run(&state_dir, Some(&operation_id), &voyage_id, epoch, None),
+            Ok(EndRunOutcome::AckUnknown(process) | EndRunOutcome::Ended(process)) => {
+                finish_end_run(&state_dir, Some(&operation_id), &voyage_id, epoch, Some(process))
+            }
+            Ok(EndRunOutcome::Foreign | EndRunOutcome::Pending) => Ok(journal::TerminalRecord::Failed {
+                detail: bounded_detail("the capsule's mgmt lane is foreign or unresponsive"),
+            }),
+            Err(e) => Ok(journal::TerminalRecord::Failed { detail: bounded_detail(format!("{e}")) }),
+        };
+        let terminal = terminal.unwrap_or_else(|e| journal::TerminalRecord::Failed { detail: bounded_detail(format!("{e}")) });
+        let terminal = match journal::finish(&state_dir, &operation_id, &terminal) {
+            Ok(()) => terminal,
+            Err(e) => journal::TerminalRecord::Failed { detail: bounded_detail(format!("journal finish failed: {e}")) },
+        };
+        let _ = tx.send(terminal);
+    });
+    rx
+}
 
 fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     std::fs::create_dir_all(voyages_dir(&config.state_dir))?;
@@ -987,168 +1440,211 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         }
     };
 
-    // Recovery FIRST — before pointer discovery, before start-mode
-    // authorization, before admitting any new command.
-    reconcile_journal_on_startup(&config.state_dir)?;
+    let voyage_id = discover_or_mint_voyage(&config.state_dir, config.mode)?;
 
-    let voyage_id = match discover_or_mint_voyage(&config.state_dir, config.mode)? {
-        Some(id) => id,
-        None => return Ok(EXIT_CLEAN),
-    };
+    // Recovery FIRST — before start-mode authorization, before admitting
+    // any new command (ADR 0041 Lifecycle "Recovery is part of the
+    // transaction, and it runs FIRST").
+    let ended_current_voyage = reconcile_journal_on_startup(&config.state_dir, &voyage_id)?;
 
     let self_ids = self_pid_and_created().unwrap_or((0, 0));
     let mut authority = AuthorityState {
         state_dir: config.state_dir.clone(),
-        voyage_id: Some(voyage_id.clone()),
-        leg_epoch: leg_epoch_of(&config.state_dir, &voyage_id),
-        phase: SupervisorPhase::Starting,
-        no_respawn: false,
-        stop_requested: false,
+        voyage_id: voyage_id.clone(),
         self_pid: self_ids.0,
         self_created: self_ids.1,
-        verify_handle: None,
     };
     let mut conns: HashMap<ConnId, Conn> = HashMap::new();
     let capsule_exe = std::env::current_exe().map_err(crate::Error::Io)?;
     let voyage_root = voyage_root_path(&config.state_dir, &voyage_id);
+    let spawn_ctx = SpawnCtx {
+        capsule_exe: capsule_exe.clone(),
+        lease_name: lease_name.clone(),
+        cols: config.cols,
+        rows: config.rows,
+        producer_argv: config.producer_argv.clone(),
+    };
 
-    // The FIRST placement decision (adopt-if-live, else consult the
-    // start-mode table) — happens exactly once, at supervisor startup.
-    let episode_deadline = Instant::now() + PROBE_EPISODE;
-    let first_probe = classify::probe_adopt_only(&RealProbeOps, &voyage_id, &voyage_root, episode_deadline, ATTEMPT_INTERVAL);
-    let mut active_leg = match first_probe {
-        ProbeOutcome::Adopted(process) => {
-            authority.phase = SupervisorPhase::Ready;
-            authority.leg_epoch = leg_epoch_of(&config.state_dir, &voyage_id);
-            ActiveLeg::Ready { process, ready_at: Instant::now() }
-        }
-        ProbeOutcome::Absent => {
-            if !should_spawn_after_absent(&config.state_dir, &voyage_id, config.mode)? {
-                return Ok(EXIT_CLEAN);
-            }
-            ActiveLeg::None
-        }
-        ProbeOutcome::Foreign | ProbeOutcome::Wedged => {
-            eprintln!("sot-capsule supervise: the voyage pipe is foreign or unreachable at startup");
-            return Ok(EXIT_TERMINAL);
-        }
-        other => {
-            return Err(err_state(format!("unexpected probe_adopt_only outcome at startup: {other:?}")));
-        }
+    // The FIRST placement decision (Codex review round 1, finding 3: a
+    // voyage this authority already recovered as ENDED must go straight
+    // to ended-no-respawn SERVICE, never an immediate exit that would
+    // strand a client still polling `query` for the operation that ended
+    // it).
+    let mut lifecycle = if ended_current_voyage {
+        Lifecycle::EndedNoRespawn
+    } else {
+        Lifecycle::InitialProbe { rx: spawn_initial_probe(voyage_id.clone(), voyage_root.clone()) }
     };
 
     let mut consecutive_unstable_legs: u32 = 0;
+    let mut stop_requested = false;
 
-    let exit_code = 'authority: loop {
-        if authority.stop_requested {
-            break 'authority EXIT_CLEAN;
+    'authority: loop {
+        let now = Instant::now();
+        let mut lane_ctx = LaneCtx {
+            authority: &mut authority,
+            lifecycle: &mut lifecycle,
+            stop_requested: &mut stop_requested,
+            spawn_ctx: &spawn_ctx,
+        };
+        if service_lane(&lane, &mut conns, &mut lane_ctx, now) {
+            lifecycle = Lifecycle::Terminal { detail: "supervisor lane accept loop failed permanently".into() };
+            break 'authority;
+        }
+        if stop_requested {
+            break 'authority;
         }
 
-        match &active_leg {
-            ActiveLeg::None => {
-                if authority.no_respawn {
-                    // ENDED-NO-RESPAWN: keep serving query/status/stop
-                    // until an explicit stop or this process is killed.
-                    service_lane(&lane, &mut conns, &mut authority, false, Instant::now());
-                    std::thread::sleep(MAIN_LOOP_POLL);
-                    continue 'authority;
+        match &mut lifecycle {
+            Lifecycle::InitialProbe { rx } => match rx.try_recv() {
+                Ok(ProbeOutcome::Adopted(process)) => {
+                    lifecycle = Lifecycle::Ready { process, ready_at: Instant::now() };
                 }
-                let readiness_cutoff = Instant::now() + READINESS_CUTOFF;
-                let mut command = build_run_command(
-                    &capsule_exe,
-                    &voyage_root,
-                    &voyage_id,
-                    config.cols,
-                    config.rows,
-                    &lease_name,
-                    &config.producer_argv,
-                );
-                let outcome = classify::probe_owned_spawn(
-                    &RealProbeOps,
-                    &mut command,
-                    &voyage_id,
-                    readiness_cutoff,
-                    KILL_WAIT_BOUND,
-                    ATTEMPT_INTERVAL,
-                );
-                match outcome {
-                    ProbeOutcome::Ready(process) => {
-                        authority.phase = SupervisorPhase::Ready;
-                        authority.leg_epoch = leg_epoch_of(&config.state_dir, &voyage_id);
-                        active_leg = ActiveLeg::Ready { process, ready_at: Instant::now() };
-                    }
-                    ProbeOutcome::SpawnFailed(e) => {
-                        eprintln!("sot-capsule supervise: spawn failed: {e}");
-                        consecutive_unstable_legs += 1;
-                        if consecutive_unstable_legs >= FLAP_THRESHOLD {
-                            break 'authority EXIT_TERMINAL;
+                Ok(ProbeOutcome::Absent) => {
+                    lifecycle = if should_spawn_after_absent(&config.state_dir, &voyage_id, config.mode)? {
+                        Lifecycle::Spawning {
+                            rx: spawn_owned_spawn_attempt(
+                                capsule_exe.clone(),
+                                voyage_root.clone(),
+                                voyage_id.clone(),
+                                config.cols,
+                                config.rows,
+                                lease_name.clone(),
+                                config.producer_argv.clone(),
+                            ),
                         }
-                    }
-                    ProbeOutcome::KilledAfterTimeout | ProbeOutcome::LegEnded => {
-                        consecutive_unstable_legs += 1;
-                        if consecutive_unstable_legs >= FLAP_THRESHOLD {
-                            break 'authority EXIT_TERMINAL;
-                        }
-                    }
-                    ProbeOutcome::KillOrWaitFailed(e) => {
-                        eprintln!("sot-capsule supervise: kill/wait failed: {e}");
-                        break 'authority EXIT_TERMINAL;
-                    }
-                    other => {
-                        return Err(err_state(format!("unexpected probe_owned_spawn outcome: {other:?}")));
-                    }
+                    } else {
+                        Lifecycle::EndedNoRespawn
+                    };
                 }
-            }
-            ActiveLeg::Ready { process, ready_at } => {
+                Ok(ProbeOutcome::Foreign | ProbeOutcome::Wedged) => {
+                    lifecycle = Lifecycle::Terminal { detail: "the voyage pipe is foreign or unreachable at startup".into() };
+                }
+                Ok(other) => return Err(err_state(format!("unexpected probe_adopt_only outcome at startup: {other:?}"))),
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    lifecycle = Lifecycle::Terminal { detail: "the initial probe thread ended without a result".into() };
+                }
+            },
+            Lifecycle::Spawning { rx } => match rx.try_recv() {
+                Ok(ProbeOutcome::Ready(process)) => {
+                    consecutive_unstable_legs = 0;
+                    lifecycle = Lifecycle::Ready { process, ready_at: Instant::now() };
+                }
+                Ok(ProbeOutcome::SpawnFailed(e)) => {
+                    eprintln!("sot-capsule supervise: spawn failed: {e}");
+                    consecutive_unstable_legs += 1;
+                    lifecycle = respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &voyage_root, &voyage_id, &config, &lease_name);
+                }
+                Ok(ProbeOutcome::KilledAfterTimeout | ProbeOutcome::LegEnded | ProbeOutcome::Foreign) => {
+                    consecutive_unstable_legs += 1;
+                    lifecycle = respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &voyage_root, &voyage_id, &config, &lease_name);
+                }
+                Ok(ProbeOutcome::KillOrWaitFailed(e)) => {
+                    lifecycle = Lifecycle::Terminal { detail: bounded_detail(format!("kill/wait failed: {e}")) };
+                }
+                Ok(other) => return Err(err_state(format!("unexpected probe_owned_spawn outcome: {other:?}"))),
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    lifecycle = Lifecycle::Terminal { detail: "the spawn thread ended without a result".into() };
+                }
+            },
+            Lifecycle::Ready { process, ready_at } => {
                 let ready_at = *ready_at;
-                service_lane(&lane, &mut conns, &mut authority, true, Instant::now());
-                match process.wait(MAIN_LOOP_POLL) {
+                match process.wait(Duration::ZERO) {
                     Ok(true) => {
-                        // The leg ended. Which way a leg was unstable is
-                        // DIAGNOSTIC, never a second counter (ADR 0041) —
-                        // and a REQUESTED end is not instability AT ALL:
-                        // `no_respawn` (set only by a completed EndRun)
-                        // is checked FIRST, before the stability/anti-flap
-                        // judgment ever runs, so ending a leg on purpose
-                        // can never itself trip the flap counter.
-                        active_leg = ActiveLeg::None;
-                        authority.leg_epoch = None;
-                        if authority.no_respawn {
-                            authority.phase = SupervisorPhase::EndedNoRespawn;
+                        // The leg ended on its own (never via `end_run`,
+                        // which transitions through `Ending` instead —
+                        // reaching `Ready`'s own exit path at all means
+                        // this was NOT a requested end, so it always
+                        // counts toward the anti-flap bound: only a leg
+                        // that outlived the stability interval resets it.
+                        if ready_at.elapsed() < STABILITY_INTERVAL {
+                            consecutive_unstable_legs += 1;
                         } else {
-                            // Stability is measured from when the leg
-                            // became ready; only a leg outliving the
-                            // interval resets the counter.
-                            if ready_at.elapsed() < STABILITY_INTERVAL {
-                                consecutive_unstable_legs += 1;
-                            } else {
-                                consecutive_unstable_legs = 0;
-                            }
-                            if consecutive_unstable_legs >= FLAP_THRESHOLD {
-                                break 'authority EXIT_TERMINAL;
-                            }
-                            authority.phase = SupervisorPhase::Starting;
+                            consecutive_unstable_legs = 0;
                         }
+                        lifecycle = respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &voyage_root, &voyage_id, &config, &lease_name);
                     }
                     Ok(false) => {} // still running
                     Err(e) => {
-                        eprintln!("sot-capsule supervise: wait on the leg's process handle failed: {e}");
-                        break 'authority EXIT_TERMINAL;
+                        lifecycle = Lifecycle::Terminal { detail: bounded_detail(format!("wait on the leg's process handle failed: {e}")) };
                     }
                 }
             }
+            Lifecycle::Ending { operation_id, rx } => match rx.try_recv() {
+                Ok(journal::TerminalRecord::RecordVerified) => {
+                    lifecycle = Lifecycle::EndedNoRespawn;
+                }
+                Ok(journal::TerminalRecord::Failed { detail }) => {
+                    // Codex review round 1, finding 2: a verification
+                    // failure (or an unconfirmed exit, or a foreign/
+                    // unresponsive mgmt lane) is a loud, non-restartable
+                    // stop — never silently folded back into ordinary
+                    // service.
+                    lifecycle = Lifecycle::Terminal { detail: format!("end_run {operation_id}: {detail}") };
+                }
+                Ok(other) => return Err(err_state(format!("unexpected end_run terminal record: {other:?}"))),
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    lifecycle = Lifecycle::Terminal { detail: format!("the end_run thread for {operation_id} ended without a result") };
+                }
+            },
+            Lifecycle::EndedNoRespawn | Lifecycle::Terminal { .. } => {
+                // Keep serving query/status/stop until an explicit stop
+                // or this process is killed — never exit on our own.
+            }
         }
+
+        std::thread::sleep(MAIN_LOOP_POLL);
+    }
+
+    // The main loop above only ever breaks on an explicit `stop` or a
+    // dead accept loop; a `stop` received while `Terminal` still exits
+    // non-zero (Codex review round 1, finding 2's fourth clause: "later
+    // `stop` must not exit 0 from TERMINAL").
+    let exit_code = if let Lifecycle::Terminal { detail } = &lifecycle {
+        eprintln!("sot-capsule supervise: exiting terminal: {detail}");
+        EXIT_TERMINAL
+    } else {
+        EXIT_CLEAN
     };
 
-    // Never report record_verified or exit 0 before a still-running
-    // verify thread has actually finished.
-    if let Some(handle) = authority.verify_handle.take() {
-        let _ = handle.join();
-    }
     // `lane`'s own `Drop` performs the teardown (`disconnect_listener`
     // then `join_workers` under `TEARDOWN_AGGREGATE_DEADLINE`) when it
-    // goes out of scope below — no separate call needed.
+    // goes out of scope below — no separate call needed. Any in-flight
+    // background thread (`Spawning`/`Ending`/`InitialProbe`) is
+    // deliberately NOT joined here: `EXIT_CLEAN`/`EXIT_TERMINAL` are only
+    // ever reached from `EndedNoRespawn`/`Terminal`, neither of which has
+    // one in flight.
     Ok(exit_code)
+}
+
+/// Shared "a leg just ended and no `end_run` was in progress" tail:
+/// count against the flap bound, then either stay Terminal (flap
+/// threshold breached) or start a fresh `Spawning` attempt.
+fn respawn_or_terminal(
+    consecutive_unstable_legs: &mut u32,
+    capsule_exe: &Path,
+    voyage_root: &Path,
+    voyage_id: &str,
+    config: &SuperviseConfig,
+    lease_name: &str,
+) -> Lifecycle {
+    if *consecutive_unstable_legs >= FLAP_THRESHOLD {
+        return Lifecycle::Terminal { detail: "the anti-flap bound was reached".into() };
+    }
+    Lifecycle::Spawning {
+        rx: spawn_owned_spawn_attempt(
+            capsule_exe.to_path_buf(),
+            voyage_root.to_path_buf(),
+            voyage_id.to_string(),
+            config.cols,
+            config.rows,
+            lease_name.to_string(),
+            config.producer_argv.clone(),
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1177,7 +1673,8 @@ fn endrun_inner(state_dir: &Path, voyage: Option<String>, reason: String) -> cra
             return Ok(EXIT_TERMINAL);
         }
     };
-    match end_run_over_mgmt_lane(&voyage_id, &reason)? {
+    let outcome = end_run_over_mgmt_lane(&voyage_id, &reason)?;
+    match outcome {
         EndRunOutcome::Absent => {
             eprintln!("sot-capsule endrun: no live capsule for this voyage — nothing to end");
             Ok(EXIT_CLEAN)
@@ -1193,18 +1690,21 @@ fn endrun_inner(state_dir: &Path, voyage: Option<String>, reason: String) -> cra
             eprintln!("sot-capsule endrun: the voyage pipe did not answer within its budget");
             Ok(EXIT_TERMINAL)
         }
-        EndRunOutcome::Ended(process) => {
-            let _ = process.wait(SUPPORTED_HISTORY_BOUND + KILL_WAIT_BOUND);
-            let root = voyage_root_path(state_dir, &voyage_id);
-            match verify::verify_voyage(&root, &voyage_id) {
-                Ok(()) => {
-                    eprintln!("sot-capsule endrun: record_closed, record_verified");
+        EndRunOutcome::AckUnknown(process) | EndRunOutcome::Ended(process) => {
+            let epoch = leg_epoch_of(state_dir, &voyage_id);
+            // `None`: this no-supervisor CLI path journals nothing at
+            // all — there is no `query{operation_id}` caller for
+            // `mark_closed`'s own intermediate milestone to ever serve.
+            match finish_end_run(state_dir, None, &voyage_id, epoch, Some(process))? {
+                journal::TerminalRecord::RecordVerified => {
+                    eprintln!("sot-capsule endrun: record_verified");
                     Ok(EXIT_CLEAN)
                 }
-                Err(e) => {
-                    eprintln!("sot-capsule endrun: record_closed, but verify_voyage failed: {e}");
+                journal::TerminalRecord::Failed { detail } => {
+                    eprintln!("sot-capsule endrun: {detail}");
                     Ok(EXIT_TERMINAL)
                 }
+                other => Err(err_state(format!("unexpected end_run terminal record: {other:?}"))),
             }
         }
     }
@@ -1221,10 +1721,35 @@ fn reset_inner(state_dir: &Path, voyage: Option<String>) -> crate::Result<i32> {
             return Ok(EXIT_TERMINAL);
         }
     };
-    let observed = voyage.or_else(|| match pointer::validate(state_dir) {
+    let current = pointer::validate(state_dir);
+    // Codex review round 1, finding 4: an explicitly-given `--voyage`
+    // must be compared against the CURRENT pointer before acting, never
+    // just trusted — a caller supplying a stale or wrong id could
+    // otherwise probe the wrong voyage's liveness and reset the actual
+    // current one out from under a live process.
+    if let Some(claimed) = &voyage {
+        match &current {
+            PointerState::Valid(id) if id == claimed => {}
+            PointerState::Valid(id) => {
+                eprintln!(
+                    "sot-capsule reset: --voyage {claimed:?} does not match the current pointer {id:?} — refusing"
+                );
+                return Ok(EXIT_TERMINAL);
+            }
+            PointerState::NotFound => {
+                eprintln!("sot-capsule reset: --voyage {claimed:?} given, but there is no current pointer to match it against — refusing");
+                return Ok(EXIT_TERMINAL);
+            }
+            PointerState::Corrupt | PointerState::OtherIo(_) => {
+                eprintln!("sot-capsule reset: the current pointer is unreadable — refusing to compare --voyage against it");
+                return Ok(EXIT_TERMINAL);
+            }
+        }
+    }
+    let observed = match current {
         PointerState::Valid(id) => Some(id),
         _ => None,
-    });
+    };
     // Capability matrix: reset only ever proceeds on a classifier ABSENT
     // taken while holding the fence.
     if let Some(voyage_id) = &observed {
@@ -1251,7 +1776,7 @@ fn reset_inner(state_dir: &Path, voyage: Option<String>) -> crate::Result<i32> {
         }
     }
     let new_voyage = uuid::Uuid::now_v7().to_string();
-    reset_pointer(state_dir, &new_voyage)?;
+    reset_pointer(state_dir, &new_voyage, None)?;
     eprintln!("sot-capsule reset: reset_done {{new_voyage: {new_voyage}}}");
     Ok(EXIT_CLEAN)
 }
@@ -1283,7 +1808,7 @@ mod tests {
     #[test]
     fn discover_or_mint_voyage_start_mints_a_fresh_voyage_when_absent() {
         let dir = tempfile::tempdir().unwrap();
-        let id = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap().unwrap();
+        let id = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap();
         assert!(matches!(pointer::validate(dir.path()), PointerState::Valid(v) if v == id));
         assert!(voyage_root_path(dir.path(), &id).exists());
     }
@@ -1297,8 +1822,8 @@ mod tests {
     #[test]
     fn discover_or_mint_voyage_returns_the_existing_id_when_valid() {
         let dir = tempfile::tempdir().unwrap();
-        let id = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap().unwrap();
-        let again = discover_or_mint_voyage(dir.path(), StartMode::Resume).unwrap().unwrap();
+        let id = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap();
+        let again = discover_or_mint_voyage(dir.path(), StartMode::Resume).unwrap();
         assert_eq!(id, again);
     }
 
@@ -1313,23 +1838,23 @@ mod tests {
     #[test]
     fn should_spawn_after_absent_start_mode_always_spawns() {
         let dir = tempfile::tempdir().unwrap();
-        let id = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap().unwrap();
+        let id = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap();
         assert!(should_spawn_after_absent(dir.path(), &id, StartMode::Start).unwrap());
     }
 
     #[test]
     fn should_spawn_after_absent_resume_with_no_leg_spawns() {
         let dir = tempfile::tempdir().unwrap();
-        let id = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap().unwrap();
+        let id = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap();
         assert!(should_spawn_after_absent(dir.path(), &id, StartMode::Resume).unwrap());
     }
 
     #[test]
     fn reset_pointer_renames_the_old_one_aside_and_mints_the_new_one() {
         let dir = tempfile::tempdir().unwrap();
-        let old = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap().unwrap();
+        let old = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap();
         let new_voyage = uuid::Uuid::now_v7().to_string();
-        reset_pointer(dir.path(), &new_voyage).unwrap();
+        reset_pointer(dir.path(), &new_voyage, None).unwrap();
         assert!(matches!(pointer::validate(dir.path()), PointerState::Valid(v) if v == new_voyage));
         assert!(voyage_root_path(dir.path(), &new_voyage).exists());
         // The old voyage's own store is untouched -- only the POINTER
@@ -1338,23 +1863,35 @@ mod tests {
     }
 
     #[test]
+    fn reset_pointer_uses_the_exact_journaled_aside_name() {
+        let dir = tempfile::tempdir().unwrap();
+        discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap();
+        let new_voyage = uuid::Uuid::now_v7().to_string();
+        let aside_name = "drawer.voyage.reset-deadbeefdeadbeef";
+        reset_pointer(dir.path(), &new_voyage, Some(aside_name)).unwrap();
+        assert!(dir.path().join(aside_name).exists(), "the pre-chosen aside name must be exactly what's used");
+    }
+
+    #[test]
     fn reconcile_reset_recovers_all_four_states() {
         let dir = tempfile::tempdir().unwrap();
-        let old = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap().unwrap();
+        let old = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap();
         let new_voyage = uuid::Uuid::now_v7().to_string();
+        let aside = "drawer.voyage.reset-cafefacecafeface".to_string();
 
         // Row 1: pointer still names the OLD voyage -- resume from the
         // beginning.
-        reconcile_reset(dir.path(), "op-1", &new_voyage, Some(&old)).unwrap();
+        reconcile_reset(dir.path(), "op-1", &new_voyage, Some(&old), Some(&aside)).unwrap();
         assert!(matches!(pointer::validate(dir.path()), PointerState::Valid(v) if v == new_voyage));
         assert_eq!(
             journal_state(dir.path(), "op-1"),
             Some(journal::TerminalRecord::ResetDone { new_voyage: new_voyage.clone() })
         );
+        assert!(dir.path().join(&aside).exists(), "the journaled aside name must be exactly what got used");
 
         // Row 3: pointer already names the INTENDED NEW voyage -- just
         // reconstruct the terminal fact.
-        reconcile_reset(dir.path(), "op-2", &new_voyage, Some(&old)).unwrap();
+        reconcile_reset(dir.path(), "op-2", &new_voyage, Some(&old), Some(&aside)).unwrap();
         assert_eq!(
             journal_state(dir.path(), "op-2"),
             Some(journal::TerminalRecord::ResetDone { new_voyage: new_voyage.clone() })
@@ -1362,17 +1899,56 @@ mod tests {
 
         // Row 4: pointer names something else entirely -- loud stop.
         let rogue = uuid::Uuid::now_v7().to_string();
-        assert!(reconcile_reset(dir.path(), "op-3", &rogue, Some(&old)).is_err());
+        assert!(reconcile_reset(dir.path(), "op-3", &rogue, Some(&old), Some(&aside)).is_err());
 
         // Row 2: pointer ABSENT with the evidence rename present --
         // resume from publication.
         std::fs::remove_file(pointer::pointer_path(dir.path())).unwrap();
         let third = uuid::Uuid::now_v7().to_string();
-        reconcile_reset(dir.path(), "op-4", &third, Some(&new_voyage)).unwrap();
+        let aside2 = "drawer.voyage.reset-0000000000000001".to_string();
+        reconcile_reset(dir.path(), "op-4", &third, Some(&new_voyage), Some(&aside2)).unwrap();
         assert!(matches!(pointer::validate(dir.path()), PointerState::Valid(v) if v == third));
+    }
+
+    /// Codex review round 1, finding 4: the pointer's mere absence is
+    /// NOT proof the rename-aside step completed — the recorded evidence
+    /// file must actually exist.
+    #[test]
+    fn reconcile_reset_refuses_when_the_pointer_is_absent_but_no_evidence_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = discover_or_mint_voyage(dir.path(), StartMode::Start).unwrap();
+        std::fs::remove_file(pointer::pointer_path(dir.path())).unwrap();
+        let new_voyage = uuid::Uuid::now_v7().to_string();
+        let never_written = "drawer.voyage.reset-ffffffffffffffff";
+        let err = reconcile_reset(dir.path(), "op-1", &new_voyage, Some(&old), Some(never_written)).unwrap_err();
+        assert!(format!("{err}").contains("investigate"));
     }
 
     fn journal_state(state_dir: &Path, op_id: &str) -> Option<journal::TerminalRecord> {
         journal::read_terminal(state_dir, op_id).unwrap()
+    }
+
+    #[test]
+    fn digest_of_is_stable_and_distinguishes_ops() {
+        let a = SupervisorOp::Stop;
+        let b = SupervisorOp::Stop;
+        let c = SupervisorOp::EndRun { reason: "r".into(), voyage: "v".into() };
+        assert_eq!(digest_of(&a).unwrap(), digest_of(&b).unwrap());
+        assert_ne!(digest_of(&a).unwrap(), digest_of(&c).unwrap());
+    }
+
+    #[test]
+    fn bounded_detail_truncates_on_a_char_boundary() {
+        let long: String = "é".repeat(wire::MAX_SUPERVISOR_STRING_LEN); // 2 bytes each
+        let truncated = bounded_detail(long);
+        assert!(truncated.len() <= wire::MAX_SUPERVISOR_STRING_LEN);
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn is_journal_unreadable_matches_only_that_shape() {
+        assert!(is_journal_unreadable(&SupervisorOperationState::Failed { detail: "journal unreadable: boom".into() }));
+        assert!(!is_journal_unreadable(&SupervisorOperationState::Failed { detail: "record_append".into() }));
+        assert!(!is_journal_unreadable(&SupervisorOperationState::Accepted));
     }
 }
