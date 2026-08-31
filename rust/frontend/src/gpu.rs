@@ -363,6 +363,23 @@ struct WorkspaceUiSnapshot {
     /// routed against the file that was ABOUT to be shown, not the one
     /// on screen.
     preview_src_node_id: Option<String>,
+    /// Terminally-failed figure URLs for the markdown doc in `preview_src`
+    /// — MUST travel with it, alongside `current_md_node_id` and
+    /// `current_md_workspace_id` below. Round-2 review finding: these
+    /// three are provenance companions of the shown doc, not global
+    /// state. Without snapshotting them, a workspace switch let workspace
+    /// B's cursor-driven markdown reload clear workspace A's cached
+    /// failures (a global `figure_failed.clear()`, since the field lived
+    /// only on `State`), switching back to A could refire A's already-
+    /// failed figure, B's surviving failures could wrongly collapse A's
+    /// healthy one, and A's restored figure fetch could resolve against
+    /// B's `current_md_node_id`/`current_md_workspace_id` — the wrong
+    /// directory or project entirely.
+    figure_failed: std::collections::HashSet<String>,
+    /// See `figure_failed` above.
+    current_md_node_id: Option<String>,
+    /// See `figure_failed` above.
+    current_md_workspace_id: Option<String>,
     /// Physical scale (ADR 0034) of the raster in `preview_src`. MUST travel
     /// with it: `preview_scale` is otherwise only ever set by a `preview.get`
     /// wire reply, and swap-in deliberately rebuilds the pane from the cached
@@ -6355,6 +6372,9 @@ impl State {
                 pinned_preview_node_id: self.pinned_preview_node_id.clone(),
                 preview_src: self.preview_src.clone(),
                 preview_src_node_id: self.preview_src_node_id.clone(),
+                figure_failed: self.figure_failed.clone(),
+                current_md_node_id: self.current_md_node_id.clone(),
+                current_md_workspace_id: self.current_md_workspace_id.clone(),
                 preview_scale: self.preview_scale.clone(),
                 concept: self.concept.clone(),
                 file_ast_hashes: self.file_ast_hashes.clone(),
@@ -6425,6 +6445,17 @@ impl State {
         // route against this workspace's file, not whatever the departing
         // workspace last had in flight.
         self.preview_src_node_id = snap.preview_src_node_id.clone();
+        // Round-2 review finding: these three are provenance companions of
+        // `preview_src`, not global state — restore them BEFORE
+        // render_preview_source below, since its markdown branch reads all
+        // three (figure_failed via figure_already_handled,
+        // current_md_node_id/current_md_workspace_id to resolve relative
+        // `![](url)`s). Restoring after would let this workspace's figures
+        // dispatch against whichever OTHER workspace happened to leave
+        // these set last.
+        self.figure_failed = snap.figure_failed.clone();
+        self.current_md_node_id = snap.current_md_node_id.clone();
+        self.current_md_workspace_id = snap.current_md_workspace_id.clone();
         if let Some((mime, bytes)) = snap.preview_src.clone() {
             self.preview_src = Some((mime.clone(), bytes.clone()));
             self.render_preview_source(&mime, &bytes);
@@ -6562,6 +6593,15 @@ impl State {
             self.pinned_preview_node_id = None;
             self.preview_src = None;
             self.preview_src_node_id = None;
+            // Same invariant as the snapshot restore: a first-visited
+            // workspace must not inherit whatever the departing workspace
+            // left in these — a stale current_md_node_id/workspace_id
+            // would resolve THIS workspace's first figure fetch against
+            // the WRONG project, and a stale figure_failed would collapse
+            // figures that are perfectly healthy here.
+            self.figure_failed.clear();
+            self.current_md_node_id = None;
+            self.current_md_workspace_id = None;
             // Same invariant as the snapshot restore: the calibration belongs
             // to the previewed raster, so clearing the preview must clear the
             // scale. Otherwise a first visit inherits the departing
