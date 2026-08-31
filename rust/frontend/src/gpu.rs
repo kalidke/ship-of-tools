@@ -672,6 +672,32 @@ fn resolve_figure_node_id(md_node_id: &Option<String>, url: &str) -> Option<Stri
     Some(format!("files:{}", stack.join("/")))
 }
 
+/// Move `url` out of `pending` and into `failed` — the one terminal state
+/// a figure fetch can land in, whether the bytes never arrived at all
+/// (`figure.get` error / parse failure) or arrived but wouldn't decode.
+/// Shared by both so there's a single place that defines "this figure is
+/// done, stop waiting on it."
+fn fail_figure(
+    pending: &mut std::collections::HashSet<String>,
+    failed: &mut std::collections::HashSet<String>,
+    url: String,
+) {
+    pending.remove(&url);
+    failed.insert(url);
+}
+
+/// Clear the terminal-failure set. Call this when the markdown document
+/// reloads (a fresh preview.get body lands): a reload is new evidence a
+/// previously-missing figure may now exist, so give every failed URL a
+/// clean shot at `dispatch_pending_figures` again instead of the skip
+/// staying permanent (field report: without this, a `figure.get` that
+/// failed once was skipped by every later reload of the same document,
+/// forever). `figure_cache` hits and in-flight `figure_pending` entries
+/// are untouched — only the terminal-failure bookkeeping resets.
+fn reset_figure_failures(failed: &mut std::collections::HashSet<String>) {
+    failed.clear();
+}
+
 /// Pull `synced_against: <value>` out of a markdown file's leading YAML
 /// frontmatter. Accepts quoted (`"x"` / `'x'`) and bare values; trims
 /// whitespace. Returns `None` when no frontmatter, no closing fence, or
@@ -8769,6 +8795,14 @@ impl State {
             self.preview_scroll = 0;
         } else if mime == "text/markdown" || mime == "text/x-markdown" {
             if let Ok(s) = std::str::from_utf8(bytes) {
+                // A fresh preview.get body landing here IS a markdown
+                // reload — new evidence that a figure which failed
+                // before (e.g. `figure.get` fired before the target PNG
+                // existed) may exist now. Clear the failure set so this
+                // walk's `dispatch_pending_figures` below gets a clean
+                // shot at every `![](url)` it finds; `figure_cache` hits
+                // and in-flight `figure_pending` entries are untouched.
+                reset_figure_failures(&mut self.figure_failed);
                 let math_metrics = self.build_math_metrics();
                 let figure_metrics = self.build_figure_metrics();
                 self.preview_md = MarkdownPreview::new(
@@ -10354,11 +10388,25 @@ impl State {
                             // compact fallback on the next reflow rather
                             // than leaving an empty box that will never
                             // be painted over.
-                            self.figure_failed.insert(url);
+                            fail_figure(&mut self.figure_pending, &mut self.figure_failed, url);
                             self.needs_md_reflow = true;
                             self.window.request_redraw();
                         }
                     }
+                }
+                crate::transport::IncomingEvt::FigureGetFailed { url } => {
+                    // `figure.get` answered with an `{error, code}`
+                    // envelope or failed to parse — the bytes never
+                    // arrived at all (field report: this used to
+                    // warn-and-drop with no event, leaving `url` stuck
+                    // in `figure_pending` forever since
+                    // `dispatch_pending_figures` never refires anything
+                    // already pending). Same terminal collapse as a
+                    // decode failure above.
+                    tracing::warn!(%url, "figure.get failed — collapsing to compact fallback");
+                    fail_figure(&mut self.figure_pending, &mut self.figure_failed, url);
+                    self.needs_md_reflow = true;
+                    self.window.request_redraw();
                 }
                 crate::transport::IncomingEvt::MathRendered {
                     latex,
@@ -19785,6 +19833,47 @@ mod tests {
         assert!(!is_raster_preview_mime("image/svg+xml"));
         assert!(!is_raster_preview_mime("text/plain; charset=utf-8"));
         assert!(!is_raster_preview_mime("application/json"));
+    }
+
+    // --- Bug 1: an early `figure.get` failure must reach a terminal state
+    // (not warn-and-drop), and a markdown reload must make a previously-
+    // failed figure URL retryable. ---
+
+    #[test]
+    fn fail_figure_clears_pending_and_marks_failed() {
+        let mut pending: std::collections::HashSet<String> =
+            ["figures/x.png".to_string()].into_iter().collect();
+        let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        fail_figure(&mut pending, &mut failed, "figures/x.png".to_string());
+        assert!(!pending.contains("figures/x.png"));
+        assert!(failed.contains("figures/x.png"));
+    }
+
+    #[test]
+    fn fail_figure_is_terminal_regardless_of_which_way_it_failed() {
+        // Decode failure (bytes arrived, wouldn't decode) and figure.get
+        // failure (bytes never arrived) must land in the exact same
+        // state — one collapse behavior, not two.
+        let mut pending: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        fail_figure(&mut pending, &mut failed, "figures/never-arrived.png".to_string());
+        assert_eq!(
+            failed,
+            ["figures/never-arrived.png".to_string()]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+        );
+    }
+
+    #[test]
+    fn reset_figure_failures_makes_failed_url_retryable() {
+        let mut failed: std::collections::HashSet<String> =
+            ["figures/x.png".to_string()].into_iter().collect();
+        reset_figure_failures(&mut failed);
+        // `dispatch_pending_figures` skips a url while it's in `failed` —
+        // an empty set means the next reload's walk will refire it.
+        assert!(!failed.contains("figures/x.png"));
+        assert!(failed.is_empty());
     }
 
     #[test]

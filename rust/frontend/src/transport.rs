@@ -338,6 +338,17 @@ pub enum IncomingEvt {
         mime: String,
         bytes: Vec<u8>,
     },
+    /// A `figure.get` came back as an `{error, code}` envelope, or its
+    /// payload didn't parse as `PreviewGetRes` at all (field report: firing
+    /// `figure.get` before the target PNG exists returns an error the old
+    /// code silently warn-and-dropped, leaving `url` stuck in
+    /// `figure_pending` forever — `dispatch_pending_figures` never retries
+    /// anything already pending). The chrome reaches the same terminal
+    /// `figure_failed` state this drives for a decode failure, so the
+    /// layout still collapses instead of holding an empty reservation.
+    FigureGetFailed {
+        url: String,
+    },
     /// A MathJax-rendered SVG blob arrived. Carries the `latex` and
     /// `display` flag from the originating `MathRender` request so the
     /// chrome can route it into its `(latex, display)`-keyed cache.
@@ -3052,6 +3063,22 @@ fn handle_response_frame(
                 // Same wire shape as PreviewGet, routed to the chrome's
                 // figure cache via a different IncomingEvt so the
                 // active markdown buffer isn't replaced.
+                //
+                // Field report: an early `figure.get` (fired before the
+                // backend has the target PNG yet) answers with `{error,
+                // code}`, which doesn't deserialize as `PreviewGetRes` —
+                // this used to warn-and-drop with no event at all, so
+                // `url` never left `figure_pending` and every later
+                // reload skipped it forever (dispatch_pending_figures
+                // treats "pending" as "already in flight, don't refire").
+                // Surface both the explicit error envelope and a bare
+                // parse failure as `FigureGetFailed` so the chrome always
+                // reaches a terminal state instead.
+                if let Some(err) = frame.payload.get("error").and_then(|v| v.as_str()) {
+                    tracing::warn!(%url, error = %err, "figure.get answered with error");
+                    let _ = evt_tx.send(IncomingEvt::FigureGetFailed { url });
+                    return;
+                }
                 match serde_json::from_value::<PreviewGetRes>(frame.payload) {
                     Ok(res) => {
                         let _ = evt_tx.send(IncomingEvt::FigureLoaded {
@@ -3062,6 +3089,7 @@ fn handle_response_frame(
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, %url, "figure.get res parse failed");
+                        let _ = evt_tx.send(IncomingEvt::FigureGetFailed { url });
                     }
                 }
                 return;
