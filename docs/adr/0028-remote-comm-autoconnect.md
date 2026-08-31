@@ -95,3 +95,119 @@ and keep setting `SOT_RELAY_ENDPOINT` inline in git-bash.
   as a restart loop in `systemctl --user status`.
 - `scripts/restart-backend.sh` now restarts the systemd `sotd` when the unit is
   enabled; the legacy `--check` staleness report is unchanged.
+
+## Addendum: derived-handle disambiguation ("derived vs explicit")
+
+**Problem.** A session's default sot-comm handle is `<repo-basename>-<host>`
+(`comm-join.sh`, `comm-spawn.sh`). Two *different* projects that happen to
+share a basename — e.g. `courseA/instructor-materials` and
+`courseB/instructor-materials` — derive the identical default handle. The
+registry has no collision check, so the second join silently overwrote the
+first's row: both sessions ended up sharing one inbox, and routing/status
+aliased two unrelated sessions onto one identity.
+
+**The contract: derived names are smart, explicit names are verbatim.**
+Every claimed handle — derived or explicit — records its canonical project
+root on the registry row (`"root"`) and on the v2 self-file (`root=` line).
+This is additive: a row or self-file without `root` predates the feature
+and reads back as *unknown root*, which the algorithm below treats as a
+collision, not a free pass.
+
+**Transition behavior.** A legacy registry row (from before this feature)
+has no `root`, and unknown-root counts as a collision — fail-safe, not
+fail-open. So until a legacy row's own session rejoins (which now records
+`root`, including via the ordinary `/sot-session-start` join), a *fresh*
+session that lands on that same bare handle from a different directory
+gets a qualified name instead, with the stderr notice explaining why. This
+is deliberate: grandfathering an unknown root in as "assume same project"
+would silently re-enable aliasing for exactly the pre-existing collisions
+this feature targets.
+
+Only a name that comes from **derivation** (nothing else was supplied) runs
+the disambiguation algorithm. A name from `--name`, `$SOT_COMM_NAME`, or an
+already-joined self-file identity is always used **verbatim** — no
+escalation, no rewriting, same overwrite-on-collision behavior as before.
+
+The derived-name algorithm takes an explicit **mode**, checked against the
+registry's current state at each tier:
+
+- **reclaim** (`comm-join.sh` — an ordinary join) — a tier is claimable if
+  it's unclaimed, OR if the existing row's root already equals mine
+  (today's same-root reclaim/rejoin).
+- **fresh** (`comm-spawn.sh` — creating a NEW agent) — a tier is claimable
+  ONLY if it's genuinely unclaimed. An existing row — even one sharing the
+  spawning session's own project root — is someone/something else's from
+  spawn's point of view and is never reclaimed: spawning a second agent
+  against a project that already has a live one must not silently
+  overwrite that live agent's tmux/pane/status fields.
+
+The three tiers themselves are the same shape under either mode:
+
+1. `<basename>-<host>` — claimable per the mode's rule above.
+2. Else `<basename>-<parentdir>-<host>` — `parentdir` is the basename of
+   the project root's *parent* directory (human-meaningful: the
+   course/collection/workspace name), same claimability rule. Example:
+   `courseB/instructor-materials` becomes `instructor-materials-courseB-<host>`.
+3. Else `<basename>-<hash6>-<host>` — `hash6` is the first 6 hex characters
+   of `sha256(canonical root path)` — checked with the SAME claimability
+   rule as tiers 1-2, not claimed unconditionally. If tier 3 isn't
+   claimable either (an explicit owner already sits on that exact
+   hash-qualified name, or — vanishingly unlikely — two different roots
+   share a six-hex prefix), derivation FAILS LOUDLY asking for an explicit
+   `--name`. There is no tier 4 and no overwrite of anything, ever.
+
+Each escalation prints one line to stderr naming the handle that was
+already held, by which root, and what was joined instead; the final
+`Joined sot-comm as @<handle>` line stays the authoritative confirmation.
+A repo/parentdir/host component that isn't already in workspace.create's
+charset (`[A-Za-z0-9._-]`, max 64 chars) is sanitized and length-clamped
+*before* any candidate is composed, so a derived handle can never diverge
+from what workspace.create will accept and no raw path text reaches a
+shell command unsanitized; a host whose sanitized form had to change at
+all (truncated, or characters rewritten) gets a short digest of the raw
+host appended, so two different real hosts that happen to sanitize to the
+same string can't alias onto one tier-1 identity when they share a root.
+
+**Liveness is deliberately not consulted.** The comparison is root-only —
+a stale registry row (its session long gone) still holds its claim until
+an existing cleanup path removes it. This keeps the rule one-dimensional
+and prevents a handle from flip-flopping between two projects depending on
+which one happens to have a live session at any given moment.
+
+**`comm-spawn.sh`'s `<name>` is optional.** Omitted, it derives and
+disambiguates in **fresh** mode (one positional argument = `<repo-path>`;
+the legacy two-positional `<name> <repo-path>` form, and `--name`, remain
+verbatim). When derivation had to qualify past the bare tier, the spawn
+also passes a qualified `--display-label` (`<basename>-<qualifier>`) so
+the two session-strip rows in the frontend stay visually distinguishable —
+and that auto-composed label is itself checked (by normalized slug,
+mirroring `rust/backend/src/paths.rs::slug`) against the daemon's existing
+workspace list before the workspace is created, refusing rather than
+risking a same-slug rebind of someone else's workspace (e.g. a worktree's
+`<repo>-wt-<short>` grouping label). That check is a best-effort,
+list-then-create human-UX guard, not an atomic guarantee.
+
+A provisional registry row makes a spawned agent addressable immediately,
+before it has actually joined; if anything synchronous afterward fails
+(the daemon unreachable, workspace creation rejected, the launch itself
+failing), that row is rolled back — but only if it's *still provably the
+exact row this spawn wrote* (matched by root + a random nonce +
+`status:"spawning"`), never a row that a real join or another claimant has
+since replaced.
+
+**Implementation.** One shared helper, `sot_derive_handle` (`comm-lib.sh`),
+is the single home for the algorithm; `comm-join.sh` and `comm-spawn.sh`
+both call it rather than deriving `<repo>-<host>` themselves. Deriving a
+name and registering it are not two separate steps: `claim_derived_handle`
+runs both under the registry's single lock, so a concurrent derived claim
+for a different root can never land in the gap between "decide" and
+"write" — the exact aliasing bug this feature closes, which would
+otherwise survive as a race window (comm-spawn.sh in particular drives
+many joins back-to-back for bulk workspace bring-up). That lock itself
+fails CLOSED: if it's still held after a bounded wait (~10s), the caller
+gets a clear error naming the lock path and the holder's age rather than
+forcing a takeover, which could let two writers corrupt the registry file
+or reopen the very race the lock exists to close. Tests:
+`comm/core/tests/test-join-disambiguation.sh` (hermetic — a temp
+`$SOT_COMM_HOME`, a temp self-file per simulated session, and an isolated
+tmux server for the spawn case; never touches a real install).

@@ -192,28 +192,95 @@ ensure_home() {
     fi
 }
 
-# with_lock CMD [ARGS...] — run CMD holding the registry lock (mkdir spinlock).
-# CMD may be a shell function defined in this sourced lib.
+# with_lock CMD [ARGS...] — run CMD holding the registry lock (mkdir
+# spinlock). CMD may be a shell function defined in this sourced lib.
+#
+# Bounded wait, then FAIL CLOSED (Codex review, PR #148 F2): a stale lock
+# used to be force-broken after ~10s regardless of whether the replacement
+# `mkdir` actually succeeded — a second waiter could enter right behind the
+# "stale" holder if it was merely slow (an NFS pause, a stopped process),
+# resurrecting the exact concurrent-derive/write clobber this lock exists
+# to prevent, and risking a corrupt `registry.json.tmp` from two writers.
+# There is no safe automatic recovery from "the lock might still be held";
+# refusing and naming the lock path + holder age lets a human decide.
+#
+# Release is TRAP-based, not a plain post-command `rmdir` (Codex review F2
+# second half / F7): a caller's `set -e` aborts the WHOLE SCRIPT the moment
+# `"$@"` fails, at that exact statement — skipping every line after it in
+# this function, including a plain `rmdir` written below the call. That
+# leaked the lock forever on any callee failure (a corrupt registry.json
+# making `registry_put`'s jq fail, for example). An EXIT trap still fires
+# on that abort, so the lock comes off either way.
+#
+# The PRIOR EXIT trap (if any) is saved and restored, not just cleared:
+# bash has one EXIT trap per shell, not a stack, and a caller may already
+# have its own (e.g. comm-spawn.sh's provisional-row rollback) active
+# around a with_lock call — blindly clearing it here would silently
+# disarm the caller's cleanup for the rest of the script. This restore now
+# runs on EVERY path, including a directly-failing "$@" (Codex review PR
+# #148 round 2, finding 4): a bare `"$@"` statement under the caller's
+# `set -e` used to abort the WHOLE SCRIPT right there, skipping every line
+# below it in this function — the lock still came off (its own release
+# trap fired on that abort), but the restore of the CALLER's prior trap
+# never ran, silently losing it for the rest of the script. Capturing the
+# callee's status via `if "$@"; then :; else rc=$?; fi` — the standard
+# idiom for "run this and don't let -e kill us on failure" — means release
+# and restore always execute before this function returns, on every path.
+SOT_LOCK_MAX_TRIES=200   # ~10s at the 0.05s poll below
 with_lock() {
     local tries=0
+    # Test seam (F10): let a test PROVE a background waiter has reached its
+    # first lock attempt, instead of racing it with a sleep. Touched once,
+    # right before that attempt; unset (the default) this is a no-op.
+    #
+    # `touch --`, NOT `: > FILE` (Codex review round 2, finding 6): a bare
+    # `>` redirect TRUNCATES whatever already sits at that path — if this
+    # var ever leaked into a production environment pointed at a real
+    # file, every with_lock call would zero it. `touch` only updates/
+    # creates, and unlike `>` it doesn't attempt to OPEN-FOR-WRITE (which
+    # would block forever against a FIFO with no reader, right here in the
+    # lock's own hot path) — and `|| true` keeps a bad path from tripping
+    # this function's own `set -e`-sensitive callers.
+    [ -n "${SOT_COMM_TEST_LOCK_BARRIER:-}" ] && { touch -- "$SOT_COMM_TEST_LOCK_BARRIER" 2>/dev/null || true; }
     while ! mkdir "$LOCKDIR" 2>/dev/null; do
         tries=$((tries + 1))
-        if [ "$tries" -gt 200 ]; then
-            echo "WARN: forcing stale lock $LOCKDIR" >&2
-            rmdir "$LOCKDIR" 2>/dev/null || true
-            mkdir "$LOCKDIR" 2>/dev/null || true
-            break
+        if [ "$tries" -gt "$SOT_LOCK_MAX_TRIES" ]; then
+            local age="unknown" mtime
+            mtime="$(stat -c '%Y' "$LOCKDIR" 2>/dev/null || true)"
+            [ -n "$mtime" ] && age="$(( $(date +%s) - mtime ))s"
+            echo "ERROR: registry lock $LOCKDIR still held after ~10s (holder age: $age) — refusing to force it: a forced takeover can let two writers corrupt registry.json.tmp, and reopens the exact clobber race this lock exists to close. If the holder is confirmed dead, remove $LOCKDIR by hand and retry." >&2
+            return 1
         fi
         sleep 0.05
     done
-    "$@"
-    local rc=$?
+    # Lock acquired — guarantee release via EXIT trap (see header comment),
+    # preserving whatever EXIT trap the caller already had.
+    local prev_trap rc=0
+    prev_trap="$(trap -p EXIT)"
+    trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT
+    if "$@"; then
+        :
+    else
+        rc=$?
+    fi
     rmdir "$LOCKDIR" 2>/dev/null || true
+    if [ -n "$prev_trap" ]; then
+        eval "$prev_trap"
+    else
+        trap - EXIT
+    fi
     return $rc
 }
 
 # --- registry mutators (call inside with_lock) ---
 registry_put() {  # name objJSON
+    # F7 (Codex review): never write an empty/blank handle — a derivation
+    # bug or a corrupt-registry jq failure upstream is an ERROR, not a
+    # claim of "". Last line of defense regardless of how a caller got here.
+    if [ -z "$1" ]; then
+        echo "registry_put: refusing to write an empty/blank handle" >&2
+        return 1
+    fi
     jq --arg n "$1" --argjson o "$2" '.agents[$n] = $o' "$REGISTRY" \
         > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
 }
@@ -226,6 +293,343 @@ registry_touch() {  # name — bump last_seen if present
     jq --arg n "$1" --arg t "$ts" \
         'if .agents[$n] then .agents[$n].last_seen = $t else . end' \
         "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+}
+
+# registry_del_if_provisional NAME WANT_ROOT WANT_NONCE — conditionally
+# delete NAME's row, but ONLY if it's STILL provably the exact provisional
+# row identified by WANT_ROOT + WANT_NONCE (status "spawning" is implied —
+# a provisional row is always spawning; a real join or an explicit
+# claimant always overwrites both root and status/removes the nonce as it
+# writes a normal row). Call under with_lock. Exists so a spawn's rollback
+# can never delete a NEWER row that has since replaced the provisional one
+# (Codex review PR #148 round 2, finding 1 — reproduced by the reviewer:
+# an unconditional `registry_del "$NAME"` deleted a live `status:"idle"`
+# row the child had already written for real, turning a successful join
+# into `null`). Returns:
+#   0 — deleted (it was still ours)
+#   1 — deletion itself failed (registry_del's jq/mv step)
+#   2 — NOT deleted: the row no longer matches what was claimed (or
+#       WANT_NONCE/NAME is empty) — left untouched; this is the common,
+#       expected outcome once a real join has happened, not an error
+registry_del_if_provisional() {
+    local name="$1" want_root="$2" want_nonce="$3"
+    local cur_status cur_root cur_nonce
+    [ -n "$name" ] && [ -n "$want_nonce" ] || return 2
+    cur_status="$(jq -r --arg n "$name" '.agents[$n].status // ""' "$REGISTRY" 2>/dev/null)"
+    cur_root="$(jq -r --arg n "$name" '.agents[$n].root // ""' "$REGISTRY" 2>/dev/null)"
+    cur_nonce="$(jq -r --arg n "$name" '.agents[$n].nonce // ""' "$REGISTRY" 2>/dev/null)"
+    if [ "$cur_status" != "spawning" ] || [ "$cur_root" != "$want_root" ] || [ "$cur_nonce" != "$want_nonce" ]; then
+        return 2
+    fi
+    registry_del "$name"
+}
+
+# --- derived-handle disambiguation (ADR 0028 addendum: "derived vs
+# explicit") --- single home for the algorithm; comm-join.sh and
+# comm-spawn.sh both call sot_derive_handle. This is ONLY for a name that
+# comes from DERIVATION (the default <basename>-<host>): a caller must never
+# route an explicit --name, $SOT_COMM_NAME, or an already-joined self-file
+# identity through here — those stay verbatim, unconditionally.
+
+# sot_canonical_path PATH — absolute, symlink-resolved path (the
+# "canonical project root" the disambiguation compares), or NOTHING on
+# stdout plus a nonzero return if one can't be established (Codex review
+# F8). NEVER falls back to an unresolved/relative path: two callers that
+# each `cd` into a differently-spelled relative path (or the SAME literal
+# "./foo" from two different directories) would otherwise compare as
+# identical roots, defeating the whole disambiguation.
+sot_canonical_path() {
+    local p="$1" out
+    if command -v realpath >/dev/null 2>&1; then
+        if out="$(realpath -- "$p" 2>/dev/null)" && [ -n "$out" ]; then
+            printf '%s\n' "$out"
+            return 0
+        fi
+    fi
+    if command -v readlink >/dev/null 2>&1; then
+        if out="$(readlink -f -- "$p" 2>/dev/null)" && [ -n "$out" ]; then
+            printf '%s\n' "$out"
+            return 0
+        fi
+    fi
+    echo "sot_canonical_path: could not resolve a canonical path for '$p' (no working realpath or readlink -f) — refusing to record a relative/unresolved project root" >&2
+    return 1
+}
+
+# sot_hash6 STR — first 6 hex chars of sha256(STR); stable per input, used
+# only for the last-resort hash-qualified handle tier. NO fallback when
+# sha256sum/shasum are both missing (Codex review F8 / simplicity audit):
+# the earlier `cksum` fallback was a variable-length decimal CRC, not a
+# hash6 — installing sha256sum later would silently change that root's
+# tier-3 handle. Fail loudly instead; the caller surfaces this as a hard
+# error asking for an explicit --name.
+#
+# Both the pipeline's exit status AND the shape of its output are checked
+# (Codex review PR #148 round 2, finding 5): the previous version ran
+# `return 0` unconditionally after each pipeline, so an INSTALLED-but-
+# FAILING sha256sum (confirmed: one that exits 23) still "succeeded" with
+# an EMPTY hash, producing a `<base>--<host>` handle instead of a loud
+# failure. `rc=$?` right after the pipeline reflects its real exit status
+# under this shell's `pipefail` (both callers set it); the regex is the
+# stronger, direct check — it also catches a tool that exits 0 but emits
+# garbage, which an exit-code check alone would miss.
+sot_hash6() {
+    local out rc
+    if command -v sha256sum >/dev/null 2>&1; then
+        out="$(printf '%s' "$1" | sha256sum | cut -c1-6)"; rc=$?
+        if [ "$rc" -eq 0 ] && [[ "$out" =~ ^[0-9a-f]{6}$ ]]; then
+            printf '%s\n' "$out"
+            return 0
+        fi
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        out="$(printf '%s' "$1" | shasum -a 256 | cut -c1-6)"; rc=$?
+        if [ "$rc" -eq 0 ] && [[ "$out" =~ ^[0-9a-f]{6}$ ]]; then
+            printf '%s\n' "$out"
+            return 0
+        fi
+    fi
+    echo "sot_hash6: no working sha256sum/shasum produced a valid 6-hex-character digest — cannot compute a stable tier-3 handle qualifier" >&2
+    return 1
+}
+
+# sot_slug LABEL — bash mirror of rust/backend/src/paths.rs::slug (Codex
+# review PR #148 round 2, finding 3): lowercase; '.' -> '_' BEFORE the
+# keep-check; a RUN of characters outside [a-z0-9_-] collapses to a single
+# '-' (a LITERAL '-'/'_'/alnum in the input is pushed as-is and never
+# collapsed, even if repeated — matching Rust's keep/else branch split
+# exactly, not a blanket dash-collapse); trailing '-' trimmed; empty ->
+# "default". Verified against every example in that function's own doc
+# comment (MyPackage.jl -> mypackage_jl, "Foo Bar" -> foo-bar, /abs/path
+# -> abs-path, "  " -> default) plus literal-repeated-dash and leading-
+# junk cases. Needed because workspace.create's same-slug path is an
+# intentional metadata-refresh idempotence, not an error — two labels
+# that only differ by case, or by a dot vs underscore, resolve to the
+# SAME workspace and must be caught as a collision too, not just a
+# byte-identical label match.
+sot_slug() {
+    local label="$1" out="" last_dash=false i len ch c
+    len=${#label}
+    for (( i = 0; i < len; i++ )); do
+        ch="${label:i:1}"
+        c="$(printf '%s' "$ch" | tr '[:upper:]' '[:lower:]')"
+        [ "$c" = "." ] && c="_"
+        case "$c" in
+            [a-z0-9_-])
+                out="${out}${c}"
+                if [ "$c" = "-" ]; then last_dash=true; else last_dash=false; fi
+                ;;
+            *)
+                if [ "$last_dash" = false ] && [ -n "$out" ]; then
+                    out="${out}-"
+                    last_dash=true
+                fi
+                ;;
+        esac
+    done
+    while [[ "$out" == *- ]]; do out="${out%-}"; done
+    [ -z "$out" ] && out="default"
+    printf '%s\n' "$out"
+}
+
+# sot_sanitize_component STR [MAXLEN=20] — reduce STR to the
+# workspace.create charset [A-Za-z0-9._-] (every other byte becomes '-',
+# runs of '-' collapse, leading/trailing '-' trimmed) and clamp it to
+# MAXLEN (Codex review F4): a repo/parentdir basename can contain spaces,
+# Unicode, or shell metacharacters, none of which workspace.create's name
+# validator (`rust/backend/src/handlers.rs`, `valid_name`) accepts — and an
+# unsanitized basename reaching the `--no-workspace` launcher string is a
+# shell-injection vector. Applied to EVERY raw piece (basename, parentdir,
+# host) BEFORE composing a candidate, never to the assembled candidate
+# afterward, so composed separators can't be reintroduced or hidden behind
+# a length overflow. MAXLEN defaults to 20 so the worst-case composed
+# candidate (20 + "-" + 20 + "-" + 20 = 62) stays inside workspace.create's
+# 64-char limit without per-tier budget arithmetic.
+sot_sanitize_component() {
+    local s="$1" max="${2:-20}"
+    s="$(printf '%s' "$s" | tr -c 'A-Za-z0-9._-' '-')"
+    while [[ "$s" == *--* ]]; do s="${s//--/-}"; done
+    s="${s#-}"; s="${s%-}"
+    s="${s:0:$max}"
+    s="${s%-}"
+    [ -z "$s" ] && s="x"
+    printf '%s' "$s"
+}
+
+# sot_registry_entry_status NAME — tagged status of the registry row for
+# NAME (Codex review simplicity audit: replaces a magic sentinel string
+# with tagged output, so "no row" and "row present but root unknown" can
+# never be confused with each other or with an actual, if empty, root
+# value):
+#   "absent\t"          — NAME has no row at all
+#   "present\t<root>"   — NAME has a row; <root> is "" for a legacy row
+#                         that predates this feature (unknown root)
+sot_registry_entry_status() {
+    jq -r --arg n "$1" \
+        'if (.agents | has($n)) then "present\t" + (.agents[$n].root // "") else "absent\t" end' \
+        "$REGISTRY" 2>/dev/null
+}
+
+# _sot_tier_claimable MODE ROOT STATUS HELD_ROOT — true if a tier whose
+# registry status is STATUS/HELD_ROOT (from sot_registry_entry_status) can
+# be claimed under MODE:
+#   reclaim — unclaimed, OR already held by MY OWN root (today's
+#             comm-join rejoin/reclaim behavior).
+#   fresh   — unclaimed ONLY. comm-spawn creates a NEW agent; an existing
+#             row for the resolved name — even one sharing my root — is
+#             someone/something else's from spawn's point of view and must
+#             never be silently absorbed (Codex review F3: this used to
+#             erase a LIVE agent's tmux/pane/status fields when spawning a
+#             second time against the same project root).
+_sot_tier_claimable() {
+    local mode="$1" root="$2" status="$3" held="$4"
+    [ "$status" = "absent" ] && return 0
+    [ "$mode" = "reclaim" ] && [ "$held" = "$root" ] && return 0
+    return 1
+}
+
+# sot_derive_handle MODE ROOT HOST — the derived-name algorithm (ADR 0028
+# addendum; see docs/adr/0028-remote-comm-autoconnect.md). MODE is
+# "reclaim" (comm-join) or "fresh" (comm-spawn) — see _sot_tier_claimable.
+# Liveness is deliberately NOT consulted — a stale registry row still
+# holds its claim until existing cleanup paths remove it; this keeps the
+# rule one-dimensional (root comparison only) and prevents handle
+# flip-flop between two projects depending on who happens to be running.
+#
+# ROOT MUST already be canonical (sot_canonical_path) — canonicalizing
+# here would mean filesystem traversal INSIDE the registry lock (this runs
+# from claim_derived_handle, under with_lock), which is worse under a
+# dead/slow NFS mount and was flagged as redundant (Codex review F8:
+# "canonicalize once before entering the lock").
+#
+# Escalates through three tiers, each checked with _sot_tier_claimable —
+# tier 3 is NOT an unconditional overwrite (Codex review F6: it used to be
+# claimed regardless of who held it, which needs no hash collision at all
+# to hit — an explicit owner of the computed hash-qualified name was
+# silently overwritten). If no tier is claimable, this FAILS LOUDLY
+# (nonzero return, nothing on stdout, a clear reason on stderr) rather than
+# inventing a fourth tier or overwriting anything — the caller must ask
+# the user for an explicit --name.
+#
+# Every raw piece (repo basename, parentdir, host) is sanitized+clamped
+# (sot_sanitize_component) BEFORE composing any candidate (Codex review
+# F4), so a derived handle can never diverge from what workspace.create
+# will accept, and no raw path text reaches a shell command unsanitized.
+# HOST gets an extra step (Codex review PR #148 round 2, finding 7): if
+# sanitizing/clamping CHANGES it at all — a long or characters-outside-
+# charset hostname got truncated/rewritten — a short digest of the RAW
+# host is appended. Without this, two DIFFERENT real hosts whose names
+# happen to sanitize/truncate to the IDENTICAL string would, if they ever
+# shared a root (an NFS-shared repo, exactly this cluster's own shape),
+# alias onto one tier-1 "reclaim" — root matches, and the (now-identical)
+# host component can no longer tell them apart. An untouched host (the
+# overwhelmingly common case: short, already-valid hostnames) gets no
+# suffix, so today's handles are unchanged. HOST_RAW_MAX=12 leaves room
+# for "-" + a 6-hex digest without the host component threatening
+# sot_sanitize_component's 20-char default budget the other components
+# still use (12 + 1 + 6 = 19 worst case).
+#
+# On success, prints ONE tab-separated line: "<handle>\t<qualifier>"
+# (qualifier empty at tier 1, "<parentdir>" at tier 2, "<hash6>" at tier
+# 3). A caller that only wants the handle:
+#   `IFS=$'\t' read -r NAME _ <<< "$(sot_derive_handle reclaim "$ROOT" "$HOST")"`
+sot_derive_handle() {
+    local mode="$1" root="$2" raw_host="$3"
+    local base parent hash6 tier1 tier2 tier3 host host_digest
+    local status1 held1 status2 held2 status3 held3 shown1 shown2 shown3
+
+    case "$mode" in
+        reclaim|fresh) : ;;
+        *) echo "sot_derive_handle: invalid mode '$mode' (want reclaim or fresh)" >&2; return 1 ;;
+    esac
+
+    base="$(sot_sanitize_component "$(basename "$root")")"
+    host="$(sot_sanitize_component "$raw_host" 12)"
+    if [ "$host" != "$raw_host" ]; then
+        host_digest="$(sot_hash6 "$raw_host")" || return 1
+        host="${host}-${host_digest}"
+    fi
+
+    tier1="${base}-${host}"
+    IFS=$'\t' read -r status1 held1 <<< "$(sot_registry_entry_status "$tier1")"
+    if _sot_tier_claimable "$mode" "$root" "$status1" "$held1"; then
+        printf '%s\t\n' "$tier1"
+        return 0
+    fi
+    shown1="$held1"; [ -z "$shown1" ] && shown1="an unknown project"
+
+    parent="$(sot_sanitize_component "$(basename "$(dirname "$root")")")"
+    tier2="${base}-${parent}-${host}"
+    IFS=$'\t' read -r status2 held2 <<< "$(sot_registry_entry_status "$tier2")"
+    if _sot_tier_claimable "$mode" "$root" "$status2" "$held2"; then
+        echo "comm: '@$tier1' is already held by $shown1 — joining as '@$tier2' instead" >&2
+        printf '%s\t%s\n' "$tier2" "$parent"
+        return 0
+    fi
+    shown2="$held2"; [ -z "$shown2" ] && shown2="an unknown project"
+
+    hash6="$(sot_hash6 "$root")" || return 1
+    tier3="${base}-${hash6}-${host}"
+    IFS=$'\t' read -r status3 held3 <<< "$(sot_registry_entry_status "$tier3")"
+    if _sot_tier_claimable "$mode" "$root" "$status3" "$held3"; then
+        echo "comm: '@$tier1' (held by $shown1) and '@$tier2' (held by $shown2) are both taken — joining as '@$tier3' instead" >&2
+        printf '%s\t%s\n' "$tier3" "$hash6"
+        return 0
+    fi
+    shown3="$held3"; [ -z "$shown3" ] && shown3="an unknown project"
+    echo "comm: every derived handle for this project is already taken — '@$tier1' (held by $shown1), '@$tier2' (held by $shown2), and '@$tier3' (held by $shown3). Pass --name to pick one explicitly." >&2
+    return 1
+}
+
+# --- atomic derive + claim (closes the read-then-write race) -----------
+# sot_derive_handle above only DECIDES a name by reading the registry; a
+# caller that derives and only LATER locks to registry_put leaves a window
+# between the two where a second, concurrent derived join (a DIFFERENT
+# root, same basename+host) can observe that exact same "still free" state
+# and also decide on tier 1 — whichever registry_put lands second then
+# silently clobbers the first. That is the aliasing bug this whole feature
+# exists to close, so it must not survive as a race window. The window is
+# not theoretical: comm-spawn.sh is driven programmatically for bulk
+# workspace bring-up, joining many sessions back-to-back.
+#
+# claim_derived_handle MODE ROOT HOST OBJ_JSON — derive AND registry_put
+# the result as ONE critical section under the registry lock, so no other
+# claim can observe registry state in between. Sets globals CLAIMED_NAME
+# and CLAIMED_QUALIFIER (mirrors sot_derive_handle's two outputs) for the
+# caller to read after this returns; both cleared to "" first, so a
+# failure never leaves a stale value from a PREVIOUS successful call for a
+# careless caller to read. Both comm-join.sh (MODE reclaim) and
+# comm-spawn.sh (MODE fresh, the provisional row) route a derived name
+# through this — one shared locked claim path, not two copies of "derive,
+# then lock to write" that could each get this wrong.
+#
+# On failure (sot_derive_handle exhausted all three tiers, or refused to
+# run at all — e.g. no hash function available), returns nonzero and
+# writes NOTHING to the registry (Codex review F7): derivation failure is
+# an error the caller must surface, never a claim of "".
+#
+# _sot_claim_derived_handle is the with_lock callee; it must NEVER be
+# invoked directly, and never as `X=$(with_lock ...)`. with_lock runs its
+# command directly ("$@", no subshell) specifically so a callee's global
+# assignment survives past its return — capturing it via command
+# substitution would fork a subshell and lose CLAIMED_NAME exactly the way
+# the test harness's own next_self_file() lost its counter (see
+# comm/core/tests/test-join-disambiguation.sh) — the same lesson, twice.
+_sot_claim_derived_handle() {  # MODE ROOT HOST OBJ_JSON — call only via with_lock
+    local mode="$1" root="$2" host="$3" obj="$4" line qualifier
+    CLAIMED_NAME=""
+    CLAIMED_QUALIFIER=""
+    line="$(sot_derive_handle "$mode" "$root" "$host")" || return 1
+    IFS=$'\t' read -r CLAIMED_NAME qualifier <<< "$line"
+    if [ -z "$CLAIMED_NAME" ]; then
+        echo "claim_derived_handle: derivation returned no name — refusing to claim an empty handle" >&2
+        return 1
+    fi
+    CLAIMED_QUALIFIER="$qualifier"
+    registry_put "$CLAIMED_NAME" "$obj"
+}
+claim_derived_handle() {  # MODE ROOT HOST OBJ_JSON
+    with_lock _sot_claim_derived_handle "$1" "$2" "$3" "$4"
 }
 
 

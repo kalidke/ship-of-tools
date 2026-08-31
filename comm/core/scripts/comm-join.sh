@@ -23,6 +23,15 @@ Usage:
 Handles are MIXED-CASE-canonical: the default <repo>-<host> is used verbatim,
 case preserved (NOT lowercased). Existing all-lowercase registry rows are
 legacy and still valid; new handles follow the host/repo casing as-is.
+
+Derived vs explicit: the default <repo>-<host> handle is auto-disambiguated
+against the registry's recorded project root when two different projects
+share a basename+host (e.g. two same-named repos in different directories) —
+you get <repo>-<parentdir>-<host>, or a hash-qualified handle as a last
+resort. An explicit --name (or $SOT_COMM_NAME, or an already-joined
+identity) is always used VERBATIM and never disambiguated. See the "derived
+vs explicit" section of docs/adr/0028-remote-comm-autoconnect.md.
+
 On success prints "Joined sot-comm as @<handle>" — that line IS your
 identity confirmation.
 EOF
@@ -53,75 +62,78 @@ ensure_home
 # /sot-session-start join inside the spawned session lands on the handle the
 # spawner is awaiting. Explicit --name wins; an already-joined NAME (from
 # context) wins over the env (a rejoin keeps its identity).
+#
+# Precedence check (Codex review F1): NAME here can ONLY carry an
+# already-joined self-file identity that comm-context.sh just validated
+# against `root=` — a self-file with no root= line, or a mismatched one,
+# comes back as NAME="" from context (see its guard), so it can never reach
+# this line to wrongly out-rank a spawn-pinned $SOT_COMM_NAME below. A
+# STALE self-file overriding a spawn pin is exactly what that root check
+# closes; this ordering is otherwise unchanged.
 [ -z "$NAME" ] && NAME="${SOT_COMM_NAME:-}"
 [ -z "$EXPERTISE" ] && EXPERTISE="${SOT_COMM_EXPERTISE:-}"
-[ -z "$NAME" ] && NAME="${REPO}-${HOST}"
+# Reached only when NAME came from none of the verbatim sources above
+# (--name, $SOT_COMM_NAME, an already-joined self-file identity) — this is
+# the DERIVED case. Note what does NOT happen here: the name is NOT decided
+# yet. Deciding it now (sot_derive_handle) and only later locking to write
+# it would reopen the exact read-then-write race the feature exists to
+# close — a concurrent derived join for a different root could observe the
+# same "still free" registry state in between. The decision and the write
+# happen together, atomically, below (claim_derived_handle).
+NEED_DERIVE=false
+[ -z "$NAME" ] && NEED_DERIVE=true
 
 ts="$(now_iso)"
 exp_json="$(printf '%s' "$EXPERTISE" \
     | jq -R 'split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$";"")) | map(select(length > 0))')"
 [ -z "$exp_json" ] && exp_json="[]"
 
+# Independent of NAME (the row's contents don't name themselves) — safe to
+# build before NAME is finalized either way.
 obj="$(jq -n \
     --arg host "$HOST" --arg tmux "$TMUX_TARGET" --arg pane "$PANE_ID" \
-    --arg repo "$REPO" --argjson exp "$exp_json" --arg ts "$ts" \
-    '{host:$host, tmux:$tmux, pane_id:$pane, repo:$repo, expertise:$exp,
+    --arg repo "$REPO" --arg root "$PROJECT_ROOT" --argjson exp "$exp_json" --arg ts "$ts" \
+    '{host:$host, tmux:$tmux, pane_id:$pane, repo:$repo, root:$root, expertise:$exp,
       status:"idle", joined:$ts, last_seen:$ts}')"
 
-with_lock registry_put "$NAME" "$obj"
-# v2 self-file: identity + the repo it was claimed for. comm-context uses the
-# repo line to detect a stale identity in a RECYCLED tmux pane (pane ids are
-# reused after a server restart) and discard it instead of letting a fresh
-# session inherit another session's handle.
-printf '%s\nrepo=%s\n' "$NAME" "$REPO" > "$SELF_FILE"
+if [ "$NEED_DERIVE" = true ]; then
+    # reclaim mode (Codex review F3): a plain join treats an existing
+    # same-root row as mine to reclaim — today's rejoin behavior. `set -e`
+    # makes a derivation failure (all three tiers taken by other roots;
+    # Codex review F6) abort here with sot_derive_handle's own clear
+    # stderr reason, rather than continuing with an empty/invalid NAME.
+    claim_derived_handle reclaim "$PROJECT_ROOT" "$HOST" "$obj"
+    NAME="$CLAIMED_NAME"
+else
+    with_lock registry_put "$NAME" "$obj"
+fi
+# v2 self-file: identity + the repo it was claimed for, plus the canonical
+# project root (ADR 0028 addendum — additive; a self-file without a root=
+# line predates this feature and is treated as unknown-root on read). The
+# repo line is used by comm-context to detect a stale identity in a
+# RECYCLED tmux pane (pane ids are reused after a server restart) and
+# discard it instead of letting a fresh session inherit another session's
+# handle.
+printf '%s\nrepo=%s\nroot=%s\n' "$NAME" "$REPO" "$PROJECT_ROOT" > "$SELF_FILE"
 # A joined handle always has an inbox: durable comm-send targets it, and a
 # first-ever selftest otherwise probes a nonexistent file (noisy redirect
 # errors that derail diagnosis — 2026-06-11 fresh-join report). Append-touch
 # so an existing inbox is never truncated.
 : >> "$INBOX_DIR/$NAME.jsonl"
 
-# Sweep LEGACY (one-line, pre-provenance) self-files. The v2 repo-line guard
-# can't validate a legacy file, and a stale legacy file's owner is gone — it
-# never upgrades itself, so each one is a mine: any fresh session whose pane
-# id happens to match inherits that identity (three sessions hit this in one
-# day once pane ids recycled after a tmux server restart — wrong Step-0
-# verdicts, one session SENDING as another's handle). Ground truth is the
-# REGISTRY row, which its owner's every join refreshes with the real
-# host/pane: a legacy file whose name's row points at this exact file is the
-# rightful owner's — upgrade it to v2 in place (with the row's repo); any
-# other legacy file (no row, or the row lives at another pane) is stale —
-# delete it. v2 files are never touched; the whole sweep runs under the
-# registry lock and is idempotent, so concurrent joins are safe. Runs on
-# every join — after the first sweep per install it's a no-op scan.
-sweep_legacy_selffiles() {
-    local rows f key name row_key row_repo migrated=0 removed=0
-    rows="$(jq -r '.agents | to_entries[]
-        | [.key, (.value.host // ""), ((.value.pane_id // "") | ltrimstr("%")), (.value.repo // "")]
-        | @tsv' "$REGISTRY" 2>/dev/null)" || return 0
-    for f in "$SELF_DIR"/*.txt; do
-        [ -f "$f" ] || continue
-        [ "$(wc -l < "$f")" -ge 2 ] && continue   # v2 — has provenance, not ours to touch
-        key="$(basename "$f" .txt)"
-        name="$(sed -n '1p' "$f")"
-        row_key=""; row_repo=""
-        while IFS=$'\t' read -r rname rhost rpane rrepo; do
-            [ "$rname" = "$name" ] || continue
-            row_key="${rhost}__${rpane:-nopane}"; row_repo="$rrepo"; break
-        done <<< "$rows"
-        if [ -n "$row_key" ] && [ "$row_key" = "$key" ]; then
-            printf '%s\nrepo=%s\n' "$name" "$row_repo" > "$f"
-            migrated=$((migrated + 1))
-        else
-            rm -f "$f"
-            removed=$((removed + 1))
-        fi
-    done
-    [ $((migrated + removed)) -gt 0 ] &&
-        echo "comm-join: legacy self-file sweep — upgraded $migrated rightful identities, removed $removed stale ones" >&2
-    return 0
-}
-with_lock sweep_legacy_selffiles
-
+# No legacy self-file sweep (Codex review PR #148 round 2, simplicity
+# audit — deleted ~50 lines that used to live here). It's redundant, not
+# merely simplifiable: comm-context.sh's read-side guard already rejects
+# ANY self-file with no (or a mismatched) `root=` line, unconditionally,
+# on every single read — a legacy file is therefore ALREADY inert; it
+# grants no trust whether or not anything ever sweeps it. And a rightful
+# owner's self-file self-heals the moment that owner rejoins: this
+# script's own write, just above, always emits the full v2 three-line
+# form. The sweep's only remaining job was pure disk hygiene (deleting
+# ABANDONED files nobody will ever rejoin), bought at the cost of a
+# directory glob + a stat/read per file, done EAGERLY on every join, while
+# holding the single global registry lock — the wrong trade for a
+# non-safety-load-bearing cleanup.
 have="$(jq -r '.protocol_version // 0' "$REGISTRY")"
 if [ "$have" != "$PROTOCOL_VERSION" ]; then
     echo "WARNING: registry protocol v$have != client v$PROTOCOL_VERSION — run ShipTools.update_comm() on all machines" >&2

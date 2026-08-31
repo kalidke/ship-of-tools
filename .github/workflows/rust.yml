@@ -24,9 +24,12 @@ on:
     # triggers them. Proven by PR #82 (a ps1-only hotfix) running zero Rust checks.
     # adapters/** likewise: the p2-e2e job is the helper's only CI, so a
     # helper-only PR must trigger this workflow (review finding on #119).
-    paths: ["rust/**", "scripts/**", "adapters/**", ".github/workflows/rust.yml"]
+    # comm/** added alongside the "Test sot-comm disambiguation" step below
+    # (PR #148 Codex review F10) — without it, a comm-only change (like the
+    # one that added that step) would never trigger this workflow at all.
+    paths: ["rust/**", "scripts/**", "adapters/**", "comm/**", ".github/workflows/rust.yml"]
   pull_request:
-    paths: ["rust/**", "scripts/**", "adapters/**", ".github/workflows/rust.yml"]
+    paths: ["rust/**", "scripts/**", "adapters/**", "comm/**", ".github/workflows/rust.yml"]
 
 concurrency:
   group: rust-${{ github.workflow }}-${{ github.ref }}
@@ -102,6 +105,18 @@ jobs:
         working-directory: scripts
         run: |
           for f in *.sh; do bash -n "$f" && echo "ok: $f"; done
+
+      # PR #148 Codex review F10: hermetic + fast, so it rides along in this
+      # existing ubuntu leg rather than a dedicated job. Only comm-spawn.sh's
+      # --no-workspace path needs a real `tmux` binary (an isolated server on
+      # a temp socket, never the runner's default one — the test never
+      # touches a real install either way); installed only if missing.
+      - name: Test sot-comm disambiguation (hermetic)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: comm/core/tests
+        run: |
+          command -v tmux >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y tmux; }
+          bash test-join-disambiguation.sh
 
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
   # `ClosePseudoConsole` that returns immediately — it cannot exercise the
