@@ -40,6 +40,15 @@ fi
 export SOT_COMM_HOME="$WORK/home"
 mkdir -p "$SOT_COMM_HOME"
 REGISTRY="$SOT_COMM_HOME/registry.json"
+# Sourced (not just invoked as external scripts, like comm-join.sh/
+# comm-spawn.sh below) so a few cases can call comm-lib.sh primitives
+# directly — with_lock, registry_put, registry_del_if_provisional — for
+# focused coverage of mechanisms that are awkward to drive end-to-end
+# (the rollback-ownership and trap-restore cases, round 2 finding 10).
+# Safe to source here: it only sets variables/functions from
+# $SOT_COMM_HOME, already exported above.
+source "$SCRIPTS_DIR/comm-lib.sh"
+ensure_home
 # Mirrors comm-lib.sh's LOCKDIR="$COMM_HOME/.registry.lock" exactly — used by
 # case_lock_closes_derive_write_gap below to simulate a concurrent claim
 # landing WHILE a derived join is blocked waiting for the lock.
@@ -112,12 +121,16 @@ next_self_file() {
 # JOIN_SELF_FILE_OVERRIDE, when non-empty, pins the self-file to an
 # EXISTING crafted path instead of a fresh one (used by the self-file
 # root-validation case, which needs to pre-populate the file's contents).
+# JOIN_PATH_PREFIX, when non-empty, is prepended to $PATH for that one
+# call (used by the hash-failure case to put a fake, failing sha256sum
+# ahead of the real one).
 JOIN_OUT=""; JOIN_ERR=""; JOIN_RC=0
 JOIN_ENV_NAME=""
 JOIN_SELF_FILE_OVERRIDE=""
+JOIN_PATH_PREFIX=""
 join_in() {
     local root="$1"; shift
-    local self errfile
+    local self errfile path_arg
     if [ -n "$JOIN_SELF_FILE_OVERRIDE" ]; then
         self="$JOIN_SELF_FILE_OVERRIDE"
     else
@@ -125,7 +138,8 @@ join_in() {
         self="$NEXT_SELF_FILE"
     fi
     errfile="$WORK/stderr.tmp"
-    JOIN_OUT="$(cd "$root" && SOT_COMM_SELF_FILE="$self" SOT_COMM_NAME="$JOIN_ENV_NAME" \
+    path_arg="${JOIN_PATH_PREFIX:+$JOIN_PATH_PREFIX:}$PATH"
+    JOIN_OUT="$(cd "$root" && PATH="$path_arg" SOT_COMM_SELF_FILE="$self" SOT_COMM_NAME="$JOIN_ENV_NAME" \
         "$JOIN" "$@" 2>"$errfile")"
     JOIN_RC=$?
     JOIN_ERR="$(cat "$errfile" 2>/dev/null || true)"
@@ -414,6 +428,113 @@ case_lock_closes_derive_write_gap() {
     return 0
 }
 
+case_rollback_survives_replacement_row() {
+    # Codex review PR #148 round 2, finding 1: registry_del_if_provisional
+    # must NOT delete a row that has since been replaced — reproduced by
+    # the round-2 reviewer as an unconditional `registry_del "$NAME"`
+    # deleting a genuinely live row a child had already written. Drives
+    # the SAME function comm-spawn.sh's rollback trap calls (comm-lib.sh),
+    # not a reimplementation, by sourcing comm-lib.sh directly (see the
+    # top of this file).
+    local name="rollback-test-agent" root="/fake/root/for/rollback-test"
+    local nonce="nonce-abc-123" prov replacement
+
+    prov="$(jq -n --arg root "$root" --arg nonce "$nonce" \
+        '{host:"h",tmux:"",pane_id:"",repo:"r",root:$root,expertise:[],status:"spawning",joined:"t0",last_seen:"t0",nonce:$nonce}')"
+    with_lock registry_put "$name" "$prov"
+
+    # Simulate "the child joined for real" (or an explicit claimant took
+    # over) BEFORE the spawner's rollback runs: a live row, no nonce.
+    replacement="$(jq -n --arg root "$root" \
+        '{host:"h",tmux:"session:1.1",pane_id:"%1",repo:"r",root:$root,expertise:[],status:"idle",joined:"t1",last_seen:"t1"}')"
+    with_lock registry_put "$name" "$replacement"
+
+    with_lock registry_del_if_provisional "$name" "$root" "$nonce"
+    local rc=$?
+    [ "$rc" -eq 2 ] || { echo "  registry_del_if_provisional returned $rc, want 2 (not-ours-anymore)"; return 1; }
+
+    [ "$(registry_field "$name" status)" = "idle" ] \
+        || { echo "  the replacement row was deleted/altered: status=$(registry_field "$name" status)"; return 1; }
+    [ "$(registry_field "$name" tmux)" = "session:1.1" ] \
+        || { echo "  the replacement row's tmux field is gone: $(registry_field "$name" tmux)"; return 1; }
+
+    # Sanity check the OTHER branch too: an UNREPLACED provisional row
+    # (matching root+nonce+status) must still be deletable.
+    local name2="rollback-test-agent-2"
+    with_lock registry_put "$name2" "$prov"
+    with_lock registry_del_if_provisional "$name2" "$root" "$nonce"
+    rc=$?
+    [ "$rc" -eq 0 ] || { echo "  an untouched provisional row was NOT deleted: rc=$rc"; return 1; }
+    [ "$(registry_field "$name2" status)" = "MISSING" ] \
+        || { echo "  provisional row for @$name2 still present after a claimed rollback"; return 1; }
+
+    with_lock registry_del "$name" >/dev/null 2>&1 || true
+    return 0
+}
+
+case_with_lock_restores_prior_trap_on_failure() {
+    # Codex review PR #148 round 2, finding 4: a callee that fails
+    # DIRECTLY (not via `|| true`) under a caller's `set -e` must still
+    # leave the caller's own prior EXIT trap intact — it used to be lost
+    # (only with_lock's own lock-release trap fired) because `"$@"` ran as
+    # a bare statement that aborted the whole subprocess right there,
+    # skipping the restore lines below it. Needs a REAL subprocess with
+    # its own `set -e` and its own prior trap — this test script itself
+    # doesn't run under `set -e`, so the bug can't reproduce inline.
+    local marker="$WORK/trap-marker.txt" script="$WORK/trap-restore-check.sh"
+    rm -f "$marker"
+    cat > "$script" <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+source "$SCRIPTS_DIR/comm-lib.sh"
+ensure_home
+trap 'echo prior-trap-fired > "$marker"' EXIT
+fail_cmd() { return 7; }
+with_lock fail_cmd
+echo UNREACHABLE >&2
+SCRIPT
+    bash "$script" >/dev/null 2>"$WORK/trap-restore.err"
+    local rc=$?
+    [ "$rc" -ne 0 ] || { echo "  subprocess did not fail as expected (rc=0): $(cat "$WORK/trap-restore.err")"; return 1; }
+    [ -f "$marker" ] || { echo "  prior EXIT trap did not fire (no marker file); stderr: $(cat "$WORK/trap-restore.err")"; return 1; }
+    contains "$(cat "$marker")" "prior-trap-fired" || { echo "  marker content wrong: $(cat "$marker")"; return 1; }
+    [ ! -d "$LOCKDIR" ] || { echo "  lock dir leaked after the failure"; return 1; }
+    return 0
+}
+
+case_hash_command_failure_fails_loudly() {
+    # Codex review PR #148 round 2, finding 5: an installed-but-FAILING
+    # sha256sum must not be silently accepted as success with an empty
+    # hash. Both sha256sum AND shasum are faked to exit nonzero (sot_hash6
+    # tries shasum as a fallback when sha256sum fails — faking only
+    # sha256sum would just exercise that fallback path onto the REAL
+    # shasum and succeed, not test the failure path at all) and put ahead
+    # of the real ones on PATH for one comm-join.sh call, forced to reach
+    # tier 3 (tiers 1-2 already taken, by ROOT1/ROOT2 from earlier cases)
+    # where a hash is actually needed.
+    local fakebin="$WORK/fakebin"
+    mkdir -p "$fakebin"
+    cat > "$fakebin/sha256sum" <<'FAKESHA'
+#!/bin/sh
+exit 23
+FAKESHA
+    cp "$fakebin/sha256sum" "$fakebin/shasum"
+    chmod +x "$fakebin/sha256sum" "$fakebin/shasum"
+
+    mkdir -p "$WORK/site4/groupX/instructor-materials"
+    local root; root="$(realpath "$WORK/site4/groupX/instructor-materials")"
+
+    JOIN_PATH_PREFIX="$fakebin"
+    join_in "$root"
+    JOIN_PATH_PREFIX=""
+
+    [ "$JOIN_RC" -ne 0 ] || { echo "  expected a nonzero exit with a broken sha256sum, got 0: $JOIN_OUT"; return 1; }
+    contains "$JOIN_ERR" "sot_hash6" || { echo "  missing sot_hash6 failure reason: $JOIN_ERR"; return 1; }
+    contains "$JOIN_OUT" "Joined sot-comm as @" \
+        && { echo "  claimed a handle despite the broken hash tool: $JOIN_OUT"; return 1; }
+    return 0
+}
+
 # --- run, in order (later cases depend on earlier ones' registry state) --
 
 check "fresh claim records root"                            case_fresh_claim
@@ -426,6 +547,9 @@ check "self-file with no root= is discarded as stale (F1)"   case_self_file_root
 check "legacy registry row with no root= is a collision, not a free pass" case_legacy_unknown_root_row
 check "comm-spawn.sh fresh-mode refuses to reclaim a live row (F3)" case_spawn_fresh_only_refusal
 check "concurrent claim landing mid-wait is not clobbered (lock closes the derive/write gap)" case_lock_closes_derive_write_gap
+check "rollback never deletes a row that replaced the provisional one (F1 round 2)" case_rollback_survives_replacement_row
+check "with_lock restores the caller's prior EXIT trap after a direct callee failure (F2 round 2)" case_with_lock_restores_prior_trap_on_failure
+check "a failing hash command fails loudly instead of an empty-hash handle (F5 round 2)" case_hash_command_failure_fails_loudly
 
 echo ""
 echo "$PASS passed, $FAIL failed"
