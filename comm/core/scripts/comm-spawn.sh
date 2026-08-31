@@ -5,11 +5,18 @@
 # switching also gives you that package's files/REPL/concept.
 #
 # Usage:
-#   comm-spawn.sh <name> <repo-path> [--expertise "a, b"] [--task "do X"]
+#   comm-spawn.sh <repo-path> [--name NAME] [--expertise "a, b"] [--task "do X"]
 #                 [--label LABEL] [--endpoint tcp:H:P|unix:PATH] [--no-workspace]
+#   comm-spawn.sh <name> <repo-path> [...]      (legacy explicit-name form)
 #
-#   <name>        sot-comm handle for the new agent
 #   <repo-path>   package the agent works in (workspace project root)
+#   --name        sot-comm handle for the new agent, used VERBATIM. Optional:
+#                 when omitted, the handle is DERIVED from the repo-path
+#                 basename + host and auto-disambiguated against the registry
+#                 (same algorithm as a plain comm-join.sh — see
+#                 docs/adr/0028-remote-comm-autoconnect.md). The legacy
+#                 two-positional form (`<name> <repo-path>`) still works and
+#                 is equivalent to passing --name.
 #   --label       FE workspace label (default: basename of repo-path); guarded to
 #                 the repo basename so a session stays findable next to its repo.
 #   --display-label  FE label that deliberately DIFFERS from the repo basename
@@ -39,24 +46,47 @@ SPAWNER="$NAME"
 [ -z "$SPAWNER" ] && SPAWNER="spawner-$HOST"
 
 NAME=""; REPO_PATH=""; EXPERTISE=""; TASK=""; LABEL=""; DISPLAY_LABEL=""; ENDPOINT=""; NO_WS=false
+NAME_FLAG=""; POSITIONAL=()
 while [ $# -gt 0 ]; do
     case "$1" in
+        --name)          NAME_FLAG="$2"; shift 2 ;;
+        --name=*)        NAME_FLAG="${1#--name=}"; shift ;;
         --expertise)     EXPERTISE="$2"; shift 2 ;;
         --task)          TASK="$2"; shift 2 ;;
         --label)         LABEL="$2"; shift 2 ;;
         --display-label) DISPLAY_LABEL="$2"; shift 2 ;;
         --endpoint)      ENDPOINT="$2"; shift 2 ;;
         --no-workspace)  NO_WS=true; shift ;;
-        *)              if [ -z "$NAME" ]; then NAME="$1"
-                        elif [ -z "$REPO_PATH" ]; then REPO_PATH="$1"; fi; shift ;;
+        *)               POSITIONAL+=("$1"); shift ;;
     esac
 done
 
-if [ -z "$NAME" ] || [ -z "$REPO_PATH" ]; then
-    echo "usage: comm-spawn.sh <name> <repo-path> [--expertise \"...\"] [--task \"...\"] [--label L] [--no-workspace]" >&2; exit 1
+# <name> is OPTIONAL (ADR 0028 addendum): one positional is <repo-path> alone
+# (name derived below); two positionals is the legacy explicit form
+# `<name> <repo-path>`, kept for existing callers (e.g. /worktree). --name is
+# the equivalent flag form — either way an explicitly-passed name is used
+# VERBATIM, exactly as before.
+case "${#POSITIONAL[@]}" in
+    1) REPO_PATH="${POSITIONAL[0]}" ;;
+    2) NAME="${POSITIONAL[0]}"; REPO_PATH="${POSITIONAL[1]}" ;;
+    *) echo "usage: comm-spawn.sh [--name NAME] <repo-path> [--expertise \"...\"] [--task \"...\"] [--label L] [--no-workspace]" >&2; exit 1 ;;
+esac
+if [ -n "$NAME_FLAG" ]; then
+    if [ -n "$NAME" ]; then
+        echo "ERROR: name given both as --name and positionally — pick one" >&2; exit 1
+    fi
+    NAME="$NAME_FLAG"
+fi
+
+if [ -z "$REPO_PATH" ]; then
+    echo "usage: comm-spawn.sh [--name NAME] <repo-path> [--expertise \"...\"] [--task \"...\"] [--label L] [--no-workspace]" >&2; exit 1
 fi
 REPO_PATH="${REPO_PATH/#\~/$HOME}"
 [ -d "$REPO_PATH" ] || { echo "ERROR: repo path not found: $REPO_PATH" >&2; exit 1; }
+# Canonical root — recorded on the provisional registry row below regardless
+# of whether NAME ends up derived or explicit (ADR 0028 addendum point 1:
+# every claimed handle records its root), and reused for derivation itself.
+CANON_ROOT="$(sot_canonical_path "$REPO_PATH")"
 [ -z "$LABEL" ] && LABEL="$(basename "$REPO_PATH")"
 
 # Sessions are named after the REPO (maintainer decision, 2026-06-12): the label drives the
@@ -67,6 +97,21 @@ REPO_PATH="${REPO_PATH/#\~/$HOME}"
 # deliberate second workspace on the same repo. Task identity belongs in
 # --task / --expertise, never in the label.
 REPO_BASE="$(basename "$REPO_PATH")"
+
+# NAME omitted -> derive it, same algorithm as a plain comm-join.sh (ADR
+# 0028 addendum; comm-lib.sh: sot_derive_handle). When the derivation had to
+# qualify past the bare <repo>-<host> tier, also give the new FE workspace a
+# qualified --display-label (<basename>-<qualifier>) so the session-strip
+# rows for the two same-named repos stay visually distinguishable — unless
+# the caller already gave an explicit --display-label, which wins.
+if [ -z "$NAME" ]; then
+    QUALIFIER=""
+    IFS=$'\t' read -r NAME QUALIFIER <<< "$(sot_derive_handle "$CANON_ROOT" "$HOST")"
+    if [ -n "$QUALIFIER" ] && [ -z "$DISPLAY_LABEL" ]; then
+        DISPLAY_LABEL="${REPO_BASE}-${QUALIFIER}"
+    fi
+fi
+
 if [ -n "$DISPLAY_LABEL" ]; then
     # Explicit FE label that deliberately differs from the repo basename — e.g.
     # the /worktree tool's '.SoT-wt-<short>' grouping prefix. It becomes the
@@ -144,8 +189,8 @@ TARGET=""   # tmux target to launch claude into
 # this row with full pane/expertise info; comm-despawn cleans it if the spawn
 # never boots.
 ts="$(now_iso)"
-prov="$(jq -n --arg host "$HOST" --arg repo "$REPO_NAME" --arg ts "$ts" \
-    '{host:$host, tmux:"", pane_id:"", repo:$repo, expertise:[],
+prov="$(jq -n --arg host "$HOST" --arg repo "$REPO_NAME" --arg root "$CANON_ROOT" --arg ts "$ts" \
+    '{host:$host, tmux:"", pane_id:"", repo:$repo, root:$root, expertise:[],
       status:"spawning", joined:$ts, last_seen:$ts}')"
 with_lock registry_put "$NAME" "$prov"
 : >> "$INBOX_DIR/$NAME.jsonl"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # comm-context.sh — detect this session's comm identity. Output is eval-able:
 #   eval "$(.../comm-context.sh)"
-# Sets HOST PANE_ID TMUX_TARGET REPO NAME SELF_FILE COMM_HOME REGISTRY INBOX_DIR READ_DIR.
+# Sets HOST PANE_ID TMUX_TARGET REPO PROJECT_ROOT NAME SELF_FILE COMM_HOME REGISTRY INBOX_DIR READ_DIR.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=comm-lib.sh
@@ -17,7 +17,14 @@ if [ -n "${TMUX_PANE:-}" ]; then
     TMUX_TARGET="$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || true)"
 fi
 
-REPO="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
+RAW_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+REPO="$(basename "$RAW_ROOT")"
+# Canonical (symlink-resolved absolute) root — the identity the derived-name
+# disambiguation and the registry/self-file `root` field compare against
+# (ADR 0028 addendum). Kept separate from REPO (which stays the RAW
+# basename, unchanged, to avoid perturbing every other consumer of REPO) so
+# a symlinked leaf directory can't shift existing repo-slug behavior.
+PROJECT_ROOT="$(sot_canonical_path "$RAW_ROOT")"
 
 PANE_SAFE="${PANE_ID//%/}"
 SELF_FILE="$SELF_DIR/${HOST}__${PANE_SAFE:-nopane}.txt"
@@ -54,6 +61,7 @@ emit HOST        "$HOST"
 emit PANE_ID     "$PANE_ID"
 emit TMUX_TARGET "$TMUX_TARGET"
 emit REPO        "$REPO"
+emit PROJECT_ROOT "$PROJECT_ROOT"
 emit NAME        "$NAME"
 emit SELF_FILE   "$SELF_FILE"
 emit COMM_HOME   "$COMM_HOME"

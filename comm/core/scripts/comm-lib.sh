@@ -228,6 +228,106 @@ registry_touch() {  # name — bump last_seen if present
         "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
 }
 
+# --- derived-handle disambiguation (ADR 0028 addendum: "derived vs
+# explicit") --- single home for the algorithm; comm-join.sh and
+# comm-spawn.sh both call sot_derive_handle. This is ONLY for a name that
+# comes from DERIVATION (the default <basename>-<host>): a caller must never
+# route an explicit --name, $SOT_COMM_NAME, or an already-joined self-file
+# identity through here — those stay verbatim, unconditionally.
+
+_SOT_NO_ENTRY="__sot_no_entry__"
+
+# sot_canonical_path PATH — best-effort absolute, symlink-resolved path (the
+# "canonical project root" the disambiguation compares). Falls back through
+# realpath -> readlink -f -> the raw path so a minimal environment still gets
+# a stable-enough string, just not de-symlinked.
+sot_canonical_path() {
+    local p="$1"
+    if command -v realpath >/dev/null 2>&1; then
+        realpath "$p" 2>/dev/null && return 0
+    fi
+    if command -v readlink >/dev/null 2>&1; then
+        readlink -f "$p" 2>/dev/null && return 0
+    fi
+    printf '%s\n' "$p"
+}
+
+# sot_hash6 STR — first 6 hex chars of sha256(STR); stable per input, used
+# only for the last-resort hash-qualified handle tier. Falls back to cksum
+# (POSIX, always present) on a system with neither sha256sum nor shasum —
+# still stable per input, just not sha256; that gap only matters for
+# cross-machine collision odds at a scale this feature doesn't operate at.
+sot_hash6() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | cut -c1-6
+    elif command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$1" | shasum -a 256 | cut -c1-6
+    else
+        printf '%s' "$1" | cksum | cut -d' ' -f1
+    fi
+}
+
+# sot_registry_entry_root NAME — the registry row's `root` for NAME, or the
+# sentinel $_SOT_NO_ENTRY when NAME has no row at all. The distinction
+# matters: a row that PREDATES this feature has no `root` key at all, which
+# reads back as an EMPTY string here — that counts as "unknown root", a
+# COLLISION for the algorithm below, same as a confirmed different root.
+# Only a genuinely absent row, or a row whose root equals mine, claims a
+# candidate outright.
+sot_registry_entry_root() {
+    jq -r --arg n "$1" --arg none "$_SOT_NO_ENTRY" \
+        'if (.agents | has($n)) then (.agents[$n].root // "") else $none end' \
+        "$REGISTRY" 2>/dev/null
+}
+
+# sot_derive_handle ROOT HOST — the derived-name join algorithm (see the ADR
+# 0028 addendum in docs/adr/ for the full contract). Escalates through three
+# tiers, each checked against the CURRENT registry. Liveness is deliberately
+# NOT consulted here — a stale registry row still holds its claim until
+# existing cleanup paths remove it; this keeps the rule one-dimensional (root
+# comparison only) and prevents handle flip-flop between two projects
+# depending on who happens to be running.
+#   1. <basename>-<host>             — claim if free, or already mine (same
+#                                       root) — today's reclaim/rejoin path
+#   2. <basename>-<parentdir>-<host> — parentdir = basename(dirname(ROOT));
+#                                       same free-or-mine check
+#   3. <basename>-<hash6>-<host>     — hash6 = sot_hash6(canonical ROOT);
+#                                       claimed unconditionally
+# Prints ONE tab-separated line: "<handle>\t<qualifier>" (qualifier is empty
+# at tier 1, "<parentdir>" at tier 2, "<hash6>" at tier 3). A caller that only
+# wants the handle: `IFS=$'\t' read -r NAME _ <<< "$(sot_derive_handle ...)"`.
+# When escalating past tier 1, writes one explanatory line to stderr naming
+# the bare handle, who holds it, and what was joined instead.
+sot_derive_handle() {
+    local root="$1" host="$2" base parent hash6 tier1 tier2 tier3
+    local held1 held2 shown1 shown2
+    root="$(sot_canonical_path "$root")"
+    base="$(basename "$root")"
+
+    tier1="${base}-${host}"
+    held1="$(sot_registry_entry_root "$tier1")"
+    if [ "$held1" = "$_SOT_NO_ENTRY" ] || [ "$held1" = "$root" ]; then
+        printf '%s\t\n' "$tier1"
+        return 0
+    fi
+    shown1="$held1"; [ -z "$shown1" ] && shown1="an unknown project"
+
+    parent="$(basename "$(dirname "$root")")"
+    tier2="${base}-${parent}-${host}"
+    held2="$(sot_registry_entry_root "$tier2")"
+    if [ "$held2" = "$_SOT_NO_ENTRY" ] || [ "$held2" = "$root" ]; then
+        echo "comm: '@$tier1' is already held by $shown1 — joining as '@$tier2' instead" >&2
+        printf '%s\t%s\n' "$tier2" "$parent"
+        return 0
+    fi
+    shown2="$held2"; [ -z "$shown2" ] && shown2="an unknown project"
+
+    hash6="$(sot_hash6 "$root")"
+    tier3="${base}-${hash6}-${host}"
+    echo "comm: '@$tier1' (held by $shown1) and '@$tier2' (held by $shown2) are both taken — joining as '@$tier3' instead" >&2
+    printf '%s\t%s\n' "$tier3" "$hash6"
+}
+
 
 # sot_oneshot_request FRAME OP — one-shot request/response on a fresh daemon
 # connection: send hello + FRAME, return (stdout) the first COMPLETE line

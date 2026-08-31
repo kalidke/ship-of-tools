@@ -23,6 +23,15 @@ Usage:
 Handles are MIXED-CASE-canonical: the default <repo>-<host> is used verbatim,
 case preserved (NOT lowercased). Existing all-lowercase registry rows are
 legacy and still valid; new handles follow the host/repo casing as-is.
+
+Derived vs explicit: the default <repo>-<host> handle is auto-disambiguated
+against the registry's recorded project root when two different projects
+share a basename+host (e.g. two same-named repos in different directories) —
+you get <repo>-<parentdir>-<host>, or a hash-qualified handle as a last
+resort. An explicit --name (or $SOT_COMM_NAME, or an already-joined
+identity) is always used VERBATIM and never disambiguated. See the "derived
+vs explicit" section of docs/adr/0028-remote-comm-autoconnect.md.
+
 On success prints "Joined sot-comm as @<handle>" — that line IS your
 identity confirmation.
 EOF
@@ -55,7 +64,13 @@ ensure_home
 # context) wins over the env (a rejoin keeps its identity).
 [ -z "$NAME" ] && NAME="${SOT_COMM_NAME:-}"
 [ -z "$EXPERTISE" ] && EXPERTISE="${SOT_COMM_EXPERTISE:-}"
-[ -z "$NAME" ] && NAME="${REPO}-${HOST}"
+# Reached only when NAME came from none of the verbatim sources above
+# (--name, $SOT_COMM_NAME, an already-joined self-file identity) — this is
+# the DERIVED case, so it alone runs the disambiguation algorithm
+# (comm-lib.sh: sot_derive_handle; ADR 0028 addendum).
+if [ -z "$NAME" ]; then
+    IFS=$'\t' read -r NAME _ <<< "$(sot_derive_handle "$PROJECT_ROOT" "$HOST")"
+fi
 
 ts="$(now_iso)"
 exp_json="$(printf '%s' "$EXPERTISE" \
@@ -64,16 +79,19 @@ exp_json="$(printf '%s' "$EXPERTISE" \
 
 obj="$(jq -n \
     --arg host "$HOST" --arg tmux "$TMUX_TARGET" --arg pane "$PANE_ID" \
-    --arg repo "$REPO" --argjson exp "$exp_json" --arg ts "$ts" \
-    '{host:$host, tmux:$tmux, pane_id:$pane, repo:$repo, expertise:$exp,
+    --arg repo "$REPO" --arg root "$PROJECT_ROOT" --argjson exp "$exp_json" --arg ts "$ts" \
+    '{host:$host, tmux:$tmux, pane_id:$pane, repo:$repo, root:$root, expertise:$exp,
       status:"idle", joined:$ts, last_seen:$ts}')"
 
 with_lock registry_put "$NAME" "$obj"
-# v2 self-file: identity + the repo it was claimed for. comm-context uses the
-# repo line to detect a stale identity in a RECYCLED tmux pane (pane ids are
-# reused after a server restart) and discard it instead of letting a fresh
-# session inherit another session's handle.
-printf '%s\nrepo=%s\n' "$NAME" "$REPO" > "$SELF_FILE"
+# v2 self-file: identity + the repo it was claimed for, plus the canonical
+# project root (ADR 0028 addendum — additive; a self-file without a root=
+# line predates this feature and is treated as unknown-root on read). The
+# repo line is used by comm-context to detect a stale identity in a
+# RECYCLED tmux pane (pane ids are reused after a server restart) and
+# discard it instead of letting a fresh session inherit another session's
+# handle.
+printf '%s\nrepo=%s\nroot=%s\n' "$NAME" "$REPO" "$PROJECT_ROOT" > "$SELF_FILE"
 # A joined handle always has an inbox: durable comm-send targets it, and a
 # first-ever selftest otherwise probes a nonexistent file (noisy redirect
 # errors that derail diagnosis — 2026-06-11 fresh-join report). Append-touch
@@ -94,22 +112,26 @@ printf '%s\nrepo=%s\n' "$NAME" "$REPO" > "$SELF_FILE"
 # registry lock and is idempotent, so concurrent joins are safe. Runs on
 # every join — after the first sweep per install it's a no-op scan.
 sweep_legacy_selffiles() {
-    local rows f key name row_key row_repo migrated=0 removed=0
+    local rows f key name row_key row_repo row_root migrated=0 removed=0
     rows="$(jq -r '.agents | to_entries[]
-        | [.key, (.value.host // ""), ((.value.pane_id // "") | ltrimstr("%")), (.value.repo // "")]
+        | [.key, (.value.host // ""), ((.value.pane_id // "") | ltrimstr("%")), (.value.repo // ""), (.value.root // "")]
         | @tsv' "$REGISTRY" 2>/dev/null)" || return 0
     for f in "$SELF_DIR"/*.txt; do
         [ -f "$f" ] || continue
         [ "$(wc -l < "$f")" -ge 2 ] && continue   # v2 — has provenance, not ours to touch
         key="$(basename "$f" .txt)"
         name="$(sed -n '1p' "$f")"
-        row_key=""; row_repo=""
-        while IFS=$'\t' read -r rname rhost rpane rrepo; do
+        row_key=""; row_repo=""; row_root=""
+        while IFS=$'\t' read -r rname rhost rpane rrepo rroot; do
             [ "$rname" = "$name" ] || continue
-            row_key="${rhost}__${rpane:-nopane}"; row_repo="$rrepo"; break
+            row_key="${rhost}__${rpane:-nopane}"; row_repo="$rrepo"; row_root="$rroot"; break
         done <<< "$rows"
         if [ -n "$row_key" ] && [ "$row_key" = "$key" ]; then
-            printf '%s\nrepo=%s\n' "$name" "$row_repo" > "$f"
+            if [ -n "$row_root" ]; then
+                printf '%s\nrepo=%s\nroot=%s\n' "$name" "$row_repo" "$row_root" > "$f"
+            else
+                printf '%s\nrepo=%s\n' "$name" "$row_repo" > "$f"
+            fi
             migrated=$((migrated + 1))
         else
             rm -f "$f"
