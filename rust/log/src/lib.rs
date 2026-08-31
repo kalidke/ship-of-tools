@@ -75,6 +75,11 @@ pub mod exchange;
 // reconciliation) — portable, like `pointer`/`rollout`, since it reuses
 // `fsutil::publish_noreplace` rather than any OS-specific primitive.
 pub mod journal;
+// ADR 0041 step 6, unit U2: the parent-death lease a spawned capsule
+// checks as its first act after acquiring the writer fence — a named,
+// kernel-brokered mutex, Windows-only. `pub`, matching `challenge`/
+// `classify`/`probe`: `tests/supervisor_win.rs` needs to reach it.
+pub mod lease;
 // ADR 0041 step 6, unit U0: `drawer.voyage` publication + validation.
 // Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
 // which already has both platform arms.
