@@ -50,16 +50,29 @@ done
 
 BIN="$COMM_HOME/bin"
 SESSION="commbridge-$NAME"
-bridge_running() { pgrep -f "comm-relay.sh bridge --name $NAME" >/dev/null 2>&1; }
+# Codex review round-2 finding 5/D: this used to be a bare, unanchored,
+# all-user `pgrep -f "comm-relay.sh bridge --name $NAME"` — a substring
+# match (NAME="foo" also matches a live "...--name foo-bar" process), a
+# regex (an unescaped '.' in NAME, common in real repo names, matches any
+# character), and not scoped to this uid at all (a shared host's
+# `pgrep`/`pkill -f` with no `-u` can false-match, or even KILL, another
+# user's process — unacceptable). comm-lib.sh's sot_bridge_running_for /
+# sot_bridge_pids_for are the ONE shared, uid-scoped, exact-anchored
+# implementation, also used by comm-join.sh's stranding guard.
+bridge_running() { sot_bridge_running_for "$NAME" "$SOT_TMUX_SOCK"; }
 
 case "$MODE" in
     status)
-        if bridge_running; then echo "relay listener for @$NAME: RUNNING (pid $(pgrep -f "comm-relay.sh bridge --name $NAME" | paste -sd, -))"
+        if bridge_running; then echo "relay listener for @$NAME: RUNNING (pid $(sot_bridge_pids_for "$NAME" | paste -sd, -))"
         else echo "relay listener for @$NAME: not running"; fi
         ;;
     stop)
-        tmux -S "$SOT_TMUX_SOCK" kill-session -t "$SESSION" 2>/dev/null || true
-        pkill -f "comm-relay.sh bridge --name $NAME" 2>/dev/null || true
+        # `=$SESSION` pins tmux to an EXACT session-name match (round-1
+        # finding 4 / round-2 finding 5) so a sibling like
+        # "commbridge-<name>-other" can't be killed by a prefix match.
+        tmux -S "$SOT_TMUX_SOCK" kill-session -t "=$SESSION" 2>/dev/null || true
+        # shellcheck disable=SC2046
+        kill $(sot_bridge_pids_for "$NAME") 2>/dev/null || true
         echo "stopped relay listener for @$NAME"
         ;;
     start)
@@ -193,8 +206,9 @@ case "$MODE" in
         for i in $(seq 1 20); do if _estab; then break; fi; sleep 1; done
         if _probe; then echo "selftest @$NAME: receive path OK"; exit 0; fi
         echo "selftest @$NAME: receive path not yet proven -- restarting listener..." >&2
-        tmux -S "$SOT_TMUX_SOCK" kill-session -t "$SESSION" 2>/dev/null || true
-        pkill -f "comm-relay.sh bridge --name $NAME" 2>/dev/null || true
+        tmux -S "$SOT_TMUX_SOCK" kill-session -t "=$SESSION" 2>/dev/null || true
+        # shellcheck disable=SC2046
+        kill $(sot_bridge_pids_for "$NAME") 2>/dev/null || true
         sleep 1
         tmux -S "$SOT_TMUX_SOCK" new-session -d -s "$SESSION" \
             "while true; do '$BIN/comm-relay.sh' bridge --name '$NAME'; sleep 2; done" 2>/dev/null || true

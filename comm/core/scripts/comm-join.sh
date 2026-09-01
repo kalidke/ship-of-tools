@@ -106,28 +106,18 @@ obj="$(jq -n \
       status:"idle", joined:$ts, last_seen:$ts}')"
 
 # _sot_join_bridge_running_for NAME — true if a relay listener bridge for
-# NAME is up under this uid. The marker is comm-listen.sh's own: it names
-# its detached tmux session "commbridge-$NAME" (see SESSION= there) and
-# that session lives for as long as the bridge's reconnect loop does — so
-# its presence on the PRIVATE per-user tmux socket is a stable, cheaply
-# checkable proxy for "a bridge for this handle exists", without a
-# system-wide process-table query (harder to reason about, and untestable
-# in a hermetic suite that isolates tmux via $SOT_TMUX_SOCK the same way
-# comm-spawn.sh's tests already do). Best-effort: an unresolvable socket
-# fails this check closed (no warning) rather than aborting the join over
-# a purely advisory guard.
-#
-# `-t "=commbridge-$name"` — the LEADING '=' pins tmux to an EXACT
-# session-name match (Codex review round-1 finding 4): without it, tmux's
-# target-session grammar falls back to prefix/glob matching, so a bridge
-# actually named e.g. "commbridge-$name-other" (a different, unrelated
-# handle that happens to start with this one) would false-positive this
-# check and trigger the stranding warning below for a session that was
-# never stranded.
+# NAME is up under this uid. Delegates entirely to comm-lib.sh's
+# sot_bridge_running_for (Codex review round-2 finding 5/D): ONE shared,
+# UID-scoped, exact-match implementation now backs both this stranding
+# guard and comm-listen.sh's --status/--stop, checking BOTH the exact tmux
+# marker session (`=commbridge-<name>`, exact-matched so a sibling like
+# "commbridge-<name>-other" can't false-positive this — Codex review
+# round-1 finding 4) and a directly-started bridge with no tmux marker at
+# all (an anchored, uid-scoped process-table check). Best-effort: an
+# unresolvable socket/pgrep failure fails this check closed (no warning)
+# rather than aborting the join over a purely advisory guard.
 _sot_join_bridge_running_for() {
-    local name="$1" sock
-    sock="$(sot_tmux_socket 2>/dev/null)" || return 1
-    tmux -S "$sock" has-session -t "=commbridge-$name" 2>/dev/null
+    sot_bridge_running_for "$1"
 }
 
 if [ "$NEED_DERIVE" = true ]; then
