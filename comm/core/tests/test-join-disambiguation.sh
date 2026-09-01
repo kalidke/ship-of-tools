@@ -1069,7 +1069,14 @@ sleep 60
 EOF
     chmod +x "$wrapper"
 
-    "$wrapper" bridge --name "$handle" &
+    # `{ ... & } 2>/dev/null` around the BACKGROUNDING itself (not the
+    # later `kill`/`wait`, which is where you'd expect to redirect this):
+    # bash's own "Terminated"/"Killed" job-control notice for a background
+    # job later reaped by `wait` after a signal is tied to stderr as it
+    # was AT THE POINT THE JOB WAS BACKGROUNDED, not at kill/wait time —
+    # redirecting only the kill/wait lines does NOT suppress it (verified
+    # empirically); redirecting the `&` itself does.
+    { "$wrapper" bridge --name "$handle" & } 2>/dev/null
     pid=$!
 
     tries=0
