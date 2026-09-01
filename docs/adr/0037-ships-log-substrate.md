@@ -149,6 +149,12 @@ Defaults, the summary prompt, and pack layout are still open decisions.
   sessions survive frontend restarts, retiring the ADR 0017 §4 resume
   ritual; and remote attach over SSH — this retires "quit and relaunch to
   switch hosts" (ADR 0015).
+- **Order amended 2026-09-01 (owner):** P3 completes through ADR 0041 step 6
+  U3 (the attach client); then first-class local sessions (one supervisor
+  per session, listed under a local host node in the session selector) and
+  P4 remote attach come BEFORE P3's final drawer cutover (step 6 U4) — see
+  the ADR 0041 "Build order" amendment. Local is just another host; local
+  sessions are ordinary rows, never drawer tenants.
 - **P5:** the daemon's terminal plumbing moves onto capsules behind a switch; the
   tmux path is deleted only after a long soak with a tested way back. The machine
   monitor (ADR 0020) becomes just another writer, which finally makes its history
