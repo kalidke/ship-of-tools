@@ -51,7 +51,18 @@ Get your handle and check for a **live watcher**:
 
 ```bash
 eval "$(~/.sot-comm/bin/comm-context.sh 2>/dev/null)" 2>/dev/null || true   # sets NAME (empty when not joined) — eval, do NOT sed-scrape: values are %q-quoted, so a scrape can capture literal quotes as a bogus non-empty handle
-h="${NAME:-$(basename "$PWD")-$(hostname -s)}"
+if [ -n "$NAME" ]; then
+    h="$NAME"
+else
+    # Never hand-construct <repo>-<host> yourself (Codex review round-3
+    # finding 6) — sanitization, truncation, and the long-host digest
+    # suffix (ADR 0028's host-alias guard) can all change it. Compute it
+    # the SAME way comm-join.sh would, via the existing tier-1 derivation
+    # (comm-lib.sh's sot_derive_handle, third output line):
+    source ~/.sot-comm/bin/comm-lib.sh
+    h="$(sot_derive_handle reclaim "$PROJECT_ROOT" "$HOST" 2>/dev/null | sed -n 3p)"
+    h="${h:-$(basename "$PWD")-$(hostname -s)}"   # last-resort only if derivation itself fails
+fi
 h_re="$(printf '%s' "$h" | sed 's/\./\\./g')"   # escape dots — repo names contain them (e.g. MyOrg.github.io-myhost); an unescaped '.' matches ANY char and could false-match a sibling
 pgrep -u "$(id -un)" -f "comm-watch\.sh ${h_re}\$"   # dot-escaped + END-ANCHORED: neither a '.' nor a `-2` sibling can false-match (a false match would make a genuinely-deaf cold session skip arming → deaf)
 ```
@@ -83,6 +94,41 @@ pgrep -u "$(id -un)" -f "comm-watch\.sh ${h_re}\$"   # dot-escaped + END-ANCHORE
 > skip arming — the exact deafness this skill exists to prevent.
 
 ### (a) Join — `comm-join.sh` (this IS your identity)
+
+**Branch BEFORE joining** (Codex review round-2 finding 6/E) — the bare
+no-args form below is only for a **genuinely new** session. Determine your
+canonical handle first — never hand-construct `<repo>-<host>` yourself
+(Codex review round-3 finding 6: sanitization, truncation, and the
+long-host digest suffix can all change it). Reuse `$h` from Step 0 above
+if you just computed it there; otherwise:
+```bash
+eval "$(~/.sot-comm/bin/comm-context.sh 2>/dev/null)" 2>/dev/null || true
+source ~/.sot-comm/bin/comm-lib.sh   # for sot_derive_handle / sot_bridge_running_for
+CANONICAL="${NAME:-$(sot_derive_handle reclaim "$PROJECT_ROOT" "$HOST" 2>/dev/null | sed -n 3p)}"
+```
+Then check either signal:
+- Have you (this session, this repo) held `$CANONICAL` before — from a
+  prior turn's "Joined sot-comm as @..." line, this repo's own notes, or
+  general knowledge that this repo already runs a durable session? **or**
+- Is a listener bridge for it already running under your uid — the SAME
+  shared detector comm-join.sh's own stranding guard uses (it also catches
+  a directly-started bridge with no tmux marker, which a raw
+  `tmux has-session` probe would miss):
+  ```bash
+  sot_bridge_running_for "$CANONICAL" && echo "bridge already running for $CANONICAL"
+  ```
+
+**If EITHER is true, join explicitly and skip the bare form entirely:**
+```bash
+~/.sot-comm/bin/comm-join.sh --name "$CANONICAL"
+```
+(See "Identity evicted / wrong handle after a rejoin" below for exactly why
+the bare form is unsafe here — it derives a handle from scratch, sees your
+own now-stale row as "held by an unknown project", and escalates AWAY from
+it, which is how sessions get stranded in the first place.)
+
+**Only when NEITHER is true** (no prior handle for this repo, no bridge
+running — a genuinely fresh session) use the bare form:
 
 ```bash
 ~/.sot-comm/bin/comm-join.sh        # no args: joins as the canonical default <repo>-<host>
@@ -194,6 +240,84 @@ Step 0 and never armed, so there is nothing to selftest.)
   `comm-relay.sh ask @<peer> "ping" 45` and require a reply: the daemon broadcasts,
   so any reply proves the round-trip; a 124 timeout is *not* proof of a dead path —
   the armed Monitor still catches a late reply.)
+
+## Identity evicted / wrong handle after a rejoin
+
+Symptom: a comm call that used to work suddenly says **"Not joined — run
+comm-join.sh first"** for a session that has been running (and joined) the
+whole time — nothing about the session changed, only its on-disk self-file's
+validation did (a stale/pre-upgrade self-file, or a genuinely recycled tmux
+pane). Or worse: you already reacted to that by running a **bare**
+`comm-join.sh`, and it printed a **different** handle than the one this
+session, its peers, and any dashboard have always known it by (e.g.
+`<repo>-<host>` becoming `<repo>-<parentdir>-<host>`).
+
+**The no-arg `comm-join.sh` is the WRONG move for a session that previously
+held a handle.** No-args derives a handle from scratch; derivation sees your
+own canonical handle's row as "held by an unknown project" (your own
+now-discarded row looks exactly like a collision from the outside) and
+escalates AWAY from it — which is how you got stranded in the first place.
+Never rejoin bare to "fix" an identity problem if you used to have a name;
+reclaim it explicitly instead. (`comm-join.sh` itself now warns loudly, at
+the moment of escalation, when a listener bridge for the bare handle it's
+escalating away from is still running under your uid — treat that warning as
+this exact situation and follow its printed recipe.)
+
+Recipe (validated live against a real 28h-stale-row incident):
+
+1. **Prove sole ownership of the canonical handle before reclaiming it** — a
+   real collision (someone else's live session) looks identical to your own
+   stranded identity from the outside. Query the **canonical** handle
+   specifically (Codex review round-2 finding 6/E) — not the accidental one
+   you're currently joined as; `--status` with no `--name` reports on
+   whatever you're joined as RIGHT NOW, which at this point in the recipe
+   is still the wrong one:
+   ```bash
+   ~/.sot-comm/bin/comm-listen.sh --status --name <canonical-handle>
+   # or, for the raw tmux marker directly (source comm-lib.sh first — sot_tmux_socket is defined there, not a standalone binary):
+   source ~/.sot-comm/bin/comm-lib.sh
+   tmux -S "$(sot_tmux_socket)" has-session -t "=commbridge-<canonical-handle>"
+   ```
+   Confirm: exactly one live session has this repo as its cwd, and that
+   bridge's creation time matches when *this* session actually started. If
+   you can't confirm sole ownership, stop and ask a human — reclaiming
+   someone else's live handle strands *them* instead of fixing you.
+2. Drop the accidental/escalated handle:
+   ```bash
+   ~/.sot-comm/bin/comm-leave.sh --name <accidental-handle>
+   ```
+3. Reclaim the canonical handle **explicitly** (never bare — see above):
+   ```bash
+   ~/.sot-comm/bin/comm-join.sh --name <canonical-handle>
+   ```
+   `--name` is always used verbatim; this is the one case a plain rejoin
+   cannot do, since bare derivation is exactly what stranded you.
+4. Your listener bridge almost certainly never needed to move — it was
+   bridging the *correct* (canonical) handle's inbox the entire time, just
+   unaddressed while your registered identity pointed elsewhere. Confirm
+   it's still up rather than starting a redundant one:
+   ```bash
+   ~/.sot-comm/bin/comm-listen.sh --status
+   ```
+5. **Selftest is required, not optional** — prove the wake path actually
+   reaches you under the reclaimed name:
+   ```bash
+   ~/.sot-comm/bin/comm-listen.sh --selftest
+   ```
+   Require the **Monitor notification** (`[relay] from __selftest__: …`),
+   not just the inline `receive path OK` — the notification is what proves a
+   peer's *next* message actually reaches this session, not just that a file
+   got written.
+
+This is a rare recovery path, not a routine step — most sessions never hit
+it, because `comm-context.sh` now self-heals a legacy (pre-root=) self-file
+on read instead of discarding it. You land here only if you already rejoined
+bare *before* noticing, or a case root= validation still (correctly) rejects
+— e.g. a genuinely different project sharing this repo's basename+host, or a
+legacy self-file whose handle the sot-comm *registry* already corroborates
+against a **different** root (comm-context.sh consults the registry before
+ever healing a basename match, and refuses outright on a disagreement — a
+basename can never outrank contrary registry evidence).
 
 ## Signal your work-state (the two cases the hooks miss)
 

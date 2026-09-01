@@ -63,13 +63,11 @@ ensure_home
 # spawner is awaiting. Explicit --name wins; an already-joined NAME (from
 # context) wins over the env (a rejoin keeps its identity).
 #
-# Precedence check (Codex review F1): NAME here can ONLY carry an
-# already-joined self-file identity that comm-context.sh just validated
-# against `root=` — a self-file with no root= line, or a mismatched one,
-# comes back as NAME="" from context (see its guard), so it can never reach
-# this line to wrongly out-rank a spawn-pinned $SOT_COMM_NAME below. A
-# STALE self-file overriding a spawn pin is exactly what that root check
-# closes; this ordering is otherwise unchanged.
+# Precedence: NAME here can only be an ALREADY-VALIDATED self-file
+# identity (comm-context.sh's own read-side matrix — see ADR 0028's
+# "Self-file read-side transition" for the full rule); anything it
+# discarded as stale/unhealable comes back as NAME="" and never reaches
+# here to out-rank a spawn-pinned $SOT_COMM_NAME.
 [ -z "$NAME" ] && NAME="${SOT_COMM_NAME:-}"
 [ -z "$EXPERTISE" ] && EXPERTISE="${SOT_COMM_EXPERTISE:-}"
 # Reached only when NAME came from none of the verbatim sources above
@@ -104,6 +102,56 @@ if [ "$NEED_DERIVE" = true ]; then
     # stderr reason, rather than continuing with an empty/invalid NAME.
     claim_derived_handle reclaim "$PROJECT_ROOT" "$HOST" "$obj"
     NAME="$CLAIMED_NAME"
+
+    # Stranding guard (field regression): escalating AWAY from the bare
+    # tier-1 handle (CLAIMED_QUALIFIER non-empty, so NAME != CLAIMED_TIER1)
+    # is the normal, correct outcome for a REAL collision with another
+    # project sharing this basename+host. But it is ALSO exactly what
+    # happens when THIS session's own tier-1 row was just evicted (a stale
+    # self-file discarded by comm-context.sh, pre-self-heal or otherwise) —
+    # the registry still shows tier-1 as held by "an unknown project", so
+    # derivation treats it as someone else's and hands back a DIFFERENT
+    # handle, silently. A live listener bridge for the bare handle, under
+    # this same uid, is strong evidence that "unknown project" is actually
+    # THIS session's own prior identity — a real collision from an
+    # unrelated project has no reason to be running a bridge named after
+    # OUR root's basename+host. Warn loudly so the operator/session can no
+    # longer strand silently; still proceed with the qualified join (the
+    # bridge alone doesn't prove ownership — a genuinely different, still
+    # -live session for the same repo+host could be the one running it —
+    # so this NEVER auto-reclaims).
+    if [ -n "$CLAIMED_QUALIFIER" ] && [ -n "$CLAIMED_TIER1" ] && [ "$CLAIMED_TIER1" != "$NAME" ] \
+       && sot_bridge_running_for "$CLAIMED_TIER1"; then
+        # The printed recipe below uses THIS install's own SCRIPT_DIR —
+        # never a hardcoded ~/.sot-comm/bin/, wrong under a non-default
+        # $SOT_COMM_HOME (supported) — and %q-quotes every interpolated
+        # handle AND the executable path itself (Codex review round-3
+        # finding 7: an unquoted $SCRIPT_DIR breaks under a spaced install
+        # path).
+        QNAME="$(printf '%q' "$NAME")"
+        QTIER1="$(printf '%q' "$CLAIMED_TIER1")"
+        QSCRIPT_DIR="$(printf '%q' "$SCRIPT_DIR")"
+        cat >&2 <<WARN
+
+*** WARNING: joined as '@$NAME', but a relay listener bridge for
+*** '@$CLAIMED_TIER1' (this project's bare handle) is ALREADY RUNNING under
+*** this user. That is almost certainly YOUR OWN earlier identity, not a
+*** real collision with another project — most likely this session's own
+*** '@$CLAIMED_TIER1' row was evicted as stale (see comm-context.sh) and
+*** this join escalated away from it instead of reclaiming it. Proceeding
+*** with the qualified join as '@$NAME' — a running bridge alone doesn't
+*** prove ownership, so this is never auto-reclaimed — but if this IS your
+*** own handle, you can now strand yourself silently: your listener bridge
+*** and any armed Monitor go on serving '@$CLAIMED_TIER1''s inbox while
+*** everyone else now addresses you as '@$NAME'.
+***
+*** If you confirm sole ownership (one live session with this repo as cwd,
+*** whose bridge creation time matches when THIS session started), reclaim
+*** the bare handle instead of staying on '@$NAME':
+***   $QSCRIPT_DIR/comm-leave.sh --name $QNAME
+***   $QSCRIPT_DIR/comm-join.sh --name $QTIER1
+WARN
+    fi
 else
     with_lock registry_put "$NAME" "$obj"
 fi
@@ -113,27 +161,28 @@ fi
 # repo line is used by comm-context to detect a stale identity in a
 # RECYCLED tmux pane (pane ids are reused after a server restart) and
 # discard it instead of letting a fresh session inherit another session's
-# handle.
-printf '%s\nrepo=%s\nroot=%s\n' "$NAME" "$REPO" "$PROJECT_ROOT" > "$SELF_FILE"
+# handle. Written via the shared atomic writer (comm-lib.sh) — same
+# same-directory-tmp-plus-mv contract comm-context.sh's self-heal uses
+# (Codex review round-1 finding 3) — and its failure is FATAL here: the
+# registry row above is already claimed, but with no local self-file this
+# shell has no record of it and every future comm call from it will read
+# as "not joined".
+if ! sot_write_self_file "$SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT"; then
+    echo "comm-join.sh: FATAL — joined as @$NAME in the registry, but could not write the local self-file at '$SELF_FILE' (see reason above). This shell has no identity record; every comm-* call from it will say 'not joined'. Fix the self-file directory's permissions and re-run comm-join.sh --name $NAME." >&2
+    exit 1
+fi
 # A joined handle always has an inbox: durable comm-send targets it, and a
 # first-ever selftest otherwise probes a nonexistent file (noisy redirect
 # errors that derail diagnosis — 2026-06-11 fresh-join report). Append-touch
 # so an existing inbox is never truncated.
 : >> "$INBOX_DIR/$NAME.jsonl"
 
-# No legacy self-file sweep (Codex review PR #148 round 2, simplicity
-# audit — deleted ~50 lines that used to live here). It's redundant, not
-# merely simplifiable: comm-context.sh's read-side guard already rejects
-# ANY self-file with no (or a mismatched) `root=` line, unconditionally,
-# on every single read — a legacy file is therefore ALREADY inert; it
-# grants no trust whether or not anything ever sweeps it. And a rightful
-# owner's self-file self-heals the moment that owner rejoins: this
-# script's own write, just above, always emits the full v2 three-line
-# form. The sweep's only remaining job was pure disk hygiene (deleting
-# ABANDONED files nobody will ever rejoin), bought at the cost of a
-# directory glob + a stat/read per file, done EAGERLY on every join, while
-# holding the single global registry lock — the wrong trade for a
-# non-safety-load-bearing cleanup.
+# No legacy self-file sweep: unnecessary disk hygiene, not safety-load-
+# bearing — an abandoned legacy file only matters if its exact path is
+# read again, and a rightful owner's self-file self-heals (or is freshly
+# written in full v2 form, as above) the moment it's actually used. See
+# ADR 0028's "Self-file read-side transition" for why a legacy file is no
+# longer "already inert" the way it was pre-hotfix.
 have="$(jq -r '.protocol_version // 0' "$REGISTRY")"
 if [ "$have" != "$PROTOCOL_VERSION" ]; then
     echo "WARNING: registry protocol v$have != client v$PROTOCOL_VERSION — run ShipTools.update_comm() on all machines" >&2

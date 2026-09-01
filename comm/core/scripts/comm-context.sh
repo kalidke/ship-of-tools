@@ -64,43 +64,100 @@ else
     PANE_SAFE="${PANE_ID//%/}"
     SELF_FILE="$SELF_DIR/${HOST}__${PANE_SAFE:-nopane}.txt"
 fi
-# The self-file is keyed by PANE ID, and tmux REUSES pane ids (%1, %2, …)
-# after a server restart — so a fresh session in a recycled pane can inherit
-# a DIFFERENT session's identity. That poisons everything downstream: the
-# session-start Step-0 watcher check pgreps the wrong handle (finds the other
-# session's live watcher → false "survived compaction" → stays deaf), and a
-# no-args rejoin keeps the stolen name (two sessions executing as one handle).
+# The self-file is keyed by PANE ID; tmux reuses pane ids, so a fresh
+# session in a recycled pane can otherwise inherit a different session's
+# identity. Full rationale for everything below — the root=/repo=/
+# registry/nopane read-side matrix, including the round-3 additions
+# (malformed third line, registry-read errors) — lives in
+# docs/adr/0028-remote-comm-autoconnect.md's "Self-file read-side
+# transition" section, THE single home of this logic's rationale. Keep
+# comments here to short invariant statements only.
 #
-# Guard: validated against `root=` (Codex review F1), NOT `repo=` — two
-# DIFFERENT projects sharing a repo basename (e.g. two same-named repos in
-# different directories, exactly what the derived-handle disambiguation
-# exists to tell apart) would pass a `repo=`-only check and recreate the
-# very alias this feature closes: `/a/foo` joins, a reused pane (or another
-# non-tmux shell sharing the same "nopane" key) in `/b/foo` would read back
-# `repo=foo` matching and inherit `/a/foo`'s identity verbatim — including
-# overriding a spawn-pinned $SOT_COMM_NAME, since a valid self-file identity
-# is read into NAME before comm-join.sh even looks at the env (see its
-# precedence comment). Root comparison closes that: two different roots
-# never match regardless of shared basename.
-#
-# A self-file with NO `root=` line — legacy, predating this feature, be it
-# the older one-line format or a two-line `repo=`-only file — is discarded
-# as stale UNCONDITIONALLY, not trusted "as before": same fail-safe
-# transition stance ADR 0028 already applies to registry rows (unknown
-# root is a collision, not a free pass), extended to self-files. This costs
-# a one-time re-derivation on that pane's first join after upgrading (the
-# join then rewrites the self-file WITH root=, so every join after that is
-# fully validated again) — a small, one-time inconvenience preferred over
-# convenience-by-default aliasing. A session merely cd'd into another repo
-# also mismatches — that costs a transient no-op status update, which is
-# the safe side of the trade (a stolen identity is worse).
+# IS_NOPANE: true only for the literal shared "$HOST__nopane.txt" slot,
+# detected from SELF_FILE's own name (not from PANE_ID at this particular
+# invocation — what matters is whether THIS FILE is the one every no-pane
+# shell on the host shares).
+case "$SELF_FILE" in
+    *__nopane.txt) IS_NOPANE=1 ;;
+    *)             IS_NOPANE=0 ;;
+esac
+
 NAME=""
 if [ -f "$SELF_FILE" ]; then
-    NAME="$(sed -n '1p' "$SELF_FILE")"
-    SELF_ROOT="$(sed -n '3p' "$SELF_FILE" | sed -n 's/^root=//p')"
-    if [ -z "$SELF_ROOT" ] || [ "$SELF_ROOT" != "$PROJECT_ROOT" ]; then
-        echo "comm-context: self-file identity '$NAME' has no root= line, or one that doesn't match this project ('$PROJECT_ROOT') — stale; discarding (forces fresh derivation)" >&2
+    # Read ONCE via mapfile — never three separate `sed -n 'Np'` opens —
+    # so a concurrent atomic rename can't be observed as a spliced mixed
+    # version (ADR 0028).
+    mapfile -t SELF_LINES < "$SELF_FILE" 2>/dev/null
+    NAME="${SELF_LINES[0]:-}"
+    SELF_REPO_LINE="${SELF_LINES[1]:-}"
+    SELF_ROOT_LINE="${SELF_LINES[2]:-}"
+    case "$SELF_REPO_LINE" in
+        repo=*) SELF_REPO="${SELF_REPO_LINE#repo=}"; HAS_REPO_LINE=1 ;;
+        *)      SELF_REPO="";                        HAS_REPO_LINE=0 ;;
+    esac
+    # A third element PRESENT but not a `root=...` line (e.g. a corrupted
+    # "rootBROKEN") is MALFORMED, not absent — told apart by array length,
+    # not pattern match alone (ADR 0028, round-3 finding 2).
+    case "$SELF_ROOT_LINE" in
+        root=*) SELF_ROOT="${SELF_ROOT_LINE#root=}"; HAS_ROOT_LINE=1; ROOT_MALFORMED=0 ;;
+        *)      SELF_ROOT="";                        HAS_ROOT_LINE=0
+                [ "${#SELF_LINES[@]}" -ge 3 ] && ROOT_MALFORMED=1 || ROOT_MALFORMED=0 ;;
+    esac
+
+    if [ "$HAS_ROOT_LINE" = 1 ]; then
+        # v2 self-file: root= present. Empty/mismatched is unconditionally
+        # stale (ADR 0028) — never routed through the legacy-heal path.
+        if [ -z "$SELF_ROOT" ] || [ "$SELF_ROOT" != "$PROJECT_ROOT" ]; then
+            reason="root='$SELF_ROOT'"
+            [ -z "$SELF_ROOT" ] && reason="an empty/malformed root="
+            echo "comm-context: self-file identity '$NAME' has $reason which doesn't match this project ('$PROJECT_ROOT') — stale; discarding (forces fresh derivation)" >&2
+            NAME=""
+        fi
+    elif [ "$ROOT_MALFORMED" = 1 ]; then
+        echo "comm-context: self-file identity '$NAME' has a malformed third line ('$SELF_ROOT_LINE', not a root=... line) — stale; discarding (corrupted evidence is never routed through the legacy-heal path)" >&2
         NAME=""
+    elif [ "$HAS_REPO_LINE" = 1 ] && [ "$SELF_REPO" != "$REPO" ]; then
+        echo "comm-context: self-file identity '$NAME' was claimed for repo '$SELF_REPO' but this is '$REPO' — stale (pane id reused, a genuine cd elsewhere, or a shared no-pane self-file read from a different repo/cwd); discarding" >&2
+        NAME=""
+    elif [ -n "$NAME" ]; then
+        # Legacy self-file (no root=; repo= matching or the ancient
+        # one-line format). Registry consulted before ever healing — see
+        # the ADR matrix for the full rationale; this is just the
+        # mechanism.
+        IFS=$'\t' read -r reg_status reg_root <<< "$(sot_registry_entry_status "$NAME")"
+        heal=0
+        if [ "$reg_status" = "error" ]; then
+            # Registry unreadable/unparseable (ADR 0028, round-3 finding
+            # 1): NO EVIDENCE AND NO WRITE. A transient failure costs
+            # this one call; the next call re-reads.
+            echo "comm-context: could not read/parse the sot-comm registry while validating self-file identity '$NAME' — refusing to trust or heal a basename match with no verifiable registry evidence; discarding" >&2
+            NAME=""
+        elif [ "$reg_status" = "present" ] && [ -n "$reg_root" ]; then
+            if [ "$reg_root" = "$PROJECT_ROOT" ]; then
+                heal=1
+            else
+                echo "comm-context: self-file identity '$NAME' has no root= (legacy) and the registry's own root for it ('$reg_root') doesn't match this project ('$PROJECT_ROOT') — stale; refusing to self-heal a basename match against contrary registry evidence; discarding" >&2
+                NAME=""
+            fi
+        elif [ "$HAS_REPO_LINE" = 1 ] && [ "$IS_NOPANE" != 1 ]; then
+            heal=1   # pane-keyed, repo= matches, no contrary registry evidence — ADR 0028 residual ambiguity
+        elif [ "$HAS_REPO_LINE" = 1 ] && [ "$IS_NOPANE" = 1 ]; then
+            echo "comm-context: self-file identity '$NAME' is in the SHARED nopane slot and this project's repo='$REPO' match alone is not enough evidence for it (this exact file is shared by every no-pane shell on this host) — stale; refusing to self-heal without a corroborating registry root; discarding" >&2
+            NAME=""
+        else
+            echo "comm-context: self-file identity '$NAME' is the ancient one-line format (no repo=, no root=) and the registry offers no corroborating root for it — stale; refusing to self-heal; discarding" >&2
+            NAME=""
+        fi
+
+        if [ "$heal" = 1 ] && [ -n "$NAME" ]; then
+            # Atomic write (comm-lib.sh sot_write_self_file); a failed
+            # heal is not fatal to THIS call but must never claim success.
+            if sot_write_self_file "$SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT"; then
+                echo "comm-context: self-healed legacy self-file for '$NAME' (pre-#148 format had no root=) — added root='$PROJECT_ROOT'; every read after this one is fully validated" >&2
+            else
+                echo "comm-context: FAILED to self-heal legacy self-file for '$NAME' at '$SELF_FILE' (see reason above) — proceeding with this identity for THIS call, but the file remains legacy and will be re-evaluated (and re-attempted) on the next read" >&2
+            fi
+        fi
     fi
 fi
 

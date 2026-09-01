@@ -324,6 +324,166 @@ registry_del_if_provisional() {
     registry_del "$name"
 }
 
+# --- self-file writer (shared by comm-join.sh and comm-context.sh's
+# read-side self-heal) ---
+
+# sot_write_self_file SELF_FILE NAME REPO ROOT — write the v2 self-file
+# format (identity line, then `repo=`, then `root=`) to SELF_FILE via a
+# same-directory temp file + checked `mv`, never an in-place `>`
+# truncation (Codex review round-1 finding 3: the old in-place write left a
+# read-only self-file silently unwritten — the redirection failed, nothing
+# checked its exit status, and the caller went on to print a success
+# message anyway — and could leave a torn/zero-byte file if interrupted
+# mid-write). The temp file lives NEXT TO SELF_FILE so the final `mv` is a
+# same-filesystem rename: atomic, no partial-write window a concurrent
+# reader could observe.
+#
+# Both write sites — this self-heal path in comm-context.sh and the
+# ordinary join-write in comm-join.sh — route through this ONE function so
+# there is a single place that gets the atomicity right, rather than two
+# copies that could drift.
+#
+# No cross-process lock: the self-file's "nopane" slot is deliberately
+# SHARED across every no-tmux-context shell on a host (see
+# comm-context.sh's nopane note) and is last-writer-wins BY DESIGN — every
+# read of it is independently re-validated (against root=, or against
+# repo=/the registry for a legacy file), so a slot two shells raced to
+# write is caught on its next read rather than silently trusted either
+# way. Serializing the write here would only slow down an already-safe
+# race, not close a real hazard.
+#
+# Returns 0 only once SELF_FILE has been VERIFIABLY replaced with the new
+# content; nonzero (with a reason on stderr) otherwise, and the original
+# SELF_FILE is left untouched (the failed temp file is cleaned up, never
+# left as e.g. a stray `.tmp.*` sibling). Callers MUST treat a nonzero
+# return as "did not persist" — never report success on it.
+sot_write_self_file() {
+    local self_file="$1" name="$2" repo="$3" root="$4" tmp
+    tmp="$(mktemp "${self_file}.tmp.XXXXXX" 2>/dev/null)" || {
+        echo "sot_write_self_file: could not create a temp file next to '$self_file' (directory missing or not writable?)" >&2
+        return 1
+    }
+    if ! printf '%s\nrepo=%s\nroot=%s\n' "$name" "$repo" "$root" > "$tmp" 2>/dev/null; then
+        echo "sot_write_self_file: write to temp file '$tmp' failed (disk full? permissions?)" >&2
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+    if ! mv -f "$tmp" "$self_file" 2>/dev/null; then
+        echo "sot_write_self_file: could not move '$tmp' into place at '$self_file'" >&2
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+    return 0
+}
+
+# --- bridge detection (shared by comm-join.sh's stranding guard and
+# comm-listen.sh's --status/--stop/start-check) ---
+#
+# Codex review round-2 finding 5/D: comm-listen.sh's own bridge check was
+# `pgrep -f "comm-relay.sh bridge --name $NAME"` — UNANCHORED (a substring
+# match, so NAME="foo" also matches a live "...--name foo-bar" process),
+# REGEX-SENSITIVE (a literal '.' in NAME, common in real repo names like
+# "MyOrg.github.io-myhost", matches any character), and NOT scoped to this
+# uid (a shared host's `pgrep`/`pkill -f` with no `-u` can false-match, or
+# even KILL, another user's process). Meanwhile comm-join.sh's tmux-only
+# check misses a bridge someone started directly, with no tmux wrapper at
+# all. ONE implementation now covers both signals and both callers.
+
+# _sot_bridge_pattern NAME — the exact, escaped, end-anchored pgrep -f
+# pattern for a reconnect-loop bridge serving NAME. Escapes EVERY
+# character that isn't `[A-Za-z0-9]` (not just '.', for safety — sanitized
+# handles only ever contain `.`/`-`/`_` besides alphanumerics, but this
+# doesn't rely on that staying true) by backslash-prefixing it, the
+# standard "escape a string for use as a literal regex" idiom: a
+# backslash before an ORDINARY (non-metacharacter) character like `-` or
+# `_` is a no-op in every regex engine pgrep is built on in practice, so
+# this is a strict superset of "escape only the metacharacters" with no
+# risk of missing one (extended-regex metacharacters like `(`, `)`, `+`,
+# `?`, `{`, `}`, `|` are just as real a hazard here as `.`, even though
+# today's sanitizer never produces them). End-anchored with `$` so a
+# shorter handle can never match a longer sibling's command line.
+_sot_bridge_pattern() {
+    local name="$1" escaped
+    escaped="$(printf '%s' "$name" | sed 's/[^A-Za-z0-9]/\\&/g')"
+    printf 'comm-relay\.sh bridge --name %s$' "$escaped"
+}
+
+# sot_bridge_pids_for NAME — space-separated PIDs (possibly empty) of a
+# bridge for NAME running under THIS uid only. Catches a bridge started
+# EITHER via comm-listen.sh's tmux wrapper OR run directly with no tmux
+# marker at all — this is a process-table check, independent of tmux.
+sot_bridge_pids_for() {
+    local name="$1"
+    pgrep -u "$(id -u)" -f "$(_sot_bridge_pattern "$name")" 2>/dev/null
+}
+
+# sot_bridge_running_for NAME [SOCK] — true if a bridge for NAME is up,
+# checking BOTH signals: the EXACT tmux marker session
+# `=commbridge-<name>` (`=` pins tmux to exact-name matching — Codex
+# review round-1 finding 4 / round-2 finding 5: without it tmux falls back
+# to prefix/glob matching) on SOCK (resolved via sot_tmux_socket if not
+# given), AND the uid-scoped anchored process check above (catches a
+# directly-started bridge with no tmux marker). Best-effort on the tmux
+# half: an unresolvable socket just skips it rather than aborting the
+# caller over a purely advisory guard.
+sot_bridge_running_for() {
+    local name="$1" sock="${2:-}"
+    [ -n "$sock" ] || sock="$(sot_tmux_socket 2>/dev/null || true)"
+    if [ -n "$sock" ] && tmux -S "$sock" has-session -t "=commbridge-$name" 2>/dev/null; then
+        return 0
+    fi
+    [ -n "$(sot_bridge_pids_for "$name")" ]
+}
+
+# --- sender identity: NAME resolved is not enough, it must be ROUTABLE ---
+#
+# Codex review round-2 finding 4/C: comm-send.sh, comm-relay.sh, and
+# comm-bootstrap.sh each carried their OWN "resolved identity" check, and
+# each treated a merely NONEMPTY $NAME as good enough. That's insufficient:
+# a self-file can resolve NAME locally (it passed comm-context.sh's own
+# root=/repo= validation) while the registry itself has no matching row
+# for it at all (evicted, or a failed registry write) or — worse — a row
+# whose root belongs to a DIFFERENT project (this handle was reclaimed
+# elsewhere). Either way, sending under it stamps a from-handle a reply
+# can't route back to, or routes it to the wrong session. "Resolved" now
+# means ROUTABLE: NAME nonempty AND a registry row for it exists AND (that
+# row's root is empty — a legacy row, allowed during the migration window
+# — OR it matches this project's canonical root).
+#
+# ONE helper, called by all three scripts, replacing three separately
+# drifting diagnostic essays with the invariant plus the exact recovery
+# command. Must be called BEFORE any endpoint/socket/transport resolution
+# (Codex review round-2 SHOULD-FIX 2) so an unresolved sender always sees
+# THIS refusal, never an unrelated daemon/socket error.
+#
+# Prints nothing and returns 0 if routable. Prints ONE refusal line and
+# returns 1 otherwise. Depends on NAME/PROJECT_ROOT already being set by
+# `eval "$(comm-context.sh)"` — call after that, never before.
+sot_require_routable_identity() {
+    if [ -z "${NAME:-}" ]; then
+        echo "ERROR: your sot-comm identity did not resolve — refusing to send with no verifiable from-handle (a reply would silently misroute). Join first: comm-join.sh --name <canonical-handle> (never a bare comm-join.sh if you previously held one — see the sot-session-start skill's recovery recipe)." >&2
+        return 1
+    fi
+    local reg_status reg_root qname qdir
+    IFS=$'\t' read -r reg_status reg_root <<< "$(sot_registry_entry_status "$NAME")"
+    # %q-quote the handle AND the executable path (Codex review round-3
+    # finding 7): a raw $NAME/$SCRIPT_DIR interpolation produces a wrong
+    # or unsafe copy-paste command for a handle or install path containing
+    # spaces/metacharacters. $SCRIPT_DIR is this HELPER's caller's own
+    # directory (every caller sources comm-lib.sh after setting it).
+    qname="$(printf '%q' "$NAME")"
+    qdir="$(printf '%q' "${SCRIPT_DIR:-.}")"
+    if [ "$reg_status" != "present" ]; then
+        echo "ERROR: your sot-comm identity '@$NAME' has no registry row — refusing to send with an unroutable from-handle (a reply would silently misroute). Reclaim it: $qdir/comm-join.sh --name $qname" >&2
+        return 1
+    fi
+    if [ -n "$reg_root" ] && [ "$reg_root" != "${PROJECT_ROOT:-}" ]; then
+        echo "ERROR: your sot-comm identity '@$NAME' is registered to a DIFFERENT project's root ('$reg_root') — refusing to send with a misrouting from-handle. Reclaim it: $qdir/comm-join.sh --name $qname" >&2
+        return 1
+    fi
+    return 0
+}
+
 # --- derived-handle disambiguation (ADR 0028 addendum: "derived vs
 # explicit") --- single home for the algorithm; comm-join.sh and
 # comm-spawn.sh both call sot_derive_handle. This is ONLY for a name that
@@ -464,10 +624,25 @@ sot_sanitize_component() {
 #   "absent\t"          — NAME has no row at all
 #   "present\t<root>"   — NAME has a row; <root> is "" for a legacy row
 #                         that predates this feature (unknown root)
+#   "error\t"           — the registry could not be read/parsed (Codex
+#                         review round-3 finding 1): jq failing (malformed
+#                         JSON, unreadable file, an NFS hiccup) used to
+#                         print NOTHING, which read back as an empty
+#                         string indistinguishable from "absent" to every
+#                         caller — letting a pane-keyed legacy self-file
+#                         self-heal on a basename match with the registry
+#                         effectively unconsultable. Callers MUST treat
+#                         "error" as NO EVIDENCE, never as "absent".
 sot_registry_entry_status() {
-    jq -r --arg n "$1" \
+    local out
+    out="$(jq -r --arg n "$1" \
         'if (.agents | has($n)) then "present\t" + (.agents[$n].root // "") else "absent\t" end' \
-        "$REGISTRY" 2>/dev/null
+        "$REGISTRY" 2>/dev/null)"
+    if [ $? -ne 0 ] || [ -z "$out" ]; then
+        printf 'error\t\n'
+        return 0
+    fi
+    printf '%s\n' "$out"
 }
 
 # _sot_tier_claimable MODE ROOT STATUS HELD_ROOT — true if a tier whose
@@ -529,10 +704,22 @@ _sot_tier_claimable() {
 # sot_sanitize_component's 20-char default budget the other components
 # still use (12 + 1 + 6 = 19 worst case).
 #
-# On success, prints ONE tab-separated line: "<handle>\t<qualifier>"
-# (qualifier empty at tier 1, "<parentdir>" at tier 2, "<hash6>" at tier
-# 3). A caller that only wants the handle:
-#   `IFS=$'\t' read -r NAME _ <<< "$(sot_derive_handle reclaim "$ROOT" "$HOST")"`
+# On success, prints THREE lines: handle, qualifier, tier1 (qualifier empty
+# at tier 1, "<parentdir>" at tier 2, "<hash6>" at tier 3; tier1 is ALWAYS
+# the bare "<base>-<host>" handle, win or lose, so a caller can tell whether
+# this call escalated AWAY from it — comm-join.sh's stranding guard needs
+# exactly that). NEWLINE-separated, not tab-separated (Codex review round-1
+# finding 1): tab is one of bash's IFS-WHITESPACE characters, so `IFS=$'\t'
+# read -r a b c` still COLLAPSES adjacent tabs exactly like the default
+# space/tab/newline splitting does — an empty qualifier field (the tier-1
+# case, `tier1<TAB><TAB>tier1`) vanished entirely instead of reading back as
+# "", shifting tier1's value into qualifier and leaving CLAIMED_TIER1 empty.
+# Every ordinary tier-1 spawn then misread CLAIMED_QUALIFIER as non-empty
+# and comm-spawn.sh synthesized a wrong "qualified" display label. Reading
+# one line per `read -r VAR` sidesteps this: with a single destination
+# variable there is no splitting to collapse — the whole line, empty or
+# not, becomes that variable's value verbatim. A caller that only wants the
+# handle: `NAME="$(sot_derive_handle reclaim "$ROOT" "$HOST" | head -n1)"`.
 sot_derive_handle() {
     local mode="$1" root="$2" raw_host="$3"
     local base parent hash6 tier1 tier2 tier3 host host_digest
@@ -553,7 +740,7 @@ sot_derive_handle() {
     tier1="${base}-${host}"
     IFS=$'\t' read -r status1 held1 <<< "$(sot_registry_entry_status "$tier1")"
     if _sot_tier_claimable "$mode" "$root" "$status1" "$held1"; then
-        printf '%s\t\n' "$tier1"
+        printf '%s\n%s\n%s\n' "$tier1" "" "$tier1"
         return 0
     fi
     shown1="$held1"; [ -z "$shown1" ] && shown1="an unknown project"
@@ -563,7 +750,7 @@ sot_derive_handle() {
     IFS=$'\t' read -r status2 held2 <<< "$(sot_registry_entry_status "$tier2")"
     if _sot_tier_claimable "$mode" "$root" "$status2" "$held2"; then
         echo "comm: '@$tier1' is already held by $shown1 — joining as '@$tier2' instead" >&2
-        printf '%s\t%s\n' "$tier2" "$parent"
+        printf '%s\n%s\n%s\n' "$tier2" "$parent" "$tier1"
         return 0
     fi
     shown2="$held2"; [ -z "$shown2" ] && shown2="an unknown project"
@@ -573,7 +760,7 @@ sot_derive_handle() {
     IFS=$'\t' read -r status3 held3 <<< "$(sot_registry_entry_status "$tier3")"
     if _sot_tier_claimable "$mode" "$root" "$status3" "$held3"; then
         echo "comm: '@$tier1' (held by $shown1) and '@$tier2' (held by $shown2) are both taken — joining as '@$tier3' instead" >&2
-        printf '%s\t%s\n' "$tier3" "$hash6"
+        printf '%s\n%s\n%s\n' "$tier3" "$hash6" "$tier1"
         return 0
     fi
     shown3="$held3"; [ -z "$shown3" ] && shown3="an unknown project"
@@ -594,11 +781,14 @@ sot_derive_handle() {
 #
 # claim_derived_handle MODE ROOT HOST OBJ_JSON — derive AND registry_put
 # the result as ONE critical section under the registry lock, so no other
-# claim can observe registry state in between. Sets globals CLAIMED_NAME
-# and CLAIMED_QUALIFIER (mirrors sot_derive_handle's two outputs) for the
-# caller to read after this returns; both cleared to "" first, so a
-# failure never leaves a stale value from a PREVIOUS successful call for a
-# careless caller to read. Both comm-join.sh (MODE reclaim) and
+# claim can observe registry state in between. Sets globals CLAIMED_NAME,
+# CLAIMED_QUALIFIER, and CLAIMED_TIER1 (mirrors sot_derive_handle's three
+# outputs) for the caller to read after this returns; all three cleared to
+# "" first, so a failure never leaves a stale value from a PREVIOUS
+# successful call for a careless caller to read. CLAIMED_TIER1 is what
+# comm-join.sh's stranding guard compares CLAIMED_NAME against — a mismatch
+# means this call escalated away from the bare handle. Both comm-join.sh
+# (MODE reclaim) and
 # comm-spawn.sh (MODE fresh, the provisional row) route a derived name
 # through this — one shared locked claim path, not two copies of "derive,
 # then lock to write" that could each get this wrong.
@@ -616,16 +806,27 @@ sot_derive_handle() {
 # the test harness's own next_self_file() lost its counter (see
 # comm/core/tests/test-join-disambiguation.sh) — the same lesson, twice.
 _sot_claim_derived_handle() {  # MODE ROOT HOST OBJ_JSON — call only via with_lock
-    local mode="$1" root="$2" host="$3" obj="$4" line qualifier
+    local mode="$1" root="$2" host="$3" obj="$4" line
     CLAIMED_NAME=""
     CLAIMED_QUALIFIER=""
+    CLAIMED_TIER1=""
     line="$(sot_derive_handle "$mode" "$root" "$host")" || return 1
-    IFS=$'\t' read -r CLAIMED_NAME qualifier <<< "$line"
+    # Three sequential single-var reads off the SAME herestring fd (Codex
+    # review round-1 finding 1) — each `read -r VAR` consumes one line and
+    # advances the shared position, and with only one destination variable
+    # there is no IFS splitting to collapse an empty middle field the way
+    # the old tab-delimited `read -r a b c` did. `{ …; } <<< "$line"` (not
+    # `( … )`) so the reads run in THIS shell and CLAIMED_* stay set for the
+    # caller.
+    {
+        IFS= read -r CLAIMED_NAME
+        IFS= read -r CLAIMED_QUALIFIER
+        IFS= read -r CLAIMED_TIER1
+    } <<< "$line"
     if [ -z "$CLAIMED_NAME" ]; then
         echo "claim_derived_handle: derivation returned no name — refusing to claim an empty handle" >&2
         return 1
     fi
-    CLAIMED_QUALIFIER="$qualifier"
     registry_put "$CLAIMED_NAME" "$obj"
 }
 claim_derived_handle() {  # MODE ROOT HOST OBJ_JSON

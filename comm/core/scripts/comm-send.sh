@@ -8,12 +8,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 ensure_home
-# Private tmux socket (security review) — the live-paste delivery legs below
-# target daemon-created panes, which live on the daemon's private socket,
-# not tmux's default server. Resolved once, used on every `tmux` call below
-# via `-S`.
-SOT_TMUX_SOCK="$(sot_tmux_socket)" \
-    || { echo "ERROR: could not resolve/secure the private tmux socket dir — see reason above" >&2; exit 1; }
 
 BROADCAST=false; TARGET=""; MSG=""; FORCE_TARGET=""
 while [ $# -gt 0 ]; do
@@ -37,9 +31,28 @@ while [ $# -gt 0 ]; do
 done
 
 [ -z "$MSG" ] && { echo "usage: comm-send.sh @name \"msg\" | --broadcast \"msg\" | --force-target T \"msg\"" >&2; exit 1; }
-[ -z "$NAME" ] && NAME="unknown-$HOST"
 
-FORMATTED="[$NAME:$REPO] $MSG"
+# Identity refusal, via the ONE shared helper (comm-lib.sh) also used by
+# comm-relay.sh and comm-bootstrap.sh (Codex review round-2 finding 4/C:
+# collapses three separately-drifting diagnostic essays into one, and
+# requires more than a merely nonempty NAME — see the helper's own
+# comment). Checked BEFORE any transport setup (the tmux socket resolution
+# below) so an unresolved sender always sees THIS refusal, never an
+# unrelated socket error (round-2 SHOULD-FIX 2). Skipped for
+# --force-target: that path is explicitly identityless by design (first
+# contact with a session that hasn't joined the network yet — a raw tmux
+# paste, no inbox, no from-field semantics to get wrong) and must keep
+# working with no identity at all.
+[ -n "$FORCE_TARGET" ] || sot_require_routable_identity || exit 1
+
+# Private tmux socket (security review) — the live-paste delivery legs below
+# target daemon-created panes, which live on the daemon's private socket,
+# not tmux's default server. Resolved once, used on every `tmux` call below
+# via `-S`.
+SOT_TMUX_SOCK="$(sot_tmux_socket)" \
+    || { echo "ERROR: could not resolve/secure the private tmux socket dir — see reason above" >&2; exit 1; }
+
+FORMATTED="[${NAME:-?}:$REPO] $MSG"
 
 # Raw delivery to a tmux target with no registry lookup — for first contact with
 # a session that hasn't joined yet. No inbox (no known recipient name).

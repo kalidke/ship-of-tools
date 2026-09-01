@@ -123,6 +123,67 @@ is deliberate: grandfathering an unknown root in as "assume same project"
 would silently re-enable aliasing for exactly the pre-existing collisions
 this feature targets.
 
+**Self-file read-side transition — THE complete matrix (dated 2026-09-01,
+PR #150; extended round 2 and round 3 — amends the "reads back as unknown
+root... a collision, not a free pass" sentence above for the SELF-FILE
+half only; the REGISTRY half is unchanged).** Applied to the self-file
+literally, "unknown root = collision" turned out to be too strict in
+practice: it discarded EVERY self-file written before `root=` shipped —
+every long-running session's identity — on its very next comm call ("Not
+joined — run comm-join.sh first"), which is strictly worse than the
+pane-recycling bug `root=` was added to close. `comm-context.sh`'s read
+side implements the matrix below; this paragraph is its rationale — the
+script itself carries only short invariant comments pointing here.
+
+*Third self-file line (`root=...`):*
+- present, matches this project's canonical root → accept.
+- present but empty, OR present and not a `root=...` line at all (e.g. a
+  corrupted `rootBROKEN` — distinguished from "no third line" by array
+  length, not just pattern match) → discard unconditionally. Both are
+  "evidence present but bad", never routed through the more permissive
+  legacy path below (which is only for files that predate `root=`
+  entirely).
+- absent (no third line at all) → legacy file, evaluated below.
+
+*Legacy self-file (no third line), `repo=` line vs. this project's
+basename:*
+- mismatched → discard (the original pane-recycling protection: a
+  recycled tmux pane id, a genuine `cd` elsewhere, or a shared no-pane
+  self-file read from a different repo/cwd). This check runs BEFORE any
+  registry consultation, by design — cheap, purely local, and a
+  DIFFERENT repo's identity is never rightfully ours no matter what the
+  registry says about the name on line 1 (registry precedence here was
+  proposed and refused in round 3: no field case motivates a new branch
+  for it).
+- matching, or absent entirely (the ancient one-line format, pre-#68) →
+  consult the registry for the handle on line 1:
+  - the registry could not be read/parsed at all (malformed JSON,
+    unreadable file, an NFS hiccup) → discard, NO HEAL, NO WRITE.
+    Treated as NO EVIDENCE, never as "no row" — the failure is transient
+    by nature, and the next call re-reads.
+  - registry row has a nonempty root, MATCHES this project → heal.
+  - registry row has a nonempty root, DISAGREES → discard (a basename
+    match can never outrank contrary registry evidence — this is the
+    wrong-checkout certification the registry consultation exists to
+    prevent).
+  - registry row has no root (legacy row) or no row at all → no contrary
+    evidence, so:
+    - `repo=` present and matching, self-file is PANE-KEYED (each tmux
+      pane gets its own path, not the shared nopane slot) → heal on the
+      basename match alone. Residual, deliberately-accepted,
+      time-bounded ambiguity: a same-basename different-directory repo
+      assigned this exact recycled pane id, with no registry row to
+      catch it either, would also heal here — rare, and stops mattering
+      once the fleet has cycled once post-upgrade.
+    - `repo=` present and matching, but this IS the shared nopane slot
+      (`"$HOST__nopane.txt"`, read/written by every no-tmux-context
+      shell on the host, in every repo, forever) → discard. A basename
+      match alone is not enough evidence for a slot this widely shared;
+      it needs the same registry corroboration the no-evidence branches
+      above already require.
+    - `repo=` absent (ancient one-line) → discard; it carries no
+      evidence of its own to check against.
+
 Only a name that comes from **derivation** (nothing else was supplied) runs
 the disambiguation algorithm. A name from `--name`, `$SOT_COMM_NAME`, or an
 already-joined self-file identity is always used **verbatim** — no

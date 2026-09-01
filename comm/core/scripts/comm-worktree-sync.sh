@@ -66,11 +66,26 @@ ${AHEAD_BEHIND:+($AHEAD_BEHIND)
 $WT_LIST"
 
 pinged=0
+failed=0
 for h in "${FAMILY[@]}"; do
     [ -n "$h" ] || continue
     [ "$h" = "$SELF" ] && continue
-    "$SCRIPT_DIR/comm-relay.sh" send "@$h" "$MSG" 2>/dev/null || true
-    pinged=$((pinged + 1))
+    # Count and report relay failures distinctly (Codex review round-1
+    # follow-up, item 6): this used to `|| true` the relay call and still
+    # increment "pinged" unconditionally, so an identity refusal (comm-relay
+    # now refuses loudly with no resolved identity) or any other send
+    # failure silently reported as a false success.
+    if "$SCRIPT_DIR/comm-relay.sh" send "@$h" "$MSG" 2>/dev/null; then
+        pinged=$((pinged + 1))
+    else
+        failed=$((failed + 1))
+        echo "comm-worktree-sync.sh: failed to relay to @$h" >&2
+    fi
 done
 
-echo "worktree-sync: base '$BASE', family [${ROSTER}], pinged $pinged (excluding @${SELF:-self})"
+echo "worktree-sync: base '$BASE', family [${ROSTER}], pinged $pinged, failed $failed (excluding @${SELF:-self})"
+# Codex review round-3 finding 3: a nonzero failed count must fail the
+# command, not just be reported — a silent-success exit code on a partial
+# delivery is the same "no quiet fallback" class the send/relay refusals
+# elsewhere in this PR exist to close.
+[ "$failed" -eq 0 ]

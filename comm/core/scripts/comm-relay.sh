@@ -25,6 +25,18 @@ source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 ensure_home
 
+# Subcommand parsed FIRST, before any transport setup (Codex review round-2
+# SHOULD-FIX 2): `send`/`ask` need a routable identity to stamp a from-field
+# that means anything, and that check must run BEFORE endpoint/socket
+# resolution below — otherwise an unresolved sender on a box with no
+# reachable daemon sees only "no sotd daemon found", never the identity
+# refusal that's the actual, fixable problem. `bridge`/`listen` are receive
+# operations and need no identity at all (bridge takes its own --name).
+SUB="${1:-}"; [ $# -gt 0 ] && shift || true
+case "$SUB" in
+    send|ask) sot_require_routable_identity || exit 1 ;;
+esac
+
 ENDPOINT="${SOT_RELAY_ENDPOINT:-}"
 resolve_endpoint() {
     sot_daemon_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
@@ -115,16 +127,28 @@ nc_hold() {
 }
 
 send_frame() {  # $1 to, $2 text
+    # Identity is already validated (sot_require_routable_identity, called
+    # above for SUB in {send,ask} before any transport setup — Codex review
+    # round-2 finding 4/C) — every relay frame stamps `from:$NAME` on the
+    # wire, and a peer's reply (or the self-echo filter in filter_inbound
+    # above) routes off that field, so this is never called with an
+    # unroutable NAME.
     local frame; frame="$(jq -nc --arg f "$NAME" --arg t "$1" --arg m "$2" \
         '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:$t,text:$m}}')"
     local resp; resp="$(printf '%s\n' "$frame" | nc_send 2>/dev/null | grep -m1 '"op":"agent.send"' || true)"
-    if printf '%s' "$resp" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
+    # An EMPTY $resp must never pass: `jq -e` on zero input never sees a
+    # falsy last value to react to, so it exits 0 — a missing socket used
+    # to print "relayed" and exit 0 (Codex review round-3 finding 3).
+    # Require a NONEMPTY response AND a true ack; anything else is a real
+    # failure, returned nonzero so `set -e` propagates it to the caller.
+    if [ -n "$resp" ] && printf '%s' "$resp" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
         echo "relayed -> ${1:-<all>} via $ENDPOINT"
-    else
-        echo "WARN: no ack from daemon — the message may NOT have been delivered." >&2
-        echo "      Retry, or use durable delivery: comm-send.sh @<name> \"msg\"" >&2
-        echo "      (If every send does this, the daemon may predate agent.send.)" >&2
+        return 0
     fi
+    echo "WARN: no ack from daemon — the message may NOT have been delivered." >&2
+    echo "      Retry, or use durable delivery: comm-send.sh @<name> \"msg\"" >&2
+    echo "      (If every send does this, the daemon may predate agent.send.)" >&2
+    return 1
 }
 
 # Filter inbound frames for agent.message addressed to me (or broadcast).
@@ -142,7 +166,8 @@ filter_inbound() {
     done
 }
 
-SUB="${1:-}"; [ $# -gt 0 ] && shift || true
+# SUB was already parsed (and shifted off) above, before the identity gate
+# and endpoint resolution — not re-parsed here.
 case "$SUB" in
     send)
         TO=""; MSG=""; TO_SET=false
