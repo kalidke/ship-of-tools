@@ -883,6 +883,7 @@ mod tests {
     /// `AlreadyExists`, same as a pre-existing file) would be silently
     /// treated as "already closed, nothing to do" instead of the loud
     /// corruption it actually is.
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn mark_closed_refuses_a_directory_masquerading_as_the_marker() {
         let dir = tempfile::tempdir().unwrap();
@@ -902,6 +903,7 @@ mod tests {
     /// The genuinely idempotent case still works once the target is
     /// validated: a SECOND `mark_closed` for the same id, after a real
     /// marker is already there, remains a no-op.
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn mark_closed_is_idempotent_over_a_genuine_prior_marker() {
         let dir = tempfile::tempdir().unwrap();
