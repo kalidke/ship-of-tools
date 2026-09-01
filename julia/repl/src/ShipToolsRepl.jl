@@ -58,6 +58,25 @@ const WGL_SERVER = Ref{Any}(nothing)
 const WGLMAKIE_PKGID = Base.PkgId(
     Base.UUID("276b4fcb-3e11-5398-bf8b-a0c2d153d008"), "WGLMakie")
 
+# Pushed onto the display stack at REPL boot (see `serve`) so `display(fig)`
+# routes to `wglshow` without ShipToolsRepl ever loading WGLMakie itself — see
+# "Display-stack integration" in the `wglshow` docstring. No `display` methods
+# are defined on this type here; the ShipToolsReplWGLMakieExt package
+# extension (loaded only when WGLMakie is) adds the one Makie-figure method,
+# so Base.display(x) falls through this display for every other value exactly
+# like it would with no display pushed at all.
+struct WGLDisplay <: Base.AbstractDisplay end
+
+# Base-only (no Makie): claiming text/html displayability makes
+# `Multimedia.has_html_display()` true the moment this is pushed. Bonito's own
+# `__init__` checks exactly that and pushes its own `BrowserDisplay` ONLY when
+# it's false — without this, Bonito's display would land ABOVE WGLDisplay on
+# the stack (pushed later, at WGLMakie/Bonito load time) and capture every
+# `display(fig)` itself (xdg-open, useless on a headless backend) before
+# WGLDisplay ever saw it. No other MIME is claimed — this display renders
+# nothing on its own; it exists only to keep Bonito off the top of the stack.
+Base.displayable(::WGLDisplay, ::MIME"text/html") = true
+
 # Client-side error overlay injected into every wglshow page. Bonito already
 # turns Julia-side render errors into inline error HTML, but a WebGL/JS error
 # (e.g. WGLMakie/THREE "computeBoundingBox NaN" from an under-constrained scene)
@@ -220,6 +239,16 @@ a port verbatim (no fallback — a taken pinned port errors loudly).
 The figure fills the browser window and grows with it as the window is resized
 (`resize_to=:parent` mounted in a viewport-filling container).
 
+## Display-stack integration
+
+A consumer never has to name `wglshow` (or a backend) at all: once WGLMakie is
+loaded — directly or transitively — plain `display(fig)` on a Makie figure
+routes here automatically, via a `WGLDisplay` pushed onto the display stack at
+REPL boot and a package extension (`ShipToolsReplWGLMakieExt`, loaded only
+when WGLMakie is) that teaches it to render a figure. `wglshow(fig; port=…)`
+keeps working exactly as documented above for anyone who wants the explicit
+call (e.g. to pin a port).
+
 Pinned against WGLMakie 0.13 / Bonito 5.1 (validated live, ADR 0032).
 """
 function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Bool = true)
@@ -341,6 +370,14 @@ it as data.
 function serve(io_in::IO, io_out::IO)
     println(stderr, "sot-repl ready · julia=$(VERSION)")
     flush(stderr)
+
+    # Display-stack integration (see WGLDisplay): pushed cheaply (one struct,
+    # no WGLMakie load) — the ShipToolsReplWGLMakieExt package extension is
+    # what actually teaches it to render a figure, and that only loads once
+    # WGLMakie does. Guarded so a process that calls `serve` more than once
+    # (every test in this file does) doesn't pile up duplicate displays.
+    any(d isa WGLDisplay for d in Base.Multimedia.displays) ||
+        pushdisplay(WGLDisplay())
 
     write_envelope(io_out, "evt", 0, "repl.ready",
         Dict(:julia => string(VERSION), :protocol => PROTOCOL_VERSION))

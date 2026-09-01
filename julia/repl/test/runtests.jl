@@ -274,4 +274,21 @@ const DR = ShipToolsRepl
         # see exactly one boot line and new ones see a designed signal.
         @test length(lines) == 1
     end
+
+    @testset "WGLDisplay: pushed onto the display stack at boot, falls through for non-figures" begin
+        # WGLMakie is not a dependency of this test environment (it's a
+        # weakdep, loaded only by a consumer that pulls it in), so this only
+        # exercises the base package's half: the push at boot, and that
+        # `display` on anything else falls through with no method defined —
+        # ShipToolsReplWGLMakieExt (loads only once WGLMakie does) is the
+        # ONLY place a Makie-figure method is added.
+        out = IOBuffer()
+        DR.serve(IOBuffer(""), out)   # boot only, same idiom as the sentinel test above
+        @test any(d isa DR.WGLDisplay for d in Base.Multimedia.displays)
+        @test_throws MethodError display(DR.WGLDisplay(), 42)
+        # Claims text/html (keeps Bonito's own display off the top of the
+        # stack — see the `Base.displayable` comment) and nothing else.
+        @test displayable(DR.WGLDisplay(), MIME("text/html"))
+        @test !displayable(DR.WGLDisplay(), MIME("text/plain"))
+    end
 end

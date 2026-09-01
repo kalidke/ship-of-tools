@@ -9,8 +9,15 @@ JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
 Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
 
+[weakdeps]
+WGLMakie = "276b4fcb-3e11-5398-bf8b-a0c2d153d008"
+
+[extensions]
+ShipToolsReplWGLMakieExt = "WGLMakie"
+
 [compat]
 JSON3 = "1"
+WGLMakie = "0.13"
 julia = "1.12"
 
 [extras]
