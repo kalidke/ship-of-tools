@@ -162,19 +162,27 @@
 //! Lifecycle state" above for how that gating actually works now.
 //!
 //! # The lane is never blocked by its OWN traffic either (Codex review
-//! round 3, N10)
+//! round 3, N10; owner-tightened to the one bound actually needed)
 //!
-//! `service_lane` drains at most `LANE_EVENT_QUOTA` transport events and
-//! [`service_connection_frames`] processes at most `LANE_FRAME_QUOTA`
-//! decoded frames per connection, per tick — an earlier version drained
-//! BOTH unconditionally, so sustained lane traffic could keep
-//! `service_lane` (and every `handle_lane_bytes` call it triggers)
-//! running indefinitely, never returning control to poll `Lifecycle`
-//! transitions, worker results, watchdogs, or `Terminal`/stop exit
-//! conditions. Leftover transport events stay queued in the transport's
-//! own channel; leftover decoded frames stay queued per-connection in
-//! `Conn::pending_frames`, drained by `service_lane`'s own sweep on a
-//! LATER tick — nothing is ever dropped, only deferred.
+//! `service_lane` drains at most `LANE_EVENT_QUOTA` transport events per
+//! tick — an earlier version drained the WHOLE channel unconditionally,
+//! so sustained lane traffic could keep `service_lane` (and every
+//! `handle_lane_bytes` call it triggers) running indefinitely, never
+//! returning control to poll `Lifecycle` transitions, worker results,
+//! watchdogs, or `Terminal`/stop exit conditions — verified NOT already
+//! bounded by connection count alone: `pipe_win.rs`'s own `reader_loop`
+//! is a tight, unpaced `ReadFile`-then-deliver-then-loop with nothing
+//! gating how much a single SUSTAINED connection can push over an
+//! extended span of wall-clock time, so `MAX_LANE_INSTANCES` (a
+//! connection-COUNT cap) does not bound per-tick THROUGHPUT. Leftover
+//! transport events simply stay queued in the transport's own channel
+//! for a LATER tick — no extra bookkeeping needed, since each event is
+//! already bounded to `pipe_win::READ_BUF_LEN` (64 KiB) by the
+//! transport, which means this ONE cap already transitively bounds
+//! per-tick FRAME-processing work too. An earlier version of this fix
+//! also queued decoded frames per-connection with a second, separate
+//! quota and a sweep to drain leftovers — deleted once it became clear
+//! that bought nothing this one cap did not already cover.
 
 #![cfg(windows)]
 
@@ -217,17 +225,20 @@ const FLAP_THRESHOLD: u32 = 3;
 const LANE_IDLE_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_LANE_INSTANCES: u32 = 8;
 const MAIN_LOOP_POLL: Duration = Duration::from_millis(100);
-/// N10 (Codex review round 3): per-tick caps on transport events and
-/// decoded frames — an earlier version drained BOTH unconditionally
-/// every tick, so sustained lane traffic could starve `Lifecycle`
-/// polling, worker results, watchdogs, and `Terminal` grace of their
-/// own turn indefinitely. Leftover events stay queued in the
-/// transport's own channel; leftover decoded frames stay queued in
-/// `Conn::pending_frames` — both drained on a LATER tick, never
-/// dropped. Not ADR-pinned numbers, same "reasoned, not pinned" status
-/// as `LANE_IDLE_DEADLINE`.
+/// N10 (Codex review round 3, owner-tightened to this ONE cap): bounds
+/// how long `service_lane`'s own event-drain loop runs per tick — an
+/// earlier version drained the channel unconditionally, so sustained
+/// lane traffic could starve `Lifecycle` polling, worker results,
+/// watchdogs, and `Terminal` grace of their own turn indefinitely.
+/// Leftover events stay queued in the transport's own channel, drained
+/// on a LATER tick — never dropped, no extra bookkeeping needed: each
+/// event is itself already bounded to `pipe_win::READ_BUF_LEN` by the
+/// transport, so this ONE cap already transitively bounds per-tick
+/// frame-processing work too (see `handle_lane_bytes`'s own doc — a
+/// separate frame-level quota and queue were tried and then deleted,
+/// buying nothing this one didn't already cover). Not an ADR-pinned
+/// number, same "reasoned, not pinned" status as `LANE_IDLE_DEADLINE`.
 const LANE_EVENT_QUOTA: usize = 64;
-const LANE_FRAME_QUOTA: usize = 64;
 const REFUSAL_SENT_DEADLINE: Duration = Duration::from_secs(2);
 const REFUSAL_FLUSH_GRACE: Duration = Duration::from_millis(250);
 /// `Terminal` may be reached with no client watching at all (a
@@ -1273,6 +1284,45 @@ fn spawn_end_run(
     (rx, handle)
 }
 
+/// The ONE journaled-reset transaction body — `reset_pointer` then
+/// `journal::finish` — shared by [`spawn_reset`] (the live lane's own
+/// background worker) and [`reset_inner`] (the no-supervisor CLI path,
+/// which calls this directly and synchronously: N6, Codex review round
+/// 3, owner-tightened — "reuse the one journaled reset function...
+/// net fewer lines, not a second implementation").
+fn do_reset(state_dir: &Path, operation_id: &str, new_voyage: &str, aside: Option<&str>) -> ResetWorkerResult {
+    match reset_pointer(state_dir, new_voyage, aside) {
+        Ok(()) => {
+            let t = journal::TerminalRecord::ResetDone { new_voyage: new_voyage.to_string() };
+            match journal::finish(state_dir, operation_id, &t) {
+                Ok(()) => ResetWorkerResult::Done { new_voyage: new_voyage.to_string() },
+                Err(e) => ResetWorkerResult::Fatal(bounded_detail(format!("journal finish failed: {e}"))),
+            }
+        }
+        Err(e) => {
+            // B2: a FAILED reset_pointer is Terminal -- a half-mutated
+            // pointer is the same "operator must investigate" condition
+            // this module's own recovery refusal already names for a
+            // third, unexplained identity. This journal::finish's OWN
+            // failure (Codex review round 3, B2) is never silently
+            // ignored either -- logged loud, even though the overall
+            // SEVERITY is unchanged either way (Fatal -> Terminal
+            // regardless): an operator investigating this failure
+            // deserves to know the journal record itself may be missing
+            // too.
+            let detail = bounded_detail(format!("{e}"));
+            let t = journal::TerminalRecord::Failed { detail: detail.clone() };
+            if let Err(finish_err) = journal::finish(state_dir, operation_id, &t) {
+                eprintln!(
+                    "sot-capsule supervise: reset {operation_id} failed ({detail}), and recording that \
+                     failure in the journal ALSO failed ({finish_err})"
+                );
+            }
+            ResetWorkerResult::Fatal(detail)
+        }
+    }
+}
+
 fn spawn_reset(
     state_dir: PathBuf,
     operation_id: String,
@@ -1281,36 +1331,7 @@ fn spawn_reset(
 ) -> (mpsc::Receiver<ResetWorkerResult>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
-        let result = match reset_pointer(&state_dir, &new_voyage, aside.as_deref()) {
-            Ok(()) => {
-                let t = journal::TerminalRecord::ResetDone { new_voyage: new_voyage.clone() };
-                match journal::finish(&state_dir, &operation_id, &t) {
-                    Ok(()) => ResetWorkerResult::Done { new_voyage },
-                    Err(e) => ResetWorkerResult::Fatal(bounded_detail(format!("journal finish failed: {e}"))),
-                }
-            }
-            Err(e) => {
-                // B2: a FAILED reset_pointer is Terminal -- a
-                // half-mutated pointer is the same "operator must
-                // investigate" condition this module's own recovery
-                // refusal already names for a third, unexplained
-                // identity. This journal::finish's OWN failure (Codex
-                // review round 3, B2) is never silently ignored either
-                // -- logged loud, even though the overall SEVERITY is
-                // unchanged either way (Fatal -> Terminal regardless):
-                // an operator investigating this failure deserves to
-                // know the journal record itself may be missing too.
-                let detail = bounded_detail(format!("{e}"));
-                let t = journal::TerminalRecord::Failed { detail: detail.clone() };
-                if let Err(finish_err) = journal::finish(&state_dir, &operation_id, &t) {
-                    eprintln!(
-                        "sot-capsule supervise: reset {operation_id} failed ({detail}), and recording that \
-                         failure in the journal ALSO failed ({finish_err})"
-                    );
-                }
-                ResetWorkerResult::Fatal(detail)
-            }
-        };
+        let result = do_reset(&state_dir, &operation_id, &new_voyage, aside.as_deref());
         let _ = tx.send(result);
     });
     (rx, handle)
@@ -1649,13 +1670,6 @@ struct Conn {
     hello_ok: bool,
     last_activity: Instant,
     pending_close: Option<PendingClose>,
-    /// N10 (Codex review round 3): frames decoded but not yet processed
-    /// within one tick's own `LANE_FRAME_QUOTA` — drained across
-    /// subsequent ticks by `service_lane`'s own sweep (never all at
-    /// once), so a client that floods many frames in one read cannot
-    /// starve `Lifecycle` polling, worker results, watchdogs, or
-    /// `Terminal` grace.
-    pending_frames: std::collections::VecDeque<DecodedFrame>,
 }
 
 /// Bundles everything `handle_lane_bytes`/`service_lane` need beyond the
@@ -1691,13 +1705,7 @@ fn service_lane(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, ctx: &mut 
             TransportEvent::Accepted(id) => {
                 conns.insert(
                     id,
-                    Conn {
-                        splitter: wire::FrameSplitter::new(),
-                        hello_ok: false,
-                        last_activity: now,
-                        pending_close: None,
-                        pending_frames: std::collections::VecDeque::new(),
-                    },
+                    Conn { splitter: wire::FrameSplitter::new(), hello_ok: false, last_activity: now, pending_close: None },
                 );
             }
             TransportEvent::Bytes(id, bytes) => {
@@ -1725,17 +1733,6 @@ fn service_lane(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, ctx: &mut 
             }
         }
     }
-    // N10: sweep every connection carrying frames left over from a
-    // PRIOR tick's own quota (decoded, but not yet processed) — nothing
-    // else revisits them once a connection goes idle right after
-    // sending its flood, since only a NEW `Bytes` event would otherwise
-    // trigger `handle_lane_bytes` again.
-    let with_pending: Vec<ConnId> =
-        conns.iter().filter(|(_, c)| !c.pending_frames.is_empty()).map(|(id, _)| *id).collect();
-    for id in with_pending {
-        service_connection_frames(lane, conns, id, ctx, now, LANE_FRAME_QUOTA);
-    }
-
     let mut to_close: Vec<ConnId> = Vec::new();
     for (id, conn) in conns.iter() {
         let idle = now.saturating_duration_since(conn.last_activity) >= LANE_IDLE_DEADLINE;
@@ -1760,47 +1757,30 @@ fn service_lane(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, ctx: &mut 
     accept_loop_dead
 }
 
-/// Decodes `bytes` into `conn`'s own queue, then hands off to
-/// [`service_connection_frames`] for the ACTUAL per-frame processing —
-/// bounded by `LANE_FRAME_QUOTA` there, never here (N10).
+/// N10 (Codex review round 3, owner-tightened): the ONE thing that must
+/// be bounded per tick is HOW LONG `service_lane`'s own event-drain loop
+/// runs before returning control — capped there, at `LANE_EVENT_QUOTA`
+/// (`pipe_win.rs`'s own `reader_loop` is a tight, unpaced
+/// `ReadFile`-then-`deliver_bytes`-then-loop with nothing gating a
+/// sustained single connection's throughput, so `MAX_LANE_INSTANCES`
+/// alone does not bound it — a genuine, not merely theoretical, per-tick
+/// starvation risk). EACH `Bytes` event this function processes is
+/// itself already bounded to `pipe_win::READ_BUF_LEN` (64 KiB) by the
+/// transport, so bounding events-per-tick already transitively bounds
+/// frames-per-tick too — an EARLIER version of this fix additionally
+/// queued decoded frames per-connection with a SECOND quota and a sweep
+/// to drain leftovers, which turned out to buy nothing: bytes beyond
+/// the event quota already stay queued, for free, in the transport's
+/// own bounded channel (backpressured, never dropped) — there was
+/// nothing left for a second, hand-rolled queue to do.
 fn handle_lane_bytes(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, id: ConnId, bytes: &[u8], ctx: &mut LaneCtx, now: Instant) {
-    let decode_err = {
-        let Some(conn) = conns.get_mut(&id) else { return };
-        conn.last_activity = now;
-        let (frames, err) = conn.splitter.feed(bytes);
-        conn.pending_frames.extend(frames);
-        err.is_some()
-    };
-    // Whatever validly decoded before a splitter error still gets its
-    // turn (queued above, exactly as it always was); the error itself
-    // still closes the connection, just AFTER that processing rather
-    // than pre-empting it.
-    service_connection_frames(lane, conns, id, ctx, now, LANE_FRAME_QUOTA);
-    if decode_err && conns.contains_key(&id) {
-        lane.close(id);
-        conns.remove(&id);
-    }
-}
-
-/// Processes AT MOST `quota` frames already queued for one connection —
-/// N10 (Codex review round 3): "per-tick quotas on transport events and
-/// decoded frames". Frames beyond the quota stay queued in
-/// `conn.pending_frames`, drained by [`service_lane`]'s own sweep on a
-/// LATER tick.
-fn service_connection_frames(
-    lane: &PipeServer,
-    conns: &mut HashMap<ConnId, Conn>,
-    id: ConnId,
-    ctx: &mut LaneCtx,
-    now: Instant,
-    quota: usize,
-) {
     let mut close_after = false;
     let mut pending: Option<PendingClose> = None;
     {
         let Some(conn) = conns.get_mut(&id) else { return };
-        for _ in 0..quota {
-            let Some(frame) = conn.pending_frames.pop_front() else { break };
+        conn.last_activity = now;
+        let (frames, err) = conn.splitter.feed(bytes);
+        for frame in frames {
             match frame {
                 DecodedFrame::SupervisorRequest(SupervisorRequest::Hello { proto, build }) if !conn.hello_ok => {
                     if proto != wire::SUPERVISOR_PROTO_V1 || build != crate::exchange::SUPERVISOR_LANE_BUILD_ID {
@@ -1917,6 +1897,9 @@ fn service_connection_frames(
             if close_after {
                 break;
             }
+        }
+        if err.is_some() {
+            close_after = true;
         }
         if let Some(p) = pending {
             conn.pending_close = Some(p);
@@ -2555,10 +2538,19 @@ fn reset_inner(state_dir: &Path, voyage: Option<String>) -> crate::Result<i32> {
         op: journal::ActiveOp::Reset { old_voyage: observed, new_voyage: new_voyage.clone(), aside: aside.clone() },
     };
     journal::begin(state_dir, &operation_id, &record)?;
-    reset_pointer(state_dir, &new_voyage, aside.as_deref())?;
-    journal::finish(state_dir, &operation_id, &journal::TerminalRecord::ResetDone { new_voyage: new_voyage.clone() })?;
-    eprintln!("sot-capsule reset: reset_done {{new_voyage: {new_voyage}}}");
-    Ok(EXIT_CLEAN)
+    // N6: the SAME journaled-reset transaction body the live lane's own
+    // spawn_reset uses — called synchronously (this CLI path is already
+    // blocking by nature; no background thread is needed here at all).
+    match do_reset(state_dir, &operation_id, &new_voyage, aside.as_deref()) {
+        ResetWorkerResult::Done { new_voyage } => {
+            eprintln!("sot-capsule reset: reset_done {{new_voyage: {new_voyage}}}");
+            Ok(EXIT_CLEAN)
+        }
+        ResetWorkerResult::Fatal(detail) => {
+            eprintln!("sot-capsule reset: {detail}");
+            Ok(EXIT_TERMINAL)
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2093,6 +2093,21 @@ pub fn run(
             }
         }
     };
+    // N1 (Codex review round 3, owner-corrected): captured HERE, the
+    // instant the main loop concludes for EITHER exit kind -- NOT after
+    // the teardown machinery below (job reap, ConPTY drain, the
+    // aggregate deadline, a final wait), which alone can outlast the
+    // producer's own life and would otherwise pollute this measurement
+    // with exactly the capsule-side latency the supervisor's own
+    // anti-flap counter must never see (an earlier version of this fix
+    // measured it at the LATE producer_dead-detail-construction site
+    // below, reproducing the identical bug it exists to close, just
+    // moved inside this process instead of the supervisor's). For
+    // ProducerExited the producer is already dead by definition; for
+    // Requested it is about to be forcibly killed by `job.terminate()`
+    // a few lines into teardown, with no intervening I/O between here
+    // and there.
+    let producer_uptime_ms = u64::try_from(spawned_at.elapsed().as_millis()).unwrap_or(u64::MAX);
     flush_output!(w);
 
     // Producer-bound admission (take/input/resize) is revoked from here on
@@ -2287,15 +2302,16 @@ pub fn run(
 
     // The mgmt `shutdown` reason, if that is what drove this EndRun (ADR
     // 0041: "the reason string is recorded in producer_dead's detail").
-    // `producer_uptime_ms` (N1, above) is an ADDITIVE, free-form
-    // diagnostic field -- like `reason` already is -- not a registered
-    // ADR 0039 feature: it changes no authority, so no segment needs to
-    // declare anything to carry it, and an older reader simply ignores
-    // an unknown plain JSON field, exactly as `detail` has always
-    // allowed.
+    // `producer_uptime_ms` (N1, captured well above, at the exit_kind
+    // boundary -- NOT recomputed here, past all the teardown machinery
+    // this point sits after) is an ADDITIVE, free-form diagnostic field
+    // -- like `reason` already is -- not a registered ADR 0039 feature:
+    // it changes no authority, so no segment needs to declare anything
+    // to carry it, and an older reader simply ignores an unknown plain
+    // JSON field, exactly as `detail` has always allowed.
     let mut detail = json!({
         "exit_code": exit_code,
-        "producer_uptime_ms": u64::try_from(spawned_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "producer_uptime_ms": producer_uptime_ms,
     });
     if let Some(reason) = &shutdown_reason {
         detail["reason"] = json!(reason);
