@@ -489,6 +489,60 @@ case_v2_self_file_empty_root_is_discarded_not_treated_as_absent() {
     return 0
 }
 
+case_malformed_third_line_discarded_not_treated_as_absent() {
+    # Codex review round-3 finding 2: a present-but-malformed third line
+    # (e.g. "rootBROKEN" — no root= prefix at all) used to be classified
+    # as an ABSENT third line and routed through the more permissive
+    # legacy-heal path (basename-alone trust). Array length (not just
+    # pattern match) now tells "no third line" apart from "a garbage
+    # third line" — the latter is corrupted evidence and discarded
+    # unconditionally, same as a present-and-wrong root=.
+    local root self
+    mkdir -p "$WORK/malformed-root/proj19"
+    root="$(realpath "$WORK/malformed-root/proj19")"
+    self="$WORK/malformed-root-self.txt"
+    printf 'proj19-handle\nrepo=proj19\nrootBROKEN\n' > "$self"
+
+    context_in "$root" "$self"
+    [ "$CTX_RC" -eq 0 ] || { echo "  exited $CTX_RC: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "malformed third line" || { echo "  missing the malformed-third-line refusal: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "self-healed" && { echo "  SELF-HEALED a malformed third line: $CTX_ERR"; return 1; }
+    [ -z "$CTX_NAME" ] || { echo "  NAME=$CTX_NAME, want empty"; return 1; }
+    local lines; lines="$(wc -l < "$self")"
+    [ "$lines" -eq 3 ] || { echo "  self-file with a malformed third line was mutated (must be left untouched): $(cat "$self")"; return 1; }
+    return 0
+}
+
+case_registry_read_error_refuses_to_heal_or_write() {
+    # Codex review round-3 finding 1: an unreadable/malformed registry.json
+    # used to make sot_registry_entry_status print NOTHING, which every
+    # caller read back as indistinguishable from "no row" — letting a
+    # pane-keyed legacy self-file self-heal on a basename match with the
+    # registry effectively unconsultable. A distinct "error" tag now means
+    # NO EVIDENCE AND NO WRITE for this call.
+    local root self saved_registry
+    mkdir -p "$WORK/regread-error/proj18"
+    root="$(realpath "$WORK/regread-error/proj18")"
+    self="$WORK/regread-error-self.txt"
+    printf 'proj18-handle\nrepo=proj18\n' > "$self"
+
+    saved_registry="$(cat "$REGISTRY")"
+    printf 'not valid json {{{' > "$REGISTRY"
+
+    context_in "$root" "$self"
+    # Restore the registry BEFORE any assertion can return early and leave
+    # every later case running against a broken registry.
+    printf '%s' "$saved_registry" > "$REGISTRY"
+
+    [ "$CTX_RC" -eq 0 ] || { echo "  exited $CTX_RC: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "could not read/parse the sot-comm registry" || { echo "  missing the registry-read-error refusal: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "self-healed" && { echo "  SELF-HEALED despite an unreadable registry: $CTX_ERR"; return 1; }
+    [ -z "$CTX_NAME" ] || { echo "  NAME=$CTX_NAME, want empty (registry unreadable -> no heal)"; return 1; }
+    local lines; lines="$(wc -l < "$self")"
+    [ "$lines" -eq 2 ] || { echo "  self-file was mutated despite an unreadable registry (NO WRITE required): $(cat "$self")"; return 1; }
+    return 0
+}
+
 case_legacy_selffile_registry_root_disagreement_refuses_heal() {
     # Sharpest finding in the round-1 review (finding 2): basename-only
     # healing can CERTIFY THE WRONG CHECKOUT. The reviewer reproduced this
@@ -868,6 +922,66 @@ case_comm_send_force_target_exempt_from_identity_refusal() {
     return 0
 }
 
+case_relay_send_fails_loudly_with_no_reachable_daemon() {
+    # Codex review round-3 finding 3: an EMPTY response from nc_send used
+    # to pass `jq -e` — zero JSON inputs means jq never sees a falsy last
+    # value to react to, so the check silently succeeded. A missing/
+    # unreachable Unix socket used to print "relayed" and exit 0.
+    local root h self errfile out rc err
+    mkdir -p "$WORK/relay-noack/proj20"
+    root="$(realpath "$WORK/relay-noack/proj20")"
+    join_in "$root"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    h="proj20-${HOST}"; self="$NEXT_SELF_FILE"
+    contains "$JOIN_OUT" "Joined sot-comm as @$h" || { echo "  setup join stdout: $JOIN_OUT"; return 1; }
+
+    errfile="$WORK/relay-noack.err"
+    out="$(cd "$root" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
+        SOT_RELAY_ENDPOINT="unix:$WORK/no-such-daemon-anywhere.sock" \
+        "$SCRIPTS_DIR/comm-relay.sh" send @somebody "hello" 2>"$errfile")"
+    rc=$?
+    err="$(cat "$errfile" 2>/dev/null || true)"
+    [ "$rc" -ne 0 ] || { echo "  comm-relay.sh send succeeded with no reachable daemon: $out"; return 1; }
+    contains "$out" "relayed ->" && { echo "  claimed 'relayed' despite no reachable daemon: $out"; return 1; }
+    contains "$err" "no ack from daemon" || { echo "  missing the no-ack warning: $err"; return 1; }
+    return 0
+}
+
+case_send_succeeds_with_rooted_registry_row() {
+    # Codex review round-3 finding 8: the suite proved only REFUSALS for
+    # comm-send.sh's identity gate; this proves the actual happy path — a
+    # real join followed by an ordinary send to another real, registered
+    # recipient must succeed end-to-end (delivered, and landed in the
+    # recipient's own inbox with the right from-field).
+    local root_sender root_recipient h_sender h_recipient self_sender errfile out rc err
+    mkdir -p "$WORK/send-happy-path/sender23" "$WORK/send-happy-path/recipient23"
+    root_sender="$(realpath "$WORK/send-happy-path/sender23")"
+    root_recipient="$(realpath "$WORK/send-happy-path/recipient23")"
+
+    join_in "$root_recipient"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  recipient setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    h_recipient="recipient23-${HOST}"
+    contains "$JOIN_OUT" "Joined sot-comm as @$h_recipient" || { echo "  recipient setup join stdout: $JOIN_OUT"; return 1; }
+
+    join_in "$root_sender"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  sender setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    h_sender="sender23-${HOST}"; self_sender="$NEXT_SELF_FILE"
+    contains "$JOIN_OUT" "Joined sot-comm as @$h_sender" || { echo "  sender setup join stdout: $JOIN_OUT"; return 1; }
+
+    errfile="$WORK/send-happy-path.err"
+    out="$(cd "$root_sender" && SOT_COMM_SELF_FILE="$self_sender" SOT_COMM_TEST_HOST="$HOST" \
+        "$SEND" "@$h_recipient" "hello there" 2>"$errfile")"
+    rc=$?
+    err="$(cat "$errfile" 2>/dev/null || true)"
+    [ "$rc" -eq 0 ] || { echo "  comm-send.sh failed with two genuinely rooted, registered identities: rc=$rc, stderr: $err"; return 1; }
+    contains "$err" "identity did not resolve" && { echo "  refused despite a valid rooted registry row: $err"; return 1; }
+    { contains "$out" "queued to inbox" || contains "$out" "delivered live"; } \
+        || { echo "  stdout doesn't confirm delivery: $out"; return 1; }
+    jq -e --arg h "$h_sender" 'select(.from == $h)' "$INBOX_DIR/$h_recipient.jsonl" >/dev/null 2>&1 \
+        || { echo "  recipient inbox missing a message from @$h_sender: $(cat "$INBOX_DIR/$h_recipient.jsonl" 2>/dev/null)"; return 1; }
+    return 0
+}
+
 case_send_refuses_when_registry_row_missing_despite_resolved_name() {
     # Codex review round-2 finding 4/C: a self-file resolving NAME locally
     # (comm-context.sh validated its root=) is NOT sufficient — the
@@ -1179,6 +1293,34 @@ case_spawn_refuses_task_when_spawner_has_no_identity() {
     return 0
 }
 
+case_spawn_task_refuses_when_spawner_has_no_registry_row() {
+    # Codex review round-3 finding 4: a VALID self-file (NAME resolves
+    # locally) but a DELETED registry row used to pass the old
+    # nonempty-only SPAWNER check — spawn "succeeded" (rc=0) while the
+    # task silently never reached the child's inbox. The routability
+    # check (same as comm-send/relay/bootstrap) now runs before any
+    # socket/spawn work when --task is given.
+    local root childroot h self errfile out rc err
+    mkdir -p "$WORK/spawn-task-no-row/proj21" "$WORK/spawn-task-no-row/child22"
+    root="$(realpath "$WORK/spawn-task-no-row/proj21")"
+    childroot="$(realpath "$WORK/spawn-task-no-row/child22")"
+    join_in "$root"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    h="proj21-${HOST}"; self="$NEXT_SELF_FILE"
+    contains "$JOIN_OUT" "Joined sot-comm as @$h" || { echo "  setup join stdout: $JOIN_OUT"; return 1; }
+
+    with_lock registry_del "$h"
+
+    errfile="$WORK/spawn-task-no-row.err"
+    out="$(cd "$root" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
+        "$SPAWN" "$childroot" --no-workspace --task "do the thing" 2>"$errfile")"
+    rc=$?
+    err="$(cat "$errfile" 2>/dev/null || true)"
+    [ "$rc" -ne 0 ] || { echo "  comm-spawn.sh --task succeeded despite a deleted spawner registry row: $out"; return 1; }
+    contains "$err" "no registry row" || { echo "  missing the spawner-routability refusal: $err"; return 1; }
+    return 0
+}
+
 case_lock_closes_derive_write_gap() {
     # Deterministic simulation of the race claim_derived_handle exists to
     # close: two derived joins for DIFFERENT roots that would both decide on
@@ -1430,6 +1572,8 @@ check "(a) legacy self-file, matching repo: comm-context.sh accepts + backfills 
 check "(b) legacy self-file, mismatched repo: still discarded as stale"     case_legacy_self_file_mismatched_repo_still_discarded
 check "(c) v2 self-file, root= present but wrong: still discarded as stale" case_v2_self_file_wrong_root_is_still_discarded
 check "(d) v2 self-file, root= present but empty: discarded, not treated as absent (round-1 F2)" case_v2_self_file_empty_root_is_discarded_not_treated_as_absent
+check "malformed third line (not root=...) discarded, not treated as absent (round-3 F2)" case_malformed_third_line_discarded_not_treated_as_absent
+check "unreadable/malformed registry refuses to heal or write (round-3 F1)" case_registry_read_error_refuses_to_heal_or_write
 check "legacy self-file + a DISAGREEING registry root: refuses to self-heal (round-1 F2 ship-blocker)" case_legacy_selffile_registry_root_disagreement_refuses_heal
 check "legacy self-file + an unknown-root registry row: still heals on repo match" case_legacy_selffile_unknown_root_registry_row_still_heals_on_repo_match
 check "ancient one-line self-file WITH a matching-root registry row: heals" case_ancient_oneline_with_matching_registry_heals
@@ -1443,6 +1587,8 @@ check "nopane self-file read from a non-repo cwd: discarded, not healed; a send 
 check "comm-relay.sh send refuses with no resolved identity" case_comm_relay_send_refuses_with_no_identity
 check "comm-bootstrap.sh refuses with no resolved identity" case_comm_bootstrap_refuses_with_no_identity
 check "comm-send.sh --force-target stays exempt from the identity refusal" case_comm_send_force_target_exempt_from_identity_refusal
+check "comm-relay.sh send fails loudly with no reachable daemon, never claims 'relayed' (round-3 F3)" case_relay_send_fails_loudly_with_no_reachable_daemon
+check "comm-send.sh succeeds with two genuinely rooted, registered identities (round-3 F8 positive path)" case_send_succeeds_with_rooted_registry_row
 check "comm-send.sh refuses when NAME resolves but has no registry row (round-2 F4/C)" case_send_refuses_when_registry_row_missing_despite_resolved_name
 check "comm-send.sh refuses when the registry row belongs to a different project (round-2 F4/C)" case_send_refuses_when_registry_root_mismatches_current_project
 check "legacy registry row with no root= is a collision, not a free pass" case_legacy_unknown_root_row
@@ -1451,6 +1597,7 @@ check "comm-join.sh bridge probe ignores a prefix-only decoy session (round-1 F4
 check "bridge detection finds a directly-started bridge with no tmux marker (round-2 F5/D)" case_bridge_detection_finds_directly_started_bridge_with_no_tmux_marker
 check "comm-spawn.sh fresh-mode refuses to reclaim a live row (F3)" case_spawn_fresh_only_refusal
 check "comm-spawn.sh --task refuses with no spawner identity, no-task spawn still works (round-2 SHOULD-FIX 3/G)" case_spawn_refuses_task_when_spawner_has_no_identity
+check "comm-spawn.sh --task refuses when the spawner's registry row is gone (round-3 F4)" case_spawn_task_refuses_when_spawner_has_no_registry_row
 check "concurrent claim landing mid-wait is not clobbered (lock closes the derive/write gap)" case_lock_closes_derive_write_gap
 check "rollback never deletes a row that replaced the provisional one (F1 round 2)" case_rollback_survives_replacement_row
 check "with_lock restores the caller's prior EXIT trap after a direct callee failure (F2 round 2)" case_with_lock_restores_prior_trap_on_failure
