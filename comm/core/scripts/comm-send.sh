@@ -37,9 +37,23 @@ while [ $# -gt 0 ]; do
 done
 
 [ -z "$MSG" ] && { echo "usage: comm-send.sh @name \"msg\" | --broadcast \"msg\" | --force-target T \"msg\"" >&2; exit 1; }
-[ -z "$NAME" ] && NAME="unknown-$HOST"
 
-FORMATTED="[$NAME:$REPO] $MSG"
+# Identity refusal (field regression — coordinator ruling): a durable send/
+# broadcast stamps `from:$NAME` into the recipient's inbox, the ONLY thing
+# that makes a reply (or anything else routing off the from-field)
+# routable back. An unresolved identity used to fall back to a synthesized
+# "unknown-$HOST" sender — worse than failing outright, since that name
+# resolves to no registry row and any reply to it silently vanishes.
+# Refuse loudly instead, UNLESS this is --force-target: that path is
+# explicitly identityless by design (first contact with a session that
+# hasn't joined the network yet — a raw tmux paste, no inbox, no from-field
+# semantics to get wrong) and must keep working with no identity at all.
+if [ -z "$NAME" ] && [ -z "$FORCE_TARGET" ]; then
+    echo "ERROR: your sot-comm identity did not resolve — refusing to send with no verifiable from-handle (a reply would silently misroute, never reaching you). Two likely causes: (1) a stale/pre-root= self-file — comm-context.sh now self-heals this on read, so simply retrying may be enough; if it recurs, reclaim explicitly with 'comm-join.sh --name <canonical-handle>' (never a bare comm-join.sh if you previously held a handle — that derives a NEW one instead of reclaiming yours); or (2) this is a background/no-pane shell whose cwd is outside this repo (or outside any repo) — the no-pane self-file slot is shared per-host, and this shell's repo/root doesn't match what it holds, so it reads as stale rather than adopted. Fix: run this from inside the repo, or from a session that has actually joined." >&2
+    exit 1
+fi
+
+FORMATTED="[${NAME:-?}:$REPO] $MSG"
 
 # Raw delivery to a tmux target with no registry lookup — for first contact with
 # a session that hasn't joined yet. No inbox (no known recipient name).

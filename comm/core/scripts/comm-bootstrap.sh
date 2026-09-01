@@ -20,7 +20,17 @@ ensure_home
 
 TGT="${1:-}"; SUGG="${2:-}"
 [ -z "$TGT" ] && { echo "usage: comm-bootstrap.sh <tmux-target> [suggested-name]" >&2; exit 1; }
-[ -z "$NAME" ] && NAME="unknown-$HOST"
+# Identity refusal (field regression — coordinator ruling, item 5): the
+# nudge below embeds "@$NAME" as the reply-to address it hands the target
+# session — unlike comm-send.sh's --force-target transport leg (which this
+# script uses only for DELIVERY and stays identityless on purpose), THIS
+# script's own use of NAME is not cosmetic: a target that dutifully replies
+# to a synthesized "unknown-$HOST" would have no working reply path at all.
+# Refuse loudly instead of handing out a broken return address.
+if [ -z "$NAME" ]; then
+    echo "ERROR: your sot-comm identity did not resolve — refusing to bootstrap another session with no working reply-to handle for them to answer. Likely a stale self-file (comm-context.sh self-heals a legacy one on read — retry) or a background/no-pane shell outside this repo. Join (or reclaim: comm-join.sh --name <canonical-handle>) first." >&2
+    exit 1
+fi
 
 # Validate the target pane exists — on the sot server (ADR 0038 keeper
 # socket), same resolution comm-send uses for the paste itself. A bare

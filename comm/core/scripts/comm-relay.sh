@@ -115,6 +115,17 @@ nc_hold() {
 }
 
 send_frame() {  # $1 to, $2 text
+    # Identity refusal (field regression — coordinator ruling): every relay
+    # frame stamps `from:$NAME` on the wire, and a peer's reply (or the
+    # self-echo filter in filter_inbound above) routes off that field.
+    # There is no identityless path here (unlike comm-send.sh's
+    # --force-target) — `send`/`ask` always claim to be someone. Refuse
+    # loudly on an unresolved identity rather than let a broken from-field
+    # go out silently.
+    if [ -z "$NAME" ]; then
+        echo "ERROR: your sot-comm identity did not resolve — refusing to relay-send with no verifiable from-handle (a reply would silently misroute). Likely a stale self-file (comm-context.sh self-heals a legacy one on read — retry) or a background/no-pane shell whose cwd doesn't match the repo its shared no-pane self-file holds (run from inside the repo). If it recurs for a session that previously held a handle, reclaim explicitly: comm-join.sh --name <canonical-handle> — never a bare comm-join.sh, which derives a NEW handle instead." >&2
+        exit 1
+    fi
     local frame; frame="$(jq -nc --arg f "$NAME" --arg t "$1" --arg m "$2" \
         '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:$t,text:$m}}')"
     local resp; resp="$(printf '%s\n' "$frame" | nc_send 2>/dev/null | grep -m1 '"op":"agent.send"' || true)"
