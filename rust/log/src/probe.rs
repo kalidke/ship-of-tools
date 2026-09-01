@@ -116,6 +116,22 @@ pub trait ProbeOps {
     /// process.
     fn terminate(&self, process: &Self::Process) -> std::io::Result<()>;
 
+    /// A4's own identity check (Codex review round 1, finding 10): the
+    /// OWNED child's own `(pid, creation time)`, read independently of
+    /// whatever a challenge over its pipe observed. `Err` means the
+    /// identity could not even be read (the handle itself failed an OS
+    /// call) — `probe_owned_spawn` treats that identically to a proven
+    /// mismatch: fail closed, never trust an unverifiable `Proven`.
+    fn spawned_identity(&self, child: &Self::SpawnedChild) -> std::io::Result<(u32, u64)>;
+    /// The SAME `(pid, creation time)` shape, read off an ALREADY-PROVEN
+    /// process — what the challenge itself already verified (against the
+    /// connection's own OS-level peer info), with no further OS call.
+    /// `probe_owned_spawn`'s A4 arm compares this against
+    /// `spawned_identity` above to tell "the pipe now answers, and it's
+    /// OUR child" apart from "the pipe now answers, but with someone
+    /// else's leftover process."
+    fn proven_identity(&self, process: &Self::Process) -> (u32, u64);
+
     /// An injectable clock. B0/readiness cutoffs are measured against
     /// THIS, never `Instant::now()` directly, in any code that consumes
     /// `ProbeOps` — so a model test can deterministically reach any
@@ -165,6 +181,28 @@ impl SpawnedChild {
 
     pub fn terminate(&self) -> std::io::Result<()> {
         challenge::terminate_handle(self.raw())
+    }
+
+    /// This CHILD's own `(pid, creation time)`, read directly off the
+    /// handle THIS episode spawned — independent of anything a challenge
+    /// over its pipe observed (Codex review round 1, finding 10). A4's
+    /// own transition ("alive, within cutoff, challenge proves it") never
+    /// compared the challenged server's identity against the child that
+    /// was actually spawned: a stale, orphaned capsule left over from a
+    /// prior crash, still bound under the SAME voyage id while this new
+    /// child's own pipe hadn't come up yet, would answer the challenge
+    /// first and be accepted as if it WERE the freshly spawned leg. This
+    /// is the independent half of that comparison; `classify::probe_owned_spawn`
+    /// is the caller that actually compares it against the challenge's
+    /// own `ChallengedProcess::pid`/`created`.
+    pub fn identity(&self) -> std::io::Result<(u32, u64)> {
+        use windows_sys::Win32::System::Threading::GetProcessId;
+        let pid = unsafe { GetProcessId(self.raw()) };
+        if pid == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let created = challenge::creation_filetime_bits(self.raw())?;
+        Ok((pid, created))
     }
 }
 
@@ -275,6 +313,14 @@ impl ProbeOps for RealProbeOps {
         process.terminate()
     }
 
+    fn spawned_identity(&self, child: &Self::SpawnedChild) -> std::io::Result<(u32, u64)> {
+        child.identity()
+    }
+
+    fn proven_identity(&self, process: &Self::Process) -> (u32, u64) {
+        (process.pid(), process.created())
+    }
+
     fn now(&self) -> Instant {
         Instant::now()
     }
@@ -334,6 +380,8 @@ pub struct ScriptedProbeOps {
     writer_fence_probe: std::sync::Mutex<std::collections::VecDeque<FenceProbe>>,
     wait_exit: std::sync::Mutex<std::collections::VecDeque<WaitOutcome>>,
     terminate: std::sync::Mutex<std::collections::VecDeque<std::io::Result<()>>>,
+    spawned_identity: std::sync::Mutex<std::collections::VecDeque<std::io::Result<(u32, u64)>>>,
+    proven_identity: std::sync::Mutex<std::collections::VecDeque<(u32, u64)>>,
     now: std::sync::Mutex<Instant>,
 }
 
@@ -349,6 +397,8 @@ impl Default for ScriptedProbeOps {
             writer_fence_probe: Default::default(),
             wait_exit: Default::default(),
             terminate: Default::default(),
+            spawned_identity: Default::default(),
+            proven_identity: Default::default(),
             now: std::sync::Mutex::new(Instant::now()),
         }
     }
@@ -384,6 +434,12 @@ impl ScriptedProbeOps {
     pub fn push_terminate(&self, outcome: std::io::Result<()>) {
         self.terminate.lock().unwrap().push_back(outcome);
     }
+    pub fn push_spawned_identity(&self, outcome: std::io::Result<(u32, u64)>) {
+        self.spawned_identity.lock().unwrap().push_back(outcome);
+    }
+    pub fn push_proven_identity(&self, identity: (u32, u64)) {
+        self.proven_identity.lock().unwrap().push_back(identity);
+    }
 
     /// Set the injected clock to an absolute `Instant` (typically derived
     /// from `self.now()` plus/minus a `Duration`, since `Instant` has no
@@ -409,6 +465,8 @@ impl ScriptedProbeOps {
             && self.writer_fence_probe.lock().unwrap().is_empty()
             && self.wait_exit.lock().unwrap().is_empty()
             && self.terminate.lock().unwrap().is_empty()
+            && self.spawned_identity.lock().unwrap().is_empty()
+            && self.proven_identity.lock().unwrap().is_empty()
     }
 }
 
@@ -441,6 +499,12 @@ impl ProbeOps for ScriptedProbeOps {
     }
     fn terminate(&self, _process: &DummyProcess) -> std::io::Result<()> {
         self.terminate.lock().unwrap().pop_front().expect("scripted terminate outcome exhausted")
+    }
+    fn spawned_identity(&self, _child: &DummySpawnedChild) -> std::io::Result<(u32, u64)> {
+        self.spawned_identity.lock().unwrap().pop_front().expect("scripted spawned_identity outcome exhausted")
+    }
+    fn proven_identity(&self, _process: &DummyProcess) -> (u32, u64) {
+        self.proven_identity.lock().unwrap().pop_front().expect("scripted proven_identity outcome exhausted")
     }
     fn now(&self) -> Instant {
         *self.now.lock().unwrap()

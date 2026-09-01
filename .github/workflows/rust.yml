@@ -136,21 +136,26 @@ jobs:
   # job too — the same-connection challenge's security-sensitive Windows
   # tests (real named pipes, a real cross-process server) belong in a named,
   # budgeted job, not folded anonymously into the general `windows-latest`
-  # matrix's blanket `cargo test --workspace`. This is a PARTIAL adoption of
+  # matrix's blanket `cargo test --workspace`. This is the FULL adoption of
   # the ADR's pinned five-command table (conpty/capsule_win/pipe_win/
-  # e2e_pipe/supervisor_win, ~75 min total incl. checkout+build):
-  # `supervisor_win` doesn't exist until U2 mints it, so this job runs the
-  # other four, each at its own ADR-pinned per-step cap; the job-level
-  # timeout leaves headroom for checkout+build plus all four steps'
-  # worst case. `pipe_win`/`e2e_pipe` ALSO still run via the main `test`
-  # job's blanket `cargo test --workspace` on `windows-latest` — the
-  # duplication is deliberate, not yet worth a special-case exclusion.
+  # e2e_pipe/supervisor_win, ~75 min total incl. checkout+build), each at
+  # its own ADR-pinned per-step cap; the job-level timeout leaves headroom
+  # for checkout+build plus all five steps' worst case. `pipe_win`/
+  # `e2e_pipe` ALSO still run via the main `test` job's blanket
+  # `cargo test --workspace` on `windows-latest` — the duplication is
+  # deliberate, not yet worth a special-case exclusion.
+  #
+  # ADR 0041 step 6, unit U2: `supervisor_win` spawns the real
+  # `sot-capsule` binary and drives it as a real client (the supervisor
+  # lane, a real cross-process authority) — belongs here for the identical
+  # "real named pipes, a real cross-process server" reason `pipe_win`/
+  # `e2e_pipe` do, at the ADR's own pinned 15-minute cap.
   conpty-windows-2022:
-    name: conpty + capsule owned-ConPTY + pipe/challenge tests (windows-2022)
+    name: conpty + capsule owned-ConPTY + pipe/challenge/supervisor tests (windows-2022)
     runs-on: windows-2022
     # See the per-step caps below for what each command budgets; this is
-    # checkout+build (~15 min per the ADR) plus all four steps' worst case.
-    timeout-minutes: 60
+    # checkout+build (~15 min per the ADR) plus all five steps' worst case.
+    timeout-minutes: 75
     defaults:
       run:
         working-directory: rust
@@ -191,6 +196,13 @@ jobs:
       - name: Test e2e_pipe (real-pipe end-to-end)
         timeout-minutes: 10
         run: cargo test -p sot-log --test e2e_pipe -- --nocapture
+      # --test supervisor_win: the real-process supervisor authority --
+      # spawn/adopt, the anti-flap bound, end_run's record_closed then
+      # record_verified, and the version-skew refusal, all against a real
+      # `sot-capsule supervise` child.
+      - name: Test supervisor_win (the supervisor authority, real process)
+        timeout-minutes: 15
+        run: cargo test -p sot-log --test supervisor_win -- --nocapture
 
   p2-e2e:
     name: P2 e2e (real helper, offline)

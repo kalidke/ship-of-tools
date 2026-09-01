@@ -14,6 +14,11 @@ pub mod capsule_win;
 // process-handle wrapper it returns. `pub`, matching `pipe_win`/
 // `capsule_win`: Windows-only (see the module's own `#![cfg(windows)]`).
 pub mod challenge;
+// ADR 0041 step 6, unit U2: the probe classifier (Stage A/B transition
+// table) `probe.rs` deliberately ships without — see that module's own
+// doc. `pub`, matching `challenge`/`probe`: Windows-only, and
+// `tests/supervisor_win.rs` needs to reach it.
+pub mod classify;
 pub mod claude;
 pub mod conpty;
 // ADR 0041 step 5, unit U3: the Windows named-pipe transport (server +
@@ -65,6 +70,16 @@ pub mod fence;
 // exchange (encode request, decode reply) -- the one thing
 // challenge::challenge delegates per-lane. Portable, like `deadline`.
 pub mod exchange;
+// ADR 0041 step 6, unit U2: the supervisor's own durable operation
+// journal (`operation_id`/`.active`/`.terminal`, recovery-first
+// reconciliation) — portable, like `pointer`/`rollout`, since it reuses
+// `fsutil::publish_noreplace` rather than any OS-specific primitive.
+pub mod journal;
+// ADR 0041 step 6, unit U2: the parent-death lease a spawned capsule
+// checks as its first act after acquiring the writer fence — a named,
+// kernel-brokered mutex, Windows-only. `pub`, matching `challenge`/
+// `classify`/`probe`: `tests/supervisor_win.rs` needs to reach it.
+pub mod lease;
 // ADR 0041 step 6, unit U0: `drawer.voyage` publication + validation.
 // Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
 // which already has both platform arms.
@@ -81,6 +96,11 @@ pub mod segment;
 // that needs it (today: the frontend) shares one rule instead of
 // drifting copies.
 pub mod state_dir;
+// ADR 0041 step 6, unit U2: the authority -- `sot-capsule supervise`,
+// and `endrun`/`reset` as fence-acquiring in-process callers. `pub`,
+// matching `challenge`/`classify`/`lease`/`probe`: Windows-only, and
+// `tests/supervisor_win.rs` needs to reach it.
+pub mod supervisor;
 pub mod verify;
 pub mod voyage;
 pub mod wire;

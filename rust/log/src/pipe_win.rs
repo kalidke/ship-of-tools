@@ -297,6 +297,18 @@ fn pipe_name_wide(voyage_id: &str) -> Vec<u16> {
     wide_null(&format!(r"\\.\pipe\sot-voyage-{voyage_id}"))
 }
 
+/// `\\.\pipe\sot-supervisor-<h>`, UTF-16, NUL-terminated (ADR 0041
+/// Lifecycle "Name and identity") — the supervisor lane's OWN pipe, a
+/// second, independently-named instance of this same server/client
+/// machinery, never a voyage pipe under another name. `h` is the caller's
+/// own stable hash of the canonicalized state-dir path; unlike
+/// [`pipe_name_wide`]'s `voyage_id`, this function neither derives nor
+/// validates it — the supervisor lane has no UUID-shape requirement to
+/// enforce.
+fn supervisor_pipe_name_wide(h: &str) -> Vec<u16> {
+    wide_null(&format!(r"\\.\pipe\sot-supervisor-{h}"))
+}
+
 /// NUL-terminated UTF-16 for an arbitrary Rust string. A small, deliberate
 /// duplicate of `conpty.rs`'s and `fsutil.rs`'s own private copies of this
 /// exact helper — sharing a three-line leaf helper would add machinery
@@ -1349,10 +1361,30 @@ impl PipeServer {
     /// documented `1..=255` range.
     pub fn bind(voyage_id: &str, max_instances: u32) -> Result<Self, PipeError> {
         validate_voyage_id(voyage_id)?;
+        Self::bind_named(pipe_name_wide(voyage_id), max_instances)
+    }
+
+    /// ADR 0041 step 6 U2: the supervisor lane's own pipe,
+    /// `\\.\pipe\sot-supervisor-<h>` — otherwise identical to [`Self::bind`]
+    /// (same security posture via [`create_pipe_instance`], same
+    /// accept/reaper machinery, same squat detection). `h` is the caller's
+    /// own stable hash of the canonicalized state-dir path (ADR 0041
+    /// Lifecycle "Name and identity") — this constructor does not derive
+    /// or validate it as a voyage id, unlike [`Self::bind`].
+    pub fn bind_supervisor(h: &str, max_instances: u32) -> Result<Self, PipeError> {
+        Self::bind_named(supervisor_pipe_name_wide(h), max_instances)
+    }
+
+    /// Shared construction (round-4 finding 1's squat-detection ordering
+    /// applies identically to both pipe families): given an
+    /// already-resolved wide pipe name, create AND REGISTER the
+    /// squat-detecting first instance synchronously, then start the
+    /// reaper and accept threads. `max_instances` must be in Win32's own
+    /// documented `1..=255` range.
+    fn bind_named(name: Vec<u16>, max_instances: u32) -> Result<Self, PipeError> {
         if !(1..=255).contains(&max_instances) {
             return Err(PipeError::InvalidMaxInstances);
         }
-        let name = pipe_name_wide(voyage_id);
 
         let (events_tx, events_rx) = mpsc::sync_channel(EVENTS_CHANNEL_CAP);
         let (reaper_tx, reaper_rx) =
@@ -2541,7 +2573,28 @@ pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, PipeError> {
 /// to tell apart.
 pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeClient, PipeError> {
     validate_voyage_id(voyage_id)?;
-    let name = pipe_name_wide(voyage_id);
+    connect_named_pipe_unchallenged(pipe_name_wide(voyage_id))
+}
+
+/// ADR 0041 step 6 U2: connect to the supervisor lane's own pipe with NO
+/// authentication — every real caller must run the SAME five-step
+/// [`crate::challenge::challenge`] the mgmt lane's own client does (the
+/// supervisor lane's security is "MUTUAL", not the weaker SID-only proof
+/// [`connect_voyage_pipe`] settles for), so unlike that function this one
+/// intentionally has no `_unchallenged`-free sibling here — the caller
+/// composes the full challenge itself, exactly as `probe::RealProbeOps`
+/// does for the mgmt lane's own unchallenged connect.
+pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient, PipeError> {
+    connect_named_pipe_unchallenged(supervisor_pipe_name_wide(h))
+}
+
+/// Shared raw connect, given an already-resolved wide pipe name: retries
+/// `CreateFileW` (bounded, 2s total) on `ERROR_PIPE_BUSY`/
+/// `ERROR_FILE_NOT_FOUND`, exactly as [`connect_voyage_pipe_unchallenged`]'s
+/// own doc describes. NO authentication of any kind — every caller of
+/// either wrapper above is responsible for running the OS-level identity
+/// check (and, where the lane needs it, the full challenge) on top.
+fn connect_named_pipe_unchallenged(name: Vec<u16>) -> Result<PipeClient, PipeError> {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let h = unsafe {

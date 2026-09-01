@@ -855,11 +855,24 @@ fn wide_verbatim(p: &Path) -> Result<Vec<u16>> {
 }
 
 /// AV/indexer transient hold codes worth absorbing (bounded).
+///
+/// `ERROR_PATH_NOT_FOUND` was added here in an earlier round on an AV-scan
+/// hypothesis for a `reconcile_reset` CI failure, then REVERTED (Codex
+/// review round 1, finding 11): that failure reproduced deterministically
+/// across repeated real-CI runs, which disproves a transient/AV cause —
+/// code 3 is PATH not FILE, meaning a real code path was constructing a
+/// path whose parent directory never existed. Broadening the transient
+/// set papered over that with a bounded retry-then-fail-anyway instead of
+/// fixing the actual missing-directory bug (see `supervisor.rs`'s own
+/// fix). `ERROR_SHARING_VIOLATION` and `ERROR_ACCESS_DENIED` remain: both
+/// are genuinely transient AV/indexer holds on a name this process itself
+/// just created (rust-lang/rust#123985), unrelated to path existence.
 #[cfg(windows)]
 fn is_transient_hold(e: &std::io::Error) -> bool {
     use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
     matches!(e.raw_os_error(),
-        Some(c) if c == ERROR_SHARING_VIOLATION as i32 || c == ERROR_ACCESS_DENIED as i32)
+        Some(c) if c == ERROR_SHARING_VIOLATION as i32
+            || c == ERROR_ACCESS_DENIED as i32)
 }
 
 /// Flush a target `finish_publication` is restating the barrier over — the
