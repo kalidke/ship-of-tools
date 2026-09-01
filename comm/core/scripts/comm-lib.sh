@@ -624,10 +624,25 @@ sot_sanitize_component() {
 #   "absent\t"          — NAME has no row at all
 #   "present\t<root>"   — NAME has a row; <root> is "" for a legacy row
 #                         that predates this feature (unknown root)
+#   "error\t"           — the registry could not be read/parsed (Codex
+#                         review round-3 finding 1): jq failing (malformed
+#                         JSON, unreadable file, an NFS hiccup) used to
+#                         print NOTHING, which read back as an empty
+#                         string indistinguishable from "absent" to every
+#                         caller — letting a pane-keyed legacy self-file
+#                         self-heal on a basename match with the registry
+#                         effectively unconsultable. Callers MUST treat
+#                         "error" as NO EVIDENCE, never as "absent".
 sot_registry_entry_status() {
-    jq -r --arg n "$1" \
+    local out
+    out="$(jq -r --arg n "$1" \
         'if (.agents | has($n)) then "present\t" + (.agents[$n].root // "") else "absent\t" end' \
-        "$REGISTRY" 2>/dev/null
+        "$REGISTRY" 2>/dev/null)"
+    if [ $? -ne 0 ] || [ -z "$out" ]; then
+        printf 'error\t\n'
+        return 0
+    fi
+    printf '%s\n' "$out"
 }
 
 # _sot_tier_claimable MODE ROOT STATUS HELD_ROOT — true if a tier whose
