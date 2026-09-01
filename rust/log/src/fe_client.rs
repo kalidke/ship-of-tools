@@ -802,7 +802,7 @@ mod tests {
     fn queue_accumulates_across_multiple_calls_up_to_the_cap() {
         let mut t = TakeTransaction::new();
         t.on_input_while_watching(&vec![b'a'; TAKE_QUEUE_CAP - 10]);
-        let overflow_actions = t.on_input_while_taking(&vec![b'b'; 50]);
+        let overflow_actions = t.on_input_while_taking(&[b'b'; 50]);
         assert!(overflow_actions.contains(&TakeAction::QueueDiscarded));
         let take_ok = t.on_take_ok(80, 24);
         let TakeAction::SendInput { bytes } = &take_ok[1] else {
