@@ -74,9 +74,16 @@ ensure_home
 SOT_TMUX_SOCK="$(sot_tmux_socket)" \
     || { echo "ERROR: could not resolve/secure the private tmux socket dir — see reason above" >&2; exit 1; }
 
-# Spawner's own handle, captured before arg parsing reuses NAME for the child.
+# Spawner's own handle, captured before arg parsing reuses NAME for the
+# child. Deliberately NOT synthesized into a "spawner-$HOST" placeholder
+# when unresolved (Codex review round-2 SHOULD-FIX 3/G): an unroutable
+# fallback sender is exactly the bug class this PR removes everywhere
+# else (comm-send.sh/comm-relay.sh/comm-bootstrap.sh no longer stamp
+# "unknown-$HOST" either). An unjoined spawner can still spawn a
+# fire-and-forget agent with no --task; a --task specifically PROMISES a
+# reply route back to @SPAWNER, so that combination is refused below,
+# once TASK is known, rather than handed a placeholder nothing can reach.
 SPAWNER="$NAME"
-[ -z "$SPAWNER" ] && SPAWNER="spawner-$HOST"
 
 NAME=""; REPO_PATH=""; EXPERTISE=""; TASK=""; LABEL=""; DISPLAY_LABEL=""; ENDPOINT=""; NO_WS=false
 NAME_FLAG=""; POSITIONAL=()
@@ -93,6 +100,11 @@ while [ $# -gt 0 ]; do
         *)               POSITIONAL+=("$1"); shift ;;
     esac
 done
+
+if [ -n "$TASK" ] && [ -z "$SPAWNER" ]; then
+    echo "ERROR: --task was given but this session's own sot-comm identity did not resolve — refusing to promise a reply route the task can never actually reach. Join first: comm-join.sh --name <canonical-handle>, then retry with --task." >&2
+    exit 1
+fi
 
 # <name> is OPTIONAL (ADR 0028 addendum): one positional is <repo-path> alone
 # (name derived below); two positionals is the legacy explicit form
@@ -443,9 +455,13 @@ else
     # and, on first attach, launches ccb with SOT_COMM_NAME=<agent_name> (it
     # owns the terminal; a detached session can't init claude). The agent joins
     # comm + reads its repo CLAUDE.md; nothing is pasted.
-    with_lock registry_touch "$SPAWNER" 2>/dev/null || true
+    [ -n "$SPAWNER" ] && with_lock registry_touch "$SPAWNER" 2>/dev/null || true
     echo "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (autostart_claude=true; NO brief — agent uses its repo CLAUDE.md)."
-    echo "The FE auto-starts ccb on first attach; the agent joins comm (~1 min) and reports to @${SPAWNER}."
+    if [ -n "$SPAWNER" ]; then
+        echo "The FE auto-starts ccb on first attach; the agent joins comm (~1 min) and reports to @${SPAWNER}."
+    else
+        echo "The FE auto-starts ccb on first attach; the agent joins comm (~1 min). This spawning session has no resolved identity of its own, so give the agent an explicit reply target if one is needed."
+    fi
 fi
 # Deliver any --task as an ordinary durable comm message (NOT a startup brief):
 # it queues in the agent's inbox now and is read on its /sot-session-start poll.
