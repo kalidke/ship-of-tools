@@ -652,11 +652,19 @@ case_nopane_selffile_shared_across_repos_not_healed() {
     # repo=/root= check is what makes that sharing safe — a background
     # shell in a DIFFERENT repo reading the same slot back must be
     # discarded, never healed into adopting the other repo's identity.
-    local rootA rootB self
+    #
+    # Codex review round-2 finding A tightened this further: for the
+    # SHARED nopane slot specifically (unlike a pane-keyed file), even a
+    # MATCHING repo= basename is not enough evidence to heal — the file's
+    # own name below uses the real "__nopane.txt" production suffix so
+    # comm-context.sh's IS_NOPANE detection actually applies to it, and
+    # repoA's own re-read now seeds a corroborating registry row first (a
+    # basename match alone no longer heals a nopane slot).
+    local rootA rootB self seed_obj
     mkdir -p "$WORK/nopane-cross-repo/repoA" "$WORK/nopane-cross-repo/repoB"
     rootA="$(realpath "$WORK/nopane-cross-repo/repoA")"
     rootB="$(realpath "$WORK/nopane-cross-repo/repoB")"
-    self="$WORK/nopane-shared-self.txt"
+    self="$WORK/nopane-cross-repo/${HOST}__nopane.txt"
 
     # repoA's session previously claimed the shared nopane slot (legacy,
     # pre-root=, so this ALSO exercises the self-heal boundary: it must
@@ -670,11 +678,84 @@ case_nopane_selffile_shared_across_repos_not_healed() {
     local lines; lines="$(wc -l < "$self")"
     [ "$lines" -eq 2 ] || { echo "  shared nopane self-file was mutated by the mismatched read: $(cat "$self")"; return 1; }
 
-    # repoA reading its OWN slot back must still work, and now self-heals.
+    # repoA reading its OWN slot back: now REQUIRES registry corroboration
+    # (round-2 finding A) — seed a matching-root row before it can heal.
+    seed_obj="$(jq -n --arg repo "repoA" --arg root "$rootA" \
+        '{host:"h",tmux:"",pane_id:"",repo:$repo,root:$root,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
+    with_lock registry_put "repoA-handle" "$seed_obj"
+
     context_in "$rootA" "$self"
     [ "$CTX_RC" -eq 0 ] || { echo "  repoA re-read exited $CTX_RC: $CTX_ERR"; return 1; }
     [ "$CTX_NAME" = "repoA-handle" ] || { echo "  repoA re-read NAME=$CTX_NAME, want repoA-handle"; return 1; }
     contains "$CTX_ERR" "self-healed" || { echo "  repoA re-read missing self-heal notice: $CTX_ERR"; return 1; }
+    return 0
+}
+
+case_nopane_same_basename_different_root_discarded() {
+    # Codex review round-2 finding A: two checkouts share a basename ("
+    # sharedname") and this project's repo= matches BOTH — but the shared
+    # nopane slot has no registry evidence tying it to either, so a
+    # basename match alone must NOT heal it (unlike a pane-keyed file,
+    # where ruling 2's original matrix still heals on repo match alone).
+    local rootA rootB self
+    mkdir -p "$WORK/nopane-samebase/siteA/sharedname" "$WORK/nopane-samebase/siteB/sharedname"
+    rootA="$(realpath "$WORK/nopane-samebase/siteA/sharedname")"
+    rootB="$(realpath "$WORK/nopane-samebase/siteB/sharedname")"
+    self="$WORK/nopane-samebase/${HOST}__nopane.txt"
+    printf 'sharedname-handle\nrepo=sharedname\n' > "$self"   # claimed from rootA, legacy, no registry row
+
+    context_in "$rootB" "$self"
+    [ "$CTX_RC" -eq 0 ] || { echo "  exited $CTX_RC: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "stale" || { echo "  missing staleness/refusal notice for a same-basename different-root nopane read: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "self-healed" && { echo "  SELF-HEALED a same-basename different-checkout nopane self-file — this is exactly the aliasing round-2 finding A closes: $CTX_ERR"; return 1; }
+    [ -z "$CTX_NAME" ] || { echo "  NAME=$CTX_NAME, want empty (nopane + basename match alone must not heal)"; return 1; }
+    local lines; lines="$(wc -l < "$self")"
+    [ "$lines" -eq 2 ] || { echo "  nopane self-file was mutated despite no registry corroboration: $(cat "$self")"; return 1; }
+    return 0
+}
+
+case_nopane_same_basename_non_repo_cwd_discarded() {
+    # Sibling of the above: a same-basename NON-repo cwd (two unrelated
+    # scratch dirs both literally named "sometmpdir") must be equally
+    # unable to heal the shared nopane slot on basename alone.
+    local rootA scratchB self
+    mkdir -p "$WORK/nopane-nonrepo/siteA/sometmpdir" "$WORK/nopane-nonrepo/scratch/sometmpdir"
+    rootA="$(realpath "$WORK/nopane-nonrepo/siteA/sometmpdir")"
+    scratchB="$(realpath "$WORK/nopane-nonrepo/scratch/sometmpdir")"
+    self="$WORK/nopane-nonrepo/${HOST}__nopane.txt"
+    printf 'sometmpdir-handle\nrepo=sometmpdir\n' > "$self"
+
+    context_in "$scratchB" "$self"
+    [ "$CTX_RC" -eq 0 ] || { echo "  exited $CTX_RC: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "stale" || { echo "  missing staleness/refusal notice for a same-basename non-repo-cwd nopane read: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "self-healed" && { echo "  SELF-HEALED a same-basename non-repo-cwd nopane self-file: $CTX_ERR"; return 1; }
+    [ -z "$CTX_NAME" ] || { echo "  NAME=$CTX_NAME, want empty (nopane + basename match alone must not heal, even outside a repo)"; return 1; }
+    local lines; lines="$(wc -l < "$self")"
+    [ "$lines" -eq 2 ] || { echo "  nopane self-file was mutated despite no registry corroboration: $(cat "$self")"; return 1; }
+    return 0
+}
+
+case_nopane_with_matching_registry_root_heals() {
+    # Positive path for round-2 finding A: the shared nopane slot DOES
+    # heal once the registry independently corroborates a matching root —
+    # the tightened rule requires evidence, it doesn't forbid healing
+    # outright.
+    local root self seed_obj
+    mkdir -p "$WORK/nopane-corroborated/proj14"
+    root="$(realpath "$WORK/nopane-corroborated/proj14")"
+    self="$WORK/nopane-corroborated/${HOST}__nopane.txt"
+    printf 'proj14-handle\nrepo=proj14\n' > "$self"
+
+    seed_obj="$(jq -n --arg repo "proj14" --arg root "$root" \
+        '{host:"h",tmux:"",pane_id:"",repo:$repo,root:$root,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
+    with_lock registry_put "proj14-handle" "$seed_obj"
+
+    context_in "$root" "$self"
+    [ "$CTX_RC" -eq 0 ] || { echo "  exited $CTX_RC: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "self-healed" || { echo "  missing self-heal notice for a registry-corroborated nopane slot: $CTX_ERR"; return 1; }
+    [ "$CTX_NAME" = "proj14-handle" ] || { echo "  NAME=$CTX_NAME, want proj14-handle"; return 1; }
+    local lines; lines="$(wc -l < "$self")"
+    [ "$lines" -ge 3 ] || { echo "  nopane self-file not backfilled to v2: $(cat "$self")"; return 1; }
     return 0
 }
 
@@ -689,7 +770,7 @@ case_nopane_selffile_from_non_repo_cwd_not_healed_and_send_refuses() {
     local self scratch
     mkdir -p "$WORK/nopane-scratch/some-scratchpad"
     scratch="$(realpath "$WORK/nopane-scratch/some-scratchpad")"
-    self="$WORK/nopane-scratch-self.txt"
+    self="$WORK/nopane-scratch/${HOST}__nopane.txt"
     printf 'repoA-handle\nrepo=repoA\n' > "$self"
 
     context_in "$scratch" "$self"
@@ -784,6 +865,65 @@ case_comm_send_force_target_exempt_from_identity_refusal() {
     [ "$rc" -eq 0 ] || { echo "  comm-send.sh --force-target failed with no identity (should be exempt): rc=$rc, stderr: $err"; return 1; }
     contains "$err" "identity did not resolve" && { echo "  --force-target was refused for lacking an identity — it must be exempt: $err"; return 1; }
     contains "$out" "force-target, no registry" || { echo "  stdout: $out (want the force-target delivery confirmation)"; return 1; }
+    return 0
+}
+
+case_send_refuses_when_registry_row_missing_despite_resolved_name() {
+    # Codex review round-2 finding 4/C: a self-file resolving NAME locally
+    # (comm-context.sh validated its root=) is NOT sufficient — the
+    # registry must ALSO have a row for it, or sending stamps a from-handle
+    # nothing can route a reply to. Simulates an evicted/never-persisted
+    # row: join normally (valid v2 self-file + a real registry row), then
+    # delete JUST the registry row, leaving the self-file believing it's
+    # still joined.
+    local root h self
+    mkdir -p "$WORK/routable-missing-row/proj15"
+    root="$(realpath "$WORK/routable-missing-row/proj15")"
+    join_in "$root"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    h="proj15-${HOST}"; self="$NEXT_SELF_FILE"
+    contains "$JOIN_OUT" "Joined sot-comm as @$h" || { echo "  setup join stdout: $JOIN_OUT"; return 1; }
+
+    with_lock registry_del "$h"
+
+    local send_out send_err send_rc errfile
+    errfile="$WORK/send-missing-row.err"
+    send_out="$(cd "$root" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
+        "$SEND" @somebody "hello" 2>"$errfile")"
+    send_rc=$?
+    send_err="$(cat "$errfile" 2>/dev/null || true)"
+    [ "$send_rc" -ne 0 ] || { echo "  comm-send.sh succeeded despite a missing registry row: $send_out"; return 1; }
+    contains "$send_err" "no registry row" || { echo "  missing the 'no registry row' refusal: $send_err"; return 1; }
+    return 0
+}
+
+case_send_refuses_when_registry_root_mismatches_current_project() {
+    # Sibling of the above: the self-file resolves NAME locally (its own
+    # root= matches THIS project), but the registry row for that handle has
+    # since been reassigned to a DIFFERENT project's root entirely (e.g. an
+    # explicit --name overwrite from elsewhere). Sending under it would
+    # misroute a reply to whoever now actually holds that project — refuse.
+    local root h self
+    mkdir -p "$WORK/routable-wrong-row/proj16"
+    root="$(realpath "$WORK/routable-wrong-row/proj16")"
+    join_in "$root"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    h="proj16-${HOST}"; self="$NEXT_SELF_FILE"
+    contains "$JOIN_OUT" "Joined sot-comm as @$h" || { echo "  setup join stdout: $JOIN_OUT"; return 1; }
+
+    local other_obj
+    other_obj="$(jq -n --arg root "/somewhere/else/entirely" \
+        '{host:"h",tmux:"",pane_id:"",repo:"other",root:$root,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
+    with_lock registry_put "$h" "$other_obj"
+
+    local send_out send_err send_rc errfile
+    errfile="$WORK/send-wrong-row.err"
+    send_out="$(cd "$root" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
+        "$SEND" @somebody "hello" 2>"$errfile")"
+    send_rc=$?
+    send_err="$(cat "$errfile" 2>/dev/null || true)"
+    [ "$send_rc" -ne 0 ] || { echo "  comm-send.sh succeeded despite a registry row pointing at a DIFFERENT project's root: $send_out"; return 1; }
+    contains "$send_err" "DIFFERENT project" || { echo "  missing the root-mismatch refusal: $send_err"; return 1; }
     return 0
 }
 
@@ -905,6 +1045,65 @@ case_join_bridge_probe_exact_match_ignores_prefix_decoy() {
     return 0
 }
 
+case_bridge_detection_finds_directly_started_bridge_with_no_tmux_marker() {
+    # Codex review round-2 finding 5/D: a bridge started directly (no
+    # comm-listen.sh tmux wrapper at all — e.g. run by hand in a plain
+    # shell) has NO "commbridge-<name>" tmux session, so the tmux-only
+    # half of bridge detection misses it entirely. The uid-scoped,
+    # anchored process-table check (sot_bridge_pids_for /
+    # sot_bridge_running_for, comm-lib.sh) must still find it.
+    #
+    # A tiny wrapper script literally NAMED comm-relay.sh (so its own
+    # invocation's argv contains the exact substring the pattern matches)
+    # stands in for the real reconnect-loop process. The trailing `:` stops
+    # the shell from tail-call-exec'ing straight into `sleep` for its last
+    # (and only) real statement, which would replace this process's argv
+    # entirely and erase the very substring being searched for.
+    local handle wrapper pid found tries sock running_result
+    handle="directbridge-$$-${RANDOM:-0}"
+    wrapper="$WORK/comm-relay.sh"
+    cat > "$wrapper" <<'EOF'
+#!/bin/sh
+sleep 60
+:
+EOF
+    chmod +x "$wrapper"
+
+    "$wrapper" bridge --name "$handle" &
+    pid=$!
+
+    tries=0
+    found=""
+    while [ "$tries" -lt 50 ]; do
+        found="$(sot_bridge_pids_for "$handle")"
+        [ -n "$found" ] && break
+        sleep 0.1
+        tries=$((tries + 1))
+    done
+
+    running_result=1
+    if sock="$(sot_tmux_socket 2>/dev/null)"; then
+        # No tmux session named commbridge-<handle> exists anywhere — this
+        # confirms sot_bridge_running_for finds it via the process signal
+        # ALONE, exactly the "directly-started, no tmux marker" case.
+        sot_bridge_running_for "$handle" "$sock"
+        running_result=$?
+    fi
+
+    # Kill the sleep CHILD first, then the wrapper — a bare `kill "$pid"`
+    # only signals the wrapper shell; its foreground `sleep 60` child is
+    # NOT auto-forwarded the signal, so it would otherwise be orphaned
+    # (reparented, left running for its full 60s) instead of actually
+    # torn down here.
+    pkill -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+
+    [ -n "$found" ] || { echo "  sot_bridge_pids_for found no PID for a directly-started (no tmux marker) bridge process"; return 1; }
+    [ "$running_result" -eq 0 ] || { echo "  sot_bridge_running_for missed a directly-started bridge with no tmux marker (process signal alone should have been enough)"; return 1; }
+    return 0
+}
+
 case_spawn_fresh_only_refusal() {
     # Codex review F3: comm-spawn.sh must NEVER reclaim an existing row —
     # even one sharing its own project root — the way comm-join.sh does.
@@ -938,6 +1137,38 @@ case_spawn_fresh_only_refusal() {
         || { echo "  @$h2 status=$(registry_field "$h2" status), want spawning"; return 1; }
     tmux -S "$SOT_TMUX_SOCK" has-session -t "$h2" 2>/dev/null \
         || { echo "  no isolated tmux session for @$h2"; return 1; }
+    return 0
+}
+
+case_spawn_refuses_task_when_spawner_has_no_identity() {
+    # Codex review round-2 SHOULD-FIX 3/G: comm-spawn.sh used to fall back
+    # to an unroutable "spawner-$HOST" placeholder sender when the
+    # spawning session itself wasn't joined. --task promises a reply route
+    # back to @SPAWNER; with no resolved identity there is nothing to
+    # route to, so it must refuse rather than hand out a placeholder.
+    local root self errfile out rc err
+    mkdir -p "$WORK/spawn-no-identity/proj17"
+    root="$(realpath "$WORK/spawn-no-identity/proj17")"
+    next_self_file; self="$NEXT_SELF_FILE"   # never created -> no identity
+
+    errfile="$WORK/spawn-no-identity-task.err"
+    out="$(SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
+        "$SPAWN" "$root" --no-workspace --task "do the thing" 2>"$errfile")"
+    rc=$?
+    err="$(cat "$errfile" 2>/dev/null || true)"
+    [ "$rc" -ne 0 ] || { echo "  comm-spawn.sh --task succeeded with no spawner identity: $out"; return 1; }
+    contains "$err" "identity did not resolve" || { echo "  missing the identity-refusal message: $err"; return 1; }
+
+    # Sanity: the SAME unjoined spawner, with NO --task, must still be able
+    # to spawn a fire-and-forget agent — a task-less spawn makes no reply
+    # promise, so it needs no identity.
+    next_self_file; self="$NEXT_SELF_FILE"
+    errfile="$WORK/spawn-no-identity-notask.err"
+    out="$(SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
+        "$SPAWN" "$root" --no-workspace 2>"$errfile")"
+    rc=$?
+    err="$(cat "$errfile" 2>/dev/null || true)"
+    [ "$rc" -eq 0 ] || { echo "  comm-spawn.sh with no --task and no spawner identity unexpectedly failed: rc=$rc, stderr: $err"; return 1; }
     return 0
 }
 
@@ -1198,14 +1429,21 @@ check "ancient one-line self-file WITH a matching-root registry row: heals" case
 check "ancient one-line self-file WITHOUT registry corroboration: discarded" case_ancient_oneline_without_registry_match_discarded
 check "self-heal write failure is reported loudly, file left intact (round-1 F3)" case_self_heal_write_failure_reported_loudly_file_intact
 check "nopane self-file shared across repos: mismatched read discarded, never healed" case_nopane_selffile_shared_across_repos_not_healed
+check "nopane + same-basename DIFFERENT root: basename alone must not heal (round-2 F-A)" case_nopane_same_basename_different_root_discarded
+check "nopane + same-basename NON-repo cwd: basename alone must not heal (round-2 F-A)" case_nopane_same_basename_non_repo_cwd_discarded
+check "nopane WITH a matching registry root: heals (round-2 F-A positive path)" case_nopane_with_matching_registry_root_heals
 check "nopane self-file read from a non-repo cwd: discarded, not healed; a send from there refuses loudly" case_nopane_selffile_from_non_repo_cwd_not_healed_and_send_refuses
 check "comm-relay.sh send refuses with no resolved identity" case_comm_relay_send_refuses_with_no_identity
 check "comm-bootstrap.sh refuses with no resolved identity" case_comm_bootstrap_refuses_with_no_identity
 check "comm-send.sh --force-target stays exempt from the identity refusal" case_comm_send_force_target_exempt_from_identity_refusal
+check "comm-send.sh refuses when NAME resolves but has no registry row (round-2 F4/C)" case_send_refuses_when_registry_row_missing_despite_resolved_name
+check "comm-send.sh refuses when the registry row belongs to a different project (round-2 F4/C)" case_send_refuses_when_registry_root_mismatches_current_project
 check "legacy registry row with no root= is a collision, not a free pass" case_legacy_unknown_root_row
 check "comm-join.sh warns loudly on stranding escalation when a bridge for the bare handle is running" case_join_warns_on_stranding_escalation_when_bridge_running
 check "comm-join.sh bridge probe ignores a prefix-only decoy session (round-1 F4)" case_join_bridge_probe_exact_match_ignores_prefix_decoy
+check "bridge detection finds a directly-started bridge with no tmux marker (round-2 F5/D)" case_bridge_detection_finds_directly_started_bridge_with_no_tmux_marker
 check "comm-spawn.sh fresh-mode refuses to reclaim a live row (F3)" case_spawn_fresh_only_refusal
+check "comm-spawn.sh --task refuses with no spawner identity, no-task spawn still works (round-2 SHOULD-FIX 3/G)" case_spawn_refuses_task_when_spawner_has_no_identity
 check "concurrent claim landing mid-wait is not clobbered (lock closes the derive/write gap)" case_lock_closes_derive_write_gap
 check "rollback never deletes a row that replaced the provisional one (F1 round 2)" case_rollback_survives_replacement_row
 check "with_lock restores the caller's prior EXIT trap after a direct callee failure (F2 round 2)" case_with_lock_restores_prior_trap_on_failure
