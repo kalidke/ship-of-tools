@@ -107,10 +107,18 @@ obj="$(jq -n \
 # comm-spawn.sh's tests already do). Best-effort: an unresolvable socket
 # fails this check closed (no warning) rather than aborting the join over
 # a purely advisory guard.
+#
+# `-t "=commbridge-$name"` — the LEADING '=' pins tmux to an EXACT
+# session-name match (Codex review round-1 finding 4): without it, tmux's
+# target-session grammar falls back to prefix/glob matching, so a bridge
+# actually named e.g. "commbridge-$name-other" (a different, unrelated
+# handle that happens to start with this one) would false-positive this
+# check and trigger the stranding warning below for a session that was
+# never stranded.
 _sot_join_bridge_running_for() {
     local name="$1" sock
     sock="$(sot_tmux_socket 2>/dev/null)" || return 1
-    tmux -S "$sock" has-session -t "commbridge-$name" 2>/dev/null
+    tmux -S "$sock" has-session -t "=commbridge-$name" 2>/dev/null
 }
 
 if [ "$NEED_DERIVE" = true ]; then
