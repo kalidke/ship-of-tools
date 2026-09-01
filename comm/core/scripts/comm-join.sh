@@ -179,8 +179,16 @@ fi
 # repo line is used by comm-context to detect a stale identity in a
 # RECYCLED tmux pane (pane ids are reused after a server restart) and
 # discard it instead of letting a fresh session inherit another session's
-# handle.
-printf '%s\nrepo=%s\nroot=%s\n' "$NAME" "$REPO" "$PROJECT_ROOT" > "$SELF_FILE"
+# handle. Written via the shared atomic writer (comm-lib.sh) — same
+# same-directory-tmp-plus-mv contract comm-context.sh's self-heal uses
+# (Codex review round-1 finding 3) — and its failure is FATAL here: the
+# registry row above is already claimed, but with no local self-file this
+# shell has no record of it and every future comm call from it will read
+# as "not joined".
+if ! sot_write_self_file "$SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT"; then
+    echo "comm-join.sh: FATAL — joined as @$NAME in the registry, but could not write the local self-file at '$SELF_FILE' (see reason above). This shell has no identity record; every comm-* call from it will say 'not joined'. Fix the self-file directory's permissions and re-run comm-join.sh --name $NAME." >&2
+    exit 1
+fi
 # A joined handle always has an inbox: durable comm-send targets it, and a
 # first-ever selftest otherwise probes a nonexistent file (noisy redirect
 # errors that derail diagnosis — 2026-06-11 fresh-join report). Append-touch

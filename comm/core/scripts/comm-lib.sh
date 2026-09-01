@@ -324,6 +324,58 @@ registry_del_if_provisional() {
     registry_del "$name"
 }
 
+# --- self-file writer (shared by comm-join.sh and comm-context.sh's
+# read-side self-heal) ---
+
+# sot_write_self_file SELF_FILE NAME REPO ROOT — write the v2 self-file
+# format (identity line, then `repo=`, then `root=`) to SELF_FILE via a
+# same-directory temp file + checked `mv`, never an in-place `>`
+# truncation (Codex review round-1 finding 3: the old in-place write left a
+# read-only self-file silently unwritten — the redirection failed, nothing
+# checked its exit status, and the caller went on to print a success
+# message anyway — and could leave a torn/zero-byte file if interrupted
+# mid-write). The temp file lives NEXT TO SELF_FILE so the final `mv` is a
+# same-filesystem rename: atomic, no partial-write window a concurrent
+# reader could observe.
+#
+# Both write sites — this self-heal path in comm-context.sh and the
+# ordinary join-write in comm-join.sh — route through this ONE function so
+# there is a single place that gets the atomicity right, rather than two
+# copies that could drift.
+#
+# No cross-process lock: the self-file's "nopane" slot is deliberately
+# SHARED across every no-tmux-context shell on a host (see
+# comm-context.sh's nopane note) and is last-writer-wins BY DESIGN — every
+# read of it is independently re-validated (against root=, or against
+# repo=/the registry for a legacy file), so a slot two shells raced to
+# write is caught on its next read rather than silently trusted either
+# way. Serializing the write here would only slow down an already-safe
+# race, not close a real hazard.
+#
+# Returns 0 only once SELF_FILE has been VERIFIABLY replaced with the new
+# content; nonzero (with a reason on stderr) otherwise, and the original
+# SELF_FILE is left untouched (the failed temp file is cleaned up, never
+# left as e.g. a stray `.tmp.*` sibling). Callers MUST treat a nonzero
+# return as "did not persist" — never report success on it.
+sot_write_self_file() {
+    local self_file="$1" name="$2" repo="$3" root="$4" tmp
+    tmp="$(mktemp "${self_file}.tmp.XXXXXX" 2>/dev/null)" || {
+        echo "sot_write_self_file: could not create a temp file next to '$self_file' (directory missing or not writable?)" >&2
+        return 1
+    }
+    if ! printf '%s\nrepo=%s\nroot=%s\n' "$name" "$repo" "$root" > "$tmp" 2>/dev/null; then
+        echo "sot_write_self_file: write to temp file '$tmp' failed (disk full? permissions?)" >&2
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+    if ! mv -f "$tmp" "$self_file" 2>/dev/null; then
+        echo "sot_write_self_file: could not move '$tmp' into place at '$self_file'" >&2
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+    return 0
+}
+
 # --- derived-handle disambiguation (ADR 0028 addendum: "derived vs
 # explicit") --- single home for the algorithm; comm-join.sh and
 # comm-spawn.sh both call sot_derive_handle. This is ONLY for a name that
