@@ -25,6 +25,18 @@ source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 ensure_home
 
+# Subcommand parsed FIRST, before any transport setup (Codex review round-2
+# SHOULD-FIX 2): `send`/`ask` need a routable identity to stamp a from-field
+# that means anything, and that check must run BEFORE endpoint/socket
+# resolution below — otherwise an unresolved sender on a box with no
+# reachable daemon sees only "no sotd daemon found", never the identity
+# refusal that's the actual, fixable problem. `bridge`/`listen` are receive
+# operations and need no identity at all (bridge takes its own --name).
+SUB="${1:-}"; [ $# -gt 0 ] && shift || true
+case "$SUB" in
+    send|ask) sot_require_routable_identity || exit 1 ;;
+esac
+
 ENDPOINT="${SOT_RELAY_ENDPOINT:-}"
 resolve_endpoint() {
     sot_daemon_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
@@ -115,17 +127,12 @@ nc_hold() {
 }
 
 send_frame() {  # $1 to, $2 text
-    # Identity refusal (field regression — coordinator ruling): every relay
-    # frame stamps `from:$NAME` on the wire, and a peer's reply (or the
-    # self-echo filter in filter_inbound above) routes off that field.
-    # There is no identityless path here (unlike comm-send.sh's
-    # --force-target) — `send`/`ask` always claim to be someone. Refuse
-    # loudly on an unresolved identity rather than let a broken from-field
-    # go out silently.
-    if [ -z "$NAME" ]; then
-        echo "ERROR: your sot-comm identity did not resolve — refusing to relay-send with no verifiable from-handle (a reply would silently misroute). Likely a stale self-file (comm-context.sh self-heals a legacy one on read — retry) or a background/no-pane shell whose cwd doesn't match the repo its shared no-pane self-file holds (run from inside the repo). If it recurs for a session that previously held a handle, reclaim explicitly: comm-join.sh --name <canonical-handle> — never a bare comm-join.sh, which derives a NEW handle instead." >&2
-        exit 1
-    fi
+    # Identity is already validated (sot_require_routable_identity, called
+    # above for SUB in {send,ask} before any transport setup — Codex review
+    # round-2 finding 4/C) — every relay frame stamps `from:$NAME` on the
+    # wire, and a peer's reply (or the self-echo filter in filter_inbound
+    # above) routes off that field, so this is never called with an
+    # unroutable NAME.
     local frame; frame="$(jq -nc --arg f "$NAME" --arg t "$1" --arg m "$2" \
         '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:$t,text:$m}}')"
     local resp; resp="$(printf '%s\n' "$frame" | nc_send 2>/dev/null | grep -m1 '"op":"agent.send"' || true)"
@@ -153,7 +160,8 @@ filter_inbound() {
     done
 }
 
-SUB="${1:-}"; [ $# -gt 0 ] && shift || true
+# SUB was already parsed (and shifted off) above, before the identity gate
+# and endpoint resolution — not re-parsed here.
 case "$SUB" in
     send)
         TO=""; MSG=""; TO_SET=false
