@@ -51,7 +51,18 @@ Get your handle and check for a **live watcher**:
 
 ```bash
 eval "$(~/.sot-comm/bin/comm-context.sh 2>/dev/null)" 2>/dev/null || true   # sets NAME (empty when not joined) — eval, do NOT sed-scrape: values are %q-quoted, so a scrape can capture literal quotes as a bogus non-empty handle
-h="${NAME:-$(basename "$PWD")-$(hostname -s)}"
+if [ -n "$NAME" ]; then
+    h="$NAME"
+else
+    # Never hand-construct <repo>-<host> yourself (Codex review round-3
+    # finding 6) — sanitization, truncation, and the long-host digest
+    # suffix (ADR 0028's host-alias guard) can all change it. Compute it
+    # the SAME way comm-join.sh would, via the existing tier-1 derivation
+    # (comm-lib.sh's sot_derive_handle, third output line):
+    source ~/.sot-comm/bin/comm-lib.sh
+    h="$(sot_derive_handle reclaim "$PROJECT_ROOT" "$HOST" 2>/dev/null | sed -n 3p)"
+    h="${h:-$(basename "$PWD")-$(hostname -s)}"   # last-resort only if derivation itself fails
+fi
 h_re="$(printf '%s' "$h" | sed 's/\./\\./g')"   # escape dots — repo names contain them (e.g. MyOrg.github.io-myhost); an unescaped '.' matches ANY char and could false-match a sibling
 pgrep -u "$(id -un)" -f "comm-watch\.sh ${h_re}\$"   # dot-escaped + END-ANCHORED: neither a '.' nor a `-2` sibling can false-match (a false match would make a genuinely-deaf cold session skip arming → deaf)
 ```
@@ -85,22 +96,31 @@ pgrep -u "$(id -un)" -f "comm-watch\.sh ${h_re}\$"   # dot-escaped + END-ANCHORE
 ### (a) Join — `comm-join.sh` (this IS your identity)
 
 **Branch BEFORE joining** (Codex review round-2 finding 6/E) — the bare
-no-args form below is only for a **genuinely new** session. Check first:
-
-- Have you (this session, this repo) held a canonical handle
-  (`<repo>-<host>`, mixed-case) before — from a prior turn's "Joined
-  sot-comm as @..." line, this repo's own notes, or general knowledge that
-  this repo already runs a durable session? **or**
-- Is a listener bridge for that canonical handle already running under
-  your uid?
+no-args form below is only for a **genuinely new** session. Determine your
+canonical handle first — never hand-construct `<repo>-<host>` yourself
+(Codex review round-3 finding 6: sanitization, truncation, and the
+long-host digest suffix can all change it). Reuse `$h` from Step 0 above
+if you just computed it there; otherwise:
+```bash
+eval "$(~/.sot-comm/bin/comm-context.sh 2>/dev/null)" 2>/dev/null || true
+source ~/.sot-comm/bin/comm-lib.sh   # for sot_derive_handle / sot_bridge_running_for
+CANONICAL="${NAME:-$(sot_derive_handle reclaim "$PROJECT_ROOT" "$HOST" 2>/dev/null | sed -n 3p)}"
+```
+Then check either signal:
+- Have you (this session, this repo) held `$CANONICAL` before — from a
+  prior turn's "Joined sot-comm as @..." line, this repo's own notes, or
+  general knowledge that this repo already runs a durable session? **or**
+- Is a listener bridge for it already running under your uid — the SAME
+  shared detector comm-join.sh's own stranding guard uses (it also catches
+  a directly-started bridge with no tmux marker, which a raw
+  `tmux has-session` probe would miss):
   ```bash
-  source ~/.sot-comm/bin/comm-lib.sh   # for sot_tmux_socket — required before any use of it
-  tmux -S "$(sot_tmux_socket)" has-session -t "=commbridge-<repo>-<host>" 2>/dev/null && echo "bridge already running for <repo>-<host>"
+  sot_bridge_running_for "$CANONICAL" && echo "bridge already running for $CANONICAL"
   ```
 
 **If EITHER is true, join explicitly and skip the bare form entirely:**
 ```bash
-~/.sot-comm/bin/comm-join.sh --name <repo>-<host>
+~/.sot-comm/bin/comm-join.sh --name "$CANONICAL"
 ```
 (See "Identity evicted / wrong handle after a rejoin" below for exactly why
 the bare form is unsafe here — it derives a handle from scratch, sees your
