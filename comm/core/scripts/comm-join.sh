@@ -105,21 +105,6 @@ obj="$(jq -n \
     '{host:$host, tmux:$tmux, pane_id:$pane, repo:$repo, root:$root, expertise:$exp,
       status:"idle", joined:$ts, last_seen:$ts}')"
 
-# _sot_join_bridge_running_for NAME — true if a relay listener bridge for
-# NAME is up under this uid. Delegates entirely to comm-lib.sh's
-# sot_bridge_running_for (Codex review round-2 finding 5/D): ONE shared,
-# UID-scoped, exact-match implementation now backs both this stranding
-# guard and comm-listen.sh's --status/--stop, checking BOTH the exact tmux
-# marker session (`=commbridge-<name>`, exact-matched so a sibling like
-# "commbridge-<name>-other" can't false-positive this — Codex review
-# round-1 finding 4) and a directly-started bridge with no tmux marker at
-# all (an anchored, uid-scoped process-table check). Best-effort: an
-# unresolvable socket/pgrep failure fails this check closed (no warning)
-# rather than aborting the join over a purely advisory guard.
-_sot_join_bridge_running_for() {
-    sot_bridge_running_for "$1"
-}
-
 if [ "$NEED_DERIVE" = true ]; then
     # reclaim mode (Codex review F3): a plain join treats an existing
     # same-root row as mine to reclaim — today's rejoin behavior. `set -e`
