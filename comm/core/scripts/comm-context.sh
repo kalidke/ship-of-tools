@@ -83,24 +83,63 @@ fi
 # precedence comment). Root comparison closes that: two different roots
 # never match regardless of shared basename.
 #
-# A self-file with NO `root=` line — legacy, predating this feature, be it
-# the older one-line format or a two-line `repo=`-only file — is discarded
-# as stale UNCONDITIONALLY, not trusted "as before": same fail-safe
-# transition stance ADR 0028 already applies to registry rows (unknown
-# root is a collision, not a free pass), extended to self-files. This costs
-# a one-time re-derivation on that pane's first join after upgrading (the
-# join then rewrites the self-file WITH root=, so every join after that is
-# fully validated again) — a small, one-time inconvenience preferred over
-# convenience-by-default aliasing. A session merely cd'd into another repo
-# also mismatches — that costs a transient no-op status update, which is
-# the safe side of the trade (a stolen identity is worse).
+# A self-file with a `root=` line gets the strict check above's sibling
+# here: present-and-mismatched is ALWAYS stale (two different roots never
+# match regardless of shared basename — the whole point of root=).
+#
+# A self-file with NO `root=` line is a DIFFERENT case: legacy, predating
+# PR #148 (which added root=) — the field regression this block now fixes.
+# PR #148 originally discarded these UNCONDITIONALLY, on the theory that
+# "unknown root is a collision, not a free pass" (the same fail-safe stance
+# ADR 0028 applies to registry rows). In production that discarded EVERY
+# self-file written before #148 shipped — every long-running session's
+# identity — on its very next comm call ("Not joined — run comm-join.sh
+# first"), because nothing about those sessions changed; only the on-disk
+# format did. That is strictly worse than the pane-recycling bug root= was
+# added to close.
+#
+# The fix: fall back to the check root= REPLACED — the `repo=` comparison
+# that guarded pane recycling from PR #68 until #148 (see that revision of
+# this file in git history). A legacy file whose repo= matches this
+# project's basename (or has no repo= line at all — the ANCIENT one-line
+# format, pre-#68) is exactly as trustworthy as it was before #148, so it
+# is ACCEPTED, then immediately self-healed by rewriting it to full v2
+# (adding root=) — no migration step, and every read after this one is
+# validated under the strict root= check above for good. A repo=
+# MISMATCH is left exactly as fail-safe as root= mismatch: discarded,
+# forcing fresh derivation — this is the original pane-recycling
+# protection (a recycled tmux pane id, a genuine `cd` elsewhere, OR a
+# no-pane self-file shared across unrelated cwds — see the nopane note
+# below) and must not be loosened.
+#
+# Nopane sharing (verified field case): a shell with NO tmux pane context
+# (no $TMUX_PANE, or a failing `tmux display-message`) collapses to the
+# SAME "nopane" key for every such shell on this host — SELF_FILE above is
+# literally "$HOST__nopane.txt", repo-agnostic in its own name, for all of
+# them. The repo=/root= comparison here is what makes that sharing safe: a
+# background shell in a different repo, or one cd'd OUTSIDE any repo
+# entirely (REPO then reads as the cwd's own basename, e.g. a scratchpad
+# dir), reads back the same file but never matches it, so the identity is
+# discarded exactly like a recycled-pane collision — NEVER self-healed
+# across repos/cwds. Do not special-case the nopane slot to skip this
+# check; that would let unrelated shells alias onto one identity, the same
+# class of bug root= exists to close.
 NAME=""
 if [ -f "$SELF_FILE" ]; then
     NAME="$(sed -n '1p' "$SELF_FILE")"
+    SELF_REPO="$(sed -n '2p' "$SELF_FILE" | sed -n 's/^repo=//p')"
     SELF_ROOT="$(sed -n '3p' "$SELF_FILE" | sed -n 's/^root=//p')"
-    if [ -z "$SELF_ROOT" ] || [ "$SELF_ROOT" != "$PROJECT_ROOT" ]; then
-        echo "comm-context: self-file identity '$NAME' has no root= line, or one that doesn't match this project ('$PROJECT_ROOT') — stale; discarding (forces fresh derivation)" >&2
+    if [ -n "$SELF_ROOT" ]; then
+        if [ "$SELF_ROOT" != "$PROJECT_ROOT" ]; then
+            echo "comm-context: self-file identity '$NAME' has root='$SELF_ROOT' which doesn't match this project ('$PROJECT_ROOT') — stale; discarding (forces fresh derivation)" >&2
+            NAME=""
+        fi
+    elif [ -n "$SELF_REPO" ] && [ "$SELF_REPO" != "$REPO" ]; then
+        echo "comm-context: self-file identity '$NAME' was claimed for repo '$SELF_REPO' but this is '$REPO' — stale (pane id reused, a genuine cd elsewhere, or a shared no-pane self-file read from a different repo/cwd); discarding" >&2
         NAME=""
+    elif [ -n "$NAME" ]; then
+        printf '%s\nrepo=%s\nroot=%s\n' "$NAME" "$REPO" "$PROJECT_ROOT" > "$SELF_FILE"
+        echo "comm-context: self-healed legacy self-file for '$NAME' (pre-#148 format had no root=) — added root='$PROJECT_ROOT'; every read after this one is fully validated" >&2
     fi
 fi
 
