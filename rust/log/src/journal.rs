@@ -358,7 +358,26 @@ pub fn mark_closed(state_dir: &Path, operation_id: &str) -> Result<()> {
     ensure_dir(state_dir)?;
     match publish_json(&journal_dir(state_dir), &closed_path(state_dir, operation_id), &ClosedMarker {}) {
         Ok(()) => Ok(()),
-        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Codex review round 3, N11/M5: `AlreadyExists` alone does
+            // NOT prove a valid prior close -- a directory or corrupt
+            // file at this path races `publish_noreplace` into this
+            // SAME branch, and until now that made `mark_closed` treat
+            // it as a successful idempotent no-op regardless. Validate
+            // the pre-existing target exactly as `is_closed` does
+            // (`read_json`'s own regular-file + size-cap + schema +
+            // parse checks) before trusting this collision; a genuinely
+            // corrupt target is loud, never silently accepted as
+            // "already closed".
+            if is_closed(state_dir, operation_id)? {
+                Ok(())
+            } else {
+                Err(Error::Schema(format!(
+                    "{operation_id}: a .closed marker publish collided with an existing target \
+                     that is not itself a valid .closed marker"
+                )))
+            }
+        }
         Err(e) => Err(e),
     }
 }
@@ -856,6 +875,39 @@ mod tests {
         )
         .unwrap();
         assert!(read_active(dir.path(), "op-1").is_err());
+    }
+
+    /// Codex review round 3, N11/M5: `mark_closed`'s `AlreadyExists`
+    /// branch used to trust the collision blindly — a DIRECTORY at the
+    /// `.closed` path (which `publish_noreplace` also refuses with
+    /// `AlreadyExists`, same as a pre-existing file) would be silently
+    /// treated as "already closed, nothing to do" instead of the loud
+    /// corruption it actually is.
+    #[test]
+    fn mark_closed_refuses_a_directory_masquerading_as_the_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(JOURNAL_DIR_NAME)).unwrap();
+        let key = record_key("op-1");
+        std::fs::create_dir_all(dir.path().join(JOURNAL_DIR_NAME).join(format!("{key}.closed"))).unwrap();
+        let err = mark_closed(dir.path(), "op-1").unwrap_err();
+        // The AlreadyExists collision defers to `is_closed`'s own
+        // validation, which itself already refuses a non-regular-file
+        // target loudly (`read_json`'s own check) -- `mark_closed`'s own
+        // "not itself a valid .closed marker" wrapper text is reached
+        // only if `is_closed` somehow returned `Ok(false)` here, which a
+        // directory never does (it always errs first).
+        assert!(format!("{err}").contains("not a regular file"), "got: {err}");
+    }
+
+    /// The genuinely idempotent case still works once the target is
+    /// validated: a SECOND `mark_closed` for the same id, after a real
+    /// marker is already there, remains a no-op.
+    #[test]
+    fn mark_closed_is_idempotent_over_a_genuine_prior_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        mark_closed(dir.path(), "op-1").unwrap();
+        mark_closed(dir.path(), "op-1").unwrap();
+        assert!(is_closed(dir.path(), "op-1").unwrap());
     }
 
     #[test]
