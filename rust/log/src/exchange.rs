@@ -128,19 +128,21 @@ impl IdentityExchange for VoyageMgmtExchange {
 /// (an old, still-live supervisor answering under a newly-replaced
 /// binary must not be treated as compatible with a client built against
 /// the new one) needs a value that actually changes commit-to-commit.
-/// `build.rs` stamps `SOT_LOG_BUILD_SHA` from `git rev-parse HEAD` — the
-/// same git-sha-capture pattern `rust/protocol/build.rs` uses for
+/// `build.rs` stamps `SOT_LOG_BUILD_SHA` from the FULL `git rev-parse
+/// HEAD`, `-dirty`-suffixed over an uncommitted tree — the same
+/// git-sha-capture pattern `rust/protocol/build.rs` uses for
 /// `app_version` (copied rather than shared: `sot-log` must not depend on
-/// `sot-protocol`, see `build.rs`'s own doc comment). When git or the
-/// repo is unavailable (a release tarball with no `.git`) the stamped
-/// value is empty and this falls back to the bare package version,
-/// matching `app_version`'s own on-tag/no-repo degradation. A stronger,
-/// executable-hash-based identity is explicitly out of scope ("Executable
-/// attestation — excluded by the threat model, not deferred").
-pub const SUPERVISOR_LANE_BUILD_ID: &str = {
-    let sha = env!("SOT_LOG_BUILD_SHA");
-    if sha.is_empty() { env!("CARGO_PKG_VERSION") } else { sha }
-};
+/// `sot-protocol`, see `build.rs`'s own doc comment). `build.rs` itself
+/// FAILS the build rather than emitting an empty/ambiguous value when no
+/// git repository is found (Codex review round 2, finding M9: silently
+/// falling back to the bare package version here made two different
+/// commits sharing one pre-release version indistinguishable — exactly
+/// what this identity exists to prevent) — this constant can therefore
+/// simply trust the env var is always a real, nonempty identity, with no
+/// runtime fallback branch of its own. A stronger, executable-hash-based
+/// identity is explicitly out of scope ("Executable attestation —
+/// excluded by the threat model, not deferred").
+pub const SUPERVISOR_LANE_BUILD_ID: &str = env!("SOT_LOG_BUILD_SHA");
 
 /// The supervisor lane's own `IdentityExchange` (ADR 0041 Lifecycle "The
 /// challenge", steps 4-5): `hello {proto, build}` request, `hello_ok`
@@ -172,10 +174,18 @@ impl SupervisorLaneExchange {
     pub fn new(build: impl Into<String>) -> Self {
         let mut build = build.into();
         if build.len() > wire::MAX_SUPERVISOR_STRING_LEN {
-            build.truncate(wire::MAX_SUPERVISOR_STRING_LEN);
-            while !build.is_char_boundary(build.len()) {
-                build.pop();
+            // Find the boundary BEFORE truncating (Codex review round 2,
+            // finding M4): `String::truncate` itself panics if the cut
+            // point splits a multi-byte codepoint — the classic
+            // "truncate-then-fix" ordering never reaches its own repair
+            // loop when that happens. Both existing tests used repeated
+            // `é`, for which byte 128 happens to land on a boundary,
+            // which is exactly how this went unnoticed.
+            let mut cut = wire::MAX_SUPERVISOR_STRING_LEN;
+            while !build.is_char_boundary(cut) {
+                cut -= 1;
             }
+            build.truncate(cut);
         }
         Self { build, splitter: wire::FrameSplitter::new(), done: false }
     }
@@ -384,6 +394,22 @@ mod tests {
         // Multi-byte UTF-8 right at the truncation point: naive byte
         // slicing would split a codepoint and panic on `String::truncate`.
         let build: String = "é".repeat(wire::MAX_SUPERVISOR_STRING_LEN); // 2 bytes each
+        let ex = SupervisorLaneExchange::new(build);
+        let encoded = ex.encode_request(); // must not panic
+        assert!(!encoded.is_empty());
+    }
+
+    /// Codex review round 2, finding M4: the ABOVE test's own `é` (2 bytes
+    /// each) happens to land byte 128 exactly on a boundary (128 is even),
+    /// which is precisely how the real bug — truncating to 128 BEFORE
+    /// finding a boundary, which panics if byte 128 lands mid-codepoint —
+    /// went unnoticed. A 3-byte codepoint repeated enough times to exceed
+    /// 128 bytes puts byte 128 strictly INSIDE a character (126..129), so
+    /// this exercises the actual straddle.
+    #[test]
+    fn supervisor_oversized_build_with_a_char_straddling_byte_128_does_not_panic() {
+        let build: String = "€".repeat(50); // 3 bytes each = 150 bytes; byte 128 splits char 42
+        assert!(!build.is_char_boundary(wire::MAX_SUPERVISOR_STRING_LEN), "test setup must actually straddle byte 128");
         let ex = SupervisorLaneExchange::new(build);
         let encoded = ex.encode_request(); // must not panic
         assert!(!encoded.is_empty());

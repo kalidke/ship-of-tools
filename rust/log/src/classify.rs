@@ -160,11 +160,19 @@ pub fn probe_owned_spawn<O: ProbeOps>(
                             // could not even be read: fail closed. The
                             // spawned child is now UNTRACKED (this
                             // function is about to return without ever
-                            // handing it back) — terminate it rather than
-                            // leaving an unproven process running with
-                            // nothing left to supervise it.
-                            let _ = ops.kill_child(&child);
-                            ProbeOutcome::Foreign
+                            // handing it back) — terminate it AND CONFIRM
+                            // it actually died (Codex review round 2,
+                            // finding M8: an earlier version discarded
+                            // `kill_child`'s own failure and never waited,
+                            // so a kill that silently failed could leave
+                            // an unproven process running with nothing
+                            // left to supervise it). Reuses A3's own
+                            // KILL+WAIT escalation — an unconfirmed kill
+                            // here is exactly as severe as it is there.
+                            match kill_and_wait(ops, &child, kill_wait_bound) {
+                                ProbeOutcome::KilledAfterTimeout => ProbeOutcome::Foreign,
+                                other => other, // KillOrWaitFailed
+                            }
                         }
                     };
                 }
@@ -377,10 +385,34 @@ mod tests {
         ops.push_challenge(ChallengeOutcome::Proven(DummyProcess));
         ops.push_spawned_identity(Ok((111, 222)));
         ops.push_proven_identity((999, 888)); // a DIFFERENT process answered
-        ops.push_kill_child(Ok(())); // the untracked child must be terminated
+        // The untracked child must be terminated AND its death confirmed
+        // (Codex review round 2, finding M8: kill alone is not enough).
+        ops.push_kill_child(Ok(()));
+        ops.push_wait_child(WaitOutcome::Exited);
         let readiness = ops.now() + Duration::from_secs(60);
         let outcome = probe_owned_spawn(&ops, &mut unused_cmd(), "voy", readiness, KILL_WAIT, ATTEMPT);
         assert!(matches!(outcome, ProbeOutcome::Foreign));
+        assert!(ops.all_exhausted());
+    }
+
+    /// Codex review round 2, finding M8: a kill/wait failure during the
+    /// A4 identity-mismatch cleanup is AT LEAST as severe as A3's own
+    /// KILL+WAIT row (an unconfirmed kill leaves an untracked process
+    /// that might still be alive) — it escalates to `KillOrWaitFailed`,
+    /// never silently reported as the milder `Foreign`.
+    #[test]
+    fn a4_identity_mismatch_kill_failure_escalates_to_kill_or_wait_failed() {
+        let ops = ScriptedProbeOps::new();
+        ops.push_spawn(SpawnOutcome::Spawned(DummySpawnedChild));
+        ops.push_wait_child(WaitOutcome::StillRunning);
+        ops.push_connect(ConnectOutcome::Connected(DummyConn));
+        ops.push_challenge(ChallengeOutcome::Proven(DummyProcess));
+        ops.push_spawned_identity(Ok((111, 222)));
+        ops.push_proven_identity((999, 888));
+        ops.push_kill_child(Err(std::io::Error::other("TerminateProcess failed")));
+        let readiness = ops.now() + Duration::from_secs(60);
+        let outcome = probe_owned_spawn(&ops, &mut unused_cmd(), "voy", readiness, KILL_WAIT, ATTEMPT);
+        assert!(matches!(outcome, ProbeOutcome::KillOrWaitFailed(_)), "expected KillOrWaitFailed, got {outcome:?}");
         assert!(ops.all_exhausted());
     }
 
@@ -396,6 +428,7 @@ mod tests {
         ops.push_challenge(ChallengeOutcome::Proven(DummyProcess));
         ops.push_spawned_identity(Err(std::io::Error::other("GetProcessId failed")));
         ops.push_kill_child(Ok(()));
+        ops.push_wait_child(WaitOutcome::Exited);
         let readiness = ops.now() + Duration::from_secs(60);
         let outcome = probe_owned_spawn(&ops, &mut unused_cmd(), "voy", readiness, KILL_WAIT, ATTEMPT);
         assert!(matches!(outcome, ProbeOutcome::Foreign));

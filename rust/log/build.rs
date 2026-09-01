@@ -13,11 +13,28 @@
 // (`rust/protocol/build.rs`), copied rather than shared, so each crate's
 // own build stays self-contained.
 //
-// Emitted rustc-env var (defaults to "" when git or the repo is
-// unavailable, e.g. a release-tarball build — `exchange.rs` falls back
-// to the bare package version in that case, matching `app_version`'s own
-// on-tag/no-repo behavior):
-//   SOT_LOG_BUILD_SHA   short commit sha
+// Codex review round 2, finding M9: an earlier version silently emitted
+// an EMPTY sha when git was unavailable, and `exchange.rs` then silently
+// reused `CARGO_PKG_VERSION` -- two different commits sharing one
+// pre-release `Cargo.toml` version would then be INDISTINGUISHABLE,
+// exactly the version-skew hole this build identity exists to close. A
+// short sha is also not collision-proof across a shallow clone or a
+// large enough repo. This build now:
+//   - uses the FULL sha, never `--short`;
+//   - appends `-dirty` when the working tree has uncommitted changes, so
+//     a locally-modified build never claims to BE the commit it was
+//     merely built from;
+//   - FAILS the build outright when no git repository is found (a
+//     release tarball, a checkout with git unavailable), UNLESS the
+//     caller supplies one explicitly via the `SOT_BUILD_ID` environment
+//     variable -- an empty/absent identity is not a safe default here,
+//     it is exactly the "two builds nobody can tell apart" case.
+//
+// Emitted rustc-env var (always nonempty on a successful build):
+//   SOT_LOG_BUILD_SHA   full commit sha, "-dirty" suffixed if the
+//                       working tree has uncommitted changes, OR the
+//                       caller-supplied SOT_BUILD_ID when git is
+//                       unavailable.
 
 use std::process::Command;
 
@@ -34,15 +51,52 @@ fn git(args: &[&str]) -> Option<String> {
     }
 }
 
-fn main() {
-    let sha = git(&["rev-parse", "--short=9", "HEAD"]);
+/// `true` iff the working tree has uncommitted changes, OR cleanliness
+/// itself could not be determined (fails closed: an unverifiable tree is
+/// treated as dirty, never silently assumed clean).
+fn is_dirty() -> bool {
+    match Command::new("git").args(["status", "--porcelain"]).output() {
+        Ok(out) if out.status.success() => !out.stdout.is_empty(),
+        _ => true,
+    }
+}
 
-    // Re-stamp when HEAD moves (commit, checkout, tag). Best-effort:
-    // absent paths make these directives inert.
+fn main() {
+    println!("cargo:rerun-if-env-changed=SOT_BUILD_ID");
+
+    let sha = git(&["rev-parse", "HEAD"]); // the FULL sha, never --short
+
+    // Re-stamp when HEAD moves (commit, checkout, tag) OR the tree's
+    // dirty/clean state changes. Best-effort: absent paths make these
+    // directives inert.
     if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
         println!("cargo:rerun-if-changed={git_dir}/HEAD");
         println!("cargo:rerun-if-changed={git_dir}/refs");
+        println!("cargo:rerun-if-changed={git_dir}/index");
     }
 
-    println!("cargo:rustc-env=SOT_LOG_BUILD_SHA={}", sha.unwrap_or_default());
+    let id = match sha {
+        Some(sha) => {
+            if is_dirty() {
+                format!("{sha}-dirty")
+            } else {
+                sha
+            }
+        }
+        None => match std::env::var("SOT_BUILD_ID") {
+            Ok(id) if !id.is_empty() => id,
+            _ => panic!(
+                "sot-log build.rs: cannot derive a build identity -- no git repository was found \
+                 (a release tarball, or a checkout where git is unavailable) and the SOT_BUILD_ID \
+                 environment variable was not set to supply one explicitly. This identity gates \
+                 the supervisor lane's own build boundary (ADR 0041 \"Build boundary\"): silently \
+                 falling back to the bare package version would make two DIFFERENT commits \
+                 sharing one pre-release Cargo.toml version indistinguishable -- exactly the \
+                 version-skew hole this exists to close, not a missing convenience to paper over. \
+                 Set SOT_BUILD_ID=<some-unique-string> to build outside a git checkout."
+            ),
+        },
+    };
+
+    println!("cargo:rustc-env=SOT_LOG_BUILD_SHA={id}");
 }
