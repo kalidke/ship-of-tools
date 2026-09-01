@@ -323,17 +323,17 @@ enum ClientEvent {
 /// [`FeAttachClient::attach`] is reported through [`FeAttachClient::pump`]
 /// (status text / terminal notice), matching the ADR's "an actionable
 /// error offering retry and reset" rather than a plain `Result` deep
-/// inside a long-running reconnect loop.
+/// inside a long-running reconnect loop. Resolving `state_dir` itself is
+/// the CALLER's job (see `attach`'s own doc), so there is no
+/// "no state dir" variant here — that failure is the caller's to name.
 #[derive(Debug)]
 pub enum FeAttachError {
-    NoStateDir,
     SpawnWorkerThread(std::io::Error),
 }
 
 impl std::fmt::Display for FeAttachError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FeAttachError::NoStateDir => write!(f, "no per-machine state dir resolved"),
             FeAttachError::SpawnWorkerThread(e) => write!(f, "spawn fe-client worker thread: {e}"),
         }
     }
@@ -358,13 +358,21 @@ pub struct FeAttachClient {
 }
 
 impl FeAttachClient {
-    /// Resolves the state dir, reads `drawer.voyage`, and starts the
-    /// background worker; the worker itself performs the connect/hello/
-    /// status/attach/checkpoint sequence and every reconnect thereafter —
-    /// this constructor never blocks on the network, matching
+    /// Reads `drawer.voyage` under `state_dir` and starts the background
+    /// worker; the worker itself performs the connect/hello/status/
+    /// attach/checkpoint sequence and every reconnect thereafter — this
+    /// constructor never blocks on the network, matching
     /// `LocalTerminal::spawn`'s own "returns once the reader thread is
-    /// running" contract.
+    /// running" contract. `state_dir` is the CALLER's resolved value
+    /// (`state_dir::sot_state_dir()` for the real frontend; an isolated
+    /// tempdir for `tests/fe_client_win.rs`) — this constructor takes it
+    /// rather than resolving it itself, the same way `sot-capsule
+    /// supervise <state_dir>` takes it as an explicit argument rather
+    /// than an internal env-var lookup, so a real client and a test can
+    /// point at different trees in the same process without racing a
+    /// shared env var.
     pub fn attach(
+        state_dir: PathBuf,
         cols: u16,
         rows: u16,
         controller_id: String,
@@ -372,7 +380,6 @@ impl FeAttachClient {
         fe_down_last_evidence: Option<String>,
         wake: Box<dyn Fn() + Send + 'static>,
     ) -> Result<Self, FeAttachError> {
-        let state_dir = crate::state_dir::sot_state_dir().ok_or(FeAttachError::NoStateDir)?;
         let rows = rows.max(2);
         let cols = cols.max(2);
         let parser = vt100_ctt::Parser::new(rows, cols, SCROLLBACK_ROWS);

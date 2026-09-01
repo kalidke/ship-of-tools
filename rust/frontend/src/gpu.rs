@@ -12408,6 +12408,12 @@ impl State {
     #[cfg(windows)]
     fn pump_attach_term(&mut self) {
         if self.attach_term.is_none() {
+            let Some(state_dir) = crate::paths::sot_state_dir() else {
+                tracing::warn!("attach-only: no per-machine state dir resolved");
+                self.status = "attach-only terminal failed: no per-machine state dir".to_string();
+                self.drawer = DrawerContent::Closed;
+                return;
+            };
             let controller_id = self_comm_handle();
             let fe_down_to = self_comm_handle();
             let fe_down_last_evidence = fe_inbox_path()
@@ -12415,6 +12421,7 @@ impl State {
                 .and_then(|s| sot_log::fe_client::last_evidence_ts(&s));
             let waker = self.window.clone();
             match sot_log::fe_client_win::FeAttachClient::attach(
+                state_dir,
                 80,
                 24,
                 controller_id,
