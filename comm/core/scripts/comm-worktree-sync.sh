@@ -66,11 +66,21 @@ ${AHEAD_BEHIND:+($AHEAD_BEHIND)
 $WT_LIST"
 
 pinged=0
+failed=0
 for h in "${FAMILY[@]}"; do
     [ -n "$h" ] || continue
     [ "$h" = "$SELF" ] && continue
-    "$SCRIPT_DIR/comm-relay.sh" send "@$h" "$MSG" 2>/dev/null || true
-    pinged=$((pinged + 1))
+    # Count and report relay failures distinctly (Codex review round-1
+    # follow-up, item 6): this used to `|| true` the relay call and still
+    # increment "pinged" unconditionally, so an identity refusal (comm-relay
+    # now refuses loudly with no resolved identity) or any other send
+    # failure silently reported as a false success.
+    if "$SCRIPT_DIR/comm-relay.sh" send "@$h" "$MSG" 2>/dev/null; then
+        pinged=$((pinged + 1))
+    else
+        failed=$((failed + 1))
+        echo "comm-worktree-sync.sh: failed to relay to @$h" >&2
+    fi
 done
 
-echo "worktree-sync: base '$BASE', family [${ROSTER}], pinged $pinged (excluding @${SELF:-self})"
+echo "worktree-sync: base '$BASE', family [${ROSTER}], pinged $pinged, failed $failed (excluding @${SELF:-self})"
