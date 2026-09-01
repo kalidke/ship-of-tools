@@ -154,6 +154,15 @@ fn all_sealed_frames(root: &Path) -> Vec<sot_log::Envelope> {
 /// scenarios are TIMING-based (fixed settling sleeps), so they serialize
 /// through one lock — parallel test scheduling starved the sleeps and
 /// produced order-dependent flakes.
+/// The operator schedule IS the rig's clock: each test's delays were tuned
+/// on a workstation, and hosted CI runners have repeatedly been too slow for
+/// them — a Turn sent 150 ms after `producer_ready` had not registered before
+/// the next command, so summaries ended with turns=0 (four sightings across
+/// three different tests on hosted ubuntu, never locally). One uniform scale
+/// keeps every schedule's SHAPE and buys the margin; there is no per-test
+/// tuning to drift.
+const RIG_CLOCK_SCALE: u64 = 4;
+
 fn drive(cfg: ClaudeConfig, cmds: Vec<(u64, OperatorCmd)>) -> sot_log::claude::ClaudeSummary {
     static RIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _serial = RIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -166,7 +175,7 @@ fn drive(cfg: ClaudeConfig, cmds: Vec<(u64, OperatorCmd)>) -> sot_log::claude::C
     // producer_ready frame to hit the open segment instead.
     wait_for_open_segment_bytes(&root, b"producer_ready", &handle);
     for (delay_ms, cmd) in cmds {
-        std::thread::sleep(Duration::from_millis(delay_ms));
+        std::thread::sleep(Duration::from_millis(delay_ms * RIG_CLOCK_SCALE));
         let _ = tx.send(cmd);
     }
     drop(tx);
@@ -418,15 +427,11 @@ fn refused_turn_is_recorded_as_bare_input() {
     let helper = write_fake_helper(dir.path(), "interrupt_no_result");
     let cfg = config(dir.path(), "v9", &helper);
     let root = cfg.voyage_root.clone();
-    // Generous gaps on purpose: the operator schedule IS this test's clock,
-    // and on a slow hosted runner the first Turn had not registered as OPEN
-    // within 150 ms, so the second was not refused and the summary ended
-    // with turns=0 (seen three times on hosted ubuntu, never locally).
     let summary = drive(cfg, vec![
-        (600, OperatorCmd::Turn("first".into())),
-        (600, OperatorCmd::Turn("refused-while-busy".into())),
-        (600, OperatorCmd::Interrupt),
-        (1200, OperatorCmd::Shutdown),
+        (150, OperatorCmd::Turn("first".into())),
+        (150, OperatorCmd::Turn("refused-while-busy".into())),
+        (150, OperatorCmd::Interrupt),
+        (300, OperatorCmd::Shutdown),
     ]);
     assert_eq!(summary.turns, 1, "terminal: {}", summary.terminal_reason);
     assert_eq!(summary.refused_turns, 1);
