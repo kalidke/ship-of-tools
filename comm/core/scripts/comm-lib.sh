@@ -464,14 +464,21 @@ sot_require_routable_identity() {
         echo "ERROR: your sot-comm identity did not resolve — refusing to send with no verifiable from-handle (a reply would silently misroute). Join first: comm-join.sh --name <canonical-handle> (never a bare comm-join.sh if you previously held one — see the sot-session-start skill's recovery recipe)." >&2
         return 1
     fi
-    local reg_status reg_root
+    local reg_status reg_root qname qdir
     IFS=$'\t' read -r reg_status reg_root <<< "$(sot_registry_entry_status "$NAME")"
+    # %q-quote the handle AND the executable path (Codex review round-3
+    # finding 7): a raw $NAME/$SCRIPT_DIR interpolation produces a wrong
+    # or unsafe copy-paste command for a handle or install path containing
+    # spaces/metacharacters. $SCRIPT_DIR is this HELPER's caller's own
+    # directory (every caller sources comm-lib.sh after setting it).
+    qname="$(printf '%q' "$NAME")"
+    qdir="$(printf '%q' "${SCRIPT_DIR:-.}")"
     if [ "$reg_status" != "present" ]; then
-        echo "ERROR: your sot-comm identity '@$NAME' has no registry row — refusing to send with an unroutable from-handle (a reply would silently misroute). Reclaim it: comm-join.sh --name $NAME" >&2
+        echo "ERROR: your sot-comm identity '@$NAME' has no registry row — refusing to send with an unroutable from-handle (a reply would silently misroute). Reclaim it: $qdir/comm-join.sh --name $qname" >&2
         return 1
     fi
     if [ -n "$reg_root" ] && [ "$reg_root" != "${PROJECT_ROOT:-}" ]; then
-        echo "ERROR: your sot-comm identity '@$NAME' is registered to a DIFFERENT project's root ('$reg_root') — refusing to send with a misrouting from-handle. Reclaim it: comm-join.sh --name $NAME" >&2
+        echo "ERROR: your sot-comm identity '@$NAME' is registered to a DIFFERENT project's root ('$reg_root') — refusing to send with a misrouting from-handle. Reclaim it: $qdir/comm-join.sh --name $qname" >&2
         return 1
     fi
     return 0
