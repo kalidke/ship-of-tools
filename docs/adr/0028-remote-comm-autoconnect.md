@@ -123,6 +123,33 @@ is deliberate: grandfathering an unknown root in as "assume same project"
 would silently re-enable aliasing for exactly the pre-existing collisions
 this feature targets.
 
+**Self-file read-side transition (dated 2026-09-01, PR #150 — amends the
+"reads back as unknown root... a collision, not a free pass" sentence
+above for the SELF-FILE half only; the REGISTRY half is unchanged).**
+Applied to the self-file literally, "unknown root = collision" turned out
+to be too strict in practice: it discarded EVERY self-file written before
+`root=` shipped — every long-running session's identity — on its very next
+comm call ("Not joined — run comm-join.sh first"), which is strictly worse
+than the pane-recycling bug `root=` was added to close in the first place.
+`comm-context.sh`'s read side now SELF-HEALS a legacy (no `root=`)
+self-file instead of discarding it outright, but only on real evidence:
+- a `repo=` basename match **corroborated by the registry's own root** for
+  that handle, when the registry has one — the strongest case;
+- a `repo=` basename match alone, when the registry offers **no** evidence
+  either way (no row, or a row with no root of its own) — a residual,
+  deliberately-accepted, time-bounded ambiguity (a same-basename different
+  checkout could theoretically alias through this too; it needs a basename
+  collision AND a coincident missing/unknown registry row, and stops
+  mattering entirely once every legacy self-file has healed once);
+- the ancient one-line format (pre-#68, no `repo=` at all) heals **only**
+  with registry corroboration — it carries no evidence of its own to check
+  against basename alone.
+A registry root that **disagrees** with the self-file's basename always
+wins and refuses the heal outright — a basename match can never outrank
+contrary registry evidence. See `comm-context.sh`'s own comment for the
+exact ruling matrix; this paragraph documents the current read-side rule,
+not the sentence two paragraphs up.
+
 Only a name that comes from **derivation** (nothing else was supplied) runs
 the disambiguation algorithm. A name from `--name`, `$SOT_COMM_NAME`, or an
 already-joined self-file identity is always used **verbatim** — no

@@ -63,13 +63,22 @@ ensure_home
 # spawner is awaiting. Explicit --name wins; an already-joined NAME (from
 # context) wins over the env (a rejoin keeps its identity).
 #
-# Precedence check (Codex review F1): NAME here can ONLY carry an
-# already-joined self-file identity that comm-context.sh just validated
-# against `root=` — a self-file with no root= line, or a mismatched one,
-# comes back as NAME="" from context (see its guard), so it can never reach
-# this line to wrongly out-rank a spawn-pinned $SOT_COMM_NAME below. A
-# STALE self-file overriding a spawn pin is exactly what that root check
-# closes; this ordering is otherwise unchanged.
+# Precedence check (Codex review F1; updated for the round-1 self-heal
+# fix — Codex review round-2 SHOULD-FIX 1/F flagged this comment as stale
+# against that fix): NAME here can carry an already-joined self-file
+# identity that comm-context.sh just validated — either a strict `root=`
+# match, OR a legacy (pre-#148, no `root=`) self-file it SELF-HEALED on
+# this same read (a `repo=` basename match corroborated by the registry,
+# or by basename alone when the registry offers no contrary evidence — see
+# comm-context.sh's own comment for the exact ruling matrix). A self-file
+# whose `root=` is PRESENT AND WRONG, or a legacy one the heal matrix
+# REFUSED (the registry disagrees, or it's the ancient one-line format
+# with no corroboration), comes back as NAME="" from context (see its
+# guard), so it can never reach this line to wrongly out-rank a
+# spawn-pinned $SOT_COMM_NAME below. A genuinely stale/wrong self-file
+# overriding a spawn pin is exactly what that guard closes; a rightfully
+# self-healed one IS this session's own real identity and correctly keeps
+# precedence, same as it always has.
 [ -z "$NAME" ] && NAME="${SOT_COMM_NAME:-}"
 [ -z "$EXPERTISE" ] && EXPERTISE="${SOT_COMM_EXPERTISE:-}"
 # Reached only when NAME came from none of the verbatim sources above
@@ -196,18 +205,25 @@ fi
 : >> "$INBOX_DIR/$NAME.jsonl"
 
 # No legacy self-file sweep (Codex review PR #148 round 2, simplicity
-# audit — deleted ~50 lines that used to live here). It's redundant, not
-# merely simplifiable: comm-context.sh's read-side guard already rejects
-# ANY self-file with no (or a mismatched) `root=` line, unconditionally,
-# on every single read — a legacy file is therefore ALREADY inert; it
-# grants no trust whether or not anything ever sweeps it. And a rightful
-# owner's self-file self-heals the moment that owner rejoins: this
-# script's own write, just above, always emits the full v2 three-line
-# form. The sweep's only remaining job was pure disk hygiene (deleting
-# ABANDONED files nobody will ever rejoin), bought at the cost of a
-# directory glob + a stat/read per file, done EAGERLY on every join, while
-# holding the single global registry lock — the wrong trade for a
-# non-safety-load-bearing cleanup.
+# audit — deleted ~50 lines that used to live here; kept deleted after the
+# round-1 self-heal fix, but the REASONING below was stale until this
+# update — Codex review round-2 SHOULD-FIX 1/F). It remains unnecessary,
+# for an updated reason: comm-context.sh's read-side guard no longer
+# rejects EVERY legacy (no `root=`) self-file unconditionally — it now
+# SELF-HEALS one whose `repo=`/registry evidence checks out (see that
+# script's own comment for the exact matrix), so a legacy file is not
+# "already inert" the way it was pre-hotfix. But it only matters if
+# something actually reads THAT exact path again, and nothing here scans
+# the self-file directory proactively — an abandoned legacy file nobody's
+# session ever revisits stays exactly as harmless clutter as before, just
+# for a narrower reason. And a rightful owner's self-file self-heals (or
+# is freshly written in full v2 form, as this script's own write just
+# above does) the moment that owner's session actually uses it. The
+# sweep's only remaining job was pure disk hygiene (deleting ABANDONED
+# files nobody will ever rejoin), bought at the cost of a directory glob +
+# a stat/read per file, done EAGERLY on every join, while holding the
+# single global registry lock — the wrong trade for a non-safety-load-
+# bearing cleanup.
 have="$(jq -r '.protocol_version // 0' "$REGISTRY")"
 if [ "$have" != "$PROTOCOL_VERSION" ]; then
     echo "WARNING: registry protocol v$have != client v$PROTOCOL_VERSION — run ShipTools.update_comm() on all machines" >&2
