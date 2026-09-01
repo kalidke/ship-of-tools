@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<!--
+  Journal entry template. Copy to journal/YYYY-MM-DD-slug.html, fill it in, and add one
+  line to journal/index.html (newest first). An entry is never edited after the day it is
+  written; a correction is a new entry that links back.
+-->
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Journal entry: one line on what happened.">
+  <title>YYYY-MM-DD · Entry title · project record</title>
+  <link rel="stylesheet" href="../assets/site.css">
+  <link rel="stylesheet" href="../assets/katex/katex.min.css">
+  <script defer src="../assets/katex/katex.min.js"></script>
+  <script defer src="../assets/katex/contrib/auto-render.min.js"></script>
+  <script defer src="../assets/site.js"></script>
+</head>
+<body data-root=".." data-page="journal/YYYY-MM-DD-slug.html" data-kind="Journal">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header data-site-header></header>
+  <div class="site-layout">
+    <aside data-site-nav></aside>
+    <main id="main" class="content">
+      <p class="eyebrow">Journal · YYYY-MM-DD</p>
+      <h1>Entry title</h1>
+      <p class="entry-meta">Written by NAME (a person, or an AI session with its handle). Campaign: NAME.</p>
+
+      <h2 id="what">What happened</h2>
+      <p>What was done, in plain words.</p>
+
+      <h2 id="decided">Decided</h2>
+      <ul>
+        <li>Each decision with its reason.</li>
+      </ul>
+
+      <h2 id="evidence">Evidence</h2>
+      <ul>
+        <li>Links to output rows, logs, commits, and the experiment page.</li>
+      </ul>
+
+      <h2 id="next">Next</h2>
+      <p>What follows from this.</p>
+
+      <nav data-page-sequence></nav>
+    </main>
+    <aside data-page-toc></aside>
+  </div>
+  <footer data-site-footer></footer>
+</body>
+</html>

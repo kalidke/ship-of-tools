@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<!--
+  Experiment page template. Copy into experiments/<campaign>/<slug>.html (two levels
+  below the record root; the asset paths below are already written for that depth).
+  Then: set title, description, data-page, data-kind, and the badge; fill every
+  section; add the page to SITE_SECTIONS in assets/site.js.
+  Sections and their order are fixed (see reference/how-we-work.html).
+-->
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="One sentence: what this experiment tests.">
+  <title>Experiment title · project record</title>
+  <link rel="stylesheet" href="../../assets/site.css">
+  <link rel="stylesheet" href="../../assets/katex/katex.min.css">
+  <script defer src="../../assets/katex/katex.min.js"></script>
+  <script defer src="../../assets/katex/contrib/auto-render.min.js"></script>
+  <script defer src="../../assets/site.js"></script>
+</head>
+<!-- data-kind is "Computational experiment" or "Wet-lab experiment" -->
+<body data-root="../.." data-page="experiments/CAMPAIGN/SLUG.html" data-kind="Computational experiment">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header data-site-header></header>
+  <div class="site-layout">
+    <aside data-site-nav></aside>
+    <main id="main" class="content">
+      <p class="eyebrow">Campaign name · Experiment name</p>
+      <h1>Experiment title</h1>
+      <p class="status-line">
+        <!-- kind badge: "Computational" or "Wet lab" -->
+        <span class="badge badge-kind">Computational</span>
+        <!-- one of: badge-planned, badge-running, badge-complete, badge-qualified, badge-superseded -->
+        <span class="badge badge-planned">Planned</span>
+        <span>One line: the state of this experiment today.</span>
+      </p>
+
+      <div class="callout">
+        <span class="callout-title">In short</span>
+        Three to five sentences, no symbols. The question, the answer so far, and what it
+        does and does not license.
+      </div>
+
+      <h2 id="hypothesis">Hypothesis</h2>
+      <p>
+        What we expect and what would show it wrong. For a quantitative test: the null and
+        the pass margin, both fixed before the run.
+      </p>
+
+      <h2 id="methods">Methods</h2>
+      <!--
+        Computational: what is held exact and what is real; inputs; seeds; the runner
+        command in a code block; links to the protocol section and the code at a commit.
+        Wet lab: sample and construct; labeling protocol; imaging modality and settings;
+        the analysis pipeline and its version; controls; what is still open before it
+        can run.
+      -->
+      <p>
+        What is held exact and what is real. Inputs, seeds, and the runner command in a
+        code block. Link the protocol section and the code at a commit.
+      </p>
+      <pre><code>command that produced the result, with its arguments</code></pre>
+
+      <h2 id="results">Results</h2>
+      <p>
+        Tables and figures. Every number traces to an output row named in Provenance.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Quantity</th><th>Truth</th><th>Estimate</th><th>Interval</th></tr></thead>
+          <tbody>
+            <tr><td></td><td></td><td></td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="conclusions">Conclusions</h2>
+      <p>
+        The verdict in one sentence. What it means for the program. The next isolation.
+      </p>
+
+      <h2 id="provenance">Provenance</h2>
+      <div class="table-wrap">
+        <table class="provenance">
+          <tbody>
+            <tr><th>Commit</th><td><code>abcdef0</code></td></tr>
+            <tr><th>Manifest hash</th><td><code></code></td></tr>
+            <tr><th>Seeds</th><td></td></tr>
+            <tr><th>Output</th><td><code>path to the output folder or result rows</code></td></tr>
+            <tr><th>Date</th><td>YYYY-MM-DD</td></tr>
+            <tr><th>Run by</th><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <nav data-page-sequence></nav>
+    </main>
+    <aside data-page-toc></aside>
+  </div>
+  <footer data-site-footer></footer>
+</body>
+</html>
