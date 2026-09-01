@@ -326,6 +326,18 @@ pub struct Settings {
     /// key mid-session does nothing until the frontend restarts
     /// (`scripts/relaunch-sot.ps1`, ADR 0017).
     pub gpu_power_preference: GpuPowerPreference,
+    /// `[drawer] attach_only` — ADR 0041 step 6 U3: when `true`, the
+    /// Terminal drawer does not spawn a local PTY at all; it resolves the
+    /// per-machine state dir, reads `drawer.voyage`, and attaches to a
+    /// running `sot-capsule supervise` as a watcher (Windows only — see
+    /// `sot_log::fe_client_win`). Default `false`: OFF BY DEFAULT, and
+    /// when off nothing the FE does today changes — the drawer keeps
+    /// spawning `term::LocalTerminal` exactly as before this unit landed.
+    /// Read once at drawer-creation time (not hot-reloaded mid-session,
+    /// same as `gpu_power_preference` above — switching it takes a
+    /// frontend restart because a live drawer's backend is not swapped
+    /// under it).
+    pub attach_only: bool,
 }
 
 impl Default for Settings {
@@ -343,6 +355,7 @@ impl Default for Settings {
             font_scale: None,
             nav_spill_ms: 2000,
             gpu_power_preference: GpuPowerPreference::Low,
+            attach_only: false,
         }
     }
 }
@@ -475,6 +488,11 @@ impl Settings {
                     self.new_session_root =
                         if v.is_empty() { None } else { Some(v.to_string()) };
                 }
+                ("drawer", "attach_only") => match parse_bool(&value) {
+                    Some(b) => self.attach_only = b,
+                    None => tracing::warn!(line = lineno + 1, value = %value,
+                        "drawer.attach_only: expected true|false"),
+                },
                 _ => {
                     tracing::warn!(line = lineno + 1, section = %section, key,
                         "unknown settings key; ignored");

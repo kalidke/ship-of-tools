@@ -370,7 +370,7 @@ impl FeAttachClient {
         controller_id: String,
         fe_down_to_handle: String,
         fe_down_last_evidence: Option<String>,
-        wake: Box<dyn Fn() + Send + Sync>,
+        wake: Box<dyn Fn() + Send + 'static>,
     ) -> Result<Self, FeAttachError> {
         let state_dir = crate::state_dir::sot_state_dir().ok_or(FeAttachError::NoStateDir)?;
         let rows = rows.max(2);
@@ -570,7 +570,7 @@ fn run_worker(
     cmd_rx: Receiver<WorkerMsg>,
     msg_tx: Sender<WorkerMsg>,
     events_tx: Sender<ClientEvent>,
-    wake: Box<dyn Fn() + Send + Sync>,
+    wake: Box<dyn Fn() + Send + 'static>,
 ) {
     let h = state_dir_hash(&state_dir);
     let mut reconnect = ReconnectState::new();
@@ -948,7 +948,7 @@ fn frame_accounted_size(frame: &DecodedFrame) -> usize {
 fn run_steady_state(
     cmd_rx: &Receiver<WorkerMsg>,
     events_tx: &Sender<ClientEvent>,
-    wake: &(dyn Fn() + Send + Sync),
+    wake: &(dyn Fn() + Send),
     attach_conn: &Arc<PipeClient>,
     supervisor_conn: &mut PipeClient,
     sup_reader: &mut FrameReader,
