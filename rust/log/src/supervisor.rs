@@ -1057,15 +1057,15 @@ enum CommandEffect {
     /// Begin ending the current `Ready` leg. The wire reply is DEFERRED
     /// to `record_closed` (B3) — this variant carries no reply value at
     /// all; `Accepted` is never sent, only implied.
-    BeginEndRun { operation_id: String, epoch: Option<u64>, reason: String, ready_at: Instant },
+    EndRun { operation_id: String, epoch: Option<u64>, reason: String, ready_at: Instant },
     /// Begin a reset (admissible only from `EndedNoRespawn` — checked by
     /// the caller before this effect is ever produced).
-    BeginReset { operation_id: String, new_voyage: String, aside: Option<String>, reply: SupervisorOperationState },
+    Reset { operation_id: String, new_voyage: String, aside: Option<String>, reply: SupervisorOperationState },
     /// `stop` was accepted and already durably journaled (B5).
     /// `journal_ok` is `false` iff `journal::finish` itself failed —
     /// still honors the stop, but forces `Terminal` severity on exit
     /// (B2/B5: "journal::finish failures are never ignored — loud").
-    BeginStop { reply: SupervisorOperationState, journal_ok: bool },
+    Stop { reply: SupervisorOperationState, journal_ok: bool },
 }
 
 fn reset_refusal_detail(lifecycle: &Lifecycle) -> &'static str {
@@ -1166,7 +1166,7 @@ impl AuthorityState {
                 if let Err(e) = journal::begin(&self.state_dir, &operation_id, &record) {
                     return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("journal begin failed: {e}")) });
                 }
-                Ok(CommandEffect::BeginEndRun { operation_id, epoch, reason, ready_at })
+                Ok(CommandEffect::EndRun { operation_id, epoch, reason, ready_at })
             }
             SupervisorOp::Reset { .. } => {
                 if !matches!(lifecycle, Lifecycle::EndedNoRespawn) {
@@ -1185,7 +1185,7 @@ impl AuthorityState {
                 if let Err(e) = journal::begin(&self.state_dir, &operation_id, &record) {
                     return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("journal begin failed: {e}")) });
                 }
-                Ok(CommandEffect::BeginReset { operation_id, new_voyage, aside, reply: SupervisorOperationState::Accepted })
+                Ok(CommandEffect::Reset { operation_id, new_voyage, aside, reply: SupervisorOperationState::Accepted })
             }
             SupervisorOp::Stop => {
                 let record = journal::ActiveRecord { operation_id: operation_id.clone(), digest, op: journal::ActiveOp::Stop };
@@ -1194,8 +1194,8 @@ impl AuthorityState {
                 }
                 let t = journal::TerminalRecord::Stopping;
                 match journal::finish(&self.state_dir, &operation_id, &t) {
-                    Ok(()) => Ok(CommandEffect::BeginStop { reply: terminal_to_wire(t), journal_ok: true }),
-                    Err(e) => Ok(CommandEffect::BeginStop {
+                    Ok(()) => Ok(CommandEffect::Stop { reply: terminal_to_wire(t), journal_ok: true }),
+                    Err(e) => Ok(CommandEffect::Stop {
                         reply: SupervisorOperationState::Failed { detail: bounded_detail(format!("journal finish failed: {e}")) },
                         journal_ok: false,
                     }),
@@ -1426,7 +1426,7 @@ fn handle_lane_bytes(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, id: C
                 DecodedFrame::SupervisorRequest(SupervisorRequest::Command { operation_id, op }) => {
                     let outcome: Option<SupervisorOperationState> =
                         match ctx.authority.handle_command(ctx.lifecycle, operation_id, op) {
-                            Ok(CommandEffect::BeginEndRun { operation_id, epoch, reason, ready_at }) => {
+                            Ok(CommandEffect::EndRun { operation_id, epoch, reason, ready_at }) => {
                                 let voyage_id =
                                     ctx.authority.voyage_id.clone().expect("EndRun was admitted, so voyage_id is Some");
                                 let (rx, handle) =
@@ -1442,13 +1442,13 @@ fn handle_lane_bytes(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, id: C
                                 // B3: the reply is DEFERRED to record_closed — never sent here.
                                 None
                             }
-                            Ok(CommandEffect::BeginReset { operation_id, new_voyage, aside, reply }) => {
+                            Ok(CommandEffect::Reset { operation_id, new_voyage, aside, reply }) => {
                                 let (rx, handle) =
                                     spawn_reset(ctx.authority.state_dir.clone(), operation_id.clone(), new_voyage, aside);
                                 *ctx.lifecycle = Lifecycle::Resetting { operation_id, rx, handle, started_at: now };
                                 Some(reply)
                             }
-                            Ok(CommandEffect::BeginStop { reply, journal_ok }) => {
+                            Ok(CommandEffect::Stop { reply, journal_ok }) => {
                                 let was_terminal = matches!(ctx.lifecycle, Lifecycle::Terminal { .. }) || !journal_ok;
                                 let worker = take_worker_handle(ctx.lifecycle);
                                 let wire_reply = SupervisorReply::Operation(reply);
