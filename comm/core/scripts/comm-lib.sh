@@ -376,6 +376,107 @@ sot_write_self_file() {
     return 0
 }
 
+# --- bridge detection (shared by comm-join.sh's stranding guard and
+# comm-listen.sh's --status/--stop/start-check) ---
+#
+# Codex review round-2 finding 5/D: comm-listen.sh's own bridge check was
+# `pgrep -f "comm-relay.sh bridge --name $NAME"` — UNANCHORED (a substring
+# match, so NAME="foo" also matches a live "...--name foo-bar" process),
+# REGEX-SENSITIVE (a literal '.' in NAME, common in real repo names like
+# "MyOrg.github.io-myhost", matches any character), and NOT scoped to this
+# uid (a shared host's `pgrep`/`pkill -f` with no `-u` can false-match, or
+# even KILL, another user's process). Meanwhile comm-join.sh's tmux-only
+# check misses a bridge someone started directly, with no tmux wrapper at
+# all. ONE implementation now covers both signals and both callers.
+
+# _sot_bridge_pattern NAME — the exact, escaped, end-anchored pgrep -f
+# pattern for a reconnect-loop bridge serving NAME. Escapes EVERY
+# character that isn't `[A-Za-z0-9]` (not just '.', for safety — sanitized
+# handles only ever contain `.`/`-`/`_` besides alphanumerics, but this
+# doesn't rely on that staying true) by backslash-prefixing it, the
+# standard "escape a string for use as a literal regex" idiom: a
+# backslash before an ORDINARY (non-metacharacter) character like `-` or
+# `_` is a no-op in every regex engine pgrep is built on in practice, so
+# this is a strict superset of "escape only the metacharacters" with no
+# risk of missing one (extended-regex metacharacters like `(`, `)`, `+`,
+# `?`, `{`, `}`, `|` are just as real a hazard here as `.`, even though
+# today's sanitizer never produces them). End-anchored with `$` so a
+# shorter handle can never match a longer sibling's command line.
+_sot_bridge_pattern() {
+    local name="$1" escaped
+    escaped="$(printf '%s' "$name" | sed 's/[^A-Za-z0-9]/\\&/g')"
+    printf 'comm-relay\.sh bridge --name %s$' "$escaped"
+}
+
+# sot_bridge_pids_for NAME — space-separated PIDs (possibly empty) of a
+# bridge for NAME running under THIS uid only. Catches a bridge started
+# EITHER via comm-listen.sh's tmux wrapper OR run directly with no tmux
+# marker at all — this is a process-table check, independent of tmux.
+sot_bridge_pids_for() {
+    local name="$1"
+    pgrep -u "$(id -u)" -f "$(_sot_bridge_pattern "$name")" 2>/dev/null
+}
+
+# sot_bridge_running_for NAME [SOCK] — true if a bridge for NAME is up,
+# checking BOTH signals: the EXACT tmux marker session
+# `=commbridge-<name>` (`=` pins tmux to exact-name matching — Codex
+# review round-1 finding 4 / round-2 finding 5: without it tmux falls back
+# to prefix/glob matching) on SOCK (resolved via sot_tmux_socket if not
+# given), AND the uid-scoped anchored process check above (catches a
+# directly-started bridge with no tmux marker). Best-effort on the tmux
+# half: an unresolvable socket just skips it rather than aborting the
+# caller over a purely advisory guard.
+sot_bridge_running_for() {
+    local name="$1" sock="${2:-}"
+    [ -n "$sock" ] || sock="$(sot_tmux_socket 2>/dev/null || true)"
+    if [ -n "$sock" ] && tmux -S "$sock" has-session -t "=commbridge-$name" 2>/dev/null; then
+        return 0
+    fi
+    [ -n "$(sot_bridge_pids_for "$name")" ]
+}
+
+# --- sender identity: NAME resolved is not enough, it must be ROUTABLE ---
+#
+# Codex review round-2 finding 4/C: comm-send.sh, comm-relay.sh, and
+# comm-bootstrap.sh each carried their OWN "resolved identity" check, and
+# each treated a merely NONEMPTY $NAME as good enough. That's insufficient:
+# a self-file can resolve NAME locally (it passed comm-context.sh's own
+# root=/repo= validation) while the registry itself has no matching row
+# for it at all (evicted, or a failed registry write) or — worse — a row
+# whose root belongs to a DIFFERENT project (this handle was reclaimed
+# elsewhere). Either way, sending under it stamps a from-handle a reply
+# can't route back to, or routes it to the wrong session. "Resolved" now
+# means ROUTABLE: NAME nonempty AND a registry row for it exists AND (that
+# row's root is empty — a legacy row, allowed during the migration window
+# — OR it matches this project's canonical root).
+#
+# ONE helper, called by all three scripts, replacing three separately
+# drifting diagnostic essays with the invariant plus the exact recovery
+# command. Must be called BEFORE any endpoint/socket/transport resolution
+# (Codex review round-2 SHOULD-FIX 2) so an unresolved sender always sees
+# THIS refusal, never an unrelated daemon/socket error.
+#
+# Prints nothing and returns 0 if routable. Prints ONE refusal line and
+# returns 1 otherwise. Depends on NAME/PROJECT_ROOT already being set by
+# `eval "$(comm-context.sh)"` — call after that, never before.
+sot_require_routable_identity() {
+    if [ -z "${NAME:-}" ]; then
+        echo "ERROR: your sot-comm identity did not resolve — refusing to send with no verifiable from-handle (a reply would silently misroute). Join first: comm-join.sh --name <canonical-handle> (never a bare comm-join.sh if you previously held one — see the sot-session-start skill's recovery recipe)." >&2
+        return 1
+    fi
+    local reg_status reg_root
+    IFS=$'\t' read -r reg_status reg_root <<< "$(sot_registry_entry_status "$NAME")"
+    if [ "$reg_status" != "present" ]; then
+        echo "ERROR: your sot-comm identity '@$NAME' has no registry row — refusing to send with an unroutable from-handle (a reply would silently misroute). Reclaim it: comm-join.sh --name $NAME" >&2
+        return 1
+    fi
+    if [ -n "$reg_root" ] && [ "$reg_root" != "${PROJECT_ROOT:-}" ]; then
+        echo "ERROR: your sot-comm identity '@$NAME' is registered to a DIFFERENT project's root ('$reg_root') — refusing to send with a misrouting from-handle. Reclaim it: comm-join.sh --name $NAME" >&2
+        return 1
+    fi
+    return 0
+}
+
 # --- derived-handle disambiguation (ADR 0028 addendum: "derived vs
 # explicit") --- single home for the algorithm; comm-join.sh and
 # comm-spawn.sh both call sot_derive_handle. This is ONLY for a name that
