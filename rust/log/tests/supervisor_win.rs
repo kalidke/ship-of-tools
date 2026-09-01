@@ -200,7 +200,17 @@ fn wait_for_exit(mut child: Child, timeout: Duration) -> std::process::ExitStatu
 /// reconnect and report whatever `status` still claims, so a future CI
 /// failure NAMES the stuck lifecycle state instead of just timing out
 /// (per the coordinator's own round-4 addendum on the flap test).
-fn wait_for_exit_with_diagnostics(mut child: Child, h: &str, timeout: Duration) -> std::process::ExitStatus {
+///
+/// Takes `&mut Child` (Codex review round 3, N13), never an owned
+/// `Child` — an earlier version moved the child out of its own
+/// `KillGuard` before calling this, so a `panic!` on timeout unwound
+/// past a bare `Child` with no guard left watching it: `Child`'s own
+/// `Drop` does not kill anything, only closes the handle, so the
+/// timed-out supervisor process leaked, orphaned, past every test that
+/// hit this exact path. Borrowing keeps the CALLER's `KillGuard` in
+/// possession of the child throughout, so its `Drop` still runs
+/// (kill + wait) as the panic unwinds through it.
+fn wait_for_exit_with_diagnostics(child: &mut Child, h: &str, timeout: Duration) -> std::process::ExitStatus {
     let started = Instant::now();
     let deadline = started + timeout;
     loop {
@@ -351,9 +361,12 @@ fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
 
     // Shell killed (by its own script) -> flap accounting -> Terminal ->
     // process exit within TERMINAL_EXIT_GRACE of reaching it. Diagnostic
-    // on timeout: report whatever `status` still claims.
-    let child = guard.0.take().unwrap();
-    let status = wait_for_exit_with_diagnostics(child, &h, Duration::from_secs(120));
+    // on timeout: report whatever `status` still claims. The child stays
+    // OWNED BY `guard` throughout (N13, above) -- borrowed here, never
+    // taken out -- so a timeout panic still leaves `guard`'s own Drop to
+    // kill and wait it rather than leaking an orphaned supervisor.
+    let status =
+        wait_for_exit_with_diagnostics(guard.0.as_mut().unwrap(), &h, Duration::from_secs(120));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_TERMINAL), "three unstable legs must terminate the supervisor");
 }
 
