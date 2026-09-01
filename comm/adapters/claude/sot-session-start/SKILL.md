@@ -259,7 +259,11 @@ This is a rare recovery path, not a routine step — most sessions never hit
 it, because `comm-context.sh` now self-heals a legacy (pre-root=) self-file
 on read instead of discarding it. You land here only if you already rejoined
 bare *before* noticing, or a case root= validation still (correctly) rejects
-— e.g. a genuinely different project sharing this repo's basename+host.
+— e.g. a genuinely different project sharing this repo's basename+host, or a
+legacy self-file whose handle the sot-comm *registry* already corroborates
+against a **different** root (comm-context.sh consults the registry before
+ever healing a basename match, and refuses outright on a disagreement — a
+basename can never outrank contrary registry evidence).
 
 ## Signal your work-state (the two cases the hooks miss)
 
