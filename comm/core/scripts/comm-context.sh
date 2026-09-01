@@ -100,17 +100,13 @@ fi
 #
 # The fix: fall back to the check root= REPLACED — the `repo=` comparison
 # that guarded pane recycling from PR #68 until #148 (see that revision of
-# this file in git history). A legacy file whose repo= matches this
-# project's basename (or has no repo= line at all — the ANCIENT one-line
-# format, pre-#68) is exactly as trustworthy as it was before #148, so it
-# is ACCEPTED, then immediately self-healed by rewriting it to full v2
-# (adding root=) — no migration step, and every read after this one is
-# validated under the strict root= check above for good. A repo=
-# MISMATCH is left exactly as fail-safe as root= mismatch: discarded,
-# forcing fresh derivation — this is the original pane-recycling
-# protection (a recycled tmux pane id, a genuine `cd` elsewhere, OR a
-# no-pane self-file shared across unrelated cwds — see the nopane note
-# below) and must not be loosened.
+# this file in git history), NOW ALSO corroborated against the registry
+# before ever healing (Codex review round-1 finding 2 — see the ruling
+# matrix in the code block below). A repo= MISMATCH is left exactly as
+# fail-safe as root= mismatch: discarded, forcing fresh derivation — this
+# is the original pane-recycling protection (a recycled tmux pane id, a
+# genuine `cd` elsewhere, OR a no-pane self-file shared across unrelated
+# cwds — see the nopane note below) and must not be loosened.
 #
 # Nopane sharing (verified field case): a shell with NO tmux pane context
 # (no $TMUX_PANE, or a failing `tmux display-message`) collapses to the
@@ -127,19 +123,116 @@ fi
 NAME=""
 if [ -f "$SELF_FILE" ]; then
     NAME="$(sed -n '1p' "$SELF_FILE")"
-    SELF_REPO="$(sed -n '2p' "$SELF_FILE" | sed -n 's/^repo=//p')"
-    SELF_ROOT="$(sed -n '3p' "$SELF_FILE" | sed -n 's/^root=//p')"
-    if [ -n "$SELF_ROOT" ]; then
-        if [ "$SELF_ROOT" != "$PROJECT_ROOT" ]; then
-            echo "comm-context: self-file identity '$NAME' has root='$SELF_ROOT' which doesn't match this project ('$PROJECT_ROOT') — stale; discarding (forces fresh derivation)" >&2
+    SELF_REPO_LINE="$(sed -n '2p' "$SELF_FILE")"
+    SELF_ROOT_LINE="$(sed -n '3p' "$SELF_FILE")"
+    # Existence of the `repo=`/`root=` PREFIX is checked separately from
+    # the extracted VALUE (Codex review round-1 finding 2: "distinguish an
+    # absent root= line from a present-but-empty/malformed one") — the old
+    # `sed -n 's/^root=//p'` scrape made both cases read back as the same
+    # empty string, so a corrupted `root=` line (present, but empty or
+    # malformed) was silently treated as "no root= line at all" and fell
+    # through to the more permissive legacy path below instead of being
+    # rejected outright.
+    case "$SELF_REPO_LINE" in
+        repo=*) SELF_REPO="${SELF_REPO_LINE#repo=}"; HAS_REPO_LINE=1 ;;
+        *)      SELF_REPO="";                        HAS_REPO_LINE=0 ;;
+    esac
+    case "$SELF_ROOT_LINE" in
+        root=*) SELF_ROOT="${SELF_ROOT_LINE#root=}"; HAS_ROOT_LINE=1 ;;
+        *)      SELF_ROOT="";                        HAS_ROOT_LINE=0 ;;
+    esac
+
+    if [ "$HAS_ROOT_LINE" = 1 ]; then
+        # v2 self-file. Present-and-wrong is unconditionally stale (the
+        # whole point of root=). Present-but-EMPTY/malformed carries no
+        # evidence either way, so it gets the SAME fail-safe rejection —
+        # never the more permissive legacy-heal path below, which is for
+        # files that predate root= entirely, not ones that have a broken
+        # one.
+        if [ -z "$SELF_ROOT" ] || [ "$SELF_ROOT" != "$PROJECT_ROOT" ]; then
+            reason="root='$SELF_ROOT'"
+            [ -z "$SELF_ROOT" ] && reason="an empty/malformed root="
+            echo "comm-context: self-file identity '$NAME' has $reason which doesn't match this project ('$PROJECT_ROOT') — stale; discarding (forces fresh derivation)" >&2
             NAME=""
         fi
-    elif [ -n "$SELF_REPO" ] && [ "$SELF_REPO" != "$REPO" ]; then
+    elif [ "$HAS_REPO_LINE" = 1 ] && [ "$SELF_REPO" != "$REPO" ]; then
         echo "comm-context: self-file identity '$NAME' was claimed for repo '$SELF_REPO' but this is '$REPO' — stale (pane id reused, a genuine cd elsewhere, or a shared no-pane self-file read from a different repo/cwd); discarding" >&2
         NAME=""
     elif [ -n "$NAME" ]; then
-        printf '%s\nrepo=%s\nroot=%s\n' "$NAME" "$REPO" "$PROJECT_ROOT" > "$SELF_FILE"
-        echo "comm-context: self-healed legacy self-file for '$NAME' (pre-#148 format had no root=) — added root='$PROJECT_ROOT'; every read after this one is fully validated" >&2
+        # Legacy (pre-#148) self-file: no root= line, and repo= either
+        # matches this project's basename or is absent entirely (the
+        # ANCIENT one-line format, pre-#68). Basename alone is no longer
+        # trusted on its own (Codex review round-1 finding 2 reproduced
+        # exactly the failure mode that made basename-only trust unsafe: a
+        # legacy file read from the WRONG checkout of a same-basename repo
+        # got healed onto that wrong checkout's root, recreating the exact
+        # alias root= was added to kill) — the registry, the one other
+        # piece of independent evidence available, is consulted FIRST,
+        # before anything is ever written:
+        #
+        #   registry row has a root, root MATCHES this project  -> heal
+        #   registry row has a root, root DISAGREES               -> DISCARD
+        #     (this is the reproduced wrong-checkout case: a basename
+        #     match can never override a registry root disagreement)
+        #   registry row has no root (legacy row), or no row at all:
+        #     repo= present and matches                            -> heal
+        #       (documented residual ambiguity below)
+        #     ancient one-line (no repo= at all)                   -> DISCARD
+        #       (carries literally no evidence of its own to check)
+        IFS=$'\t' read -r reg_status reg_root <<< "$(sot_registry_entry_status "$NAME")"
+        heal=0
+        if [ "$reg_status" = "present" ] && [ -n "$reg_root" ]; then
+            if [ "$reg_root" = "$PROJECT_ROOT" ]; then
+                heal=1
+            else
+                echo "comm-context: self-file identity '$NAME' has no root= (legacy) and the registry's own root for it ('$reg_root') doesn't match this project ('$PROJECT_ROOT') — stale; refusing to self-heal a basename match against contrary registry evidence; discarding" >&2
+                NAME=""
+            fi
+        elif [ "$HAS_REPO_LINE" = 1 ]; then
+            # repo= present and matches, but the registry offers nothing
+            # to corroborate with (no row, or a legacy row with no root
+            # key of its own). Heal on the repo-basename match alone —
+            # this slot's exact pre-#148 behavior. Residual, deliberately
+            # accepted ambiguity: a same-basename, DIFFERENT-directory
+            # repo sharing this exact HOST/pane slot during the
+            # pre-#148-to-post-#148 transition, with no registry row to
+            # catch it either, would also heal here. That needs a
+            # basename collision AND a coincident missing/unknown
+            # registry row — rare, and time-bounded (every legacy
+            # self-file heals to v2 the first time anyone reads it, so
+            # this branch stops mattering once the fleet has cycled once
+            # post-upgrade). The alternative — refusing every legacy
+            # self-file whose registry row lacks a root — is exactly the
+            # fleet-deafening regression this PR exists to fix.
+            heal=1
+        else
+            # Ancient one-line format: no repo= line either, so this
+            # self-file carries NO evidence of its own — not even a
+            # basename to match against. Heal ONLY when the registry
+            # corroborates (handled above); with no row, or an
+            # unknown-root row, refuse rather than stamp this project's
+            # root into a file that could belong to any repository.
+            echo "comm-context: self-file identity '$NAME' is the ancient one-line format (no repo=, no root=) and the registry offers no corroborating root for it — stale; refusing to self-heal; discarding" >&2
+            NAME=""
+        fi
+
+        if [ "$heal" = 1 ] && [ -n "$NAME" ]; then
+            # sot_write_self_file (comm-lib.sh) writes via a
+            # same-directory temp file + checked `mv`, never an in-place
+            # `>` truncation (Codex review round-1 finding 3: the old
+            # in-place write silently no-op'd on a read-only self-file —
+            # the redirection failed, nothing checked its exit status, and
+            # this script printed "self-healed" anyway). A failed heal is
+            # NOT fatal to this call — the identity was already validated
+            # above and is good for the current invocation — but it must
+            # never be reported as healed, and the file stays legacy for
+            # the next read to retry.
+            if sot_write_self_file "$SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT"; then
+                echo "comm-context: self-healed legacy self-file for '$NAME' (pre-#148 format had no root=) — added root='$PROJECT_ROOT'; every read after this one is fully validated" >&2
+            else
+                echo "comm-context: FAILED to self-heal legacy self-file for '$NAME' at '$SELF_FILE' (see reason above) — proceeding with this identity for THIS call, but the file remains legacy and will be re-evaluated (and re-attempted) on the next read" >&2
+            fi
+        fi
     fi
 fi
 
