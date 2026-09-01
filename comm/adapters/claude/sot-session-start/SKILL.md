@@ -195,6 +195,72 @@ Step 0 and never armed, so there is nothing to selftest.)
   so any reply proves the round-trip; a 124 timeout is *not* proof of a dead path —
   the armed Monitor still catches a late reply.)
 
+## Identity evicted / wrong handle after a rejoin
+
+Symptom: a comm call that used to work suddenly says **"Not joined — run
+comm-join.sh first"** for a session that has been running (and joined) the
+whole time — nothing about the session changed, only its on-disk self-file's
+validation did (a stale/pre-upgrade self-file, or a genuinely recycled tmux
+pane). Or worse: you already reacted to that by running a **bare**
+`comm-join.sh`, and it printed a **different** handle than the one this
+session, its peers, and any dashboard have always known it by (e.g.
+`<repo>-<host>` becoming `<repo>-<parentdir>-<host>`).
+
+**The no-arg `comm-join.sh` is the WRONG move for a session that previously
+held a handle.** No-args derives a handle from scratch; derivation sees your
+own canonical handle's row as "held by an unknown project" (your own
+now-discarded row looks exactly like a collision from the outside) and
+escalates AWAY from it — which is how you got stranded in the first place.
+Never rejoin bare to "fix" an identity problem if you used to have a name;
+reclaim it explicitly instead. (`comm-join.sh` itself now warns loudly, at
+the moment of escalation, when a listener bridge for the bare handle it's
+escalating away from is still running under your uid — treat that warning as
+this exact situation and follow its printed recipe.)
+
+Recipe (validated live against a real 28h-stale-row incident):
+
+1. **Prove sole ownership of the canonical handle before reclaiming it** — a
+   real collision (someone else's live session) looks identical to your own
+   stranded identity from the outside. Confirm: exactly one live session has
+   this repo as its cwd, and its listener bridge's tmux session
+   (`comm-listen.sh --status`, or `tmux -S "$(sot_tmux_socket)" list-sessions`
+   for the raw `commbridge-<handle>` session name) was created around when
+   *this* session actually started. If you can't confirm sole ownership,
+   stop and ask a human — reclaiming someone else's live handle strands
+   *them* instead of fixing you.
+2. Drop the accidental/escalated handle:
+   ```bash
+   ~/.sot-comm/bin/comm-leave.sh --name <accidental-handle>
+   ```
+3. Reclaim the canonical handle **explicitly** (never bare — see above):
+   ```bash
+   ~/.sot-comm/bin/comm-join.sh --name <canonical-handle>
+   ```
+   `--name` is always used verbatim; this is the one case a plain rejoin
+   cannot do, since bare derivation is exactly what stranded you.
+4. Your listener bridge almost certainly never needed to move — it was
+   bridging the *correct* (canonical) handle's inbox the entire time, just
+   unaddressed while your registered identity pointed elsewhere. Confirm
+   it's still up rather than starting a redundant one:
+   ```bash
+   ~/.sot-comm/bin/comm-listen.sh --status
+   ```
+5. **Selftest is required, not optional** — prove the wake path actually
+   reaches you under the reclaimed name:
+   ```bash
+   ~/.sot-comm/bin/comm-listen.sh --selftest
+   ```
+   Require the **Monitor notification** (`[relay] from __selftest__: …`),
+   not just the inline `receive path OK` — the notification is what proves a
+   peer's *next* message actually reaches this session, not just that a file
+   got written.
+
+This is a rare recovery path, not a routine step — most sessions never hit
+it, because `comm-context.sh` now self-heals a legacy (pre-root=) self-file
+on read instead of discarding it. You land here only if you already rejoined
+bare *before* noticing, or a case root= validation still (correctly) rejects
+— e.g. a genuinely different project sharing this repo's basename+host.
+
 ## Signal your work-state (the two cases the hooks miss)
 
 Your nav-colour work-state is mostly automatic (Claude Code hooks:
