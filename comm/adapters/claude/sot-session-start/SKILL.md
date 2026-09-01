@@ -84,6 +84,32 @@ pgrep -u "$(id -un)" -f "comm-watch\.sh ${h_re}\$"   # dot-escaped + END-ANCHORE
 
 ### (a) Join — `comm-join.sh` (this IS your identity)
 
+**Branch BEFORE joining** (Codex review round-2 finding 6/E) — the bare
+no-args form below is only for a **genuinely new** session. Check first:
+
+- Have you (this session, this repo) held a canonical handle
+  (`<repo>-<host>`, mixed-case) before — from a prior turn's "Joined
+  sot-comm as @..." line, this repo's own notes, or general knowledge that
+  this repo already runs a durable session? **or**
+- Is a listener bridge for that canonical handle already running under
+  your uid?
+  ```bash
+  source ~/.sot-comm/bin/comm-lib.sh   # for sot_tmux_socket — required before any use of it
+  tmux -S "$(sot_tmux_socket)" has-session -t "=commbridge-<repo>-<host>" 2>/dev/null && echo "bridge already running for <repo>-<host>"
+  ```
+
+**If EITHER is true, join explicitly and skip the bare form entirely:**
+```bash
+~/.sot-comm/bin/comm-join.sh --name <repo>-<host>
+```
+(See "Identity evicted / wrong handle after a rejoin" below for exactly why
+the bare form is unsafe here — it derives a handle from scratch, sees your
+own now-stale row as "held by an unknown project", and escalates AWAY from
+it, which is how sessions get stranded in the first place.)
+
+**Only when NEITHER is true** (no prior handle for this repo, no bridge
+running — a genuinely fresh session) use the bare form:
+
 ```bash
 ~/.sot-comm/bin/comm-join.sh        # no args: joins as the canonical default <repo>-<host>
 ```
@@ -221,13 +247,21 @@ Recipe (validated live against a real 28h-stale-row incident):
 
 1. **Prove sole ownership of the canonical handle before reclaiming it** — a
    real collision (someone else's live session) looks identical to your own
-   stranded identity from the outside. Confirm: exactly one live session has
-   this repo as its cwd, and its listener bridge's tmux session
-   (`comm-listen.sh --status`, or `tmux -S "$(sot_tmux_socket)" list-sessions`
-   for the raw `commbridge-<handle>` session name) was created around when
-   *this* session actually started. If you can't confirm sole ownership,
-   stop and ask a human — reclaiming someone else's live handle strands
-   *them* instead of fixing you.
+   stranded identity from the outside. Query the **canonical** handle
+   specifically (Codex review round-2 finding 6/E) — not the accidental one
+   you're currently joined as; `--status` with no `--name` reports on
+   whatever you're joined as RIGHT NOW, which at this point in the recipe
+   is still the wrong one:
+   ```bash
+   ~/.sot-comm/bin/comm-listen.sh --status --name <canonical-handle>
+   # or, for the raw tmux marker directly (source comm-lib.sh first — sot_tmux_socket is defined there, not a standalone binary):
+   source ~/.sot-comm/bin/comm-lib.sh
+   tmux -S "$(sot_tmux_socket)" has-session -t "=commbridge-<canonical-handle>"
+   ```
+   Confirm: exactly one live session has this repo as its cwd, and that
+   bridge's creation time matches when *this* session actually started. If
+   you can't confirm sole ownership, stop and ask a human — reclaiming
+   someone else's live handle strands *them* instead of fixing you.
 2. Drop the accidental/escalated handle:
    ```bash
    ~/.sot-comm/bin/comm-leave.sh --name <accidental-handle>

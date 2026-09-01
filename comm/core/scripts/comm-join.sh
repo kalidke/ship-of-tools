@@ -148,6 +148,14 @@ if [ "$NEED_DERIVE" = true ]; then
     # so this NEVER auto-reclaims).
     if [ -n "$CLAIMED_QUALIFIER" ] && [ -n "$CLAIMED_TIER1" ] && [ "$CLAIMED_TIER1" != "$NAME" ] \
        && _sot_join_bridge_running_for "$CLAIMED_TIER1"; then
+        # Codex review round-2 finding 6/E: the printed recipe below uses
+        # THIS install's own SCRIPT_DIR — never a hardcoded ~/.sot-comm/bin/,
+        # which is wrong under a non-default $SOT_COMM_HOME (supported) —
+        # and shell-quotes every interpolated handle. Sanitized handles
+        # never need quoting today, but a copy-pasted recipe should stay
+        # correct even if that invariant ever changes.
+        QNAME="$(printf '%q' "$NAME")"
+        QTIER1="$(printf '%q' "$CLAIMED_TIER1")"
         cat >&2 <<WARN
 
 *** WARNING: joined as '@$NAME', but a relay listener bridge for
@@ -165,8 +173,8 @@ if [ "$NEED_DERIVE" = true ]; then
 *** If you confirm sole ownership (one live session with this repo as cwd,
 *** whose bridge creation time matches when THIS session started), reclaim
 *** the bare handle instead of staying on '@$NAME':
-***   ~/.sot-comm/bin/comm-leave.sh --name $NAME
-***   ~/.sot-comm/bin/comm-join.sh --name $CLAIMED_TIER1
+***   $SCRIPT_DIR/comm-leave.sh --name $QNAME
+***   $SCRIPT_DIR/comm-join.sh --name $QTIER1
 WARN
     fi
 else
