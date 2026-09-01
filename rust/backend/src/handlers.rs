@@ -2397,7 +2397,13 @@ pub async fn handle_repl_execute(
                     &run_id,
                     &ws_id,
                     "error",
-                    format!("path {} is outside workspace {}", abs.display(), root.display()),
+                    format!(
+                        "repl run is confined to the workspace root ({}); {} is outside it — \
+                         use `repl eval --code 'include(\"{}\")'` for files elsewhere",
+                        root.display(),
+                        abs.display(),
+                        abs.display(),
+                    ),
                 ));
             }
             if !abs.is_file() || abs.extension().and_then(|s| s.to_str()) != Some("jl") {
