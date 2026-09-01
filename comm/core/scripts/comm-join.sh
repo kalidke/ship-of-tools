@@ -96,6 +96,23 @@ obj="$(jq -n \
     '{host:$host, tmux:$tmux, pane_id:$pane, repo:$repo, root:$root, expertise:$exp,
       status:"idle", joined:$ts, last_seen:$ts}')"
 
+# _sot_join_bridge_running_for NAME — true if a relay listener bridge for
+# NAME is up under this uid. The marker is comm-listen.sh's own: it names
+# its detached tmux session "commbridge-$NAME" (see SESSION= there) and
+# that session lives for as long as the bridge's reconnect loop does — so
+# its presence on the PRIVATE per-user tmux socket is a stable, cheaply
+# checkable proxy for "a bridge for this handle exists", without a
+# system-wide process-table query (harder to reason about, and untestable
+# in a hermetic suite that isolates tmux via $SOT_TMUX_SOCK the same way
+# comm-spawn.sh's tests already do). Best-effort: an unresolvable socket
+# fails this check closed (no warning) rather than aborting the join over
+# a purely advisory guard.
+_sot_join_bridge_running_for() {
+    local name="$1" sock
+    sock="$(sot_tmux_socket 2>/dev/null)" || return 1
+    tmux -S "$sock" has-session -t "commbridge-$name" 2>/dev/null
+}
+
 if [ "$NEED_DERIVE" = true ]; then
     # reclaim mode (Codex review F3): a plain join treats an existing
     # same-root row as mine to reclaim — today's rejoin behavior. `set -e`
@@ -104,6 +121,47 @@ if [ "$NEED_DERIVE" = true ]; then
     # stderr reason, rather than continuing with an empty/invalid NAME.
     claim_derived_handle reclaim "$PROJECT_ROOT" "$HOST" "$obj"
     NAME="$CLAIMED_NAME"
+
+    # Stranding guard (field regression): escalating AWAY from the bare
+    # tier-1 handle (CLAIMED_QUALIFIER non-empty, so NAME != CLAIMED_TIER1)
+    # is the normal, correct outcome for a REAL collision with another
+    # project sharing this basename+host. But it is ALSO exactly what
+    # happens when THIS session's own tier-1 row was just evicted (a stale
+    # self-file discarded by comm-context.sh, pre-self-heal or otherwise) —
+    # the registry still shows tier-1 as held by "an unknown project", so
+    # derivation treats it as someone else's and hands back a DIFFERENT
+    # handle, silently. A live listener bridge for the bare handle, under
+    # this same uid, is strong evidence that "unknown project" is actually
+    # THIS session's own prior identity — a real collision from an
+    # unrelated project has no reason to be running a bridge named after
+    # OUR root's basename+host. Warn loudly so the operator/session can no
+    # longer strand silently; still proceed with the qualified join (the
+    # bridge alone doesn't prove ownership — a genuinely different, still
+    # -live session for the same repo+host could be the one running it —
+    # so this NEVER auto-reclaims).
+    if [ -n "$CLAIMED_QUALIFIER" ] && [ -n "$CLAIMED_TIER1" ] && [ "$CLAIMED_TIER1" != "$NAME" ] \
+       && _sot_join_bridge_running_for "$CLAIMED_TIER1"; then
+        cat >&2 <<WARN
+
+*** WARNING: joined as '@$NAME', but a relay listener bridge for
+*** '@$CLAIMED_TIER1' (this project's bare handle) is ALREADY RUNNING under
+*** this user. That is almost certainly YOUR OWN earlier identity, not a
+*** real collision with another project — most likely this session's own
+*** '@$CLAIMED_TIER1' row was evicted as stale (see comm-context.sh) and
+*** this join escalated away from it instead of reclaiming it. Proceeding
+*** with the qualified join as '@$NAME' — a running bridge alone doesn't
+*** prove ownership, so this is never auto-reclaimed — but if this IS your
+*** own handle, you can now strand yourself silently: your listener bridge
+*** and any armed Monitor go on serving '@$CLAIMED_TIER1''s inbox while
+*** everyone else now addresses you as '@$NAME'.
+***
+*** If you confirm sole ownership (one live session with this repo as cwd,
+*** whose bridge creation time matches when THIS session started), reclaim
+*** the bare handle instead of staying on '@$NAME':
+***   ~/.sot-comm/bin/comm-leave.sh --name $NAME
+***   ~/.sot-comm/bin/comm-join.sh --name $CLAIMED_TIER1
+WARN
+    fi
 else
     with_lock registry_put "$NAME" "$obj"
 fi

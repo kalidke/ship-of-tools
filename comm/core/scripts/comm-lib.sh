@@ -529,9 +529,11 @@ _sot_tier_claimable() {
 # sot_sanitize_component's 20-char default budget the other components
 # still use (12 + 1 + 6 = 19 worst case).
 #
-# On success, prints ONE tab-separated line: "<handle>\t<qualifier>"
-# (qualifier empty at tier 1, "<parentdir>" at tier 2, "<hash6>" at tier
-# 3). A caller that only wants the handle:
+# On success, prints ONE tab-separated line: "<handle>\t<qualifier>\t<tier1>"
+# (qualifier empty at tier 1, "<parentdir>" at tier 2, "<hash6>" at tier 3;
+# tier1 is ALWAYS the bare "<base>-<host>" handle, win or lose, so a caller
+# can tell whether this call escalated AWAY from it — comm-join.sh's
+# stranding guard needs exactly that). A caller that only wants the handle:
 #   `IFS=$'\t' read -r NAME _ <<< "$(sot_derive_handle reclaim "$ROOT" "$HOST")"`
 sot_derive_handle() {
     local mode="$1" root="$2" raw_host="$3"
@@ -553,7 +555,7 @@ sot_derive_handle() {
     tier1="${base}-${host}"
     IFS=$'\t' read -r status1 held1 <<< "$(sot_registry_entry_status "$tier1")"
     if _sot_tier_claimable "$mode" "$root" "$status1" "$held1"; then
-        printf '%s\t\n' "$tier1"
+        printf '%s\t\t%s\n' "$tier1" "$tier1"
         return 0
     fi
     shown1="$held1"; [ -z "$shown1" ] && shown1="an unknown project"
@@ -563,7 +565,7 @@ sot_derive_handle() {
     IFS=$'\t' read -r status2 held2 <<< "$(sot_registry_entry_status "$tier2")"
     if _sot_tier_claimable "$mode" "$root" "$status2" "$held2"; then
         echo "comm: '@$tier1' is already held by $shown1 — joining as '@$tier2' instead" >&2
-        printf '%s\t%s\n' "$tier2" "$parent"
+        printf '%s\t%s\t%s\n' "$tier2" "$parent" "$tier1"
         return 0
     fi
     shown2="$held2"; [ -z "$shown2" ] && shown2="an unknown project"
@@ -573,7 +575,7 @@ sot_derive_handle() {
     IFS=$'\t' read -r status3 held3 <<< "$(sot_registry_entry_status "$tier3")"
     if _sot_tier_claimable "$mode" "$root" "$status3" "$held3"; then
         echo "comm: '@$tier1' (held by $shown1) and '@$tier2' (held by $shown2) are both taken — joining as '@$tier3' instead" >&2
-        printf '%s\t%s\n' "$tier3" "$hash6"
+        printf '%s\t%s\t%s\n' "$tier3" "$hash6" "$tier1"
         return 0
     fi
     shown3="$held3"; [ -z "$shown3" ] && shown3="an unknown project"
@@ -594,11 +596,14 @@ sot_derive_handle() {
 #
 # claim_derived_handle MODE ROOT HOST OBJ_JSON — derive AND registry_put
 # the result as ONE critical section under the registry lock, so no other
-# claim can observe registry state in between. Sets globals CLAIMED_NAME
-# and CLAIMED_QUALIFIER (mirrors sot_derive_handle's two outputs) for the
-# caller to read after this returns; both cleared to "" first, so a
-# failure never leaves a stale value from a PREVIOUS successful call for a
-# careless caller to read. Both comm-join.sh (MODE reclaim) and
+# claim can observe registry state in between. Sets globals CLAIMED_NAME,
+# CLAIMED_QUALIFIER, and CLAIMED_TIER1 (mirrors sot_derive_handle's three
+# outputs) for the caller to read after this returns; all three cleared to
+# "" first, so a failure never leaves a stale value from a PREVIOUS
+# successful call for a careless caller to read. CLAIMED_TIER1 is what
+# comm-join.sh's stranding guard compares CLAIMED_NAME against — a mismatch
+# means this call escalated away from the bare handle. Both comm-join.sh
+# (MODE reclaim) and
 # comm-spawn.sh (MODE fresh, the provisional row) route a derived name
 # through this — one shared locked claim path, not two copies of "derive,
 # then lock to write" that could each get this wrong.
@@ -616,16 +621,18 @@ sot_derive_handle() {
 # the test harness's own next_self_file() lost its counter (see
 # comm/core/tests/test-join-disambiguation.sh) — the same lesson, twice.
 _sot_claim_derived_handle() {  # MODE ROOT HOST OBJ_JSON — call only via with_lock
-    local mode="$1" root="$2" host="$3" obj="$4" line qualifier
+    local mode="$1" root="$2" host="$3" obj="$4" line qualifier tier1
     CLAIMED_NAME=""
     CLAIMED_QUALIFIER=""
+    CLAIMED_TIER1=""
     line="$(sot_derive_handle "$mode" "$root" "$host")" || return 1
-    IFS=$'\t' read -r CLAIMED_NAME qualifier <<< "$line"
+    IFS=$'\t' read -r CLAIMED_NAME qualifier tier1 <<< "$line"
     if [ -z "$CLAIMED_NAME" ]; then
         echo "claim_derived_handle: derivation returned no name — refusing to claim an empty handle" >&2
         return 1
     fi
     CLAIMED_QUALIFIER="$qualifier"
+    CLAIMED_TIER1="$tier1"
     registry_put "$CLAIMED_NAME" "$obj"
 }
 claim_derived_handle() {  # MODE ROOT HOST OBJ_JSON
