@@ -90,18 +90,27 @@ export SOT_COMM_TEST_HOST="$HOST"
 
 PASS=0
 FAIL=0
+SKIP=0
 
-# check DESC FN — run FN (which prints diagnostics and returns 1 on
-# failure), then print the required PASS/FAIL line.
+# check DESC FN — run FN (which prints diagnostics and returns 0 = pass,
+# 2 = SKIP, anything else = fail), then print the required PASS/FAIL/SKIP
+# line. SKIP is a DISTINCT outcome, never folded into PASS (Codex review
+# round-1 finding 5): a case that can't exercise its guard in this
+# environment (no tmux, an unmockable resource) used to just `return 0`
+# after printing its own inline "SKIP:" diagnostic, which this function
+# then reported as a bare PASS — an unexecuted guard counted as verified.
+# A case that cannot run its check must say so in the tally, not just in
+# an easy-to-miss diagnostic line.
 check() {
     local desc="$1" fn="$2"
-    if "$fn"; then
-        echo "PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "FAIL: $desc"
-        FAIL=$((FAIL + 1))
-    fi
+    local rc
+    "$fn"
+    rc=$?
+    case "$rc" in
+        0) echo "PASS: $desc"; PASS=$((PASS + 1)) ;;
+        2) echo "SKIP: $desc"; SKIP=$((SKIP + 1)) ;;
+        *) echo "FAIL: $desc"; FAIL=$((FAIL + 1)) ;;
+    esac
 }
 
 # --- fake project roots -------------------------------------------------
@@ -283,6 +292,46 @@ case_env_name_verbatim() {
     return 0
 }
 
+case_claim_derived_handle_tier1_three_field_parse() {
+    # Codex review round-1 finding 1: sot_derive_handle's tier-1 line used
+    # to be tab-delimited with an EMPTY qualifier field in the middle
+    # ("$tier1\t\t$tier1"), and `IFS=$'\t' read -r a b c` collapses
+    # adjacent tabs exactly like default whitespace splitting does — tab
+    # is an IFS-WHITESPACE character, not a plain delimiter. The empty
+    # middle field vanished instead of reading back as "", shifting
+    # tier1's value into CLAIMED_QUALIFIER and leaving CLAIMED_TIER1
+    # empty. Every ordinary, uncontested tier-1 spawn then misread
+    # CLAIMED_QUALIFIER as non-empty and comm-spawn.sh synthesized a wrong
+    # "qualified" display label (comm-spawn.sh:229-230). Assert all THREE
+    # globals directly, at the comm-lib.sh level, for a plain tier-1
+    # claim — this is the unit the field bug lived in, not just its
+    # downstream effect.
+    local root base obj expect_h1
+    mkdir -p "$WORK/tier1parse/proj9"
+    root="$(realpath "$WORK/tier1parse/proj9")"
+    base="proj9"
+    expect_h1="${base}-${HOST}"
+
+    obj="$(jq -n --arg repo "$base" --arg root "$root" \
+        '{host:"h",tmux:"",pane_id:"",repo:$repo,root:$root,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
+
+    CLAIMED_NAME=""; CLAIMED_QUALIFIER=""; CLAIMED_TIER1=""
+    # claim_derived_handle already wraps its own with_lock — call it
+    # directly, exactly as comm-join.sh does, never nested inside another
+    # with_lock (which would deadlock against its own lock directory).
+    claim_derived_handle reclaim "$root" "$HOST" "$obj"
+    local rc=$?
+    [ "$rc" -eq 0 ] || { echo "  claim_derived_handle failed: rc=$rc"; return 1; }
+    [ "$CLAIMED_NAME" = "$expect_h1" ] || { echo "  CLAIMED_NAME=$CLAIMED_NAME, want $expect_h1"; return 1; }
+    [ -z "$CLAIMED_QUALIFIER" ] \
+        || { echo "  CLAIMED_QUALIFIER='$CLAIMED_QUALIFIER', want empty at tier 1 — non-empty is exactly the tab-collapse bug (comm-spawn.sh would synthesize a bogus qualified display label)"; return 1; }
+    [ "$CLAIMED_TIER1" = "$expect_h1" ] \
+        || { echo "  CLAIMED_TIER1='$CLAIMED_TIER1', want $expect_h1 — empty means the tab-collapse bug ate this field"; return 1; }
+
+    with_lock registry_del "$expect_h1" >/dev/null 2>&1 || true
+    return 0
+}
+
 case_legacy_matching_self_file_is_reclaimed_not_rederived() {
     # Field regression fix (coordinator ruling, item 1). This case used to
     # assert the OPPOSITE of what follows: that a legacy (pre-#148, no
@@ -296,11 +345,27 @@ case_legacy_matching_self_file_is_reclaimed_not_rederived() {
     # root= self-healed onto it so every subsequent read is fully
     # validated. See case_v2_self_file_wrong_root_is_still_discarded below
     # for the strict root= check this does NOT relax.
-    local root base h1 crafted
+    #
+    # Codex review round-1 finding 2: this case originally proved nothing
+    # about OWNERSHIP — it seeded no registry row at all for
+    # 'legacy-claimed-name', so the heal below exercised only the weaker
+    # "no corroborating evidence, trust the basename" branch, which
+    # codifies excessive trust rather than proving the fix. Seeding a
+    # registry row with a MATCHING root here routes this through the
+    # strongest branch instead — the heal is now corroborated by
+    # independent registry evidence, not basename alone. See
+    # case_legacy_selffile_registry_root_disagreement_refuses_heal below
+    # for the mirror-image case (a DISAGREEING registry root, which must
+    # refuse to heal).
+    local root base h1 crafted seed_obj
     mkdir -p "$WORK/selftest/proj2"
     root="$(realpath "$WORK/selftest/proj2")"
     base="proj2"
     h1="${base}-${HOST}"
+
+    seed_obj="$(jq -n --arg repo "$base" --arg root "$root" \
+        '{host:"h",tmux:"",pane_id:"",repo:$repo,root:$root,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
+    with_lock registry_put "legacy-claimed-name" "$seed_obj"
 
     crafted="$WORK/crafted-self.txt"
     # A LEGACY two-line self-file (repo= but no root=). The point of this
@@ -401,6 +466,185 @@ case_v2_self_file_wrong_root_is_still_discarded() {
     return 0
 }
 
+case_v2_self_file_empty_root_is_discarded_not_treated_as_absent() {
+    # (d) Codex review round-1 finding 2: "distinguish an absent root= line
+    # from a present-but-empty/malformed one" — a `root=` line that IS
+    # present but carries no value must be discarded exactly like a wrong
+    # one, never treated as if the line were missing altogether (which
+    # would route it into the more permissive legacy-heal path below,
+    # trusting a basename alone for a file that is supposed to already
+    # carry root= evidence).
+    local root self
+    mkdir -p "$WORK/v2-empty-root/proj6c"
+    root="$(realpath "$WORK/v2-empty-root/proj6c")"
+    self="$WORK/v2-empty-root-self.txt"
+    printf 'handle-for-c\nrepo=proj6c\nroot=\n' > "$self"
+
+    context_in "$root" "$self"
+    [ "$CTX_RC" -eq 0 ] || { echo "  exited $CTX_RC: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "stale" || { echo "  missing staleness notice for an empty root=: $CTX_ERR"; return 1; }
+    [ -z "$CTX_NAME" ] || { echo "  NAME=$CTX_NAME, want empty (discarded — root= present but empty)"; return 1; }
+    local lines; lines="$(wc -l < "$self")"
+    [ "$lines" -eq 3 ] || { echo "  self-file with an empty root= was mutated (must be left untouched): $(cat "$self")"; return 1; }
+    return 0
+}
+
+case_legacy_selffile_registry_root_disagreement_refuses_heal() {
+    # Sharpest finding in the round-1 review (finding 2): basename-only
+    # healing can CERTIFY THE WRONG CHECKOUT. The reviewer reproduced this
+    # live — a legacy self-file (repo= matches, no root=) read from
+    # checkout B, while the registry ALREADY records that same handle's
+    # root as checkout A (a different directory sharing B's basename) —
+    # and the old code healed the self-file onto checkout B's root
+    # anyway, recreating the exact alias root= was added to eliminate.
+    # A registry root DISAGREEMENT must reject the heal outright — a
+    # basename match can never override contrary registry evidence.
+    local rootA rootB base self seed_obj
+    mkdir -p "$WORK/regdisagree/checkoutA/proj8" "$WORK/regdisagree/checkoutB/proj8"
+    rootA="$(realpath "$WORK/regdisagree/checkoutA/proj8")"
+    rootB="$(realpath "$WORK/regdisagree/checkoutB/proj8")"
+    base="proj8"
+
+    # The registry already knows this handle as checkout A's (a real prior
+    # join from there).
+    seed_obj="$(jq -n --arg repo "$base" --arg root "$rootA" \
+        '{host:"h",tmux:"",pane_id:"",repo:$repo,root:$root,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
+    with_lock registry_put "proj8-handle" "$seed_obj"
+
+    self="$WORK/regdisagree-self.txt"
+    printf 'proj8-handle\nrepo=%s\n' "$base" > "$self"
+
+    # Read from checkout B — repo= matches (both share basename "proj8"),
+    # but the registry's root for this handle is checkout A's. Must
+    # refuse to heal, never certify checkout B as this handle's root.
+    context_in "$rootB" "$self"
+    [ "$CTX_RC" -eq 0 ] || { echo "  exited $CTX_RC: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "stale" || { echo "  missing staleness/refusal notice: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "self-healed" && { echo "  SELF-HEALED against a disagreeing registry root — this is the reproduced wrong-checkout certification bug: $CTX_ERR"; return 1; }
+    [ -z "$CTX_NAME" ] || { echo "  NAME=$CTX_NAME, want empty (registry disagrees on root; must not adopt checkout B)"; return 1; }
+    local lines; lines="$(wc -l < "$self")"
+    [ "$lines" -eq 2 ] || { echo "  self-file was mutated despite the registry disagreement (must be left untouched): $(cat "$self")"; return 1; }
+    [ "$(registry_root "proj8-handle")" = "$rootA" ] \
+        || { echo "  registry root for @proj8-handle changed: $(registry_root "proj8-handle"), want $rootA (untouched)"; return 1; }
+    return 0
+}
+
+case_legacy_selffile_unknown_root_registry_row_still_heals_on_repo_match() {
+    # Sibling of the disagreement case above, proving the OTHER half of the
+    # ruling matrix: a registry row that EXISTS for this handle but carries
+    # no root of its own (a legacy registry row, predating root=) offers no
+    # contrary evidence — it is treated the same as "no row at all", and
+    # the repo-basename match still heals (documented residual ambiguity).
+    local root base self legacy_reg_obj
+    mkdir -p "$WORK/regunknown/proj11"
+    root="$(realpath "$WORK/regunknown/proj11")"
+    base="proj11"
+
+    legacy_reg_obj="$(jq -n --arg repo "$base" \
+        '{host:"other",tmux:"",pane_id:"",repo:$repo,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
+    jq --arg n "proj11-handle" --argjson o "$legacy_reg_obj" '.agents[$n] = $o' "$REGISTRY" > "$REGISTRY.tmp" \
+        && mv "$REGISTRY.tmp" "$REGISTRY"
+    [ "$(registry_has_root_key "proj11-handle")" = "no" ] \
+        || { echo "  setup bug: seeded registry row unexpectedly has a root key"; return 1; }
+
+    self="$WORK/regunknown-self.txt"
+    printf 'proj11-handle\nrepo=%s\n' "$base" > "$self"
+
+    context_in "$root" "$self"
+    [ "$CTX_RC" -eq 0 ] || { echo "  exited $CTX_RC: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "self-healed" || { echo "  missing self-heal notice (an unknown-root registry row must not block healing on repo match): $CTX_ERR"; return 1; }
+    [ "$CTX_NAME" = "proj11-handle" ] || { echo "  NAME=$CTX_NAME, want proj11-handle"; return 1; }
+    local lines; lines="$(wc -l < "$self")"
+    [ "$lines" -ge 3 ] || { echo "  self-file not backfilled to v2: $(cat "$self")"; return 1; }
+    return 0
+}
+
+case_ancient_oneline_with_matching_registry_heals() {
+    # Ancient one-line format (no repo=, no root= — pre-#68): the reviewer
+    # flagged this as broader than the repo=-matching legacy case, since it
+    # carries NO evidence of its own — not even a basename. It must heal
+    # ONLY when the registry independently corroborates a matching root.
+    local root base self seed_obj
+    mkdir -p "$WORK/ancient-match/proj12"
+    root="$(realpath "$WORK/ancient-match/proj12")"
+    base="proj12"
+
+    seed_obj="$(jq -n --arg repo "$base" --arg root "$root" \
+        '{host:"h",tmux:"",pane_id:"",repo:$repo,root:$root,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
+    with_lock registry_put "ancient-handle-match" "$seed_obj"
+
+    self="$WORK/ancient-match-self.txt"
+    printf 'ancient-handle-match\n' > "$self"   # ONE line: no repo=, no root=
+
+    context_in "$root" "$self"
+    [ "$CTX_RC" -eq 0 ] || { echo "  exited $CTX_RC: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "self-healed" || { echo "  missing self-heal notice (ancient one-line WITH a matching-root registry row must heal): $CTX_ERR"; return 1; }
+    [ "$CTX_NAME" = "ancient-handle-match" ] || { echo "  NAME=$CTX_NAME, want ancient-handle-match"; return 1; }
+    local lines; lines="$(wc -l < "$self")"
+    [ "$lines" -ge 3 ] || { echo "  ancient one-line self-file not upgraded to v2: $(cat "$self")"; return 1; }
+    return 0
+}
+
+case_ancient_oneline_without_registry_match_discarded() {
+    # Mirror of the above: an ancient one-line self-file with NO
+    # corroborating registry row (absent, or an unknown/disagreeing root)
+    # carries no evidence of its own at all and must be discarded, not
+    # healed on nothing.
+    local root self
+    mkdir -p "$WORK/ancient-nomatch/proj13"
+    root="$(realpath "$WORK/ancient-nomatch/proj13")"
+
+    self="$WORK/ancient-nomatch-self.txt"
+    printf 'ancient-handle-nomatch\n' > "$self"   # ONE line, no registry row exists for this handle at all
+
+    context_in "$root" "$self"
+    [ "$CTX_RC" -eq 0 ] || { echo "  exited $CTX_RC: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "stale" || { echo "  missing discard notice for an ancient one-line file with no registry corroboration: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "self-healed" && { echo "  SELF-HEALED an ancient one-line file with no corroborating registry evidence: $CTX_ERR"; return 1; }
+    [ -z "$CTX_NAME" ] || { echo "  NAME=$CTX_NAME, want empty (no evidence to heal on)"; return 1; }
+    local lines; lines="$(wc -l < "$self")"
+    [ "$lines" -eq 1 ] || { echo "  ancient one-line self-file was mutated despite no corroboration: $(cat "$self")"; return 1; }
+    return 0
+}
+
+case_self_heal_write_failure_reported_loudly_file_intact() {
+    # Codex review round-1 finding 3: the pre-fix in-place `>` truncation
+    # ignored a failed write entirely — with a read-only self-file it
+    # exited 0 and printed "self-healed" while the file remained legacy.
+    # The fix (comm-lib.sh's sot_write_self_file) writes via a
+    # same-directory temp file + checked `mv` instead — which means a
+    # read-only TARGET FILE no longer blocks anything (`mv`/rename(2) only
+    # needs write permission on the DIRECTORY, not on the file being
+    # replaced). Reproducing a write failure under the NEW mechanics means
+    # making the self-file's DIRECTORY unwritable (mktemp then fails to
+    # create the temp file there), not the file itself.
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "  SKIP: running as root — permission bits don't block root, so a write failure can't be reproduced this way"
+        return 2
+    fi
+    local dir root self rc
+    mkdir -p "$WORK/heal-write-fail-root/projRO"
+    root="$(realpath "$WORK/heal-write-fail-root/projRO")"
+    dir="$WORK/heal-write-fail-selfdir"
+    mkdir -p "$dir"
+    self="$dir/legacy-self.txt"
+    printf 'readonly-dir-handle\nrepo=projRO\n' > "$self"
+    chmod 500 "$dir"   # r-x: mktemp can no longer create a sibling temp file here
+
+    context_in "$root" "$self"
+    rc="$CTX_RC"
+    chmod 700 "$dir"   # restore BEFORE any assertion can return early and leave an unwritable dir behind for the suite's own cleanup
+
+    [ "$rc" -eq 0 ] || { echo "  comm-context.sh exited $rc (must still succeed for THIS call even though the heal write failed): $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "FAILED to self-heal" || { echo "  missing the loud write-failure notice: $CTX_ERR"; return 1; }
+    contains "$CTX_ERR" "self-healed for" && { echo "  claimed success (\"self-healed for\") despite the write failing: $CTX_ERR"; return 1; }
+    [ "$CTX_NAME" = "readonly-dir-handle" ] || { echo "  NAME=$CTX_NAME, want readonly-dir-handle (the identity is still valid for THIS call even though persisting the heal failed)"; return 1; }
+    local lines; lines="$(wc -l < "$self")"
+    [ "$lines" -eq 2 ] || { echo "  self-file was mutated despite the write failing (must be left untouched): $(cat "$self")"; return 1; }
+    ! ls "$dir"/*.tmp.* >/dev/null 2>&1 || { echo "  a stray temp file was left behind: $(ls "$dir")"; return 1; }
+    return 0
+}
+
 case_nopane_selffile_shared_across_repos_not_healed() {
     # Coordinator addendum, item 6: a shell with NO tmux pane collapses to
     # ONE self-file slot per host ("<host>__nopane.txt", see
@@ -469,6 +713,80 @@ case_nopane_selffile_from_non_repo_cwd_not_healed_and_send_refuses() {
     return 0
 }
 
+case_comm_relay_send_refuses_with_no_identity() {
+    # Caller-audit follow-up (ruling 5): comm-send.sh's identity refusal is
+    # covered above, but comm-relay.sh's OWN refusal (send_frame — a
+    # SEPARATE code path with no --force-target escape hatch) was never
+    # exercised. Setting SOT_RELAY_ENDPOINT to a well-formed-but-bogus unix
+    # endpoint lets comm-relay.sh resolve an endpoint with no live daemon
+    # (sot_daemon_endpoint returns an EXPLICIT endpoint verbatim, no probe)
+    # — the identity check inside send_frame fires before any socket is
+    # ever touched, so no real daemon is needed to prove this refusal.
+    local self scratch out err rc errfile
+    next_self_file; self="$NEXT_SELF_FILE"   # never created -> no identity
+    scratch="$(realpath "$WORK")"
+    errfile="$WORK/relay-refusal.err"
+    out="$(cd "$scratch" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
+        SOT_RELAY_ENDPOINT="unix:$WORK/no-such-daemon.sock" \
+        "$SCRIPTS_DIR/comm-relay.sh" send @somebody "hello" 2>"$errfile")"
+    rc=$?
+    err="$(cat "$errfile" 2>/dev/null || true)"
+    [ "$rc" -ne 0 ] || { echo "  comm-relay.sh send succeeded with no identity: $out"; return 1; }
+    contains "$err" "identity did not resolve" || { echo "  missing identity-refusal message: $err"; return 1; }
+    return 0
+}
+
+case_comm_bootstrap_refuses_with_no_identity() {
+    # Same caller-audit gap for comm-bootstrap.sh: its NAME check runs
+    # before any tmux target validation, so a bogus target is enough to
+    # exercise the refusal without a real peer session.
+    local self scratch out err rc errfile
+    next_self_file; self="$NEXT_SELF_FILE"
+    scratch="$(realpath "$WORK")"
+    errfile="$WORK/bootstrap-refusal.err"
+    out="$(cd "$scratch" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
+        "$SCRIPTS_DIR/comm-bootstrap.sh" "nonexistent-target:0.0" 2>"$errfile")"
+    rc=$?
+    err="$(cat "$errfile" 2>/dev/null || true)"
+    [ "$rc" -ne 0 ] || { echo "  comm-bootstrap.sh succeeded with no identity: $out"; return 1; }
+    contains "$err" "identity did not resolve" || { echo "  missing identity-refusal message: $err"; return 1; }
+    return 0
+}
+
+case_comm_send_force_target_exempt_from_identity_refusal() {
+    # Mirror image of the two refusals above: --force-target is
+    # DELIBERATELY identityless (first contact with a session that hasn't
+    # joined the network yet) and must keep working with NO resolved
+    # identity at all — never refused. Uses a real mock tmux target on
+    # this suite's isolated socket, addressed via a target string queried
+    # back from tmux itself (never a hardcoded "0.0" — this suite makes no
+    # assumption about base-index), so the full delivery path is proven
+    # end-to-end, not just "didn't refuse".
+    local self scratch out err rc errfile target
+    next_self_file; self="$NEXT_SELF_FILE"
+    scratch="$(realpath "$WORK")"
+
+    tmux -S "$SOT_TMUX_SOCK" new-session -d -s "forcetesttarget" "sleep 60" \
+        || { echo "  could not create a mock tmux target on the isolated socket"; return 1; }
+    target="$(tmux -S "$SOT_TMUX_SOCK" list-panes -t "forcetesttarget" -F '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null | head -n1)"
+    if [ -z "$target" ]; then
+        tmux -S "$SOT_TMUX_SOCK" kill-session -t "forcetesttarget" 2>/dev/null || true
+        echo "  could not resolve the mock target's own session:window.pane string"; return 1
+    fi
+
+    errfile="$WORK/force-target.err"
+    out="$(cd "$scratch" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
+        "$SEND" --force-target "$target" "hello" 2>"$errfile")"
+    rc=$?
+    err="$(cat "$errfile" 2>/dev/null || true)"
+    tmux -S "$SOT_TMUX_SOCK" kill-session -t "forcetesttarget" 2>/dev/null || true
+
+    [ "$rc" -eq 0 ] || { echo "  comm-send.sh --force-target failed with no identity (should be exempt): rc=$rc, stderr: $err"; return 1; }
+    contains "$err" "identity did not resolve" && { echo "  --force-target was refused for lacking an identity — it must be exempt: $err"; return 1; }
+    contains "$out" "force-target, no registry" || { echo "  stdout: $out (want the force-target delivery confirmation)"; return 1; }
+    return 0
+}
+
 case_legacy_unknown_root_row() {
     # Codex review F1 / simplicity audit: a registry row that predates this
     # feature (no `root` key at all) must count as a COLLISION for the
@@ -517,8 +835,8 @@ case_join_warns_on_stranding_escalation_when_bridge_running() {
         && mv "$REGISTRY.tmp" "$REGISTRY"
 
     if ! command -v tmux >/dev/null 2>&1; then
-        echo "  SKIP: no tmux on this host — cannot mock a bridge marker (reporting as pass; see report for this deviation)"
-        return 0
+        echo "  SKIP: no tmux on this host — cannot mock a bridge marker"
+        return 2
     fi
     # Mock the bridge marker: comm-listen.sh's own naming, a detached tmux
     # session "commbridge-<handle>" on this suite's ISOLATED $SOT_TMUX_SOCK
@@ -526,8 +844,8 @@ case_join_warns_on_stranding_escalation_when_bridge_running() {
     # the real per-user socket. `sleep` stands in for the reconnect loop;
     # comm-join.sh's guard only checks that the session exists.
     if ! tmux -S "$SOT_TMUX_SOCK" new-session -d -s "commbridge-$h1" "sleep 60" 2>/dev/null; then
-        echo "  SKIP: could not create a mock bridge tmux session on the isolated socket — unmockable in this environment (reporting as pass; see report for this deviation)"
-        return 0
+        echo "  SKIP: could not create a mock bridge tmux session on the isolated socket — unmockable in this environment"
+        return 2
     fi
 
     join_in "$root"
@@ -542,6 +860,48 @@ case_join_warns_on_stranding_escalation_when_bridge_running() {
         || { echo "  warning missing the exact reclaim recipe (comm-leave.sh --name $h2): $JOIN_ERR"; return 1; }
     contains "$JOIN_ERR" "comm-join.sh --name $h1" \
         || { echo "  warning missing the exact reclaim recipe (comm-join.sh --name $h1): $JOIN_ERR"; return 1; }
+    return 0
+}
+
+case_join_bridge_probe_exact_match_ignores_prefix_decoy() {
+    # Codex review round-1 finding 4: tmux's target-session grammar falls
+    # BACK to prefix/glob matching without a leading '=', so a bridge
+    # session actually named "commbridge-<h1>-decoy" (a DIFFERENT handle
+    # that merely starts with h1's bridge name) used to false-positive the
+    # has-session probe and fire the stranding warning for a session that
+    # was never stranded. Same registry setup that forces escalation as
+    # case_join_warns_on_stranding_escalation_when_bridge_running above,
+    # but the ONLY bridge session present is the prefix decoy — no EXACT
+    # "commbridge-<h1>" session exists — so the warning must NOT fire.
+    local root base parent h1 h2 legacy_obj
+    mkdir -p "$WORK/bridgeprefix/grpP/proj10"
+    root="$(realpath "$WORK/bridgeprefix/grpP/proj10")"
+    base="proj10"; parent="grpP"
+    h1="${base}-${HOST}"
+    h2="${base}-${parent}-${HOST}"
+
+    legacy_obj="$(jq -n --arg repo "$base" \
+        '{host:"other",tmux:"",pane_id:"",repo:$repo,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
+    jq --arg n "$h1" --argjson o "$legacy_obj" '.agents[$n] = $o' "$REGISTRY" > "$REGISTRY.tmp" \
+        && mv "$REGISTRY.tmp" "$REGISTRY"
+
+    if ! command -v tmux >/dev/null 2>&1; then
+        echo "  SKIP: no tmux on this host — cannot mock a decoy bridge marker"
+        return 2
+    fi
+    if ! tmux -S "$SOT_TMUX_SOCK" new-session -d -s "commbridge-$h1-decoy" "sleep 60" 2>/dev/null; then
+        echo "  SKIP: could not create a mock decoy tmux session on the isolated socket — unmockable in this environment"
+        return 2
+    fi
+
+    join_in "$root"
+    tmux -S "$SOT_TMUX_SOCK" kill-session -t "commbridge-$h1-decoy" 2>/dev/null || true
+
+    [ "$JOIN_RC" -eq 0 ] || { echo "  comm-join.sh exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    contains "$JOIN_OUT" "Joined sot-comm as @$h2" \
+        || { echo "  stdout: $JOIN_OUT (want escalation to @$h2, same as the no-bridge case)"; return 1; }
+    contains "$JOIN_ERR" "WARNING" \
+        && { echo "  stranding warning fired against a PREFIX-only decoy bridge (exact-match probe regressed — the '=' prefix pin is missing or broken): $JOIN_ERR"; return 1; }
     return 0
 }
 
@@ -826,14 +1186,25 @@ check "different-root collision -> parentdir-qualified, first entry intact" case
 check "three-way collision -> hash-qualified handle"         case_three_way_collision
 check "explicit --name is verbatim even when it collides"    case_explicit_name_verbatim
 check "SOT_COMM_NAME env is verbatim even when it collides"  case_env_name_verbatim
-check "legacy self-file (repo= matches, no root=) is reclaimed via comm-join.sh, not re-derived" case_legacy_matching_self_file_is_reclaimed_not_rederived
+check "claim_derived_handle tier-1: CLAIMED_NAME/QUALIFIER/TIER1 parse correctly (round-1 F1)" case_claim_derived_handle_tier1_three_field_parse
+check "legacy self-file (repo= matches, no root=) is reclaimed via comm-join.sh, not re-derived (registry-corroborated)" case_legacy_matching_self_file_is_reclaimed_not_rederived
 check "(a) legacy self-file, matching repo: comm-context.sh accepts + backfills root=" case_legacy_self_file_matching_repo_accepted_and_backfilled
 check "(b) legacy self-file, mismatched repo: still discarded as stale"     case_legacy_self_file_mismatched_repo_still_discarded
 check "(c) v2 self-file, root= present but wrong: still discarded as stale" case_v2_self_file_wrong_root_is_still_discarded
+check "(d) v2 self-file, root= present but empty: discarded, not treated as absent (round-1 F2)" case_v2_self_file_empty_root_is_discarded_not_treated_as_absent
+check "legacy self-file + a DISAGREEING registry root: refuses to self-heal (round-1 F2 ship-blocker)" case_legacy_selffile_registry_root_disagreement_refuses_heal
+check "legacy self-file + an unknown-root registry row: still heals on repo match" case_legacy_selffile_unknown_root_registry_row_still_heals_on_repo_match
+check "ancient one-line self-file WITH a matching-root registry row: heals" case_ancient_oneline_with_matching_registry_heals
+check "ancient one-line self-file WITHOUT registry corroboration: discarded" case_ancient_oneline_without_registry_match_discarded
+check "self-heal write failure is reported loudly, file left intact (round-1 F3)" case_self_heal_write_failure_reported_loudly_file_intact
 check "nopane self-file shared across repos: mismatched read discarded, never healed" case_nopane_selffile_shared_across_repos_not_healed
 check "nopane self-file read from a non-repo cwd: discarded, not healed; a send from there refuses loudly" case_nopane_selffile_from_non_repo_cwd_not_healed_and_send_refuses
+check "comm-relay.sh send refuses with no resolved identity" case_comm_relay_send_refuses_with_no_identity
+check "comm-bootstrap.sh refuses with no resolved identity" case_comm_bootstrap_refuses_with_no_identity
+check "comm-send.sh --force-target stays exempt from the identity refusal" case_comm_send_force_target_exempt_from_identity_refusal
 check "legacy registry row with no root= is a collision, not a free pass" case_legacy_unknown_root_row
 check "comm-join.sh warns loudly on stranding escalation when a bridge for the bare handle is running" case_join_warns_on_stranding_escalation_when_bridge_running
+check "comm-join.sh bridge probe ignores a prefix-only decoy session (round-1 F4)" case_join_bridge_probe_exact_match_ignores_prefix_decoy
 check "comm-spawn.sh fresh-mode refuses to reclaim a live row (F3)" case_spawn_fresh_only_refusal
 check "concurrent claim landing mid-wait is not clobbered (lock closes the derive/write gap)" case_lock_closes_derive_write_gap
 check "rollback never deletes a row that replaced the provisional one (F1 round 2)" case_rollback_survives_replacement_row
@@ -842,5 +1213,5 @@ check "a failing hash command fails loudly instead of an empty-hash handle (F5 r
 check "a long/dirty host triggers the F7 host-alias digest suffix" case_host_alias_guard_triggers_on_long_host
 
 echo ""
-echo "$PASS passed, $FAIL failed"
+echo "$PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ]
