@@ -151,6 +151,19 @@ const REFUSAL_SENT_DEADLINE: Duration = Duration::from_secs(2);
 /// the client into `Undetermined` rather than `Foreign`, which is not
 /// possible if the client already has the bytes in hand).
 const REFUSAL_FLUSH_GRACE: Duration = Duration::from_millis(250);
+/// `Terminal` is reached with NO client necessarily watching (a
+/// flap-threshold breach, a KILL+WAIT that never confirmed exit — nothing
+/// a caller submitted) just as often as with one (an `end_run`
+/// verification failure a client is actively polling). This bounds how
+/// long the loop lingers in `Terminal`, serving whatever lane traffic
+/// happens to arrive, before exiting on its own regardless — "every path
+/// into Terminal must reach process exit within a bound with no
+/// dependence on further lane traffic" (Codex review round 2). An
+/// explicit `stop` still ends it sooner; this is only the upper bound
+/// for the case nothing ever sends one. Not ADR-pinned — long enough for
+/// an already-connected client to read one final `status`/`query`, short
+/// enough that "terminal" actually means the process is about to exit.
+const TERMINAL_EXIT_GRACE: Duration = Duration::from_secs(2);
 
 /// Exit codes are the launcher's own contract (ADR 0041 Lifecycle
 /// "Supervisor exit codes"): `0` = clean end, do not restart; `69` =
@@ -1478,6 +1491,10 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
 
     let mut consecutive_unstable_legs: u32 = 0;
     let mut stop_requested = false;
+    // Set once, the first iteration `lifecycle` is observed `Terminal` —
+    // Terminal is one-way (nothing ever transitions out of it), so this
+    // is also the ONLY time it is ever set. See `TERMINAL_EXIT_GRACE`.
+    let mut terminal_since: Option<Instant> = None;
 
     'authority: loop {
         let now = Instant::now();
@@ -1609,9 +1626,29 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     lifecycle = Lifecycle::Terminal { detail: format!("the end_run thread for {operation_id} ended without a result") };
                 }
             },
-            Lifecycle::EndedNoRespawn | Lifecycle::Terminal { .. } => {
+            Lifecycle::EndedNoRespawn => {
                 // Keep serving query/status/stop until an explicit stop
-                // or this process is killed — never exit on our own.
+                // or this process is killed — never exit on our own. This
+                // is the ADR's own steady state, not a failure: nothing
+                // bounds how long a client may take to send `stop`.
+            }
+            Lifecycle::Terminal { .. } => {
+                // Keep serving whatever lane traffic arrives, but — unlike
+                // `EndedNoRespawn` — never wait past `TERMINAL_EXIT_GRACE`
+                // for an explicit `stop`: a flap-threshold breach or a
+                // KILL+WAIT failure has no client watching it at all, and
+                // this loop must still reach process exit on its own
+                // (Codex review round 2 — see `TERMINAL_EXIT_GRACE`'s doc).
+            }
+        }
+
+        // `Terminal` never reached a second time by a different path —
+        // `get_or_insert` only ever fires on the FIRST iteration that
+        // observes it, exactly once.
+        if matches!(lifecycle, Lifecycle::Terminal { .. }) {
+            let since = *terminal_since.get_or_insert(now);
+            if now.saturating_duration_since(since) >= TERMINAL_EXIT_GRACE {
+                break 'authority;
             }
         }
 
@@ -1920,11 +1957,17 @@ mod tests {
         let rogue = uuid::Uuid::now_v7().to_string();
         assert!(reconcile_reset(dir.path(), "op-3", &rogue, Some(&old), Some(&aside)).is_err());
 
-        // Row 2: pointer ABSENT with the evidence rename present --
-        // resume from publication.
+        // Row 2: pointer ABSENT with the evidence rename PRESENT -- resume
+        // from publication. "Present" is the whole point of F4's own
+        // evidence-verification (Codex review round 2): the row's setup
+        // must actually MATERIALIZE the file it claims exists, not merely
+        // name one in the journal record -- an un-created path is
+        // correctly refused as unresolved (that refusal is what F4 exists
+        // to produce; this row is proving the OTHER, resumable case).
         std::fs::remove_file(pointer::pointer_path(dir.path())).unwrap();
         let third = uuid::Uuid::now_v7().to_string();
         let aside2 = "drawer.voyage.reset-0000000000000001".to_string();
+        std::fs::write(dir.path().join(&aside2), b"drawer.voyage").unwrap();
         reconcile_reset(dir.path(), "op-4", &third, Some(&new_voyage), Some(&aside2)).unwrap();
         assert!(matches!(pointer::validate(dir.path()), PointerState::Valid(v) if v == third));
     }
