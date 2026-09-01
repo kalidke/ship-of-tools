@@ -8,9 +8,7 @@
 //! table (A1-A5/B0-B9) and the journal's own crash-durability are already
 //! proven scripted-only by `classify.rs`'s and `journal.rs`'s own unit
 //! tests; what these tests add is proof the WIRING across a real process
-//! boundary is correct — the step-5 e2e suite's own cross-process
-//! residual this ADR names ("the true cross-process challenge is step
-//! 6's adoption test").
+//! boundary is correct.
 //!
 //! Deterministic by construction: every wait below is a BOUNDED POLL for
 //! an external, observable fact (a pipe answering, a process's own exit
@@ -69,6 +67,18 @@ fn status(conn: &sot_log::pipe_win::PipeClient) -> (Option<String>, Option<u64>,
     }
 }
 
+/// As [`status`], but never panics — `Err`'s own text names what went
+/// wrong. Used only where a connection MAY legitimately have stopped
+/// answering (a diagnostic best-effort, or a poll loop that itself
+/// decides what a failure means).
+fn try_status(conn: &sot_log::pipe_win::PipeClient) -> Result<(Option<String>, Option<u64>, SupervisorPhase), String> {
+    match request_for_test(conn, &SupervisorRequest::Status, Instant::now() + Duration::from_secs(5)) {
+        Ok(SupervisorReply::StatusOk { voyage, leg, phase, .. }) => Ok((voyage, leg, phase)),
+        Ok(other) => Err(format!("expected StatusOk, got {other:?}")),
+        Err(e) => Err(format!("{e}")),
+    }
+}
+
 /// The lane binds BEFORE any adopt or spawn (ADR 0041), so answering
 /// `status` does not by itself mean a leg is READY yet — poll for the
 /// phase itself, the observable fact, rather than assuming spawn
@@ -88,7 +98,12 @@ fn command(conn: &sot_log::pipe_win::PipeClient, operation_id: &str, op: Supervi
     match request_for_test(
         conn,
         &SupervisorRequest::Command { operation_id: operation_id.to_string(), op },
-        Instant::now() + Duration::from_secs(10),
+        // Generous: an EndRun's own reply is DEFERRED to record_closed
+        // (B3) -- the mgmt-lane exchange plus the leg writing its own
+        // marker, both real OS work on a background thread, not a bound
+        // this crate itself pins tighter than "well within the ADR's own
+        // per-op budgets stacked together".
+        Instant::now() + Duration::from_secs(30),
     )
     .expect("command")
     {
@@ -110,15 +125,10 @@ fn query(conn: &sot_log::pipe_win::PipeClient, operation_id: &str) -> Supervisor
     }
 }
 
-/// Poll `query` past both pre-terminal milestones (`accepted`, the
-/// initial durable-but-not-yet-acted-on state, and `record_closed`, the
-/// end_run-specific "confirmed exited, not yet verified" milestone) to
-/// whatever terminal state follows. The command's OWN immediate reply is
-/// `accepted` (ADR 0041 Lifecycle: "typically `Accepted`, once the
-/// operation is durably journaled" — never a value obtained by blocking
-/// this call on the operation's own OS-facing work), so every caller that
-/// used to assert on the immediate reply directly now polls through this
-/// instead.
+/// Poll `query` past both pre-terminal milestones to whatever terminal
+/// state follows. Callers that already PROVED `record_closed` via the
+/// `end_run` command's own deferred reply (B3) use this only for the
+/// remaining `record_closed -> record_verified`/`failed` step.
 fn poll_to_terminal(conn: &sot_log::pipe_win::PipeClient, operation_id: &str, timeout: Duration) -> SupervisorOperationState {
     poll_until(
         || match query(conn, operation_id) {
@@ -130,13 +140,23 @@ fn poll_to_terminal(conn: &sot_log::pipe_win::PipeClient, operation_id: &str, ti
     )
 }
 
+/// Submits `end_run` and asserts its OWN reply is `record_closed` (B3:
+/// "the lane reply for an accepted EndRun is sent AT record_closed, not
+/// at admission") — proving the FIRST half of the "record_closed then
+/// record_verified" sequence directly, rather than silently accepting
+/// either as `poll_to_terminal` alone would (Codex review round 2: "the
+/// workflow's own description is unproved... never requires observing
+/// record_closed").
+fn end_run_and_expect_record_closed(conn: &sot_log::pipe_win::PipeClient, operation_id: &str, reason: &str, voyage: String) {
+    let reply = command(conn, operation_id, SupervisorOp::EndRun { reason: reason.into(), voyage });
+    assert_eq!(reply, SupervisorOperationState::RecordClosed, "end_run's own command reply must arrive AT record_closed (ADR 0041:592)");
+}
+
 /// Blocks on `conn.read` in a background thread so an EOF (or any other
 /// outcome) can be awaited with a bounded timeout — `PipeClient` is
 /// `Sync`/movable across threads by design (its own doc: a second thread
 /// may `cancel` a blocking call in flight). Used to verify a connection
-/// the supervisor is EXPECTED to close actually does (Codex review round
-/// 1, test honesty: the mismatched-build test used to assert only the
-/// classification, never the close its own name claims).
+/// the supervisor is EXPECTED to close actually does.
 fn expect_connection_closes(conn: sot_log::pipe_win::PipeClient, timeout: Duration) {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -163,8 +183,32 @@ fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> Child {
     cmd.spawn().expect("spawn sot-capsule supervise")
 }
 
-/// The step-5 e2e suite's own cross-process residual, closed for real:
-/// a real launcher-shaped client connects the supervisor lane of a real
+fn wait_for_exit(mut child: Child, timeout: Duration) -> std::process::ExitStatus {
+    poll_until(|| child.try_wait().unwrap(), timeout, "the supervisor process to exit")
+}
+
+/// As [`wait_for_exit`], but on timeout makes ONE best-effort attempt to
+/// reconnect and report whatever `status` still claims, so a future CI
+/// failure NAMES the stuck lifecycle state instead of just timing out
+/// (per the coordinator's own round-4 addendum on the flap test).
+fn wait_for_exit_with_diagnostics(mut child: Child, h: &str, timeout: Duration) -> std::process::ExitStatus {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() >= deadline {
+            let diagnostic = connect_and_challenge_for_test(h).ok().and_then(|(conn, _)| try_status(&conn).ok());
+            panic!(
+                "timed out waiting for the supervisor process to exit; last reachable status \
+                 (voyage, leg, phase): {diagnostic:?}"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A real launcher-shaped client connects the supervisor lane of a real
 /// spawned `sot-capsule supervise`, runs hello/status/end_run/query, and
 /// observes the supervisor's own clean exit.
 #[test]
@@ -179,26 +223,14 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
 
     // `wait_for_lane` already ran the FULL same-connection challenge,
     // whose own `hello`/`hello_ok` round trip IS this connection's hello
-    // — a second, explicit `hello` here would be a protocol violation
-    // (hello_ok is already latched) and the lane would correctly close
-    // the connection on it, not answer it.
+    // — a second, explicit `hello` here would be a protocol violation.
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
     assert_eq!(query(&conn, "unused-op-id"), SupervisorOperationState::UnknownOperation);
 
     let op_id = "test-end-run-1";
-    let reply = command(
-        &conn,
-        op_id,
-        SupervisorOp::EndRun { reason: "integration test".into(), voyage: voyage.clone() },
-    );
-    // ADR 0041 Lifecycle: "typically `Accepted`, once the operation is
-    // durably journaled" -- the command's own reply never blocks on the
-    // mgmt-lane exchange, the wait for the leg's exit, or verification,
-    // all of which now run on a background thread (Codex review round 1,
-    // finding 1).
-    assert_eq!(reply, SupervisorOperationState::Accepted, "the COMMAND's own immediate reply is accepted");
+    end_run_and_expect_record_closed(&conn, op_id, "integration test", voyage.clone());
 
     let final_state = poll_to_terminal(&conn, op_id, Duration::from_secs(60));
     assert_eq!(final_state, SupervisorOperationState::RecordVerified);
@@ -206,11 +238,7 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
     // Resubmitting the SAME operation id with the SAME digest is
     // idempotent -- it must answer with the current state, not
     // re-execute.
-    let resubmit = command(
-        &conn,
-        op_id,
-        SupervisorOp::EndRun { reason: "integration test".into(), voyage: voyage.clone() },
-    );
+    let resubmit = command(&conn, op_id, SupervisorOp::EndRun { reason: "integration test".into(), voyage: voyage.clone() });
     assert_eq!(resubmit, SupervisorOperationState::RecordVerified);
 
     // A DIFFERENT digest under the same id is an id_conflict.
@@ -225,16 +253,12 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_CLEAN), "a clean EndRun+Stop must exit 0");
 }
 
-fn wait_for_exit(mut child: Child, timeout: Duration) -> std::process::ExitStatus {
-    poll_until(|| child.try_wait().unwrap(), timeout, "the supervisor process to exit")
-}
-
 /// ADR 0041 start-mode table: "`--resume` | sealed, carrying its own
-/// `run_end_requested` | do not spawn." Codex review round 1, finding 3:
-/// the SECOND supervisor must NOT exit immediately -- it serves
-/// ended-no-respawn (so a client polling `query` for the operation that
-/// ended it, right after the crash-restart, still finds a supervisor to
-/// ask) and only exits once explicitly told to `stop`.
+/// `run_end_requested` | do not spawn." The SECOND supervisor must NOT
+/// exit immediately -- it serves ended-no-respawn (so a client polling
+/// `query` for the operation that ended it, right after the
+/// crash-restart, still finds a supervisor to ask) and only exits once
+/// explicitly told to `stop`.
 #[test]
 fn resume_after_a_requested_end_serves_ended_no_respawn_then_exits_on_stop() {
     let dir = tempfile::tempdir().unwrap();
@@ -242,32 +266,17 @@ fn resume_after_a_requested_end_serves_ended_no_respawn_then_exits_on_stop() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    // A producer that exits ON ITS OWN seals with `producer_dead`, NOT
-    // `run_end_requested` -- "the run's program ending is not a teardown
-    // anyone requested" (ADR 0041). Proving THIS row needs a leg ended BY
-    // an explicit `end_run`, so the producer here is long-lived and this
-    // test ends it itself, exactly like the full-lifecycle test does.
     let child = spawn_supervisor(&state_dir, "--start", &["cmd.exe"]);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
-    let reply = command(&conn, "req-end", SupervisorOp::EndRun { reason: "test".into(), voyage });
-    assert_eq!(reply, SupervisorOperationState::Accepted);
-    // Wait for record_verified through `query` first, so the marker this
-    // test's whole premise depends on is definitely durable before the
-    // second supervisor ever looks.
+    end_run_and_expect_record_closed(&conn, "req-end", "test", voyage);
     let final_state = poll_to_terminal(&conn, "req-end", Duration::from_secs(60));
     assert_eq!(final_state, SupervisorOperationState::RecordVerified);
     assert_eq!(command(&conn, "req-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
     let status1 = wait_for_exit(child, Duration::from_secs(30));
     assert_eq!(status1.code(), Some(sot_log::supervisor::EXIT_CLEAN));
 
-    // A SECOND supervisor, `--resume`, against the SAME state-dir: the
-    // latest leg is sealed carrying its own marker, so it recovers
-    // straight into ended-no-respawn -- never spawns `cmd.exe` again, but
-    // also never exits on its own. Prove BOTH: the lane answers (it is
-    // actually SERVING, not merely still starting up) and reports the
-    // right phase/voyage, and the client's own OLD operation id is still
-    // answerable from this fresh process.
+    // A SECOND supervisor, `--resume`, against the SAME state-dir.
     let child2 = spawn_supervisor(&state_dir, "--resume", &["cmd.exe"]);
     let mut guard2 = KillGuard(Some(child2));
     let conn2 = wait_for_lane(&h, Duration::from_secs(30));
@@ -295,26 +304,45 @@ fn resume_after_a_requested_end_serves_ended_no_respawn_then_exits_on_stop() {
 }
 
 /// ADR 0041 "the flap bound": a leg that reaches READY and then dies
-/// increments the ONE counter to its threshold. Codex review round 1,
-/// test honesty: an earlier version's shell died SO fast it usually never
-/// answered a single challenge, exercising only the pre-READY (A2
-/// `LegEnded`) counting path rather than the READY-then-died path the
-/// anti-flap bound actually exists to catch (`ready_at.elapsed() <
-/// STABILITY_INTERVAL`) -- a short delay before exiting gives the
-/// capsule's own mgmt pipe a real chance to answer at least one challenge
-/// first.
+/// increments the ONE counter to its threshold. Explicitly PROVES Ready
+/// was observed before relying on the shell's own timed self-exit (the
+/// test's own name claims it); logs the observed phase at every poll so
+/// a future CI failure names the stuck state instead of just timing out
+/// (coordinator's round-4 addendum: the pre-rewrite version of this test
+/// wedged past its own grace bound on real Windows CI twice).
 #[test]
 fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
 
     let child = spawn_supervisor(
         &state_dir,
         "--start",
         &["cmd.exe", "/d", "/c", "ping -n 2 127.0.0.1 >nul & exit 1"],
     );
-    let status = wait_for_exit(child, Duration::from_secs(120));
+    let guard = KillGuard(Some(child));
+
+    // Ready observed: connect and poll status, logging every phase.
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let observed_ready = poll_until(
+        || {
+            let (_voyage, _leg, phase) = status(&conn);
+            eprintln!("[flap test] observed phase: {phase:?}");
+            (phase == SupervisorPhase::Ready).then_some(true)
+        },
+        Duration::from_secs(60),
+        "the leg to reach Ready at least once before its own timed self-exit",
+    );
+    assert!(observed_ready);
+    drop(conn); // the lane's own 5s idle eviction would close it anyway once flapping starts
+
+    // Shell killed (by its own script) -> flap accounting -> Terminal ->
+    // process exit within TERMINAL_EXIT_GRACE of reaching it. Diagnostic
+    // on timeout: report whatever `status` still claims.
+    let child = KillGuard(guard.0).0.unwrap();
+    let status = wait_for_exit_with_diagnostics(child, &h, Duration::from_secs(120));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_TERMINAL), "three unstable legs must terminate the supervisor");
 }
 
@@ -351,8 +379,7 @@ fn a_second_supervisor_adopts_a_leg_left_behind_by_a_killed_first_one() {
 
     // Clean up: end the run through the SECOND (now authoritative)
     // supervisor, then stop it, before letting the guards kill anything.
-    let reply = command(&conn2, "cleanup-end", SupervisorOp::EndRun { reason: "test cleanup".into(), voyage: voyage2 });
-    assert_eq!(reply, SupervisorOperationState::Accepted);
+    end_run_and_expect_record_closed(&conn2, "cleanup-end", "test cleanup", voyage2);
     let _ = poll_to_terminal(&conn2, "cleanup-end", Duration::from_secs(60));
     assert_eq!(command(&conn2, "cleanup-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
     let second = second_guard.0.take().unwrap();
@@ -370,12 +397,6 @@ fn a_mismatched_build_id_is_refused_and_the_connection_closes() {
 
     let child = spawn_supervisor(&state_dir, "--start", &["cmd.exe"]);
     let _guard = KillGuard(Some(child));
-    // The challenge's OWN `hello` IS the connection's one first frame —
-    // drive it directly with a WRONG build (never send a second, separate
-    // `hello` after a correct-build challenge already latched `hello_ok`;
-    // the lane closes on that as a protocol violation, not a version-skew
-    // refusal — see `full_lifecycle_...`'s own comment on this exact
-    // point).
     let (conn, outcome) = poll_until(
         || sot_log::supervisor::connect_and_challenge_with_build_for_test(&h, "some-other-build").ok(),
         Duration::from_secs(30),
@@ -385,11 +406,7 @@ fn a_mismatched_build_id_is_refused_and_the_connection_closes() {
         matches!(outcome, sot_log::challenge::ChallengeOutcome::Foreign),
         "a wrong build must be classified Foreign (refused{{version_skew}}), got {outcome:?}"
     );
-    // Codex review round 1, test honesty: this test's own name claims the
-    // connection closes -- verify it actually does, not merely that the
-    // classification came back Foreign.
     expect_connection_closes(conn, Duration::from_secs(5));
-    // `_guard` reaps the supervisor process on drop below.
 }
 
 /// ADR 0041 no-supervisor capability matrix: "proven ABSENT: reset only"
@@ -402,22 +419,16 @@ fn endrun_and_reset_without_a_running_supervisor() {
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
-    // No drawer at all yet: endrun has nothing to infer a voyage from.
     assert_eq!(sot_log::supervisor::endrun(&state_dir, None, "no drawer yet".into()), sot_log::supervisor::EXIT_TERMINAL);
 
-    // reset with no pointer at all: absence is provably ABSENT (nothing
-    // to probe), so this mints the very first voyage.
     assert_eq!(sot_log::supervisor::reset(&state_dir, None), sot_log::supervisor::EXIT_CLEAN);
     let minted = match sot_log::pointer::validate(&state_dir) {
         sot_log::pointer::PointerState::Valid(id) => id,
         other => panic!("expected a valid pointer after reset, got {other:?}"),
     };
 
-    // endrun against the now-valid-but-capsule-less voyage: ABSENT ->
-    // nothing to end -> exit 0.
     assert_eq!(sot_log::supervisor::endrun(&state_dir, Some(minted.clone()), "still nothing running".into()), sot_log::supervisor::EXIT_CLEAN);
 
-    // A second reset mints yet another fresh voyage, evidence-preserving.
     assert_eq!(sot_log::supervisor::reset(&state_dir, Some(minted.clone())), sot_log::supervisor::EXIT_CLEAN);
     match sot_log::pointer::validate(&state_dir) {
         sot_log::pointer::PointerState::Valid(id) => assert_ne!(id, minted, "reset must mint a NEW identity, never reuse the old one"),
@@ -425,11 +436,9 @@ fn endrun_and_reset_without_a_running_supervisor() {
     }
 }
 
-/// Codex review round 1 fix 5 (commit 3d031ebb): a SECOND `hello` on an
-/// already-challenged connection used to crash the WHOLE authority
-/// (`unreachable!()`). It must be a plain protocol violation instead --
-/// this connection closes, but the supervisor PROCESS survives and keeps
-/// answering everyone else.
+/// A SECOND `hello` on an already-challenged connection is a plain
+/// protocol violation -- this connection closes, but the supervisor
+/// PROCESS survives and keeps answering everyone else.
 #[test]
 fn a_second_hello_closes_the_connection_but_the_authority_survives() {
     let dir = tempfile::tempdir().unwrap();
@@ -456,18 +465,19 @@ fn a_second_hello_closes_the_connection_but_the_authority_survives() {
     let (voyage2, _leg2, phase2) = status(&conn2);
     assert_eq!(phase2, SupervisorPhase::Ready, "the authority must still be alive and serving after the protocol violation");
 
-    let reply = command(&conn2, "cleanup-end", SupervisorOp::EndRun { reason: "cleanup".into(), voyage: voyage2.unwrap() });
-    assert_eq!(reply, SupervisorOperationState::Accepted);
+    end_run_and_expect_record_closed(&conn2, "cleanup-end", "cleanup", voyage2.unwrap());
     let _ = poll_to_terminal(&conn2, "cleanup-end", Duration::from_secs(60));
     assert_eq!(command(&conn2, "cleanup-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
     let child = guard.0.take().unwrap();
     let _ = wait_for_exit(child, Duration::from_secs(30));
 }
 
-/// Codex review round 1, finding 3: a crash mid `end_run` must be
-/// RECOVERABLE by a fresh supervisor -- the ORIGINAL client's operation
-/// id must still answer through `query` against the new process, never
-/// silently vanish because the process that accepted it is gone.
+/// A crash mid `end_run` must be RECOVERABLE by a fresh supervisor -- the
+/// ORIGINAL client's operation id must still answer through `query`
+/// against the new process, never silently vanish because the process
+/// that accepted it is gone. Proves the operation was genuinely
+/// NONTERMINAL before the kill (polling `query` for `accepted`, never
+/// assuming the 500ms pre-kill pause alone proves it).
 #[test]
 fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     let dir = tempfile::tempdir().unwrap();
@@ -480,31 +490,42 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
-    let reply = command(&conn, "op-recover", SupervisorOp::EndRun { reason: "test".into(), voyage });
-    assert_eq!(reply, SupervisorOperationState::Accepted);
+    // Submit end_run on a SEPARATE thread: its own reply is deferred to
+    // record_closed (B3), which may not arrive before this test kills
+    // the supervisor -- block on it in the background rather than in
+    // this thread, which needs to move on to killing the process.
+    let conn_for_command = conn;
+    let submit = std::thread::spawn(move || {
+        command(&conn_for_command, "op-recover", SupervisorOp::EndRun { reason: "test".into(), voyage })
+    });
 
-    // A bounded real-world pause before killing: `end_run`'s own
-    // background thread (mgmt-lane connect/challenge/write) needs a
-    // moment of real OS scheduling to actually dispatch the shutdown
-    // request before this test yanks the process out from under it --
-    // this is deliberately landing the simulated crash PAST that point,
-    // not an ADR-observable production wait.
-    std::thread::sleep(Duration::from_millis(500));
+    // Prove the operation is genuinely NONTERMINAL before killing --
+    // poll a FRESH connection's `query` for `accepted` (durably
+    // journaled, per ADR 0041's own "before the first irreversible act")
+    // rather than assuming a fixed sleep landed before completion.
+    let query_conn = wait_for_lane(&h, Duration::from_secs(10));
+    poll_until(
+        || matches!(query(&query_conn, "op-recover"), SupervisorOperationState::Accepted).then_some(()),
+        Duration::from_secs(10),
+        "the end_run operation to be admitted (accepted) before this test kills the supervisor",
+    );
 
     // Kill the supervisor -- simulating a crash mid end_run. The LEG
-    // process is not in the supervisor's job (ADR 0041: "the supervisor
-    // dying must be harmless to the run"), and the shutdown request was
-    // already delivered to IT directly, so its own teardown proceeds
-    // independently of whether the supervisor that asked for it is still
-    // alive to see the result.
+    // process is not in the supervisor's job, and the shutdown request
+    // may already have been delivered to it directly, so its own
+    // teardown can proceed independently of whether the supervisor that
+    // asked for it is still alive to see the result.
     let mut first = first_guard.0.take().unwrap();
     first.kill().unwrap();
     first.wait().unwrap();
+    // The background `command` thread's own connection just died with
+    // the process -- let it finish (its own `Err` is fine and ignored;
+    // this test only cares about the SECOND supervisor's recovery).
+    let _ = submit.join();
 
     // A SECOND supervisor, `--resume`: recovery reconciles the in-flight
-    // end_run via the leg's own durable marker (never assuming success,
-    // nor fabricating failure, just because the process that accepted it
-    // is gone), and this operation id must still answer.
+    // end_run via the leg's own durable marker, and this operation id
+    // must still answer.
     let second = spawn_supervisor(&state_dir, "--resume", &["cmd.exe"]);
     let mut second_guard = KillGuard(Some(second));
     let conn2 = wait_for_lane(&h, Duration::from_secs(30));
@@ -513,18 +534,10 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     assert_eq!(final_state, SupervisorOperationState::RecordVerified);
 
     // Recovering an end_run for the CURRENT voyage means no leg is ever
-    // spawned -- eventually straight to ended-no-respawn. NOT necessarily
-    // immediately: the lane is phase-total now (Codex review round 2), so
-    // a `status` mid-`Starting` is a legitimate observation, not a bug --
-    // this test's own 500ms pre-kill sleep does not pin whether the FIRST
-    // supervisor's end_run had already reached its OWN terminal record
-    // before the kill landed. Either way it resolves to ended-no-respawn:
-    // if the first supervisor finished first, THIS supervisor never finds
-    // anything active to reconcile and instead reaches it via the ordinary
-    // start-mode path (adopt-only probe -> Absent -> should_spawn_after_
-    // absent sees the sealed, marked leg); if it was truly interrupted,
-    // reconcile_journal_on_startup reaches it directly at startup. Poll
-    // for the observable fact instead of asserting the immediate value.
+    // spawned -- eventually straight to ended-no-respawn (not necessarily
+    // immediately: the lane is phase-total, so a status mid-Starting is a
+    // legitimate observation while recovery is still resolving via the
+    // ordinary adopt-probe/start-mode path).
     let (_voyage2, leg2, phase2) = poll_until(
         || {
             let (voyage, leg, phase) = status(&conn2);
@@ -544,8 +557,7 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
 /// ADR 0041 voyage-fencing: a mismatch is refused `stale_voyage` with NO
 /// mutation, checked before the journal is ever touched -- so the SAME
 /// operation id, resubmitted with the CORRECT voyage, is still
-/// admissible afterward (never blocked as a spurious id_conflict from
-/// the refused attempt).
+/// admissible afterward.
 #[test]
 fn a_command_naming_the_wrong_voyage_is_refused_stale_voyage() {
     let dir = tempfile::tempdir().unwrap();
@@ -563,20 +575,18 @@ fn a_command_naming_the_wrong_voyage_is_refused_stale_voyage() {
     let reply = command(&conn, "stale-1", SupervisorOp::EndRun { reason: "test".into(), voyage: wrong_voyage });
     assert_eq!(reply, SupervisorOperationState::Refused { reason: sot_log::wire::SupervisorRefusedReason::StaleVoyage });
 
-    let reply2 = command(&conn, "stale-1", SupervisorOp::EndRun { reason: "test".into(), voyage });
-    assert_eq!(reply2, SupervisorOperationState::Accepted, "the SAME id with the CORRECT voyage must still be admissible");
+    end_run_and_expect_record_closed(&conn, "stale-1", "test", voyage);
     let _ = poll_to_terminal(&conn, "stale-1", Duration::from_secs(60));
     assert_eq!(command(&conn, "stale-1-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
     let child = guard.0.take().unwrap();
     let _ = wait_for_exit(child, Duration::from_secs(30));
 }
 
-/// ADR 0041: `reset` while a leg is live is refused through the generic
+/// ADR 0041 (Codex review round 2, B2): `reset` is admissible ONLY from
+/// `EndedNoRespawn` -- refused while a leg is live, through the generic
 /// `Failed{detail}` shape (there is no dedicated wire refusal reason for
 /// it); `Reset{voyage: None}` while a live voyage exists is refused as
-/// `stale_voyage` (Codex review round 1, finding 4: `None` is legal ONLY
-/// when there is truly no live voyage to fence against). Neither
-/// mutates the pointer.
+/// `stale_voyage`. Neither mutates the pointer.
 #[test]
 fn reset_is_refused_while_a_leg_is_live() {
     let dir = tempfile::tempdir().unwrap();
@@ -600,14 +610,54 @@ fn reset_is_refused_while_a_leg_is_live() {
     let reply2 = command(&conn, "reset-none-while-live", SupervisorOp::Reset { voyage: None });
     assert_eq!(reply2, SupervisorOperationState::Refused { reason: sot_log::wire::SupervisorRefusedReason::StaleVoyage });
 
-    // Neither refusal mutated the pointer.
     match sot_log::pointer::validate(&state_dir) {
         sot_log::pointer::PointerState::Valid(id) => assert_eq!(id, voyage, "the pointer must be unchanged after both refusals"),
         other => panic!("expected the pointer to still be valid and unchanged, got {other:?}"),
     }
 
-    let reply3 = command(&conn, "cleanup-end", SupervisorOp::EndRun { reason: "cleanup".into(), voyage });
-    assert_eq!(reply3, SupervisorOperationState::Accepted);
+    end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
+    let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
+    assert_eq!(command(&conn, "cleanup-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
+    let child = guard.0.take().unwrap();
+    let _ = wait_for_exit(child, Duration::from_secs(30));
+}
+
+/// ADR 0041 (Codex review round 2, B2): once `EndedNoRespawn`, `reset`
+/// IS admissible and produces a genuinely NEW voyage the authority then
+/// spawns a fresh leg for.
+#[test]
+fn reset_from_ended_no_respawn_mints_a_new_voyage_and_spawns_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let child = spawn_supervisor(&state_dir, "--start", &["cmd.exe"]);
+    let mut guard = KillGuard(Some(child));
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (old_voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+
+    end_run_and_expect_record_closed(&conn, "end-before-reset", "test", old_voyage.clone());
+    let _ = poll_to_terminal(&conn, "end-before-reset", Duration::from_secs(60));
+    poll_until(
+        || matches!(status(&conn), (_, _, SupervisorPhase::EndedNoRespawn)).then_some(()),
+        Duration::from_secs(30),
+        "ended-no-respawn before submitting reset",
+    );
+
+    let reset_reply = command(&conn, "do-reset", SupervisorOp::Reset { voyage: Some(old_voyage.clone()) });
+    assert_eq!(reset_reply, SupervisorOperationState::Accepted);
+    let reset_final = poll_to_terminal(&conn, "do-reset", Duration::from_secs(30));
+    match reset_final {
+        SupervisorOperationState::ResetDone { new_voyage } => assert_ne!(new_voyage, old_voyage),
+        other => panic!("expected ResetDone, got {other:?}"),
+    }
+
+    // The authority spawns a fresh leg for the NEW voyage.
+    let (new_voyage, _leg2) = wait_for_ready(&conn, Duration::from_secs(90));
+    assert_ne!(new_voyage, old_voyage);
+
+    end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", new_voyage);
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
     assert_eq!(command(&conn, "cleanup-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
     let child = guard.0.take().unwrap();
