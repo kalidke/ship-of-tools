@@ -346,8 +346,12 @@ fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
     let mut guard = KillGuard(Some(child));
 
     // Ready observed: connect and poll status, logging every phase.
+    // `poll_until` itself already proves this (a successful return can
+    // only ever be `true` here, and a timeout panics on its own) —
+    // Codex review round 4 deletion candidate: the former separate
+    // `observed_ready` binding plus `assert!` never added anything.
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let observed_ready = poll_until(
+    poll_until(
         || {
             let (_voyage, _leg, phase) = status(&conn);
             eprintln!("[flap test] observed phase: {phase:?}");
@@ -356,7 +360,6 @@ fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
         Duration::from_secs(60),
         "the leg to reach Ready at least once before its own timed self-exit",
     );
-    assert!(observed_ready);
     drop(conn); // the lane's own 5s idle eviction would close it anyway once flapping starts
 
     // Shell killed (by its own script) -> flap accounting -> Terminal ->
@@ -365,8 +368,17 @@ fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
     // OWNED BY `guard` throughout (N13, above) -- borrowed here, never
     // taken out -- so a timeout panic still leaves `guard`'s own Drop to
     // kill and wait it rather than leaking an orphaned supervisor.
+    //
+    // F1 (Codex review round 4): 360s, not 120s -- the implementation's
+    // OWN legal worst case, with legal per-op teardown delays and two
+    // respawns each reaching Ready near their own 60s readiness cutoff,
+    // runs to roughly 276-306s (three legs' own ping+detection+reap+
+    // drain+aggregate teardown, two full 60s stability windows before a
+    // respawn resets the counter, plus the 2s terminal grace) -- 120s
+    // was below the bound this test's own implementation is allowed to
+    // legally take, not a bug in the implementation itself.
     let status =
-        wait_for_exit_with_diagnostics(guard.0.as_mut().unwrap(), &h, Duration::from_secs(120));
+        wait_for_exit_with_diagnostics(guard.0.as_mut().unwrap(), &h, Duration::from_secs(360));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_TERMINAL), "three unstable legs must terminate the supervisor");
 }
 
