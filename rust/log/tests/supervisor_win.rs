@@ -446,9 +446,18 @@ fn a_mismatched_build_id_is_refused_and_the_connection_closes() {
 }
 
 /// ADR 0041 no-supervisor capability matrix: "proven ABSENT: reset only"
-/// and endrun's own "nothing to end" case -- both exercised with NO
-/// supervisor running at all, driving `sot_log::supervisor::{endrun,
-/// reset}` directly (the fence-acquiring in-process callers).
+/// -- both exercised with NO supervisor running at all, driving
+/// `sot_log::supervisor::{endrun, reset}` directly (the fence-acquiring
+/// in-process callers).
+///
+/// `endrun` against a voyage that was reset but never actually started
+/// (N2, Codex review round 4): a raw pipe-NotFound is proven, via
+/// `writer.lock`, to be a GENUINE absence here -- but genuine absence
+/// with no leg and no requested-end marker still means this end was
+/// NEVER ACTUALLY DELIVERED. Reporting that as success (the old
+/// behavior) would let a later `--resume` respawn as if nothing had
+/// happened, which is exactly the false-positive N2 exists to close --
+/// so the loud refusal (69), not a silent EXIT_CLEAN, is correct here.
 #[test]
 fn endrun_and_reset_without_a_running_supervisor() {
     let dir = tempfile::tempdir().unwrap();
@@ -463,7 +472,15 @@ fn endrun_and_reset_without_a_running_supervisor() {
         other => panic!("expected a valid pointer after reset, got {other:?}"),
     };
 
-    assert_eq!(sot_log::supervisor::endrun(&state_dir, Some(minted.clone()), "still nothing running".into()), sot_log::supervisor::EXIT_CLEAN);
+    // N2 (Codex review round 4): this voyage was minted by the reset
+    // above but never actually started -- no leg, no requested-end
+    // marker. A GENUINELY absent writer (proven via writer.lock) with
+    // nothing ever delivered is a loud refusal, never a silent
+    // EXIT_CLEAN success -- see this test's own doc comment.
+    assert_eq!(
+        sot_log::supervisor::endrun(&state_dir, Some(minted.clone()), "still nothing running".into()),
+        sot_log::supervisor::EXIT_TERMINAL
+    );
 
     assert_eq!(sot_log::supervisor::reset(&state_dir, Some(minted.clone())), sot_log::supervisor::EXIT_CLEAN);
     match sot_log::pointer::validate(&state_dir) {
