@@ -1497,6 +1497,24 @@ binary.
    EndRun — the capsule survives headless and the next start ADOPTS it,
    never silently).
 
+**Build-order amendment (owner ruling, 2026-09-01).** After step 6 U3
+(the FE attach client) lands, the ladder proceeds to FIRST-CLASS LOCAL
+SESSIONS and the P4 bridge BEFORE step 6 U4 (the drawer cutover, launcher
+stop handshake, upgrade transaction). Rationale: U3 is the client every
+later step reuses; the drawer works today under the ADR 0017 ritual, so
+its cutover buys the least toward the stated goal — sessions from
+multiple hosts, and local sessions as ordinary rows in the session
+selector. Once local sessions exist, the drawer is one more session whose
+tenant is the SoT LLM, and the upgrade transaction then protects all of
+them. The drawer contract in this ADR is unchanged: ONE drawer, tenant
+fixed (the SoT LLM plus terminal/monitor/Julia); local sessions are never
+drawer tenants — "local is just another host". Local sessions: one
+supervisor per session, each with its own state directory (the fence,
+pointer, journal and lane are already state-dir-scoped, so N sessions
+need no new mechanism); the selector lists local state directories under
+a local host node and attaches the LLM pane through the U3 client; hosts
+are separated in the selector by the wheel icon. U4 follows.
+
 ### Step 6 units
 
 U0 and U1 carry mechanism the contract does not decide; U2 and U3 are
