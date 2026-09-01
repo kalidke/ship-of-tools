@@ -1576,13 +1576,14 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                         } else {
                             consecutive_unstable_legs = 0;
                         }
-                        // Read the CURRENT voyage off `authority`, never the
-                    // pre-loop `voyage_id`/`voyage_root` locals: a live
-                    // `reset` mutates `authority.voyage_id` (see
-                    // `handle_command`'s own Reset arm) and this respawn
-                    // may be for a leg that outlived one.
-                    let current_root = voyage_root_path(&authority.state_dir, &authority.voyage_id);
-                    lifecycle = respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &current_root, &authority.voyage_id, &config, &lease_name);
+                        // Read the CURRENT voyage off `authority`, never
+                        // the pre-loop `voyage_id`/`voyage_root` locals:
+                        // a live `reset` mutates `authority.voyage_id`
+                        // (see `handle_command`'s own Reset arm) and
+                        // this respawn may be for a leg that outlived
+                        // one.
+                        let current_root = voyage_root_path(&authority.state_dir, &authority.voyage_id);
+                        lifecycle = respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &current_root, &authority.voyage_id, &config, &lease_name);
                     }
                     Ok(false) => {} // still running
                     Err(e) => {
