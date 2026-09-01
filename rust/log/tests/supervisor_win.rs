@@ -322,7 +322,7 @@ fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
         "--start",
         &["cmd.exe", "/d", "/c", "ping -n 2 127.0.0.1 >nul & exit 1"],
     );
-    let guard = KillGuard(Some(child));
+    let mut guard = KillGuard(Some(child));
 
     // Ready observed: connect and poll status, logging every phase.
     let conn = wait_for_lane(&h, Duration::from_secs(30));
@@ -341,7 +341,7 @@ fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
     // Shell killed (by its own script) -> flap accounting -> Terminal ->
     // process exit within TERMINAL_EXIT_GRACE of reaching it. Diagnostic
     // on timeout: report whatever `status` still claims.
-    let child = KillGuard(guard.0).0.unwrap();
+    let child = guard.0.take().unwrap();
     let status = wait_for_exit_with_diagnostics(child, &h, Duration::from_secs(120));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_TERMINAL), "three unstable legs must terminate the supervisor");
 }
