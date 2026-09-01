@@ -1512,6 +1512,9 @@ fn respawn_or_terminal(
     authority: &AuthorityState,
 ) -> Lifecycle {
     if *consecutive_unstable_legs >= FLAP_THRESHOLD {
+        eprintln!(
+            "sot-capsule supervise: anti-flap bound reached (consecutive_unstable_legs={consecutive_unstable_legs} >= {FLAP_THRESHOLD}); entering Terminal"
+        );
         return Lifecycle::Terminal { detail: "the anti-flap bound was reached".into() };
     }
     let voyage_id = authority.voyage_id.clone().expect("respawn is only reachable once voyage_id is Some");
@@ -1666,19 +1669,34 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             },
             Lifecycle::Spawning { rx, handle, started_at } => match rx.try_recv() {
                 Ok(ProbeOutcome::Ready(process)) => {
+                    // The counter resets only on a PROVEN-stable leg --
+                    // one that has SURVIVED STABILITY_INTERVAL in Ready
+                    // (the `Lifecycle::Ready` arm below does exactly
+                    // that, on the SAME elapsed-since-ready_at check the
+                    // `Ending`->`NotEnded` arm also uses) -- never merely
+                    // on reaching Ready. Resetting it HERE zeroed the
+                    // count before every death could ever be observed,
+                    // so a leg that died moments after every respawn was
+                    // "the first" unstable leg forever: 90 legs in ~120s
+                    // of real Windows CI, the anti-flap bound never
+                    // tripping.
                     join_and_warn(handle, "spawn");
-                    consecutive_unstable_legs = 0;
                     Lifecycle::Ready { process, ready_at: Instant::now() }
                 }
                 Ok(ProbeOutcome::SpawnFailed(e)) => {
                     join_and_warn(handle, "spawn");
-                    eprintln!("sot-capsule supervise: spawn failed: {e}");
                     consecutive_unstable_legs += 1;
+                    eprintln!(
+                        "sot-capsule supervise: leg failed to spawn: {e} (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}"
+                    );
                     respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease_name, &authority)
                 }
                 Ok(ProbeOutcome::KilledAfterTimeout | ProbeOutcome::LegEnded) => {
                     join_and_warn(handle, "spawn");
                     consecutive_unstable_legs += 1;
+                    eprintln!(
+                        "sot-capsule supervise: leg ended before reaching Ready (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}"
+                    );
                     respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease_name, &authority)
                 }
                 Ok(ProbeOutcome::Foreign) => {
@@ -1712,11 +1730,16 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             },
             Lifecycle::Ready { process, ready_at } => match process.wait(Duration::ZERO) {
                 Ok(true) => {
-                    if ready_at.elapsed() < STABILITY_INTERVAL {
+                    let elapsed = ready_at.elapsed();
+                    let unstable = elapsed < STABILITY_INTERVAL;
+                    if unstable {
                         consecutive_unstable_legs += 1;
                     } else {
                         consecutive_unstable_legs = 0;
                     }
+                    eprintln!(
+                        "sot-capsule supervise: leg ended after {elapsed:?} in Ready (unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
+                    );
                     respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease_name, &authority)
                 }
                 Ok(false) => Lifecycle::Ready { process, ready_at },
@@ -1739,11 +1762,16 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                 }
                 Ok(EndingProgress::Final(EndRunWorkerResult::NotEnded)) => {
                     join_and_warn(handle, "end_run");
-                    if ready_at.elapsed() < STABILITY_INTERVAL {
+                    let elapsed = ready_at.elapsed();
+                    let unstable = elapsed < STABILITY_INTERVAL;
+                    if unstable {
                         consecutive_unstable_legs += 1;
                     } else {
                         consecutive_unstable_legs = 0;
                     }
+                    eprintln!(
+                        "sot-capsule supervise: leg ended after {elapsed:?} (end_run not durably accepted; unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
+                    );
                     respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease_name, &authority)
                 }
                 Ok(EndingProgress::Final(EndRunWorkerResult::Fatal(detail))) => {

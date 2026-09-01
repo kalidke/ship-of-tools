@@ -178,8 +178,17 @@ fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> Child {
         .arg("--assume-no-rollback-target")
         .arg("--")
         .args(argv)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        // `inherit()`, not `piped()`: nothing in this file ever reads
+        // the child's stdout/stderr, so a piped handle just accumulates
+        // in an OS buffer a chatty child could eventually fill and
+        // block on -- and worse, silently swallows every
+        // `eprintln!("sot-capsule supervise: ...")` diagnostic (the
+        // supervisor's own respawn/flap-bound logging) that CI needs to
+        // see when a test times out. Inheriting sends both straight to
+        // the test binary's own stdout/stderr, which `cargo test`
+        // already captures and only shows on a failing test.
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
     cmd.spawn().expect("spawn sot-capsule supervise")
 }
 
@@ -192,7 +201,8 @@ fn wait_for_exit(mut child: Child, timeout: Duration) -> std::process::ExitStatu
 /// failure NAMES the stuck lifecycle state instead of just timing out
 /// (per the coordinator's own round-4 addendum on the flap test).
 fn wait_for_exit_with_diagnostics(mut child: Child, h: &str, timeout: Duration) -> std::process::ExitStatus {
-    let deadline = Instant::now() + timeout;
+    let started = Instant::now();
+    let deadline = started + timeout;
     loop {
         if let Some(status) = child.try_wait().unwrap() {
             return status;
@@ -200,8 +210,9 @@ fn wait_for_exit_with_diagnostics(mut child: Child, h: &str, timeout: Duration) 
         if Instant::now() >= deadline {
             let diagnostic = connect_and_challenge_for_test(h).ok().and_then(|(conn, _)| try_status(&conn).ok());
             panic!(
-                "timed out waiting for the supervisor process to exit; last reachable status \
-                 (voyage, leg, phase): {diagnostic:?}"
+                "timed out after {:?} waiting for the supervisor process to exit; last reachable \
+                 status (voyage, leg, phase): {diagnostic:?}",
+                started.elapsed()
             );
         }
         std::thread::sleep(Duration::from_millis(100));
