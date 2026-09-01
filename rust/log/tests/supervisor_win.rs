@@ -513,8 +513,26 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     assert_eq!(final_state, SupervisorOperationState::RecordVerified);
 
     // Recovering an end_run for the CURRENT voyage means no leg is ever
-    // spawned -- straight to ended-no-respawn.
-    let (_voyage2, leg2, phase2) = status(&conn2);
+    // spawned -- eventually straight to ended-no-respawn. NOT necessarily
+    // immediately: the lane is phase-total now (Codex review round 2), so
+    // a `status` mid-`Starting` is a legitimate observation, not a bug --
+    // this test's own 500ms pre-kill sleep does not pin whether the FIRST
+    // supervisor's end_run had already reached its OWN terminal record
+    // before the kill landed. Either way it resolves to ended-no-respawn:
+    // if the first supervisor finished first, THIS supervisor never finds
+    // anything active to reconcile and instead reaches it via the ordinary
+    // start-mode path (adopt-only probe -> Absent -> should_spawn_after_
+    // absent sees the sealed, marked leg); if it was truly interrupted,
+    // reconcile_journal_on_startup reaches it directly at startup. Poll
+    // for the observable fact instead of asserting the immediate value.
+    let (_voyage2, leg2, phase2) = poll_until(
+        || {
+            let (voyage, leg, phase) = status(&conn2);
+            (phase == SupervisorPhase::EndedNoRespawn).then_some((voyage, leg, phase))
+        },
+        Duration::from_secs(90),
+        "the resumed supervisor to reach ended-no-respawn",
+    );
     assert_eq!(phase2, SupervisorPhase::EndedNoRespawn);
     assert!(leg2.is_none(), "no leg is running once ended-no-respawn");
 
