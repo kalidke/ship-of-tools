@@ -1551,6 +1551,28 @@ owns its own PTY is two sessions, so U2 and U3 stay off until U4.
 - **U3 — the FE client**, behind the same off-by-default flag: the six
   FE rulings in "Step 6 as specified", checkpoint restore into the
   drawer's parser, and deletion of its DSR responder.
+
+  **As built (2026-09-01).** The flag: this section names none, so the
+  frontend gained one settings key, `[drawer] attach_only` (default
+  `false`), read once at Terminal-drawer creation time
+  (`rust/frontend/src/settings.rs`, `State::pump_attach_term` in
+  `gpu.rs`). Off (the default) or off-Windows, the drawer keeps
+  spawning `term::LocalTerminal` exactly as before this unit — nothing
+  else in the frontend changes. The six rulings, checkpoint restore,
+  and the attach lane's connect/hello/status/checkpoint sequence are
+  pure-and-portable where possible (`rust/log/src/fe_client.rs`, tested
+  on every CI platform) plus a Windows-only runtime
+  (`fe_client_win.rs`, `FeAttachClient`) that mirrors `LocalTerminal`'s
+  own public surface so the frontend's own diff stays small. "Deletion
+  of its DSR responder" is satisfied by absence, not a runtime switch:
+  the attach-only path never implements one (the capsule's own ConPTY
+  DSR responder, step 4, already resolves every query before the FE
+  ever sees a byte) — `LocalTerminal::respond_to_queries` itself is
+  untouched, since it is still load-bearing for the off-flag path. Real
+  cross-process proof (attach+checkpoint, take/resize-ordering,
+  end_run/record_closed, reconnect+fresh-checkpoint) lives in
+  `rust/log/tests/fe_client_win.rs`, wired into the `windows-2022` CI
+  job alongside `pipe_win`/`e2e_pipe`/`supervisor_win`.
 - **U4 — the cutover, one flag.** The launcher starts the supervisor
   with a start mode and the stop handshake, waits for pointer
   publication and READY before starting the FE, and stages the capsule
