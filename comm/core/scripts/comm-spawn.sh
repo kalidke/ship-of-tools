@@ -101,9 +101,19 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -n "$TASK" ] && [ -z "$SPAWNER" ]; then
-    echo "ERROR: --task was given but this session's own sot-comm identity did not resolve — refusing to promise a reply route the task can never actually reach. Join first: comm-join.sh --name <canonical-handle>, then retry with --task." >&2
-    exit 1
+if [ -n "$TASK" ]; then
+    # --task promises a reply route back to @SPAWNER, so SPAWNER's own
+    # identity must be ROUTABLE (registry row present, root matches — not
+    # just resolved/nonempty) before any socket/spawn work happens (Codex
+    # review round-3 finding 4: a valid self-file with a deleted registry
+    # row used to pass the old nonempty-only check, spawn "succeeded", and
+    # the task silently never reached the child's inbox). Reuses the same
+    # check comm-send/relay/bootstrap already enforce; NAME is reused
+    # below for the CHILD and is still "" at this point in the script, so
+    # this borrows it briefly rather than adding a parallel helper.
+    NAME="$SPAWNER"
+    sot_require_routable_identity || exit 1
+    NAME=""
 fi
 
 # <name> is OPTIONAL (ADR 0028 addendum): one positional is <repo-path> alone
@@ -469,7 +479,15 @@ if [ -n "$TASKMSG" ]; then
     if "$BIN/comm-send.sh" @"$NAME" "$TASKMSG" >/dev/null 2>&1; then
         echo "Task queued to @${NAME}'s inbox (durable; read on bootstrap)."
     else
-        echo "WARN: could not queue task — send it yourself: ${BIN}/comm-send.sh @${NAME} \"...\""
+        # A failed enqueue must fail the command, not just warn (Codex
+        # review round-3 finding 4) — the routability pre-check above
+        # covers the common case, but a successful queue is still a
+        # required postcondition for a promised task, not an assumption.
+        # The agent itself already spawned successfully (SPAWN_SUCCEEDED
+        # is set) so the exit trap will NOT roll it back — only the task
+        # promise failed.
+        echo "ERROR: --task was given but could not be queued to @${NAME}'s inbox — send it yourself: ${BIN}/comm-send.sh @${NAME} \"...\"" >&2
+        exit 1
     fi
 fi
 echo "@${NAME} is addressable NOW: ${BIN}/comm-send.sh @${NAME} \"...\" queues durably in its inbox,"
