@@ -418,11 +418,15 @@ fn refused_turn_is_recorded_as_bare_input() {
     let helper = write_fake_helper(dir.path(), "interrupt_no_result");
     let cfg = config(dir.path(), "v9", &helper);
     let root = cfg.voyage_root.clone();
+    // Generous gaps on purpose: the operator schedule IS this test's clock,
+    // and on a slow hosted runner the first Turn had not registered as OPEN
+    // within 150 ms, so the second was not refused and the summary ended
+    // with turns=0 (seen three times on hosted ubuntu, never locally).
     let summary = drive(cfg, vec![
-        (150, OperatorCmd::Turn("first".into())),
-        (150, OperatorCmd::Turn("refused-while-busy".into())),
-        (150, OperatorCmd::Interrupt),
-        (300, OperatorCmd::Shutdown),
+        (600, OperatorCmd::Turn("first".into())),
+        (600, OperatorCmd::Turn("refused-while-busy".into())),
+        (600, OperatorCmd::Interrupt),
+        (1200, OperatorCmd::Shutdown),
     ]);
     assert_eq!(summary.turns, 1, "terminal: {}", summary.terminal_reason);
     assert_eq!(summary.refused_turns, 1);
