@@ -120,11 +120,45 @@ fi
 # across repos/cwds. Do not special-case the nopane slot to skip this
 # check; that would let unrelated shells alias onto one identity, the same
 # class of bug root= exists to close.
+#
+# IS_NOPANE (Codex review round-2 finding A) tightens this further: even a
+# MATCHING repo= basename is not enough evidence to heal the shared nopane
+# slot specifically, because it is — by construction — the one file every
+# no-pane shell on this host can read and write, so a same-basename
+# DIFFERENT checkout (or a same-basename non-repo cwd, e.g. two unrelated
+# `/tmp/foo` scratch dirs on the same host) aliases through it exactly as
+# easily as the rightful owner does. A pane-keyed self-file has no such
+# sharing (each tmux pane gets its own path) so ruling 2's original matrix
+# — heal on repo match alone when the registry offers no corroboration —
+# still applies there unchanged. Detected from SELF_FILE's OWN name (the
+# literal "__nopane.txt" suffix computed above), not from PANE_ID at this
+# particular invocation: what matters is whether THIS FILE is the one
+# shared slot, not whether this one caller happens to lack a pane (a test
+# harness that points SOT_COMM_SELF_FILE at a dedicated, never-shared path
+# is not exposed to the aliasing risk this guards against, regardless of
+# its own pane state).
+case "$SELF_FILE" in
+    *__nopane.txt) IS_NOPANE=1 ;;
+    *)             IS_NOPANE=0 ;;
+esac
+
 NAME=""
 if [ -f "$SELF_FILE" ]; then
-    NAME="$(sed -n '1p' "$SELF_FILE")"
-    SELF_REPO_LINE="$(sed -n '2p' "$SELF_FILE")"
-    SELF_ROOT_LINE="$(sed -n '3p' "$SELF_FILE")"
+    # Read the file ONCE (Codex review round-2 finding B/3): the three
+    # fields used to come from THREE separate `sed -n 'Np'` invocations —
+    # three separate opens+reads of the same path. Even with ruling 3's
+    # atomic same-directory-tmp+`mv` write, an atomic rename can still land
+    # BETWEEN any two of those three opens (the rename itself is atomic;
+    # three independent reads of its result are not), so a concurrent
+    # rewrite could be observed as a MIXED version — old NAME with a new
+    # root=, or vice versa. `mapfile` opens and reads the whole file
+    # exactly once into memory; every field below is parsed from that one
+    # in-memory snapshot, so it's either entirely the old content or
+    # entirely the new, never a splice of both.
+    mapfile -t SELF_LINES < "$SELF_FILE" 2>/dev/null
+    NAME="${SELF_LINES[0]:-}"
+    SELF_REPO_LINE="${SELF_LINES[1]:-}"
+    SELF_ROOT_LINE="${SELF_LINES[2]:-}"
     # Existence of the `repo=`/`root=` PREFIX is checked separately from
     # the extracted VALUE (Codex review round-1 finding 2: "distinguish an
     # absent root= line from a present-but-empty/malformed one") — the old
@@ -175,8 +209,12 @@ if [ -f "$SELF_FILE" ]; then
         #     (this is the reproduced wrong-checkout case: a basename
         #     match can never override a registry root disagreement)
         #   registry row has no root (legacy row), or no row at all:
-        #     repo= present and matches                            -> heal
+        #     repo= present, matches, PANE-KEYED file (not shared)   -> heal
         #       (documented residual ambiguity below)
+        #     repo= present, matches, but this IS the shared nopane
+        #       slot (round-2 finding A)                            -> DISCARD
+        #       (repo= alone is not enough evidence for a slot every
+        #       no-pane shell on this host can read/write)
         #     ancient one-line (no repo= at all)                   -> DISCARD
         #       (carries literally no evidence of its own to check)
         IFS=$'\t' read -r reg_status reg_root <<< "$(sot_registry_entry_status "$NAME")"
@@ -188,23 +226,39 @@ if [ -f "$SELF_FILE" ]; then
                 echo "comm-context: self-file identity '$NAME' has no root= (legacy) and the registry's own root for it ('$reg_root') doesn't match this project ('$PROJECT_ROOT') — stale; refusing to self-heal a basename match against contrary registry evidence; discarding" >&2
                 NAME=""
             fi
-        elif [ "$HAS_REPO_LINE" = 1 ]; then
+        elif [ "$HAS_REPO_LINE" = 1 ] && [ "$IS_NOPANE" != 1 ]; then
             # repo= present and matches, but the registry offers nothing
             # to corroborate with (no row, or a legacy row with no root
-            # key of its own). Heal on the repo-basename match alone —
+            # key of its own), AND this is a PANE-KEYED self-file — each
+            # tmux pane gets its own path, so this file is not shared with
+            # any other shell. Heal on the repo-basename match alone —
             # this slot's exact pre-#148 behavior. Residual, deliberately
             # accepted ambiguity: a same-basename, DIFFERENT-directory
-            # repo sharing this exact HOST/pane slot during the
-            # pre-#148-to-post-#148 transition, with no registry row to
-            # catch it either, would also heal here. That needs a
-            # basename collision AND a coincident missing/unknown
-            # registry row — rare, and time-bounded (every legacy
+            # repo whose session was ASSIGNED this exact pane id after a
+            # tmux server restart, with no registry row to catch it
+            # either, would also heal here. That needs a basename
+            # collision AND a coincident missing/unknown registry row AND
+            # a recycled pane id — rare, and time-bounded (every legacy
             # self-file heals to v2 the first time anyone reads it, so
             # this branch stops mattering once the fleet has cycled once
             # post-upgrade). The alternative — refusing every legacy
             # self-file whose registry row lacks a root — is exactly the
             # fleet-deafening regression this PR exists to fix.
             heal=1
+        elif [ "$HAS_REPO_LINE" = 1 ] && [ "$IS_NOPANE" = 1 ]; then
+            # repo= present and matches, but this IS the shared nopane
+            # slot (Codex review round-2 finding A): unlike a pane-keyed
+            # file, this exact path is read AND written by every no-pane
+            # shell on this host, in every repo, forever — a same-basename
+            # DIFFERENT checkout (two unrelated repos both named "foo") or
+            # a same-basename non-repo cwd (two unrelated `/tmp/foo`
+            # scratch dirs) collide on it just as easily as the rightful
+            # owner. A basename match alone is never enough evidence for a
+            # slot this widely shared; require the same registry
+            # corroboration the "no row at all" branches above already
+            # demand, with no exception for a matching basename.
+            echo "comm-context: self-file identity '$NAME' is in the SHARED nopane slot and this project's repo='$REPO' match alone is not enough evidence for it (this exact file is shared by every no-pane shell on this host) — stale; refusing to self-heal without a corroborating registry root; discarding" >&2
+            NAME=""
         else
             # Ancient one-line format: no repo= line either, so this
             # self-file carries NO evidence of its own — not even a
