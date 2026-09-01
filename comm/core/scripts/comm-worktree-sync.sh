@@ -84,3 +84,8 @@ for h in "${FAMILY[@]}"; do
 done
 
 echo "worktree-sync: base '$BASE', family [${ROSTER}], pinged $pinged, failed $failed (excluding @${SELF:-self})"
+# Codex review round-3 finding 3: a nonzero failed count must fail the
+# command, not just be reported — a silent-success exit code on a partial
+# delivery is the same "no quiet fallback" class the send/relay refusals
+# elsewhere in this PR exist to close.
+[ "$failed" -eq 0 ]

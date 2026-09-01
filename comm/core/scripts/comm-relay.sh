@@ -136,13 +136,19 @@ send_frame() {  # $1 to, $2 text
     local frame; frame="$(jq -nc --arg f "$NAME" --arg t "$1" --arg m "$2" \
         '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:$t,text:$m}}')"
     local resp; resp="$(printf '%s\n' "$frame" | nc_send 2>/dev/null | grep -m1 '"op":"agent.send"' || true)"
-    if printf '%s' "$resp" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
+    # An EMPTY $resp must never pass: `jq -e` on zero input never sees a
+    # falsy last value to react to, so it exits 0 — a missing socket used
+    # to print "relayed" and exit 0 (Codex review round-3 finding 3).
+    # Require a NONEMPTY response AND a true ack; anything else is a real
+    # failure, returned nonzero so `set -e` propagates it to the caller.
+    if [ -n "$resp" ] && printf '%s' "$resp" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
         echo "relayed -> ${1:-<all>} via $ENDPOINT"
-    else
-        echo "WARN: no ack from daemon — the message may NOT have been delivered." >&2
-        echo "      Retry, or use durable delivery: comm-send.sh @<name> \"msg\"" >&2
-        echo "      (If every send does this, the daemon may predate agent.send.)" >&2
+        return 0
     fi
+    echo "WARN: no ack from daemon — the message may NOT have been delivered." >&2
+    echo "      Retry, or use durable delivery: comm-send.sh @<name> \"msg\"" >&2
+    echo "      (If every send does this, the daemon may predate agent.send.)" >&2
+    return 1
 }
 
 # Filter inbound frames for agent.message addressed to me (or broadcast).
