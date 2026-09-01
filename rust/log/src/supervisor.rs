@@ -1810,12 +1810,22 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         // it finishes, or give up on it past its OWN watchdog (anchored
         // to `since`, set once when `Stopping` was entered — the loop
         // must still reach exit within a bound, never depend on a
-        // worker that might itself be stuck).
-        if let Lifecycle::Stopping { worker, since, .. } = &mut lifecycle {
+        // worker that might itself be stuck). A PANIC here still forces
+        // `was_terminal` (Codex review round 2, M2: "any worker panic ->
+        // Terminal regardless of which receiver is currently active" —
+        // `join_and_warn` alone would silently swallow it, exactly the
+        // gap that review named: "Reset/Stop can discard the receiver
+        // and hide the panic").
+        if let Lifecycle::Stopping { worker, since, was_terminal, .. } = &mut lifecycle {
             if let Some(h) = worker {
                 if h.is_finished() {
                     if let Some(h) = worker.take() {
-                        join_and_warn(h, "stopping-drain");
+                        if let Err(panic) = h.join() {
+                            eprintln!(
+                                "sot-capsule supervise: a worker thread carried into Stopping panicked: {panic:?}"
+                            );
+                            *was_terminal = true;
+                        }
                     }
                 } else if watchdog_expired(*since, ENDING_WATCHDOG, now) {
                     eprintln!(
