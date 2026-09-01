@@ -173,13 +173,18 @@ function _install_adapter(cli::Symbol)
     if cli === :claude
         srcdir = joinpath(COMM_SRC, "adapters", "claude")
         skillsroot = joinpath(homedir(), ".claude", "skills")
+        mkpath(skillsroot)
         installed = String[]
         for name in readdir(srcdir)
-            src = joinpath(srcdir, name, "SKILL.md")
-            isfile(src) || continue
+            src = joinpath(srcdir, name)
+            isfile(joinpath(src, "SKILL.md")) || continue
             dst = joinpath(skillsroot, name)
-            mkpath(dst)
-            cp(src, joinpath(dst, "SKILL.md"); force = true)
+            # Copy the whole skill directory (not just SKILL.md) so a skill's
+            # resources/ (e.g. project-log's vendored templates) travel with
+            # it. Remove any stale destination first so a renamed/removed
+            # resource file doesn't linger as an orphan.
+            isdir(dst) && rm(dst; recursive = true, force = true)
+            cp(src, dst; force = true)
             push!(installed, "/$name")
         end
         @info "Installed Claude skills" skills = installed dir = skillsroot
