@@ -953,21 +953,24 @@ fn reconcile_journal_on_startup(state_dir: &Path) -> crate::Result<Reconciliatio
             journal::ActiveOp::EndRun { voyage, epoch } => {
                 // `on_closed: None` — recovery has no live connection to
                 // signal through; the journal itself carries the result
-                // for a later `query`.
-                match finish_end_run_without_process(state_dir, Some(&op_id), voyage, *epoch, None)? {
+                // for a later `query`. N3 (Codex review round 4):
+                // retried right here, in THIS worker (already bounded
+                // from OUTSIDE by RECOVERY_WATCHDOG, exactly as
+                // `spawn_end_run`'s own retry is bounded by
+                // ENDING_WATCHDOG) — an earlier version discarded a
+                // recovered `PendingWriter` outright and returned
+                // `ended=false`, so startup would go on to adopt/respawn
+                // right over a writer whose own EndRun was still
+                // genuinely outstanding, leaving the operation `Accepted`
+                // forever with nothing left to ever retry it.
+                match retry_until_writer_resolved(state_dir, Some(&op_id), voyage, *epoch, None)? {
                     EndRunReconciliation::Ended => {
                         ended_voyages.insert(voyage.clone());
                     }
                     EndRunReconciliation::PreBarrierFailed => {}
-                    // N3 (Codex review round 3): leave this entry
-                    // ACTIVE, untouched — a later pass (a fresh
-                    // `end_run`/`query` against this same id, or the
-                    // NEXT restart) re-evaluates once the writer's fate
-                    // is actually known. This authority has no live
-                    // `Ending` state for an OLD operation to keep
-                    // re-probing from — that machinery exists only for
-                    // an operation THIS process itself admitted.
-                    EndRunReconciliation::PendingWriter => {}
+                    EndRunReconciliation::PendingWriter => {
+                        unreachable!("retry_until_writer_resolved only returns once no longer PendingWriter")
+                    }
                 }
             }
             journal::ActiveOp::Reset { old_voyage, new_voyage, aside } => {
@@ -1226,6 +1229,34 @@ fn spawn_owned_spawn_attempt(
 /// an earlier version hardcoded `None` for, silently starving a
 /// `pending_reply` that would then wait forever), then
 /// [`EndingProgress::Final`] once the operation concludes.
+/// Retries [`finish_end_run_without_process`] while it keeps returning
+/// `PendingWriter`, until it resolves to `Ended`/`PreBarrierFailed` or
+/// errors — shared by the LIVE EndRun worker ([`spawn_end_run`]) and
+/// RECOVERY's own reconciliation of a crashed EndRun whose writer was
+/// still live at startup ([`reconcile_journal_on_startup`]; N3, Codex
+/// review round 4 — an earlier version had recovery discard a recovered
+/// `PendingWriter` outright, so startup would adopt/respawn right over
+/// a writer whose own EndRun was still genuinely outstanding, leaving
+/// the operation `Accepted` forever). Bounded from OUTSIDE only — by
+/// whichever caller's own watchdog measures the WHOLE worker
+/// (`ENDING_WATCHDOG` for the live path, `RECOVERY_WATCHDOG` for
+/// recovery) — never internally, which would just be a second bound to
+/// keep synchronized with that one.
+fn retry_until_writer_resolved(
+    state_dir: &Path,
+    op_id: Option<&str>,
+    voyage_id: &str,
+    epoch: Option<u64>,
+    on_closed: Option<&mpsc::Sender<EndingProgress>>,
+) -> crate::Result<EndRunReconciliation> {
+    let mut result = finish_end_run_without_process(state_dir, op_id, voyage_id, epoch, on_closed);
+    while matches!(result, Ok(EndRunReconciliation::PendingWriter)) {
+        std::thread::sleep(ATTEMPT_INTERVAL);
+        result = finish_end_run_without_process(state_dir, op_id, voyage_id, epoch, on_closed);
+    }
+    result
+}
+
 fn spawn_end_run(
     state_dir: PathBuf,
     operation_id: String,
@@ -1235,9 +1266,9 @@ fn spawn_end_run(
 ) -> (mpsc::Receiver<EndingProgress>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
-        let mut result = match end_run_over_mgmt_lane(&voyage_id, &reason) {
+        let result = match end_run_over_mgmt_lane(&voyage_id, &reason) {
             Ok(EndRunOutcome::Absent | EndRunOutcome::Foreign | EndRunOutcome::Pending) => {
-                finish_end_run_without_process(&state_dir, Some(&operation_id), &voyage_id, epoch, Some(&tx))
+                retry_until_writer_resolved(&state_dir, Some(&operation_id), &voyage_id, epoch, Some(&tx))
             }
             Ok(EndRunOutcome::Ended(process)) => {
                 finish_end_run_with_process(&state_dir, Some(&operation_id), &voyage_id, epoch, process, &tx)
@@ -1253,29 +1284,14 @@ fn spawn_end_run(
                     "sot-capsule supervise: end_run_over_mgmt_lane failed ({e}); still attempting \
                      marker reconciliation rather than failing outright (B4)"
                 );
-                finish_end_run_without_process(&state_dir, Some(&operation_id), &voyage_id, epoch, Some(&tx))
+                retry_until_writer_resolved(&state_dir, Some(&operation_id), &voyage_id, epoch, Some(&tx))
             }
         };
-        // N3 (Codex review round 3): `PendingWriter` (the writer proven
-        // still `Alive`, or `Ambiguous`) is retried in a BOUNDED loop on
-        // THIS SAME thread — never surfaced as a final result, and
-        // never released/respawned over from the main loop, which only
-        // ever observes `Ended`/`PreBarrierFailed`/`Fatal`. This loop
-        // has no bound of its OWN on purpose: the main loop's
-        // `ENDING_WATCHDOG` (measured from when `Ending` was FIRST
-        // entered, entirely untouched by how many times this loop
-        // iterates) is what eventually abandons a writer that never
-        // goes away — an internal cap here would just be a second,
-        // redundant bound to keep synchronized with that one.
-        while matches!(result, Ok(EndRunReconciliation::PendingWriter)) {
-            std::thread::sleep(ATTEMPT_INTERVAL);
-            result = finish_end_run_without_process(&state_dir, Some(&operation_id), &voyage_id, epoch, Some(&tx));
-        }
         let final_result = match result {
             Ok(EndRunReconciliation::Ended) => EndRunWorkerResult::Ended,
             Ok(EndRunReconciliation::PreBarrierFailed) => EndRunWorkerResult::PreBarrierFailed,
             Ok(EndRunReconciliation::PendingWriter) => {
-                unreachable!("the loop above only exits once result is no longer PendingWriter")
+                unreachable!("retry_until_writer_resolved only returns once result is no longer PendingWriter")
             }
             Err(e) => EndRunWorkerResult::Fatal(bounded_detail(format!("{e}"))),
         };
@@ -1375,7 +1391,7 @@ struct StopRequested {
     /// MONOTONIC once `true` (never reset to `false`): OR'd from
     /// "already `Terminal`, or THIS Stop's own `journal::finish` itself
     /// failed" at the moment of acceptance, together with every
-    /// SUBSEQUENT admitted Stop's own `journal_ok`. The final exit code
+    /// SUBSEQUENT admitted Stop's own outcome. The final exit code
     /// additionally checks whether the underlying `Lifecycle` reached
     /// `Terminal` on its own account by the time the loop actually
     /// exits — computed fresh, never stored here, because sticky
@@ -1409,11 +1425,16 @@ enum CommandEffect {
     /// ever equal the one constant `handle_lane_bytes` can just write
     /// directly.
     Reset { operation_id: String, new_voyage: String, aside: Option<String> },
-    /// `stop` was accepted and already durably journaled (B5).
-    /// `journal_ok` is `false` iff `journal::finish` itself failed —
-    /// still honors the stop, but forces `Terminal` severity on exit
-    /// (B2/B5: "journal::finish failures are never ignored — loud").
-    Stop { reply: SupervisorOperationState, journal_ok: bool },
+    /// `stop` was accepted and already durably journaled (B5). No
+    /// separate `journal_ok` field (Codex review round 4 deletion
+    /// candidate, applied): it duplicated exactly `reply`'s own shape
+    /// within this variant — `journal::finish` succeeding is the ONLY
+    /// way `reply` becomes `Stopping` here, and failing is the ONLY way
+    /// it becomes `Failed` — so the caller reads `journal::finish`'s
+    /// own outcome directly off `reply` (`matches!(reply,
+    /// SupervisorOperationState::Failed { .. })`) instead of a second,
+    /// redundant bool always in lockstep with it.
+    Stop { reply: SupervisorOperationState },
 }
 
 fn reset_refusal_detail(lifecycle: &Lifecycle) -> &'static str {
@@ -1467,15 +1488,6 @@ impl AuthorityState {
         operation_id: String,
         op: SupervisorOp,
     ) -> Result<CommandEffect, SupervisorOperationState> {
-        // N4 (Codex review round 3): once a Stop has been accepted, the
-        // authority is winding down — refuse every OTHER command
-        // outright rather than admit new work that may never get
-        // serviced. A repeat `Stop` still reaches its own arm below,
-        // unaffected by this gate.
-        if self.stop_requested.is_some() && !matches!(op, SupervisorOp::Stop) {
-            return Err(SupervisorOperationState::Failed { detail: bounded_detail("the authority is stopping") });
-        }
-
         let digest = match digest_of(&op) {
             Ok(d) => d,
             Err(e) => return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("{e}")) }),
@@ -1564,10 +1576,9 @@ impl AuthorityState {
                 }
                 let t = journal::TerminalRecord::Stopping;
                 match journal::finish(&self.state_dir, &operation_id, &t) {
-                    Ok(()) => Ok(CommandEffect::Stop { reply: terminal_to_wire(t), journal_ok: true }),
+                    Ok(()) => Ok(CommandEffect::Stop { reply: terminal_to_wire(t) }),
                     Err(e) => Ok(CommandEffect::Stop {
                         reply: SupervisorOperationState::Failed { detail: bounded_detail(format!("journal finish failed: {e}")) },
-                        journal_ok: false,
                     }),
                 }
             }
@@ -1847,7 +1858,7 @@ fn handle_lane_bytes(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, id: C
                                 *ctx.lifecycle = Lifecycle::Resetting { operation_id, rx, handle, started_at: now };
                                 Some(SupervisorOperationState::Accepted)
                             }
-                            Ok(CommandEffect::Stop { reply, journal_ok }) => {
+                            Ok(CommandEffect::Stop { reply }) => {
                                 // N4 (Codex review round 3): `stop` no
                                 // longer transitions the Lifecycle AT
                                 // ALL — it stays exactly whatever it
@@ -1861,14 +1872,20 @@ fn handle_lane_bytes(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, id: C
                                 // a second bespoke mechanism — so it is
                                 // sent HERE, inline, rather than falling
                                 // through to the shared tail below (which
-                                // never marker-tracks a reply).
+                                // never marker-tracks a reply). Whether
+                                // the journal write failed is read
+                                // straight off `reply`'s own shape
+                                // (Codex review round 4 deletion
+                                // candidate: a separate `journal_ok`
+                                // bool only ever duplicated this).
+                                let journal_failed = matches!(&reply, SupervisorOperationState::Failed { .. });
                                 let wire_reply = SupervisorReply::Operation(reply);
                                 let reply_bytes = encode_reply_or_fallback(&wire_reply);
                                 match lane.send(id, reply_bytes, Some(id)) {
                                     Ok(()) => pending = Some(PendingClose::AwaitingSent { deadline: now + REFUSAL_SENT_DEADLINE }),
                                     Err(_) => close_after = true,
                                 }
-                                let terminal_now = matches!(ctx.lifecycle, Lifecycle::Terminal { .. }) || !journal_ok;
+                                let terminal_now = matches!(ctx.lifecycle, Lifecycle::Terminal { .. }) || journal_failed;
                                 match &mut ctx.authority.stop_requested {
                                     Some(existing) => existing.terminal_severity |= terminal_now,
                                     None => {
@@ -2390,14 +2407,50 @@ fn endrun_inner(state_dir: &Path, voyage: Option<String>, reason: String) -> cra
     let outcome = end_run_over_mgmt_lane(&voyage_id, &reason)?;
     match outcome {
         EndRunOutcome::Absent => {
-            // No journaling on this path (nothing to reconcile via
-            // query later) -- ABSENT here genuinely means nothing is
-            // running at all, distinct from B3's "prove the writer is
-            // gone before trusting a marker" concern, which is about
-            // NOT fabricating success for an operation that WAS
-            // admitted.
-            eprintln!("sot-capsule endrun: no live capsule for this voyage — nothing to end");
-            Ok(EXIT_CLEAN)
+            // N2 (Codex review round 4): raw pipe-NotFound alone is NOT
+            // proof the writer is gone -- the capsule removes the pipe
+            // NAME before its final writes, seal, and writer-lock
+            // release (capsule_win.rs's own teardown order), the SAME
+            // race B3/N2 already guard against for every OTHER caller.
+            // Trusting it directly here let a concurrent natural
+            // teardown be misreported as EXIT_CLEAN with no
+            // requested-end marker ever written, so a later `--resume`
+            // would respawn. Reused, not reinvented:
+            // finish_end_run_without_process (op_id: None -- this path
+            // still journals nothing) already IS "probe_writer_liveness
+            // then, if genuinely absent, reconcile via the marker" --
+            // the capability matrix's own "proven ABSENT: reset only"
+            // means even a CONFIRMED-gone writer with no marker is
+            // refused here (this operator's own end was never actually
+            // delivered), never silently reported as success; only a
+            // marker a concurrent racer already committed makes this
+            // legitimately `Ended`.
+            let epoch = leg_epoch_of(state_dir, &voyage_id);
+            match finish_end_run_without_process(state_dir, None, &voyage_id, epoch, None) {
+                Ok(EndRunReconciliation::Ended) => {
+                    eprintln!("sot-capsule endrun: record_verified");
+                    Ok(EXIT_CLEAN)
+                }
+                Ok(EndRunReconciliation::PreBarrierFailed) => {
+                    eprintln!(
+                        "sot-capsule endrun: the voyage pipe is genuinely gone (writer.lock proven \
+                         free), but no requested-end marker exists for its latest leg -- this end \
+                         was never actually delivered; refusing to report success"
+                    );
+                    Ok(EXIT_TERMINAL)
+                }
+                Ok(EndRunReconciliation::PendingWriter) => {
+                    eprintln!(
+                        "sot-capsule endrun: could not prove the voyage pipe's own writer is gone \
+                         (writer.lock still held or its liveness is ambiguous) — refusing"
+                    );
+                    Ok(EXIT_TERMINAL)
+                }
+                Err(e) => {
+                    eprintln!("sot-capsule endrun: {e}");
+                    Ok(EXIT_TERMINAL)
+                }
+            }
         }
         EndRunOutcome::Foreign => {
             eprintln!(
@@ -2743,10 +2796,13 @@ mod tests {
     /// representative sample of the actual strings too. No `Stopping`
     /// case any more (N4, Codex review round 3): `stop` no longer
     /// touches the `Lifecycle` at all, so there is no "busy because
-    /// stopping" state for `reset_refusal_detail` to describe — a reset
-    /// attempted while a stop is pending is refused by
-    /// `handle_command`'s own blanket gate instead, before
-    /// `reset_refusal_detail` is ever reached.
+    /// stopping" state for `reset_refusal_detail` to describe -- a
+    /// reset attempted while a stop is pending is admitted and resolved
+    /// exactly like any other command would be (N9, Codex review round
+    /// 4: a former blanket "refuse everything once stopping" gate here
+    /// was DELETED, since it ran before existing-id resolution and made
+    /// a replayed EndRun/Reset id return a fresh refusal instead of its
+    /// own stored terminal state).
     #[test]
     fn reset_refusal_detail_names_the_reason_for_every_busy_state() {
         let (_tx, rx) = mpsc::channel::<RecoveryOutcome>();
@@ -2852,17 +2908,18 @@ mod tests {
         let mut authority = test_authority(dir.path());
         let terminal = Lifecycle::Terminal { detail: "x".into(), entered_at: Instant::now() };
 
-        let CommandEffect::Stop { journal_ok, .. } =
+        let CommandEffect::Stop { reply } =
             authority.handle_command(&terminal, "stop-1".into(), SupervisorOp::Stop).unwrap()
         else {
             panic!("expected a Stop effect");
         };
-        assert!(journal_ok);
+        let journal_failed = matches!(reply, SupervisorOperationState::Failed { .. });
+        assert!(!journal_failed);
         // Mirror what handle_lane_bytes does with the effect: this is
         // the FIRST stop, accepted while already Terminal.
         authority.stop_requested = Some(StopRequested {
             primary_conn: 0, // ConnId is a bare u64; no real connection needed for this test
-            terminal_severity: matches!(terminal, Lifecycle::Terminal { .. }) || !journal_ok,
+            terminal_severity: matches!(terminal, Lifecycle::Terminal { .. }) || journal_failed,
         });
         assert!(authority.stop_requested.as_ref().unwrap().terminal_severity);
 
@@ -2871,13 +2928,14 @@ mod tests {
         // stop's OWN severity computes `false` on its own; the stored
         // flag must still not clear.
         let not_terminal = Lifecycle::EndedNoRespawn;
-        let CommandEffect::Stop { journal_ok: second_ok, .. } =
+        let CommandEffect::Stop { reply: second_reply } =
             authority.handle_command(&not_terminal, "stop-2".into(), SupervisorOp::Stop).unwrap()
         else {
             panic!("expected a Stop effect");
         };
-        assert!(second_ok);
-        let terminal_now = matches!(not_terminal, Lifecycle::Terminal { .. }) || !second_ok;
+        let second_journal_failed = matches!(second_reply, SupervisorOperationState::Failed { .. });
+        assert!(!second_journal_failed);
+        let terminal_now = matches!(not_terminal, Lifecycle::Terminal { .. }) || second_journal_failed;
         assert!(!terminal_now, "test setup: the second stop alone must look clean, or this proves nothing");
         authority.stop_requested.as_mut().unwrap().terminal_severity |= terminal_now;
         assert!(
