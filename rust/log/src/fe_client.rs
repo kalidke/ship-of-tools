@@ -649,11 +649,18 @@ impl FeDownBaseline {
 
 /// Bounds how long the "ending session" window waits for `record_closed`
 /// before switching to "outcome unknown" (ADR 0041: "on the FE QUIT
-/// cutoff"). Pinned to the supervisor lane's own reply-read budget —
-/// Lifecycle "Every op has one budget: connect 2 s, request write 2 s,
-/// reply read 5 s" — since `end_run`'s own reply IS a lane reply and the
-/// ADR names no separate cutoff value for this specific wait.
-pub const QUIT_CUTOFF: Duration = Duration::from_secs(5);
+/// cutoff") — the ADR names no exact value for this specific wait. NOT
+/// the ordinary lane-operation reply budget (Lifecycle "reply read 5 s"):
+/// that budget covers `status`/`query`, whose replies are immediate,
+/// while `end_run`'s OWN reply is deliberately DEFERRED until real,
+/// slow OS work completes underneath it — killing the process, closing
+/// the ConPTY (with the pre-24H2 blocking-close case step 4 pins), and
+/// sealing the voyage. `tests/supervisor_win.rs`'s own `command()` helper
+/// budgets 30 s for exactly this reply for exactly this reason; this
+/// cutoff matches it rather than inventing an independent, tighter
+/// number that would report "outcome unknown" for a request still
+/// legitimately in flight.
+pub const QUIT_CUTOFF: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuitState {

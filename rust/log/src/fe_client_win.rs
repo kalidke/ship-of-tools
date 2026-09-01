@@ -1032,8 +1032,16 @@ fn run_steady_state(
                     };
                     if let Ok(bytes) = wire::encode_supervisor_request(&cmd) {
                         if write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET).is_ok() {
+                            // `end_run`'s own reply is deliberately DEFERRED
+                            // to record_closed (real OS work underneath
+                            // it), not the ordinary STATUS_BUDGET a
+                            // stateless `status` answers within -- bounded
+                            // by the SAME cutoff `QuitDispatcher::tick`
+                            // uses, so a blocking wait here and the
+                            // dispatcher's own elapsed-time check agree on
+                            // one bound rather than stacking two.
                             if let Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(state))) =
-                                sup_reader.next_frame(supervisor_conn, Instant::now() + STATUS_BUDGET)
+                                sup_reader.next_frame(supervisor_conn, Instant::now() + fe_client::QUIT_CUTOFF)
                             {
                                 if matches!(state, SupervisorOperationState::RecordClosed) {
                                     quit.on_record_closed();
