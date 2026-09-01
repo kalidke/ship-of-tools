@@ -1240,6 +1240,17 @@ pub fn run(
             });
         }
     };
+    // N1 (Codex review round 3): the supervisor's own anti-flap counter
+    // must judge stability on the PRODUCER's lifetime, never on how long
+    // this capsule process's own teardown (job reap, ConPTY drain,
+    // aggregate deadline, final wait) happens to take afterward -- those
+    // are all supervisor-invisible-until-exit timers that can alone
+    // exceed the stability interval regardless of how long the producer
+    // itself actually ran. Captured HERE, the instant a real spawn
+    // succeeds (not before the attempt, which would count spawn latency
+    // itself as producer uptime) -- `Instant` is `Copy`, so this survives
+    // unmoved all the way to the `producer_dead` frame far below.
+    let spawned_at = Instant::now();
 
     // Destructure rather than keep `spawn` around: partial moves out of a
     // Drop-less struct (conpty.rs pins `ConptySpawn` as deliberately
@@ -2276,7 +2287,16 @@ pub fn run(
 
     // The mgmt `shutdown` reason, if that is what drove this EndRun (ADR
     // 0041: "the reason string is recorded in producer_dead's detail").
-    let mut detail = json!({"exit_code": exit_code});
+    // `producer_uptime_ms` (N1, above) is an ADDITIVE, free-form
+    // diagnostic field -- like `reason` already is -- not a registered
+    // ADR 0039 feature: it changes no authority, so no segment needs to
+    // declare anything to carry it, and an older reader simply ignores
+    // an unknown plain JSON field, exactly as `detail` has always
+    // allowed.
+    let mut detail = json!({
+        "exit_code": exit_code,
+        "producer_uptime_ms": u64::try_from(spawned_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+    });
     if let Some(reason) = &shutdown_reason {
         detail["reason"] = json!(reason);
     }

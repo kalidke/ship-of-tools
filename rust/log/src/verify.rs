@@ -996,6 +996,82 @@ pub fn leg_carries_run_end_marker(seg_dir: &Path, voyage_id: &str, epoch: u64) -
     Ok(found.is_some())
 }
 
+/// The READ half of Codex review round 3, N1: "stability must be judged
+/// on the PRODUCER's lifetime, never on the capsule process's exit."
+/// Scans `seg_dir` for `epoch`'s own `producer_dead` lifecycle frame and
+/// returns its `detail.producer_uptime_ms`, an ADDITIVE free-form
+/// diagnostic field (like `detail.reason` already is — no registered
+/// feature required, no authority changes). Fail-safe direction is
+/// `Ok(None)` for every case that must NOT be trusted as a proven
+/// stable duration: no `producer_dead` frame found on this epoch at all
+/// (a still-open/unsealed leg, or a spawn-failed leg that never reached
+/// a real producer), the key absent from an otherwise well-formed
+/// frame, or the value present but not a plain non-negative integer.
+/// `None` here is the caller's own cue to count the leg UNSTABLE (N1's
+/// own ruling) — never to fall back to a wall-clock measurement a slow
+/// teardown could inflate arbitrarily, which is the exact bug this
+/// exists to close.
+///
+/// A STRUCTURALLY corrupt segment (mismatched filename/header identity,
+/// a malformed lifecycle envelope) still errs loud here, exactly as
+/// [`leg_carries_run_end_marker`] does — this accessor is lenient only
+/// about the specific diagnostic VALUE it is looking for, never about
+/// the store's own integrity; only an already-reconciled leg is ever
+/// handed to it.
+pub fn leg_producer_uptime_ms(seg_dir: &Path, voyage_id: &str, epoch: u64) -> Result<Option<u64>> {
+    for entry in std::fs::read_dir(seg_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name == ".tmp" {
+            continue;
+        }
+        let Some((idx, seg_epoch, state)) = SegmentIdentity::parse_file_name(name) else {
+            continue;
+        };
+        if seg_epoch != epoch || !matches!(state, SegmentState::Open | SegmentState::Sealed) {
+            continue;
+        }
+        let id = SegmentIdentity {
+            voyage_id: voyage_id.to_string(),
+            segment_index: idx,
+            epoch: seg_epoch,
+        };
+        let sealed = state == SegmentState::Sealed;
+        let reader = SegmentReader::read(&id.path(seg_dir, state), sealed)?;
+        if reader.header.segment_index != idx
+            || reader.header.epoch != seg_epoch
+            || reader.header.voyage_id != voyage_id
+        {
+            return Err(Error::State(format!(
+                "segment {name}: filename and header identity disagree"
+            )));
+        }
+        for env in &reader.frames {
+            if env.class != Class::Lifecycle {
+                continue;
+            }
+            let payload = env.payload.as_ref().ok_or_else(|| {
+                Error::State(format!("lifecycle {:?}: missing payload", env.seq))
+            })?;
+            let kind: LifecycleKind = payload
+                .get("kind")
+                .and_then(|k| serde_json::from_value::<LifecycleKind>(k.clone()).ok())
+                .ok_or_else(|| {
+                    Error::State(format!("lifecycle {:?}: invalid/missing kind", env.seq))
+                })?;
+            if kind != LifecycleKind::ProducerDead {
+                continue;
+            }
+            return Ok(payload
+                .get("detail")
+                .and_then(|d| d.get("producer_uptime_ms"))
+                .and_then(serde_json::Value::as_u64));
+        }
+    }
+    Ok(None)
+}
+
 /// Producer payloads without the f64 feature: every number must be an
 /// integer with |v| <= 2^53-1 (the §3 atoms), recursively.
 fn check_integer_numbers(v: &serde_json::Value) -> std::result::Result<(), String> {
