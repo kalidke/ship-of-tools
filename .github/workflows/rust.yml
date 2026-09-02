@@ -139,23 +139,29 @@ jobs:
   # matrix's blanket `cargo test --workspace`. This is the FULL adoption of
   # the ADR's pinned five-command table (conpty/capsule_win/pipe_win/
   # e2e_pipe/supervisor_win, ~75 min total incl. checkout+build), each at
-  # its own ADR-pinned per-step cap; the job-level timeout leaves headroom
-  # for checkout+build plus all five steps' worst case. `pipe_win`/
-  # `e2e_pipe` ALSO still run via the main `test` job's blanket
-  # `cargo test --workspace` on `windows-latest` — the duplication is
-  # deliberate, not yet worth a special-case exclusion.
+  # its own ADR-pinned per-step cap, PLUS step 6 U3's own `fe_client_win`
+  # addition below (~95 min total incl. checkout+build); the job-level
+  # timeout leaves headroom for checkout+build plus every step's worst
+  # case. `pipe_win`/`e2e_pipe` ALSO still run via the main `test` job's
+  # blanket `cargo test --workspace` on `windows-latest` — the duplication
+  # is deliberate, not yet worth a special-case exclusion.
   #
   # ADR 0041 step 6, unit U2: `supervisor_win` spawns the real
   # `sot-capsule` binary and drives it as a real client (the supervisor
   # lane, a real cross-process authority) — belongs here for the identical
   # "real named pipes, a real cross-process server" reason `pipe_win`/
   # `e2e_pipe` do, at the ADR's own pinned 15-minute cap.
+  #
+  # ADR 0041 step 6, unit U3: `fe_client_win` drives the FE attach-only
+  # client against a real supervisor + real capsule the identical way —
+  # belongs here for the same reason, budgeted separately (20 min) since
+  # its reconnect case spawns a SECOND real supervisor process.
   conpty-windows-2022:
-    name: conpty + capsule owned-ConPTY + pipe/challenge/supervisor tests (windows-2022)
+    name: conpty + capsule owned-ConPTY + pipe/challenge/supervisor/fe-client tests (windows-2022)
     runs-on: windows-2022
     # See the per-step caps below for what each command budgets; this is
-    # checkout+build (~15 min per the ADR) plus all five steps' worst case.
-    timeout-minutes: 75
+    # checkout+build (~15 min per the ADR) plus all six steps' worst case.
+    timeout-minutes: 95
     defaults:
       run:
         working-directory: rust
@@ -203,6 +209,18 @@ jobs:
       - name: Test supervisor_win (the supervisor authority, real process)
         timeout-minutes: 15
         run: cargo test -p sot-log --test supervisor_win -- --nocapture
+      # --test fe_client_win: ADR 0041 step 6 U3, the FE attach-only
+      # client -- attach as a watcher and receive the checkpoint;
+      # take-on-first-input's resize-before-flush ordering (proven via
+      # the sealed voyage record); end_run from the quit dispatcher
+      # reaching record_closed; and reconnect after the capsule is
+      # killed and a fresh supervisor takes over restoring the screen
+      # from the new checkpoint -- the last of which spawns a SECOND
+      # real supervisor process and rides the client's own real
+      # 250ms-to-4s backoff, hence the generous budget.
+      - name: Test fe_client_win (FE attach-only client, real process)
+        timeout-minutes: 20
+        run: cargo test -p sot-log --test fe_client_win -- --nocapture
 
   p2-e2e:
     name: P2 e2e (real helper, offline)

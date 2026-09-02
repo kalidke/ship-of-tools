@@ -3300,6 +3300,26 @@ struct State {
     /// from the ratatui `terminal` so the draw closure's `self.terminal`
     /// borrow and this terminal's `screen()` borrow are disjoint.
     local_term: Option<crate::term::LocalTerminal>,
+    /// ADR 0041 step 6 U3: the attach-only alternative to `local_term`,
+    /// live only when `settings.attach_only` is on (Windows only — see
+    /// `sot_log::fe_client_win`). Mutually exclusive with `local_term`:
+    /// the Terminal drawer's lazy-spawn site picks exactly one backend
+    /// at creation time and never both. `None` on every non-Windows
+    /// build target (the field itself still exists there so the rest of
+    /// this struct's layout doesn't fork by platform) since attach-only
+    /// has nothing to attach to off Windows.
+    #[cfg(windows)]
+    attach_term: Option<sot_log::fe_client_win::FeAttachClient>,
+    /// ADR 0041 step 6 U3 ruling (f): `fe-inbox.jsonl`'s "last inbox
+    /// evidence" read at FE PROCESS START (`State::new`), BEFORE the
+    /// fe-command watcher thread or anything else appends to that file
+    /// (Codex review round, finding 10: reading this lazily at first
+    /// drawer-open time let intervening traffic corrupt the baseline).
+    /// Cloned into every `FeAttachClient::attach` call this process ever
+    /// makes; `None` when no evidence exists yet (the marker's own
+    /// contract: "No baseline, no marker").
+    #[cfg(windows)]
+    fe_down_baseline_evidence: Option<String>,
     /// Last `(cols, rows)` the local terminal's PTY was sized to. `None`
     /// until the drawer rect is first observed; drives resize-on-change
     /// (mirrors `pty_size` for the LLM pane).
@@ -3849,6 +3869,12 @@ fn forward_clipboard_paste_to_local_term(state: &mut State) {
     if let Some(t) = state.local_term.as_mut() {
         t.send_input(&bytes);
         state.term_scroll = 0;
+    } else {
+        #[cfg(windows)]
+        if let Some(t) = state.attach_term.as_mut() {
+            t.send_input(&bytes);
+            state.term_scroll = 0;
+        }
     }
 }
 
@@ -3902,6 +3928,20 @@ impl State {
         // "settings loaded" twice and could disagree if the file changed
         // mid-startup.
         let settings = Settings::load_layered();
+        // ADR 0041 step 6 U3 ruling (f): "No baseline, no marker" -- read
+        // BEFORE anything else in this process (this watcher, the fe-command
+        // watcher spawned later in `resumed`, an incoming relay message) can
+        // append to fe-inbox.jsonl (Codex review round, finding 10: an
+        // earlier version read this lazily at first Terminal-drawer open,
+        // so an inbound message arriving between process start and the
+        // user opening the drawer became this run's OWN baseline instead
+        // of prior evidence). Cheap and harmless off-Windows / off-flag —
+        // one file read, never referenced again if attach-only never
+        // constructs a client.
+        #[cfg(windows)]
+        let fe_down_baseline_evidence = fe_inbox_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| sot_log::fe_client::last_evidence_ts(&s));
         // Cross-platform window icon, decoded at runtime from the logo PNG that is
         // embedded into the binary at compile time — no Windows .rc/winres
         // resource compiler, so the build needs no extra tooling and is identical
@@ -4580,6 +4620,10 @@ impl State {
                 DrawerContent::Closed
             },
             local_term: None,
+            #[cfg(windows)]
+            attach_term: None,
+            #[cfg(windows)]
+            fe_down_baseline_evidence,
             term_size: None,
             term_scroll: 0,
             repo_dir,
@@ -12380,6 +12424,120 @@ impl State {
         !self.flash_starts.is_empty()
     }
 
+    /// ADR 0041 step 6 U3: constructs the attach-only backend the first
+    /// time the Terminal drawer opens with `drawer.attach_only` on
+    /// (mirrors `LocalTerminal::spawn`'s own lazy-spawn site). Gated by
+    /// the caller on `self.drawer == DrawerContent::Terminal` — spawning
+    /// is a user-visible-drawer-only act; PUMPING the client once it
+    /// exists is not (see `pump_attach_term`'s own doc).
+    #[cfg(windows)]
+    fn spawn_attach_term(&mut self) {
+        let Some(state_dir) = crate::paths::sot_state_dir() else {
+            tracing::warn!("attach-only: no per-machine state dir resolved");
+            self.status = "attach-only terminal failed: no per-machine state dir".to_string();
+            self.drawer = DrawerContent::Closed;
+            return;
+        };
+        let controller_id = self_comm_handle();
+        let fe_down_to = self_comm_handle();
+        // Ruling (f), Codex review round finding 10: the SAME baseline
+        // captured once at FE process start (`State::new`) — never a
+        // fresh read here, which would let traffic since startup become
+        // this run's own false baseline.
+        let fe_down_last_evidence = self.fe_down_baseline_evidence.clone();
+        let waker = self.window.clone();
+        match sot_log::fe_client_win::FeAttachClient::attach(
+            state_dir,
+            80,
+            24,
+            controller_id,
+            fe_down_to,
+            fe_down_last_evidence,
+            Box::new(move || waker.request_redraw()),
+        ) {
+            Ok(c) => {
+                tracing::info!("fe attach-only client attaching");
+                self.attach_term = Some(c);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to start attach-only client");
+                self.status = format!("attach-only terminal failed: {e}");
+                self.drawer = DrawerContent::Closed;
+            }
+        }
+    }
+
+    /// ADR 0041 step 6 U3: drains checkpoint/output/notice/status/
+    /// terminal/fe_down events from an EXISTING attach client. Called by
+    /// the caller on every redraw whenever `self.attach_term.is_some()`
+    /// — deliberately NOT gated on `self.drawer` (Codex review round,
+    /// finding 2): the quit dispatcher's own `ShouldExit` outcome must
+    /// reach `self.should_exit` even while the drawer is closed, or a
+    /// window-close request issued with the Terminal drawer hidden would
+    /// never actually exit.
+    #[cfg(windows)]
+    fn pump_attach_term(&mut self) {
+        let Some(t) = self.attach_term.as_mut() else { return };
+        let changed = t.pump();
+        t.screen_mut().set_scrollback(self.term_scroll as usize);
+        self.term_scroll = t.screen().scrollback().min(u16::MAX as usize) as u16;
+        // Codex review round, finding 11: status text (queue overflow/
+        // expiry, geometry refusal, pen loss, input-delivery-unknown,
+        // ...) must reach the drawer independently of `is_dead()` — the
+        // first landing only copied `status_line()` once the client was
+        // already terminal, so every one of those still-live diagnostics
+        // was invisible. `notice`/`quit_message` are the more urgent
+        // overlays and still take priority when present.
+        if changed {
+            if let Some(notice) = t.notice() {
+                self.status = notice.to_string();
+            } else if let Some(msg) = t.quit_message() {
+                self.status = msg.to_string();
+            } else {
+                self.status = t.status_line().to_string();
+            }
+        }
+        for marker in t.drain_fe_down_markers() {
+            if let Err(e) = append_fe_down_marker(&marker) {
+                // Ruling (f): a marker that exists so a failure is not
+                // quiet cannot fail quietly itself.
+                self.status = format!("fe_down marker append failed: {e}");
+            }
+        }
+        if t.should_exit() {
+            self.should_exit = true;
+            self.window.request_redraw();
+        }
+    }
+
+    /// ADR 0041 step 6 U3 ruling (a): the ONE quit dispatcher every
+    /// user-requested exit routes through — the window-close request and
+    /// the Quit keybind both call this instead of `event_loop.exit()`
+    /// directly. Exit 75 (self-relaunch), a crash, and `--capture` are
+    /// excluded by construction: none of their call sites reach this
+    /// method (see `window_event`'s relaunch-flag branch and the
+    /// `capture_now` path in `redraw`, both untouched by this unit).
+    ///
+    /// When attach-only is not live for this drawer (the flag is off,
+    /// the drawer was never opened, or this is not Windows) there is no
+    /// supervisor lane to notify, so this degrades to exactly today's
+    /// behavior: `event_loop.exit()` immediately. When it IS live, this
+    /// sends `end_run` and holds the window open in the "ending session"
+    /// state until `record_closed` (or the cutoff) — `pump_attach_term`
+    /// and `about_to_wait`'s `should_exit` check carry the rest.
+    fn request_quit(&mut self, event_loop: &ActiveEventLoop, reason: &str) {
+        #[cfg(windows)]
+        if let Some(t) = self.attach_term.as_mut() {
+            t.request_quit(reason);
+            self.status = "ending session\u{2026}".to_string();
+            self.window.request_redraw();
+            return;
+        }
+        let _ = reason;
+        self.should_exit = true;
+        event_loop.exit();
+    }
+
     fn redraw(&mut self) -> Result<()> {
         self.drain_events();
         // Prune finished status-change flashes; while any is still fading,
@@ -12717,7 +12875,33 @@ impl State {
         // output into its parser before we borrow its screen for the draw.
         // All mutation happens here, before the `self.terminal.draw`
         // borrow and the immutable `local_term` screen borrow below.
-        if self.drawer == DrawerContent::Terminal {
+        // ADR 0041 step 6 U3: `drawer.attach_only` picks the Terminal
+        // drawer's BACKEND, once, the first time the drawer opens this
+        // session. Off (the default) or off-Windows: `use_attach_only`
+        // is always `false` and every line below behaves exactly as it
+        // did before this unit — "When off, NOTHING the FE does today
+        // changes."
+        #[cfg(windows)]
+        let use_attach_only = self.settings.attach_only;
+        #[cfg(not(windows))]
+        let use_attach_only = false;
+
+        // ADR 0041 step 6 U3 ruling (a), Codex review round finding 2:
+        // spawn (gated on the drawer being open) is separate from pump
+        // (which must run on EVERY redraw regardless of drawer
+        // visibility, so a quit dispatched while the drawer is closed
+        // still reaches `should_exit` — see `pump_attach_term`'s own
+        // doc for why gating pump on visibility would starve it).
+        #[cfg(windows)]
+        if self.drawer == DrawerContent::Terminal && use_attach_only && self.attach_term.is_none() {
+            self.spawn_attach_term();
+        }
+        #[cfg(windows)]
+        if self.attach_term.is_some() {
+            self.pump_attach_term();
+        }
+
+        if self.drawer == DrawerContent::Terminal && !use_attach_only {
             if self.local_term.is_none() {
                 let shell = crate::term::resolve_shell(self.settings.terminal_shell.as_deref());
                 let waker = self.window.clone();
@@ -12792,8 +12976,12 @@ impl State {
         // rules let us hold both at once. The local terminal's screen is
         // borrowed the same way when the Terminal drawer is active.
         let pty_screen = self.pty_terminal.screen();
+        #[cfg(windows)]
+        let attach_screen = self.attach_term.as_ref().map(|t| t.screen());
+        #[cfg(not(windows))]
+        let attach_screen: Option<&vt100::Screen> = None;
         let term_screen = if drawer == DrawerContent::Terminal {
-            self.local_term.as_ref().map(|t| t.screen())
+            self.local_term.as_ref().map(|t| t.screen()).or(attach_screen)
         } else {
             None
         };
@@ -13761,6 +13949,10 @@ impl State {
                 .unwrap_or(true);
             if changed {
                 if let Some(t) = self.local_term.as_mut() {
+                    t.resize(tcols, trows);
+                }
+                #[cfg(windows)]
+                if let Some(t) = self.attach_term.as_mut() {
                     t.resize(tcols, trows);
                 }
                 self.term_size = Some((tcols, trows));
@@ -15770,7 +15962,15 @@ fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) ->
 /// Append one `agent.message` evt payload to `fe-inbox.jsonl` (creating the
 /// file/dir if needed). Re-serializes the payload verbatim as a single line.
 /// Non-fatal on IO error: log and continue — a missed relay must not take
-/// down the frontend.
+/// down the frontend. UNCHANGED from before ADR 0041 step 6 U3 (Codex
+/// review round, finding 12: an earlier version of this file routed this
+/// through a shared `Result`-returning helper, which collapsed these
+/// per-stage diagnostics into one generic "append failed" message for
+/// EVERY caller, including this one — a behavior change outside the
+/// attach-only feature's own flag). [`append_fe_down_marker`] below is a
+/// SEPARATE, `Result`-returning function used ONLY by the `fe_down`
+/// marker, which needs to surface a visible drawer error on failure; it
+/// does not wrap or share code with this one.
 fn append_agent_message(payload: &serde_json::Value) {
     let Some(path) = fe_inbox_path() else {
         tracing::warn!("agent.message: no state dir; dropping");
@@ -15803,6 +16003,32 @@ fn append_agent_message(payload: &serde_json::Value) {
         }
         Err(e) => tracing::warn!(error = %e, ?path, "agent.message: open inbox failed"),
     }
+}
+
+/// Append one `fe_down` marker to `fe-inbox.jsonl` (creating the file/dir
+/// if needed), re-serializing it verbatim as a single line. Returns the
+/// `io::Error` on any failure (no state dir, dir creation, serialize,
+/// open, or write) rather than only logging it — ADR 0041 step 6 U3's
+/// `fe_down` marker needs this to surface a VISIBLE drawer error ("a
+/// marker that exists so a failure is not quiet cannot fail quietly
+/// itself"). Deliberately NOT shared with [`append_agent_message`] above
+/// (Codex review round, finding 12) — that function's own diagnostics
+/// must stay exactly what they were before this feature existed.
+/// Windows-only: `pump_attach_term`, its only caller, is itself
+/// `#[cfg(windows)]`.
+#[cfg(windows)]
+fn append_fe_down_marker(payload: &serde_json::Value) -> std::io::Result<()> {
+    let Some(path) = fe_inbox_path() else {
+        return Err(std::io::Error::other("no state dir resolved"));
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut line = serde_json::to_string(payload)?;
+    line.push('\n');
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    f.write_all(line.as_bytes())
 }
 
 /// A control command raised through the FE command-file channel (ADR 0019).
@@ -16113,7 +16339,7 @@ impl ApplicationHandler for App {
         // Cheap no-op when the queue is empty.
         state.drain_fe_commands();
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => state.request_quit(event_loop, "window close requested"),
             WindowEvent::Resized(size) => {
                 state.resize(size);
                 state.persist_resume_state();
@@ -16252,17 +16478,29 @@ impl ApplicationHandler for App {
                         // walk our vt100 scrollback ring (set_scrollback is
                         // applied in redraw). Sign: positive rows_above = up =
                         // older = larger offset, matching the REPL pane.
+                        #[cfg(windows)]
+                        let attach_mouse_on = state.attach_term.as_ref().map(|t| t.mouse_tracking_on());
+                        #[cfg(not(windows))]
+                        let attach_mouse_on: Option<bool> = None;
                         let mouse_on = state
                             .local_term
                             .as_ref()
                             .map(|t| t.mouse_tracking_on())
+                            .or(attach_mouse_on)
                             .unwrap_or(false);
                         if mouse_on {
+                            let button = if rows_above > 0 { 64 } else { 65 };
+                            let n = rows_above.unsigned_abs().min(8);
+                            let seq = format!("\x1b[<{button};1;1M");
                             if let Some(t) = state.local_term.as_mut() {
-                                let button = if rows_above > 0 { 64 } else { 65 };
-                                let n = rows_above.unsigned_abs().min(8);
                                 for _ in 0..n {
-                                    t.send_input(format!("\x1b[<{button};1;1M").as_bytes());
+                                    t.send_input(seq.as_bytes());
+                                }
+                            }
+                            #[cfg(windows)]
+                            if let Some(t) = state.attach_term.as_mut() {
+                                for _ in 0..n {
+                                    t.send_input(seq.as_bytes());
                                 }
                             }
                         } else {
@@ -17109,8 +17347,7 @@ impl ApplicationHandler for App {
                                 shift,
                             )
                         {
-                            state.should_exit = true;
-                            event_loop.exit();
+                            state.request_quit(event_loop, "Ctrl+Q quit action");
                             return;
                         }
                         // Ctrl+C: copy the cursored row's file path to the
@@ -17643,10 +17880,16 @@ impl ApplicationHandler for App {
                             // plain key. One-third-pane step like the REPL pane.
                             let h = state.pane_rects.repl.height as i32;
                             let page_step = (h / 3).max(1);
+                            #[cfg(windows)]
+                            let attach_alt_screen =
+                                state.attach_term.as_ref().map(|t| t.screen().alternate_screen());
+                            #[cfg(not(windows))]
+                            let attach_alt_screen: Option<bool> = None;
                             let alt_screen = state
                                 .local_term
                                 .as_ref()
                                 .map(|t| t.screen().alternate_screen())
+                                .or(attach_alt_screen)
                                 .unwrap_or(false);
                             if !shift && !alt_screen {
                                 match &event.logical_key {
@@ -17667,6 +17910,10 @@ impl ApplicationHandler for App {
                             }
                             if let Some(bytes) = key_to_pty_bytes(&event.logical_key, ctrl, shift) {
                                 if let Some(t) = state.local_term.as_mut() {
+                                    t.send_input(&bytes);
+                                }
+                                #[cfg(windows)]
+                                if let Some(t) = state.attach_term.as_mut() {
                                     t.send_input(&bytes);
                                 }
                                 // Typing snaps back to the live tail so the
@@ -18654,6 +18901,18 @@ impl ApplicationHandler for App {
             return;
         };
         if state.capture_path.is_some() {
+            return;
+        }
+        // ADR 0041 step 6 U3 ruling (a): the quit dispatcher's own
+        // `Ended` outcome (from `pump_attach_term`, run during `redraw`,
+        // which has no `event_loop` of its own) reaches an actual exit
+        // HERE — the one place every idle cycle already passes through
+        // with both `state` and `event_loop` in hand. Every OTHER
+        // `should_exit` setter (the Quit keybind, the capture harness)
+        // already calls `event_loop.exit()` at its own call site; this
+        // check is additive for the one setter that cannot.
+        if state.should_exit {
+            event_loop.exit();
             return;
         }
         // Notify toast expiry: once the sticky window elapses, restore the

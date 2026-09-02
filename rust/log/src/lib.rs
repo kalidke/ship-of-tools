@@ -70,6 +70,15 @@ pub mod fence;
 // exchange (encode request, decode reply) -- the one thing
 // challenge::challenge delegates per-lane. Portable, like `deadline`.
 pub mod exchange;
+// ADR 0041 step 6, unit U3: the FE attach-only client's PURE state
+// machines (the six FE rulings from "Step 6 as specified") -- portable,
+// like `pointer`/`exchange`/`rollout`: no OS call, so it is genuinely
+// tested on every CI platform. The Windows-only runtime that wires these
+// to a real `PipeClient` lives in `fe_client_win`, gated by its own
+// `#![cfg(windows)]`.
+pub mod fe_client;
+#[cfg(windows)]
+pub mod fe_client_win;
 // ADR 0041 step 6, unit U2: the supervisor's own durable operation
 // journal (`operation_id`/`.active`/`.terminal`, recovery-first
 // reconciliation) — portable, like `pointer`/`rollout`, since it reuses
