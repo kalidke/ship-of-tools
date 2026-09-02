@@ -448,11 +448,28 @@ fn end_run_from_the_quit_dispatcher_gets_record_closed() {
     assert!(exited, "quit dispatcher never reached should_exit (record_closed) within 60s");
 
     // Independent corroboration, over a SEPARATE connection: the
-    // supervisor itself is now serving ENDED-NO-RESPAWN, exactly what a
+    // supervisor ends up serving ENDED-NO-RESPAWN, exactly what a
     // `record_closed` end_run leaves behind (ADR 0041 Lifecycle: "An
-    // ended authority stays serviceable").
-    let (_v, _l, phase) = status(&conn);
-    assert_eq!(phase, SupervisorPhase::EndedNoRespawn);
+    // ended authority stays serviceable"). POLLED, not asserted at once:
+    // the lane replies `record_closed` the moment the record is closed
+    // (B3, the deferred reply) while the authority is still ENDING —
+    // verification (`record_verified`) and the phase transition land
+    // after it. First real-Windows run caught exactly that: Ending.
+    let corroborated = {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let (_v, _l, phase) = status(&conn);
+            if phase == SupervisorPhase::EndedNoRespawn {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                eprintln!("[quit test] last phase before giving up: {phase:?}");
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    assert!(corroborated, "the authority never reached EndedNoRespawn after record_closed");
 
     let _ = command(&conn, "test-c-stop", SupervisorOp::Stop);
     let child = guard.0.take().unwrap();
