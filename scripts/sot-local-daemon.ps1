@@ -1,44 +1,43 @@
-# sot-local-daemon.ps1 -- ensure/stop the per-user LOCAL sotd (ADR 0042 L1c).
+# sot-local-daemon.ps1 -- ensure/stop the per-user LOCAL sotd (ADR 0042 L1c,
+# L2b: the pipe name is queried from the daemon itself, and every launch
+# mode calls this, not just -Local).
 #
-# "Local is just another host": -Local ensures a per-user sotd is running on
-# a FIXED named pipe, so the frontend always has a local daemon to talk to.
-# Idempotent: if the pipe already answers, this is a no-op. Detached: the
-# daemon outlives this script, the launcher, and every frontend relaunch --
-# it is a persistent per-host daemon exactly like the remote one, not a
-# per-session spawn (contrast the old GUID-pipe -Local path this replaces).
-# Only -Local calls this today (launch-sot.ps1) -- nothing in the default
-# (remote-tunnel) flow consumes the local daemon until L2 (frontend holds
-# one connection per host, local included), which is also when the ensure
-# moves to every launch mode.
+# "Local is just another host": every launch ensures a per-user sotd is
+# running on a fixed named pipe, so the frontend always has a local daemon
+# to talk to. Idempotent: if the pipe already answers, this is a no-op.
+# Detached: the daemon outlives this script, the launcher, and every
+# frontend relaunch -- it is a persistent per-host daemon exactly like the
+# remote one, not a per-session spawn (contrast the old GUID-pipe -Local
+# path this replaces).
 #
 # Binary+capsule resolution: the COMPLETE DEV pair (sotd.exe AND
 # sot-capsule.exe both present in <DevBinDir>) wins over the COMPLETE
 # install pair (<prefix>\bin\); refuse only when NEITHER pair is complete.
 # This MATCHES the frontend's own dev-build-first resolution in
-# launch-sot.ps1, deliberately: -Local runs the dev frontend from this same
-# checkout, so the daemon and its capsule runtime must come from that SAME
-# origin, or a dev frontend ends up talking to an older installed
-# sot-capsule.exe -- exactly the skew ADR 0041's "same release" rule warns
-# about. "Complete" matters: a partial dev build (sotd.exe without a
-# matching sot-capsule.exe, e.g. built before that binary existed) is not
-# preferred over a complete install pair -- `sot-capsule.exe` MUST be a
-# sibling of whichever sotd.exe is chosen (rust/backend/src/
-# capsule_workspace.rs resolves it via `current_exe().parent()`), so a
-# daemon started from a directory missing that file can create workspaces
-# that immediately fail to spawn. Refuse to start rather than run degraded.
+# launch-sot.ps1, deliberately: a dev checkout's frontend and this daemon
+# (and its capsule runtime) must come from the SAME origin, or a dev
+# frontend ends up talking to an older installed sot-capsule.exe -- exactly
+# the skew ADR 0041's "same release" rule warns about. "Complete" matters: a
+# partial dev build (sotd.exe without a matching sot-capsule.exe, e.g. built
+# before that binary existed) is not preferred over a complete install pair
+# -- `sot-capsule.exe` MUST be a sibling of whichever sotd.exe is chosen
+# (rust/backend/src/capsule_workspace.rs resolves it via
+# `current_exe().parent()`), so a daemon started from a directory missing
+# that file can create workspaces that immediately fail to spawn. Refuse to
+# start rather than run degraded.
 #
-# Pipe naming: sotd's own `--label` auto-derivation
-# (rust/backend/src/paths.rs::session_socket_path) is a Unix runtime-dir
-# scheme with no Windows branch -- on Windows it degrades to a POSIX-shaped
-# path, not a `\\.\pipe\...` name. The one real Windows pipe-name precedent
-# in this repo is the hand-authored `hosts.toml` example
-# `[host.local] socket = "\\.\pipe\sot-local"` (rust/frontend/src/hosts.rs).
-# This script follows that exact shape, made per-user (`sot-<user>-local`)
-# since the daemon's own private-socket security model is per-user
-# ownership, not a shared name. `--label local` is passed too (harmless --
-# `--socket` already wins over label-derivation) so the daemon's Sessions-
-# mode metadata identifies it as "local", mirroring the backend host's own
-# `--label sot`.
+# Pipe naming (ADR 0042 L2b design C): resolved FIRST (the section above),
+# THEN queried from the daemon itself -- `& $daemonExe session-socket-path
+# local` -- which prints exactly what `rust/protocol`'s
+# `session_socket::session_socket_path("local")` derives (the SAME function
+# `sotd --label local` uses for its own `--socket` default), giving
+# `\\.\pipe\sot-<user>-local`. This script no longer constructs that name
+# itself: a hand-authored copy of a naming rule that also lives in the
+# daemon is exactly the kind of two-sources-of-truth bug ADR 0042 L2b design
+# A closes. Used for the probe, the spawn argv, AND the `-Stop` match, so
+# all three can never diverge. `-PipeName` (tests) skips the query entirely
+# -- a `-Stop`-only test doesn't need a real binary on disk to know what
+# it's stopping.
 #
 # --project-root: the user's home (`$env:USERPROFILE`), the same convention
 # the backend host uses (deploy/sotd.service, scripts/install.sh: `sotd
@@ -71,6 +70,15 @@
 # line -- not a bare substring match, which could also hit an unrelated
 # sotd whose pipe name happens to contain this one.
 #
+# ADR 0042 L2b consequence, not a regression covered elsewhere: because the
+# pipe name is now DERIVED (queried from a resolved binary) rather than
+# constructed from `$env:USERNAME` alone, `-Stop` with no `-PipeName`
+# override now ALSO needs a resolvable dev-or-install pair to know what to
+# stop -- previously it could compute the pipe name with no binary present
+# at all. In practice this is a non-issue: a running daemon pins its own
+# `sotd.exe` as a mapped image while it runs, so if the daemon is up, ITS
+# binary is still resolvable at its original location.
+#
 # Spawn hygiene: stdout/stderr are redirected to
 # <prefix>\logs\sotd-local.{stdout,stderr}.log -- Start-Process TRUNCATES
 # these on every (re)start, same as the frontend's own logs (see
@@ -87,9 +95,10 @@
 # Standalone + parameterized (mirrors scripts/sot-apply.ps1's own -Prefix
 # test-override convention) so this is independently testable without the
 # rest of launch-sot.ps1/shutdown-sot.ps1 -- see
-# scripts/tests/test-local-daemon.ps1. Called from launch-sot.ps1's -Local
-# branch (ensure-started) and shutdown-sot.ps1 (last, after the FE and
-# tunnel are down, -Stop).
+# scripts/tests/test-local-daemon.ps1. Called from EVERY launch-sot.ps1
+# mode now (ADR 0042 L2b design D; -Local ensures + errors hard on failure,
+# the default mode ensures + fails open) and shutdown-sot.ps1 (last, after
+# the FE and tunnel are down, -Stop).
 #
 # ASCII ONLY in string literals (see the same note in launch-sot.ps1): this
 # file has no BOM, so Windows PowerShell 5.1 decodes it as cp1252 and a
@@ -98,10 +107,11 @@
 #
 # Exit codes: 0 = the daemon is confirmed answering on the pipe (already was,
 # or was just started) -- or, for -Stop, confirmed stopped/was not running.
-# 1 = not ready (no complete binary pair, it did not come up, or it did not
-# go down within the bound) -- callers treat this as their own error path
-# (launch-sot.ps1's -Local shows its existing "not found" dialog class;
-# shutdown-sot.ps1 logs a WARNING).
+# 1 = not ready (no complete binary pair to resolve or query, it did not
+# come up, or it did not go down within the bound) -- callers treat this as
+# their own error path (launch-sot.ps1's -Local shows its existing "not
+# found" dialog class; the default mode logs and continues; shutdown-sot.ps1
+# logs a WARNING).
 
 [CmdletBinding()]
 param(
@@ -115,7 +125,8 @@ param(
     # --project-root override (tests). Default: $env:USERPROFILE.
     [string]$ProjectRoot,
     # Named-pipe basename override (tests, so a test run never collides with
-    # a real per-user daemon). Default: sot-$env:USERNAME-local.
+    # a real per-user daemon, and so a -Stop-only test needs no real binary
+    # on disk). Default: queried from the resolved sotd.exe (see header).
     [string]$PipeName
 )
 
@@ -127,8 +138,6 @@ if (-not $DevBinDir) {
     $DevBinDir = Join-Path $repo 'rust\target\release'
 }
 if (-not $ProjectRoot) { $ProjectRoot = $env:USERPROFILE }
-if (-not $PipeName) { $PipeName = "sot-$env:USERNAME-local" }
-$PipePath = '\\.\pipe\' + $PipeName
 
 function Write-LocalDaemonLog {
     param([string]$Message)
@@ -155,6 +164,40 @@ function Test-SotPipeOpen {
     } finally {
         $client.Dispose()
     }
+}
+
+function Test-CompletePair {
+    param([string]$Dir)
+    (Test-Path (Join-Path $Dir 'sotd.exe')) -and (Test-Path (Join-Path $Dir 'sot-capsule.exe'))
+}
+
+# ---- resolve the binary FIRST (unchanged preference order) -----------------
+$installBinDir = Join-Path $Prefix 'bin'
+$daemonExe = $null
+if (Test-CompletePair $DevBinDir) {
+    $daemonExe = Join-Path $DevBinDir 'sotd.exe'
+} elseif (Test-CompletePair $installBinDir) {
+    $daemonExe = Join-Path $installBinDir 'sotd.exe'
+}
+
+# ---- pipe path: queried from the daemon, not constructed here (design C) ---
+if ($PipeName) {
+    $PipePath = '\\.\pipe\' + $PipeName
+} elseif ($daemonExe) {
+    $queried = (& $daemonExe session-socket-path local | Select-Object -First 1)
+    $PipePath = if ($queried) { $queried.ToString().Trim() } else { $null }
+    if ($PipePath -and $PipePath.StartsWith('\\.\pipe\')) {
+        $PipeName = $PipePath.Substring(9)
+    } else {
+        $PipePath = $null
+    }
+} else {
+    $PipePath = $null
+}
+
+if (-not $PipePath -or -not $PipeName) {
+    Write-LocalDaemonLog "REFUSED: no complete sotd.exe+sot-capsule.exe pair found to derive the pipe name (checked dev $DevBinDir and install $installBinDir)"
+    exit 1
 }
 
 function Get-LocalDaemonProcess {
@@ -200,18 +243,6 @@ if (Test-SotPipeOpen $PipeName) {
     exit 0
 }
 
-function Test-CompletePair {
-    param([string]$Dir)
-    (Test-Path (Join-Path $Dir 'sotd.exe')) -and (Test-Path (Join-Path $Dir 'sot-capsule.exe'))
-}
-
-$installBinDir = Join-Path $Prefix 'bin'
-$daemonExe = $null
-if (Test-CompletePair $DevBinDir) {
-    $daemonExe = Join-Path $DevBinDir 'sotd.exe'
-} elseif (Test-CompletePair $installBinDir) {
-    $daemonExe = Join-Path $installBinDir 'sotd.exe'
-}
 if (-not $daemonExe) {
     Write-LocalDaemonLog "REFUSED: no complete sotd.exe+sot-capsule.exe pair found (checked dev $DevBinDir and install $installBinDir)"
     exit 1
