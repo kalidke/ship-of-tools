@@ -2110,17 +2110,11 @@ fn resolve_default_host(
 /// status in the same way, as a bracketed tag, so it draws the way every
 /// other badge here actually does. Connected, non-current hosts stay
 /// quiet — nothing to shout about — so a healthy multi-host list doesn't
-/// drown in tags; `unreachable` and `current` always show.
+/// drown in tags; `unreachable` and `current` always show. `badges` itself
+/// is deleted (Codex round, PR #172): nothing ever read it, and computing
+/// it alongside the SAME status this label already carries was pure
+/// duplication — the label is the one source of truth now.
 fn host_tree_node(host: &HostKey, connected: bool, has_list: bool, is_active: bool) -> TreeNode {
-    let mut badges = vec![if connected {
-        "connected"
-    } else {
-        "unreachable"
-    }
-    .to_string()];
-    if is_active {
-        badges.push("current".to_string());
-    }
     let mut tags = Vec::new();
     if !connected {
         tags.push("[unreachable]");
@@ -2140,7 +2134,7 @@ fn host_tree_node(host: &HostKey, connected: bool, has_list: bool, is_active: bo
         label,
         kind: "session_host".to_string(),
         has_children: has_list,
-        badges,
+        badges: Vec::new(),
         payload,
     }
 }
@@ -2148,30 +2142,29 @@ fn host_tree_node(host: &HostKey, connected: bool, has_list: bool, is_active: bo
 /// One host's `host`-kind row for Mode::Hosts's flat list (first live
 /// shakedown fix) — pure, no `State` dependency, mirroring `host_tree_node`
 /// above: every LIVE connection gets a row (membership + `connected`/
-/// `current` all come from the caller's already-resolved connection set),
-/// `hosts_config` supplying only the `default` badge.
+/// `current`/`default` all come from the caller's already-resolved
+/// connection set). `current`/`default` are baked into the label as
+/// bracketed tags, the same way `host_tree_node` bakes its own status
+/// (Codex round, PR #172) — `badges` is deleted for the same reason: it's
+/// unread, and duplicated exactly what the label already says.
 fn hosts_mode_row(name: &str, connected: bool, is_active: bool, is_default: bool) -> TreeNode {
-    let mut badges = Vec::new();
-    if is_active {
-        badges.push("current".to_string());
-    }
-    if is_default {
-        badges.push("default".to_string());
-    }
-    badges.push(
-        if connected {
-            "connected"
-        } else {
-            "unreachable"
-        }
-        .to_string(),
-    );
     let status_word = if connected {
         "connected"
     } else {
         "unreachable"
     };
-    let label = format!("{name} · {status_word}");
+    let mut tags = Vec::new();
+    if is_default {
+        tags.push("[default]");
+    }
+    if is_active {
+        tags.push("[current]");
+    }
+    let label = if tags.is_empty() {
+        format!("{name} · {status_word}")
+    } else {
+        format!("{name} · {status_word} {}", tags.join(" "))
+    };
     let mut payload = serde_json::Map::new();
     payload.insert(
         "name".to_string(),
@@ -2182,7 +2175,7 @@ fn hosts_mode_row(name: &str, connected: bool, is_active: bool, is_default: bool
         label,
         kind: "host".to_string(),
         has_children: false,
-        badges,
+        badges: Vec::new(),
         payload,
     }
 }
@@ -25497,42 +25490,45 @@ mod tests {
 
         assert_eq!(children.len(), 2, "every configured host gets a node");
         assert_eq!(children[0].id, "sessions:host:alpha");
-        assert!(children[0].badges.iter().any(|b| b == "connected"));
+        // alpha is connected AND active -- quiet status, "[current]" marker.
+        assert_eq!(
+            children[0].label,
+            format!("{HOST_DIVIDER_GLYPH} alpha [current]")
+        );
         assert!(children[0].has_children);
 
         assert_eq!(children[1].id, "sessions:host:beta");
         assert!(
-            children[1].badges.iter().any(|b| b == "unreachable"),
-            "no list yet → unreachable badge, got {:?}",
-            children[1].badges
+            children[1].label.contains("[unreachable]"),
+            "no list yet → unreachable marker, got {:?}",
+            children[1].label
         );
         assert!(!children[1].has_children, "no list yet → no children");
     }
 
     #[test]
-    fn host_node_badge_flips_live_with_connected_status_same_row_id() {
+    fn host_node_label_flips_live_with_connected_status_same_row_id() {
         // ADR 0042 L2a codex review, item L: on Connected/Disconnected the
         // tree is rebuilt so a node doesn't stay `unreachable` after
         // connecting or `connected` after dropping. `host_tree_node` is
         // the pure per-row seam that rebuild calls on every trigger (a
         // workspace.list reply, or now a bare Connected/Disconnected too)
         // — this pins that re-deriving the SAME row id with a flipped
-        // `connected` flag flips the badge, and (crucially for
-        // `set_root`'s cursor/expansion preservation) the id itself never
-        // changes across the flip.
+        // `connected` flag flips the drawn status (Codex round, PR #172:
+        // badges are gone, the label is the one source of truth), and
+        // (crucially for `set_root`'s cursor/expansion preservation) the
+        // id itself never changes across the flip.
         let before = host_tree_node(&"alpha".to_string(), false, false, true);
         let after = host_tree_node(&"alpha".to_string(), true, true, true);
         assert_eq!(before.id, after.id, "same host → same row id, always");
-        assert!(before.badges.iter().any(|b| b == "unreachable"));
-        assert!(!before.badges.iter().any(|b| b == "connected"));
-        assert!(after.badges.iter().any(|b| b == "connected"));
-        assert!(!after.badges.iter().any(|b| b == "unreachable"));
+        assert!(before.label.contains("[unreachable]"));
+        assert!(after.label.contains("[current]"));
+        assert!(!after.label.contains("[unreachable]"));
 
         // And the reverse direction (a live Disconnected).
         let dropped = host_tree_node(&"alpha".to_string(), false, true, true);
         assert_eq!(dropped.id, after.id);
-        assert!(dropped.badges.iter().any(|b| b == "unreachable"));
-        assert!(!dropped.badges.iter().any(|b| b == "connected"));
+        assert!(dropped.label.contains("[unreachable]"));
     }
 
     #[test]
@@ -25565,30 +25561,28 @@ mod tests {
     }
 
     #[test]
-    fn hosts_mode_row_id_and_badges_come_only_from_the_caller() {
-        // Mode::Hosts's own per-row builder (first live shakedown fix):
-        // membership/connected/current/default are all caller-supplied —
+    fn hosts_mode_row_label_and_id_come_only_from_the_caller() {
+        // Mode::Hosts's own per-row builder (first live shakedown fix;
+        // Codex round, PR #172 dropped the endpoint text and `badges` --
+        // `[current]`/`[default]` are baked into the label instead, the
+        // one source of truth since nothing reads `badges`):
+        // membership/connected/current/default are all caller-supplied --
         // this row-builder itself never touches `hosts_config`, matching
         // `hosts_tree_children`'s contract that `local` (no `hosts.toml`
-        // entry) gets a row exactly like any configured host. No endpoint
-        // text (Codex round, PR #172: the row is name + status + markers).
+        // entry) gets a row exactly like any configured host.
         let row = hosts_mode_row("local", true, true, false);
         assert_eq!(row.id, "hosts:local");
         assert_eq!(row.kind, "host");
         assert!(!row.has_children);
-        assert_eq!(row.label, "local · connected");
-        assert!(row.badges.iter().any(|b| b == "current"));
-        assert!(row.badges.iter().any(|b| b == "connected"));
-        assert!(!row.badges.iter().any(|b| b == "default"));
+        assert_eq!(row.label, "local · connected [current]");
+        assert!(row.badges.is_empty());
 
         let unreachable_default = hosts_mode_row("beta", false, false, true);
-        assert_eq!(unreachable_default.label, "beta · unreachable");
-        assert!(unreachable_default.badges.iter().any(|b| b == "default"));
-        assert!(unreachable_default
-            .badges
-            .iter()
-            .any(|b| b == "unreachable"));
-        assert!(!unreachable_default.badges.iter().any(|b| b == "current"));
+        assert_eq!(unreachable_default.label, "beta · unreachable [default]");
+        assert!(unreachable_default.badges.is_empty());
+
+        let quiet = hosts_mode_row("gamma", true, false, false);
+        assert_eq!(quiet.label, "gamma · connected");
     }
 
     #[test]
