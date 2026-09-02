@@ -40,7 +40,11 @@ Type=simple
 # the '-' prefix tolerates even a missing/broken script — a bad update path
 # must never keep the daemon down.
 ExecStartPre=-@SOT_APPLY@
-ExecStart=@SOT_BIN@ --project-root @SOT_PROJECT_ROOT@ --label sot
+# Login shell (-l), so the daemon — and every kernel/REPL it spawns — inherits
+# the owner's ~/.bashrc exports (JULIA_DEPOT_PATH included) on every host,
+# same as an interactive shell. No path is carried in this unit or any config
+# (owner ruling 2026-09-02). exec replaces bash so sotd, not bash, is the PID.
+ExecStart=/bin/bash -lc 'exec "@SOT_BIN@" --project-root "@SOT_PROJECT_ROOT@" --label sot'
 Restart=always
 RestartSec=2
 
