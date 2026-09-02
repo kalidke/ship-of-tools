@@ -190,7 +190,7 @@ use crate::challenge::{self, ChallengeOutcome, ChallengedProcess};
 use crate::classify::{self, ProbeOutcome};
 use crate::fsutil;
 use crate::journal;
-use crate::pipe_win::{self, ConnId, PipeServer, TransportEvent};
+use crate::pipe_win::{self, ConnId, PipeServer, TransportEvent, PIPE_CONNECT_BOUND};
 use crate::pointer::{self, PointerState};
 use crate::probe::RealProbeOps;
 use crate::recovery::{self, LatestLegState};
@@ -253,13 +253,53 @@ const TERMINAL_EXIT_GRACE: Duration = Duration::from_secs(2);
 /// multi-attempt episode: this is asking "is anyone there RIGHT NOW",
 /// never "wait for it to come up".
 const LIVENESS_PROBE_BUDGET: Duration = Duration::from_secs(2);
+/// [`end_run_over_mgmt_lane`]'s own three per-attempt sub-bounds —
+/// named (Codex review, PR #171) so [`RECOVERY_WATCHDOG`]'s formula can
+/// cite the real constants a delivery attempt is bound by instead of
+/// re-deriving the same numbers as independent, driftable literals. The
+/// challenge and write bounds match every other "2s" per-op budget in
+/// this module (`LIVENESS_PROBE_BUDGET`, `PIPE_CONNECT_BOUND`); the ack
+/// read gets its own longer allowance because it waits on the CAPSULE's
+/// own reply, not a bare OS call.
+const END_RUN_CHALLENGE_BOUND: Duration = Duration::from_secs(2);
+const END_RUN_WRITE_BOUND: Duration = Duration::from_secs(2);
+const END_RUN_ACK_READ_BOUND: Duration = Duration::from_secs(5);
 /// Margin added to each worker state's own known worst-case bound before
 /// its operation watchdog fires (Codex review round 2, M2) — belt and
 /// braces against a hang inside a call that SHOULD already be bounded by
 /// its own internal deadline; not itself an ADR number.
 const WATCHDOG_BUFFER: Duration = Duration::from_secs(10);
+/// Bounds the WHOLE recovery worker (`reconcile_journal_on_startup`'s
+/// `EndRun` arm, via [`reissue_and_reconcile_end_run`]), not merely the
+/// wait-only reconcile — so its formula is the FULL sequential
+/// worst-case path a legitimate, no-retry-needed recovery can legally
+/// take (Codex review, PR #171: the previous formula omitted the
+/// delivery attempt entirely, so a genuinely slow-but-legal recovery
+/// could hit this watchdog before its own terminal journal record was
+/// durable), plus [`WATCHDOG_BUFFER`]:
+/// [`PIPE_CONNECT_BOUND`] (connect) + [`END_RUN_CHALLENGE_BOUND`]
+/// (challenge) + [`END_RUN_WRITE_BOUND`] (shutdown write) +
+/// [`END_RUN_ACK_READ_BOUND`] (ack read) — one
+/// [`end_run_over_mgmt_lane`] attempt — + [`SUPPORTED_HISTORY_BOUND`] +
+/// [`KILL_WAIT_BOUND`] (the confirmed-exit wait) + [`KILL_WAIT_BOUND`]
+/// again (the hard-stop fallback's own wait) — both inside
+/// [`finish_end_run_with_process`] — + [`WATCHDOG_BUFFER`] (also
+/// covers the marker check and `verify_voyage`'s own O(retained-history)
+/// walk, neither separately bounded). Does NOT multiply the delivery
+/// bound by a retry count: [`reissue_and_reconcile_end_run`]'s own
+/// retry loop is intentionally bounded from OUTSIDE, by this watchdog,
+/// exactly like the pre-existing `PendingWriter` retry it now shares a
+/// loop with — an operation still genuinely undetermined after this
+/// budget stays `.active` for a LATER pass, never silently abandoned.
 const RECOVERY_WATCHDOG: Duration = Duration::from_secs(
-    SUPPORTED_HISTORY_BOUND.as_secs() + KILL_WAIT_BOUND.as_secs() + WATCHDOG_BUFFER.as_secs(),
+    PIPE_CONNECT_BOUND.as_secs()
+        + END_RUN_CHALLENGE_BOUND.as_secs()
+        + END_RUN_WRITE_BOUND.as_secs()
+        + END_RUN_ACK_READ_BOUND.as_secs()
+        + SUPPORTED_HISTORY_BOUND.as_secs()
+        + KILL_WAIT_BOUND.as_secs()
+        + KILL_WAIT_BOUND.as_secs()
+        + WATCHDOG_BUFFER.as_secs(),
 );
 const INITIAL_PROBE_WATCHDOG: Duration = Duration::from_secs(PROBE_EPISODE.as_secs() + WATCHDOG_BUFFER.as_secs());
 const SPAWNING_WATCHDOG: Duration = Duration::from_secs(
@@ -730,7 +770,7 @@ fn end_run_over_mgmt_lane(voyage_id: &str, reason: &str) -> crate::Result<EndRun
         Err(e) => return Err(e.into()),
     };
     let mut exchange = crate::exchange::VoyageMgmtExchange::default();
-    match challenge::challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2)) {
+    match challenge::challenge(&conn, &mut exchange, Instant::now() + END_RUN_CHALLENGE_BOUND) {
         ChallengeOutcome::Foreign => Ok(EndRunOutcome::Foreign),
         ChallengeOutcome::Undetermined => Ok(EndRunOutcome::Pending),
         ChallengeOutcome::Proven(process) => {
@@ -742,7 +782,7 @@ fn end_run_over_mgmt_lane(voyage_id: &str, reason: &str) -> crate::Result<EndRun
             // for its own read); reused here rather than a second one,
             // on the SAME "request write 2s" per-op budget every other
             // op already uses.
-            let write_deadline = Instant::now() + Duration::from_secs(2);
+            let write_deadline = Instant::now() + END_RUN_WRITE_BOUND;
             let write_ok = crate::deadline::run_with_deadline(write_deadline, || conn.cancel(), || conn.write_all(&request))
                 .is_some_and(|r| r.is_ok());
             if !write_ok {
@@ -751,7 +791,7 @@ fn end_run_over_mgmt_lane(voyage_id: &str, reason: &str) -> crate::Result<EndRun
             // The ack itself is read for wire-protocol hygiene (drain
             // what the peer sends), but its outcome no longer branches
             // anything — see `Ended`'s own doc above.
-            let _ = read_one_frame(&conn, Instant::now() + Duration::from_secs(5));
+            let _ = read_one_frame(&conn, Instant::now() + END_RUN_ACK_READ_BOUND);
             Ok(EndRunOutcome::Ended(process))
         }
     }
@@ -1319,26 +1359,27 @@ fn spawn_owned_spawn_attempt(
     (rx, handle)
 }
 
-/// Carries the `end_run` to its terminal fact. Sends
+/// The WAIT-ONLY reconcile, reached from [`reissue_and_reconcile_end_run`]
+/// ONLY once `end_run_over_mgmt_lane` has proven the capsule `Absent` —
+/// nothing left to redeliver `Shutdown` to (delivery is that caller's
+/// own retry loop; this one never re-sends anything). Sends
 /// [`EndingProgress::RecordClosed`] the moment `mark_closed` succeeds
 /// (B3's deferred-reply signal — N8: on EVERY path that can reach it,
-/// including the no-process Absent/Foreign/Pending/error outcomes that
-/// an earlier version hardcoded `None` for, silently starving a
-/// `pending_reply` that would then wait forever), then
-/// [`EndingProgress::Final`] once the operation concludes.
+/// an earlier version hardcoded `None` for the no-process outcomes,
+/// silently starving a `pending_reply` that would then wait forever).
 /// Retries [`finish_end_run_without_process`] while it keeps returning
-/// `PendingWriter`, until it resolves to `Ended`/`PreBarrierFailed` or
-/// errors — shared by the LIVE EndRun worker ([`spawn_end_run`]) and
-/// RECOVERY's own reconciliation of a crashed EndRun whose writer was
-/// still live at startup ([`reconcile_journal_on_startup`]; N3, Codex
-/// review round 4 — an earlier version had recovery discard a recovered
-/// `PendingWriter` outright, so startup would adopt/respawn right over
-/// a writer whose own EndRun was still genuinely outstanding, leaving
-/// the operation `Accepted` forever). Bounded from OUTSIDE only — by
-/// whichever caller's own watchdog measures the WHOLE worker
-/// (`ENDING_WATCHDOG` for the live path, `RECOVERY_WATCHDOG` for
-/// recovery) — never internally, which would just be a second bound to
-/// keep synchronized with that one.
+/// `PendingWriter` (the writer's own fence is still held or ambiguous,
+/// per B3's "pipe absence is NOT writer absence"), until it resolves to
+/// `Ended`/`PreBarrierFailed` or errors — N3, Codex review round 4: an
+/// earlier version had recovery discard a recovered `PendingWriter`
+/// outright, so startup would adopt/respawn right over a writer whose
+/// own EndRun was still genuinely outstanding, leaving the operation
+/// `Accepted` forever. Bounded from OUTSIDE only — by whichever
+/// caller's own watchdog measures the WHOLE worker (`ENDING_WATCHDOG`
+/// for the live path, `RECOVERY_WATCHDOG` for recovery, both of which
+/// this loop shares with [`reissue_and_reconcile_end_run`]'s own
+/// delivery retries) — never internally, which would just be a second
+/// bound to keep synchronized with that one.
 fn retry_until_writer_resolved(
     state_dir: &Path,
     op_id: Option<&str>,
@@ -1354,7 +1395,7 @@ fn retry_until_writer_resolved(
     result
 }
 
-/// The ONE "tell the capsule, then resolve" sequence — call
+/// The ONE "deliver, then resolve" sequence — call
 /// [`end_run_over_mgmt_lane`] and dispatch on its outcome exactly the
 /// same way regardless of who is asking. Shared by the LIVE worker
 /// ([`spawn_end_run`], the FE's own `end_run` command) and RECOVERY's
@@ -1368,6 +1409,25 @@ fn retry_until_writer_resolved(
 /// its writer stays alive and a wait-only recovery would wait on it
 /// forever. Calling this here instead makes recovery perform the exact
 /// same first act the live worker does, closing that gap.
+///
+/// Codex review, PR #171: a ONE-SHOT delivery attempt reopened the
+/// identical bug for any TRANSIENT outcome — a `Foreign`/`Pending`
+/// challenge (an `Undetermined` OS-call hiccup, not a real identity
+/// mismatch) or a connect `Err` fell straight through to the wait-only
+/// [`retry_until_writer_resolved`], which never re-sends `Shutdown`, so
+/// a capsule that was never actually told to end (this attempt's own
+/// write never reached it) would again be waited on forever. The loop
+/// below RE-ATTEMPTS DELIVERY on every iteration while the capsule
+/// might still be alive — acting (via [`finish_end_run_with_process`])
+/// only once a challenge is actually `Proven` (`Ended`), and falling to
+/// the wait-only reconcile ONLY once the capsule is provably `Absent`
+/// (nothing left to redeliver to) — never on `Foreign`/`Pending`/`Err`,
+/// which prove nothing about whether the capsule is still there. Same
+/// cadence as the wait-only loop it hands off to
+/// ([`ATTEMPT_INTERVAL`]), bounded from OUTSIDE only, exactly like
+/// [`retry_until_writer_resolved`] already was (`ENDING_WATCHDOG` for
+/// the live path, [`RECOVERY_WATCHDOG`] for recovery — both now sized
+/// to cover at least one full delivery attempt, not just the wait).
 ///
 /// Re-issuing is harmless: ADR 0041's own EndRun transition says a
 /// second `shutdown` against an already-latched capsule "is acked
@@ -1385,26 +1445,35 @@ fn reissue_and_reconcile_end_run(
     reason: &str,
     on_closed: Option<&mpsc::Sender<EndingProgress>>,
 ) -> crate::Result<EndRunReconciliation> {
-    match end_run_over_mgmt_lane(voyage_id, reason) {
-        Ok(EndRunOutcome::Absent | EndRunOutcome::Foreign | EndRunOutcome::Pending) => {
-            retry_until_writer_resolved(state_dir, op_id, voyage_id, epoch, on_closed)
+    loop {
+        match end_run_over_mgmt_lane(voyage_id, reason) {
+            Ok(EndRunOutcome::Ended(process)) => {
+                return finish_end_run_with_process(state_dir, op_id, voyage_id, epoch, process, on_closed);
+            }
+            Ok(EndRunOutcome::Absent) => {
+                // Provably nothing left to deliver to — hand off to the
+                // wait-only reconcile, which proves the writer's own
+                // fence is free before ever trusting the marker (B3).
+                return retry_until_writer_resolved(state_dir, op_id, voyage_id, epoch, on_closed);
+            }
+            Ok(EndRunOutcome::Foreign | EndRunOutcome::Pending) => {
+                // Neither proves the capsule is gone — retry delivery,
+                // not just the wait.
+            }
+            Err(e) => {
+                // B4 (Codex review round 3): a generic mgmt-lane error
+                // (e.g. a connect failure other than NotFound) proves
+                // nothing about the capsule's own liveness either —
+                // retry delivery rather than falling back to a
+                // wait-only reconcile that would never re-send the
+                // request this attempt never actually delivered.
+                eprintln!(
+                    "sot-capsule supervise: end_run_over_mgmt_lane failed ({e}); retrying delivery \
+                     rather than falling back to a wait-only reconcile (B4)"
+                );
+            }
         }
-        Ok(EndRunOutcome::Ended(process)) => {
-            finish_end_run_with_process(state_dir, op_id, voyage_id, epoch, process, on_closed)
-        }
-        Err(e) => {
-            // B4 (Codex review round 3): a generic mgmt-lane error
-            // (e.g. a connect failure other than NotFound) still
-            // runs marker reconciliation exactly like
-            // Foreign/Pending — never bypass straight to Fatal just
-            // because THIS attempt could not classify itself more
-            // precisely than "something went wrong talking to it".
-            eprintln!(
-                "sot-capsule supervise: end_run_over_mgmt_lane failed ({e}); still attempting \
-                 marker reconciliation rather than failing outright (B4)"
-            );
-            retry_until_writer_resolved(state_dir, op_id, voyage_id, epoch, on_closed)
-        }
+        std::thread::sleep(ATTEMPT_INTERVAL);
     }
 }
 
