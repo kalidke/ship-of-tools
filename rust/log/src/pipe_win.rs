@@ -2588,14 +2588,23 @@ pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient
     connect_named_pipe_unchallenged(supervisor_pipe_name_wide(h))
 }
 
+/// [`connect_named_pipe_unchallenged`]'s own total `CreateFileW` retry
+/// budget — `pub`, matching [`TEARDOWN_AGGREGATE_DEADLINE`]'s own
+/// convention, so a caller composing a worst-case bound over a whole
+/// connect-then-challenge sequence (`supervisor.rs`'s own recovery/
+/// ending watchdogs) cites the real constant instead of re-deriving the
+/// same "2s" as an independent, driftable literal.
+pub const PIPE_CONNECT_BOUND: Duration = Duration::from_secs(2);
+
 /// Shared raw connect, given an already-resolved wide pipe name: retries
-/// `CreateFileW` (bounded, 2s total) on `ERROR_PIPE_BUSY`/
-/// `ERROR_FILE_NOT_FOUND`, exactly as [`connect_voyage_pipe_unchallenged`]'s
-/// own doc describes. NO authentication of any kind — every caller of
-/// either wrapper above is responsible for running the OS-level identity
-/// check (and, where the lane needs it, the full challenge) on top.
+/// `CreateFileW` (bounded, [`PIPE_CONNECT_BOUND`] total) on
+/// `ERROR_PIPE_BUSY`/`ERROR_FILE_NOT_FOUND`, exactly as
+/// [`connect_voyage_pipe_unchallenged`]'s own doc describes. NO
+/// authentication of any kind — every caller of either wrapper above is
+/// responsible for running the OS-level identity check (and, where the
+/// lane needs it, the full challenge) on top.
 fn connect_named_pipe_unchallenged(name: Vec<u16>) -> Result<PipeClient, PipeError> {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + PIPE_CONNECT_BOUND;
     loop {
         let h = unsafe {
             CreateFileW(

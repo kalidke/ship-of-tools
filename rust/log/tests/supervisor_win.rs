@@ -15,6 +15,7 @@
 //! code) — never a sleep-and-hope, and never a lifetime-counter
 //! observation of kernel state.
 
+use sot_log::journal;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test, state_dir_hash};
 use sot_log::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 use std::path::{Path, PathBuf};
@@ -543,13 +544,42 @@ fn a_second_hello_closes_the_connection_but_the_authority_survives() {
     let _ = wait_for_exit(child, Duration::from_secs(30));
 }
 
-/// A crash mid `end_run` must be RECOVERABLE by a fresh supervisor -- the
-/// ORIGINAL client's operation id must still answer through `query`
-/// against the new process, never silently vanish because the process
-/// that accepted it is gone. Proves the operation was genuinely
-/// NONTERMINAL before the kill (polling `query` for `Accepted |
-/// RecordClosed`, never assuming the 500ms pre-kill pause alone proves
-/// it).
+/// A supervisor that journaled `end_run` as `accepted` (durable, under
+/// `supervisor.lock`, BEFORE the first irreversible act) and then died
+/// BEFORE its own worker ever reached the capsule must still have that
+/// `end_run` DELIVERED, not merely waited for, by a fresh supervisor's
+/// recovery pass — the defect this test proves fixed:
+/// `reconcile_journal_on_startup`'s `EndRun` arm used to jump straight
+/// to a wait-only reconcile, which never resolves for a capsule nobody
+/// ever actually told to end.
+///
+/// Constructed DETERMINISTICALLY from the crash-durable state itself,
+/// never by racing a live kill against a real submission's own worker
+/// thread. A prior version submitted `end_run` over the wire and raced
+/// a watcher's `query` poll against the kill to catch a momentary
+/// `Accepted`/`RecordClosed` sample first — PR #171 review: that
+/// worker's whole pipeline (mgmt exchange, capsule teardown, marker
+/// check, `verify_voyage`) runs on one thread with no built-in pause
+/// anywhere in between, and on fast CI hardware reliably raced straight
+/// through to a terminal record before even the FIRST watcher sample,
+/// so the poll timed out waiting for a window that no longer existed —
+/// a coin flip this rewrite removes by never depending on it. This test
+/// instead starts a capsule through a first supervisor exactly like
+/// every other test here, kills that supervisor WITHOUT ever submitting
+/// `end_run` (the capsule is untouched by its supervisor's death — ADR
+/// 0041 Lifecycle: "any exit code, an FE crash, supervisor death — all
+/// are FE loss; the capsule is untouched" — so it stays alive,
+/// orphaned), then hand-journals the EXACT `ActiveOp::EndRun` record a
+/// live admission would have written, via the crate's own public
+/// `journal::begin` — no `run_end_requested` marker exists yet, exactly
+/// the state a worker killed before its first mgmt-lane exchange
+/// leaves. This IS the crash state, not a simulation raced into
+/// existence. The race-based version added nothing over
+/// `full_lifecycle_hello_status_end_run_query_and_clean_exit` (already
+/// proves live wire admission: command -> journal -> record_closed ->
+/// record_verified, resubmit idempotency, id_conflict) beyond
+/// recovering a genuinely in-flight operation — exactly what this
+/// version proves, without the race.
 #[test]
 fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     let _serial = serial();
@@ -558,108 +588,70 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
+    // A running capsule, exactly as any other test here starts one.
     let first = spawn_supervisor(&state_dir, "--start", &["cmd.exe"]);
     let mut first_guard = KillGuard(Some(first));
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    let (voyage, leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
-    // Establish the WATCHER connection BEFORE submitting end_run, not
-    // after: once submitted, admission runs on the main loop's own next
-    // tick and end_run's own reconciliation (mark_closed -> verify_voyage
-    // -> finish, all on ONE background worker thread with no built-in
-    // pause anywhere in between) is free to race straight through
-    // `Accepted` to a terminal record with nothing gating it to the main
-    // loop's pace. A watcher connection opened only AFTER submission has
-    // to win its own connect+hello+challenge round trip -- each hop
-    // gated by the main loop's own tick -- against that race, which a
-    // loaded runner does not guarantee: this flaked repeatedly on the
-    // windows-2022 leg, always at this poll. Opening the watcher first
-    // removes the watcher-setup latency from the race -- it is already
-    // live before there is anything to observe -- but a residual window
-    // remains, unchanged by this fix and predating it: the kill below
-    // lands microseconds after whatever sample satisfies the poll, so a
-    // worker that finishes in that exact gap would make the SECOND
-    // supervisor's recovery a no-op for that run (it would simply find
-    // an already-terminal record, proving nothing about recovering an
-    // IN-FLIGHT operation). A cross-process barrier inside the
-    // supervisor could close that residual window, but that is
-    // production machinery justified only by a test's own timing, so it
-    // is deliberately not added here.
-    let query_conn = wait_for_lane(&h, Duration::from_secs(10));
-
-    // Keep the ORIGINAL command lane alive while `wait_for_lane` above
-    // was establishing the watcher: the supervisor evicts an idle lane
-    // after LANE_IDLE_DEADLINE (5s, `supervisor.rs`), and that call can
-    // itself take up to its own 10s bound -- longer than the eviction
-    // deadline, and with no traffic of its own on `conn` in between. A
-    // `query` here (answered `UnknownOperation`, since "op-recover" has
-    // not been submitted yet) is real received traffic, which resets
-    // `conn`'s idle clock, so the command below is never written to a
-    // connection the supervisor already closed out from under it.
-    let _ = query(&conn, "op-recover");
-
-    // Submit end_run on a SEPARATE thread: its own reply is deferred to
-    // record_closed (B3), which may not arrive before this test kills
-    // the supervisor -- block on it in the background rather than in
-    // this thread, which needs to move on to killing the process.
-    let conn_for_command = conn;
-    let submit = std::thread::spawn(move || {
-        command(&conn_for_command, "op-recover", SupervisorOp::EndRun { reason: "test".into(), voyage })
-    });
-
-    // Prove the operation is genuinely NONTERMINAL before killing -- poll
-    // the watcher connection's `query` for `Accepted` OR `RecordClosed`
-    // (durably journaled, per ADR 0041's own "before the first
-    // irreversible act"). Both, not just `Accepted`, count as proof here:
-    // `poll_to_terminal` above already draws this exact line (`Accepted |
-    // RecordClosed` are its own two non-terminal arms), and end_run's
-    // worker can legitimately reach `record_closed` (the writer already
-    // confirmed exited, B3) before this poll's very first sample --
-    // requiring the single, momentary `Accepted` instant specifically is
-    // an unforced, narrower bar than "genuinely nonterminal" needs.
-    poll_until(
-        || {
-            matches!(
-                query(&query_conn, "op-recover"),
-                SupervisorOperationState::Accepted | SupervisorOperationState::RecordClosed
-            )
-            .then_some(())
-        },
-        Duration::from_secs(10),
-        "the end_run operation to be admitted (accepted or record_closed) before this test kills the supervisor",
-    );
-
-    // Kill the supervisor -- simulating a crash mid end_run. The LEG
-    // process is not in the supervisor's job, and the shutdown request
-    // may already have been delivered to it directly, so its own
-    // teardown can proceed independently of whether the supervisor that
-    // asked for it is still alive to see the result.
+    // Kill the supervisor WITHOUT ever submitting end_run. The LEG
+    // process is not in the supervisor's job (module doc), so it stays
+    // alive, orphaned — the "crash after admission, before the capsule
+    // was ever told" state this test constructs directly rather than
+    // racing a kill against a live submission to land there.
     let mut first = first_guard.0.take().unwrap();
     first.kill().unwrap();
     first.wait().unwrap();
-    // The background `command` thread's own connection just died with
-    // the process -- an `Err` here (its own `.expect("command")` turning
-    // that into a panic) is the EXPECTED shape once the kill lands
-    // before the deferred reply does, so it must not fail this test; but
-    // silently discarding the join result would ALSO hide a genuinely
-    // unexpected panic (a real protocol bug, say), so print whatever it
-    // was rather than dropping it on the floor -- this test still only
-    // cares about the SECOND supervisor's recovery, checked below.
-    if let Err(panic) = submit.join() {
-        eprintln!(
-            "[crash-recovery test] submit thread ended in a panic (expected once the kill lands before its deferred reply): {panic:?}"
-        );
-    }
 
-    // A SECOND supervisor, `--resume`: recovery reconciles the in-flight
-    // end_run via the leg's own durable marker, and this operation id
-    // must still answer.
+    // Hand-journal the SAME `ActiveOp::EndRun` record a live admission
+    // would have written (`supervisor.rs`'s own `handle_command`:
+    // `ActiveOp::EndRun { voyage: voyage_id, epoch: leg_epoch_of(...) }`
+    // — `leg` here IS that epoch, per `status_ok`'s own `leg` field),
+    // via the crate's own public `journal::begin` — the exact API a
+    // fresh supervisor's recovery consumes. The digest need not match a
+    // real wire encoding: recovery reads `active.op` directly and never
+    // compares digests (those exist only for the WIRE's own
+    // idempotent-resubmit check, never exercised here);
+    // `ActiveRecord::validate` only checks the field's SHAPE (64
+    // lowercase hex chars) — the same `"0".repeat(64)` placeholder
+    // `sot-fault-writer.rs`'s own fixture uses for an unchecked digest.
+    let op_id = "op-recover";
+    let record = journal::ActiveRecord {
+        operation_id: op_id.to_string(),
+        digest: "0".repeat(64),
+        op: journal::ActiveOp::EndRun { voyage: voyage.clone(), epoch: Some(leg) },
+    };
+    journal::begin(&state_dir, op_id, &record).unwrap();
+
+    // Non-vacuous: recovery genuinely has work to do before the fresh
+    // supervisor ever starts, proven by reading the same durable state
+    // its own recovery pass will.
+    assert_eq!(
+        journal::active_operations(&state_dir).unwrap(),
+        vec![op_id.to_string()],
+        "the hand-journaled operation must be active before the fresh supervisor starts"
+    );
+
+    // A fresh supervisor, `--resume`: recovery must DELIVER the
+    // end_run to the still-live orphaned capsule (this test's own fix),
+    // not merely wait for a writer nobody ever told to go away.
     let second = spawn_supervisor(&state_dir, "--resume", &["cmd.exe"]);
     let mut second_guard = KillGuard(Some(second));
     let conn2 = wait_for_lane(&h, Duration::from_secs(30));
 
-    let final_state = poll_to_terminal(&conn2, "op-recover", Duration::from_secs(60));
+    let final_state = poll_to_terminal(&conn2, op_id, Duration::from_secs(120));
     assert_eq!(final_state, SupervisorOperationState::RecordVerified);
+
+    // The orphaned capsule's own mgmt pipe is gone -- its teardown
+    // removes the pipe NAME before final writes/seal/writer-lock
+    // release (`capsule_win.rs`), so this proves the capsule this test
+    // started is no longer serving, external to and independent of
+    // whatever the supervisor's own recovery believes.
+    let pipe_gone = matches!(
+        sot_log::pipe_win::connect_voyage_pipe(&voyage),
+        Err(sot_log::pipe_win::PipeError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound
+    );
+    assert!(pipe_gone, "the orphaned capsule's own mgmt pipe must be gone once its end_run is recovered");
 
     // Recovering an end_run for the CURRENT voyage means no leg is ever
     // spawned -- eventually straight to ended-no-respawn (not necessarily
