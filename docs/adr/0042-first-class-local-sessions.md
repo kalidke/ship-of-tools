@@ -75,6 +75,44 @@ the backend daemon, which is what the drawer's agent already does.
   screen comes back from the checkpoint; the daemon is restarted and the
   workspace is re-adopted; `end_run` ends it and the record verifies.
 
+**Amendment 2026-09-02 — L1c: the launcher starts and stops the local
+daemon.** L1a shipped the daemon-side capsule runtime and L1b the frontend's
+attach pane; this closes the remaining gap the decision paragraph above
+asserted ("the frontend machine runs its own `sotd`") but the ADR text never
+specified: getting a local `sotd` running at all, unattended, before either
+of those can do anything. `scripts/launch-sot.ps1` now ensures one on EVERY
+launch (not only `-Local`): idempotently, on the fixed per-user named pipe
+`\\.\pipe\sot-<user>-local` (`sotd --label`'s own auto-derivation is a Unix
+runtime-dir scheme with no Windows branch, so this pipe name is constructed
+explicitly, following the one real Windows precedent already in the repo,
+`hosts.toml`'s `[host.local] socket = "\\.\pipe\sot-local"`), with
+`--project-root` the user's home and `--label local` — the same
+project-root-is-home and `--label` convention the backend host's own `sotd
+--project-root $HOME --label sot` already uses. Binary resolution prefers
+the release install's `<prefix>\bin\sotd.exe` over the dev checkout (the
+opposite priority from the frontend's own dev-build-first resolution,
+because this daemon is meant to sit untouched across many launches, not be
+rebuilt every session), and refuses to start — logging why, without blocking
+the rest of the launch — when `sot-capsule.exe` is not its sibling (L1a's own
+`current_exe().parent()` resolution). The daemon is spawned detached, so it
+outlives the launcher and every frontend relaunch; `-Local` now connects the
+frontend to this persistent daemon instead of spawning a fresh per-session
+one. `scripts/shutdown-sot.ps1` stops it LAST, after the frontend and tunnel
+are already down — sotd has no clean-stop IPC op and installs no signal
+handler on either platform (Linux's own `sotd.service` has no `ExecStop`
+either, so its "graceful" stop is already just systemd's unhandled default
+SIGTERM), so `Stop-Process` is what "clean stop" reduces to here. Capsule
+workspace supervisors (`sot-capsule.exe`) are never touched by this — they
+are separate detached processes and the one authority over a workspace's
+live state, and the daemon re-adopts every still-running one via `--resume`
+the next time it starts, which is exactly what a shutdown-and-relaunch does.
+Logic lives in a new standalone `scripts/sot-local-daemon.ps1`
+(start/`-Stop`), tested by `scripts/tests/test-local-daemon.ps1` on the
+Windows CI leg. Out of scope here: connecting the frontend to the local
+daemon in the default (remote-tunnel) launch mode — that is L2's "one
+connection per host" below; until then the local daemon simply runs
+alongside, unconnected, in every launch mode but `-Local`.
+
 ### L2 — one connection per host, one tree
 
 - The frontend holds one transport per host in `hosts.toml` that it can
