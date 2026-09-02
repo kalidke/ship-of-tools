@@ -1247,10 +1247,13 @@ fn run_quit(
         }
         match sup_reader.next_frame(supervisor_conn, now + QUIT_POLL_READ_BUDGET) {
             Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(state))) => {
+                eprintln!("fe-client quit: operation state {state:?}");
                 quit.on_operation_state(state);
                 emit(ClientEvent::QuitMessage(quit.message()));
             }
-            Ok(_) => {} // an unrelated frame; keep waiting
+            Ok(other) => {
+                eprintln!("fe-client quit: unrelated frame while waiting: {other:?}");
+            }
             Err(_) => {
                 // Timeout, EOF, or a wire error: `query` both advances
                 // verification and is itself traffic that keeps the

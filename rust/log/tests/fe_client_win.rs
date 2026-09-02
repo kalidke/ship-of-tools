@@ -476,23 +476,37 @@ fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
 
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut exited = false;
+    let mut last_msg: Option<String> = None;
     while Instant::now() < deadline {
         client.pump();
         if client.should_exit() {
             exited = true;
             break;
         }
+        let msg = client.quit_message();
+        if msg != last_msg {
+            eprintln!("[quit test] quit message: {msg:?}");
+            last_msg = msg.clone();
+        }
         assert_ne!(
-            client.quit_message(),
+            msg.as_deref(),
             Some("ending the session did not complete \u{2014} outcome unknown"),
             "the quit dispatcher timed out instead of observing record_closed"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(
-        exited,
-        "quit dispatcher never reached should_exit (client-visible record_verified) within 60s"
-    );
+    if !exited {
+        // Name the stuck state: the dispatcher's own message (Refused/Failed
+        // carry their reason) and what the authority says over a separate
+        // connection.
+        let diag = try_status(&conn).ok();
+        panic!(
+            "quit dispatcher never reached should_exit (client-visible record_verified) within 60s; \
+             quit message: {:?}; authority status (voyage, leg, phase): {:?}",
+            client.quit_message(),
+            diag
+        );
+    }
 
     // Independent corroboration, over a SEPARATE connection: the
     // supervisor ends up serving ENDED-NO-RESPAWN, exactly what a
