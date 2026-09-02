@@ -1,7 +1,7 @@
 #!/bin/bash
 # ccb — start (or resume) a comm-aware backend Claude session for ANY project.
 #
-# Thin launcher: runs `claude --dangerously-skip-permissions` and bakes the
+# Thin launcher: runs `claude --permission-mode auto` and bakes the
 # /sot-session-start bootstrap skill in as the first-turn prompt, so the session
 # comes up already RECEIVING fast-comm on the sot-comm network (durable relay
 # listener + the inbox Monitor that wakes it). Project-agnostic: use it for any
@@ -37,4 +37,4 @@ unset CLAUDE_CODE_FORK_SUBAGENT CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_TEAMMATE_M
 # same reason ccb itself is invoked by full path); the export also covers any
 # ~/.local/bin tools the spawned session uses.
 export PATH="$HOME/.local/bin:$PATH"
-exec "$HOME/.local/bin/claude" --dangerously-skip-permissions "$@" /sot-session-start
+exec "$HOME/.local/bin/claude" --permission-mode auto "$@" /sot-session-start

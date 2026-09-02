@@ -80,11 +80,11 @@ fi
 # First-turn brief: identity + where the conventions live. AGENTS.md carries
 # the full contract; this just anchors the session's handle and backlog.
 # --sandbox danger-full-access: the ccb-equivalent trust posture (ccb runs
-# claude --dangerously-skip-permissions). Without it codex's sandbox makes
+# claude --permission-mode auto). Without it codex's sandbox makes
 # $HOME read-only, which breaks every comm CLI (registry, inbox cursors,
 # comm-send) — observed live: comm-poll.sh died on a read-only cursor file.
 # --dangerously-bypass-approvals-and-sandbox is the TRUE ccb equivalent
-# (claude runs --dangerously-skip-permissions): full access AND no trust /
+# (claude runs --permission-mode auto): full access AND no trust /
 # approval prompts — a [projects] trust_level entry alone still left an
 # interactive trust prompt blocking daemon-booted panes. exec (not a child)
 # so the pane's foreground command reads node/codex and the daemon's boot

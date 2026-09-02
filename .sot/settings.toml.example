@@ -33,10 +33,10 @@
 # positional `/sot-fe-session-start` is submitted as the resumed session's
 # FIRST turn, invoking the project skill that re-arms the fast-comm
 # fe-inbox Monitor + catches the relaunch deaf-window gap.
-# --dangerously-skip-permissions matches the documented default
+# --permission-mode auto matches the documented default
 # (docs/src/ref/config.md + the sot-setup skill): without it the resumed
 # drawer session stalls on permission prompts before its bootstrap turn.
-resume_command = "claude --dangerously-skip-permissions --continue /sot-fe-session-start"
+resume_command = "claude --permission-mode auto --continue /sot-fe-session-start"
 
 [sessions]
 # Directory the Sessions-mode "create workspace" picker (nav pane → new

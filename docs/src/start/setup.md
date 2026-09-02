@@ -112,7 +112,7 @@ file never crashes the chrome.
 preset = "auto"   # auto | ultrawide | laptop | portrait
 
 [terminal]
-resume_command = "claude --dangerously-skip-permissions --continue /sot-fe-session-start"
+resume_command = "claude --permission-mode auto --continue /sot-fe-session-start"
 ```
 
 Discovery order: `$SOT_SETTINGS` → `<repo-root>/.sot/settings.toml` →

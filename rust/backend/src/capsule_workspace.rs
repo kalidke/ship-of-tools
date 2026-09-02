@@ -39,8 +39,8 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 /// ADR 0041's own drawer capsule is deliberately a RAW TERMINAL voyage,
 /// not yet wired to any launcher either — U4, the drawer cutover, is
 /// still unbuilt). `"claude"` gets the closest honest equivalent: the
-/// same flags `ccb` itself execs with (`claude --dangerously-skip-
-/// permissions /sot-session-start`), relying on `claude` being on the
+/// same flags `ccb` itself execs with (`claude --permission-mode auto
+/// /sot-session-start`), relying on `claude` being on the
 /// daemon's own PATH — a detached child inherits it, same as any spawned
 /// process. `"none"` is the explicit bare platform shell. Every other
 /// kind (`"codex"` included — no known Windows launcher exists) is
@@ -53,7 +53,8 @@ pub fn agent_argv(agent_kind: &str) -> Result<Vec<String>, String> {
         "none" => Ok(vec!["cmd.exe".to_string()]),
         "claude" => Ok(vec![
             "claude".to_string(),
-            "--dangerously-skip-permissions".to_string(),
+            "--permission-mode".to_string(),
+            "auto".to_string(),
             "/sot-session-start".to_string(),
         ]),
         other => Err(format!(
@@ -603,7 +604,7 @@ mod tests {
     fn agent_argv_claude_matches_ccbs_own_flags() {
         assert_eq!(
             agent_argv("claude").unwrap(),
-            vec!["claude", "--dangerously-skip-permissions", "/sot-session-start"]
+            vec!["claude", "--permission-mode", "auto", "/sot-session-start"]
         );
     }
 

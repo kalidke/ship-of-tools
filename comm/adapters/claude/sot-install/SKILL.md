@@ -43,7 +43,7 @@ changes need a restart; hot-reload covers body edits).
 ## Launchers
 
 Both live in `~/.local/bin` (which must be on PATH) and run
-`claude --dangerously-skip-permissions` with a bootstrap skill baked in as the
+`claude --permission-mode auto` with a bootstrap skill baked in as the
 first-turn prompt. Use the bare form for a fresh session, `--continue` to resume
 and re-arm comm (harness Monitors don't survive `claude --continue`); extra flags
 are forwarded to `claude` ahead of the skill.
