@@ -3108,12 +3108,18 @@ struct State {
     /// moves clear it when we want a re-fetch. Cleared on mode-switch into
     /// Sessions so the first cursored pane fires fresh.
     tmux_capture_fired_for: Option<String>,
-    /// Tmux session the BL pane is attached to. `None` until the first
-    /// `pty.open` reply lands; defaults to `sot-llm` semantically.
-    /// Sessions-mode Enter (B3) updates this to the targeted backend
-    /// session and fires a fresh `pty.open` with the new target so the
-    /// backend kills + respawns the pty.
-    bl_pane_target: Option<String>,
+    /// Owning host + tmux session the BL pane is attached to (ADR 0042
+    /// L2a codex review, item D). `None` until the first `pty.open`
+    /// reply lands; defaults to `sot-llm` semantically. Sessions-mode
+    /// Enter (B3) updates this to the targeted backend session and
+    /// fires a fresh `pty.open` with the new target so the backend
+    /// kills + respawns the pty. MUST carry the host: two hosts can
+    /// both name a session "sot-be-sot", and a bare session name used
+    /// to make `attach_session_to_bl`'s "already attached" early
+    /// return fire on a same-named session on a DIFFERENT host,
+    /// leaving the pty open on the OLD host while every subsequent
+    /// write/resize/scroll routed (via `active_host`) to the new one.
+    bl_pane_target: Option<(HostKey, String)>,
     /// ADR 0014 active workspace. `None` resolves to the daemon's
     /// default workspace (the project the backend was launched with).
     /// `Some(slug)` routes tree/preview ops through the corresponding
@@ -4955,7 +4961,12 @@ impl State {
             tmux_capture_fired_for: None,
             // Restored BL target so the first pty.open re-attaches to
             // wherever the last session left off. None → DEFAULT (sot-llm).
-            bl_pane_target: crate::state_persistence::load().last_bl_target,
+            // The persisted state is single-host (H, not yet done) --
+            // paired with the resolved startup `active_host` here so the
+            // type carries an owner from the moment it's set.
+            bl_pane_target: crate::state_persistence::load()
+                .last_bl_target
+                .map(|t| (active_host.clone(), t)),
             // Harness runs (capture or --ephemeral) skip the restore: a
             // persisted workspace switch re-fires tree.root + a root preview
             // after --capture-preview's one-shot, clobbering the captured
@@ -5936,7 +5947,10 @@ impl State {
             .map(|p| p.to_logical::<f64>(scale));
         let s = crate::state_persistence::GlobalState {
             last_mode: Some(self.mode.label().to_string()),
-            last_bl_target: self.bl_pane_target.clone(),
+            // The persisted GlobalState is still single-host (H, not
+            // yet done) -- drop the owner, keep the session name, same
+            // shape as before this field carried a host.
+            last_bl_target: self.bl_pane_target.as_ref().map(|(_, s)| s.clone()),
             last_workspace_id: self.active_workspace_id.clone(),
             // ADR 0042 L2a: no longer written. `last_host` was ADR 0015's
             // "pick a host, Ctrl+Q + relaunch" single-host-swap signal to
@@ -7310,7 +7324,10 @@ impl State {
                 mode: self.mode,
                 // (tree + scroll deliberately absent — they stash into
                 // `tree_store` under their own key in switch_to_workspace.)
-                bl_pane_target: self.bl_pane_target.clone(),
+                // Host dropped — redundant with this snapshot's own WsKey
+                // (the map's key), which is `active_host` by construction
+                // at snapshot time.
+                bl_pane_target: self.bl_pane_target.as_ref().map(|(_, s)| s.clone()),
                 preview_node_id_fired: self.preview_node_id_fired.clone(),
                 pinned_preview_node_id: self.pinned_preview_node_id.clone(),
                 preview_src: self.preview_src.clone(),
@@ -7347,7 +7364,10 @@ impl State {
         // focus is global across workspaces — don't restore. The user
         // expects pane focus to follow their last interaction regardless
         // of which workspace is active.
-        self.bl_pane_target = snap.bl_pane_target;
+        // Re-pair with `key`'s own host (ADR 0042 L2a) -- this snapshot
+        // was captured while that host was active, so its bare session
+        // name always belonged to it.
+        self.bl_pane_target = snap.bl_pane_target.map(|s| (key.0.clone(), s));
         self.preview_node_id_fired = snap.preview_node_id_fired;
         self.pinned_preview_node_id = snap.pinned_preview_node_id;
         // preview_concept gets re-shaped on the next frame by the
@@ -8036,7 +8056,12 @@ impl State {
     /// threaded through), reached only when that helper declines (tmux
     /// row, unknown row, or a non-Windows build).
     fn attach_session_to_bl(&mut self, host: HostKey, session_name: String) {
-        if self.bl_pane_target.as_deref() == Some(session_name.as_str()) {
+        // ADR 0042 L2a codex review, item D: compare the OWNER pair, not
+        // just the session name -- two hosts can both name a session
+        // "sot-be-sot", and a bare-name compare made switching to the
+        // same-named session on a DIFFERENT host early-return here,
+        // leaving the pty open on the OLD host.
+        if self.bl_pane_target.as_ref() == Some(&(host.clone(), session_name.clone())) {
             // Already attached — no-op rather than churn the pty.
             self.status = format!("already attached · {session_name}");
             self.window.request_redraw();
@@ -8068,7 +8093,7 @@ impl State {
             tracing::warn!(error = %e, %session_name, "drop pty.open re-target request — channel closed");
             return;
         }
-        self.bl_pane_target = Some(session_name.clone());
+        self.bl_pane_target = Some((host, session_name.clone()));
         self.status = format!("attached BL → {session_name}");
         // Claude boot is owned by the BE tmux start-command wrapper
         // (`boot_wrapper_command`, ADR 0023 unified spawn): every
@@ -8164,7 +8189,7 @@ impl State {
                 return false;
             }
             self.pane_feed = PaneFeed::Capsule;
-            self.bl_pane_target = Some(session_name.to_string());
+            self.bl_pane_target = Some((host.clone(), session_name.to_string()));
             self.status = format!("attached BL → {session_name} (capsule)");
             self.window.request_redraw();
             self.persist_resume_state();
@@ -8265,7 +8290,16 @@ impl State {
             return;
         }
         let bytes = std::mem::take(&mut self.pane_pending_input);
-        if let Err(e) = self.send(crate::transport::OutgoingReq::PtyWrite { bytes }) {
+        // ADR 0042 L2a item D: route to the BL pane's owner, not
+        // whatever's active — the buffer was queued for a specific
+        // target, and by the time it flushes the user may have already
+        // switched active_host elsewhere.
+        let bl_owner = self
+            .bl_pane_target
+            .as_ref()
+            .map(|(h, _)| h.clone())
+            .unwrap_or_else(|| self.active_host.clone());
+        if let Err(e) = self.send_to(&bl_owner, crate::transport::OutgoingReq::PtyWrite { bytes }) {
             tracing::warn!(error = %e, "drop buffered pty.write on tmux confirm — channel closed");
         }
     }
@@ -8295,9 +8329,19 @@ impl State {
             }
             PaneFeed::Tmux => {}
         }
-        if let Err(e) = self.send(crate::transport::OutgoingReq::PtyWrite {
-            bytes: bytes.to_vec(),
-        }) {
+        // ADR 0042 L2a item D: same owner-routing as
+        // flush_pane_pending_input_to_tmux above.
+        let bl_owner = self
+            .bl_pane_target
+            .as_ref()
+            .map(|(h, _)| h.clone())
+            .unwrap_or_else(|| self.active_host.clone());
+        if let Err(e) = self.send_to(
+            &bl_owner,
+            crate::transport::OutgoingReq::PtyWrite {
+                bytes: bytes.to_vec(),
+            },
+        ) {
             tracing::warn!(error = %e, "drop pty.write — channel closed");
         }
     }
@@ -8358,7 +8402,10 @@ impl State {
         // this session re-arms the launch (attach_session_to_bl's contract-b
         // check), and the status says so out loud — a silent flash here made
         // spawn delivery look like a coin flip under a multitasking user.
-        if self.bl_pane_target.as_deref() != Some(session.as_str()) {
+        // ADR 0042 L2a: this scan is always active_host-scoped (see
+        // autostart_claude_in_pane's doc, same invariant) -- compare the
+        // owner pair, not just the session name.
+        if self.bl_pane_target.as_ref() != Some(&(self.active_host.clone(), session.clone())) {
             tracing::warn!(%session,
                 "autostart: BL pane left the target before launch decision — deferred to next attach");
             self.status = format!("autostart deferred · launches on next visit → {session}");
@@ -8425,7 +8472,7 @@ impl State {
             None => return,
         };
         // Only if the BL pane is actually on this session right now.
-        if self.bl_pane_target.as_deref() != Some(session.as_str()) {
+        if self.bl_pane_target.as_ref() != Some(&(self.active_host.clone(), session.clone())) {
             return;
         }
         // Stamp a time-bounded "launching" hold (NOT the permanent confirmed
@@ -8460,10 +8507,17 @@ impl State {
         };
         tracing::info!(%session, %agent, has_task = !task.is_empty(),
             "autostart: launching ccb in agent pane");
+        // ADR 0042 L2a: route via send_to the owner (already confirmed
+        // == active_host above) rather than the implicit self.send, so
+        // this reads the same as every other bl_pane_target-owned
+        // request rather than relying on the invariant silently.
         if self
-            .send(crate::transport::OutgoingReq::PtyWrite {
-                bytes: launch.into_bytes(),
-            })
+            .send_to(
+                &self.active_host.clone(),
+                crate::transport::OutgoingReq::PtyWrite {
+                    bytes: launch.into_bytes(),
+                },
+            )
             .is_err()
         {
             return;
@@ -8520,7 +8574,10 @@ impl State {
         // resumes phase-preserved on the next attach of the pinned session
         // (PtyOpened consumes `deferred_delivery`). Killing here left a
         // launched-but-taskless agent behind a status flash.
-        if self.bl_pane_target.as_deref() != Some(pinned.as_str()) {
+        // ADR 0042 L2a: same active_host-scoped invariant as
+        // autostart_claude_in_pane -- delivery only ever pins a session
+        // on the host that was active when the launch fired.
+        if self.bl_pane_target.as_ref() != Some(&(self.active_host.clone(), pinned.clone())) {
             tracing::warn!(%pinned,
                 "autostart: BL pane left the target before delivery — deferred to next attach (no misroute)");
             self.status = format!(
@@ -8597,9 +8654,12 @@ impl State {
     }
 
     /// Send one keystroke to the BL pane during delivery. The caller has
-    /// already confirmed `bl_pane_target == pinned`.
+    /// already confirmed `bl_pane_target == (active_host, pinned)`.
     fn deliver_write(&self, bytes: Vec<u8>) {
-        let _ = self.send(crate::transport::OutgoingReq::PtyWrite { bytes });
+        let _ = self.send_to(
+            &self.active_host.clone(),
+            crate::transport::OutgoingReq::PtyWrite { bytes },
+        );
     }
 
     /// Sessions-mode (ADR 0013): when the cursored row is a `pane`, fire a
@@ -10983,17 +11043,29 @@ impl State {
                         #[cfg(not(windows))]
                         let pane_is_capsule = false;
                         if !pane_is_capsule {
-                            if let Some(target) = self.bl_pane_target.clone() {
-                                let (cols, rows) = self.pty_size.unwrap_or((80, 24));
-                                let _ = self.send(crate::transport::OutgoingReq::PtyOpen {
-                                    cols,
-                                    rows,
-                                    target: Some(target),
-                                    // #5 guard: a reconnect re-attach (sleep /
-                                    // tunnel drop) is NOT a user switch — re-stream
-                                    // the existing target, don't yank the foreground.
-                                    user_switch: false,
-                                });
+                            // ADR 0042 L2a: only re-fire if the OWNING host
+                            // is the one that just reconnected -- this
+                            // whole arm is already gated on
+                            // `event_host == self.active_host`, so in the
+                            // normal case owner == event_host by
+                            // construction, but a defensive check costs
+                            // nothing and documents the invariant here too.
+                            if let Some((owner, target)) = self.bl_pane_target.clone() {
+                                if owner == event_host {
+                                    let (cols, rows) = self.pty_size.unwrap_or((80, 24));
+                                    let _ = self.send_to(
+                                        &owner,
+                                        crate::transport::OutgoingReq::PtyOpen {
+                                            cols,
+                                            rows,
+                                            target: Some(target),
+                                            // #5 guard: a reconnect re-attach (sleep /
+                                            // tunnel drop) is NOT a user switch — re-stream
+                                            // the existing target, don't yank the foreground.
+                                            user_switch: false,
+                                        },
+                                    );
+                                }
                             }
                         }
                         // And re-fire preview for the currently-cursored node
@@ -12527,6 +12599,25 @@ impl State {
                     rows,
                     pane_command,
                 } => {
+                    // ADR 0042 L2a codex review, item D: only the BL
+                    // pane's actual OWNER may act on its own pty.open
+                    // reply -- the owner is bl_pane_target's host, or
+                    // active_host as the fallback for the pre-first-
+                    // attach case (redraw's startup-resync PtyOpen routes
+                    // the same way, see the `bl_owner` local there). A
+                    // reply from any other host is stale/foreign and is
+                    // dropped rather than resizing/flushing the wrong
+                    // connection's state.
+                    let bl_owner = self
+                        .bl_pane_target
+                        .as_ref()
+                        .map(|(h, _)| h.clone())
+                        .unwrap_or_else(|| self.active_host.clone());
+                    if event_host != bl_owner {
+                        tracing::debug!(%event_host, %bl_owner,
+                            "pty.opened from a non-owning host — dropped");
+                        continue;
+                    }
                     // Backend confirmed the pty size. Make sure our
                     // emulator matches — if it doesn't (e.g. backend
                     // clamped to a minimum), the redraw will fire a
@@ -12547,7 +12638,9 @@ impl State {
                     // + deliver its bootstrap now that the BL pane points at
                     // the agent's session.
                     if let Some(sess) = self.pending_autostart.take() {
-                        if self.bl_pane_target.as_deref() == Some(sess.as_str()) {
+                        if self.bl_pane_target.as_ref().map(|(_, s)| s.as_str())
+                            == Some(sess.as_str())
+                        {
                             // Authoritative backend guard first: if the agent
                             // pane already runs claude (tmux foreground process
                             // is `claude`/`node`, reported on this `pty.open`),
@@ -12596,7 +12689,8 @@ impl State {
                     // put the session in `autostarted_sessions`.)
                     if self.delivery.is_none()
                         && self.deferred_delivery.as_ref().is_some_and(|d| {
-                            self.bl_pane_target.as_deref() == Some(d.pinned.as_str())
+                            self.bl_pane_target.as_ref().map(|(_, s)| s.as_str())
+                                == Some(d.pinned.as_str())
                         })
                     {
                         let mut d = self.deferred_delivery.take().expect("checked above");
@@ -12650,9 +12744,12 @@ impl State {
                                 // active pane — a same-named session on a
                                 // NON-active host answering late must not
                                 // be mistaken for the row the user is
-                                // actually looking at.
+                                // actually looking at. bl_pane_target now
+                                // carries its own owner host (ADR 0042 L2a
+                                // item D), so this checks the full pair.
                                 let still_selected = event_host == self.active_host
-                                    && self.bl_pane_target.as_deref() == Some(target.as_str());
+                                    && self.bl_pane_target.as_ref()
+                                        == Some(&(event_host.clone(), target.clone()));
                                 // Already corrected by an earlier reply
                                 // (or a fresh cache-hit switch) — a
                                 // duplicate/late refusal for the SAME
@@ -12705,12 +12802,31 @@ impl State {
                     }
                 }
                 crate::transport::IncomingEvt::PtyBytes { bytes } => {
+                    // ADR 0042 L2a codex review, item D: only the BL
+                    // pane's actual OWNER may feed these bytes into the
+                    // shared terminal emulator -- otherwise a same-named
+                    // session on a NON-owning host (or a straggling
+                    // stream from a host we've since switched away from)
+                    // would render into the wrong pane's screen.
+                    let bl_owner = self
+                        .bl_pane_target
+                        .as_ref()
+                        .map(|(h, _)| h.clone())
+                        .unwrap_or_else(|| self.active_host.clone());
+                    if event_host != bl_owner {
+                        tracing::debug!(%event_host, %bl_owner,
+                            "pty.bytes from a non-owning host — dropped");
+                        continue;
+                    }
                     self.pty_terminal.process(&bytes);
                     // Feed the auto-start delivery settle-clock: output on the
                     // pinned pane means claude is still rendering (not ready
                     // yet), so reset its quiescence timer.
                     let on_pinned = match self.delivery.as_ref() {
-                        Some(d) => self.bl_pane_target.as_deref() == Some(d.pinned.as_str()),
+                        Some(d) => {
+                            self.bl_pane_target.as_ref().map(|(_, s)| s.as_str())
+                                == Some(d.pinned.as_str())
+                        }
                         None => false,
                     };
                     if on_pinned {
@@ -12721,7 +12837,10 @@ impl State {
                     // Same settle-clock for the pre-launch sniff: output on the
                     // scanned pane means tmux is still replaying its screen.
                     let scan_on_pinned = match self.autostart_scan.as_ref() {
-                        Some(s) => self.bl_pane_target.as_deref() == Some(s.session.as_str()),
+                        Some(s) => {
+                            self.bl_pane_target.as_ref().map(|(_, sn)| sn.as_str())
+                                == Some(s.session.as_str())
+                        }
                         None => false,
                     };
                     if scan_on_pinned {
@@ -15214,17 +15333,29 @@ impl State {
                     }
                 }
                 PaneFeed::Tmux => {
+                    // ADR 0042 L2a item D: route to the OWNER of
+                    // bl_pane_target, falling back to active_host for the
+                    // pre-first-attach case (no target yet -- opens the
+                    // daemon's default pty on whichever host is active).
+                    let bl_owner = self
+                        .bl_pane_target
+                        .as_ref()
+                        .map(|(h, _)| h.clone())
+                        .unwrap_or_else(|| self.active_host.clone());
                     if need_open {
-                        if let Err(e) = self.send(OutgoingReq::PtyOpen {
-                            cols,
-                            rows,
-                            target: self.bl_pane_target.clone(),
-                            // #5 guard: the first-redraw initial BL open is
-                            // startup restore, not a user switch — false so
-                            // it can't claim the foreground from where the
-                            // user (on any FE) put it.
-                            user_switch: false,
-                        }) {
+                        if let Err(e) = self.send_to(
+                            &bl_owner,
+                            OutgoingReq::PtyOpen {
+                                cols,
+                                rows,
+                                target: self.bl_pane_target.as_ref().map(|(_, s)| s.clone()),
+                                // #5 guard: the first-redraw initial BL open is
+                                // startup restore, not a user switch — false so
+                                // it can't claim the foreground from where the
+                                // user (on any FE) put it.
+                                user_switch: false,
+                            },
+                        ) {
                             tracing::warn!(error = %e, "drop pty.open request — channel closed");
                         } else {
                             // Locally seed the size so a resize doesn't fire
@@ -15235,7 +15366,9 @@ impl State {
                             self.pty_size = Some((cols, rows));
                         }
                     } else if need_resize {
-                        if let Err(e) = self.send(OutgoingReq::PtyResize { cols, rows }) {
+                        if let Err(e) =
+                            self.send_to(&bl_owner, OutgoingReq::PtyResize { cols, rows })
+                        {
                             tracing::warn!(error = %e, "drop pty.resize — channel closed");
                         } else {
                             self.pty_terminal.screen_mut().set_size(rows, cols);
@@ -17910,9 +18043,18 @@ impl ApplicationHandler for App {
                         state.last_pty_wheel_at = Some(now);
                         let button = if rows_above > 0 { 64 } else { 65 };
                         let seq = format!("\x1b[<{};1;1M", button);
-                        if let Err(e) = state.send(OutgoingReq::PtyWrite {
-                            bytes: seq.into_bytes(),
-                        }) {
+                        // ADR 0042 L2a item D: route to the BL pane's owner.
+                        let bl_owner = state
+                            .bl_pane_target
+                            .as_ref()
+                            .map(|(h, _)| h.clone())
+                            .unwrap_or_else(|| state.active_host.clone());
+                        if let Err(e) = state.send_to(
+                            &bl_owner,
+                            OutgoingReq::PtyWrite {
+                                bytes: seq.into_bytes(),
+                            },
+                        ) {
                             tracing::warn!(error = %e, "drop pty.write (wheel) — channel closed");
                         }
                     }
@@ -20320,8 +20462,15 @@ impl ApplicationHandler for App {
                                         }
                                         PaneFeed::Pending => {}
                                         PaneFeed::Tmux => {
-                                            if let Err(e) =
-                                                state.send(OutgoingReq::PtyScroll { up })
+                                            // ADR 0042 L2a item D: route to
+                                            // the BL pane's owner.
+                                            let bl_owner = state
+                                                .bl_pane_target
+                                                .as_ref()
+                                                .map(|(h, _)| h.clone())
+                                                .unwrap_or_else(|| state.active_host.clone());
+                                            if let Err(e) = state
+                                                .send_to(&bl_owner, OutgoingReq::PtyScroll { up })
                                             {
                                                 tracing::warn!(error = %e, "drop pty.scroll — channel closed");
                                             }
@@ -24674,6 +24823,39 @@ mod tests {
         let owner_id = ("beta".to_string(), 1u64);
         assert_eq!(owners.get(&owner_id), Some(&key_beta));
         assert_ne!(owners.get(&owner_id), Some(&key_alpha));
+    }
+
+    #[test]
+    fn bl_pane_target_owner_pair_distinguishes_same_named_sessions_across_hosts() {
+        // ADR 0042 L2a codex review, item D: attach_session_to_bl's
+        // "already attached" early-return, and the PtyOpened/PtyBytes
+        // owner gates, all compare the FULL (host, session) pair -- a
+        // bare session-name compare let a switch from host alpha's
+        // "sot-be-sot" to host beta's "sot-be-sot" (every host uses the
+        // same "sot-be-<slug>" naming convention) hit the early return,
+        // leaving the pty open on alpha while every later
+        // write/resize/scroll (routed via active_host) went to beta.
+        let bl_pane_target: Option<(HostKey, String)> =
+            Some(("alpha".to_string(), "sot-be-sot".to_string()));
+
+        // The switch target names the SAME session on a DIFFERENT host.
+        let switch_to: (HostKey, String) = ("beta".to_string(), "sot-be-sot".to_string());
+        assert_ne!(
+            bl_pane_target.as_ref(),
+            Some(&switch_to),
+            "same session name on a different host must not read as already-attached"
+        );
+
+        // Once re-attached, an event tagged with the OLD host must not be
+        // mistaken for the new owner (the PtyBytes/PtyOpened event_host
+        // gate).
+        let new_owner: Option<(HostKey, String)> = Some(switch_to);
+        let stale_event_host: HostKey = "alpha".to_string();
+        assert_ne!(
+            new_owner.as_ref().map(|(h, _)| h),
+            Some(&stale_event_host),
+            "bytes tagged with the departed host must be recognized as non-owner"
+        );
     }
 
     #[test]
