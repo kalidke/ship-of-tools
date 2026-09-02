@@ -6,9 +6,11 @@
 // startup and opens ONE CONNECTION PER REACHABLE ENTRY (resolve_connections),
 // local-first then hosts.toml order — `Mode::Hosts` is a live
 // connected/unreachable status list over the same set, not a picker. We
-// don't manage tunnels from Rust — the launcher does that; the launcher's
-// own `last_host` read (a separate, PowerShell-side mechanism, unrelated to
-// this file) is untouched by L2a — see ADR 0015's superseded note.
+// don't manage tunnels from Rust — the launcher does that, routing its one
+// SSH tunnel to `default_host` (env vars can override); its own former
+// `last_host` read (a separate, PowerShell-side mechanism reading a field
+// that has since been repurposed for something FE-internal — see
+// state_persistence.rs's field doc) is DELETED (codex review item I).
 //
 // Format (deliberately simple — same shape PowerShell can regex-parse):
 //
@@ -45,8 +47,7 @@ pub type HostKey = String;
 /// is unusable and the picker renders it dimmed.
 #[derive(Debug, Clone)]
 pub struct HostEntry {
-    /// Slug as it appears under `[host.<name>]`. Matched against
-    /// `last_host` in state-toml on launcher startup.
+    /// Slug as it appears under `[host.<name>]`.
     pub name: String,
     /// SSH alias the launcher passes to `ssh` (host as `~/.ssh/config`
     /// knows it, not necessarily the FQDN). `None` for local-socket
@@ -73,7 +74,7 @@ pub struct HostEntry {
 
 /// Full hosts.toml content: ordered list of entries (as they appear on
 /// disk so the picker has stable ordering) plus the default-host slug
-/// the launcher falls back to when state-toml has no `last_host`.
+/// the launcher routes its one SSH tunnel to.
 #[derive(Debug, Clone, Default)]
 pub struct HostsConfig {
     pub default_host: Option<String>,

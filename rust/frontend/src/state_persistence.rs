@@ -33,12 +33,27 @@ pub struct GlobalState {
     /// ADR 0014 active workspace at last save. `None` resumes to the
     /// daemon's default workspace.
     pub last_workspace_id: Option<String>,
-    /// ADR 0015 host registry pick. The launcher reads this on startup
-    /// and routes the SSH tunnel + remote daemon spawn at the named
-    /// host's entry in `hosts.toml`. `None` → launcher uses
-    /// `default_host` from hosts.toml (which itself defaults to
-    /// "myserver"). Persisted from `Mode::Hosts` Enter; not changed by
-    /// any other path.
+    /// ADR 0042 L2a codex review, item H: REPURPOSED from its ADR 0015
+    /// meaning. It used to be the LAUNCHER's "pick a host, Ctrl+Q +
+    /// relaunch" signal (which host's SSH tunnel + remote daemon spawn
+    /// to route to) — superseded by L2a's multi-host connection set,
+    /// where the frontend holds every configured host's connection at
+    /// once and the launcher has nothing left to route (the launcher no
+    /// longer reads this field at all; see `scripts/launch-sot.ps1`'s
+    /// header comment).
+    ///
+    /// Its NEW meaning is entirely frontend-internal: the `HostKey` that
+    /// was `active_host` at quit, written on every save. On the next
+    /// launch it's the FIRST thing tried for the new `active_host` (in
+    /// `State::new`) — a daily launch resumes wherever the user actually
+    /// left off, not always the configured `hosts.toml default_host` —
+    /// falling back to the usual default-host/first-connection rule when
+    /// it's absent or no longer a resolved connection. `last_workspace_id`
+    /// and `last_bl_target` are meaningful only paired with whichever
+    /// host was active when THEY were saved, so they're restored only
+    /// when the resumed `active_host` matches this field exactly (a
+    /// fallback to a DIFFERENT host must not inherit a workspace id or
+    /// session name that belongs to the one the user actually left).
     pub last_host: Option<String>,
     /// Window inner size in *logical* pixels so cross-DPR launches
     /// don't blow up the geometry. `None` falls through to the

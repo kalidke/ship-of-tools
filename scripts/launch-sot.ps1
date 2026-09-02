@@ -258,24 +258,22 @@ if ($Local) {
 # ---------------------------------------------------------------------------
 # Default: SSH-to-remote backend.
 #
-# ADR 0015 — host registry. We read state-toml's `last_host` plus the
-# `.sot/hosts.toml` table to figure out which remote to tunnel to.
-# The frontend's `Mode::Hosts` picker writes `last_host`; the launcher
-# reads it here, looks up the matching `[host.<name>]` block, and sets
-# the existing SOT_HOST / SOT_REMOTE_REPO / SOT_TCP_PORT env
-# vars from it. The original env-var-driven fallback chain still works
-# (env wins → state-toml → hosts.toml default_host → error if none configured).
-function Read-SotLastHost {
-    $statePath = Join-Path $env:APPDATA "sot\state-$env:COMPUTERNAME.toml"
-    if (-not (Test-Path $statePath)) { return $null }
-    foreach ($line in Get-Content $statePath) {
-        if ($line -match '^\s*last_host\s*=\s*"?([^"]+?)"?\s*$') {
-            return $matches[1]
-        }
-    }
-    return $null
-}
-
+# Host registry. We read the `.sot/hosts.toml` table to figure out which
+# remote to tunnel to, looking up the `[host.<name>]` block for
+# `hosts.toml`'s `default_host` and setting the existing SOT_HOST /
+# SOT_REMOTE_REPO / SOT_TCP_PORT env vars from it. The fallback chain is
+# env wins → hosts.toml default_host → error if none configured.
+#
+# ADR 0042 L2a codex review, item I: the state-toml `last_host` read
+# (`Read-SotLastHost`, ADR 0015) is DELETED. Under L2a the frontend holds
+# one connection per configured host at once and attributes a
+# `--socket`/`--tcp` CLI override to `default_host` specifically (hosts.rs
+# `resolve_connections`) — a stale `last_host` here (the field now means
+# "active host at QUIT" on the frontend side, an entirely different thing;
+# see state_persistence.rs's field doc) would make the launcher tunnel to
+# host B while a connection the frontend labels A actually reaches B's
+# daemon. Per-host tunnels (routing each configured host's own SSH
+# forward, not just the launcher's single one) are a later slice.
 function Read-SotHosts {
     param([string]$Path)
     $cfg = @{ default_host = $null; hosts = @{} }
@@ -311,11 +309,8 @@ function Read-SotHosts {
 
 $hostsTomlPath = Join-Path $repo '.sot\hosts.toml'
 $hostsCfg = Read-SotHosts -Path $hostsTomlPath
-$lastHost = Read-SotLastHost
 $activeHostName = if ($env:SOT_HOST_NAME) {
     $env:SOT_HOST_NAME
-} elseif ($lastHost) {
-    $lastHost
 } elseif ($hostsCfg.default_host) {
     $hostsCfg.default_host
 } else {

@@ -128,7 +128,7 @@ PowerShell side does not layer).
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `default_host` | string | *(none)* | Host used when no `last_host` has been picked yet. The launcher resolves the target as: env vars (`SOT_HOST` etc.) → persisted `last_host` → `default_host` → error ("no backend host configured") if none of those resolve. |
+| `default_host` | string | *(none)* | The host the launcher connects to. The launcher resolves the target as: env vars (`SOT_HOST` etc.) → `default_host` → error ("no backend host configured") if neither resolves. (Pre-ADR-0042-L2a this also fell back to a persisted `last_host` the launcher read from frontend state; that step is deleted — see the note below.) |
 
 ### `[host.<name>]`
 

@@ -47,9 +47,8 @@ use sot_protocol::{
     MonitorHistoryReq, MonitorHistoryRes, MonitorSubscribeRes, MonitorTickEvt, PlutoOpenReq,
     PlutoOpenRes, PreviewGetReq, PreviewGetRes, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyScrollReq,
     PtyWriteReq, QuartoOpenReq, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt, ReplRunFileReq,
-    ReplRunFileRes, TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxCreateSessionReq,
-    TmuxKillSessionReq, TmuxListPanesReq, TmuxListPanesRes, TmuxListSessionsRes, TmuxPane,
-    TmuxSession, ToggleHiddenReq, TreeChildrenReq, TreeChildrenRes, TreeNode, TreeRootReq,
+    ReplRunFileRes, TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxListPanesReq, TmuxListPanesRes,
+    TmuxPane, ToggleHiddenReq, TreeChildrenReq, TreeChildrenRes, TreeNode, TreeRootReq,
     TreeRootRes, VideoOpenReq, VideoOpenRes, WorkspaceListReq, WorkspaceListRes,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -433,32 +432,19 @@ pub enum IncomingEvt {
         #[allow(dead_code)]
         payload: Value,
     },
-    /// Sessions mode (ADR 0013): `tmux.list_sessions` reply — every alive
-    /// session on the backend's host tmux server (the same server the
-    /// backend daemon itself lives in per ADR 0010).
-    #[allow(dead_code)]
-    TmuxSessions {
-        sessions: Vec<TmuxSession>,
-    },
     /// `tmux.list_panes` reply for the queried session (or for the whole
-    /// server when `session: None` was sent).
+    /// server when `session: None` was sent). ADR 0042 L2a codex review
+    /// deletions: the sibling `TmuxSessions`/`TmuxSessionCreated`/
+    /// `TmuxSessionKilled` replies (to `tmux.list_sessions`/
+    /// `tmux.create_session`/`tmux.kill_session`) had no production
+    /// sender — ADR 0014 moved Sessions mode onto the daemon's workspace
+    /// registry instead of scanning tmux, before this spike-era plumbing
+    /// was ever wired up.
     #[allow(dead_code)]
     TmuxPanes {
         /// Echoes the request scope; `None` when the request was server-wide.
         session: Option<String>,
         panes: Vec<TmuxPane>,
-    },
-    /// `tmux.create_session` reply — backend confirms it ran the spawn.
-    /// Success carries `result: Ok(name)`; tmux-side failures land as
-    /// `result: Err(msg)` and the UI surfaces a banner.
-    #[allow(dead_code)]
-    TmuxSessionCreated {
-        result: Result<String, String>,
-    },
-    /// `tmux.kill_session` reply, same Ok/Err shape as create.
-    #[allow(dead_code)]
-    TmuxSessionKilled {
-        result: Result<String, String>,
     },
     /// `tmux.capture_pane` reply: scrollback bytes for the requested target.
     /// Used by Sessions-mode col-3 live tail.
@@ -1050,25 +1036,22 @@ pub enum OutgoingReq {
     /// Keyboard PgUp/PgDn scrollback paging for the LLM pane — the backend
     /// drives tmux copy-mode (`op::PTY_SCROLL`). Fire-and-forget.
     PtyScroll { up: bool },
-    /// Sessions-mode ops (ADR 0013 B1 backend; B2-B5 consumes here).
-    /// All five round-trip through the host tmux server; responses surface
-    /// as the matching `IncomingEvt::Tmux*` variants. Kept as
-    /// `#[allow(dead_code)]` until Sessions-mode UI lands the call sites.
-    #[allow(dead_code)]
-    TmuxListSessions,
+    /// Sessions-mode ops (ADR 0013 B1 backend; B2-B5 consumes here) that
+    /// round-trip through the host tmux server; responses surface as the
+    /// matching `IncomingEvt::Tmux*` variants. ADR 0042 L2a codex review
+    /// deletions: `TmuxListSessions`/`TmuxCreateSession`/`TmuxKillSession`
+    /// (and their `IncomingEvt::TmuxSessions`/`TmuxSessionCreated`/
+    /// `TmuxSessionKilled` replies) never got a call site — ADR 0014 moved
+    /// Sessions mode onto the daemon's workspace registry
+    /// (WorkspaceList/Workspaces) before this spike-era plumbing was ever
+    /// wired up. `TmuxListPanes`/`TmuxCapturePane` stay: both are live,
+    /// host-qualified (ADR 0042 L2a), and fired from Sessions-mode row
+    /// expansion / the live-tail preview.
     #[allow(dead_code)]
     TmuxListPanes {
         /// `None` lists across the whole server; `Some(name)` scopes to one session.
         session: Option<String>,
     },
-    #[allow(dead_code)]
-    TmuxCreateSession {
-        name: String,
-        command: Option<String>,
-        cwd: Option<String>,
-    },
-    #[allow(dead_code)]
-    TmuxKillSession { name: String },
     #[allow(dead_code)]
     TmuxCapturePane { target: String, lines: u32 },
     /// List subdirectories of `path`. Used by the Sessions-mode workspace
@@ -1266,12 +1249,9 @@ enum PendingKind {
     PtyOpen {
         target: Option<String>,
     },
-    TmuxListSessions,
     TmuxListPanes {
         session: Option<String>,
     },
-    TmuxCreateSession,
-    TmuxKillSession,
     TmuxCapturePane {
         target: String,
     },
@@ -2400,16 +2380,6 @@ where
                         )
                         .await?;
                     }
-                    OutgoingReq::TmuxListSessions => {
-                        tracing::debug!(id, "→ tmux.list_sessions");
-                        codec::write_frame(
-                            &mut tx,
-                            &Frame::req(id, op::TMUX_LIST_SESSIONS, serde_json::json!({})),
-                            None,
-                        )
-                        .await?;
-                        pending.insert(id, PendingKind::TmuxListSessions);
-                    }
                     OutgoingReq::TmuxListPanes { session } => {
                         tracing::debug!(?session, id, "→ tmux.list_panes");
                         codec::write_frame(
@@ -2425,34 +2395,6 @@ where
                         )
                         .await?;
                         pending.insert(id, PendingKind::TmuxListPanes { session });
-                    }
-                    OutgoingReq::TmuxCreateSession { name, command, cwd } => {
-                        tracing::info!(%name, ?command, ?cwd, id, "→ tmux.create_session");
-                        codec::write_frame(
-                            &mut tx,
-                            &Frame::req(
-                                id,
-                                op::TMUX_CREATE_SESSION,
-                                serde_json::to_value(TmuxCreateSessionReq { name, command, cwd })?,
-                            ),
-                            None,
-                        )
-                        .await?;
-                        pending.insert(id, PendingKind::TmuxCreateSession);
-                    }
-                    OutgoingReq::TmuxKillSession { name } => {
-                        tracing::info!(%name, id, "→ tmux.kill_session");
-                        codec::write_frame(
-                            &mut tx,
-                            &Frame::req(
-                                id,
-                                op::TMUX_KILL_SESSION,
-                                serde_json::to_value(TmuxKillSessionReq { name })?,
-                            ),
-                            None,
-                        )
-                        .await?;
-                        pending.insert(id, PendingKind::TmuxKillSession);
                     }
                     OutgoingReq::TmuxCapturePane { target, lines } => {
                         tracing::debug!(%target, lines, id, "→ tmux.capture_pane");
@@ -3378,18 +3320,6 @@ fn handle_response_frame(
                     }
                 }
             }
-            PendingKind::TmuxListSessions => {
-                match serde_json::from_value::<TmuxListSessionsRes>(frame.payload) {
-                    Ok(res) => {
-                        emit(IncomingEvt::TmuxSessions {
-                            sessions: res.sessions,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "tmux.list_sessions res parse failed");
-                    }
-                }
-            }
             PendingKind::TmuxListPanes { session } => {
                 match serde_json::from_value::<TmuxListPanesRes>(frame.payload) {
                     Ok(res) => {
@@ -3402,14 +3332,6 @@ fn handle_response_frame(
                         tracing::warn!(error = %e, "tmux.list_panes res parse failed");
                     }
                 }
-            }
-            PendingKind::TmuxCreateSession => {
-                let result = tmux_op_result(&frame.payload);
-                emit(IncomingEvt::TmuxSessionCreated { result });
-            }
-            PendingKind::TmuxKillSession => {
-                let result = tmux_op_result(&frame.payload);
-                emit(IncomingEvt::TmuxSessionKilled { result });
             }
             PendingKind::TmuxCapturePane { target } => {
                 match serde_json::from_value::<TmuxCapturePaneRes>(frame.payload) {
@@ -3946,27 +3868,6 @@ fn parse_scan_entity(v: &Value) -> ScanEntity {
             .unwrap_or_default()
             .to_string(),
     }
-}
-
-/// Translate the backend's tmux op reply payload into a Result. Backend
-/// returns `{name: "..."}` on success and `{error, code: "tmux_failed"}`
-/// on failure (see `handlers.rs::tmux_error_frame`). The chrome wants a
-/// single Result-shaped event for both shapes.
-fn tmux_op_result(payload: &Value) -> Result<String, String> {
-    if let Some(code) = payload.get("code").and_then(|v| v.as_str()) {
-        let msg = payload
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or(code)
-            .to_string();
-        return Err(msg);
-    }
-    let name = payload
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    Ok(name)
 }
 
 #[cfg(test)]

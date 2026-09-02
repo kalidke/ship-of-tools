@@ -2688,14 +2688,6 @@ struct AutostartScan {
     last_pty: std::time::Instant,
 }
 
-/// How long an auto-start launch's "launching" hold suppresses a re-launch
-/// (see `launching_sessions`). Covers ccb boot + the `advance_autostart_scan`
-/// confirm latency (SETTLE 1.2s + ccb footer render, a few seconds), with
-/// headroom. A launch lost to a pty re-target ages past this and retries on
-/// the next attach; a real launch is promoted to `autostarted_sessions` by
-/// the confirm-scan well before it expires.
-const AUTOSTART_LAUNCH_HOLD: std::time::Duration = std::time::Duration::from_secs(12);
-
 /// Heuristic: does this pane's visible text show a *running* Claude Code TUI?
 /// Matches stable chrome present across boot/idle/working states so we don't
 /// re-launch claude into a pane that already has it (which would type the
@@ -3344,13 +3336,19 @@ struct State {
     /// agent on the next attach, so the forgotten set self-heals.
     autostarted_sessions: std::collections::HashSet<String>,
     /// tmux session → the `Instant` we last *fired* an auto-start launch into
-    /// it. A time-bounded "launching" hold (NOT a permanent mark): while a
-    /// stamp is within `AUTOSTART_LAUNCH_HOLD` the attach guard skips
-    /// re-launching (so a rapid re-attach during ccb boot can't double-fire
-    /// `ccb` into the first instance's prompt). A launch lost to a pty
-    /// re-target is never confirmed by the scan, so its stamp simply ages
-    /// out — the guard then stops skipping and the session retries on the
-    /// next attach. The 4171 confirm-scan promotes a stamp into
+    /// it. ADR 0042 L2a codex review deletions: the read-side "is this
+    /// stamp still within its hold window" guard (`launching_held`,
+    /// `AUTOSTART_LAUNCH_HOLD`) had zero call sites (compiler-confirmed
+    /// dead) and is deleted; this map is now written (insert on fire,
+    /// remove on confirm) but not read back for a re-launch decision.
+    /// Left in place because the rest of the autostart/delivery chain
+    /// this field belongs to (`AutostartScan`, `advance_autostart_scan`,
+    /// `autostart_claude_in_pane`, `pending_autostart`) still has
+    /// syntactic call sites the compiler doesn't flag, even though a
+    /// data-flow read shows `pending_autostart` is never set to `Some`
+    /// anywhere — auditing/retiring that whole chain is a separate,
+    /// larger change than this deletion pass. The 4171 confirm-scan
+    /// promotes a stamp into
     /// `autostarted_sessions` (and clears it here). Fixes the old eager-mark
     /// race where a lost launch left the session permanently marked → a bare
     /// shell that never retried.
@@ -4444,19 +4442,42 @@ impl State {
             tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
         )>,
     ) -> Result<Self> {
-        // ADR 0042 L2a: the connection every "current view" op targets
-        // until the user switches workspaces. Same resolution as
-        // `default_host()` (`resolve_default_host`, shared) — `self`
-        // doesn't exist yet, so `hosts_config` is loaded fresh here.
-        let active_host: crate::hosts::HostKey = resolve_default_host(
-            crate::hosts::load().default_host,
-            &conns,
-            "offline".to_string(),
-        );
+        // Loaded here (rather than at each of its several uses below) so
+        // `last_host` and the window-geometry fields below all read the
+        // SAME snapshot of the file.
+        let persisted_geom = crate::state_persistence::load();
+        // ADR 0042 L2a codex review, item H: `last_host` is the active
+        // host AT QUIT (persist_resume_state writes it every save now —
+        // see the field's own doc for the ADR 0015 -> L2a meaning
+        // change). It wins over the configured `hosts.toml default_host`
+        // whenever it's still a resolved connection, so a daily launch
+        // resumes wherever the user actually left off, not always the
+        // configured default; `resolve_default_host` (G's rule) is the
+        // fallback when there's no persisted host, or it's no longer
+        // reachable.
+        let active_host: crate::hosts::HostKey = persisted_geom
+            .last_host
+            .clone()
+            .filter(|h| conns.iter().any(|(ch, _)| ch == h))
+            .unwrap_or_else(|| {
+                resolve_default_host(
+                    crate::hosts::load().default_host,
+                    &conns,
+                    "offline".to_string(),
+                )
+            });
+        // ADR 0042 L2a codex review, item H: `last_workspace_id` /
+        // `last_bl_target` were saved for WHATEVER host was active at
+        // quit. If that host is unreachable now and `active_host` fell
+        // back to G's rule (a DIFFERENT host), those saved values name a
+        // workspace/session that may not exist -- or worse, exist under
+        // the SAME name -- on the fallback host. Restore them only when
+        // we actually resumed onto the host they were saved for.
+        let resume_matches_last_host =
+            persisted_geom.last_host.as_deref() == Some(active_host.as_str());
         // Restore previous window geometry on launch. Saved in logical
         // pixels so cross-DPR launches behave sensibly. Defaults are
         // ~50% bigger than the spike's original 1024×700.
-        let persisted_geom = crate::state_persistence::load();
         let init_w = persisted_geom.window_w.unwrap_or(1536.0);
         let init_h = persisted_geom.window_h.unwrap_or(1050.0);
         // Loaded here rather than at first use (the Terminal-drawer resume,
@@ -4999,21 +5020,32 @@ impl State {
             tmux_capture_fired_for: None,
             // Restored BL target so the first pty.open re-attaches to
             // wherever the last session left off. None → DEFAULT (sot-llm).
-            // The persisted state is single-host (H, not yet done) --
-            // paired with the resolved startup `active_host` here so the
-            // type carries an owner from the moment it's set.
-            bl_pane_target: crate::state_persistence::load()
-                .last_bl_target
-                .map(|t| (active_host.clone(), t)),
+            // Only restored when we actually resumed onto the host it was
+            // saved for (`resume_matches_last_host`, ADR 0042 L2a codex
+            // review item H) -- a session name saved for a DIFFERENT host
+            // (G's fallback kicked in) could collide with an unrelated
+            // same-named session on this one.
+            bl_pane_target: if resume_matches_last_host {
+                persisted_geom
+                    .last_bl_target
+                    .clone()
+                    .map(|t| (active_host.clone(), t))
+            } else {
+                None
+            },
             // Harness runs (capture or --ephemeral) skip the restore: a
             // persisted workspace switch re-fires tree.root + a root preview
             // after --capture-preview's one-shot, clobbering the captured
             // node with whatever the live session was parked on. Harness
-            // runs must be deterministic.
-            active_workspace_id: if cli.capture.is_some() || cli.ephemeral {
+            // runs must be deterministic. Also gated on
+            // `resume_matches_last_host` -- see bl_pane_target above.
+            active_workspace_id: if cli.capture.is_some()
+                || cli.ephemeral
+                || !resume_matches_last_host
+            {
                 None
             } else {
-                crate::state_persistence::load().last_workspace_id
+                persisted_geom.last_workspace_id.clone()
             },
             hosts_config: crate::hosts::load(),
             host_connected: HashMap::new(),
@@ -5990,18 +6022,26 @@ impl State {
             .map(|p| p.to_logical::<f64>(scale));
         let s = crate::state_persistence::GlobalState {
             last_mode: Some(self.mode.label().to_string()),
-            // The persisted GlobalState is still single-host (H, not
-            // yet done) -- drop the owner, keep the session name, same
-            // shape as before this field carried a host.
+            // The persisted GlobalState is still single-host -- drop the
+            // owner, keep the session name. `last_workspace_id` and
+            // `last_bl_target` are meaningful only paired with
+            // `last_host` below (State::new's `resume_matches_last_host`
+            // gate is the read side of that pairing: it discards both
+            // when the resumed active_host isn't the one they were
+            // saved for).
             last_bl_target: self.bl_pane_target.as_ref().map(|(_, s)| s.clone()),
             last_workspace_id: self.active_workspace_id.clone(),
-            // ADR 0042 L2a: no longer written. `last_host` was ADR 0015's
-            // "pick a host, Ctrl+Q + relaunch" single-host-swap signal to
-            // the launcher; L2a's multi-host connection set supersedes it
-            // (docs/adr/0015-hosts-targeting.md carries the superseded
-            // note). The launcher's READ side is untouched — deferred to
-            // a later slice (per-host tunnels) rather than broken here.
-            last_host: None,
+            // ADR 0042 L2a codex review, item H: REPURPOSED. This field
+            // was ADR 0015's "pick a host, Ctrl+Q + relaunch" signal to
+            // the LAUNCHER (which host to route the SSH tunnel + remote
+            // daemon spawn to) -- superseded by L2a's multi-host
+            // connection set, and the launcher's own read of it is
+            // deleted (item I; per-host tunnels are a later slice). Its
+            // NEW meaning, entirely FE-internal: the active host at
+            // quit, so a daily launch resumes wherever the user actually
+            // left off rather than always the configured default (see
+            // State::new's active_host resolution).
+            last_host: Some(self.active_host.clone()),
             window_w: Some(inner.width),
             window_h: Some(inner.height),
             window_x: pos.as_ref().map(|p| p.x),
@@ -8076,21 +8116,6 @@ impl State {
             .map(String::from)
     }
 
-    /// True while a recent auto-start launch into `session` is still inside
-    /// its boot grace window (`AUTOSTART_LAUNCH_HOLD`). The attach guard uses
-    /// this to suppress a *second* launch during ccb startup (the
-    /// no-double-launch half); once the stamp ages past the window the guard
-    /// stops skipping, so a launch lost to a rapid pty re-target retries on
-    /// the next attach (the no-permanent-block half). A confirmed launch is
-    /// promoted out of `launching_sessions` by the 4171 sniff before it
-    /// expires, so this only ever returns true for genuinely in-flight or
-    /// lost-but-still-recent launches.
-    fn launching_held(&self, session: &str) -> bool {
-        self.launching_sessions
-            .get(session)
-            .is_some_and(|t| t.elapsed() < AUTOSTART_LAUNCH_HOLD)
-    }
-
     /// Sessions-mode (ADR 0013) attach action (B3): re-target the BL pane
     /// to the selected session. For a `session` row, attach to that
     /// session's name; for a `pane` row, attach to the parent session
@@ -8536,11 +8561,11 @@ impl State {
         if self.bl_pane_target.as_ref() != Some(&(self.active_host.clone(), session.clone())) {
             return;
         }
-        // Stamp a time-bounded "launching" hold (NOT the permanent confirmed
-        // mark — that's set only by the 4171 sniff once ccb is actually seen
-        // running). This blocks a rapid re-attach from double-firing during
-        // boot, but ages out (AUTOSTART_LAUNCH_HOLD) so a launch lost to a pty
-        // re-target retries on the next attach instead of being stuck forever.
+        // Stamp the fire time (NOT the permanent confirmed mark -- that's
+        // set only by the 4171 sniff once ccb is actually seen running).
+        // ADR 0042 L2a codex review deletions: the read-side hold-window
+        // guard this stamp used to gate (`launching_held`) is deleted as
+        // dead code -- see `launching_sessions`'s own field doc.
         self.launching_sessions
             .insert(session.clone(), std::time::Instant::now());
         // One launch flavor (pane is already cd'd to the repo root): `ccb` —
@@ -13161,88 +13186,19 @@ impl State {
                         tracing::debug!(%op, "evt");
                     }
                 }
-                // Sessions-mode events (ADR 0013). Synthesize TreeNodes
-                // for sessions / panes so Sessions mode reuses the same
-                // TreeView rendering Files / Modules use; capture-pane
-                // text feeds through `render_preview_source` as plain text.
-                crate::transport::IncomingEvt::TmuxSessions { sessions } => {
-                    let root = TreeNode {
-                        id: "sessions:".to_string(),
-                        label: "sessions".to_string(),
-                        kind: "sessions".to_string(),
-                        // Always show the [+ create new] row even when the
-                        // sessions list is empty (fresh host).
-                        has_children: true,
-                        badges: Vec::new(),
-                        payload: Default::default(),
-                    };
-                    let create_row = TreeNode {
-                        id: "sessions:+create".to_string(),
-                        label: "[+ create new]".to_string(),
-                        kind: "session_create".to_string(),
-                        has_children: false,
-                        badges: Vec::new(),
-                        payload: Default::default(),
-                    };
-                    let mut children = vec![create_row];
-                    // Only surface tmux sessions that belong to Ship of Tools. Other
-                    // sessions on the host (the user's own work, system
-                    // sessions, etc.) are intentionally hidden — Sessions mode
-                    // is a sot workspace picker, not a tmux browser.
-                    // Per ADR 0014, workspace tmux sessions are named
-                    // `sot-be-<slug>`. Until the rename to "Workspaces"
-                    // lands we still call this Sessions mode, but the visible
-                    // list is workspace-scoped.
-                    children.extend(
-                        sessions
-                            .into_iter()
-                            .filter(|s| s.name.starts_with("sot-be-"))
-                            .map(|s| {
-                                let mut payload = serde_json::Map::new();
-                                payload.insert("created".to_string(), serde_json::json!(s.created));
-                                payload
-                                    .insert("attached".to_string(), serde_json::json!(s.attached));
-                                payload.insert("windows".to_string(), serde_json::json!(s.windows));
-                                payload.insert("width".to_string(), serde_json::json!(s.width));
-                                payload.insert("height".to_string(), serde_json::json!(s.height));
-                                payload.insert(
-                                    "name".to_string(),
-                                    serde_json::Value::String(s.name.clone()),
-                                );
-                                TreeNode {
-                                    id: format!("sessions:{}", s.name),
-                                    label: s.name,
-                                    kind: "session".to_string(),
-                                    has_children: true,
-                                    badges: Vec::new(),
-                                    payload,
-                                }
-                            }),
-                    );
-                    // Route by key: the Sessions tree is Global (machine-
-                    // level, workspace-independent). Parked when another
-                    // mode is up instead of clobbering its view.
-                    let reply_key: TreeKey = (Mode::Sessions, TreeScope::Global);
-                    if reply_key != self.active_tree_key() {
-                        // Reply-over-reply allowed (newest wins, server-
-                        // ordered); only a user-stashed Sessions view
-                        // (from_reply=false) blocks the rebuild.
-                        let slot = self.tree_store.slot_mut(reply_key);
-                        if slot.view.rows.is_empty() || slot.from_reply {
-                            slot.view.set_root(root, children);
-                            slot.from_reply = true;
-                        } else {
-                            tracing::debug!(
-                                "tmux.sessions dropped — parked Sessions slot holds user state"
-                            );
-                        }
-                        continue;
-                    }
-                    self.tree.set_root(root, children);
-                    if let Some(n) = self.pending_initial_selection.take() {
-                        self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
-                    }
-                }
+                // Sessions-mode pane events (ADR 0013). ADR 0042 L2a
+                // codex review deletions: the sibling `tmux.list_sessions`/
+                // `tmux.create_session`/`tmux.kill_session` request/reply
+                // plumbing (OutgoingReq::TmuxListSessions/TmuxCreateSession/
+                // TmuxKillSession, IncomingEvt::TmuxSessions/
+                // TmuxSessionCreated/TmuxSessionKilled) had no production
+                // sender — ADR 0014 moved Sessions mode onto the daemon's
+                // workspace registry (WorkspaceList/Workspaces) instead of
+                // scanning tmux, and this dead code still built a
+                // pre-L2a, non-host-grouped tree shape that would have
+                // been actively wrong had it somehow fired. Panes stay:
+                // `tmux.list_panes` (a session's pane list, fired on
+                // Sessions-tree row expansion) is live and host-qualified.
                 crate::transport::IncomingEvt::TmuxPanes { session, panes } => {
                     let Some(session) = session else {
                         // Server-wide list isn't consumed by the UI today;
@@ -13270,33 +13226,6 @@ impl State {
                     }
                     self.tree.apply_children(&parent_id, children);
                 }
-                crate::transport::IncomingEvt::TmuxSessionCreated { result } => {
-                    match result {
-                        Ok(name) => {
-                            self.status = format!("session created · {name}");
-                            // Refresh the workspace list so the new row appears.
-                            if matches!(self.mode, Mode::Sessions) {
-                                let _ = self.send(OutgoingReq::WorkspaceList);
-                            }
-                        }
-                        Err(msg) => {
-                            self.status = format!("session create failed · {msg}");
-                            tracing::warn!(error = %msg, "tmux.create_session failed");
-                        }
-                    }
-                }
-                crate::transport::IncomingEvt::TmuxSessionKilled { result } => match result {
-                    Ok(name) => {
-                        self.status = format!("session killed · {name}");
-                        if matches!(self.mode, Mode::Sessions) {
-                            let _ = self.send(OutgoingReq::WorkspaceList);
-                        }
-                    }
-                    Err(msg) => {
-                        self.status = format!("session kill failed · {msg}");
-                        tracing::warn!(error = %msg, "tmux.kill_session failed");
-                    }
-                },
                 crate::transport::IncomingEvt::TmuxPaneCaptured { target, text } => {
                     // Route through render_preview_source as plain text so
                     // the existing markdown-plain renderer shapes it into
