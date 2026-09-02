@@ -41,11 +41,16 @@ Two small helpers used below, for turning a CLI-style slug into a display
 title and a human title into a slug:
 
 ```bash
-titleize() { # "foo-bar_baz" -> "Foo Bar Baz"
-  echo "$1" | tr -- '-_' '  ' | awk '{for(i=1;i<=NF;i++)$i=toupper(substr($i,1,1)) substr($i,2); print}'
+# NOTE (skill-text rule): Claude Code substitutes positional-argument tokens
+# (a dollar sign followed by a digit, and the all-arguments variable) into a
+# skill's text when the skill is invoked with arguments, so NOTHING below may
+# use a shell positional parameter or awk's whole-line variable — the helpers
+# are stdin filters and awk uses the parenthesized form of that variable.
+titleize() { # stdin "foo-bar_baz" -> "Foo Bar Baz"
+  tr -- '-_' '  ' | awk '{for(i=1;i<=NF;i++)$i=toupper(substr($i,1,1)) substr($i,2); print}'
 }
-slugify() { # "Foo Bar, baz!" -> "foo-bar-baz"
-  echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g'
+slugify() { # stdin "Foo Bar, baz!" -> "foo-bar-baz"
+  tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g'
 }
 ```
 
@@ -72,7 +77,7 @@ skeleton.
 3. **Set `SITE_NAME`.** Default is the repo directory name; `--name` overrides.
 
    ```bash
-   NAME="${1:-$(basename "$REPO")}"   # or the value passed after --name
+   NAME="<the value given after --name>"   # when no --name was given: NAME="$(basename "$REPO")"
    sed -i "s|^const SITE_NAME = \"project-name\";\$|const SITE_NAME = \"$NAME\";|" \
      "$REPO/project-log/assets/site.js"
    ```
@@ -127,8 +132,8 @@ case "$KIND" in
   *) echo "unknown --kind: $KIND (use computational or wet-lab)" >&2; exit 1 ;;
 esac
 
-TITLE="$(titleize "$SLUG")"
-CAMPAIGN_TITLE="$(titleize "$CAMPAIGN")"
+TITLE="$(printf '%s' "$SLUG" | titleize)"
+CAMPAIGN_TITLE="$(printf '%s' "$CAMPAIGN" | titleize)"
 TODAY="$(date +%F)"
 
 DEST="$REPO/project-log/experiments/$CAMPAIGN/$SLUG.html"
@@ -165,10 +170,10 @@ NEWLINE="      [\"experiments/$CAMPAIGN/$SLUG.html\", \"$TITLE\"],"
 SITEJS="$REPO/project-log/assets/site.js"
 TMP="$(mktemp)"
 awk -v section="$SECTION" -v newline="$NEWLINE" '
-  $0 == "    title: \"" section "\"," { insection=1 }
-  insection && $0 == "    pages: [],"  { print "    pages: ["; print newline; print "    ],"; insection=0; next }
-  insection && $0 == "    pages: ["    { print; inpages=1; insection=0; next }
-  inpages && $0 == "    ],"            { print newline; print; inpages=0; next }
+  $(0) == "    title: \"" section "\"," { insection=1 }
+  insection && $(0) == "    pages: [],"  { print "    pages: ["; print newline; print "    ],"; insection=0; next }
+  insection && $(0) == "    pages: ["    { print; inpages=1; insection=0; next }
+  inpages && $(0) == "    ],"            { print newline; print; inpages=0; next }
   { print }
 ' "$SITEJS" > "$TMP"
 mv "$TMP" "$SITEJS"
@@ -192,7 +197,7 @@ Adds one dated journal entry. Default date is today. Journal entries are
 ```bash
 DATE="${DATE:-$(date +%F)}"
 TITLE="<title>"
-SLUG="$(slugify "$TITLE")"
+SLUG="$(printf '%s' "$TITLE" | slugify)"
 
 DEST="$REPO/project-log/journal/$DATE-$SLUG.html"
 [ -f "$DEST" ] && { echo "$DEST already exists" >&2; exit 1; }
@@ -217,7 +222,7 @@ already there:
 IDX="$REPO/project-log/journal/index.html"
 ROW="            <tr><td>$DATE</td><td><a href=\"$DATE-$SLUG.html\">$TITLE</a></td><td></td></tr>"
 TMP="$(mktemp)"
-awk -v row="$ROW" '{ print; if ($0 == "          <tbody>") print row }' "$IDX" > "$TMP"
+awk -v row="$ROW" '{ print; if ($(0) == "          <tbody>") print row }' "$IDX" > "$TMP"
 mv "$TMP" "$IDX"
 ```
 
