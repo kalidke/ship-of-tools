@@ -2061,6 +2061,34 @@ struct FreshWorkspaceCaches {
     default_workspace_slug: Option<String>,
 }
 
+/// One host's `session_host` node in the Sessions tree (ADR 0042 L2a) —
+/// pure, no `State` dependency, so `build_sessions_tree`'s "every configured
+/// host shows up, connected or not" behavior is directly unit-testable.
+/// `has_list` (not `connected`) drives `has_children`: a host can be
+/// connected but simply not have answered `workspace.list` yet, and either
+/// way there's nothing to expand into until it has.
+fn host_tree_node(host: &HostKey, connected: bool, has_list: bool, is_active: bool) -> TreeNode {
+    let mut badges = vec![if connected {
+        "connected"
+    } else {
+        "unreachable"
+    }
+    .to_string()];
+    if is_active {
+        badges.push("current".to_string());
+    }
+    let mut payload = serde_json::Map::new();
+    payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
+    TreeNode {
+        id: format!("sessions:host:{host}"),
+        label: format!("{HOST_DIVIDER_GLYPH} {host}"),
+        kind: "session_host".to_string(),
+        has_children: has_list,
+        badges,
+        payload,
+    }
+}
+
 /// Pure core of the ADR 0042 L2a workspace-cache rebuild: given the union
 /// (`ordered_hosts` for display order, `lists` for each host's last-known
 /// `workspace.list`) and `active_host`, computes every workspace-scoped
@@ -6836,12 +6864,15 @@ impl State {
             .unwrap_or_else(|| self.active_host.clone())
     }
 
+    /// Every connection in display order (ADR 0042 L2a) — local-first,
+    /// then hosts.toml order, from `conns` (fixed at startup). Deliberately
+    /// NOT filtered to hosts that have answered a `workspace.list` yet: L2's
+    /// acceptance criterion is that an unreachable (or still-mid-hello) host
+    /// is a VISIBLE node marked unreachable, not an absent one.
+    /// `fresh_workspace_caches` is what skips a host with no list — it has
+    /// nothing to contribute to the caches, but it still gets a tree node.
     fn ordered_hosts(&self) -> Vec<HostKey> {
-        self.conns
-            .iter()
-            .map(|(h, _)| h.clone())
-            .filter(|h| self.workspace_lists.contains_key(h))
-            .collect()
+        self.conns.iter().map(|(h, _)| h.clone()).collect()
     }
 
     /// Which host owns tmux session `name` — scans `workspace_lists`
@@ -7030,25 +7061,9 @@ impl State {
             .into_iter()
             .map(|host| {
                 let connected = self.host_connected.get(&host).copied().unwrap_or(false);
-                let mut badges = vec![if connected {
-                    "connected"
-                } else {
-                    "unreachable"
-                }
-                .to_string()];
-                if host == self.active_host {
-                    badges.push("current".to_string());
-                }
-                let mut payload = serde_json::Map::new();
-                payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
-                TreeNode {
-                    id: format!("sessions:host:{host}"),
-                    label: format!("{HOST_DIVIDER_GLYPH} {host}"),
-                    kind: "session_host".to_string(),
-                    has_children: true,
-                    badges,
-                    payload,
-                }
+                let has_list = self.workspace_lists.contains_key(&host);
+                let is_active = host == self.active_host;
+                host_tree_node(&host, connected, has_list, is_active)
             })
             .collect();
         (root, children)
@@ -7075,6 +7090,12 @@ impl State {
         else {
             return false;
         };
+        // A host with no list yet has no children (matches the tree's own
+        // `has_children: false` for that state, ADR 0042 L2's acceptance:
+        // still a visible node, just nothing to expand into).
+        if !self.workspace_lists.contains_key(&host) {
+            return false;
+        }
         let parent_id = row.node.id.clone();
         let mut payload = serde_json::Map::new();
         payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
@@ -24442,6 +24463,42 @@ mod tests {
             err.is_err(),
             "an unrouteable host must surface as an error, not vanish"
         );
+    }
+
+    #[test]
+    fn every_configured_host_shows_up_even_without_a_list_yet() {
+        // ADR 0042 L2's acceptance: an unreachable (or still-mid-hello)
+        // host is a VISIBLE node marked unreachable, not an absent one.
+        // Two conns, one has answered workspace.list — both still get a
+        // tree node; the empty one is flagged unreachable and childless.
+        let ordered = vec!["alpha".to_string(), "beta".to_string()];
+        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        lists.insert("alpha".to_string(), vec![ws_info("sot", "sot-be-sot")]);
+        // "beta" has no list yet.
+        let host_connected: HashMap<HostKey, bool> =
+            [("alpha".to_string(), true)].into_iter().collect();
+
+        let children: Vec<TreeNode> = ordered
+            .iter()
+            .map(|host| {
+                let connected = host_connected.get(host).copied().unwrap_or(false);
+                let has_list = lists.contains_key(host);
+                host_tree_node(host, connected, has_list, host == "alpha")
+            })
+            .collect();
+
+        assert_eq!(children.len(), 2, "every configured host gets a node");
+        assert_eq!(children[0].id, "sessions:host:alpha");
+        assert!(children[0].badges.iter().any(|b| b == "connected"));
+        assert!(children[0].has_children);
+
+        assert_eq!(children[1].id, "sessions:host:beta");
+        assert!(
+            children[1].badges.iter().any(|b| b == "unreachable"),
+            "no list yet → unreachable badge, got {:?}",
+            children[1].badges
+        );
+        assert!(!children[1].has_children, "no list yet → no children");
     }
 }
 
