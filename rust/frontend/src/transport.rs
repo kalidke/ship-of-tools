@@ -31,6 +31,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender as StdSender;
 use std::sync::Arc;
 
+use crate::hosts::HostKey;
 use anyhow::{Context, Result};
 use base64::Engine;
 use interprocess::local_socket::{
@@ -39,15 +40,14 @@ use interprocess::local_socket::{
 };
 use serde_json::Value;
 use sot_protocol::{
-    codec, op, AgentSendReq, ConceptReadReq, ConceptReadRes, ConceptWriteReq, ConceptWriteRes, DocsOpenReq,
-    DocsOpenRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq,
-    FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
-    HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
+    codec, op, AgentSendReq, ConceptReadReq, ConceptReadRes, ConceptWriteReq, ConceptWriteRes,
+    DocsOpenReq, DocsOpenRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq,
+    FileReadReq, FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame,
+    HelloReq, HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
     MonitorHistoryReq, MonitorHistoryRes, MonitorSubscribeRes, MonitorTickEvt, PlutoOpenReq,
     PlutoOpenRes, PreviewGetReq, PreviewGetRes, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyScrollReq,
-    PtyWriteReq,
-    QuartoOpenReq, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt,
-    ReplRunFileReq, ReplRunFileRes, TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxCreateSessionReq,
+    PtyWriteReq, QuartoOpenReq, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt, ReplRunFileReq,
+    ReplRunFileRes, TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxCreateSessionReq,
     TmuxKillSessionReq, TmuxListPanesReq, TmuxListPanesRes, TmuxListSessionsRes, TmuxPane,
     TmuxSession, ToggleHiddenReq, TreeChildrenReq, TreeChildrenRes, TreeNode, TreeRootReq,
     TreeRootRes, VideoOpenReq, VideoOpenRes, WorkspaceListReq, WorkspaceListRes,
@@ -1323,7 +1323,11 @@ enum PendingKind {
 /// / `&mut pending` call site in `run_protocol` needs no change.
 struct PendingGuard<'a> {
     map: HashMap<u64, PendingKind>,
-    evt_tx: &'a StdSender<IncomingEvt>,
+    evt_tx: &'a StdSender<(HostKey, IncomingEvt)>,
+    /// ADR 0042 L2a: which connection this guard belongs to, so its Drop
+    /// tags the `FigureGetFailed` flush the same way every other send on
+    /// this connection is tagged.
+    host: HostKey,
 }
 
 impl std::ops::Deref for PendingGuard<'_> {
@@ -1350,7 +1354,9 @@ impl Drop for PendingGuard<'_> {
             })
             .collect();
         for url in urls {
-            let _ = self.evt_tx.send(IncomingEvt::FigureGetFailed { url });
+            let _ = self
+                .evt_tx
+                .send((self.host.clone(), IncomingEvt::FigureGetFailed { url }));
         }
     }
 }
@@ -1411,8 +1417,9 @@ pub fn outgoing_channel() -> (UnboundedSender<OutgoingReq>, UnboundedReceiver<Ou
 /// thread sees state updates without polling.
 pub fn spawn(
     rt: &tokio::runtime::Runtime,
+    host: HostKey,
     config: TransportConfig,
-    evt_tx: StdSender<IncomingEvt>,
+    evt_tx: StdSender<(HostKey, IncomingEvt)>,
     out_rx: UnboundedReceiver<OutgoingReq>,
     window: Arc<Window>,
     reconnect_now: Arc<tokio::sync::Notify>,
@@ -1439,6 +1446,7 @@ pub fn spawn(
         const BACKOFF_CAP_MS: u64 = 5_000;
         loop {
             match connect_and_run(
+                host.clone(),
                 config.clone(),
                 evt_tx.clone(),
                 &mut out_rx,
@@ -1448,18 +1456,22 @@ pub fn spawn(
             .await
             {
                 Ok(()) => {
-                    tracing::info!("transport task exited cleanly");
+                    tracing::info!(%host, "transport task exited cleanly");
                     return;
                 }
                 Err(e) => {
                     tracing::warn!(
+                        %host,
                         error = %e,
                         backoff_ms,
                         "transport task ended; reconnecting"
                     );
-                    let _ = evt_tx.send(IncomingEvt::Disconnected {
-                        reason: format!("{e:#} — retry in {backoff_ms}ms (F5 to retry now)"),
-                    });
+                    let _ = evt_tx.send((
+                        host.clone(),
+                        IncomingEvt::Disconnected {
+                            reason: format!("{e:#} — retry in {backoff_ms}ms (F5 to retry now)"),
+                        },
+                    ));
                     window.request_redraw();
                     tokio::select! {
                         _ = tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)) => {}
@@ -1481,8 +1493,9 @@ pub fn spawn(
 /// from there is *not* retried via the other transport — that's a runtime
 /// disconnect, not a startup-time choose-your-transport decision.
 async fn connect_and_run(
+    host: HostKey,
     config: TransportConfig,
-    evt_tx: StdSender<IncomingEvt>,
+    evt_tx: StdSender<(HostKey, IncomingEvt)>,
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
     window: Arc<Window>,
     backoff_ms: &mut u64,
@@ -1490,10 +1503,11 @@ async fn connect_and_run(
     if let Some(pipe_path) = config.pipe.as_ref() {
         match connect_pipe(pipe_path).await {
             Ok(stream) => {
-                tracing::info!(?pipe_path, "connected via local socket");
+                tracing::info!(%host, ?pipe_path, "connected via local socket");
                 let (rx, tx) = stream.split();
                 let rx = codec::buffered(rx);
                 return run_protocol(
+                    host,
                     rx,
                     tx,
                     config.token.as_deref(),
@@ -1529,10 +1543,11 @@ async fn connect_and_run(
         if let Err(e) = stream.set_nodelay(true) {
             tracing::warn!(error = %e, "set_nodelay failed on tcp stream");
         }
-        tracing::info!(%tcp_addr, "connected via tcp");
+        tracing::info!(%host, %tcp_addr, "connected via tcp");
         let (rx, tx) = stream.into_split();
         let rx = codec::buffered(rx);
         return run_protocol(
+            host,
             rx,
             tx,
             config.token.as_deref(),
@@ -1575,10 +1590,11 @@ async fn read_owned<R: AsyncRead + Unpin>(
 /// over the read/write types so the same code path serves the local-socket
 /// transport and the TCP transport.
 async fn run_protocol<R, W>(
+    host: HostKey,
     mut rx: tokio::io::BufReader<R>,
     mut tx: W,
     token: Option<&str>,
-    evt_tx: &StdSender<IncomingEvt>,
+    evt_tx: &StdSender<(HostKey, IncomingEvt)>,
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
     window: &Arc<Window>,
     backoff_ms: &mut u64,
@@ -1601,14 +1617,27 @@ where
     let mut pending = PendingGuard {
         map: HashMap::new(),
         evt_tx,
+        host: host.clone(),
+    };
+    // Tags every run_protocol-level send with `host` — ADR 0042 L2a: the
+    // app's receiver is `Receiver<(HostKey, IncomingEvt)>`, tagged at each
+    // send (this closure), not by a separate forwarding task.
+    // `handle_response_frame` (a separate fn, most of the actual sends)
+    // carries its own copy of the same pattern.
+    let emit = {
+        let host = host.clone();
+        move |ev: IncomingEvt| {
+            let _ = evt_tx.send((host.clone(), ev));
+        }
     };
 
     // Reconnect memory: client_id stays stable across runs; session_id +
     // last_seen_revision feed the backend's replay path. First-ever launch
     // produces fresh values and the backend assigns a session_id we'll
     // remember for next time.
-    let mut memory = crate::state::load();
+    let mut memory = crate::state::load(&host);
     tracing::info!(
+        %host,
         client_id = %memory.client_id,
         ?memory.session_id,
         last_seen_revision = memory.last_seen_revision,
@@ -1690,7 +1719,7 @@ where
                 sot_protocol::PROTOCOL_VERSION,
             );
             tracing::error!(code, "hello rejected: {err_msg}");
-            let _ = evt_tx.send(IncomingEvt::ProtocolMismatch { message });
+            emit(IncomingEvt::ProtocolMismatch { message });
             window.request_redraw();
             anyhow::bail!("hello rejected: {err_msg} (code={code})");
         }
@@ -1712,14 +1741,14 @@ where
         // assigned id so the next reconnect is on the live session.
         memory.session_id = Some(hello_res.session_id.clone());
     }
-    crate::state::save(&memory).ok();
+    crate::state::save(&host, &memory).ok();
     // Hello round-trip succeeded — reset backoff to the floor so any
     // *future* disconnect in this session restarts the exponential
     // climb from 200ms rather than picking up wherever the previous
     // unrelated reconnect cycle left it (e.g. wifi flicker followed
     // by months of stable session).
     *backoff_ms = 200;
-    let _ = evt_tx.send(IncomingEvt::Connected {
+    emit(IncomingEvt::Connected {
         session_id: hello_res.session_id.clone(),
         revision: hello_res.revision,
         host: hello_res.host.clone(),
@@ -1756,7 +1785,7 @@ where
     let (frame, _) = codec::read_frame(&mut rx).await?;
     if let Some(r) = frame.rev {
         memory.last_seen_revision = memory.last_seen_revision.max(r);
-        crate::state::save(&memory).ok();
+        crate::state::save(&host, &memory).ok();
     }
     // Hold the root node id so preview.get can target it without hardcoding
     // the backend's id-format conventions in the frontend. Today files mode
@@ -1765,7 +1794,7 @@ where
     if frame.id == tree_id {
         let res: TreeRootRes = serde_json::from_value(frame.payload).context("tree.root res")?;
         root_node_id = res.node.id.clone();
-        let _ = evt_tx.send(IncomingEvt::TreeRoot {
+        emit(IncomingEvt::TreeRoot {
             // Connect-time fetch is always the default workspace (see the
             // tree.root request above). If the chrome resumed a non-default
             // active workspace it re-fires tree.root with the id set, and
@@ -1801,13 +1830,13 @@ where
     let (frame, blob) = codec::read_frame(&mut rx).await?;
     if let Some(r) = frame.rev {
         memory.last_seen_revision = memory.last_seen_revision.max(r);
-        crate::state::save(&memory).ok();
+        crate::state::save(&host, &memory).ok();
     }
     if frame.id == prev_id {
         let res: PreviewGetRes =
             serde_json::from_value(frame.payload).context("preview.get res")?;
         let bytes = blob.unwrap_or_default();
-        let _ = evt_tx.send(IncomingEvt::Preview {
+        emit(IncomingEvt::Preview {
             node_id: None,
             workspace_id: None,
             mime: res.mime,
@@ -1853,9 +1882,9 @@ where
                 let (frame, blob) = read?;
                 if let Some(r) = frame.rev {
                     memory.last_seen_revision = memory.last_seen_revision.max(r);
-                    crate::state::save(&memory).ok();
+                    crate::state::save(&host, &memory).ok();
                 }
-                handle_response_frame(frame, blob, &mut pending, evt_tx);
+                handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                 window.request_redraw();
             }
 
@@ -1874,17 +1903,17 @@ where
                     let (frame, blob) = read?;
                     if let Some(r) = frame.rev {
                         memory.last_seen_revision = memory.last_seen_revision.max(r);
-                        crate::state::save(&memory).ok();
+                        crate::state::save(&host, &memory).ok();
                     }
-                    handle_response_frame(frame, blob, &mut pending, evt_tx);
+                    handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                     window.request_redraw();
                     loop {
                         let (frame, blob) = codec::read_frame(&mut rx).await?;
                         if let Some(r) = frame.rev {
                             memory.last_seen_revision = memory.last_seen_revision.max(r);
-                            crate::state::save(&memory).ok();
+                            crate::state::save(&host, &memory).ok();
                         }
-                        handle_response_frame(frame, blob, &mut pending, evt_tx);
+                        handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                         window.request_redraw();
                     }
                 };
@@ -2718,8 +2747,16 @@ fn handle_response_frame(
     frame: Frame,
     mut blob: Option<Vec<u8>>,
     pending: &mut HashMap<u64, PendingKind>,
-    evt_tx: &StdSender<IncomingEvt>,
+    evt_tx: &StdSender<(HostKey, IncomingEvt)>,
+    host: &HostKey,
 ) {
+    // Same tag-at-the-send pattern as `run_protocol`'s own `emit` — this
+    // function carries essentially all of a connection's inbound sends, so
+    // it needs its own copy rather than threading `run_protocol`'s closure
+    // across a function boundary.
+    let emit = |ev: IncomingEvt| {
+        let _ = evt_tx.send((host.clone(), ev));
+    };
     if let Some(kind) = pending.remove(&frame.id) {
         match kind {
             PendingKind::TreeChildren {
@@ -2731,7 +2768,7 @@ fn handle_response_frame(
                 // parse below ("missing field children") and dropping.
                 if let Some(err) = frame.payload.get("error").and_then(|v| v.as_str()) {
                     tracing::warn!(%parent_id, error = %err, "tree.children answered with error");
-                    let _ = evt_tx.send(IncomingEvt::TreeChildrenFailed {
+                    emit(IncomingEvt::TreeChildrenFailed {
                         workspace_id,
                         parent_id,
                         error: err.to_string(),
@@ -2739,27 +2776,27 @@ fn handle_response_frame(
                     return;
                 }
                 match serde_json::from_value::<TreeChildrenRes>(frame.payload) {
-                Ok(res) => {
-                    let _ = evt_tx.send(IncomingEvt::TreeChildren {
-                        workspace_id,
-                        parent_id,
-                        children: res.children,
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, %parent_id, "tree.children res parse failed");
-                    let _ = evt_tx.send(IncomingEvt::TreeChildrenFailed {
-                        workspace_id,
-                        parent_id,
-                        error: e.to_string(),
-                    });
-                }
+                    Ok(res) => {
+                        emit(IncomingEvt::TreeChildren {
+                            workspace_id,
+                            parent_id,
+                            children: res.children,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, %parent_id, "tree.children res parse failed");
+                        emit(IncomingEvt::TreeChildrenFailed {
+                            workspace_id,
+                            parent_id,
+                            error: e.to_string(),
+                        });
+                    }
                 }
             }
             PendingKind::TreeRoot { workspace_id } => {
                 match serde_json::from_value::<TreeRootRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::TreeRoot {
+                        emit(IncomingEvt::TreeRoot {
                             workspace_id,
                             root: res.node,
                             children: res.children,
@@ -2794,7 +2831,7 @@ fn handle_response_frame(
                 if modules.is_empty() {
                     tracing::warn!(payload = %frame.payload, "modules.list returned no modules");
                 }
-                let _ = evt_tx.send(IncomingEvt::ModulesList {
+                emit(IncomingEvt::ModulesList {
                     workspace_id,
                     modules,
                 });
@@ -2819,7 +2856,7 @@ fn handle_response_frame(
                     .map(String::from);
                 if let Some(err) = payload.get("error").and_then(|v| v.as_str()) {
                     tracing::warn!(error = %err, "project.scan returned error");
-                    let _ = evt_tx.send(IncomingEvt::ProjectScan {
+                    emit(IncomingEvt::ProjectScan {
                         workspace_id,
                         project_root,
                         package_name,
@@ -2832,7 +2869,7 @@ fn handle_response_frame(
                         .and_then(|v| v.as_array())
                         .map(|arr| arr.iter().map(parse_scan_module).collect())
                         .unwrap_or_default();
-                    let _ = evt_tx.send(IncomingEvt::ProjectScan {
+                    emit(IncomingEvt::ProjectScan {
                         workspace_id,
                         project_root,
                         package_name,
@@ -2861,7 +2898,7 @@ fn handle_response_frame(
                             .collect()
                     })
                     .unwrap_or_default();
-                let _ = evt_tx.send(IncomingEvt::MarkdownTokens {
+                emit(IncomingEvt::MarkdownTokens {
                     lang,
                     source_hash,
                     spans,
@@ -2870,7 +2907,7 @@ fn handle_response_frame(
             PendingKind::ConceptRead { target } => {
                 match serde_json::from_value::<ConceptReadRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::ConceptRead {
+                        emit(IncomingEvt::ConceptRead {
                             target: res.target,
                             exists: res.exists,
                             content: res.content,
@@ -2894,7 +2931,7 @@ fn handle_response_frame(
                         let _ = res.blob;
                         match blob {
                             Some(svg_bytes) => {
-                                let _ = evt_tx.send(IncomingEvt::MathRendered {
+                                emit(IncomingEvt::MathRendered {
                                     latex,
                                     svg_bytes,
                                     ex: res.ex,
@@ -2918,14 +2955,14 @@ fn handle_response_frame(
             }
             PendingKind::ImageCrop { node_id } => {
                 if let Some(err) = frame.payload.get("error").and_then(|v| v.as_str()) {
-                    let _ = evt_tx.send(IncomingEvt::ImageCropFailed {
+                    emit(IncomingEvt::ImageCropFailed {
                         node_id,
                         message: err.to_string(),
                     });
                 } else {
                     match serde_json::from_value::<ImageCropRes>(frame.payload) {
                         Ok(res) => {
-                            let _ = evt_tx.send(IncomingEvt::ImageCropped {
+                            emit(IncomingEvt::ImageCropped {
                                 node_id,
                                 path: res.path,
                                 x: res.x,
@@ -2980,12 +3017,12 @@ fn handle_response_frame(
                         }
                     }
                 };
-                let _ = evt_tx.send(IncomingEvt::ConceptWriteDone { target, result });
+                emit(IncomingEvt::ConceptWriteDone { target, result });
             }
             PendingKind::FileRead { node_id } => {
                 match serde_json::from_value::<FileReadRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::FileRead {
+                        emit(IncomingEvt::FileRead {
                             node_id: res.node_id,
                             exists: res.exists,
                             content: res.content,
@@ -3047,7 +3084,7 @@ fn handle_response_frame(
                         }
                     }
                 };
-                let _ = evt_tx.send(IncomingEvt::FileWriteDone { node_id, result });
+                emit(IncomingEvt::FileWriteDone { node_id, result });
             }
             PendingKind::FileDelete { node_id } => {
                 // Mirror the backend's two shapes: happy-path FileDeleteRes or
@@ -3080,7 +3117,7 @@ fn handle_response_frame(
                         }
                     }
                 };
-                let _ = evt_tx.send(IncomingEvt::FileDeleteDone { node_id, result });
+                emit(IncomingEvt::FileDeleteDone { node_id, result });
             }
             PendingKind::FileParse { path, workspace_id } => {
                 // `file.parse` returns either {ast_hash, path, definitions}
@@ -3104,7 +3141,7 @@ fn handle_response_frame(
                         payload = %frame.payload,
                         "file.parse returned no ast_hash — drift check failed, un-latching for retry"
                     );
-                    let _ = evt_tx.send(IncomingEvt::FileParseFailed { workspace_id, path });
+                    emit(IncomingEvt::FileParseFailed { workspace_id, path });
                     return;
                 };
                 let definitions: Vec<DefinitionInfo> = frame
@@ -3136,7 +3173,7 @@ fn handle_response_frame(
                             .collect()
                     })
                     .unwrap_or_default();
-                let _ = evt_tx.send(IncomingEvt::FileParsed {
+                emit(IncomingEvt::FileParsed {
                     workspace_id,
                     path,
                     ast_hash,
@@ -3157,7 +3194,7 @@ fn handle_response_frame(
                 // the right workspace.
                 match serde_json::from_value::<PreviewGetRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::Preview {
+                        emit(IncomingEvt::Preview {
                             node_id: Some(node_id),
                             workspace_id,
                             mime: res.mime,
@@ -3197,7 +3234,7 @@ fn handle_response_frame(
                         .and_then(|v| v.as_str())
                         .unwrap_or("error");
                     tracing::warn!(%node_id, %code, %err, "preview.set_scale rejected");
-                    let _ = evt_tx.send(IncomingEvt::ScaleSetFailed {
+                    emit(IncomingEvt::ScaleSetFailed {
                         node_id,
                         message: format!("{code}: {err}"),
                     });
@@ -3205,7 +3242,7 @@ fn handle_response_frame(
                 }
                 match serde_json::from_value::<PreviewGetRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::Preview {
+                        emit(IncomingEvt::Preview {
                             node_id: Some(node_id),
                             workspace_id,
                             mime: res.mime,
@@ -3237,7 +3274,7 @@ fn handle_response_frame(
                 // both causes, both terminate as `FigureGetFailed`.
                 match serde_json::from_value::<PreviewGetRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::FigureLoaded {
+                        emit(IncomingEvt::FigureLoaded {
                             url,
                             mime: res.mime,
                             bytes: blob.unwrap_or_default(),
@@ -3245,12 +3282,16 @@ fn handle_response_frame(
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, %url, "figure.get failed or unparseable");
-                        let _ = evt_tx.send(IncomingEvt::FigureGetFailed { url });
+                        emit(IncomingEvt::FigureGetFailed { url });
                     }
                 }
                 return;
             }
-            PendingKind::FunctionMethods { module, name, workspace_id } => {
+            PendingKind::FunctionMethods {
+                module,
+                name,
+                workspace_id,
+            } => {
                 // Reply shape: `{methods: [{module, name, file, line, sig, ast_hash}, ...]}`
                 // or `{error, code}` on bad_request / module_not_found /
                 // function_not_found. We surface an empty list in the
@@ -3285,7 +3326,7 @@ fn handle_response_frame(
                 if let Some(code) = frame.payload.get("code").and_then(|v| v.as_str()) {
                     tracing::warn!(%module, %name, code, "function.methods returned error");
                 }
-                let _ = evt_tx.send(IncomingEvt::FunctionMethodsReceived {
+                emit(IncomingEvt::FunctionMethodsReceived {
                     workspace_id,
                     module,
                     name,
@@ -3300,7 +3341,7 @@ fn handle_response_frame(
                 // collected-at-once payload.
                 match serde_json::from_value::<ReplEvalRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::ReplEvalDone {
+                        emit(IncomingEvt::ReplEvalDone {
                             eval_id: res.eval_id,
                             elapsed_ms: res.elapsed_ms,
                             frames: res.frames,
@@ -3321,12 +3362,12 @@ fn handle_response_frame(
                 // chrome corrects/attaches that row, not whatever is
                 // currently selected.
                 if let Some(state_dir) = attach_direct_state_dir(&frame.payload) {
-                    let _ = evt_tx.send(IncomingEvt::PtyAttachDirect { target, state_dir });
+                    emit(IncomingEvt::PtyAttachDirect { target, state_dir });
                     return;
                 }
                 match serde_json::from_value::<PtyOpenRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::PtyOpened {
+                        emit(IncomingEvt::PtyOpened {
                             cols: res.cols,
                             rows: res.rows,
                             pane_command: res.pane_command,
@@ -3340,7 +3381,7 @@ fn handle_response_frame(
             PendingKind::TmuxListSessions => {
                 match serde_json::from_value::<TmuxListSessionsRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::TmuxSessions {
+                        emit(IncomingEvt::TmuxSessions {
                             sessions: res.sessions,
                         });
                     }
@@ -3352,7 +3393,7 @@ fn handle_response_frame(
             PendingKind::TmuxListPanes { session } => {
                 match serde_json::from_value::<TmuxListPanesRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::TmuxPanes {
+                        emit(IncomingEvt::TmuxPanes {
                             session,
                             panes: res.panes,
                         });
@@ -3364,16 +3405,16 @@ fn handle_response_frame(
             }
             PendingKind::TmuxCreateSession => {
                 let result = tmux_op_result(&frame.payload);
-                let _ = evt_tx.send(IncomingEvt::TmuxSessionCreated { result });
+                emit(IncomingEvt::TmuxSessionCreated { result });
             }
             PendingKind::TmuxKillSession => {
                 let result = tmux_op_result(&frame.payload);
-                let _ = evt_tx.send(IncomingEvt::TmuxSessionKilled { result });
+                emit(IncomingEvt::TmuxSessionKilled { result });
             }
             PendingKind::TmuxCapturePane { target } => {
                 match serde_json::from_value::<TmuxCapturePaneRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::TmuxPaneCaptured {
+                        emit(IncomingEvt::TmuxPaneCaptured {
                             target,
                             text: res.text,
                         });
@@ -3395,7 +3436,7 @@ fn handle_response_frame(
                                 has_children: e.has_children,
                             })
                             .collect();
-                        let _ = evt_tx.send(IncomingEvt::DirectoryList {
+                        emit(IncomingEvt::DirectoryList {
                             path: res.path,
                             entries,
                         });
@@ -3429,7 +3470,7 @@ fn handle_response_frame(
                         .to_string();
                     Err(msg)
                 };
-                let _ = evt_tx.send(IncomingEvt::WorkspaceCreated { result });
+                emit(IncomingEvt::WorkspaceCreated { result });
             }
             PendingKind::WorkspaceList => {
                 match serde_json::from_value::<WorkspaceListRes>(frame.payload) {
@@ -3457,7 +3498,7 @@ fn handle_response_frame(
                                 phase: w.phase,
                             })
                             .collect();
-                        let _ = evt_tx.send(IncomingEvt::Workspaces { workspaces });
+                        emit(IncomingEvt::Workspaces { workspaces });
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "workspace.list res parse failed");
@@ -3490,7 +3531,7 @@ fn handle_response_frame(
                         .to_string();
                     Err(msg)
                 };
-                let _ = evt_tx.send(IncomingEvt::WorkspaceDestroyed { result });
+                emit(IncomingEvt::WorkspaceDestroyed { result });
             }
             PendingKind::PlutoOpen => {
                 let payload = frame.payload;
@@ -3507,7 +3548,7 @@ fn handle_response_frame(
                         .to_string();
                     Err(msg)
                 };
-                let _ = evt_tx.send(IncomingEvt::PlutoOpened { result });
+                emit(IncomingEvt::PlutoOpened { result });
             }
             PendingKind::VideoOpen => {
                 let payload = frame.payload;
@@ -3524,7 +3565,7 @@ fn handle_response_frame(
                         .to_string();
                     Err(msg)
                 };
-                let _ = evt_tx.send(IncomingEvt::VideoOpened { result });
+                emit(IncomingEvt::VideoOpened { result });
             }
             PendingKind::DocsOpen => {
                 let payload = frame.payload;
@@ -3541,7 +3582,7 @@ fn handle_response_frame(
                         .to_string();
                     Err(msg)
                 };
-                let _ = evt_tx.send(IncomingEvt::DocsOpened { result });
+                emit(IncomingEvt::DocsOpened { result });
             }
             PendingKind::QuartoOpen => {
                 let payload = frame.payload;
@@ -3573,7 +3614,7 @@ fn handle_response_frame(
                         .to_string();
                     Err(msg)
                 };
-                let _ = evt_tx.send(IncomingEvt::QuartoOpened { result });
+                emit(IncomingEvt::QuartoOpened { result });
             }
             PendingKind::ReplRunFile {
                 eval_id,
@@ -3607,7 +3648,7 @@ fn handle_response_frame(
                 };
                 let _ = path;
                 let _ = fresh;
-                let _ = evt_tx.send(IncomingEvt::ReplRunFileDone { eval_id, result });
+                emit(IncomingEvt::ReplRunFileDone { eval_id, result });
             }
             PendingKind::FileDownload { dest, mut file } => {
                 let frame_id = frame.id;
@@ -3618,7 +3659,7 @@ fn handle_response_frame(
                     if file.is_some() {
                         let _ = std::fs::remove_file(&dest);
                     }
-                    let _ = evt_tx.send(IncomingEvt::FileTransferFailed {
+                    emit(IncomingEvt::FileTransferFailed {
                         op: "download",
                         message: err.to_string(),
                     });
@@ -3634,7 +3675,7 @@ fn handle_response_frame(
                                     Err(e) => {
                                         tracing::warn!(error = %e, dest = %dest.display(),
                                             "file.download: cannot create dest");
-                                        let _ = evt_tx.send(IncomingEvt::FileTransferFailed {
+                                        emit(IncomingEvt::FileTransferFailed {
                                             op: "download",
                                             message: format!("create {}: {e}", dest.display()),
                                         });
@@ -3655,13 +3696,13 @@ fn handle_response_frame(
                             if let Some(msg) = write_err {
                                 tracing::warn!(dest = %dest.display(), %msg, "file.download write failed");
                                 let _ = std::fs::remove_file(&dest);
-                                let _ = evt_tx.send(IncomingEvt::FileTransferFailed {
+                                emit(IncomingEvt::FileTransferFailed {
                                     op: "download",
                                     message: msg,
                                 });
                             } else {
                                 let written = chunk.offset + bytes.len() as u64;
-                                let _ = evt_tx.send(IncomingEvt::FileDownloadProgress {
+                                emit(IncomingEvt::FileDownloadProgress {
                                     dest: dest.clone(),
                                     written,
                                     total: chunk.total,
@@ -3681,7 +3722,7 @@ fn handle_response_frame(
                         Err(e) => {
                             tracing::warn!(error = %e, "file.download chunk parse failed");
                             let _ = std::fs::remove_file(&dest);
-                            let _ = evt_tx.send(IncomingEvt::FileTransferFailed {
+                            emit(IncomingEvt::FileTransferFailed {
                                 op: "download",
                                 message: format!("bad chunk: {e}"),
                             });
@@ -3693,14 +3734,14 @@ fn handle_response_frame(
                 let payload = frame.payload;
                 if let Some(err) = payload.get("error").and_then(|v| v.as_str()) {
                     tracing::warn!(error = %err, "file.upload failed");
-                    let _ = evt_tx.send(IncomingEvt::FileTransferFailed {
+                    emit(IncomingEvt::FileTransferFailed {
                         op: "upload",
                         message: err.to_string(),
                     });
                 } else {
                     match serde_json::from_value::<FileUploadAck>(payload) {
                         Ok(ack) => {
-                            let _ = evt_tx.send(IncomingEvt::FileUploadAck {
+                            emit(IncomingEvt::FileUploadAck {
                                 offset: ack.offset,
                                 done: ack.done,
                                 final_name: ack.final_name,
@@ -3708,7 +3749,7 @@ fn handle_response_frame(
                         }
                         Err(e) => {
                             tracing::warn!(error = %e, "file.upload ack parse failed");
-                            let _ = evt_tx.send(IncomingEvt::FileTransferFailed {
+                            emit(IncomingEvt::FileTransferFailed {
                                 op: "upload",
                                 message: format!("bad ack: {e}"),
                             });
@@ -3719,7 +3760,7 @@ fn handle_response_frame(
             PendingKind::MonitorSubscribe => {
                 match serde_json::from_value::<MonitorSubscribeRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::MonitorSubscribed {
+                        emit(IncomingEvt::MonitorSubscribed {
                             hosts: res.hosts,
                             interval_s: res.interval_s,
                         });
@@ -3730,7 +3771,7 @@ fn handle_response_frame(
             PendingKind::MonitorHistory => {
                 match serde_json::from_value::<MonitorHistoryRes>(frame.payload) {
                     Ok(res) => {
-                        let _ = evt_tx.send(IncomingEvt::MonitorHistory { hosts: res.hosts });
+                        emit(IncomingEvt::MonitorHistory { hosts: res.hosts });
                     }
                     Err(e) => tracing::warn!(error = %e, "monitor.history res parse failed"),
                 }
@@ -3760,7 +3801,7 @@ fn handle_response_frame(
                     .map(|d| d.as_millis())
                     .unwrap_or(0);
                 tracing::info!(now_ms, n = bytes.len(), "pty.evt received");
-                let _ = evt_tx.send(IncomingEvt::PtyBytes { bytes });
+                emit(IncomingEvt::PtyBytes { bytes });
             }
             Err(e) => tracing::warn!(error = %e, "pty.evt b64 decode failed"),
         }
@@ -3772,7 +3813,7 @@ fn handle_response_frame(
     if frame.kind == sot_protocol::Kind::Evt && frame.op == op::REPL_FRAME {
         match serde_json::from_value::<ReplFrameEvt>(frame.payload) {
             Ok(ev) => {
-                let _ = evt_tx.send(IncomingEvt::ReplFrameStreamed {
+                emit(IncomingEvt::ReplFrameStreamed {
                     eval_id: ev.eval_id,
                     workspace_id: ev.workspace_id,
                     frame: ev.frame,
@@ -3787,13 +3828,13 @@ fn handle_response_frame(
     if frame.kind == sot_protocol::Kind::Evt && frame.op == op::MONITOR_TICK {
         match serde_json::from_value::<MonitorTickEvt>(frame.payload) {
             Ok(ev) => {
-                let _ = evt_tx.send(IncomingEvt::MonitorTick { hosts: ev.hosts });
+                emit(IncomingEvt::MonitorTick { hosts: ev.hosts });
             }
             Err(e) => tracing::warn!(error = %e, "monitor.tick evt parse failed"),
         }
         return;
     }
-    let _ = evt_tx.send(IncomingEvt::Event {
+    emit(IncomingEvt::Event {
         op: frame.op,
         payload: frame.payload,
     });
@@ -3952,16 +3993,20 @@ mod tests {
             op::PREVIEW_GET,
             serde_json::json!({"error": "not_found", "code": "not_found"}),
         );
-        handle_response_frame(frame, None, &mut pending, &evt_tx);
+        let host = "test-host".to_string();
+        handle_response_frame(frame, None, &mut pending, &evt_tx, &host);
 
-        let events: Vec<IncomingEvt> = evt_rx.try_iter().collect();
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
         assert_eq!(
             events.len(),
             1,
             "exactly one event for one figure.get error reply, got {events:?}"
         );
         match &events[0] {
-            IncomingEvt::FigureGetFailed { url } => assert_eq!(url, "figures/dead.png"),
+            (h, IncomingEvt::FigureGetFailed { url }) => {
+                assert_eq!(h, &host);
+                assert_eq!(url, "figures/dead.png");
+            }
             other => panic!("expected FigureGetFailed, got {other:?}"),
         }
         assert!(
@@ -3986,11 +4031,14 @@ mod tests {
             },
         );
         let frame = Frame::res(9, op::PREVIEW_GET, serde_json::json!({"unexpected": true}));
-        handle_response_frame(frame, None, &mut pending, &evt_tx);
+        let host = "test-host".to_string();
+        handle_response_frame(frame, None, &mut pending, &evt_tx, &host);
 
-        let events: Vec<IncomingEvt> = evt_rx.try_iter().collect();
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], IncomingEvt::FigureGetFailed { url } if url == "figures/weird.png"));
+        assert!(
+            matches!(&events[0], (h, IncomingEvt::FigureGetFailed { url }) if h == &host && url == "figures/weird.png")
+        );
     }
 
     /// Fix 2 (disconnect strands pending forever): dropping the guard —
@@ -4003,10 +4051,12 @@ mod tests {
     #[test]
     fn pending_guard_flushes_figure_gets_on_drop_not_other_kinds() {
         let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let host = "test-host".to_string();
         {
             let mut guard = PendingGuard {
                 map: HashMap::new(),
                 evt_tx: &evt_tx,
+                host: host.clone(),
             };
             guard.insert(
                 1,
@@ -4025,9 +4075,12 @@ mod tests {
         }
         let mut urls: Vec<String> = evt_rx
             .try_iter()
-            .map(|evt| match evt {
-                IncomingEvt::FigureGetFailed { url } => url,
-                other => panic!("only FigureGet entries should flush on drop, got {other:?}"),
+            .map(|(h, evt)| {
+                assert_eq!(h, host);
+                match evt {
+                    IncomingEvt::FigureGetFailed { url } => url,
+                    other => panic!("only FigureGet entries should flush on drop, got {other:?}"),
+                }
             })
             .collect();
         urls.sort();
@@ -4078,11 +4131,13 @@ mod tests {
     #[tokio::test]
     async fn write_failure_flushes_via_guard_because_insert_precedes_the_write() {
         let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let host = "test-host".to_string();
         let mut writer = FailingWriter;
         {
             let mut guard = PendingGuard {
                 map: HashMap::new(),
                 evt_tx: &evt_tx,
+                host: host.clone(),
             };
             let result = send_figure_get(
                 &mut writer,
@@ -4100,7 +4155,7 @@ mod tests {
             );
             // `guard` drops here — the same `?` exit `run_protocol` takes.
         }
-        let events: Vec<IncomingEvt> = evt_rx.try_iter().collect();
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
         assert_eq!(
             events.len(),
             1,
@@ -4108,7 +4163,7 @@ mod tests {
         );
         assert!(matches!(
             &events[0],
-            IncomingEvt::FigureGetFailed { url } if url == "figures/never-sent.png"
+            (h, IncomingEvt::FigureGetFailed { url }) if h == &host && url == "figures/never-sent.png"
         ));
     }
 
@@ -4178,16 +4233,18 @@ mod tests {
                 "state_dir": "/state/workspaces/ws-9",
             }),
         );
-        handle_response_frame(frame, None, &mut pending, &evt_tx);
+        let host = "test-host".to_string();
+        handle_response_frame(frame, None, &mut pending, &evt_tx, &host);
 
-        let events: Vec<IncomingEvt> = evt_rx.try_iter().collect();
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
         assert_eq!(
             events.len(),
             1,
             "exactly one event for one attach_direct reply, got {events:?}"
         );
         match &events[0] {
-            IncomingEvt::PtyAttachDirect { target, state_dir } => {
+            (h, IncomingEvt::PtyAttachDirect { target, state_dir }) => {
+                assert_eq!(h, &host);
                 assert_eq!(target.as_deref(), Some("sot-be-alpha"));
                 assert_eq!(state_dir.as_deref(), Some("/state/workspaces/ws-9"));
             }
@@ -4202,18 +4259,32 @@ mod tests {
         // pre-L1b behavior for a tmux row.
         let (evt_tx, evt_rx) = std::sync::mpsc::channel();
         let mut pending: HashMap<u64, PendingKind> = HashMap::new();
-        pending.insert(11, PendingKind::PtyOpen { target: Some("sot-be-beta".to_string()) });
+        pending.insert(
+            11,
+            PendingKind::PtyOpen {
+                target: Some("sot-be-beta".to_string()),
+            },
+        );
         let frame = Frame::res(
             11,
             op::PTY_OPEN,
             serde_json::json!({"cols": 80, "rows": 24, "pane_command": "claude"}),
         );
-        handle_response_frame(frame, None, &mut pending, &evt_tx);
+        let host = "test-host".to_string();
+        handle_response_frame(frame, None, &mut pending, &evt_tx, &host);
 
-        let events: Vec<IncomingEvt> = evt_rx.try_iter().collect();
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
         assert_eq!(events.len(), 1, "got {events:?}");
         match &events[0] {
-            IncomingEvt::PtyOpened { cols, rows, pane_command } => {
+            (
+                h,
+                IncomingEvt::PtyOpened {
+                    cols,
+                    rows,
+                    pane_command,
+                },
+            ) => {
+                assert_eq!(h, &host);
                 assert_eq!(*cols, 80);
                 assert_eq!(*rows, 24);
                 assert_eq!(pane_command.as_deref(), Some("claude"));
