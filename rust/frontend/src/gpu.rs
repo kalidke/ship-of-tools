@@ -6491,6 +6491,7 @@ impl State {
             }
             Mode::Hosts => {
                 self.populate_hosts_tree();
+                self.select_active_host();
             }
         }
         self.persist_resume_state();
@@ -7089,20 +7090,34 @@ impl State {
             payload: Default::default(),
         };
         let children = self.hosts_tree_children();
-        // Cursor lands on the active host so a fresh `h`-press shows where
-        // the current view actually is. Codex review (PR #163): the OLD
-        // version computed a position into `hosts_config.hosts` (0 =
-        // first host) and used it directly as `self.tree.selected` — off
-        // by one, since row 0 of the rendered tree is the ROOT ("hosts:")
-        // and the first host lands at row 1. Restoring by NODE ID against
-        // the actual post-`set_root` rows sidesteps that arithmetic
-        // entirely rather than just patching the +1.
+        // A LIVE refresh (connect/disconnect while Hosts mode is active)
+        // must not move the cursor out from under the user (Codex round,
+        // PR #172) -- `set_root` re-seeding the SAME root id already
+        // re-anchors the previously-selected row by node id on its own.
+        // Landing on the active host at all is `select_active_host`'s job,
+        // called only for a genuinely FIRST population (mode entry, a
+        // first-visited workspace, resume).
         self.tree.set_root(root, children);
+        self.window.request_redraw();
+    }
+
+    /// Point the Hosts-mode cursor at the active host -- called only when
+    /// the view is being newly populated (mode entry, a first-visited
+    /// workspace, resume), never after `populate_hosts_tree` alone on a
+    /// live refresh: `set_root`'s own id-based reanchor already keeps a
+    /// refresh's cursor where the user left it (Codex round, PR #172).
+    /// Codex review (PR #163): the OLD version computed a position into
+    /// `hosts_config.hosts` (0 = first host) and used it directly as
+    /// `self.tree.selected` -- off by one, since row 0 of the rendered
+    /// tree is the ROOT ("hosts:") and the first host lands at row 1.
+    /// Restoring by NODE ID against the actual post-`set_root` rows
+    /// sidesteps that arithmetic entirely rather than just patching the
+    /// +1.
+    fn select_active_host(&mut self) {
         let want_id = format!("hosts:{}", self.active_host);
         if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == want_id) {
             self.tree.selected = idx;
         }
-        self.window.request_redraw();
     }
 
     /// The Hosts-mode root's children, in `ordered_hosts()` (local-first)
@@ -7828,7 +7843,10 @@ impl State {
                         let _ = self.send_to(host, crate::transport::OutgoingReq::WorkspaceList);
                     }
                 }
-                Mode::Hosts => self.populate_hosts_tree(),
+                Mode::Hosts => {
+                    self.populate_hosts_tree();
+                    self.select_active_host();
+                }
             }
         }
         // Refresh the workspace list so kernel_running / new rows stay
@@ -11274,8 +11292,11 @@ impl State {
                                 // hosts tree is sourced from `hosts.toml`
                                 // on the frontend side. Populate once on
                                 // resume; subsequent `h` re-entries call
-                                // `populate_hosts_tree` directly.
+                                // `populate_hosts_tree` directly. A resume
+                                // is a first population too, so land on
+                                // the active host same as mode entry.
                                 self.populate_hosts_tree();
+                                self.select_active_host();
                             }
                         }
                         // Reconnect after laptop sleep / SSH-tunnel drop:
@@ -24511,6 +24532,36 @@ mod tests {
         t.apply_children("r", vec![node("a", "a", true)]);
         assert!(!t.rows[0].expanded);
         assert_eq!(t.rows.len(), 1);
+    }
+
+    #[test]
+    fn hosts_tree_refresh_keeps_the_cursor_on_the_host_it_was_on() {
+        // Codex round, PR #172: `populate_hosts_tree` used to reposition
+        // the cursor to the ACTIVE host on every call, including a live
+        // refresh (a connect/disconnect while Hosts mode is active) --
+        // stealing the cursor out from under a user looking at some OTHER
+        // host. `set_root` re-seeding the SAME root id ("hosts:") already
+        // re-anchors the previously-selected row by node id on its own;
+        // a refresh should trust that instead of forcing a fresh position.
+        let mut t = TreeView::new();
+        t.set_root(
+            node("hosts:", "hosts", true),
+            vec![
+                node("hosts:local", "local", false),
+                node("hosts:beta", "beta", false),
+            ],
+        );
+        t.selected = 2; // cursor on "beta", not the active host
+                        // A refresh re-seeds the same root -- no cursor repositioning,
+                        // just the id-based reanchor `set_root` already does.
+        t.set_root(
+            node("hosts:", "hosts", true),
+            vec![
+                node("hosts:local", "local", false),
+                node("hosts:beta", "beta", false),
+            ],
+        );
+        assert_eq!(t.rows[t.selected].node.id, "hosts:beta");
     }
 
     #[test]
