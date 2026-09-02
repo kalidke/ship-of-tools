@@ -272,6 +272,15 @@ const ENDING_WATCHDOG: Duration = Duration::from_secs(
 /// fsyncs — not ADR-pinned, generous but bounded, matching
 /// `LANE_IDLE_DEADLINE`'s own "reasoned, not pinned" status.
 const RESETTING_WATCHDOG: Duration = Duration::from_secs(30);
+/// The `reason` recovery re-issues an `EndRun` with when reconciling a
+/// journal entry whose worker never reached
+/// [`end_run_over_mgmt_lane`] before this authority died. The journal's
+/// own `ActiveOp::EndRun` does not carry the original requester's
+/// reason (only `voyage`/`epoch` — see its own doc), and
+/// `producer_dead.detail.reason` stays a free-form diagnostic per ADR
+/// 0041, never a discriminator, so a fixed, honest label is exactly as
+/// informative as reconstructing one would be.
+const RECOVERY_END_RUN_REASON: &str = "recovered";
 
 /// Exit codes are the launcher's own contract (ADR 0041 Lifecycle
 /// "Supervisor exit codes"): `0` = clean end, do not restart; `69` =
@@ -837,13 +846,19 @@ enum EndRunReconciliation {
 /// caller for a durable record to ever serve, and a fixed placeholder id
 /// would risk colliding with a REAL operation id a later supervised
 /// session might actually use against the same state directory.
+/// `on_closed` is `Option`, like [`finish_end_run_without_process`]'s own
+/// parameter of the same name: `Some` for the live worker
+/// ([`spawn_end_run`], via a connection it may owe a deferred reply to),
+/// `None` for RECOVERY re-issuing this same call with no live connection
+/// to signal through (`reconcile_journal_on_startup`) — the journal
+/// itself carries the result for a later `query`.
 fn finish_end_run_with_process(
     state_dir: &Path,
     op_id: Option<&str>,
     voyage_id: &str,
     epoch: Option<u64>,
     process: ChallengedProcess,
-    on_closed: &mpsc::Sender<EndingProgress>,
+    on_closed: Option<&mpsc::Sender<EndingProgress>>,
 ) -> crate::Result<EndRunReconciliation> {
     let confirmed_exit = match process.wait(SUPPORTED_HISTORY_BOUND + KILL_WAIT_BOUND) {
         Ok(true) => true,
@@ -859,7 +874,7 @@ fn finish_end_run_with_process(
         }
         return Err(err_state(detail));
     }
-    reconcile_via_marker(state_dir, op_id, voyage_id, epoch, Some(on_closed))
+    reconcile_via_marker(state_dir, op_id, voyage_id, epoch, on_closed)
 }
 
 /// As [`finish_end_run_with_process`], but for a caller with NO proven
@@ -1014,19 +1029,34 @@ fn reconcile_journal_on_startup(state_dir: &Path) -> crate::Result<Reconciliatio
         let Some(active) = journal::read_active(state_dir, &op_id)? else { continue };
         match &active.op {
             journal::ActiveOp::EndRun { voyage, epoch } => {
-                // `on_closed: None` — recovery has no live connection to
-                // signal through; the journal itself carries the result
-                // for a later `query`. N3 (Codex review round 4):
-                // retried right here, in THIS worker (already bounded
-                // from OUTSIDE by RECOVERY_WATCHDOG, exactly as
-                // `spawn_end_run`'s own retry is bounded by
-                // ENDING_WATCHDOG) — an earlier version discarded a
-                // recovered `PendingWriter` outright and returned
-                // `ended=false`, so startup would go on to adopt/respawn
-                // right over a writer whose own EndRun was still
-                // genuinely outstanding, leaving the operation `Accepted`
-                // forever with nothing left to ever retry it.
-                match retry_until_writer_resolved(state_dir, Some(&op_id), voyage, *epoch, None)? {
+                // Re-issue the `end_run` exactly as the live worker
+                // would, via the SAME shared sequence
+                // ([`reissue_and_reconcile_end_run`]) — a worker killed
+                // after the journal record was accepted but BEFORE it
+                // ever called `end_run_over_mgmt_lane` leaves the
+                // capsule never asked to end; jumping straight to
+                // `retry_until_writer_resolved` (as an earlier version
+                // did) only waits for a writer that was never told to
+                // go away and so never resolves. `on_closed: None` —
+                // recovery has no live connection to signal through;
+                // the journal itself carries the result for a later
+                // `query`. N3 (Codex review round 4): retried right
+                // here, in THIS worker (already bounded from OUTSIDE by
+                // RECOVERY_WATCHDOG, exactly as `spawn_end_run`'s own
+                // retry is bounded by ENDING_WATCHDOG) — an earlier
+                // version discarded a recovered `PendingWriter` outright
+                // and returned `ended=false`, so startup would go on to
+                // adopt/respawn right over a writer whose own EndRun was
+                // still genuinely outstanding, leaving the operation
+                // `Accepted` forever with nothing left to ever retry it.
+                match reissue_and_reconcile_end_run(
+                    state_dir,
+                    Some(&op_id),
+                    voyage,
+                    *epoch,
+                    RECOVERY_END_RUN_REASON,
+                    None,
+                )? {
                     EndRunReconciliation::Ended => {
                         ended_voyages.insert(voyage.clone());
                     }
@@ -1324,6 +1354,60 @@ fn retry_until_writer_resolved(
     result
 }
 
+/// The ONE "tell the capsule, then resolve" sequence — call
+/// [`end_run_over_mgmt_lane`] and dispatch on its outcome exactly the
+/// same way regardless of who is asking. Shared by the LIVE worker
+/// ([`spawn_end_run`], the FE's own `end_run` command) and RECOVERY's
+/// reconciliation of an `EndRun` journal entry
+/// (`reconcile_journal_on_startup`'s `EndRun` arm). Recovery previously
+/// skipped straight to [`retry_until_writer_resolved`], which only
+/// WAITS for the writer to go away — correct for a worker that already
+/// told the capsule and crashed waiting on the reply, but silently
+/// wrong for a worker killed BEFORE that call ever landed (accepted the
+/// journal record, then died): the capsule was never asked to end, so
+/// its writer stays alive and a wait-only recovery would wait on it
+/// forever. Calling this here instead makes recovery perform the exact
+/// same first act the live worker does, closing that gap.
+///
+/// Re-issuing is harmless: ADR 0041's own EndRun transition says a
+/// second `shutdown` against an already-latched capsule "is acked
+/// without a second marker" (concurrent-request rule 4) — the capsule's
+/// latch is a one-shot, so a redelivered request either lands before
+/// the first has latched (ordinary first-time delivery) or lands on a
+/// capsule already torn down, where the pipe is simply
+/// [`EndRunOutcome::Absent`] and reconciliation proceeds from the
+/// durable marker exactly as it would without a reissue at all.
+fn reissue_and_reconcile_end_run(
+    state_dir: &Path,
+    op_id: Option<&str>,
+    voyage_id: &str,
+    epoch: Option<u64>,
+    reason: &str,
+    on_closed: Option<&mpsc::Sender<EndingProgress>>,
+) -> crate::Result<EndRunReconciliation> {
+    match end_run_over_mgmt_lane(voyage_id, reason) {
+        Ok(EndRunOutcome::Absent | EndRunOutcome::Foreign | EndRunOutcome::Pending) => {
+            retry_until_writer_resolved(state_dir, op_id, voyage_id, epoch, on_closed)
+        }
+        Ok(EndRunOutcome::Ended(process)) => {
+            finish_end_run_with_process(state_dir, op_id, voyage_id, epoch, process, on_closed)
+        }
+        Err(e) => {
+            // B4 (Codex review round 3): a generic mgmt-lane error
+            // (e.g. a connect failure other than NotFound) still
+            // runs marker reconciliation exactly like
+            // Foreign/Pending — never bypass straight to Fatal just
+            // because THIS attempt could not classify itself more
+            // precisely than "something went wrong talking to it".
+            eprintln!(
+                "sot-capsule supervise: end_run_over_mgmt_lane failed ({e}); still attempting \
+                 marker reconciliation rather than failing outright (B4)"
+            );
+            retry_until_writer_resolved(state_dir, op_id, voyage_id, epoch, on_closed)
+        }
+    }
+}
+
 fn spawn_end_run(
     state_dir: PathBuf,
     operation_id: String,
@@ -1333,27 +1417,7 @@ fn spawn_end_run(
 ) -> (mpsc::Receiver<EndingProgress>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
-        let result = match end_run_over_mgmt_lane(&voyage_id, &reason) {
-            Ok(EndRunOutcome::Absent | EndRunOutcome::Foreign | EndRunOutcome::Pending) => {
-                retry_until_writer_resolved(&state_dir, Some(&operation_id), &voyage_id, epoch, Some(&tx))
-            }
-            Ok(EndRunOutcome::Ended(process)) => {
-                finish_end_run_with_process(&state_dir, Some(&operation_id), &voyage_id, epoch, process, &tx)
-            }
-            Err(e) => {
-                // B4 (Codex review round 3): a generic mgmt-lane error
-                // (e.g. a connect failure other than NotFound) still
-                // runs marker reconciliation exactly like
-                // Foreign/Pending — never bypass straight to Fatal just
-                // because THIS attempt could not classify itself more
-                // precisely than "something went wrong talking to it".
-                eprintln!(
-                    "sot-capsule supervise: end_run_over_mgmt_lane failed ({e}); still attempting \
-                     marker reconciliation rather than failing outright (B4)"
-                );
-                retry_until_writer_resolved(&state_dir, Some(&operation_id), &voyage_id, epoch, Some(&tx))
-            }
-        };
+        let result = reissue_and_reconcile_end_run(&state_dir, Some(&operation_id), &voyage_id, epoch, &reason, Some(&tx));
         let final_result = match result {
             Ok(EndRunReconciliation::Ended) => EndRunWorkerResult::Ended,
             Ok(EndRunReconciliation::PreBarrierFailed) => EndRunWorkerResult::PreBarrierFailed,
@@ -2538,7 +2602,7 @@ fn endrun_inner(state_dir: &Path, voyage: Option<String>, reason: String) -> cra
             // No lane reply to defer here; discarded. `None`: this
             // no-supervisor CLI path journals nothing at all.
             let (tx, _rx) = mpsc::channel();
-            match finish_end_run_with_process(state_dir, None, &voyage_id, epoch, process, &tx) {
+            match finish_end_run_with_process(state_dir, None, &voyage_id, epoch, process, Some(&tx)) {
                 Ok(EndRunReconciliation::Ended) => {
                     eprintln!("sot-capsule endrun: record_verified");
                     Ok(EXIT_CLEAN)
