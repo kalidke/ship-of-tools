@@ -220,7 +220,12 @@ $queriedRaw = $null
 if ($PipeName) {
     $PipePath = '\\.\pipe\' + $PipeName
 } elseif ($daemonExe) {
-    $queried = (& $daemonExe session-socket-path local | Select-Object -First 1)
+    # try/catch + 2>$null: a stale or unexecutable sotd.exe must yield an
+    # EMPTY answer (the diagnostic branch below), not a NativeCommandFailed
+    # record -- under a caller whose ErrorActionPreference is Stop (the test
+    # harness, any strict launcher) that record is terminating on 5.1 and
+    # kills the caller instead of reaching the message.
+    $queried = try { (& $daemonExe session-socket-path local 2>$null | Select-Object -First 1) } catch { $null }
     $queriedRaw = if ($queried) { $queried.ToString().Trim() } else { '' }
     $PipePath = if ($queriedRaw) { $queriedRaw } else { $null }
     if ($PipePath -and $PipePath.StartsWith('\\.\pipe\')) {
