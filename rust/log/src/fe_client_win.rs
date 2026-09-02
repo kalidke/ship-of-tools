@@ -41,11 +41,51 @@
 //! `tests/e2e_pipe.rs`'s `RealFrames` harness) — folded into one channel
 //! so the worker services commands and unsolicited output with a single
 //! `recv_timeout` loop rather than a hand-rolled select.
+//!
+//! # Codex review round (the ONE review round for this PR) — what changed
+//!
+//! The first landing's runtime wiring violated all six rulings in
+//! concrete, reproducible ways; every fix below is cited at its own site
+//! by finding number. Summary, so the shape of the redesign reads as one
+//! story rather than fourteen unrelated patches:
+//! - Quit (finding 1, 2): the cutoff is the ADR's own pinned 90s
+//!   bound-graph figure (`fe_client::QUIT_CUTOFF`); after `record_closed`
+//!   the worker polls `query` until `record_verified`; a `Quit` message
+//!   arriving during reconnect backoff is LATCHED, not dropped, and
+//!   applied the moment the supervisor lane reconnects (`end_run` needs
+//!   only that lane, never the attach lane).
+//! - Take/input (finding 3, 4, 5, 6): `take_ok` sends only `resize`; the
+//!   queue flushes only after `resize_ok`; `take_refused{not_attached}`
+//!   ends the episode PRESERVING the take transaction; driving-mode
+//!   input while one is outstanding is queued (reusing the take queue),
+//!   never dropped; a reconnect resends the retained `(voyage, key,
+//!   epoch, bytes)` tuple under the SAME key once re-taken; a stale
+//!   refusal re-takes before minting a new key.
+//! - Backpressure (finding 7): `queued_bytes` is a SINGLE `Arc<AtomicUsize>`
+//!   shared between the episode reader (increments, blocks the pipe read
+//!   when full) and `FeAttachClient::pump` (decrements on consumption,
+//!   caps bytes drained per call).
+//! - Health window (finding 8): the timer only advances when the voyage
+//!   pipe is ALSO absent, checked via `on_supervisor_absent_or_unresponsive`;
+//!   access-denied on either pipe is terminal immediately
+//!   (`ReconnectState::classify_access_denied`, now wired).
+//! - Attach notice (finding 9): the capsule's own identity comes from a
+//!   THROWAWAY voyage mgmt-lane challenge (`capsule_identity_via_mgmt`),
+//!   never the supervisor's own `status_ok` (which reports the
+//!   SUPERVISOR process, not the leg).
+//! - `fe_down` (finding 10): markers land in a small foreground
+//!   `VecDeque` `pump` itself appends to, never a second, racing drain of
+//!   the same channel; the baseline is captured by the caller at FE
+//!   process start (`gpu.rs`'s `State::new`), not at first drawer open.
+//! - Visible outcomes (finding 11) and flag-off diagnostics (finding 12)
+//!   are the frontend's own fixes (`gpu.rs`); reader-thread spawn
+//!   failure (finding 13) is a visible terminal error here, never a
+//!   silent "attached".
 
 use crate::challenge::{self, ChallengeOutcome, ChallengedProcess};
-use crate::exchange::{SupervisorLaneExchange, SUPERVISOR_LANE_BUILD_ID};
+use crate::exchange::{SupervisorLaneExchange, VoyageMgmtExchange, SUPERVISOR_LANE_BUILD_ID};
 use crate::fe_client::{
-    self, FeDownBaseline, InputWireOutcome, OutstandingSlot, QuitDispatcher, QuitState,
+    self, FeDownBaseline, InputWireOutcome, OutstandingSlot, QuitDispatcher,
     ReconnectDecision, ReconnectState, Role, TakeAction, TakeTransaction,
 };
 use crate::pipe_win::{self, PipeClient};
@@ -53,13 +93,12 @@ use crate::pointer::{self, PointerState};
 use crate::supervisor::state_dir_hash;
 use crate::wire::{
     self, AttachClient, AttachServer, DecodedFrame, ResizeRefusedReason, SupervisorOp,
-    SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest,
-    TakeRefusedReason,
+    SupervisorPhase, SupervisorReply, SupervisorRequest, TakeRefusedReason,
 };
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -83,14 +122,36 @@ const WRITE_BUDGET: Duration = Duration::from_secs(2);
 /// (ruling (d)) must become visible promptly, but polling faster than
 /// this buys nothing beyond load.
 const LIVENESS_POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// How often the worker polls `query` while a quit is `Verifying`
+/// (Codex review round, finding 1: "after record_closed, query the
+/// operation until record_verified"). `query` is a fast stateless read
+/// (Lifecycle: "the FE never blocks on an O(history) walk") even though
+/// what it reports on can take a while server-side, so polling this
+/// much faster than the liveness cadence costs little and keeps the
+/// "ending session…" window responsive.
+const QUIT_QUERY_INTERVAL: Duration = Duration::from_secs(1);
 /// The worker's own message-loop tick — bounds how promptly a command
 /// (input/resize/quit) is serviced and how often the pure tick-driven
 /// timers (quit cutoff, checkpoint-in-flight retry, backoff) advance.
 const WORKER_TICK: Duration = Duration::from_millis(100);
 /// Ruling (d): "The reader's unbounded channel becomes BYTE-ACCOUNTED
 /// and bounded at 4 MiB — bytes, not items... When it is full the FE
-/// STOPS READING THE PIPE."
+/// STOPS READING THE PIPE." (Codex review round, finding 7: the first
+/// landing's counter was local to the reader thread and released
+/// immediately, never actually shared with the consumer — see
+/// [`FeAttachClient::pump`]'s own doc for the real, shared half.)
 const READER_QUEUE_CAP_BYTES: usize = 4 * 1024 * 1024;
+/// How many bytes of `Output` one `pump()` call drains before returning
+/// — Codex review round, finding 7: "cap bytes drained per pump while
+/// requesting another redraw if more remain." `pump()` returning `true`
+/// already makes every existing caller request a redraw (see
+/// `gpu.rs::pump_attach_term`), so capping here and relying on that same
+/// "changed -> redraw -> pump again" cycle needs no new plumbing — a
+/// continuous-output flood drains in bounded slices across several
+/// frames instead of stalling one. Comfortably below the 4 MiB reader
+/// cap so a single pump() call can never itself observe the reader
+/// having stalled.
+const PUMP_DRAIN_CAP_BYTES: usize = 1024 * 1024;
 /// Local, FE-side scrollback depth for the restored screen — a UI
 /// parameter, not protocol-defined (the capsule itself keeps none; see
 /// ADR 0041 "Terminal state"). Matches `term::LocalTerminal`'s own value
@@ -210,9 +271,9 @@ fn connect_supervisor_lane(h: &str) -> Result<(PipeClient, ChallengedProcess), L
         // well-formed WRONG reply" (which includes a genuine
         // `hello_refused{version_skew}` from an otherwise legitimate,
         // same-account peer) into the SAME `Foreign` outcome — see this
-        // module's own doc and the fe_client_win report's "Deviations"
-        // for why disambiguating them would need new machinery this
-        // unit prefers not to add. Either way it is an unproven server:
+        // module's own doc and the report's "Deviations" for why
+        // disambiguating them would need new machinery this unit
+        // prefers not to add. Either way it is an unproven server:
         // never retried as if it might still be legitimate.
         ChallengeOutcome::Foreign => Err(LaneError::Protocol("supervisor hello: foreign")),
         ChallengeOutcome::Undetermined => Err(LaneError::Protocol("supervisor hello: undetermined")),
@@ -231,6 +292,57 @@ fn supervisor_status(
             Ok((voyage, leg, phase))
         }
         _ => Err(LaneError::Protocol("expected status_ok")),
+    }
+}
+
+/// Ruling (d), Codex review round finding 8: called whenever the
+/// supervisor lane looks absent OR unresponsive THIS round. Applies the
+/// AND condition directly — the health-window timer only advances when
+/// the voyage pipe is ALSO absent, checked here via a throwaway connect
+/// probe (successful connect is evidence enough of presence; no need to
+/// run the full challenge just to answer "does anything answer this
+/// name"). A live voyage pipe means the capsule survives headless
+/// (exactly the scenario ADR 0041 P3 is built to tolerate), so this
+/// clears the clock and asks the caller to retry shortly rather than
+/// attaching blind this round — the caller's own backoff (250 ms
+/// doubling to 4 s) makes that a brief, bounded gap, not a stall.
+fn on_supervisor_absent_or_unresponsive(
+    reconnect: &mut ReconnectState,
+    voyage: &str,
+    now: Instant,
+) -> ReconnectDecision {
+    match pipe_win::connect_voyage_pipe_unchallenged(voyage) {
+        Ok(_probe) => {
+            reconnect.clear_unresponsive();
+            ReconnectDecision::Retry
+        }
+        Err(e) => {
+            if is_access_denied(&pipe_err_to_io(e)) {
+                reconnect.classify_access_denied()
+            } else {
+                reconnect.classify_unresponsive(now)
+            }
+        }
+    }
+}
+
+/// Ruling (e), Codex review round finding 9: the CAPSULE'S OWN identity,
+/// proven via a THROWAWAY connection to the voyage pipe's mgmt sub-lane
+/// (`probe`/`status`/`shutdown` — the step-5 lane, distinct from the
+/// attach lane) and the full same-connection challenge
+/// (`VoyageMgmtExchange`, already built for exactly this: "the voyage
+/// mgmt lane's own `IdentityExchange`"). The merged U2 supervisor lane's
+/// own `status_ok.pid`/`.created` report the SUPERVISOR process itself
+/// (`supervisor.rs`'s own doc: "`pid`/`created` are this process's own
+/// identity"), never the leg, so that reply can never stand in for this.
+fn capsule_identity_via_mgmt(voyage: &str) -> Result<ChallengedProcess, LaneError> {
+    let conn = pipe_win::connect_voyage_pipe_unchallenged(voyage).map_err(|e| LaneError::Io(pipe_err_to_io(e)))?;
+    let mut exchange = VoyageMgmtExchange::default();
+    let deadline = Instant::now() + STATUS_BUDGET;
+    match challenge::challenge(&conn, &mut exchange, deadline) {
+        ChallengeOutcome::Proven(process) => Ok(process),
+        ChallengeOutcome::Foreign => Err(LaneError::Protocol("voyage mgmt: foreign")),
+        ChallengeOutcome::Undetermined => Err(LaneError::Protocol("voyage mgmt: undetermined")),
     }
 }
 
@@ -298,7 +410,7 @@ enum WorkerMsg {
     Resize(u16, u16),
     Quit(String),
     Shutdown,
-    Frame(DecodedFrame, usize),
+    Frame(DecodedFrame),
     ReaderDone,
 }
 
@@ -310,7 +422,7 @@ enum ClientEvent {
     Notice(String),
     Status(String),
     Terminal(String),
-    QuitMessage(Option<&'static str>),
+    QuitMessage(Option<String>),
     ShouldExit,
     FeDownMarker(serde_json::Value),
 }
@@ -347,14 +459,33 @@ pub struct FeAttachClient {
     parser: vt100_ctt::Parser,
     msg_tx: Sender<WorkerMsg>,
     events_rx: Receiver<ClientEvent>,
-    _worker: thread::JoinHandle<()>,
+    /// Codex review round, deletion candidate: the join handle used to be
+    /// held for no reason a `JoinHandle`'s own `Drop` does not already
+    /// give for free (dropping it neither joins nor detaches — Rust
+    /// threads run detached from their handle either way). Not stored.
+    /// Ruling (d)'s reader/worker teardown is unaffected: the WORKER
+    /// thread's own loop exits on `Shutdown` or `Disconnected`
+    /// regardless of whether anything outlives it holding the handle.
     status: String,
     notice: Option<String>,
-    quit_message: Option<&'static str>,
+    quit_message: Option<String>,
     should_exit: bool,
     dead: bool,
-    cols: u16,
-    rows: u16,
+    /// Codex review round, finding 7: the SHARED half of the byte-account
+    /// (the episode reader thread, spawned inside the worker, holds the
+    /// other `Arc` clone and increments this on every `Output`/
+    /// `CheckpointChunk` byte it reads, blocking further reads while at
+    /// cap). `pump` decrements it as it actually consumes `Output` bytes
+    /// — the ONLY place this counter is ever decremented, which is what
+    /// makes the accounting real (the first landing incremented and
+    /// immediately decremented in the SAME reader-thread call, which
+    /// Codex review round correctly called a no-op).
+    queued_bytes: Arc<AtomicUsize>,
+    /// Codex review round, finding 10: markers `pump` receives land here
+    /// (never re-drained from the same channel a second time, which
+    /// silently ate whatever non-marker event happened to be next in
+    /// line). `drain_fe_down_markers` drains ONLY this queue.
+    pending_fe_down_markers: VecDeque<serde_json::Value>,
 }
 
 impl FeAttachClient {
@@ -370,7 +501,11 @@ impl FeAttachClient {
     /// supervise <state_dir>` takes it as an explicit argument rather
     /// than an internal env-var lookup, so a real client and a test can
     /// point at different trees in the same process without racing a
-    /// shared env var.
+    /// shared env var. `fe_down_last_evidence` is likewise the CALLER's
+    /// own read of `fe-inbox.jsonl`, taken at FE PROCESS START (Codex
+    /// review round, finding 10) — this constructor never reads that
+    /// file itself, so a drawer opened long after startup still reports
+    /// the SAME baseline the process began with.
     pub fn attach(
         state_dir: PathBuf,
         cols: u16,
@@ -388,8 +523,10 @@ impl FeAttachClient {
         let (events_tx, events_rx) = mpsc::channel::<ClientEvent>();
         let worker_msg_tx = msg_tx.clone();
         let fe_down = FeDownBaseline::capture(fe_down_last_evidence);
+        let queued_bytes = Arc::new(AtomicUsize::new(0));
+        let worker_queued_bytes = Arc::clone(&queued_bytes);
 
-        let worker = thread::Builder::new()
+        thread::Builder::new()
             .name("sot-fe-attach-worker".to_string())
             .spawn(move || {
                 run_worker(
@@ -402,6 +539,7 @@ impl FeAttachClient {
                     msg_rx,
                     worker_msg_tx,
                     events_tx,
+                    worker_queued_bytes,
                     wake,
                 );
             })
@@ -411,23 +549,32 @@ impl FeAttachClient {
             parser,
             msg_tx,
             events_rx,
-            _worker: worker,
             status: "connecting\u{2026}".to_string(),
             notice: None,
             quit_message: None,
             should_exit: false,
             dead: false,
-            cols,
-            rows,
+            queued_bytes,
+            pending_fe_down_markers: VecDeque::new(),
         })
     }
 
     /// Drains pending events into the parser/UI state (non-blocking).
     /// Returns `true` iff anything changed — the caller schedules a
-    /// repaint, matching `LocalTerminal::pump`'s own contract.
+    /// repaint, matching `LocalTerminal::pump`'s own contract. Caps
+    /// `Output` bytes drained per call at [`PUMP_DRAIN_CAP_BYTES`] (Codex
+    /// review round, finding 7): a continuous-output flood is drained in
+    /// bounded slices across several frames rather than stalling
+    /// rendering for one unbounded call — the caller already requests
+    /// another redraw whenever this returns `true`, which is what brings
+    /// `pump` back for the rest.
     pub fn pump(&mut self) -> bool {
         let mut changed = false;
+        let mut drained_output_bytes = 0usize;
         loop {
+            if drained_output_bytes >= PUMP_DRAIN_CAP_BYTES {
+                break;
+            }
             match self.events_rx.try_recv() {
                 Ok(ClientEvent::Checkpoint(bytes)) => {
                     if let Err(e) = self.parser.restore_screen(&bytes) {
@@ -436,6 +583,10 @@ impl FeAttachClient {
                     changed = true;
                 }
                 Ok(ClientEvent::Output(bytes)) => {
+                    drained_output_bytes += bytes.len();
+                    // The ONLY decrement of the shared byte-account — see
+                    // this struct's own `queued_bytes` doc.
+                    self.queued_bytes.fetch_sub(bytes.len(), Ordering::AcqRel);
                     self.parser.process(&bytes);
                     changed = true;
                 }
@@ -460,11 +611,13 @@ impl FeAttachClient {
                     self.should_exit = true;
                     changed = true;
                 }
-                Ok(ClientEvent::FeDownMarker(_)) => {
-                    // Surfaced via `drain_fe_down_markers` instead of
-                    // applied here -- appending to fe-inbox.jsonl and
-                    // showing a visible failure is the frontend's own
-                    // job (it already owns that writer).
+                Ok(ClientEvent::FeDownMarker(v)) => {
+                    // Codex review round, finding 10: land it in the
+                    // dedicated queue rather than discarding the payload
+                    // — `drain_fe_down_markers` reads ONLY this queue,
+                    // never the channel again, so no other event can be
+                    // swallowed alongside it.
+                    self.pending_fe_down_markers.push_back(v);
                     changed = true;
                 }
                 Err(_) => break,
@@ -473,22 +626,14 @@ impl FeAttachClient {
         changed
     }
 
-    /// Any `fe_down` markers the worker minted since the last drain —
-    /// the caller (the frontend) appends each to `fe-inbox.jsonl` and
-    /// must surface a VISIBLE failure if the append itself fails ("a
-    /// marker that exists so a failure is not quiet cannot fail quietly
-    /// itself").
+    /// Any `fe_down` markers `pump` received since the last drain — the
+    /// caller (the frontend) appends each to `fe-inbox.jsonl` and must
+    /// surface a VISIBLE failure if the append itself fails ("a marker
+    /// that exists so a failure is not quiet cannot fail quietly
+    /// itself"). Call AFTER `pump`, which is what actually populates the
+    /// queue this drains.
     pub fn drain_fe_down_markers(&mut self) -> Vec<serde_json::Value> {
-        let mut out = Vec::new();
-        // `pump` already drained ClientEvent::FeDownMarker into nothing;
-        // re-drain here from a fresh pass is wrong -- keep a queue
-        // instead. See the field-carrying redesign note below this impl
-        // is intentionally simple: markers are rare (one per reconnect),
-        // so a dedicated small buffer is not worth a second channel.
-        while let Ok(ClientEvent::FeDownMarker(v)) = self.events_rx.try_recv() {
-            out.push(v);
-        }
-        out
+        self.pending_fe_down_markers.drain(..).collect()
     }
 
     pub fn screen(&self) -> &vt100_ctt::Screen {
@@ -511,13 +656,13 @@ impl FeAttachClient {
 
     /// Records the desired viewport. A WATCHER cannot correct the
     /// geometry until it holds the pen (ruling (b)) — the worker applies
-    /// this only once `take_ok` grants the pen, or immediately (as an
-    /// ordinary `resize` request) while already DRIVING.
+    /// this only once `take_ok` grants the pen (via its OWN `resize`,
+    /// awaited alone — see `fe_client::TakeTransaction::on_take_ok`), or
+    /// immediately (as an ordinary `resize` request) while already
+    /// DRIVING.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         let rows = rows.max(2);
         let cols = cols.max(2);
-        self.cols = cols;
-        self.rows = rows;
         let _ = self.msg_tx.send(WorkerMsg::Resize(cols, rows));
     }
 
@@ -530,18 +675,25 @@ impl FeAttachClient {
 
     /// Ruling (a): the ONE quit dispatcher. Idempotent — a second call
     /// while already ending does nothing (the worker's own
-    /// `QuitDispatcher` enforces this).
+    /// `QuitDispatcher` enforces this). Never lost across a reconnect in
+    /// flight (Codex review round, finding 2) — the worker LATCHES this
+    /// message rather than dropping it if a reconnect backoff is
+    /// currently in progress.
     pub fn request_quit(&mut self, reason: &str) {
         let _ = self.msg_tx.send(WorkerMsg::Quit(reason.to_string()));
     }
 
-    /// `Some("ending session…")` / `Some("...outcome unknown")` while a
-    /// quit is in flight or timed out; `None` otherwise.
-    pub fn quit_message(&self) -> Option<&'static str> {
-        self.quit_message
+    /// `Some("ending session…")` / `Some("verifying…")` / `Some("...
+    /// outcome unknown")` / `Some("...failed: ...")` /
+    /// `Some("...refused: ...")` while a quit is in flight, verifying,
+    /// or reached a terminal outcome; `None` otherwise.
+    pub fn quit_message(&self) -> Option<&str> {
+        self.quit_message.as_deref()
     }
 
-    /// `true` once `record_closed` arrived — the caller may now call
+    /// `true` once `record_verified` arrived (ADR Lifecycle: "the
+    /// COMMAND reply arrives at record_closed, and record_verified
+    /// follows through query") — the caller may now call
     /// `event_loop.exit()`.
     pub fn should_exit(&self) -> bool {
         self.should_exit
@@ -566,6 +718,25 @@ impl Drop for FeAttachClient {
 // The worker thread
 // -----------------------------------------------------------------------
 
+/// What triggered the take-on-first-input `take` currently in flight (or
+/// about to be), so the post-`take_ok`/`resize_ok` flush knows what to
+/// send once it is safe to. `Ordinary` covers the common case (a real
+/// keystroke); the other two exist ONLY to correctly discharge ruling
+/// (c)'s exactly-once contract (Codex review round, finding 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TakeIntent {
+    /// Flush whatever `TakeTransaction::take_queued` returns, minting a
+    /// FRESH idem key.
+    Ordinary,
+    /// Resend the retained `OutstandingInput` under the SAME key, once
+    /// the fresh epoch is known (ruling (c): "resends THE SAME KEY").
+    ReconnectResend,
+    /// `input_refused_stale`'s own retry: mint a NEW key under the fresh
+    /// epoch now that it is known (ruling (c): "re-sent under the new
+    /// epoch with a NEW key").
+    StaleRetry,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_worker(
     state_dir: PathBuf,
@@ -577,6 +748,7 @@ fn run_worker(
     cmd_rx: Receiver<WorkerMsg>,
     msg_tx: Sender<WorkerMsg>,
     events_tx: Sender<ClientEvent>,
+    queued_bytes: Arc<AtomicUsize>,
     wake: Box<dyn Fn() + Send + 'static>,
 ) {
     let h = state_dir_hash(&state_dir);
@@ -584,11 +756,24 @@ fn run_worker(
     let mut take = TakeTransaction::new();
     let mut outstanding = OutstandingSlot::new();
     let mut quit = QuitDispatcher::new();
+    let mut take_intent = TakeIntent::Ordinary;
     let mut cols = initial_cols;
     let mut rows = initial_rows;
     let mut voyage_uuid: Option<String> = None;
     let mut take_epoch: u64 = 0;
     let mut shutdown = false;
+    // Ruling (b), Codex review round finding 4: set when
+    // `take_refused{not_attached}` fires, so the NEXT episode's own
+    // arrival at a fresh checkpoint knows to `retry_take()` (preserving
+    // role+queue) instead of `reset_to_watching()`.
+    let mut preserve_take_on_reconnect = false;
+    // Ruling (a), Codex review round finding 2: a `Quit` requested
+    // while no supervisor connection is currently open (mid-backoff, or
+    // before the first one ever connects) is LATCHED here rather than
+    // dropped — applied the instant a fresh supervisor connection
+    // exists, since `end_run` needs only that lane, never the attach
+    // lane.
+    let mut latched_quit_reason: Option<String> = None;
 
     let emit = |e: ClientEvent| {
         let _ = events_tx.send(e);
@@ -596,7 +781,6 @@ fn run_worker(
     };
 
     'episodes: while !shutdown {
-        reconnect.begin_episode();
         emit(ClientEvent::Status("connecting\u{2026}".to_string()));
 
         // Re-read and re-validate the pointer at the START of every
@@ -613,16 +797,45 @@ fn run_worker(
         if voyage_uuid.as_deref() != Some(voyage.as_str()) {
             // A reset landed underneath us: any outstanding input from
             // the OLD voyage is canceled, never replayed into the new
-            // one.
-            let _ = outstanding.resend_after_reconnect(&voyage, take_epoch);
+            // one -- and reported, never silently (finding 6).
+            if let fe_client::ReconnectResendDecision::Cancel { canceled } =
+                outstanding.resend_after_reconnect(&voyage, take_epoch)
+            {
+                emit(ClientEvent::Status(format!(
+                    "input canceled \u{2014} the voyage changed ({} byte(s) lost)",
+                    canceled.bytes.len()
+                )));
+            }
             take.reset_to_watching();
+            preserve_take_on_reconnect = false;
+            take_intent = TakeIntent::Ordinary;
             voyage_uuid = Some(voyage.clone());
         }
 
         // --- supervisor lane: hello (build identity) then status -----
-        reconnect.enter_hello();
-        let (conn, proven) = match connect_supervisor_lane(&h) {
-            Ok(v) => v,
+        let supervisor_connected = match connect_supervisor_lane(&h) {
+            Ok((conn, _proven)) => {
+                let mut sup_reader = FrameReader::new();
+                match supervisor_status(&conn, &mut sup_reader) {
+                    Ok((sv, _leg, phase)) => {
+                        if let ReconnectDecision::Terminal(reason) = reconnect.classify_supervisor_phase(phase) {
+                            emit(ClientEvent::Terminal(format!("supervisor: {reason:?}")));
+                            return;
+                        }
+                        if sv.as_deref() == Some(voyage.as_str()) || sv.is_none() {
+                            Some((conn, sup_reader))
+                        } else {
+                            // The pointer moved again between our read
+                            // and the authority's own -- treated as
+                            // "not yet usable this round"; the top of
+                            // the NEXT episode re-reads the pointer
+                            // fresh and reconciles.
+                            None
+                        }
+                    }
+                    Err(_) => None,
+                }
+            }
             Err(LaneError::Protocol(p)) if p.contains("foreign") => {
                 match reconnect.classify_foreign() {
                     ReconnectDecision::Terminal(reason) => {
@@ -632,52 +845,45 @@ fn run_worker(
                     ReconnectDecision::Retry => unreachable!("classify_foreign is always terminal"),
                 }
             }
-            Err(e) => {
-                emit(ClientEvent::Status(format!("supervisor lane unreachable: {e}")));
-                if !wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff()) {
-                    break 'episodes;
-                }
-                continue 'episodes;
+            Err(LaneError::Io(e)) if is_access_denied(&e) => {
+                emit(ClientEvent::Terminal("supervisor lane: access denied".to_string()));
+                return;
             }
+            Err(_) => None,
         };
-        let mgmt_leg = (proven.pid(), proven.created());
 
-        reconnect.enter_attaching();
-        let mut sup_reader = FrameReader::new();
-        let (sv, _leg, phase) = match supervisor_status(&conn, &mut sup_reader) {
-            Ok(v) => v,
-            Err(_) => {
-                match reconnect.classify_unresponsive(Instant::now()) {
-                    ReconnectDecision::Terminal(reason) => {
-                        emit(ClientEvent::Terminal(format!("supervisor lane unresponsive: {reason:?}")));
-                        return;
-                    }
-                    ReconnectDecision::Retry => {
-                        emit(ClientEvent::Status("supervisor lane not answering \u{2014} retrying\u{2026}".to_string()));
-                        if !wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff()) {
-                            break 'episodes;
-                        }
-                        continue 'episodes;
+        // Ruling (d), Codex review round finding 8: only when the
+        // supervisor lane is ALSO absent/unresponsive this round does the
+        // health window even get consulted -- a reachable voyage pipe
+        // (the capsule surviving headless) clears it unconditionally.
+        if supervisor_connected.is_none() {
+            match on_supervisor_absent_or_unresponsive(&mut reconnect, &voyage, Instant::now()) {
+                ReconnectDecision::Terminal(reason) => {
+                    emit(ClientEvent::Terminal(format!("supervisor lane unreachable: {reason:?}")));
+                    return;
+                }
+                ReconnectDecision::Retry => {
+                    emit(ClientEvent::Status("supervisor lane not answering \u{2014} retrying\u{2026}".to_string()));
+                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                        WaitOutcome::Shutdown => break 'episodes,
+                        WaitOutcome::Continue => continue 'episodes,
                     }
                 }
             }
-        };
-        reconnect.clear_unresponsive();
-        if let ReconnectDecision::Terminal(reason) = reconnect.classify_supervisor_phase(phase) {
-            emit(ClientEvent::Terminal(format!("supervisor: {reason:?}")));
-            return;
         }
-        if sv.as_deref() != Some(voyage.as_str()) {
-            // The pointer moved again between our read and the
-            // authority's own -- loop back to the top, which re-reads
-            // the pointer fresh.
-            if !wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff()) {
-                break 'episodes;
+        let (supervisor_conn, mut sup_reader) = supervisor_connected.expect("checked Some above");
+
+        // A latched quit only needs the supervisor lane -- apply it now,
+        // rather than waiting for a full attach that a quit makes moot.
+        if let Some(reason) = latched_quit_reason.take() {
+            run_quit(&supervisor_conn, &mut sup_reader, &voyage, reason, &mut quit, &mut outstanding, &emit);
+            if quit.should_exit() {
+                emit(ClientEvent::ShouldExit);
+                return;
             }
-            continue 'episodes;
         }
 
-        // --- attach lane: hello, attach, checkpoint -------------------
+        // --- attach lane: SID auth, hello, attach, checkpoint ---------
         let voyage_conn = match pipe_win::connect_voyage_pipe_unchallenged(&voyage) {
             Ok(c) => c,
             Err(e) => {
@@ -687,10 +893,10 @@ fn run_worker(
                     return;
                 }
                 emit(ClientEvent::Status(format!("voyage pipe unreachable: {io}")));
-                if !wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff()) {
-                    break 'episodes;
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                    WaitOutcome::Shutdown => break 'episodes,
+                    WaitOutcome::Continue => continue 'episodes,
                 }
-                continue 'episodes;
             }
         };
         let attach_identity = match challenge::authenticate_server(&voyage_conn) {
@@ -700,10 +906,10 @@ fn run_worker(
                 return;
             }
             challenge::SidAuthOutcome::Undetermined => {
-                if !wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff()) {
-                    break 'episodes;
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                    WaitOutcome::Shutdown => break 'episodes,
+                    WaitOutcome::Continue => continue 'episodes,
                 }
-                continue 'episodes;
             }
         };
 
@@ -715,10 +921,10 @@ fn run_worker(
                     return;
                 }
                 _ => {
-                    if !wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff()) {
-                        break 'episodes;
+                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                        WaitOutcome::Shutdown => break 'episodes,
+                        WaitOutcome::Continue => continue 'episodes,
                     }
-                    continue 'episodes;
                 }
             }
         }
@@ -726,32 +932,45 @@ fn run_worker(
             match attach_and_collect_checkpoint(&voyage_conn, &mut attach_reader, &controller_id) {
                 Ok(c) => c,
                 Err(_) => {
-                    if !wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff()) {
-                        break 'episodes;
+                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                        WaitOutcome::Shutdown => break 'episodes,
+                        WaitOutcome::Continue => continue 'episodes,
                     }
-                    continue 'episodes;
                 }
             };
 
-        // Ruling (e): the attach notice is bound to the leg it
-        // describes -- compare pid+created across BOTH connections
-        // before trusting it. On mismatch, re-read status once and
-        // proceed without a notice rather than looping forever.
-        let notice = if fe_client::legs_match(mgmt_leg, attach_identity) {
-            Some(fe_client::attach_notice_text(&format!("{}", mgmt_leg.1)))
-        } else if let Ok((_, _, _)) = supervisor_status(&conn, &mut sup_reader) {
-            None
-        } else {
-            None
-        };
-        if let Some(n) = notice {
-            emit(ClientEvent::Notice(n));
+        // Ruling (e), Codex review round finding 9: the attach notice
+        // compares the CAPSULE's own identity (a throwaway voyage
+        // mgmt-lane challenge) against the attach connection's own
+        // SID-proven identity -- never the supervisor's. On mismatch,
+        // re-read the mgmt identity once and proceed without a notice
+        // rather than looping forever.
+        let mgmt_identity = capsule_identity_via_mgmt(&voyage)
+            .ok()
+            .map(|p| (p.pid(), p.created()))
+            .or_else(|| capsule_identity_via_mgmt(&voyage).ok().map(|p| (p.pid(), p.created())));
+        if let Some(mgmt_leg) = mgmt_identity {
+            if fe_client::legs_match(mgmt_leg, attach_identity) {
+                emit(ClientEvent::Notice(fe_client::attach_notice_text(&format!("{}", mgmt_leg.1))));
+            }
         }
 
         emit(ClientEvent::Checkpoint(checkpoint));
         emit(ClientEvent::Status("attached".to_string()));
-        reconnect.enter_watching();
-        take.reset_to_watching();
+        reconnect.attached();
+
+        // Ruling (b), Codex review round finding 4: a `not_attached`
+        // reattach preserves the take transaction instead of resetting
+        // it -- re-issue `take` for the SAME still-queued bytes now that
+        // a fresh checkpoint has landed.
+        if preserve_take_on_reconnect {
+            preserve_take_on_reconnect = false;
+            for action in take.retry_take() {
+                apply_single_take_action(action, &voyage_conn, &controller_id, &emit);
+            }
+        } else {
+            take.reset_to_watching();
+        }
 
         // Ruling (f): fe_down marker on every attach after the first.
         let now_iso = iso_now();
@@ -759,25 +978,31 @@ fn run_worker(
             emit(ClientEvent::FeDownMarker(marker));
         }
 
-        // Resend any input left outstanding from a prior connection,
-        // within this same voyage (ruling (c)).
+        // Ruling (c), Codex review round finding 6: resume any input
+        // left outstanding from a prior connection, within this same
+        // voyage -- kick off the SAME take-on-first-input transaction
+        // that a real keystroke would, so `resize` then the retained
+        // frame flow through the identical lockstep-respecting path.
         match outstanding.resend_after_reconnect(&voyage, take_epoch) {
-            fe_client::ReconnectResendDecision::Resend { idem_key } => {
-                if let Some(o) = outstanding.outstanding() {
-                    let frame = wire::AttachClient::Input {
-                        controller_id: controller_id.clone(),
-                        take_epoch,
-                        idem_key,
-                        payload: o.bytes.clone(),
-                    };
-                    // Resending implies we must re-take first -- handled
-                    // by the take transaction below once input resumes;
-                    // a resend with no live pen yet is queued the same
-                    // way `on_input_while_watching` would.
-                    let _ = frame;
+            fe_client::ReconnectResendDecision::Resend { .. } => {
+                take_intent = TakeIntent::ReconnectResend;
+                if take.role() == Role::Watching {
+                    let actions = take.on_input_while_watching(&[]);
+                    for action in actions {
+                        apply_single_take_action(action, &voyage_conn, &controller_id, &emit);
+                    }
                 }
+                // Else: role is already Taking from the preserved
+                // not_attached retry above -- the same take_ok serves
+                // both purposes.
             }
-            fe_client::ReconnectResendDecision::Cancel | fe_client::ReconnectResendDecision::None => {}
+            fe_client::ReconnectResendDecision::Cancel { canceled } => {
+                emit(ClientEvent::Status(format!(
+                    "input canceled \u{2014} the voyage changed ({} byte(s) lost)",
+                    canceled.bytes.len()
+                )));
+            }
+            fe_client::ReconnectResendDecision::None => {}
         }
 
         // Spawn the episode-scoped reader thread for the attach
@@ -785,11 +1010,24 @@ fn run_worker(
         let shared_conn = Arc::new(voyage_conn);
         let reader_tx = msg_tx.clone();
         let reader_conn = Arc::clone(&shared_conn);
-        let reader_thread = thread::Builder::new()
+        let episode_stop = Arc::new(AtomicBool::new(false));
+        let reader_stop = Arc::clone(&episode_stop);
+        let reader_queued_bytes = Arc::clone(&queued_bytes);
+        let reader_thread = match thread::Builder::new()
             .name("sot-fe-attach-reader".to_string())
-            .spawn(move || run_attach_reader(reader_conn, attach_reader, reader_tx))
-            .ok();
-        let mut supervisor_conn = conn;
+            .spawn(move || run_attach_reader(reader_conn, attach_reader, reader_tx, reader_queued_bytes, reader_stop))
+        {
+            Ok(jh) => jh,
+            Err(e) => {
+                // Codex review round, finding 13: a reader that could
+                // not even be spawned must never look "attached" -- no
+                // thread exists to ever deliver TakeOk, output, or input
+                // acknowledgements.
+                emit(ClientEvent::Terminal(format!("failed to start the attach reader thread: {e}")));
+                return;
+            }
+        };
+        let mut supervisor_conn = supervisor_conn;
         let mut last_liveness_poll = Instant::now();
 
         // --- steady state ------------------------------------------
@@ -801,6 +1039,7 @@ fn run_worker(
             &mut supervisor_conn,
             &mut sup_reader,
             &mut take,
+            &mut take_intent,
             &mut outstanding,
             &mut quit,
             &mut reconnect,
@@ -813,17 +1052,16 @@ fn run_worker(
         );
 
         // Tear down this episode's connections before deciding what's
-        // next. `cancel()` unblocks the reader thread's own blocked
-        // read (dropping our `Arc` clone alone would NOT — the reader
-        // thread's own clone keeps the handle open) so it observes an
-        // error, sends the now-moot `ReaderDone` (harmlessly ignored;
-        // a fresh reader is not spawned until the next successful
-        // attach), and exits; only then do both `Arc` clones drop and
-        // the pipe handle actually closes.
+        // next. The stop flag interrupts the reader's OWN backpressure
+        // wait (a sleep loop, not a blocked read -- `cancel()` alone
+        // cannot reach it); `cancel()` then unblocks a blocked read so
+        // the thread observes an error, sends the now-moot `ReaderDone`
+        // (harmlessly ignored; a fresh reader is not spawned until the
+        // next successful attach), and exits; only then do both `Arc`
+        // clones drop and the pipe handle actually closes.
+        episode_stop.store(true, Ordering::Release);
         shared_conn.cancel();
-        if let Some(jh) = reader_thread {
-            let _ = jh.join();
-        }
+        let _ = reader_thread.join();
         drop(shared_conn);
         drop(supervisor_conn);
 
@@ -840,8 +1078,16 @@ fn run_worker(
                 return;
             }
             SteadyOutcome::Reconnect => {
-                if !wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff()) {
-                    shutdown = true;
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                    WaitOutcome::Shutdown => shutdown = true,
+                    WaitOutcome::Continue => {}
+                }
+            }
+            SteadyOutcome::ReconnectPreserveTake => {
+                preserve_take_on_reconnect = true;
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                    WaitOutcome::Shutdown => shutdown = true,
+                    WaitOutcome::Continue => {}
                 }
             }
         }
@@ -852,24 +1098,50 @@ enum SteadyOutcome {
     Shutdown,
     QuitEnded,
     Terminal(String),
+    /// An ordinary episode end -- the NEXT episode resets the take
+    /// transaction to Watching.
     Reconnect,
+    /// `take_refused{not_attached}` ended this episode -- the NEXT
+    /// episode preserves the take transaction instead (ruling (b),
+    /// Codex review round finding 4).
+    ReconnectPreserveTake,
+}
+
+enum WaitOutcome {
+    Continue,
+    Shutdown,
 }
 
 /// Blocks up to `wait` for a `Shutdown` command, otherwise returns after
-/// the backoff elapses so the next episode can start. Returns `false`
-/// iff the caller must stop entirely (shutdown requested).
-fn wait_for_retry_or_shutdown(cmd_rx: &Receiver<WorkerMsg>, wait: Duration) -> bool {
+/// the backoff elapses so the next episode can start. A `Quit` arriving
+/// during this wait is LATCHED into `*latched_quit_reason` rather than
+/// dropped (Codex review round, finding 2) — the top of the next episode
+/// applies it the moment a supervisor connection exists, since `end_run`
+/// needs only that lane. `Input`/`Resize` arriving with no live
+/// connection to send them on have nothing to act on yet and are
+/// dropped (the take transaction and outstanding slot are not mutated
+/// while disconnected, so a keystroke here would have nothing to attach
+/// its intent to).
+fn wait_for_retry_or_shutdown(
+    cmd_rx: &Receiver<WorkerMsg>,
+    wait: Duration,
+    latched_quit_reason: &mut Option<String>,
+) -> WaitOutcome {
     let deadline = Instant::now() + wait;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return true;
+            return WaitOutcome::Continue;
         }
         match cmd_rx.recv_timeout(remaining.min(WORKER_TICK)) {
-            Ok(WorkerMsg::Shutdown) => return false,
-            Ok(_) => continue, // input/resize/quit while disconnected: dropped, nothing to act on yet
+            Ok(WorkerMsg::Shutdown) => return WaitOutcome::Shutdown,
+            Ok(WorkerMsg::Quit(reason)) => {
+                latched_quit_reason.get_or_insert(reason);
+                continue;
+            }
+            Ok(_) => continue,
             Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => return false,
+            Err(RecvTimeoutError::Disconnected) => return WaitOutcome::Shutdown,
         }
     }
 }
@@ -902,17 +1174,120 @@ fn iso_now() -> String {
     format!("{y:04}-{m2:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
-/// The episode-scoped attach-connection reader: blocking read, decode via
-/// its own `FrameSplitter`, forward each frame with its own byte-account
-/// tag. Gates its OWN next `read()` call on the shared queued-bytes
-/// counter (ruling (d)'s "the FE STOPS READING THE PIPE" backpressure) —
-/// `Keepalive` is answered directly here (bounced back byte-identical),
-/// never round-tripped through the worker.
-fn run_attach_reader(conn: Arc<PipeClient>, mut reader: FrameReader, tx: Sender<WorkerMsg>) {
-    let queued = Arc::new(AtomicUsize::new(0));
+/// Submits `end_run` on the (already-connected) supervisor lane and
+/// applies its OWN reply (per Lifecycle, this arrives AT `record_closed`
+/// — see `fe_client::QuitDispatcher::on_operation_state`'s own doc for
+/// why that is not yet exit-worthy). Call sites keep polling `query` via
+/// [`maybe_poll_quit_query`] afterward, every tick, until
+/// `record_verified` or another terminal outcome (ruling (a), Codex
+/// review round finding 1). Idempotent — a `quit` already in flight
+/// (Ending/Verifying/terminal) makes this a no-op, so applying a
+/// LATCHED quit at the top of a fresh episode can never double-fire.
+fn run_quit(
+    supervisor_conn: &PipeClient,
+    sup_reader: &mut FrameReader,
+    voyage: &str,
+    reason: String,
+    quit: &mut QuitDispatcher,
+    outstanding: &mut OutstandingSlot,
+    emit: &dyn Fn(ClientEvent),
+) {
+    let operation_id = format!("fe-quit-{}", uuid::Uuid::now_v7());
+    if !quit.request_quit(operation_id.clone(), Instant::now()) {
+        return; // already ending/verifying/terminal -- idempotent
+    }
+    // Ruling (c), Codex review round finding 6: an input outstanding
+    // when quit is requested is reported, never dropped silently.
+    if let Some(o) = outstanding.cancel_for_quit() {
+        emit(ClientEvent::Status(format!(
+            "input canceled by quit \u{2014} {} byte(s) not confirmed",
+            o.bytes.len()
+        )));
+    }
+    let cmd = SupervisorRequest::Command {
+        operation_id,
+        op: SupervisorOp::EndRun { reason, voyage: voyage.to_string() },
+    };
+    if let Ok(bytes) = wire::encode_supervisor_request(&cmd) {
+        if write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET).is_ok() {
+            // The command's own reply is bounded by the SAME cutoff
+            // `QuitDispatcher::tick` uses, so a blocking wait here and
+            // the dispatcher's own elapsed-time check agree on one
+            // bound rather than stacking two.
+            if let Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(state))) =
+                sup_reader.next_frame(supervisor_conn, Instant::now() + fe_client::QUIT_CUTOFF)
+            {
+                quit.on_operation_state(state);
+            }
+        }
+    }
+    emit(ClientEvent::QuitMessage(quit.message()));
+}
+
+/// While `quit` is `Ending`/`Verifying`, polls `query{operation_id}`
+/// every [`QUIT_QUERY_INTERVAL`] and applies the reply — the mechanism
+/// that actually reaches `record_verified` after the command's own
+/// `record_closed` reply (ruling (a), Codex review round finding 1:
+/// "after record_closed, query the operation until record_verified").
+/// A no-op whenever `quit` is not currently waiting on anything, or the
+/// interval has not yet elapsed since the last poll.
+fn maybe_poll_quit_query(
+    supervisor_conn: &PipeClient,
+    sup_reader: &mut FrameReader,
+    quit: &mut QuitDispatcher,
+    next_quit_query_at: &mut Instant,
+    now: Instant,
+    emit: &dyn Fn(ClientEvent),
+) {
+    let Some(operation_id) = quit.operation_id() else {
+        return;
+    };
+    if now < *next_quit_query_at {
+        return;
+    }
+    *next_quit_query_at = now + QUIT_QUERY_INTERVAL;
+    let q = SupervisorRequest::Query { operation_id: operation_id.to_string() };
+    if let Ok(bytes) = wire::encode_supervisor_request(&q) {
+        if write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET).is_ok() {
+            if let Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(state))) =
+                sup_reader.next_frame(supervisor_conn, Instant::now() + STATUS_BUDGET)
+            {
+                quit.on_operation_state(state);
+                emit(ClientEvent::QuitMessage(quit.message()));
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// The episode-scoped attach-connection reader
+// -----------------------------------------------------------------------
+
+/// Blocking read, decode via its own `FrameSplitter`, forward each frame
+/// to the worker. Gates its OWN next `read()` call on the SHARED
+/// `queued_bytes` counter (Codex review round, finding 7: "the FE STOPS
+/// READING THE PIPE" is now real — this counter is the SAME `Arc` clone
+/// [`FeAttachClient::pump`] decrements, not a private, immediately-
+/// released one). `stop` breaks the backpressure wait itself (a sleep
+/// loop `cancel()` cannot reach); a normal teardown sets it just before
+/// calling `cancel()`. `Keepalive` is answered directly here (bounced
+/// back byte-identical), never round-tripped through the worker.
+fn run_attach_reader(
+    conn: Arc<PipeClient>,
+    mut reader: FrameReader,
+    tx: Sender<WorkerMsg>,
+    queued_bytes: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+) {
     loop {
-        while queued.load(Ordering::Acquire) >= READER_QUEUE_CAP_BYTES {
+        while queued_bytes.load(Ordering::Acquire) >= READER_QUEUE_CAP_BYTES {
+            if stop.load(Ordering::Acquire) {
+                return;
+            }
             thread::sleep(Duration::from_millis(20));
+        }
+        if stop.load(Ordering::Acquire) {
+            return;
         }
         let deadline = Instant::now() + Duration::from_secs(3600); // steady-state: no artificial read deadline; EOF/cancel end it
         let frame = match reader.next_frame(&conn, deadline) {
@@ -926,30 +1301,20 @@ fn run_attach_reader(conn: Arc<PipeClient>, mut reader: FrameReader, tx: Sender<
             let _ = conn.write_all(&wire::encode_keepalive(*nonce));
             continue;
         }
-        let size = frame_accounted_size(&frame);
-        queued.fetch_add(size, Ordering::AcqRel);
-        if tx.send(WorkerMsg::Frame(frame, size)).is_err() {
+        if let DecodedFrame::AttachServer(AttachServer::Output { bytes }) = &frame {
+            // The ONLY increment of the shared byte-account — paired
+            // with `FeAttachClient::pump`'s own decrement.
+            queued_bytes.fetch_add(bytes.len(), Ordering::AcqRel);
+        }
+        if tx.send(WorkerMsg::Frame(frame)).is_err() {
             return;
         }
-        // Decrement happens when the worker finishes processing --
-        // approximated here by immediately releasing the budget once
-        // sent, since the mpsc channel itself is the only queue that can
-        // grow unbounded and its own allocation is already bounded by
-        // how fast the worker's `recv_timeout` loop drains it; holding
-        // the "outstanding" accounting any longer would need a second
-        // channel back from the worker for no behavioral difference in
-        // a single-consumer channel that is drained every `WORKER_TICK`.
-        queued.fetch_sub(size, Ordering::AcqRel);
     }
 }
 
-fn frame_accounted_size(frame: &DecodedFrame) -> usize {
-    match frame {
-        DecodedFrame::AttachServer(AttachServer::Output { bytes }) => bytes.len(),
-        DecodedFrame::AttachServer(AttachServer::CheckpointChunk { bytes, .. }) => bytes.len(),
-        _ => 32,
-    }
-}
+// -----------------------------------------------------------------------
+// Steady state
+// -----------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
 fn run_steady_state(
@@ -960,6 +1325,7 @@ fn run_steady_state(
     supervisor_conn: &mut PipeClient,
     sup_reader: &mut FrameReader,
     take: &mut TakeTransaction,
+    take_intent: &mut TakeIntent,
     outstanding: &mut OutstandingSlot,
     quit: &mut QuitDispatcher,
     reconnect: &mut ReconnectState,
@@ -974,48 +1340,45 @@ fn run_steady_state(
         let _ = events_tx.send(e);
         wake();
     };
+    let mut next_quit_query_at = Instant::now();
 
     loop {
         match cmd_rx.recv_timeout(WORKER_TICK) {
             Ok(WorkerMsg::Shutdown) => return SteadyOutcome::Shutdown,
-            Ok(WorkerMsg::Input(bytes)) => {
-                let actions = match take.role() {
-                    Role::Watching => take.on_input_while_watching(&bytes),
-                    Role::Taking => take.on_input_while_taking(&bytes),
-                    Role::Driving => {
-                        // Steady-state typing while already driving: one
-                        // outstanding input at a time (ruling (c)); a
-                        // second keystroke before the first resolves is
-                        // simply appended to this same frame's payload
-                        // via the take-queue mechanism reused here for
-                        // its bound, not its role semantics.
-                        if outstanding.outstanding().is_some() {
-                            vec![]
-                        } else {
-                            let idem_key = outstanding.record(
-                                voyage.to_string(),
-                                *take_epoch,
-                                bytes.clone(),
-                                mint_idem_key,
-                            );
-                            let frame = AttachClient::Input {
-                                controller_id: controller_id.to_string(),
-                                take_epoch: *take_epoch,
-                                idem_key,
-                                payload: bytes,
-                            };
-                            if let Ok(enc) = wire::encode_attach_client(&frame) {
-                                let _ = write_bounded(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
-                            }
-                            vec![]
-                        }
+            Ok(WorkerMsg::Input(bytes)) => match take.role() {
+                Role::Watching => {
+                    for action in take.on_input_while_watching(&bytes) {
+                        apply_single_take_action(action, attach_conn, controller_id, &emit);
                     }
-                };
-                apply_take_actions(actions, attach_conn, take, outstanding, take_epoch, controller_id, voyage, cols, rows, &emit);
-            }
+                }
+                Role::Taking | Role::Resizing => {
+                    for action in take.on_input_while_pending(&bytes) {
+                        apply_single_take_action(action, attach_conn, controller_id, &emit);
+                    }
+                }
+                Role::Driving => {
+                    if outstanding.outstanding().is_some() {
+                        // Ruling (b), Codex review round finding 5: an
+                        // input already outstanding queues the next one
+                        // rather than dropping it.
+                        for action in take.queue_while_driving(&bytes) {
+                            apply_single_take_action(action, attach_conn, controller_id, &emit);
+                        }
+                    } else {
+                        send_new_input(attach_conn, outstanding, *take_epoch, controller_id, voyage, bytes);
+                    }
+                }
+            },
             Ok(WorkerMsg::Resize(c, r)) => {
                 *cols = c;
                 *rows = r;
+                // An ad hoc resize while already DRIVING is sent
+                // immediately (unrelated to the take transaction's own
+                // resize, which is awaited alone before ANYTHING else
+                // goes out — see ruling (b)'s lockstep fix). Not sent
+                // while WATCHING/TAKING/RESIZING: a watcher cannot
+                // correct the geometry until it holds the pen, and while
+                // RESIZING a second resize would itself violate lockstep.
                 if take.role() == Role::Driving {
                     let frame = AttachClient::Resize { cols: c, rows: r };
                     if let Ok(enc) = wire::encode_attach_client(&frame) {
@@ -1024,39 +1387,16 @@ fn run_steady_state(
                 }
             }
             Ok(WorkerMsg::Quit(reason)) => {
-                let operation_id = format!("fe-quit-{}", uuid::Uuid::now_v7());
-                if quit.request_quit(operation_id.clone(), Instant::now()) {
-                    let cmd = SupervisorRequest::Command {
-                        operation_id,
-                        op: SupervisorOp::EndRun { reason, voyage: voyage.to_string() },
-                    };
-                    if let Ok(bytes) = wire::encode_supervisor_request(&cmd) {
-                        if write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET).is_ok() {
-                            // `end_run`'s own reply is deliberately DEFERRED
-                            // to record_closed (real OS work underneath
-                            // it), not the ordinary STATUS_BUDGET a
-                            // stateless `status` answers within -- bounded
-                            // by the SAME cutoff `QuitDispatcher::tick`
-                            // uses, so a blocking wait here and the
-                            // dispatcher's own elapsed-time check agree on
-                            // one bound rather than stacking two.
-                            if let Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(state))) =
-                                sup_reader.next_frame(supervisor_conn, Instant::now() + fe_client::QUIT_CUTOFF)
-                            {
-                                if matches!(state, SupervisorOperationState::RecordClosed) {
-                                    quit.on_record_closed();
-                                }
-                            }
-                        }
-                    }
-                    emit(ClientEvent::QuitMessage(quit.message()));
-                }
+                run_quit(supervisor_conn, sup_reader, voyage, reason, quit, outstanding, &emit);
+                next_quit_query_at = Instant::now() + QUIT_QUERY_INTERVAL;
             }
-            Ok(WorkerMsg::Frame(frame, _size)) => {
-                if !handle_attach_frame(
-                    frame, attach_conn, take, outstanding, take_epoch, controller_id, voyage, cols, rows, &emit,
+            Ok(WorkerMsg::Frame(frame)) => {
+                match handle_attach_frame(
+                    frame, attach_conn, take, take_intent, outstanding, take_epoch, controller_id, voyage, *cols,
+                    *rows, &emit,
                 ) {
-                    // A stray or ignorable frame; nothing to do.
+                    FrameOutcome::ReattachRequested => return SteadyOutcome::ReconnectPreserveTake,
+                    FrameOutcome::Handled | FrameOutcome::Ignored => {}
                 }
             }
             Ok(WorkerMsg::ReaderDone) => {
@@ -1068,33 +1408,51 @@ fn run_steady_state(
 
         let now = Instant::now();
         quit.tick(now);
-        if let QuitState::OutcomeUnknown = quit.state() {
-            emit(ClientEvent::QuitMessage(quit.message()));
-        }
+        maybe_poll_quit_query(supervisor_conn, sup_reader, quit, &mut next_quit_query_at, now, &emit);
         if quit.should_exit() {
             return SteadyOutcome::QuitEnded;
         }
         for action in take.tick_checkpoint_retry(now) {
-            apply_single_take_action(action, attach_conn, take_epoch, controller_id, &emit);
+            apply_single_take_action(action, attach_conn, controller_id, &emit);
         }
 
         if now.duration_since(*last_liveness_poll) >= LIVENESS_POLL_INTERVAL {
             *last_liveness_poll = now;
             match supervisor_status(supervisor_conn, sup_reader) {
                 Ok((_, _, phase)) => {
+                    // The supervisor answered -- unambiguously NOT
+                    // absent/unresponsive; the voyage pipe question
+                    // never even arises (ruling (d), finding 8).
                     reconnect.clear_unresponsive();
                     if let ReconnectDecision::Terminal(reason) = reconnect.classify_supervisor_phase(phase) {
                         return SteadyOutcome::Terminal(format!("supervisor: {reason:?}"));
                     }
                 }
                 Err(_) => {
-                    if let ReconnectDecision::Terminal(reason) = reconnect.classify_unresponsive(now) {
-                        return SteadyOutcome::Terminal(format!("supervisor lane unresponsive: {reason:?}"));
-                    }
+                    // Codex review round, finding 8: the attach
+                    // connection is DEMONSTRABLY alive right now (we are
+                    // actively reading it in this very loop) — the
+                    // voyage-absent half of the AND condition is false
+                    // by construction here, so the health window must
+                    // NEVER be consulted from this branch. "The capsule
+                    // survives headless": keep going.
+                    reconnect.clear_unresponsive();
+                    emit(ClientEvent::Status(
+                        "supervisor lane not answering \u{2014} the session is still live".to_string(),
+                    ));
                 }
             }
         }
     }
+}
+
+enum FrameOutcome {
+    Handled,
+    Ignored,
+    /// `take_refused{not_attached}` — the caller ends this episode
+    /// PRESERVING the take transaction (ruling (b), Codex review round
+    /// finding 4).
+    ReattachRequested,
 }
 
 fn mint_idem_key() -> [u8; 16] {
@@ -1103,59 +1461,35 @@ fn mint_idem_key() -> [u8; 16] {
     buf
 }
 
-#[allow(clippy::too_many_arguments)]
-fn apply_take_actions(
-    actions: Vec<TakeAction>,
-    attach_conn: &PipeClient,
-    take: &mut TakeTransaction,
-    outstanding: &mut OutstandingSlot,
-    take_epoch: &mut u64,
-    controller_id: &str,
-    voyage: &str,
-    cols: &u16,
-    rows: &u16,
-    emit: &dyn Fn(ClientEvent),
-) {
-    for action in actions {
-        apply_single_take_action_full(
-            action, attach_conn, take, outstanding, take_epoch, controller_id, voyage, cols, rows, emit,
-        );
+fn send_wire_input(attach_conn: &PipeClient, controller_id: &str, take_epoch: u64, idem_key: [u8; 16], payload: Vec<u8>) {
+    let frame = AttachClient::Input { controller_id: controller_id.to_string(), take_epoch, idem_key, payload };
+    if let Ok(enc) = wire::encode_attach_client(&frame) {
+        let _ = write_bounded(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn apply_single_take_action(
-    action: TakeAction,
+/// Records a FRESH outstanding input (a new idem key) and sends it —
+/// the ordinary path for both a first Driving-idle keystroke and a
+/// flushed queue entry.
+fn send_new_input(
     attach_conn: &PipeClient,
-    take_epoch: &mut u64,
-    controller_id: &str,
-    emit: &dyn Fn(ClientEvent),
-) {
-    if let TakeAction::SendTake = action {
-        let frame = AttachClient::Take { controller_id: controller_id.to_string() };
-        if let Ok(enc) = wire::encode_attach_client(&frame) {
-            let _ = write_bounded(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
-        }
-    } else if let TakeAction::QueueDiscarded = action {
-        emit(ClientEvent::Status("input discarded \u{2014} the pen never arrived in time".to_string()));
-    }
-    let _ = take_epoch;
-}
-
-#[allow(clippy::too_many_arguments)]
-fn apply_single_take_action_full(
-    action: TakeAction,
-    attach_conn: &PipeClient,
-    take: &mut TakeTransaction,
     outstanding: &mut OutstandingSlot,
-    take_epoch: &mut u64,
+    take_epoch: u64,
     controller_id: &str,
     voyage: &str,
-    cols: &u16,
-    rows: &u16,
-    emit: &dyn Fn(ClientEvent),
+    bytes: Vec<u8>,
 ) {
-    let _ = take;
+    let idem_key = outstanding.record(voyage.to_string(), take_epoch, bytes.clone(), mint_idem_key);
+    send_wire_input(attach_conn, controller_id, take_epoch, idem_key, bytes);
+}
+
+/// Dispatches one `TakeAction`. `SendInput` no longer exists as a
+/// variant (Codex review round, finding 3: flushing the queue is never
+/// bundled with `take_ok`'s own actions) — every input send in this
+/// module goes through [`send_new_input`]/[`send_wire_input`] instead,
+/// called from the specific points ruling (b)/(c) pin (after
+/// `resize_ok`, after an outstanding reply resolves while DRIVING).
+fn apply_single_take_action(action: TakeAction, attach_conn: &PipeClient, controller_id: &str, emit: &dyn Fn(ClientEvent)) {
     match action {
         TakeAction::SendTake => {
             let frame = AttachClient::Take { controller_id: controller_id.to_string() };
@@ -1163,20 +1497,8 @@ fn apply_single_take_action_full(
                 let _ = write_bounded(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
             }
         }
-        TakeAction::SendResize { .. } => {
-            let frame = AttachClient::Resize { cols: *cols, rows: *rows };
-            if let Ok(enc) = wire::encode_attach_client(&frame) {
-                let _ = write_bounded(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
-            }
-        }
-        TakeAction::SendInput { bytes } => {
-            let idem_key = outstanding.record(voyage.to_string(), *take_epoch, bytes.clone(), mint_idem_key);
-            let frame = AttachClient::Input {
-                controller_id: controller_id.to_string(),
-                take_epoch: *take_epoch,
-                idem_key,
-                payload: bytes,
-            };
+        TakeAction::SendResize { cols, rows } => {
+            let frame = AttachClient::Resize { cols, rows };
             if let Ok(enc) = wire::encode_attach_client(&frame) {
                 let _ = write_bounded(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
             }
@@ -1191,99 +1513,182 @@ fn apply_single_take_action_full(
             emit(ClientEvent::Status("lost the pen".to_string()));
         }
         TakeAction::Reattach => {
-            // Handled by the reconnect episode loop itself (a fresh
-            // attach re-enters Watching, and `retry_take` re-sends
-            // `take` for the still-queued bytes once it does).
+            // Handled by the caller propagating `FrameOutcome::
+            // ReattachRequested` up to `SteadyOutcome::
+            // ReconnectPreserveTake` -- nothing to send here (the
+            // server already does not recognize this connection as
+            // attached).
         }
     }
 }
 
+/// After the pen is fully secured (`resize_ok`, or `resize_refused{out_
+/// of_budget}` which still keeps it): send whatever is owed next, per
+/// `take_intent` — the reconnect resend (SAME key), the stale retry
+/// (NEW key under the now-current epoch), or the ordinary queued flush
+/// (fresh key). Ruling (c), Codex review round finding 6.
+fn flush_after_pen_secured(
+    attach_conn: &PipeClient,
+    take: &mut TakeTransaction,
+    take_intent: &mut TakeIntent,
+    outstanding: &mut OutstandingSlot,
+    take_epoch: u64,
+    controller_id: &str,
+    voyage: &str,
+) {
+    match std::mem::replace(take_intent, TakeIntent::Ordinary) {
+        TakeIntent::ReconnectResend => {
+            if let Some(o) = outstanding.outstanding() {
+                send_wire_input(attach_conn, controller_id, o.take_epoch, o.idem_key, o.bytes.clone());
+            }
+        }
+        TakeIntent::StaleRetry => {
+            let resolution = outstanding.apply_outcome(InputWireOutcome::RefusedStale, take_epoch, mint_idem_key);
+            if let fe_client::OutstandingResolution::RetryNewEpoch { idem_key } = resolution {
+                if let Some(o) = outstanding.outstanding() {
+                    send_wire_input(attach_conn, controller_id, take_epoch, idem_key, o.bytes.clone());
+                }
+            }
+        }
+        TakeIntent::Ordinary => {
+            if let Some(bytes) = take.take_queued() {
+                send_new_input(attach_conn, outstanding, take_epoch, controller_id, voyage, bytes);
+            }
+        }
+    }
+}
+
+/// After an outstanding input's reply resolves (`InputRecorded`/
+/// `InputDeliveryUnknown`) while still DRIVING: flush whatever the take
+/// transaction queued behind it (ruling (b), Codex review round finding
+/// 5's own "dispatch queued bytes after the outstanding reply").
+fn flush_next_driving_input(
+    attach_conn: &PipeClient,
+    take: &mut TakeTransaction,
+    outstanding: &mut OutstandingSlot,
+    take_epoch: u64,
+    controller_id: &str,
+    voyage: &str,
+) {
+    if take.role() != Role::Driving {
+        return;
+    }
+    if let Some(bytes) = take.take_queued() {
+        send_new_input(attach_conn, outstanding, take_epoch, controller_id, voyage, bytes);
+    }
+}
+
 /// Dispatches one incoming attach-lane frame (unsolicited `Output` or a
-/// reply to whatever the worker most recently sent). Returns `false` for
-/// a frame this function had nothing to do with (kept explicit rather
-/// than silently swallowing an unrecognized shape).
+/// reply to whatever the worker most recently sent).
 #[allow(clippy::too_many_arguments)]
 fn handle_attach_frame(
     frame: DecodedFrame,
     attach_conn: &PipeClient,
     take: &mut TakeTransaction,
+    take_intent: &mut TakeIntent,
     outstanding: &mut OutstandingSlot,
     take_epoch: &mut u64,
     controller_id: &str,
     voyage: &str,
-    cols: &u16,
-    rows: &u16,
+    cols: u16,
+    rows: u16,
     emit: &dyn Fn(ClientEvent),
-) -> bool {
+) -> FrameOutcome {
     match frame {
         DecodedFrame::AttachServer(AttachServer::Output { bytes }) => {
             emit(ClientEvent::Output(bytes));
-            true
+            FrameOutcome::Handled
         }
         DecodedFrame::AttachServer(AttachServer::TakeOk { take_epoch: epoch }) => {
             *take_epoch = epoch;
-            let actions = take.on_take_ok(*cols, *rows);
-            apply_take_actions(actions, attach_conn, take, outstanding, take_epoch, controller_id, voyage, cols, rows, emit);
-            true
+            if *take_intent == TakeIntent::ReconnectResend {
+                if let fe_client::ReconnectResendDecision::Cancel { canceled } =
+                    outstanding.resend_after_reconnect(voyage, epoch)
+                {
+                    emit(ClientEvent::Status(format!(
+                        "input canceled \u{2014} the voyage changed ({} byte(s) lost)",
+                        canceled.bytes.len()
+                    )));
+                    *take_intent = TakeIntent::Ordinary;
+                }
+            }
+            for action in take.on_take_ok(cols, rows) {
+                apply_single_take_action(action, attach_conn, controller_id, emit);
+            }
+            FrameOutcome::Handled
         }
         DecodedFrame::AttachServer(AttachServer::TakeRefused { reason }) => {
             match reason {
                 TakeRefusedReason::NotAttached => {
                     let actions = take.on_take_refused_not_attached();
-                    apply_take_actions(actions, attach_conn, take, outstanding, take_epoch, controller_id, voyage, cols, rows, emit);
+                    let reattach = actions.contains(&TakeAction::Reattach);
+                    for action in actions {
+                        apply_single_take_action(action, attach_conn, controller_id, emit);
+                    }
+                    if reattach {
+                        return FrameOutcome::ReattachRequested;
+                    }
                 }
                 TakeRefusedReason::CheckpointInFlight => {
-                    let actions = take.on_take_refused_checkpoint_in_flight(Instant::now());
-                    apply_take_actions(actions, attach_conn, take, outstanding, take_epoch, controller_id, voyage, cols, rows, emit);
-                }
-            }
-            true
-        }
-        DecodedFrame::AttachServer(AttachServer::ResizeRefused { reason }) => {
-            let actions = take.on_resize_refused(reason);
-            apply_take_actions(actions, attach_conn, take, outstanding, take_epoch, controller_id, voyage, cols, rows, emit);
-            let _ = ResizeRefusedReason::OutOfBudget; // keep import used across match arms
-            true
-        }
-        DecodedFrame::AttachServer(AttachServer::ResizeOk) => true,
-        DecodedFrame::AttachServer(AttachServer::InputRecorded) => {
-            let _ = outstanding.apply_outcome(InputWireOutcome::Recorded, *take_epoch, mint_idem_key);
-            true
-        }
-        DecodedFrame::AttachServer(AttachServer::InputRefusedStale) => {
-            let resolution =
-                outstanding.apply_outcome(InputWireOutcome::RefusedStale, *take_epoch, mint_idem_key);
-            if let fe_client::OutstandingResolution::RetryNewEpoch { idem_key } = resolution {
-                if let Some(o) = outstanding.outstanding() {
-                    let frame = AttachClient::Input {
-                        controller_id: controller_id.to_string(),
-                        take_epoch: *take_epoch,
-                        idem_key,
-                        payload: o.bytes.clone(),
-                    };
-                    if let Ok(enc) = wire::encode_attach_client(&frame) {
-                        let _ = write_bounded(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
+                    for action in take.on_take_refused_checkpoint_in_flight(Instant::now()) {
+                        apply_single_take_action(action, attach_conn, controller_id, emit);
                     }
                 }
             }
-            true
+            FrameOutcome::Handled
+        }
+        DecodedFrame::AttachServer(AttachServer::ResizeOk) => {
+            take.on_resize_ok();
+            flush_after_pen_secured(attach_conn, take, take_intent, outstanding, *take_epoch, controller_id, voyage);
+            FrameOutcome::Handled
+        }
+        DecodedFrame::AttachServer(AttachServer::ResizeRefused { reason }) => {
+            let was_resizing = take.role() == Role::Resizing;
+            for action in take.on_resize_refused(reason) {
+                apply_single_take_action(action, attach_conn, controller_id, emit);
+            }
+            if was_resizing && reason == ResizeRefusedReason::OutOfBudget {
+                // `on_resize_refused` already promoted RESIZING ->
+                // DRIVING for this refusal -- the pen is still held, so
+                // whatever was queued behind the take-ok flushes exactly
+                // as it would after a real `resize_ok`.
+                flush_after_pen_secured(attach_conn, take, take_intent, outstanding, *take_epoch, controller_id, voyage);
+            }
+            FrameOutcome::Handled
+        }
+        DecodedFrame::AttachServer(AttachServer::InputRecorded) => {
+            let _ = outstanding.apply_outcome(InputWireOutcome::Recorded, *take_epoch, mint_idem_key);
+            flush_next_driving_input(attach_conn, take, outstanding, *take_epoch, controller_id, voyage);
+            FrameOutcome::Handled
+        }
+        DecodedFrame::AttachServer(AttachServer::InputRefusedStale) => {
+            // Ruling (c), Codex review round finding 6: re-take FIRST;
+            // the new key is minted once the fresh `take_ok` arrives
+            // (see the `TakeOk` arm above and `flush_after_pen_secured`'s
+            // own `StaleRetry` handling).
+            *take_intent = TakeIntent::StaleRetry;
+            for action in take.retake_while_driving() {
+                apply_single_take_action(action, attach_conn, controller_id, emit);
+            }
+            FrameOutcome::Handled
         }
         DecodedFrame::AttachServer(AttachServer::InputDeliveryUnknown) => {
             let res = outstanding.apply_outcome(InputWireOutcome::DeliveryUnknown, *take_epoch, mint_idem_key);
             if matches!(res, fe_client::OutstandingResolution::Unknown) {
                 emit(ClientEvent::Status("input delivery unknown".to_string()));
             }
-            true
+            flush_next_driving_input(attach_conn, take, outstanding, *take_epoch, controller_id, voyage);
+            FrameOutcome::Handled
         }
         DecodedFrame::AttachServer(AttachServer::AttachRefused { .. })
         | DecodedFrame::AttachServer(AttachServer::HelloOk { .. })
         | DecodedFrame::AttachServer(AttachServer::HelloRefused { .. })
-        | DecodedFrame::AttachServer(AttachServer::CheckpointChunk { .. }) => false,
-        DecodedFrame::Keepalive { .. } => false, // answered by the reader thread directly
+        | DecodedFrame::AttachServer(AttachServer::CheckpointChunk { .. }) => FrameOutcome::Ignored,
+        DecodedFrame::Keepalive { .. } => FrameOutcome::Ignored, // answered by the reader thread directly
         DecodedFrame::MgmtRequest(_)
         | DecodedFrame::MgmtReply(_)
         | DecodedFrame::AttachClient(_)
         | DecodedFrame::SupervisorRequest(_)
-        | DecodedFrame::SupervisorReply(_) => false,
+        | DecodedFrame::SupervisorReply(_) => FrameOutcome::Ignored,
     }
 }
