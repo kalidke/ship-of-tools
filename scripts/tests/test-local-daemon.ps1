@@ -109,8 +109,11 @@ function Wait-PipeGone([string]$Name, [int]$TimeoutMs = 5000) {
     return $false
 }
 function Get-DaemonProcs([string]$PipeName) {
-    @(Get-CimInstance Win32_Process -Filter "Name='sotd.exe'" |
-        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($PipeName) })
+    # Callers wrap the result in @(...): a single CimInstance unrolled on
+    # return answers .Count with $null (adapted-object property lookup wins
+    # over the scalar Count intrinsic on 5.1), which failed CI as "found ".
+    Get-CimInstance Win32_Process -Filter "Name='sotd.exe'" |
+        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($PipeName) }
 }
 
 $realSotd = Join-Path $repo 'rust\target\debug\sotd.exe'
@@ -148,7 +151,7 @@ if (-not $haveRealSotd) {
     $exit3 = $LASTEXITCODE
     Check 'exit code 0' ($exit3 -eq 0) "got $exit3; log: $out3"
     Check 'pipe answers' (Wait-Pipe $pipe3) 'pipe never opened'
-    $procs3 = Get-DaemonProcs $pipe3
+    $procs3 = @(Get-DaemonProcs $pipe3)
     Check 'exactly one sotd.exe on this pipe' ($procs3.Count -eq 1) "found $($procs3.Count)"
 
     Write-Host "`n=== 4. no second start when the pipe already answers ===" -ForegroundColor Cyan
@@ -156,7 +159,7 @@ if (-not $haveRealSotd) {
     $exit4 = $LASTEXITCODE
     Check 'exit code 0 (already running is success)' ($exit4 -eq 0) "got $exit4"
     Check 'said already running' ((($out4 -join ' ')) -match 'already running') "log was: $out4"
-    $procs4 = Get-DaemonProcs $pipe3
+    $procs4 = @(Get-DaemonProcs $pipe3)
     Check 'still exactly one sotd.exe (no second spawn)' ($procs4.Count -eq 1) "found $($procs4.Count)"
     if ($procs3.Count -eq 1 -and $procs4.Count -eq 1) {
         Check 'same pid (not restarted)' ($procs4[0].ProcessId -eq $procs3[0].ProcessId) 'pid changed'
@@ -174,7 +177,7 @@ if (-not $haveRealSotd) {
         $exit5 = $LASTEXITCODE
         Check 'stop exit code 0' ($exit5 -eq 0) "got $exit5; log: $out5"
         Check 'pipe gone' (Wait-PipeGone $pipe3) 'pipe still listed'
-        $procs5 = Get-DaemonProcs $pipe3
+        $procs5 = @(Get-DaemonProcs $pipe3)
         Check 'sotd.exe process gone' ($procs5.Count -eq 0) "still found $($procs5.Count)"
         Start-Sleep -Milliseconds 300
         $fakeSup.Refresh()
