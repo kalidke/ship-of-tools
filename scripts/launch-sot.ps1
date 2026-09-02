@@ -14,8 +14,12 @@
 # right after the staged-update apply and before either mode's frontend
 # launch; see scripts/sot-local-daemon.ps1 and design D in the ADR. Design
 # E is the multi-tunnel loop below `New-RemoteEnsureCommand` — one tunnel
-# per remote, `$backendHost`'s own kept exactly as before it (env vars can
-# still override which host that is).
+# per remote, `$backendHost` (env vars can still override which host that
+# is) included: with the local connection always present, an unreachable
+# or unconfigured default remote is NONFATAL too now (codex follow-up) --
+# every remote-ensure step is skipped with a log line on failure, never a
+# hard stop, except the one dialog for "nothing at all could be reached"
+# right before the frontend launches.
 #
 # Overrides (env vars):
 #   SOT_HOST         SSH alias for the backend host       (default: none — see .sot/hosts.toml)
@@ -199,19 +203,25 @@ $sotApply = Join-Path $PSScriptRoot 'sot-apply.ps1'
 $sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
 
 # ADR 0042 L2b design D: a running local daemon pins its sotd.exe/
-# sot-capsule.exe as mapped images (Windows) -- stop it BEFORE anything that
-# might replace those files out from under it. Checked, never unconditional:
-# only when an update is actually about to land -- sot-apply.ps1's own
-# staged-update pointer (about to be consumed by the apply call right
-# below), or SOT_LAUNCH_REBUILD (set by the self-update prelude above on a
-# successful git pull, consumed later by the frontend rebuild block) --
-# never on every launch, which would pay a stop/restart on every idle
-# click. -NoUpdate skips both, same as the steps it guards.
+# sot-capsule.exe as mapped images (Windows) -- stop it BEFORE anything
+# that might replace those files out from under it. Checked, never
+# unconditional: only when an update is actually about to land --
+# sot-apply.ps1's own staged-update pointer (about to be consumed by the
+# apply call right below), which is the ONLY thing in this launcher that
+# replaces sotd.exe/sot-capsule.exe -- never on every launch, which would
+# pay a stop/restart on every idle click. -NoUpdate skips it, same as the
+# apply step it guards.
+#
+# Codex follow-up: SOT_LAUNCH_REBUILD (set by the self-update prelude on a
+# successful git pull) used to also trigger this -- deleted. The rebuild
+# block it guards is `cargo build --release -p sot-frontend` ONLY (see
+# below); that never touches sotd.exe/sot-capsule.exe, so stopping the
+# local daemon for it bought nothing but a pointless stop/restart on every
+# launch that pulled fresh source.
 if (-not $NoUpdate -and (Test-Path $sotLocalDaemon)) {
-    $updatePending = (Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')) `
-        -or ($env:SOT_LAUNCH_REBUILD -eq '1')
+    $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
     if ($updatePending) {
-        Write-SupLog 'local daemon: stopping before apply/rebuild so it does not pin a stale binary'
+        Write-SupLog 'local daemon: stopping before apply so it does not pin a stale binary'
         $stopOut = & $sotLocalDaemon -Stop 6>&1 2>&1
         foreach ($l in @($stopOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
     }
@@ -343,15 +353,15 @@ $remoteRepo = if ($env:SOT_REMOTE_REPO) {
 } else {
     $null
 }
-if (-not $backendHost -or -not $remoteRepo) {
-    Set-LaunchStatus 'ERROR: no backend host configured - run scripts/install.sh or copy .sot/hosts.toml.example'
-    Stop-Splash
-    [System.Windows.Forms.MessageBox]::Show(
-        "No backend host configured.`n`nRun scripts/install.sh, or copy .sot/hosts.toml.example to .sot/hosts.toml and set default_host.",
-        'Ship of Tools launcher',
-        'OK', 'Error') | Out-Null
-    exit 1
-}
+# ADR 0042 L2b codex follow-up (design 3): the default remote is now
+# NONFATAL, same as every other host -- the implicit local connection
+# (hosts::resolve_connections) means the frontend always has SOMETHING to
+# show even with no default remote configured or reachable at all. No
+# backend host configured (logged below, once $tcpPort/etc. are in scope)
+# just means the launch continues without one; $defaultRemoteOk (computed
+# further down, after the ssh attempt) gates the one error dialog that
+# remains -- see the "nothing at all can start" check right before the
+# frontend launches.
 $tcpPort = if ($env:SOT_TCP_PORT) { [int]$env:SOT_TCP_PORT } else { 18743 }
 $remoteSocket = if ($env:SOT_REMOTE_SOCKET) { $env:SOT_REMOTE_SOCKET } else { $null }
 # Token resolution with registry-scope fallback (a Windows FE box finding, 2026-07-11):
@@ -374,10 +384,20 @@ if (-not $token) { $token = [Environment]::GetEnvironmentVariable('SOT_TOKEN', '
 # special-cased to $backendHost -- "resolved as today" means the exact same
 # three-tier socket resolution and start-if-down/staleness/force-restart
 # logic every remote gets, not a lighter version. Kept as a function that
-# BUILDS the remote command text (not one that also runs ssh) so the
-# default host's own error handling below -- fatal, with the existing
-# dialog -- stays completely unchanged; every other host's ssh call and
-# handling is nonfatal (see the loop after the tunnel-supervisor functions).
+# BUILDS the remote command text (not one that also runs ssh) so the same
+# text feeds an `ssh` call at every call site, default host included
+# (codex follow-up: the default host is nonfatal too now, exactly like
+# every other host -- see $defaultRemoteOk below).
+#
+# ssh options (codex follow-up, item 5, trimmed): BatchMode=yes (never
+# prompt for a password/passphrase -- that would hang, not fail, on a
+# misconfigured host) and ConnectionAttempts=1 (no silent retries) join
+# the existing ConnectTimeout=10 at every remote call site, default host
+# included. No separate per-host deadline machinery beyond that -- a wedged
+# remote command past the handshake is accepted as today's existing risk,
+# not one this slice takes on.
+$sshRemoteOpts = @('-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes', '-o', 'ConnectionAttempts=1')
+
 function New-RemoteEnsureCommand {
     param(
         [string]$RemoteRepo,
@@ -458,56 +478,50 @@ done
     return ($cmd -replace "`r`n", "`n")
 }
 
-$remoteCmd = New-RemoteEnsureCommand -RemoteRepo $remoteRepo -RemoteSocketOverride $remoteSocket -Restart $RestartBackend
-# rev 2: default launches only check staleness / start-if-down (never restart a
-# running shared daemon); -RestartBackend forces the full restart-backend.sh path.
-Set-LaunchStatus $(if ($RestartBackend) { "Restarting backend on $backendHost..." } else { "Checking backend on $backendHost..." })
-# Relax 'Stop' -> 'Continue' around native ssh (same reason as the git pull
-# above): under 'Stop' + 2>&1 in PS 5.1, ANY remote stderr line throws and
-# kills the launcher silently - splash frozen on "Checking backend...". Gate
-# on $LASTEXITCODE below instead; stderr noise lands in $remoteStatusText.
-$savedEAP = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-$remoteStatus = ssh -o ConnectTimeout=10 $backendHost $remoteCmd 2>&1
-$ErrorActionPreference = $savedEAP
-$remoteStatusText = ($remoteStatus | Out-String)
-if ($LASTEXITCODE -ne 0) {
-    Set-LaunchStatus "ERROR: couldn't reach $backendHost (ssh exit $LASTEXITCODE) - try -Local"
-    Stop-Splash
-    [System.Windows.Forms.MessageBox]::Show(
-        "Couldn't reach $backendHost (exit $LASTEXITCODE):`n`n$remoteStatusText`n`nFall back to local with:`n  pwsh -File scripts\launch-sot.ps1 -Local",
-        'Ship of Tools launcher',
-        'OK', 'Error') | Out-Null
-    exit 1
-}
-# Surface a remote force-restart failure. rev 2 only ever restarts the daemon on
-# the -RestartBackend force path (the default path never touches a running shared
-# daemon), so this can only fire there. Sticky warning, not a stop — if a daemon
-# is up the FE still connects; staleness on the default path is expected and silent.
-if ($remoteStatusText -match 'force-restart FAILED') {
-    Set-LaunchStatus "ERROR: backend force-restart failed on $backendHost (see restart-backend.sh output / supervisor.log)"
-}
-if ($remoteStatusText -match 'socket MISSING') {
-    Set-LaunchStatus "ERROR: backend socket missing on $backendHost"
-    Stop-Splash
-    [System.Windows.Forms.MessageBox]::Show(
-        "Backend on $backendHost did not create its socket.`n`nRemote output:`n$remoteStatusText",
-        'Ship of Tools launcher',
-        'OK', 'Error') | Out-Null
-    exit 1
-}
-if (-not $remoteSocket) {
-    if ($remoteStatusText -match 'backend-socket:\s*(\S+)') {
-        $remoteSocket = $matches[1]
+# ADR 0042 L2b codex follow-up (design 3): the default remote is routed
+# through the same nonfatal plan every other host uses -- log, continue,
+# let the frontend show it unreachable and reconnect. $defaultRemoteOk
+# gates: whether $sshArgs/Start-SotTunnel below is worth building at all,
+# and (combined with $localDaemonReady, checked earlier) the ONE error
+# dialog that remains -- see "nothing at all can start" further down.
+$defaultRemoteOk = $false
+if ($backendHost -and $remoteRepo) {
+    $remoteCmd = New-RemoteEnsureCommand -RemoteRepo $remoteRepo -RemoteSocketOverride $remoteSocket -Restart $RestartBackend
+    # rev 2: default launches only check staleness / start-if-down (never restart a
+    # running shared daemon); -RestartBackend forces the full restart-backend.sh path.
+    Set-LaunchStatus $(if ($RestartBackend) { "Restarting backend on $backendHost..." } else { "Checking backend on $backendHost..." })
+    # Relax 'Stop' -> 'Continue' around native ssh (same reason as the git pull
+    # above): under 'Stop' + 2>&1 in PS 5.1, ANY remote stderr line throws and
+    # kills the launcher silently. Gate on $LASTEXITCODE below instead.
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $remoteStatus = ssh $sshRemoteOpts $backendHost $remoteCmd 2>&1
+    $remoteExit = $LASTEXITCODE
+    $ErrorActionPreference = $savedEAP
+    $remoteStatusText = ($remoteStatus | Out-String)
+    if ($remoteExit -ne 0) {
+        Write-SupLog "default remote: '$backendHost' unreachable (ssh exit $remoteExit) - continuing without it"
+    } elseif ($remoteStatusText -match 'socket MISSING') {
+        Write-SupLog "default remote: '$backendHost' backend did not create its socket - continuing without it"
     } else {
-        Set-LaunchStatus "ERROR: backend did not report a socket path on $backendHost"
-        Stop-Splash
-        [System.Windows.Forms.MessageBox]::Show(
-            "Backend on $backendHost did not report a socket path.`n`nRemote output:`n$remoteStatusText",
-            'Ship of Tools launcher',
-            'OK', 'Error') | Out-Null
-        exit 1
+        # Surface a remote force-restart failure. rev 2 only ever restarts the daemon on
+        # the -RestartBackend force path (the default path never touches a running shared
+        # daemon), so this can only fire there. Sticky warning, not a stop -- if a daemon
+        # is up the FE still connects; staleness on the default path is expected and silent.
+        if ($remoteStatusText -match 'force-restart FAILED') {
+            Set-LaunchStatus "ERROR: backend force-restart failed on $backendHost (see restart-backend.sh output / supervisor.log)"
+        }
+        if (-not $remoteSocket -and $remoteStatusText -match 'backend-socket:\s*(\S+)') {
+            $remoteSocket = $matches[1]
+        }
+        if ($remoteSocket) {
+            $defaultRemoteOk = $true
+        } else {
+            Write-SupLog "default remote: '$backendHost' did not report a socket path - continuing without it"
+        }
     }
+} else {
+    Write-SupLog "default remote: not configured (.sot/hosts.toml default_host, or SOT_HOST/SOT_REMOTE_REPO) - continuing without one"
 }
 
 # SSH local-port-forward. Keepalive tuning so brief wifi flaps and
@@ -557,7 +571,7 @@ $sshCommonArgs = @(
 # yours.
 $useLegacyForwards = [bool]$env:SOT_LEGACY_FORWARDS
 $sshAuxArgs = @()
-if ($useLegacyForwards) {
+if ($useLegacyForwards -and $defaultRemoteOk) {
     Write-Host "SOT_LEGACY_FORWARDS=1 - forwarding fixed helper ports $plutoPort/$videoPort/$docsPort(+1..4)/$wglPort." -ForegroundColor Yellow
     Write-Host "  On a shared host these may belong to ANOTHER USER's daemon; pages served over them are not verified as yours." -ForegroundColor Yellow
     $sshAuxArgs += $sshCommonArgs
@@ -579,28 +593,34 @@ if ($useLegacyForwards) {
         $backendHost
     )
 }
+# ADR 0042 L2b codex follow-up: only worth building at all when the
+# default remote actually resolved -- see $defaultRemoteOk above. An empty
+# $sshArgs makes Start-SotTunnel's own callers no-ops (guarded at each
+# call site, "Connecting..." and the supervisor loop below).
 $sshArgs = @()
-$sshArgs += $sshCommonArgs
-$sshArgs += @('-L', "${tcpPort}:$remoteSocket")
-# Fold the aux forwards into the MAIN tunnel too — but only when they exist.
-# With the forwards retired, $sshAuxArgs is empty and `$sshAuxArgs.Count - 1`
-# would be -1, which PowerShell reads as "last element" and would splice
-# garbage into the control tunnel's args.
-if ($sshAuxArgs.Count -gt 0) {
-    $auxForwardStart = $sshCommonArgs.Count
-    # Count - 2, NOT Count - 1: the last element of $sshAuxArgs is $backendHost,
-    # and the destination is appended separately below. Slicing to Count - 1 here
-    # would put the host in twice.
-    $auxForwardEnd = $sshAuxArgs.Count - 2
-    $sshArgs += $sshAuxArgs[$auxForwardStart..$auxForwardEnd]
+if ($defaultRemoteOk) {
+    $sshArgs += $sshCommonArgs
+    $sshArgs += @('-L', "${tcpPort}:$remoteSocket")
+    # Fold the aux forwards into the MAIN tunnel too -- but only when they exist.
+    # With the forwards retired, $sshAuxArgs is empty and `$sshAuxArgs.Count - 1`
+    # would be -1, which PowerShell reads as "last element" and would splice
+    # garbage into the control tunnel's args.
+    if ($sshAuxArgs.Count -gt 0) {
+        $auxForwardStart = $sshCommonArgs.Count
+        # Count - 2, NOT Count - 1: the last element of $sshAuxArgs is $backendHost,
+        # and the destination is appended separately below. Slicing to Count - 1 here
+        # would put the host in twice.
+        $auxForwardEnd = $sshAuxArgs.Count - 2
+        $sshArgs += $sshAuxArgs[$auxForwardStart..$auxForwardEnd]
+    }
+    # The ssh DESTINATION, always last and never conditional. Before the aux
+    # forwards were retired this rode in as the final element of the $sshAuxArgs
+    # splice above; once that splice became conditional the control tunnel lost its
+    # host entirely and ssh exited instantly ("ssh -N -o ... -L 18743:<sock>" with
+    # no destination), leaving the supervisor respawning a doomed tunnel on
+    # exponential backoff and 18743 never listening. Observed on a real FE, 2026-07-30.
+    $sshArgs += $backendHost
 }
-# The ssh DESTINATION, always last and never conditional. Before the aux
-# forwards were retired this rode in as the final element of the $sshAuxArgs
-# splice above; once that splice became conditional the control tunnel lost its
-# host entirely and ssh exited instantly ("ssh -N -o ... -L 18743:<sock>" with
-# no destination), leaving the supervisor respawning a doomed tunnel on
-# exponential backoff and 18743 never listening. Observed on a real FE, 2026-07-30.
-$sshArgs += $backendHost
 function Test-LocalPortOpen {
     param([int]$Port)
     $client = New-Object Net.Sockets.TcpClient
@@ -614,6 +634,11 @@ function Test-LocalPortOpen {
     }
 }
 function Start-SotTunnel {
+    # No-op when the default remote never resolved ($sshArgs empty -- see
+    # $defaultRemoteOk above): nothing to forward to, and every call site
+    # already treats a $null return the same way Start-SotAuxTunnel's own
+    # no-op is treated.
+    if ($sshArgs.Count -eq 0) { return $null }
     Start-Process -FilePath ssh `
         -ArgumentList $sshArgs `
         -WindowStyle Hidden `
@@ -634,21 +659,22 @@ function Start-SotAuxTunnel {
 # Every OTHER configured remote gets its own tunnel too (ADR 0042 L2b design
 # E) -- $backendHost's tunnel is $sshArgs/Start-SotTunnel above/below; this
 # loop covers every remaining `[host.<name>]` entry with an `ssh_alias`.
-# Ensure+resolve reuses New-RemoteEnsureCommand (identical to $backendHost's
-# own treatment), but every failure here is NONFATAL: one log line and the
-# launch continues without that host's tunnel. The frontend's own
-# hosts.toml read (independent of the launcher) then shows that host
-# unreachable and keeps retrying — never a reason to fail the whole launch.
-# tcp_port is required per remote (Get-TunnelPlan names the host + field in
-# `error` when it's missing); $backendHost alone may fall back to
-# $tcpPort/SOT_TCP_PORT for compatibility, matched here by ssh_alias so an
-# env-var-only $backendHost (bypassing hosts.toml) still isn't double-
-# tunneled if it also happens to have its own [host.*] section.
+# Ensure+resolve reuses New-RemoteEnsureCommand and the same $sshRemoteOpts
+# (codex follow-up, item 5) as the default host's own attempt, but every
+# failure here is NONFATAL: one log line and the launch continues without
+# that host's tunnel. The frontend's own hosts.toml read (independent of the launcher)
+# then shows that host unreachable and keeps retrying -- never a reason to
+# fail the whole launch. tcp_port is required per remote (Get-TunnelPlan
+# names the host + field in `error` when it's missing); $activeHostName
+# (the default host's hosts.toml KEY, not its ssh_alias -- codex follow-up
+# item 7: identity is the key, since nothing stops two different hosts.toml
+# entries from sharing one ssh_alias) may fall back to $tcpPort/SOT_TCP_PORT
+# for compatibility, matched here by KEY so it isn't double-tunneled.
 # ---------------------------------------------------------------------------
 $extraTunnels = @()
-$tunnelPlan = Get-TunnelPlan -Cfg $hostsCfg -DefaultAlias $backendHost -DefaultPort $tcpPort
+$tunnelPlan = Get-TunnelPlan -Cfg $hostsCfg -DefaultHost $activeHostName -DefaultPort $tcpPort
 foreach ($item in $tunnelPlan) {
-    if ($item.ssh_alias -eq $backendHost) { continue }
+    if ($item.host -eq $activeHostName) { continue }
     if ($item.error) {
         Write-SupLog "tunnel: skipping host '$($item.host)' - $($item.error)"
         continue
@@ -661,7 +687,7 @@ foreach ($item in $tunnelPlan) {
     $extraCmd = New-RemoteEnsureCommand -RemoteRepo $item.remote_repo -RemoteSocketOverride $item.remote -Restart $RestartBackend
     $savedEAP2 = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $extraStatus = ssh -o ConnectTimeout=10 $item.ssh_alias $extraCmd 2>&1
+    $extraStatus = ssh $sshRemoteOpts $item.ssh_alias $extraCmd 2>&1
     $extraExit = $LASTEXITCODE
     $ErrorActionPreference = $savedEAP2
     $extraStatusText = ($extraStatus | Out-String)
@@ -777,6 +803,23 @@ if (-not $env:SOT_SETTINGS) {
     $env:SOT_SETTINGS = Join-Path $repo '.sot\settings.toml'
 }
 
+# ADR 0042 L2b codex follow-up (design 3): the ONE error dialog that
+# survives the default remote becoming nonfatal -- nothing at all could be
+# reached. Every OTHER remote is still purely informational (the frontend
+# shows each as unreachable and reconnects on its own), but if BOTH the
+# local daemon and the default remote failed, there is nothing for the
+# frontend to usefully show on first paint; fail loud here rather than
+# open a window with no connection anywhere and no way back in.
+if (-not $localDaemonReady -and -not $defaultRemoteOk) {
+    Set-LaunchStatus 'ERROR: nothing reachable - no local daemon and no default remote'
+    Stop-Splash
+    [System.Windows.Forms.MessageBox]::Show(
+        "Nothing reachable: the local sotd did not come up, and $(if ($backendHost) { "the default remote ($backendHost)" } else { 'no default remote is configured' }) could not be used either.`n`nSee %LOCALAPPDATA%\sot\logs\supervisor.log and sotd-local.log for why.",
+        'Ship of Tools launcher',
+        'OK', 'Error') | Out-Null
+    exit 1
+}
+
 Set-LaunchStatus 'Connecting...'
 $externalControlTunnel = Test-LocalPortOpen -Port $tcpPort
 if ($externalControlTunnel) {
@@ -851,8 +894,8 @@ try {
             $splashDismissed = $true
         }
 
-        # Tunnel supervisor: poll the ssh process every 500ms while the
-        # frontend runs. If ssh exits (laptop wake, wifi flap, backend sshd
+        # Tunnel supervisor: poll every ssh process every 500ms while the
+        # frontend runs. If one exits (laptop wake, wifi flap, backend sshd
         # restart, server kicked us idle), respawn it. Back off on rapid
         # successive failures so a permanent issue (backend unreachable) doesn't
         # hammer the network — 1s → 2s → 4s → ... capped at 30s, resets to
@@ -862,42 +905,40 @@ try {
         # listener the frontend reconnects, hello-resumes with its cached
         # (session_id, last_seen_revision), and the daemon replays missed
         # events. No state lost as long as the backend's daemon is alive.
+        #
+        # Codex follow-up, item 6 (trimmed): respawn happens immediately: no
+        # per-tunnel Start-Sleep before it, so a backoff on one tunnel can't
+        # stack with -- or delay respawning -- another's. Any backoff a
+        # respawn needed THIS pass is only applied once, as the single sleep
+        # at the bottom of the loop (the largest one needed, if more than
+        # one tunnel flapped this pass), in place of the normal 500ms poll
+        # interval for that one iteration.
         $tunnelBackoffSec = 0
         while (-not $frontend.HasExited) {
-            Start-Sleep -Milliseconds 500
+            $pollSleepSec = 0.5
             # $sshTunnel is $null when the control port is externally held AND
-            # the aux forwards are retired (nothing to supervise). Guard it
-            # explicitly rather than relying on $null.HasExited being falsy —
-            # that only holds while no one adds Set-StrictMode.
+            # the aux forwards are retired (nothing to supervise), or when the
+            # default remote never resolved (ADR 0042 L2b codex follow-up,
+            # item 3 -- Start-SotTunnel/Start-SotAuxTunnel are no-ops then).
+            # Guard it explicitly rather than relying on $null.HasExited being
+            # falsy -- that only holds while no one adds Set-StrictMode.
             if ($sshTunnel -and $sshTunnel.HasExited) {
                 $uptime = ((Get-Date) - $sshStartedAt).TotalSeconds
-                if ($uptime -lt 2) {
-                    $tunnelBackoffSec = [Math]::Min(($tunnelBackoffSec * 2 + 1), 30)
-                    Start-Sleep -Seconds $tunnelBackoffSec
-                } else {
-                    $tunnelBackoffSec = 0
-                }
-                if ($externalControlTunnel) {
-                    $sshTunnel = Start-SotAuxTunnel
-                } else {
-                    $sshTunnel = Start-SotTunnel
-                }
+                $tunnelBackoffSec = if ($uptime -lt 2) { [Math]::Min(($tunnelBackoffSec * 2 + 1), 30) } else { 0 }
+                if ($tunnelBackoffSec -gt $pollSleepSec) { $pollSleepSec = $tunnelBackoffSec }
+                $sshTunnel = if ($externalControlTunnel) { Start-SotAuxTunnel } else { Start-SotTunnel }
                 $sshStartedAt = Get-Date
                 Write-SupLog "tunnel respawned pid=$($sshTunnel.Id) (backoff=${tunnelBackoffSec}s)"
             }
             # Every OTHER configured remote's tunnel (ADR 0042 L2b design E),
-            # same respawn-with-backoff shape as $sshTunnel above, one
-            # instance of state per host so one host's flap doesn't reset
-            # another's backoff.
+            # same respawn-then-backoff shape as $sshTunnel above, one
+            # instance of state per host (on the PSCustomObject itself) so
+            # one host's flap doesn't reset another's.
             foreach ($et in $extraTunnels) {
                 if ($et.Proc -and $et.Proc.HasExited) {
                     $etUptime = ((Get-Date) - $et.StartedAt).TotalSeconds
-                    if ($etUptime -lt 2) {
-                        $et.BackoffSec = [Math]::Min(($et.BackoffSec * 2 + 1), 30)
-                        Start-Sleep -Seconds $et.BackoffSec
-                    } else {
-                        $et.BackoffSec = 0
-                    }
+                    $et.BackoffSec = if ($etUptime -lt 2) { [Math]::Min(($et.BackoffSec * 2 + 1), 30) } else { 0 }
+                    if ($et.BackoffSec -gt $pollSleepSec) { $pollSleepSec = $et.BackoffSec }
                     try {
                         $et.Proc = Start-Process -FilePath ssh -ArgumentList $et.Args -WindowStyle Hidden -PassThru
                         $et.StartedAt = Get-Date
@@ -907,6 +948,11 @@ try {
                     }
                 }
             }
+            # The one Start-Sleep for this iteration: the normal 500ms poll
+            # cadence, stretched to the largest backoff any respawn needed
+            # this pass (never more than one sleep per iteration, whether
+            # zero, one, or every tunnel flapped).
+            Start-Sleep -Milliseconds ([int]($pollSleepSec * 1000))
         }
 
         # Determine whether this was a relaunch request (75) or a real quit.
