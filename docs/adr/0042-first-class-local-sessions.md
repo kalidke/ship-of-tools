@@ -95,7 +95,10 @@ included) — which is also when this ensure moves to every launch — and
 starting it unconditionally today would let it pin `<prefix>\bin\sotd.exe`
 (a mapped image while the process runs, on Windows) before the default
 launch's own apply/rebuild step gets a chance to update it: pure exposure,
-no benefit yet. Binary+capsule resolution prefers the COMPLETE dev pair
+no benefit yet. **Superseded by the L2b amendment below**: the ensure now
+runs on every launch mode, positioned after the apply step so a freshly
+applied binary is what it sees, with the local daemon stopped first only
+when an update is actually pending. Binary+capsule resolution prefers the COMPLETE dev pair
 (`sotd.exe` AND `sot-capsule.exe` both present in the dev checkout's
 `rust\target\release`) over the complete install pair, refusing only when
 NEITHER pair is complete — matching, not opposing, the frontend's own
@@ -156,6 +159,67 @@ launch mode — both are L2's "one connection per host" below.
 - Acceptance: the backend host and the local host in one selector; a
   session on each attached in turn; a remote host going away marks its node
   unreachable without disturbing the others.
+
+**Amendment 2026-09-02 — L2b: the launchers open one tunnel per remote,
+start the local daemon on every launch, and the local endpoint has one
+derivation.** L2a shipped the frontend half (`hosts::resolve_connections`,
+one connection per `hosts.toml` entry, local-first when present); this
+closes the launcher half the L2 bullets above assumed but didn't build yet.
+Four pieces:
+
+(A) **One derivation.** `session_socket_path(label)` — and the private-
+runtime-dir resolution it needs on Unix — moved from `rust/backend` into
+`sot_protocol::session_socket`, gaining the Windows branch it lacked
+(`\\.\pipe\sot-<user>-<label>`, `<label>` run through the same `slug()`
+every platform uses). The backend re-exports it (`sotd --label` and `sotd
+session-socket-path` are unchanged call sites); the frontend now calls it
+directly for its implicit local connection. One function, three
+consumers, never a second guess of what the pipe name is.
+
+(B) **Local is implicit.** `hosts::resolve_connections` adds a `local` entry
+FIRST unconditionally — no `hosts.toml` section required — with its
+endpoint defaulting to `session_socket_path("local")`. An explicit
+`[host.local]` section still works but now only for overriding `socket`;
+every other field on it is ignored, since local is never tunneled. The
+`hosts.toml.example` `[host.local]` block became one sentence.
+
+(C) **The daemon names its own pipe.** `sot-local-daemon.ps1` resolves the
+dev-or-install binary pair first (unchanged preference order), then asks
+IT — `sotd session-socket-path local` — for the pipe path used by the
+probe, the spawn argv, and the `-Stop` match. The script's own
+`"sot-$env:USERNAME-local"` construction (and `launch-sot.ps1`'s matching
+copy, which also stopped passing `--socket` for `-Local` — the frontend
+derives it via (B)) is deleted. Consequence: `-Stop` with no `-PipeName`
+test override now also needs a resolvable binary pair to know what to
+stop, where it previously didn't — accepted, since a running daemon keeps
+its own binary resolvable at its original location while it runs.
+
+(D) **Every launch ensures the local daemon.** The ensure moved out of the
+`-Local`-only block to run on every launch, right after the staged-update
+apply and before either mode's frontend starts. A pending update (the
+apply step's own staged-update pointer, or `SOT_LAUNCH_REBUILD` from a
+successful self-update pull) stops the local daemon first, so it never
+pins a binary about to be replaced — checked, not unconditional, so an
+ordinary launch pays nothing extra. `-Local` still hard-errors on failure;
+the default mode fails open (the `local` row just shows unreachable).
+
+(E) **One tunnel per remote.** Both launchers now iterate every
+`[host.<name>]` entry with an `ssh_alias` and open its own SSH forward,
+ensuring that host's backend the same way `default_host`'s always has
+(`New-RemoteEnsureCommand` / `sot_ensure_remote_host`) — but nonfatal per
+host: an unreachable remote logs one line and the launch continues, and
+the frontend's own hosts.toml read shows it unreachable. `tcp_port` is
+required per remote; `default_host` alone may still fall back to
+`SOT_TCP_PORT`/18743. `shutdown-sot.ps1` now discovers every configured
+port (via the same `Get-TunnelPlan`) so its tunnel-kill regex covers all
+of them, not just `default_host`'s. `-Local` still opens no tunnels at
+all. `Read-SotHosts`/`Get-TunnelPlan` (PowerShell) and
+`sot_hosts_table`/`sot_tunnel_plan` (bash) — pure, no ssh — moved into
+`scripts/sot-hosts.ps1`/`scripts/sot-hosts.sh`, shared by both launchers
+and their own tests (`scripts/tests/test-tunnel-plan.{ps1,sh}`).
+
+Not built here: L3 (remote attach, below), ADR 0035 per-host proxying, or
+retiring `-Local` (it keeps its "no tunnels, no freshness" meaning).
 
 ### L3 — remote attach (the P4 bridge, frontend half)
 
