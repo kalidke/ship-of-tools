@@ -3859,12 +3859,12 @@ fn forward_clipboard_paste_to_local_term(state: &mut State) {
     if let Some(t) = state.local_term.as_mut() {
         t.send_input(&bytes);
         state.term_scroll = 0;
-        return;
-    }
-    #[cfg(windows)]
-    if let Some(t) = state.attach_term.as_mut() {
-        t.send_input(&bytes);
-        state.term_scroll = 0;
+    } else {
+        #[cfg(windows)]
+        if let Some(t) = state.attach_term.as_mut() {
+            t.send_input(&bytes);
+            state.term_scroll = 0;
+        }
     }
 }
 
