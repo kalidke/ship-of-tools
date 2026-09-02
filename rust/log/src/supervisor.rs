@@ -198,7 +198,7 @@ use crate::segment::RetentionClass;
 use crate::verify;
 use crate::voyage::VoyageStore;
 use crate::wire::{
-    self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
+    self, DecodedFrame, Survival, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
     SupervisorRequest,
 };
 use std::collections::HashMap;
@@ -298,6 +298,19 @@ pub struct SuperviseConfig {
     pub cols: u16,
     pub rows: u16,
     pub assume_no_rollback_target: bool,
+    /// ADR 0042 slice L1a (Codex review finding 7): the spawner's own
+    /// breakaway outcome, supplied here rather than inferred (ADR 0041
+    /// decision 11: "Survival is supplied, never inferred... Deriving it
+    /// from `IsProcessInJob` observation would cross the ADR's
+    /// observation-is-not-authority line"). Threaded into every leg this
+    /// authority spawns (`build_run_command`'s own `--survival` flag) so
+    /// `status_ok.survival` and the sealed voyage's own record are
+    /// truthful for a supervisor itself spawned DEGRADED (still inside
+    /// its own parent's job, because the parent's breakaway attempt was
+    /// denied) — the marker must be RECORDED, not merely logged.
+    /// Defaults to `Normal` for every existing manual invocation that
+    /// predates this field.
+    pub survival: Survival,
 }
 
 /// `sot-capsule supervise`'s own entry point — never panics by design;
@@ -608,6 +621,12 @@ fn leg_was_stable(state_dir: &Path, voyage_id: &str) -> bool {
     }
 }
 
+// ADR 0042 slice L1a added `survival` as an 8th parameter (Codex review
+// finding 7) — matching this file's own existing precedent
+// (`run_quit`-equivalent lane loops) for a constructor whose every
+// parameter is load-bearing and independently documented at its call
+// sites, rather than a struct that would only exist to satisfy this lint.
+#[allow(clippy::too_many_arguments)]
 fn build_run_command(
     capsule_exe: &Path,
     voyage_root: &Path,
@@ -615,8 +634,13 @@ fn build_run_command(
     cols: u16,
     rows: u16,
     lease_name: &str,
+    survival: Survival,
     producer_argv: &[String],
 ) -> std::process::Command {
+    let survival_flag = match survival {
+        Survival::Normal => "normal",
+        Survival::Degraded => "degraded",
+    };
     let mut command = std::process::Command::new(capsule_exe);
     command
         .arg("run")
@@ -628,6 +652,8 @@ fn build_run_command(
         .arg(rows.to_string())
         .arg("--parent-lease-name")
         .arg(lease_name)
+        .arg("--survival")
+        .arg(survival_flag)
         .arg("--assume-no-rollback-target")
         .arg("--")
         .args(producer_argv);
@@ -1232,6 +1258,9 @@ fn spawn_initial_probe(
     (rx, handle)
 }
 
+// Same 8th `survival` parameter (ADR 0042 L1a, Codex review finding 7)
+// and the same reasoning as `build_run_command`'s own attribute above.
+#[allow(clippy::too_many_arguments)]
 fn spawn_owned_spawn_attempt(
     capsule_exe: PathBuf,
     voyage_root: PathBuf,
@@ -1239,13 +1268,14 @@ fn spawn_owned_spawn_attempt(
     cols: u16,
     rows: u16,
     lease_name: String,
+    survival: Survival,
     producer_argv: Vec<String>,
 ) -> (mpsc::Receiver<ProbeOutcome<ChallengedProcess>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
         let readiness_cutoff = Instant::now() + READINESS_CUTOFF;
         let mut command =
-            build_run_command(&capsule_exe, &voyage_root, &voyage_id, cols, rows, &lease_name, &producer_argv);
+            build_run_command(&capsule_exe, &voyage_root, &voyage_id, cols, rows, &lease_name, survival, &producer_argv);
         let outcome = classify::probe_owned_spawn(
             &RealProbeOps,
             &mut command,
@@ -1997,6 +2027,7 @@ fn respawn_or_terminal(
         config.cols,
         config.rows,
         lease_name.to_string(),
+        config.survival,
         config.producer_argv.clone(),
     );
     Lifecycle::Spawning { rx, handle, started_at: Instant::now() }
@@ -2119,6 +2150,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                                 config.cols,
                                 config.rows,
                                 lease_name.clone(),
+                                config.survival,
                                 config.producer_argv.clone(),
                             );
                             Lifecycle::Spawning { rx, handle, started_at: now }
@@ -2327,6 +2359,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                         config.cols,
                         config.rows,
                         lease_name.clone(),
+                        config.survival,
                         config.producer_argv.clone(),
                     );
                     Lifecycle::Spawning { rx, handle, started_at: now }

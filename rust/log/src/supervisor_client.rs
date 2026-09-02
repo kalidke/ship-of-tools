@@ -21,6 +21,8 @@
 //! err_state}`, `exchange::{SupervisorLaneExchange,
 //! SUPERVISOR_LANE_BUILD_ID}`, and `wire`'s supervisor-lane frames.
 
+use crate::fe_client::{QuitDispatcher, QuitState};
+use crate::fe_client_win::{run_end_run_and_wait, FrameReader};
 use crate::supervisor::{connect_and_challenge, err_state, send_and_read};
 use crate::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 use std::path::Path;
@@ -38,11 +40,6 @@ const CONNECT_AND_HELLO_BUDGET: Duration = Duration::from_secs(2);
 /// within it is treated exactly as an absent lane." Matches
 /// `fe_client_win.rs`'s own `STATUS_BUDGET`.
 const STATUS_BUDGET: Duration = Duration::from_secs(5);
-/// How often [`end_run`] re-polls `query` while an operation is still
-/// `Accepted`/`RecordClosed` — a UI-facing poll cadence, not an
-/// ADR-pinned figure (matching `LANE_IDLE_DEADLINE`'s own "reasoned, not
-/// pinned" status in `supervisor.rs`).
-const END_RUN_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// What a `status` round trip reports — [`wire::SupervisorPhase`] reused
 /// directly rather than a second local enum, since this module adds no
@@ -54,18 +51,26 @@ pub struct StatusReport {
     pub phase: SupervisorPhase,
 }
 
-/// What [`end_run`] settled on. `RecordClosed` (rather than
-/// `RecordVerified`) is a legitimate, honestly-reported outcome: it means
-/// the run genuinely ended (the marker committed) but this call's own
-/// budget ran out before the authority's O(retained history)
-/// `record_verified` walk finished — never "unknown", since the request
-/// was accepted and the record did close.
+/// What [`end_run`] settled on — [`QuitState`]'s own terminal vocabulary
+/// (ADR 0042 L1a, Codex review finding 4: `end_run` shares
+/// [`run_end_run_and_wait`] with the FE's own quit path rather than
+/// carrying a second state machine, so its outcomes are exactly that
+/// dispatcher's). `RecordClosed` is not one of `QuitDispatcher`'s own
+/// states — `Verifying` is non-terminal, so the dispatcher alone cannot
+/// distinguish "closed, not yet verified when the 90 s cutoff hit" from
+/// "never even got a reply." [`end_run`] recovers that ONE extra bit
+/// itself, externally, via `on_transition` (never touching
+/// `QuitDispatcher`'s shared state machine) — see that function's own
+/// comment.
 #[derive(Debug, Clone)]
 pub enum EndRunOutcome {
     /// The run ended and its record verified green.
     RecordVerified,
-    /// The run ended (the marker committed) but verification had not
-    /// completed within this call's own budget.
+    /// The run ended (the marker committed — `record_closed` was
+    /// observed) but the authority's own O(retained history)
+    /// `record_verified` walk had not completed by the ADR's 90 s
+    /// cutoff. The marker itself is the irrevocable acceptance (ADR
+    /// 0041 Lifecycle), so a caller may still treat this as "ended."
     RecordClosed,
     /// The authority reports the operation failed — never ended.
     Failed(String),
@@ -73,14 +78,10 @@ pub enum EndRunOutcome {
     /// voyage was stale, or `operation_id` collided with a different
     /// command's digest.
     Refused(String),
-    /// The `operation_id` this call minted was, impossibly, unknown to
-    /// the authority it was just accepted by — surfaced rather than
-    /// silently retried, since a production caller should never see this.
-    UnknownOperation,
-    /// The command was accepted but neither `record_closed` nor a
-    /// terminal state arrived within this call's own budget — genuinely
-    /// unknown, unlike `RecordClosed` above.
-    TimedOut,
+    /// Neither `record_closed` nor a terminal reply was ever observed
+    /// before `QuitDispatcher`'s own ADR-pinned 90 s cutoff — genuinely
+    /// unknown, not merely slow.
+    OutcomeUnknown,
 }
 
 /// Connect the supervisor lane at `state_dir` and run the full
@@ -111,60 +112,74 @@ pub fn query_status(state_dir: &Path) -> crate::Result<StatusReport> {
     }
 }
 
-/// Connect, challenge, submit `end_run {reason, voyage}`, and poll
-/// `query` until a terminal state or `budget` elapses (ADR 0042 L1a:
-/// `workspace.delete` on a capsule workspace). `voyage` MUST be the
-/// voyage the caller most recently observed via [`query_status`] —
-/// lifecycle commands are voyage-fenced (ADR 0041 Lifecycle), so a stale
-/// value is safely refused rather than mutated against.
-///
-/// `budget` bounds the WHOLE call (connect + hello + command + every
-/// query poll) — never merely the final poll — so a caller can cap total
-/// wall time regardless of how the authority's own O(retained history)
-/// verification walk is going.
-pub fn end_run(state_dir: &Path, voyage: &str, reason: &str, budget: Duration) -> crate::Result<EndRunOutcome> {
-    let deadline = Instant::now() + budget;
-    let conn = connect(state_dir, deadline.min(Instant::now() + CONNECT_AND_HELLO_BUDGET))?;
-    let operation_id = uuid::Uuid::now_v7().to_string();
-    let op = SupervisorOp::EndRun {
-        reason: reason.to_string(),
-        voyage: voyage.to_string(),
-    };
-    let request = SupervisorRequest::Command { operation_id: operation_id.clone(), op };
-    let mut state = match send_and_read(&conn, &request, deadline)? {
-        SupervisorReply::Operation(state) => state,
-        other => return Err(err_state(format!("expected an Operation reply to command, got {other:?}"))),
-    };
-    loop {
-        match state {
-            SupervisorOperationState::RecordVerified => return Ok(EndRunOutcome::RecordVerified),
-            SupervisorOperationState::Failed { detail } => return Ok(EndRunOutcome::Failed(detail)),
-            SupervisorOperationState::Refused { reason } => return Ok(EndRunOutcome::Refused(format!("{reason:?}"))),
-            SupervisorOperationState::UnknownOperation => return Ok(EndRunOutcome::UnknownOperation),
-            SupervisorOperationState::Accepted | SupervisorOperationState::RecordClosed => {
-                let now = Instant::now();
-                if now >= deadline {
-                    return Ok(match state {
-                        SupervisorOperationState::RecordClosed => EndRunOutcome::RecordClosed,
-                        _ => EndRunOutcome::TimedOut,
-                    });
-                }
-                std::thread::sleep(END_RUN_POLL_INTERVAL.min(deadline.saturating_duration_since(now)));
-                let query = SupervisorRequest::Query { operation_id: operation_id.clone() };
-                state = match send_and_read(&conn, &query, deadline)? {
-                    SupervisorReply::Operation(state) => state,
-                    other => return Err(err_state(format!("expected an Operation reply to query, got {other:?}"))),
-                };
-            }
-            // `Stopping`/`ResetDone` are other command families' own
-            // terminal shapes; the shared `SupervisorOperationState`
-            // vocabulary makes them reachable here in the TYPE, but the
-            // authority never actually answers an EndRun command/query
-            // with either — a protocol violation, not a case this
-            // caller has a meaningful outcome for.
-            SupervisorOperationState::Stopping | SupervisorOperationState::ResetDone { .. } => {
-                return Err(err_state(format!("unexpected operation state answering end_run: {state:?}")));
-            }
-        }
+/// Connect, challenge, and send `stop` — the authority acknowledges
+/// `stopping` and then exits, while its own capsule LEG survives:
+/// "Legs are spawned as CHILD PROCESSES and deliberately NOT placed in
+/// the supervisor's job... the supervisor dying must be harmless to the
+/// run, which is the whole reason adoption exists" (ADR 0041 Lifecycle).
+/// This is therefore the clean, protocol-level way to end JUST the
+/// authority — used today by `tests/capsule_workspaces.rs` (ADR 0042
+/// L1a, Codex review finding 13) to prove ADOPTION (a fresh `--resume`
+/// finding the SAME leg still alive) rather than mere detachment (an
+/// untouched, already-running supervisor surviving a daemon restart).
+pub fn stop(state_dir: &Path) -> crate::Result<()> {
+    let deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
+    let conn = connect(state_dir, deadline)?;
+    let operation_id = format!("sot-backend-stop-{}", uuid::Uuid::now_v7());
+    let request = SupervisorRequest::Command { operation_id, op: SupervisorOp::Stop };
+    match send_and_read(&conn, &request, Instant::now() + STATUS_BUDGET)? {
+        SupervisorReply::Operation(SupervisorOperationState::Stopping) => Ok(()),
+        other => Err(err_state(format!("expected Operation(Stopping), got {other:?}"))),
     }
+}
+
+/// Connect, challenge, and run [`run_end_run_and_wait`] — the SAME
+/// end_run+heartbeat-query loop `fe_client_win.rs`'s own `run_quit` uses
+/// (ADR 0042 L1a, Codex review finding 4), bounded by that function's own
+/// ADR-pinned `fe_client::QUIT_CUTOFF` (90 s), never a daemon-invented
+/// budget. `voyage` MUST be the voyage the caller most recently observed
+/// via [`query_status`] — lifecycle commands are voyage-fenced (ADR 0041
+/// Lifecycle), so a stale value is safely refused rather than mutated
+/// against.
+pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<EndRunOutcome> {
+    let hello_deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
+    let mut conn = connect(state_dir, hello_deadline)?;
+    let mut reader = FrameReader::new();
+    let h = crate::supervisor::state_dir_hash(state_dir);
+    let mut quit = QuitDispatcher::new();
+    let operation_id = format!("sot-backend-end-run-{}", uuid::Uuid::now_v7());
+    // Recovers the `record_closed`-but-not-yet-`record_verified` case
+    // `QuitDispatcher`'s own terminal states cannot express on their
+    // own (see `EndRunOutcome::RecordClosed`'s doc) — a plain external
+    // observer of the SAME transitions `run_quit` already emits as UI
+    // events, never a second copy of the dispatcher's own logic.
+    let mut observed_record_closed = false;
+    run_end_run_and_wait(
+        &mut conn,
+        &mut reader,
+        |c, r| {
+            if let Ok((new_conn, _process)) =
+                connect_and_challenge(&h, crate::exchange::SUPERVISOR_LANE_BUILD_ID, Instant::now() + CONNECT_AND_HELLO_BUDGET)
+            {
+                *c = new_conn;
+                *r = FrameReader::new();
+            }
+        },
+        &mut quit,
+        operation_id,
+        reason.to_string(),
+        voyage,
+        |quit| {
+            if matches!(quit.state(), QuitState::Verifying { .. } | QuitState::Ended) {
+                observed_record_closed = true;
+            }
+        },
+    );
+    Ok(match quit.state() {
+        QuitState::Ended => EndRunOutcome::RecordVerified,
+        QuitState::Failed { detail } => EndRunOutcome::Failed(detail.clone()),
+        QuitState::Refused { reason } => EndRunOutcome::Refused(format!("{reason:?}")),
+        _ if observed_record_closed => EndRunOutcome::RecordClosed,
+        _ => EndRunOutcome::OutcomeUnknown,
+    })
 }
