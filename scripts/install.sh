@@ -36,6 +36,18 @@ GLIBC_FLOOR_FE="2.35"
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Refuse characters a shell-embedded path (systemd unit ExecStart, JSON
+# manifest, sed substitution, launcher heredocs) cannot carry safely.
+# Explicit rejection over silent corruption. Shared by --prefix and the
+# project root ($HOME) — deploy/sotd.service's ExecStart now embeds both
+# inside a shell string, where a stray quote breaks the unit.
+reject_unsafe_path_chars() {  # <label> <value>
+    case "$2" in
+        *[\&\|\;\"\'\\\`]*|*' '*|*'	'*)
+            die "unsupported characters in $1 '$2' — no spaces, quotes, backslashes, or shell metacharacters" ;;
+    esac
+}
+
 # ---- hosts.toml editing --------------------------------------------------------
 # The installer owns exactly TWO things in hosts.toml: the value of
 # `default_host`, and the presence of an entry for the role's own host. Every
@@ -140,12 +152,24 @@ installer_manifest_state() {  # <prefix>
     printf 'known:%s' "$role"
 }
 
+# Extract the sotd binary path from a unit's ExecStart line. Two shapes:
+# the old direct form (ExecStart=<bin>/sotd ...) and the current form that
+# sources ~/.bashrc through a shell before exec'ing (ExecStart=/bin/bash -c
+# '...; exec "<bin>/sotd" ...'). One regex covers both: an optional
+# `exec "` prefix — present only in the wrapped form — before the path,
+# which runs to the next space or quote either way. Pure (stdin -> stdout),
+# so it is testable without systemctl or a real unit file
+# (scripts/tests/installer-state.sh).
+installer_unit_owner_path() {
+    sed -n -E 's/^ExecStart=(.*exec ")?([^ "]+)"?.*/\2/p' | head -1
+}
+
 # The program an existing user-level sotd.service runs, if there is one. A
 # source install has no manifest but owns this same fixed unit name, so the
 # manifest alone would miss it.
 installer_unit_owner() {
     command -v systemctl >/dev/null 2>&1 || return 0
-    systemctl --user cat sotd.service 2>/dev/null | sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' | head -1
+    systemctl --user cat sotd.service 2>/dev/null | installer_unit_owner_path
 }
 
 # "allow" | "refuse:<why>". Pure, so the decision matrix is testable without
@@ -179,6 +203,18 @@ installer_role_flag() {  # role -> the flag that asks for it, for messages
 # functions above in isolation. Nothing else sets it, `curl | bash` included.
 if [ "${SOT_INSTALL_SOURCE_ONLY:-}" = 1 ]; then return 0; fi
 
+# ---- 0. heal a forbidden depot config (owner ruling 2026-09-02: no depot
+# path is ever set, derived, or hardcoded anywhere in this repo) -----------
+# A prior install (PR #161) wrote a systemd drop-in carrying the installing
+# shell's JULIA_DEPOT_PATH into the unit. Remove it UNCONDITIONALLY, for
+# every role and every --no-service combination — not only the managed-
+# local-service path that used to own this cleanup — so a remote or
+# --no-service reinstall heals too. Reload only when the file existed.
+if [ -f "$HOME/.config/systemd/user/sotd.service.d/depot.conf" ]; then
+    rm -f "$HOME/.config/systemd/user/sotd.service.d/depot.conf"
+    command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload 2>/dev/null
+fi
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --local) ROLE=local ;;
@@ -201,17 +237,16 @@ while [ $# -gt 0 ]; do
     shift
 done
 # Canonicalize the prefix (a relative one produces a repo/current symlink
-# whose target resolves from repo/, i.e. a broken link) and refuse characters
-# the systemd-unit sed, JSON manifest, and launcher heredocs cannot carry
-# safely. Explicit rejection over silent corruption.
+# whose target resolves from repo/, i.e. a broken link), then reject unsafe
+# characters in both the prefix and the project root — deploy/sotd.service's
+# ExecStart embeds @SOT_PROJECT_ROOT@ ($HOME) inside a shell string too, so a
+# stray quote there breaks the unit exactly like it would in the prefix.
 case "$PREFIX" in
     /*) ;;
     *) PREFIX="$(pwd)/$PREFIX" ;;
 esac
-case "$PREFIX" in
-    *[\&\|\;\"\'\\\`]*|*' '*|*'	'*)
-        die "unsupported characters in prefix '$PREFIX' — no spaces, quotes, backslashes, or shell metacharacters" ;;
-esac
+reject_unsafe_path_chars "prefix" "$PREFIX"
+reject_unsafe_path_chars 'project root ($HOME)' "$HOME"
 
 # ---- the role gate -------------------------------------------------------------
 # Runs BEFORE the role is resolved, so it can refuse a flag, and after the
@@ -606,19 +641,12 @@ if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
         -e "s|@SOT_APPLY@|$PREFIX/bin/sot-apply|" \
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
         "$BINDIR/sotd.service" > "$HOME/.config/systemd/user/sotd.service"
-    # A systemd user service never sees the login shell's profile, so the
-    # Julia depot the user's shells run on must be carried into the unit
-    # explicitly — otherwise every kernel and REPL the daemon spawns runs off
-    # Julia's DEFAULT depot (a different, possibly stale or network-mounted
-    # one), precompiling twice and missing packages the shell resolved.
-    # Written as a drop-in next to the unit, only when the installing shell
-    # has a depot set; re-running the installer refreshes it.
-    if [ -n "${JULIA_DEPOT_PATH:-}" ]; then
-        mkdir -p "$HOME/.config/systemd/user/sotd.service.d"
-        printf '[Service]\nEnvironment=JULIA_DEPOT_PATH=%s\n' "$JULIA_DEPOT_PATH" \
-            > "$HOME/.config/systemd/user/sotd.service.d/depot.conf"
-        say "sotd depot drop-in: JULIA_DEPOT_PATH=$JULIA_DEPOT_PATH"
-    fi
+    # No JULIA_DEPOT_PATH (or any other) config is written here: owner ruling
+    # 2026-09-02 forbids writing/overwriting depot config anywhere. The unit
+    # itself (deploy/sotd.service) sources ~/.bashrc before exec'ing sotd, so
+    # the daemon inherits whatever the owner's shell profile exports. A prior
+    # install's forbidden drop-in is healed unconditionally near the top of
+    # this script (step 0), not here.
     systemctl --user daemon-reload
     if [ -f "$HOME/.config/systemd/user/sot-tmux.service" ]; then
         systemctl --user enable --now sot-tmux.service

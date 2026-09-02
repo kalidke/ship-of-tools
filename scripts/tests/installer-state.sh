@@ -132,6 +132,41 @@ check "the manifest exposes no alias to reuse" \
     "" "$(jq -r '.ssh_alias // ""' <<<'{"schema":1,"role":"remote"}')"
 
 # ---------------------------------------------------------------------------
+case_start "unit ownership: ExecStart path extraction (old + wrapped forms)"
+# Codex round on PR #164: installer_unit_owner_path used to take the FIRST
+# WORD of ExecStart, which was the sotd path in the old direct form but
+# became "/bin/bash" once ExecStart wraps the daemon in a shell that sources
+# ~/.bashrc (deploy/sotd.service). A reinstall then treated its own unit as
+# foreign and aborted (or demanded --force-role-change) every time. Pin both
+# shapes so the regex never regresses to first-word-only again.
+
+old_unit="$(cat <<'UNITEOF'
+ExecStartPre=-/opt/sot/bin/sot-apply
+ExecStart=/opt/sot/bin/sotd --project-root /home/u --label sot
+Restart=always
+UNITEOF
+)"
+check "old direct ExecStart form" \
+    "/opt/sot/bin/sotd" "$(printf '%s\n' "$old_unit" | installer_unit_owner_path)"
+
+wrapped_unit="$(cat <<'UNITEOF'
+ExecStartPre=-/opt/sot/bin/sot-apply
+ExecStart=/bin/bash -c '[ -r "$HOME/.bashrc" ] && . "$HOME/.bashrc"; exec "/opt/sot/bin/sotd" --project-root "/home/u" --label sot'
+Restart=always
+UNITEOF
+)"
+check "wrapped bash -c ExecStart form (current unit)" \
+    "/opt/sot/bin/sotd" "$(printf '%s\n' "$wrapped_unit" | installer_unit_owner_path)"
+
+no_execstart="$(cat <<'UNITEOF'
+[Unit]
+Description=something else entirely
+UNITEOF
+)"
+check "no ExecStart line yields empty" \
+    "" "$(printf '%s\n' "$no_execstart" | installer_unit_owner_path)"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'
