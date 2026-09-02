@@ -1,10 +1,16 @@
-// hosts.rs — host registry parsing for in-app target selection (ADR 0015).
+// hosts.rs — host registry parsing + connection-set resolution (ADR 0015
+// registry format; ADR 0042 L2a targeting model — see that ADR's note on
+// ADR 0015's superseded status).
 //
 // The frontend reads `.sot/hosts.toml` (or its layered fallbacks) at
-// startup so `Mode::Hosts` can render a picker. Selecting an entry
-// persists `last_host` in `state-<hostname>.toml`; the launcher reads
-// that on next launch and aims the SSH tunnel + spawn at the chosen
-// host. We don't manage tunnels from Rust — the launcher does that.
+// startup and opens ONE CONNECTION PER REACHABLE ENTRY (resolve_connections),
+// local-first then hosts.toml order — `Mode::Hosts` is a live
+// connected/unreachable status list over the same set, not a picker. We
+// don't manage tunnels from Rust — the launcher does that, routing its one
+// SSH tunnel to `default_host` (env vars can override); its own former
+// `last_host` read (a separate, PowerShell-side mechanism reading a field
+// that has since been repurposed for something FE-internal — see
+// state_persistence.rs's field doc) is DELETED (codex review item I).
 //
 // Format (deliberately simple — same shape PowerShell can regex-parse):
 //
@@ -25,6 +31,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// A `hosts.toml` entry name — identifies which daemon connection owns a
+/// workspace, a Sessions-tree host node, or an `IncomingEvt`. A plain
+/// `String` alias (not a newtype): every call site treats it as an opaque
+/// display + lookup key, and the value space IS just hosts.toml slugs, so a
+/// wrapper type would buy no invariant a `String` doesn't already carry
+/// (ADR 0042 L2a).
+pub type HostKey = String;
+
 /// One configured host. Remote hosts use `tcp_port` for the local side of the
 /// SSH forward, with `ssh_alias` + `remote_repo` telling the launcher where to
 /// find/start the daemon; `remote_socket` optionally overrides the remote side
@@ -33,8 +47,7 @@ use std::path::PathBuf;
 /// is unusable and the picker renders it dimmed.
 #[derive(Debug, Clone)]
 pub struct HostEntry {
-    /// Slug as it appears under `[host.<name>]`. Matched against
-    /// `last_host` in state-toml on launcher startup.
+    /// Slug as it appears under `[host.<name>]`.
     pub name: String,
     /// SSH alias the launcher passes to `ssh` (host as `~/.ssh/config`
     /// knows it, not necessarily the FQDN). `None` for local-socket
@@ -61,7 +74,7 @@ pub struct HostEntry {
 
 /// Full hosts.toml content: ordered list of entries (as they appear on
 /// disk so the picker has stable ordering) plus the default-host slug
-/// the launcher falls back to when state-toml has no `last_host`.
+/// the launcher routes its one SSH tunnel to.
 #[derive(Debug, Clone, Default)]
 pub struct HostsConfig {
     pub default_host: Option<String>,
@@ -185,6 +198,100 @@ pub fn parse(text: &str) -> HostsConfig {
     // Flush the final section.
     flush(&mut cfg, &current_section, &current_kv);
     cfg
+}
+
+/// Endpoint override for whichever host is `default_host` — sourced from
+/// the CLI `--socket`/`--tcp`/`--token` flags (the launcher's own tunnel).
+/// ADR 0042 L2a: the CLI flags keep exactly their pre-L2a meaning, just
+/// scoped to one host instead of "the only host".
+#[derive(Debug, Clone, Default)]
+pub struct CliOverride {
+    pub socket: Option<PathBuf>,
+    pub tcp: Option<String>,
+    pub token: Option<String>,
+}
+
+/// Resolve the startup connection set: one `(HostKey, TransportConfig)` per
+/// `hosts.toml` entry that has an endpoint reachable from this machine
+/// without a launcher action (a `socket` or a `tcp_port`), in display order
+/// — the `local` entry first if present, then `hosts.toml` order otherwise.
+/// `default_host`'s endpoint is overridden by `cli` when set, matching the
+/// pre-L2a contract where the CLI flags were the only source. An entry with
+/// neither `socket` nor `tcp_port` (and not the CLI-overridden default) is
+/// skipped with one log line — no endpoint reachable without a launcher
+/// action.
+///
+/// Compatibility fallback: when no `hosts.toml` entry matches
+/// `default_host` — including the common case of no `hosts.toml` at all —
+/// but `cli` gives an endpoint anyway, one synthetic connection is added so
+/// the pre-L2a CLI-only flow (`--socket`/`--tcp` with no host registry,
+/// e.g. local dev / tests) still opens exactly the one connection it always
+/// did. Named after `default_host` if set, else `"default"`.
+pub fn resolve_connections(
+    cfg: &HostsConfig,
+    cli: &CliOverride,
+) -> Vec<(HostKey, crate::transport::TransportConfig)> {
+    let default_name = cfg.default_host.clone();
+    let mut ordered: Vec<&HostEntry> = Vec::with_capacity(cfg.hosts.len());
+    if let Some(local) = cfg.hosts.iter().find(|h| h.name == "local") {
+        ordered.push(local);
+    }
+    for h in &cfg.hosts {
+        if h.name != "local" {
+            ordered.push(h);
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut default_matched = false;
+    for h in ordered {
+        let is_default = default_name.as_deref() == Some(h.name.as_str());
+        if is_default {
+            default_matched = true;
+        }
+        // Codex review (PR #163): when the CLI overrides the default
+        // host, the whole endpoint set comes from the CLI ONLY -- pipe
+        // AND tcp together, never mixed with the entry's own hosts.toml
+        // values. A mixed set (CLI tcp + the entry's own stale socket,
+        // say) would have transport.rs try that stale socket FIRST
+        // (pipe-before-tcp is its own fallback order) and never even
+        // attempt the tunnel the launcher just opened unless the stale
+        // socket connect failed outright.
+        let cli_overrides_default = is_default && (cli.socket.is_some() || cli.tcp.is_some());
+        let (pipe, tcp) = if cli_overrides_default {
+            (cli.socket.clone(), cli.tcp.clone())
+        } else {
+            (
+                h.socket.as_ref().map(PathBuf::from),
+                h.tcp_port.map(|p| format!("127.0.0.1:{p}")),
+            )
+        };
+        if pipe.is_none() && tcp.is_none() {
+            tracing::info!(host = %h.name, "hosts.toml entry has no endpoint reachable without a launcher action; skipping");
+            continue;
+        }
+        let token = if is_default { cli.token.clone() } else { None };
+        out.push((
+            h.name.clone(),
+            crate::transport::TransportConfig { pipe, tcp, token },
+        ));
+    }
+
+    if !default_matched && (cli.socket.is_some() || cli.tcp.is_some()) {
+        let name = default_name.unwrap_or_else(|| "default".to_string());
+        out.insert(
+            0,
+            (
+                name,
+                crate::transport::TransportConfig {
+                    pipe: cli.socket.clone(),
+                    tcp: cli.tcp.clone(),
+                    token: cli.token.clone(),
+                },
+            ),
+        );
+    }
+    out
 }
 
 fn strip_quotes(s: &str) -> &str {
@@ -311,5 +418,133 @@ ssh_alias = "host-a"
         assert!(cfg.default_host.as_deref().unwrap().contains("host-a"));
         assert_eq!(cfg.hosts.len(), 1);
         assert_eq!(cfg.hosts[0].ssh_alias.as_deref(), Some("host-a"));
+    }
+
+    // --- resolve_connections (ADR 0042 L2a) ---
+
+    #[test]
+    fn resolve_connections_orders_local_first_then_hosts_toml_order() {
+        let cfg = parse(
+            r#"
+default_host = "beta"
+
+[host.beta]
+tcp_port = 18744
+
+[host.local]
+socket = "\\.\pipe\sot-local"
+
+[host.alpha]
+tcp_port = 18743
+"#,
+        );
+        let conns = resolve_connections(&cfg, &CliOverride::default());
+        let names: Vec<&str> = conns.iter().map(|(h, _)| h.as_str()).collect();
+        // local first, then hosts.toml declaration order (beta, alpha) —
+        // NOT alphabetical, NOT default-host-first.
+        assert_eq!(names, vec!["local", "beta", "alpha"]);
+    }
+
+    #[test]
+    fn resolve_connections_skips_entries_with_no_endpoint() {
+        let cfg = parse(
+            r#"
+[host.reachable]
+tcp_port = 18743
+
+[host.unreachable]
+ssh_alias = "somewhere"
+"#,
+        );
+        let conns = resolve_connections(&cfg, &CliOverride::default());
+        let names: Vec<&str> = conns.iter().map(|(h, _)| h.as_str()).collect();
+        assert_eq!(names, vec!["reachable"]);
+    }
+
+    #[test]
+    fn resolve_connections_cli_overrides_only_default_host_endpoint() {
+        let cfg = parse(
+            r#"
+default_host = "beta"
+
+[host.beta]
+tcp_port = 18744
+
+[host.alpha]
+tcp_port = 18743
+"#,
+        );
+        let cli = CliOverride {
+            socket: None,
+            tcp: Some("127.0.0.1:9999".to_string()),
+            token: Some("secret".to_string()),
+        };
+        let conns = resolve_connections(&cfg, &cli);
+        let beta = conns.iter().find(|(h, _)| h == "beta").unwrap();
+        let alpha = conns.iter().find(|(h, _)| h == "alpha").unwrap();
+        // default_host's endpoint is overridden by the CLI...
+        assert_eq!(beta.1.tcp.as_deref(), Some("127.0.0.1:9999"));
+        assert_eq!(beta.1.token.as_deref(), Some("secret"));
+        // ...every other host keeps its hosts.toml endpoint, untouched and
+        // unauthenticated by the CLI token (that token is scoped to the
+        // tunnel the launcher actually opened).
+        assert_eq!(alpha.1.tcp.as_deref(), Some("127.0.0.1:18743"));
+        assert!(alpha.1.token.is_none());
+    }
+
+    #[test]
+    fn resolve_connections_cli_tcp_override_does_not_leak_the_entrys_own_socket() {
+        // Codex review (PR #163): a default_host entry that ALSO has its
+        // own (possibly stale) socket set must not have that socket
+        // survive alongside a CLI tcp override -- the whole endpoint set
+        // comes from the CLI ONLY once it overrides at all, so
+        // transport.rs's pipe-tried-first fallback order can't reach for
+        // the stale socket before the tunnel the launcher just opened.
+        let cfg = parse(
+            r#"
+default_host = "beta"
+
+[host.beta]
+socket = "/run/user/1000/stale-beta.sock"
+tcp_port = 18744
+"#,
+        );
+        let cli = CliOverride {
+            socket: None,
+            tcp: Some("127.0.0.1:9999".to_string()),
+            token: None,
+        };
+        let conns = resolve_connections(&cfg, &cli);
+        let beta = conns.iter().find(|(h, _)| h == "beta").unwrap();
+        assert_eq!(beta.1.tcp.as_deref(), Some("127.0.0.1:9999"));
+        assert!(
+            beta.1.pipe.is_none(),
+            "the entry's own socket must not leak in once the CLI overrides, got {:?}",
+            beta.1.pipe
+        );
+    }
+
+    #[test]
+    fn resolve_connections_cli_only_synthesizes_one_connection_with_no_hosts_toml() {
+        // Pre-L2a compatibility: `--socket`/`--tcp` with no hosts.toml at
+        // all (the common local-dev/test invocation) must still open
+        // exactly one connection, as it always did.
+        let cfg = HostsConfig::default();
+        let cli = CliOverride {
+            socket: None,
+            tcp: Some("127.0.0.1:18743".to_string()),
+            token: None,
+        };
+        let conns = resolve_connections(&cfg, &cli);
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0].0, "default");
+        assert_eq!(conns[0].1.tcp.as_deref(), Some("127.0.0.1:18743"));
+    }
+
+    #[test]
+    fn resolve_connections_no_endpoint_anywhere_yields_empty_set() {
+        let cfg = HostsConfig::default();
+        let conns = resolve_connections(&cfg, &CliOverride::default());
+        assert!(conns.is_empty());
     }
 }

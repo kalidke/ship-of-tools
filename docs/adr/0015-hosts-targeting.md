@@ -1,6 +1,18 @@
 # ADR 0015: In-app host targeting via `hosts.toml` + `Mode::Hosts`
 
-**Status:** Accepted
+**Status:** Accepted, **superseded in part by ADR 0042 slice L2a**
+(2026-09-02). L2a replaces the "pick one host, persist `last_host`,
+Ctrl+Q + relaunch" flow this ADR specifies with a live connection per
+`hosts.toml` entry, open simultaneously — "no live in-session swap" is
+moot once switching hosts no longer means cold-starting a new
+connection at all. `hosts.toml` itself (the registry format, its
+layered discovery, `HostEntry`/`HostsConfig`) is UNCHANGED and remains
+this ADR's live contribution; only the "one active host, chosen via
+`Mode::Hosts` + relaunch" targeting model is superseded. `Mode::Hosts`
+still exists but is now a live connected/unreachable status list (see
+ADR 0042 L2a); the frontend no longer writes `last_host` to
+`state-<hostname>.toml`. The launcher's READ side of `last_host` is
+untouched for now (a later slice's concern — per-host tunnels).
 **Date:** 2026-05-19
 
 ## Context

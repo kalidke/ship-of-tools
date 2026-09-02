@@ -10,13 +10,15 @@
 # key = value lines — so the PowerShell launcher can parse it with
 # regex without pulling in a TOML library.
 #
-# The frontend's `Mode::Hosts` lists every `[host.<name>]` section and
-# writes the chosen name to `state-<hostname>.toml` as `last_host`.
-# On next launch the launcher reads that, resolves the matching host
-# entry here, and sets SOT_HOST / SOT_REMOTE_REPO /
-# SOT_TCP_PORT / SOT_REMOTE_SOCKET before starting the tunnel.
-#
-# If no last_host is set yet, the launcher falls back to `default_host`.
+# The frontend's `Mode::Hosts` lists every `[host.<name>]` section — every
+# entry is a live connection at once (ADR 0042 slice L2a), not a single
+# picked target, so Enter there just navigates the Sessions-mode cursor
+# to that host's node. The LAUNCHER only ever routes its one SSH tunnel
+# to `default_host` below (env vars can override); it no longer reads
+# any persisted "last picked host" from frontend state (that ADR-0015
+# mechanism — a `last_host` written to `state-<hostname>.toml` — is
+# retired; the field now means something else entirely on the frontend
+# side and the launcher doesn't read it at all).
 #
 # Frontend↔backend transport is SSH to a per-user remote socket. `tcp_port`
 # below is the local forwarded port the native frontend dials; the remote side
