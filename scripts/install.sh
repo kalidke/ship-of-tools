@@ -756,95 +756,39 @@ EOF
     else
         cat > "$HOME/.local/bin/sot-launch" <<EOF
 #!/usr/bin/env bash
-# FE → remote BE over SSH local forwards (key auth required, ADR 0030 §5).
-# The frontend connects to local TCP $PORT; ssh terminates that forward at
-# the remote user's per-user sotd socket. Browser/webview pages ride the same
-# control tunnel via the daemon proxy (ADR 0035); the legacy fixed helper-port
-# forwards are opt-in via SOT_LEGACY_FORWARDS=1 (pre-v0.5.0 backends only).
-# Applies armed pending updates for THIS machine (FE binary + checkout —
-# staged by the frontend's own self-check) before launching, and supervises
-# the frontend (exit-75 respawn, crash-loop rollback). The backend host
-# updates itself on its own cadence.
-MARKER="$PREFIX/updates/just-applied-$TARGET"
+# FE-only install -> remote BE over SSH (key auth required, ADR 0030 §5).
+# Item 2 follow-up: this used to be a second, hand-maintained copy of
+# scripts/launch-sot.sh's tunnel-open + backend-ensure + frontend-invoke
+# logic (one fixed tunnel, no per-host support) -- it now delegates to the
+# pinned checkout's own copy instead, so the two never drift.
+#
+# Kept from the old heredoc (install-layout-specific; no equivalent in
+# launch-sot.sh itself, which only knows git pull / cargo build, not
+# sot-apply's staged $PREFIX/repo/versions flip): applying an armed
+# pending update (staged by the frontend's own self-check) before every
+# launch. Exit-75 respawn and crash-loop rollback are DROPPED, not kept --
+# launch-sot.sh has never had them for the plain Unix launcher either
+# (that's Windows-only today, ADR 0017 / relaunch-sot.ps1), so this
+# wrapper now matches every other Unix launch path instead of being the
+# one with more supervision than the rest.
+#
+# SOT_REMOTE_SOCKET and SOT_LEGACY_FORWARDS, if a caller sets them in its
+# own environment before running sot-launch, pass through unchanged --
+# launch-sot.sh reads both itself, so no explicit forwarding is needed
+# here. SOT_REMOTE_REPO is deliberately left UNSET: this install has no
+# local knowledge of the remote's checkout (never had one -- the old
+# heredoc only ever queried the remote's installed sotd directly), and
+# sot_ensure_remote_host's repo-optional path (scripts/launch-sot.sh) is
+# exactly that behavior.
 if [ -x "$PREFIX/bin/sot-apply" ]; then
     APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
     [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
 fi
-REMOTE_SOCKET="\${SOT_REMOTE_SOCKET:-}"
-if [ -z "\$REMOTE_SOCKET" ]; then
-    REMOTE_SOCKET="\$(ssh "$BE_ALIAS" '\${SOT_REMOTE_SOTD:-\$HOME/.local/share/sot/bin/sotd} session-socket-path sot')" \
-        || { echo "ERROR: could not query remote sotd socket path" >&2; exit 1; }
-fi
-port_open() {
-    if (exec 3<>"/dev/tcp/127.0.0.1/\$1") 2>/dev/null; then exec 3>&-; return 0; fi
-    command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 "\$1" >/dev/null 2>&1
-}
-ensure_aux_tunnel() {
-    # Fixed helper-port forwards (1234-1241) are RETIRED by default (ADR 0035):
-    # backend pages ride the control tunnel through the daemon proxy, whose
-    # allowlist authorizes only ports THIS daemon actually bound. On a shared
-    # host a fixed forward can silently serve another user's content.
-    # SOT_LEGACY_FORWARDS=1 restores them for a pre-v0.5.0 backend.
-    if [ -z "\${SOT_LEGACY_FORWARDS:-}" ]; then return 0; fi
-    missing=()
-    # 1234 pluto · 1235 video · 1236 docs · 1237-1240 docs pool · 1241 WGLMakie (ADR 0032)
-    for p in 1234 1235 1236 1237 1238 1239 1240 1241; do
-        port_open "\$p" || missing+=("\$p")
-    done
-    if [ "\${#missing[@]}" -eq 0 ]; then return 0; fi
-    # Forward only the missing ports: an old aux tunnel outlives the FE, so a
-    # partial set means "opened by a previous launch", not an error.
-    fwd=()
-    for p in "\${missing[@]}"; do fwd+=(-L "\$p:127.0.0.1:\$p"); done
-    echo "SOT_LEGACY_FORWARDS=1 — forwarding fixed helper ports: \${missing[*]}" >&2
-    ssh -fN -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
-      "\${fwd[@]}" "$BE_ALIAS" \
-      || { echo "ERROR: could not open browser aux SSH tunnel (missing: \${missing[*]})" >&2; exit 1; }
-}
-if pgrep -f "ssh .*${PORT}:\$REMOTE_SOCKET.*$BE_ALIAS" >/dev/null 2>&1; then
-    :
-elif port_open "$PORT"; then
-    echo "ERROR: local port $PORT is open but not forwarding to \$REMOTE_SOCKET" >&2
-    exit 1
-else
-    ssh -fN -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
-      -L "$PORT:\$REMOTE_SOCKET" \
-      "$BE_ALIAS" \
-      || { echo "ERROR: could not open SSH tunnel" >&2; exit 1; }
-fi
-ensure_aux_tunnel
-FAILS=0; ROLLED=0
-while :; do
-    START="\$(date +%s)"
-    "$PREFIX/bin/sot" --tcp "127.0.0.1:$PORT"
-    RC=\$?
-    NOW="\$(date +%s)"
-    RUNTIME=\$((NOW - START))
-    # A healthy run closes the crash-loop health window.
-    [ "\$RUNTIME" -ge 60 ] && rm -f "\$MARKER" 2>/dev/null
-    if [ "\$RC" -eq 75 ]; then
-        # ADR-0017 self-relaunch: pick up any staged update, then respawn.
-        [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" >&2
-        FAILS=0
-        continue
-    fi
-    if [ "\$RC" -ne 0 ] && [ "\$RUNTIME" -le 10 ]; then
-        FAILS=\$((FAILS + 1))
-        if [ "\$FAILS" -ge 2 ]; then
-            # Roll back ONLY inside the just-applied health window.
-            if [ "\$ROLLED" -eq 0 ] && [ -f "\$MARKER" ] \
-               && [ -n "\$(find "\$MARKER" -mmin -30 2>/dev/null)" ]; then
-                echo "frontend crash-looped inside the post-update window — rolling back" >&2
-                [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" --rollback >&2
-                ROLLED=1; FAILS=0
-                continue
-            fi
-            exit "\$RC"
-        fi
-        continue
-    fi
-    exit "\$RC"
-done
+export SOT_HOST="$BE_ALIAS"
+export SOT_TCP_PORT="$PORT"
+export SOT_FRONTEND_BIN="$PREFIX/bin/sot"
+export SOT_NO_UPDATE=1
+exec "$PREFIX/repo/current/scripts/launch-sot.sh" "\$@"
 EOF
     fi
     chmod +x "$HOME/.local/bin/sot-launch"
