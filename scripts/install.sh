@@ -203,6 +203,18 @@ installer_role_flag() {  # role -> the flag that asks for it, for messages
 # functions above in isolation. Nothing else sets it, `curl | bash` included.
 if [ "${SOT_INSTALL_SOURCE_ONLY:-}" = 1 ]; then return 0; fi
 
+# ---- 0. heal a forbidden depot config (owner ruling 2026-09-02: no depot
+# path is ever set, derived, or hardcoded anywhere in this repo) -----------
+# A prior install (PR #161) wrote a systemd drop-in carrying the installing
+# shell's JULIA_DEPOT_PATH into the unit. Remove it UNCONDITIONALLY, for
+# every role and every --no-service combination — not only the managed-
+# local-service path that used to own this cleanup — so a remote or
+# --no-service reinstall heals too. Reload only when the file existed.
+if [ -f "$HOME/.config/systemd/user/sotd.service.d/depot.conf" ]; then
+    rm -f "$HOME/.config/systemd/user/sotd.service.d/depot.conf"
+    command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload 2>/dev/null
+fi
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --local) ROLE=local ;;
@@ -630,11 +642,11 @@ if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
         "$BINDIR/sotd.service" > "$HOME/.config/systemd/user/sotd.service"
     # No JULIA_DEPOT_PATH (or any other) config is written here: owner ruling
-    # 2026-09-02 forbids writing/overwriting depot config anywhere — the unit
-    # itself now runs the daemon through a login shell (deploy/sotd.service)
-    # so it inherits the owner's ~/.bashrc exports directly. Heal a prior
-    # install that left the old drop-in behind.
-    rm -f "$HOME/.config/systemd/user/sotd.service.d/depot.conf"
+    # 2026-09-02 forbids writing/overwriting depot config anywhere. The unit
+    # itself (deploy/sotd.service) sources ~/.bashrc before exec'ing sotd, so
+    # the daemon inherits whatever the owner's shell profile exports. A prior
+    # install's forbidden drop-in is healed unconditionally near the top of
+    # this script (step 0), not here.
     systemctl --user daemon-reload
     if [ -f "$HOME/.config/systemd/user/sot-tmux.service" ]; then
         systemctl --user enable --now sot-tmux.service
