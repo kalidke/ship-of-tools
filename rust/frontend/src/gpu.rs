@@ -10987,6 +10987,29 @@ impl State {
                 }
                 _ => {}
             }
+            // ADR 0042 L2a codex review, item L: live host status in the
+            // tree. Without this, a node's `connected`/`unreachable`
+            // badge only refreshed on the NEXT unrelated event that
+            // happened to rebuild the tree (a workspace.list reply for
+            // Sessions, a fresh `h`-press for Hosts) — a Connected node
+            // could sit `unreachable` and a Disconnected one could sit
+            // `connected` indefinitely otherwise. Sessions rebuilds
+            // through the SAME install-or-park seam every other trigger
+            // uses (a `workspace.list` reply calls this unconditionally
+            // too, regardless of the active mode, so doing the same here
+            // is not a new pattern). Hosts writes `self.tree` directly
+            // (see `populate_hosts_tree`'s own doc, no parked slot), so
+            // it's gated on actually being the active view.
+            if matches!(
+                &evt,
+                crate::transport::IncomingEvt::Connected { .. }
+                    | crate::transport::IncomingEvt::Disconnected { .. }
+            ) {
+                self.rebuild_and_install_sessions_tree();
+                if matches!(self.mode, Mode::Hosts) {
+                    self.populate_hosts_tree();
+                }
+            }
             match evt {
                 crate::transport::IncomingEvt::Connected {
                     session_id,
@@ -13898,28 +13921,42 @@ impl State {
                     // them; parking keeps the Sessions tree fresh from
                     // switch_to_workspace's workspace.list refreshes, so
                     // entering Sessions shows current rows instantly).
-                    let (root, children) = self.build_sessions_tree();
-                    let reply_key: TreeKey = (Mode::Sessions, TreeScope::Global);
-                    if reply_key != self.active_tree_key() {
-                        // Reply-over-reply allowed (see the TreeRoot park
-                        // rationale); user-stashed state blocks.
-                        let slot = self.tree_store.slot_mut(reply_key);
-                        if slot.view.rows.is_empty() || slot.from_reply {
-                            slot.view.set_root(root, children);
-                            slot.from_reply = true;
-                        } else {
-                            tracing::debug!(
-                                "workspace.list dropped — parked Sessions slot holds user state"
-                            );
-                        }
-                        continue;
-                    }
-                    self.tree.set_root(root, children);
-                    if let Some(n) = self.pending_initial_selection.take() {
-                        self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
-                    }
+                    self.rebuild_and_install_sessions_tree();
                 }
             }
+        }
+    }
+
+    /// Rebuild the host-grouped Sessions tree from current state
+    /// (`workspace_lists` + `host_connected`) and either install it into
+    /// the active view or park it — the ONE seam every trigger for a
+    /// Sessions-tree refresh shares (a `workspace.list` reply landing, or
+    /// ADR 0042 L2a codex review item L: a `Connected`/`Disconnected` on
+    /// ANY host, so a node doesn't stay `unreachable` after connecting or
+    /// `connected` after dropping until the next unrelated reply happens
+    /// to land). `set_root` with the SAME root id ("sessions:") preserves
+    /// expansion/cursor for rows that still exist — no separate
+    /// preservation logic needed here.
+    fn rebuild_and_install_sessions_tree(&mut self) {
+        let (root, children) = self.build_sessions_tree();
+        let reply_key: TreeKey = (Mode::Sessions, TreeScope::Global);
+        if reply_key != self.active_tree_key() {
+            // Reply-over-reply allowed (see the TreeRoot park
+            // rationale); user-stashed state blocks.
+            let slot = self.tree_store.slot_mut(reply_key);
+            if slot.view.rows.is_empty() || slot.from_reply {
+                slot.view.set_root(root, children);
+                slot.from_reply = true;
+            } else {
+                tracing::debug!(
+                    "sessions-tree refresh dropped — parked Sessions slot holds user state"
+                );
+            }
+            return;
+        }
+        self.tree.set_root(root, children);
+        if let Some(n) = self.pending_initial_selection.take() {
+            self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
         }
     }
 
@@ -25332,6 +25369,32 @@ mod tests {
             children[1].badges
         );
         assert!(!children[1].has_children, "no list yet → no children");
+    }
+
+    #[test]
+    fn host_node_badge_flips_live_with_connected_status_same_row_id() {
+        // ADR 0042 L2a codex review, item L: on Connected/Disconnected the
+        // tree is rebuilt so a node doesn't stay `unreachable` after
+        // connecting or `connected` after dropping. `host_tree_node` is
+        // the pure per-row seam that rebuild calls on every trigger (a
+        // workspace.list reply, or now a bare Connected/Disconnected too)
+        // — this pins that re-deriving the SAME row id with a flipped
+        // `connected` flag flips the badge, and (crucially for
+        // `set_root`'s cursor/expansion preservation) the id itself never
+        // changes across the flip.
+        let before = host_tree_node(&"alpha".to_string(), false, false, true);
+        let after = host_tree_node(&"alpha".to_string(), true, true, true);
+        assert_eq!(before.id, after.id, "same host → same row id, always");
+        assert!(before.badges.iter().any(|b| b == "unreachable"));
+        assert!(!before.badges.iter().any(|b| b == "connected"));
+        assert!(after.badges.iter().any(|b| b == "connected"));
+        assert!(!after.badges.iter().any(|b| b == "unreachable"));
+
+        // And the reverse direction (a live Disconnected).
+        let dropped = host_tree_node(&"alpha".to_string(), false, true, true);
+        assert_eq!(dropped.id, after.id);
+        assert!(dropped.badges.iter().any(|b| b == "unreachable"));
+        assert!(!dropped.badges.iter().any(|b| b == "connected"));
     }
 
     #[test]
