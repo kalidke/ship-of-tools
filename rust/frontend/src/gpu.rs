@@ -422,9 +422,11 @@ struct WorkspaceUiSnapshot {
     /// hashes from workspace A don't leak into workspace B's tree.
     file_ast_hashes: std::collections::HashMap<String, String>,
     file_parse_fired: std::collections::HashSet<String>,
-    /// Sessions-mode dedup memo — which pane we last fired
-    /// `tmux.capture_pane` for so swap-back doesn't refire.
-    tmux_capture_fired_for: Option<String>,
+    /// Sessions-mode dedup memo — which (host, pane) we last fired
+    /// `tmux.capture_pane` for so swap-back doesn't refire. ADR 0042 L2a
+    /// codex review, item K: host-qualified -- tmux pane ids ("%3") are
+    /// per-daemon counters, so two hosts' panes can share the same id.
+    tmux_capture_fired_for: Option<(HostKey, String)>,
     /// Concept-write modal state (header / buffer / dirty flag /
     /// banners). Captured so swap-back returns the user to mid-edit
     /// without losing typed content. preview_edit is *not* in the
@@ -3104,10 +3106,13 @@ struct State {
     /// Per-workspace via [`WorkspaceUiSnapshot`].
     pinned_preview_node_id: Option<String>,
     /// Sessions-mode (ADR 0013) per-pane capture dedup. Stores the
-    /// `<session>/<pane_id>` we last fired `tmux.capture_pane` for; cursor
+    /// (host, pane_id) we last fired `tmux.capture_pane` for; cursor
     /// moves clear it when we want a re-fetch. Cleared on mode-switch into
-    /// Sessions so the first cursored pane fires fresh.
-    tmux_capture_fired_for: Option<String>,
+    /// Sessions so the first cursored pane fires fresh. Host-qualified
+    /// (ADR 0042 L2a codex review, item K): tmux pane ids are per-daemon
+    /// counters, so a bare id can't tell two hosts' panes apart, and the
+    /// request must route to the OWNING host, not whatever's active.
+    tmux_capture_fired_for: Option<(HostKey, String)>,
     /// Owning host + tmux session the BL pane is attached to (ADR 0042
     /// L2a codex review, item D). `None` until the first `pty.open`
     /// reply lands; defaults to `sot-llm` semantically. Sessions-mode
@@ -8699,18 +8704,31 @@ impl State {
         else {
             return;
         };
-        if self.tmux_capture_fired_for.as_deref() == Some(pane_id) {
+        // ADR 0042 L2a codex review, item K: the row carries its OWN
+        // host (every Sessions row does, since the tree spans every
+        // connection) -- request via that host, not whatever's active.
+        // A tmux pane id ("%3") is a per-daemon counter, so the dedup key
+        // must carry the host too, or a same-numbered pane on a
+        // different host would be mistaken for "already captured".
+        let Some(host) = row.node.payload.get("host").and_then(|v| v.as_str()) else {
+            return;
+        };
+        let owner: HostKey = host.to_string();
+        if self.tmux_capture_fired_for.as_ref() == Some(&(owner.clone(), pane_id.to_string())) {
             return;
         }
         let target = pane_id.to_string();
-        if let Err(e) = self.send(crate::transport::OutgoingReq::TmuxCapturePane {
-            target: target.clone(),
-            lines: 200,
-        }) {
+        if let Err(e) = self.send_to(
+            &owner,
+            crate::transport::OutgoingReq::TmuxCapturePane {
+                target: target.clone(),
+                lines: 200,
+            },
+        ) {
             tracing::warn!(error = %e, %target, "drop tmux.capture_pane request — channel closed");
             return;
         }
-        self.tmux_capture_fired_for = Some(target);
+        self.tmux_capture_fired_for = Some((owner, target));
     }
 
     /// If the selected tree row's annotation target differs from the last
@@ -13175,7 +13193,13 @@ impl State {
                     // the preview pane the same as a text file would.
                     // Drop the result if the cursor has moved off the
                     // target since the request fired — avoids racing
-                    // captures painting stale panes.
+                    // captures painting stale panes. ADR 0042 L2a codex
+                    // review, item K: the pane id alone isn't enough — a
+                    // tmux pane id ("%3") is a per-daemon counter, so two
+                    // hosts can report the SAME id for two different
+                    // panes; the row's own "host" must match event_host
+                    // too, or a same-numbered pane on a different host
+                    // could paint its capture into this row.
                     let still_current =
                         self.tree.rows.get(self.tree.selected).map_or(false, |row| {
                             row.node
@@ -13183,6 +13207,8 @@ impl State {
                                 .get("tmux_pane_id")
                                 .and_then(|v| v.as_str())
                                 == Some(target.as_str())
+                                && row.node.payload.get("host").and_then(|v| v.as_str())
+                                    == Some(event_host.as_str())
                         });
                     if still_current {
                         self.render_preview_source("text/plain", text.as_bytes());
@@ -13195,14 +13221,19 @@ impl State {
                     // — late replies for a previously-drilled directory
                     // would otherwise overwrite the new entries.
                     if let Some(p) = self.workspace_picker.as_mut() {
-                        if p.current_path == path {
+                        // ADR 0042 L2a codex review, item K: match the
+                        // picker's OWN host too — a directory.list reply
+                        // from a different host echoing the same path
+                        // (plausible: two hosts share a home-directory
+                        // layout) must not populate this picker's entries.
+                        if p.current_path == path && p.host == event_host {
                             p.entries = entries;
                             if p.selected >= p.entries.len() {
                                 p.selected = 0;
                             }
                             self.window.request_redraw();
                         } else {
-                            tracing::debug!(%path, current = %p.current_path, "drop stale directory.list reply");
+                            tracing::debug!(%path, current = %p.current_path, %event_host, picker_host = %p.host, "drop stale directory.list reply");
                         }
                     }
                 }
@@ -24913,6 +24944,34 @@ mod tests {
             new_owner.as_ref().map(|(h, _)| h),
             Some(&stale_event_host),
             "bytes tagged with the departed host must be recognized as non-owner"
+        );
+    }
+
+    #[test]
+    fn tmux_capture_dedup_and_stale_check_are_host_qualified() {
+        // ADR 0042 L2a codex review, item K: tmux pane ids ("%3") are
+        // per-daemon counters -- two hosts can both report pane "%3", so
+        // both the fired-for dedup memo and the "is this reply still for
+        // the cursored row" staleness check must compare the FULL
+        // (host, pane_id) pair, not the bare id alone.
+        let fired_for: Option<(HostKey, String)> = Some(("alpha".to_string(), "%3".to_string()));
+
+        // Same pane id, different host: must NOT read as already-fired.
+        let beta_same_id: (HostKey, String) = ("beta".to_string(), "%3".to_string());
+        assert_ne!(
+            fired_for.as_ref(),
+            Some(&beta_same_id),
+            "the same pane id on a different host is a different pane"
+        );
+
+        // The staleness check mirrors this: a reply tagged with beta's
+        // event_host must not be accepted for a row whose own "host" is
+        // alpha, even when both report tmux_pane_id "%3".
+        let row_host: HostKey = "alpha".to_string();
+        let reply_event_host: HostKey = "beta".to_string();
+        assert_ne!(
+            row_host, reply_event_host,
+            "a same-numbered pane's reply from a non-owning host must be dropped, not painted"
         );
     }
 
