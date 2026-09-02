@@ -1,23 +1,29 @@
 # sot-local-daemon.ps1 -- ensure/stop the per-user LOCAL sotd (ADR 0042 L1c).
 #
-# "Local is just another host": every launch of the Windows frontend ensures
-# a per-user sotd is running on a FIXED named pipe, so the frontend (today
-# via -Local; from L2 on, alongside the remote connection) always has a
-# local daemon to talk to. Idempotent: if the pipe already answers, this is
-# a no-op. Detached: the daemon outlives this script, the launcher, and every
-# frontend relaunch -- it is a persistent per-host daemon exactly like the
-# remote one, not a per-session spawn (contrast the old GUID-pipe -Local path
-# this replaces).
+# "Local is just another host": -Local ensures a per-user sotd is running on
+# a FIXED named pipe, so the frontend always has a local daemon to talk to.
+# Idempotent: if the pipe already answers, this is a no-op. Detached: the
+# daemon outlives this script, the launcher, and every frontend relaunch --
+# it is a persistent per-host daemon exactly like the remote one, not a
+# per-session spawn (contrast the old GUID-pipe -Local path this replaces).
+# Only -Local calls this today (launch-sot.ps1) -- nothing in the default
+# (remote-tunnel) flow consumes the local daemon until L2 (frontend holds
+# one connection per host, local included), which is also when the ensure
+# moves to every launch mode.
 #
-# Binary resolution, in order: the release install's <prefix>\bin\sotd.exe,
-# then the dev checkout's <DevBinDir>\sotd.exe. This is the OPPOSITE priority
-# from the frontend's own dev-build-first resolution in launch-sot.ps1 --
-# deliberately: the local daemon is meant to sit untouched across many
-# launches (idempotent), so it should run the binary sot-apply.ps1 already
-# keeps current, not whatever a dev's last `cargo build` happened to leave
-# behind. `sot-capsule.exe` (ADR 0042 L1a's capsule workspace runtime) MUST
-# be a sibling of whichever sotd.exe is chosen -- rust/backend/src/
-# capsule_workspace.rs resolves it via `current_exe().parent()`, so a
+# Binary+capsule resolution: the COMPLETE DEV pair (sotd.exe AND
+# sot-capsule.exe both present in <DevBinDir>) wins over the COMPLETE
+# install pair (<prefix>\bin\); refuse only when NEITHER pair is complete.
+# This MATCHES the frontend's own dev-build-first resolution in
+# launch-sot.ps1, deliberately: -Local runs the dev frontend from this same
+# checkout, so the daemon and its capsule runtime must come from that SAME
+# origin, or a dev frontend ends up talking to an older installed
+# sot-capsule.exe -- exactly the skew ADR 0041's "same release" rule warns
+# about. "Complete" matters: a partial dev build (sotd.exe without a
+# matching sot-capsule.exe, e.g. built before that binary existed) is not
+# preferred over a complete install pair -- `sot-capsule.exe` MUST be a
+# sibling of whichever sotd.exe is chosen (rust/backend/src/
+# capsule_workspace.rs resolves it via `current_exe().parent()`), so a
 # daemon started from a directory missing that file can create workspaces
 # that immediately fail to spawn. Refuse to start rather than run degraded.
 #
@@ -39,6 +45,17 @@
 # --project-root $HOME --label sot`) -- a persistent daemon's default
 # workspace root is the user's home, not this repo checkout.
 #
+# Liveness = a bounded named-pipe CONNECT probe, not a namespace listing. A
+# pipe NAME persists under \\.\pipe\ while any dead client still holds a
+# handle to it (and is listed even when every real instance is busy) --
+# presence there is not health. Connecting (then immediately closing) is
+# what proves a server is actually there to accept; the daemon treats an
+# early close as a normal EOF (server.rs), so this probe is harmless to a
+# live daemon. Used for the idempotency check, the readiness wait, AND stop
+# confirmation (probe fails AND the matched process is gone -- a process
+# that's still exiting can leave the pipe briefly unconnectable without
+# actually being gone yet).
+#
 # -Stop: sotd installs no signal/console-control handler on either platform
 # (grepped: no SIGTERM/ctrl_c handling in rust/backend/src/*.rs) and exposes
 # no clean-stop IPC op. Linux's own "graceful" stop is systemd's UNHANDLED
@@ -48,15 +65,30 @@
 # supervisors (sot-capsule.exe) are never touched by -Stop: they are
 # separate DETACHED processes (spawned with CREATE_BREAKAWAY_FROM_JOB) and
 # the one authority over a workspace's live state; the daemon re-adopts them
-# via `--resume` on its next start (ADR 0042 L1a). Matched for -Stop by
-# process name `sotd.exe` AND the pipe name in its command line, so this
-# never touches an unrelated sotd (a different label/pipe) on the same box.
+# via `--resume` on its next start (ADR 0042 L1a). Matched for -Stop by an
+# EXACT process match: process name `sotd.exe` AND a `--socket` token
+# followed by exactly this pipe path at a token boundary in its command
+# line -- not a bare substring match, which could also hit an unrelated
+# sotd whose pipe name happens to contain this one.
+#
+# Spawn hygiene: stdout/stderr are redirected to
+# <prefix>\logs\sotd-local.{stdout,stderr}.log -- Start-Process TRUNCATES
+# these on every (re)start, same as the frontend's own logs (see
+# launch-sot.ps1's header); this is fine here because a start only happens
+# when the pipe was NOT already answering, i.e. rarely. The daemon's own
+# private log (rust/backend/src/main.rs::open_private_log_file, via
+# paths::state_dir()) is a SEPARATE, HOME-derived path that today has no
+# Windows branch -- a known gap, not fixed here (see the ADR amendment). If
+# the spawned process exits before the pipe comes up, that's logged with its
+# exit code and the wait stops early rather than spinning out the full
+# bound; if the pipe never comes up within the bound, the process we just
+# spawned is stopped so a hung daemon can't accumulate across retries.
 #
 # Standalone + parameterized (mirrors scripts/sot-apply.ps1's own -Prefix
 # test-override convention) so this is independently testable without the
 # rest of launch-sot.ps1/shutdown-sot.ps1 -- see
-# scripts/tests/test-local-daemon.ps1. Called from launch-sot.ps1 (every
-# launch mode, ensure-started) and shutdown-sot.ps1 (last, after the FE and
+# scripts/tests/test-local-daemon.ps1. Called from launch-sot.ps1's -Local
+# branch (ensure-started) and shutdown-sot.ps1 (last, after the FE and
 # tunnel are down, -Stop).
 #
 # ASCII ONLY in string literals (see the same note in launch-sot.ps1): this
@@ -66,9 +98,10 @@
 #
 # Exit codes: 0 = the daemon is confirmed answering on the pipe (already was,
 # or was just started) -- or, for -Stop, confirmed stopped/was not running.
-# 1 = not ready (binary missing, sot-capsule.exe missing, or it did not come
-# up / go down within the bound) -- callers treat this as fail-open: log and
-# continue, never abort the whole launch over it.
+# 1 = not ready (no complete binary pair, it did not come up, or it did not
+# go down within the bound) -- callers treat this as their own error path
+# (launch-sot.ps1's -Local shows its existing "not found" dialog class;
+# shutdown-sot.ps1 logs a WARNING).
 
 [CmdletBinding()]
 param(
@@ -108,22 +141,26 @@ function Write-LocalDaemonLog {
     } catch { }
 }
 
-# Windows named pipes appear as entries under the \\.\pipe\ pseudo-directory
-# for as long as a server instance is listening -- listing it (rather than
-# attempting a client connect) is a non-blocking existence check with no
-# risk of hanging on a pipe at its max-instance count.
+# Bounded connect probe (500ms) -- see the header for why this replaces a
+# namespace listing. Always closes/disposes, so a live daemon just sees one
+# harmless connect-then-EOF.
 function Test-SotPipeOpen {
-    param([string]$Path)
+    param([string]$Name)
+    $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $Name, [System.IO.Pipes.PipeDirection]::InOut)
     try {
-        return ([System.IO.Directory]::GetFiles('\\.\pipe\')) -contains $Path
+        $client.Connect(500)
+        return $true
     } catch {
         return $false
+    } finally {
+        $client.Dispose()
     }
 }
 
 function Get-LocalDaemonProcess {
+    $pat = '(?i)--socket\s+"?' + [regex]::Escape($PipePath) + '"?(\s|$)'
     Get-CimInstance Win32_Process -Filter "Name='sotd.exe'" |
-        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($PipeName) }
+        Where-Object { $_.CommandLine -and ($_.CommandLine -match $pat) }
 }
 
 if ($Stop) {
@@ -136,52 +173,67 @@ if ($Stop) {
         Write-LocalDaemonLog "stop: killing pid=$($p.ProcessId)"
         Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
     }
-    # Bounded confirmation the pipe actually went away -- never an unbounded
-    # wait; a stubborn process just gets reported, not retried forever.
+    # Bounded confirmation the pipe actually went away AND the process is
+    # actually gone -- never an unbounded wait; a stubborn process just gets
+    # reported, not retried forever.
     $down = $false
     for ($i = 0; $i -lt 8; $i++) {
         Start-Sleep -Milliseconds 250
-        if (-not (Test-SotPipeOpen $PipePath)) { $down = $true; break }
+        if ((-not (Test-SotPipeOpen $PipeName)) -and ((@(Get-LocalDaemonProcess)).Count -eq 0)) {
+            $down = $true
+            break
+        }
     }
     if ($down) {
-        Write-LocalDaemonLog "stop: confirmed down ($PipePath no longer listed)"
+        Write-LocalDaemonLog "stop: confirmed down (pipe unreachable, process gone)"
         exit 0
     } else {
-        Write-LocalDaemonLog "stop: pipe $PipePath still listed after 2s - may still be tearing down"
+        Write-LocalDaemonLog "stop: still not confirmed down after 2s - may still be tearing down"
         exit 1
     }
 }
 
 # ---- ensure-started (default mode) ------------------------------------------
 
-if (Test-SotPipeOpen $PipePath) {
+if (Test-SotPipeOpen $PipeName) {
     Write-LocalDaemonLog "already running on $PipePath"
     exit 0
 }
 
-$installExe = Join-Path $Prefix 'bin\sotd.exe'
-$devExe = Join-Path $DevBinDir 'sotd.exe'
+function Test-CompletePair {
+    param([string]$Dir)
+    (Test-Path (Join-Path $Dir 'sotd.exe')) -and (Test-Path (Join-Path $Dir 'sot-capsule.exe'))
+}
+
+$installBinDir = Join-Path $Prefix 'bin'
 $daemonExe = $null
-if (Test-Path $installExe) {
-    $daemonExe = $installExe
-} elseif (Test-Path $devExe) {
-    $daemonExe = $devExe
+if (Test-CompletePair $DevBinDir) {
+    $daemonExe = Join-Path $DevBinDir 'sotd.exe'
+} elseif (Test-CompletePair $installBinDir) {
+    $daemonExe = Join-Path $installBinDir 'sotd.exe'
 }
 if (-not $daemonExe) {
-    Write-LocalDaemonLog "REFUSED: no sotd.exe found (checked $installExe and $devExe)"
+    Write-LocalDaemonLog "REFUSED: no complete sotd.exe+sot-capsule.exe pair found (checked dev $DevBinDir and install $installBinDir)"
     exit 1
 }
 
-$capsuleExe = Join-Path (Split-Path $daemonExe -Parent) 'sot-capsule.exe'
-if (-not (Test-Path $capsuleExe)) {
-    Write-LocalDaemonLog "REFUSED: sot-capsule.exe not found beside $daemonExe (ADR 0042 L1a resolves it there; a local daemon started without it cannot run capsule workspaces)"
-    exit 1
-}
+$logDir = Join-Path $Prefix 'logs'
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$daemonStdout = Join-Path $logDir 'sotd-local.stdout.log'
+$daemonStderr = Join-Path $logDir 'sotd-local.stderr.log'
 
-$daemonArgs = @('--socket', $PipePath, '--project-root', $ProjectRoot, '--label', 'local')
-Write-LocalDaemonLog "starting: $daemonExe $($daemonArgs -join ' ')"
+# Single pre-quoted argument STRING, not an array: PowerShell 5.1's
+# Start-Process joins an -ArgumentList array with spaces and drops the
+# quotes it would otherwise add around an element containing a space, so a
+# project root or pipe path with a space silently splits into stray argv.
+# A single string is passed through to CreateProcess's command line as-is,
+# quotes intact.
+$daemonArgLine = '--socket "{0}" --project-root "{1}" --label local' -f $PipePath, $ProjectRoot
+Write-LocalDaemonLog "starting: $daemonExe $daemonArgLine"
 try {
-    $proc = Start-Process -FilePath $daemonExe -ArgumentList $daemonArgs -WindowStyle Hidden -PassThru
+    $proc = Start-Process -FilePath $daemonExe -ArgumentList $daemonArgLine `
+        -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr `
+        -WindowStyle Hidden -PassThru
 } catch {
     Write-LocalDaemonLog "REFUSED: failed to start $daemonExe - $($_.Exception.Message)"
     exit 1
@@ -190,16 +242,24 @@ Write-LocalDaemonLog "spawned pid=$($proc.Id)"
 
 # Bounded wait for the pipe to come up -- same 20x250ms=5s shape the remote
 # path already uses (launch-sot.ps1's socket-wait loop) for an analogous
-# "did the daemon we just started actually bind" check.
+# "did the daemon we just started actually bind" check. Stops early (a) if
+# the process already exited (nothing to wait for) or (b) once the pipe
+# answers.
 $up = $false
 for ($i = 0; $i -lt 20; $i++) {
     Start-Sleep -Milliseconds 250
-    if (Test-SotPipeOpen $PipePath) { $up = $true; break }
+    $proc.Refresh()
+    if ($proc.HasExited) {
+        Write-LocalDaemonLog "REFUSED: $daemonExe exited during startup (code=$($proc.ExitCode))"
+        exit 1
+    }
+    if (Test-SotPipeOpen $PipeName) { $up = $true; break }
 }
 if ($up) {
     Write-LocalDaemonLog "pipe=$PipePath"
     exit 0
 } else {
-    Write-LocalDaemonLog "did not come up on $PipePath within 5s"
+    Write-LocalDaemonLog "did not come up on $PipePath within 5s - stopping pid=$($proc.Id) so it cannot accumulate"
+    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     exit 1
 }
