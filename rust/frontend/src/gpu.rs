@@ -2216,7 +2216,7 @@ fn fresh_workspace_caches(
                     .insert(ws_key.clone(), w.repl_state.clone());
             }
             out.workspace_slugs.push(ws_key.clone());
-            let tmux_key: WsKey = (host.clone(), w.tmux_session.clone());
+            let tmux_key: WsKey = tmux_session_key(&host, &w.tmux_session);
             out.workspace_autostart.insert(
                 tmux_key.clone(),
                 WsAutostart {
@@ -2536,6 +2536,19 @@ struct WsAutostart {
 struct WorkspaceRuntime {
     runtime: String,
     state_dir: Option<String>,
+}
+
+/// The `workspace_runtime` lookup/insert key for `session_name` (a tmux
+/// session name) on `host` — `WsKey`, i.e. `(host, session_name)` (ADR
+/// 0042 L2a: two hosts can both report a `sot-be-sot` session). Every
+/// `workspace_runtime` access builds its key through this function.
+/// Deliberately NOT `#[cfg(windows)]` even though `workspace_runtime`
+/// itself is (`WorkspaceRuntime`'s own doc: capsule has nothing to attach
+/// to off Windows) — keeping the key-building cfg-free means its `WsKey`
+/// shape is type-checked, and its own unit test runs, on every platform,
+/// not only on a Windows CI leg no Linux dev session can run.
+fn tmux_session_key(host: &HostKey, session_name: &str) -> WsKey {
+    (host.clone(), session_name.to_string())
 }
 
 /// ADR 0042 slice L1b: which transport feeds the session pane. Keyed off
@@ -7471,7 +7484,11 @@ impl State {
         self.driven_preview_hold_cursor = None;
         if let Some(target) = tmux_session.or_else(|| slug.as_ref().map(|s| format!("sot-be-{s}")))
         {
-            self.attach_session_to_bl(target);
+            // `self.active_host` was just set to `host` above, before
+            // anything in this function fired a request — correct BY
+            // CONSTRUCTION, not a default (see `attach_session_to_bl`'s
+            // own doc).
+            self.attach_session_to_bl(self.active_host.clone(), target);
         }
         let key = self.current_workspace_key();
         // Restore REPL state independently of the UI snapshot — they
@@ -7949,13 +7966,24 @@ impl State {
     /// Sends a `pty.open` carrying the new target; backend kills the
     /// existing pty and respawns against the new session.
     ///
+    /// `host` (ADR 0042 L2a) — the connection that owns `session_name`.
+    /// Every caller either IS `switch_to_workspace` (which sets
+    /// `active_host` to this same value immediately before calling here,
+    /// so `self.active_host.clone()` there is correct BY CONSTRUCTION —
+    /// not a default) or resolves it from the cursored row's own
+    /// `payload.host` (the Sessions-Enter foreign-session fallback below):
+    /// a row can be cursored without ever having been switched to, so
+    /// `active_host` alone would be wrong there.
+    ///
     /// ADR 0042 slice L1b: `try_attach_capsule_pane` runs first and, when
     /// the cached row is a capsule workspace, takes over the switch
     /// entirely (spawns/replaces `pane_attach_term`, sets
     /// `bl_pane_target`, returns) — everything below it is the ORIGINAL
-    /// tmux path, byte-for-byte unchanged, reached only when that helper
-    /// declines (tmux row, unknown row, or a non-Windows build).
-    fn attach_session_to_bl(&mut self, session_name: String) {
+    /// tmux path, routed via `send_to(&host, ...)` (ADR 0042 L2a — was
+    /// `self.send`, i.e. `active_host`, before this row's own host was
+    /// threaded through), reached only when that helper declines (tmux
+    /// row, unknown row, or a non-Windows build).
+    fn attach_session_to_bl(&mut self, host: HostKey, session_name: String) {
         if self.bl_pane_target.as_deref() == Some(session_name.as_str()) {
             // Already attached — no-op rather than churn the pty.
             self.status = format!("already attached · {session_name}");
@@ -7966,22 +7994,25 @@ impl State {
         // was buffered for the DEPARTING target — it must never leak
         // into the row we're about to select.
         self.pane_pending_input.clear();
-        if self.try_attach_capsule_pane(&session_name) {
+        if self.try_attach_capsule_pane(&host, &session_name) {
             return;
         }
         // `try_attach_capsule_pane` has already set `pane_feed` for this
         // target (`Tmux` when the cache confirms it, `Pending` when the
         // row is unknown or a degenerate capsule entry) before declining.
         let (cols, rows) = self.pty_size.unwrap_or((80, 24));
-        if let Err(e) = self.send(crate::transport::OutgoingReq::PtyOpen {
-            cols,
-            rows,
-            target: Some(session_name.clone()),
-            // #5 guard: attach_session_to_bl is reached only via an explicit
-            // user workspace-switch (switch_to_workspace / Sessions-mode
-            // attach), so this open IS allowed to re-target the foreground pty.
-            user_switch: true,
-        }) {
+        if let Err(e) = self.send_to(
+            &host,
+            crate::transport::OutgoingReq::PtyOpen {
+                cols,
+                rows,
+                target: Some(session_name.clone()),
+                // #5 guard: attach_session_to_bl is reached only via an explicit
+                // user workspace-switch (switch_to_workspace / Sessions-mode
+                // attach), so this open IS allowed to re-target the foreground pty.
+                user_switch: true,
+            },
+        ) {
             tracing::warn!(error = %e, %session_name, "drop pty.open re-target request — channel closed");
             return;
         }
@@ -8034,7 +8065,7 @@ impl State {
     /// caller's `pty.open` fallback gives the daemon a chance to refuse
     /// `attach_direct` again, which re-drives a retry through that
     /// handler), `Capsule` only once the client is actually live.
-    fn try_attach_capsule_pane(&mut self, session_name: &str) -> bool {
+    fn try_attach_capsule_pane(&mut self, host: &HostKey, session_name: &str) -> bool {
         // ADR 0042 slice L1b fix 5: the runtime-cache LOOKUP is
         // Windows-only too, not just the attach-client construction —
         // `workspace_runtime` is never populated off Windows either (its
@@ -8043,7 +8074,7 @@ impl State {
         // explicitly makes that fact auditable instead of implicit.
         #[cfg(not(windows))]
         {
-            let _ = session_name;
+            let _ = (host, session_name);
             self.pane_feed = PaneFeed::Tmux;
             false
         }
@@ -8053,7 +8084,13 @@ impl State {
         }
         #[cfg(windows)]
         {
-            let Some(info) = self.workspace_runtime.get(session_name).cloned() else {
+            // ADR 0042 L2a: `workspace_runtime` is `WsKey`-keyed —
+            // `tmux_session_key` builds that pair and is cfg-free
+            // (checked on every platform) precisely so a future reshape of
+            // `WsKey` fails to compile HERE too, not only on a Windows CI
+            // leg no Linux dev session can run.
+            let key = tmux_session_key(host, session_name);
+            let Some(info) = self.workspace_runtime.get(&key).cloned() else {
                 self.pane_feed = PaneFeed::Pending;
                 return false;
             };
@@ -12481,16 +12518,27 @@ impl State {
                                 // regardless of whether it's still
                                 // selected — the next switch to it goes
                                 // straight to the attach path without
-                                // needing this fallback again.
+                                // needing this fallback again. Keyed by
+                                // the REPLYING host (ADR 0042 L2a) — the
+                                // same tag every other per-connection
+                                // reply carries, and the only host
+                                // information this event has: two hosts
+                                // can both report a `sot-be-sot` target.
                                 self.workspace_runtime.insert(
-                                    target.clone(),
+                                    tmux_session_key(&event_host, &target),
                                     WorkspaceRuntime {
                                         runtime: "capsule".to_string(),
                                         state_dir: state_dir.clone(),
                                     },
                                 );
-                                let still_selected =
-                                    self.bl_pane_target.as_deref() == Some(target.as_str());
+                                // "Still selected" requires BOTH the target
+                                // name AND the replying host to match the
+                                // active pane — a same-named session on a
+                                // NON-active host answering late must not
+                                // be mistaken for the row the user is
+                                // actually looking at.
+                                let still_selected = event_host == self.active_host
+                                    && self.bl_pane_target.as_deref() == Some(target.as_str());
                                 // Already corrected by an earlier reply
                                 // (or a fresh cache-hit switch) — a
                                 // duplicate/late refusal for the SAME
@@ -18689,8 +18737,20 @@ impl ApplicationHandler for App {
                                                     // surfaced by an older
                                                     // backend that hadn't
                                                     // filtered them out —
-                                                    // just retarget BL.
-                                                    state.attach_session_to_bl(session_name);
+                                                    // just retarget BL, on
+                                                    // the cursored row's
+                                                    // OWN host (this row
+                                                    // was never switched
+                                                    // to, so active_host
+                                                    // alone would be wrong
+                                                    // — same reasoning as
+                                                    // the branch above).
+                                                    let host = state
+                                                        .selected_session_host()
+                                                        .unwrap_or_else(|| {
+                                                            state.active_host.clone()
+                                                        });
+                                                    state.attach_session_to_bl(host, session_name);
                                                 }
                                             }
                                         }
@@ -24800,11 +24860,33 @@ mod capsule_pane_tests {
         }
     }
 
+    #[test]
+    fn tmux_session_key_does_not_collide_across_hosts() {
+        // ADR 0042 L2a (coordinator review of the first pass): every
+        // host's default workspace tmux session is named `sot-be-<slug>`
+        // — commonly `sot-be-sot` — so `workspace_runtime`'s key MUST
+        // carry the host. `tmux_session_key` is the one place that key is
+        // built (both `try_attach_capsule_pane`'s read and
+        // `fresh_workspace_caches`'/`PtyAttachDirect`'s writes go through
+        // it), and it's deliberately NOT `#[cfg(windows)]` — even though
+        // `workspace_runtime` itself only exists on Windows — precisely
+        // so this type is checked, and this test runs, on every platform.
+        let key_a = tmux_session_key(&"alpha".to_string(), "sot-be-sot");
+        let key_b = tmux_session_key(&"beta".to_string(), "sot-be-sot");
+        assert_ne!(
+            key_a, key_b,
+            "same session name, different host → different key"
+        );
+        assert_eq!(key_a, ("alpha".to_string(), "sot-be-sot".to_string()));
+        assert_eq!(key_b, ("beta".to_string(), "sot-be-sot".to_string()));
+    }
+
     // The `attach_direct` switch itself (parsing the daemon's refusal
     // payload) is tested where it lives — `transport.rs`'s own test
     // module (`attach_direct_state_dir_*`, plus a real-seam test driven
     // through `handle_response_frame`) — rather than a reimplementation
-    // here. Runtime-cache wiring (`WorkspaceRuntime`/`workspace_runtime`)
-    // is exercised the same way — no standalone HashMap-round-trip test:
-    // it would only re-check `pane_backend_for`, already covered above.
+    // here. `WorkspaceRuntime`/`workspace_runtime` itself stays untested
+    // beyond `tmux_session_key` above (the map type is `#[cfg(windows)]`,
+    // so a HashMap-round-trip test can't run here anyway) — a re-check of
+    // `pane_backend_for` would add nothing already covered above.
 }
