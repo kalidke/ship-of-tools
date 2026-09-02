@@ -2433,10 +2433,16 @@ struct UploadState {
     file: std::fs::File,
     /// Absolute backend destination directory (the cursored nav folder).
     dir: String,
-    /// `files:`-prefixed tree node id of the destination directory, so the
-    /// nav listing can be refreshed when the upload completes (the new file
-    /// shows up without a manual re-expand).
-    dir_node_id: String,
+    /// Host this upload targets, pinned at start (ADR 0042 L2a codex
+    /// review, item F) -- reuses this field slot (formerly the dead
+    /// `dir_node_id: String`, never actually read: the nav-listing
+    /// refresh always reads `UploadBatch.dir_node_id` instead, even for
+    /// a single-file "batch of one"). Every wire request for this file
+    /// routes via `send_to(&host, ...)`, and a `FileUploadAck` /
+    /// `FileTransferFailed` tagged with any other host is ignored --
+    /// otherwise a workspace/host switch mid-upload would silently
+    /// redirect the remaining chunks to the NEW active_host's daemon.
+    host: HostKey,
     /// Basename sent to the backend (it sanitizes + de-dups).
     name: String,
     total: u64,
@@ -2451,6 +2457,13 @@ struct UploadState {
 /// `dir_node_id` are resolved once for the whole batch (the picker is invoked
 /// once); the completion refresh uses `dir_node_id`.
 struct UploadBatch {
+    /// Host + workspace this whole batch targets, pinned once at
+    /// `start_upload` (ADR 0042 L2a codex review, item F) -- the batch
+    /// outlives any single `UploadState`, including the completion
+    /// refresh after the queue drains and `self.upload` is already
+    /// `None`, so THIS is where the refresh's routing must be pinned.
+    host: HostKey,
+    workspace_id: Option<String>,
     /// Absolute backend destination directory (shared by every file).
     dir: String,
     /// `files:`-prefixed tree node id of the destination dir, for the
@@ -2834,6 +2847,15 @@ struct State {
     /// fe-command) and surfaced in `fe-state.json` so the LLM pane knows what
     /// the user is zoomed into.
     preview_roi: Option<PreviewRoi>,
+    /// Host `capture_roi` fired its `image.crop` request against, pinned
+    /// at send time (ADR 0042 L2a codex review, item F). The
+    /// `ImageCropped`/`ImageCropFailed` reply is a multi-step op just
+    /// like an upload — the reply pastes into (or fails to paste into)
+    /// the LLM pane, and a workspace/host switch between the request and
+    /// the reply landing must not let a stray reply from a NON-owning
+    /// host drive that side effect. One-shot: consumed (`.take()`) by
+    /// whichever of the two replies lands first.
+    pending_roi_capture_host: Option<HostKey>,
     /// ADR 0025 `preview --roi`: an armed viewport aim awaiting its image
     /// (see `RoiAim`). Deliberately NOT per-workspace snapshot state — a
     /// cross-workspace aim must survive the switch that consumes its badge.
@@ -4887,6 +4909,7 @@ impl State {
             preview_png_dims: None,
             preview_png_src_dims: None,
             preview_roi: None,
+            pending_roi_capture_host: None,
             pending_roi_aim: None,
             preview_png_cache: HashMap::new(),
             pending_roi_restore: None,
@@ -9306,6 +9329,8 @@ impl State {
         };
         let total_files = files.len();
         self.upload_batch = Some(UploadBatch {
+            host: self.active_host.clone(),
+            workspace_id: self.active_workspace_id.clone(),
             dir,
             dir_node_id,
             queue: files,
@@ -9326,22 +9351,35 @@ impl State {
             let Some(batch) = self.upload_batch.as_mut() else {
                 return;
             };
-            batch
-                .queue
-                .pop_front()
-                .map(|p| (p, batch.dir.clone(), batch.dir_node_id.clone()))
+            batch.queue.pop_front().map(|p| {
+                (
+                    p,
+                    batch.host.clone(),
+                    batch.workspace_id.clone(),
+                    batch.dir.clone(),
+                    batch.dir_node_id.clone(),
+                )
+            })
         };
-        let (local, dir, dir_node_id) = match next {
+        let (local, host, workspace_id, dir, dir_node_id) = match next {
             Some(v) => v,
             None => {
                 // Queue drained — the whole batch is complete. Refresh the
                 // destination listing once so the new files appear without a
                 // manual re-expand, then report the aggregate.
-                let (dir, dir_node_id, done, total) = match self.upload_batch.take() {
-                    Some(b) => (b.dir, b.dir_node_id, b.done_files, b.total_files),
-                    None => return,
-                };
-                self.refresh_upload_dir(&dir_node_id);
+                let (host, workspace_id, dir, dir_node_id, done, total) =
+                    match self.upload_batch.take() {
+                        Some(b) => (
+                            b.host,
+                            b.workspace_id,
+                            b.dir,
+                            b.dir_node_id,
+                            b.done_files,
+                            b.total_files,
+                        ),
+                        None => return,
+                    };
+                self.refresh_upload_dir(&host, workspace_id, &dir_node_id);
                 self.status = if total == 1 {
                     format!("uploaded · {done} file → {dir}")
                 } else {
@@ -9368,7 +9406,7 @@ impl State {
                 // uploaded files stay (refresh so they show), the remainder is
                 // dropped. Predictable partial state over silent skipping.
                 self.upload_batch = None;
-                self.refresh_upload_dir(&dir_node_id);
+                self.refresh_upload_dir(&host, workspace_id, &dir_node_id);
                 self.window.request_redraw();
                 return;
             }
@@ -9376,7 +9414,7 @@ impl State {
         self.upload = Some(UploadState {
             file,
             dir,
-            dir_node_id,
+            host,
             name,
             total,
             sent: 0,
@@ -9385,16 +9423,22 @@ impl State {
     }
 
     /// Refresh a destination directory's nav listing after upload activity so
-    /// newly written files appear without a manual re-expand. No-op for an empty
-    /// node id (unresolved parent).
-    fn refresh_upload_dir(&self, dir_node_id: &str) {
+    /// newly written files appear without a manual re-expand. No-op for an
+    /// empty node id (unresolved parent). Routes via the PINNED `host`/
+    /// `workspace_id` the upload started with (ADR 0042 L2a codex review,
+    /// item F) — not `active_host`/`active_workspace_id`, which may have
+    /// moved on by the time the batch completes.
+    fn refresh_upload_dir(&self, host: &HostKey, workspace_id: Option<String>, dir_node_id: &str) {
         if dir_node_id.is_empty() {
             return;
         }
-        if let Err(e) = self.send(crate::transport::OutgoingReq::TreeChildren {
-            parent_id: dir_node_id.to_string(),
-            workspace_id: self.active_workspace_id.clone(),
-        }) {
+        if let Err(e) = self.send_to(
+            host,
+            crate::transport::OutgoingReq::TreeChildren {
+                parent_id: dir_node_id.to_string(),
+                workspace_id,
+            },
+        ) {
             tracing::warn!(error = %e, "drop post-upload tree.children refresh");
         }
     }
@@ -9416,6 +9460,7 @@ impl State {
                     up.sent += n as u64;
                     let eof = up.sent >= up.total;
                     Ok((
+                        up.host.clone(),
                         up.dir.clone(),
                         up.name.clone(),
                         up.total,
@@ -9429,15 +9474,22 @@ impl State {
             }
         };
         match read {
-            Ok((dir, name, total, sent, offset, eof, bytes)) => {
-                if let Err(e) = self.send(crate::transport::OutgoingReq::FileUpload {
-                    dir,
-                    name: name.clone(),
-                    offset,
-                    total,
-                    eof,
-                    bytes,
-                }) {
+            Ok((host, dir, name, total, sent, offset, eof, bytes)) => {
+                // ADR 0042 L2a codex review, item F: routed to the
+                // PINNED owner, not active_host — a workspace/host
+                // switch mid-upload must not redirect the remaining
+                // chunks to a different daemon.
+                if let Err(e) = self.send_to(
+                    &host,
+                    crate::transport::OutgoingReq::FileUpload {
+                        dir,
+                        name: name.clone(),
+                        offset,
+                        total,
+                        eof,
+                        bytes,
+                    },
+                ) {
                     tracing::warn!(error = %e, "drop file.upload chunk — channel closed");
                     self.upload = None;
                     self.upload_batch = None;
@@ -9544,21 +9596,31 @@ impl State {
             .to_string();
         tracing::info!(node_id = %roi.node_id, x = roi.x, y = roi.y, w = roi.w, h = roi.h,
             "image.crop requested (capture_roi)");
+        // ADR 0042 L2a codex review, item F: pin the requesting host so
+        // the ImageCropped/ImageCropFailed reply (which pastes into the
+        // LLM pane — a side effect, not just a paint) can confirm it's
+        // still answering FOR this host before acting, even if the user
+        // switched hosts between the request and the reply landing.
+        let roi_host = self.active_host.clone();
         if self
-            .send(crate::transport::OutgoingReq::ImageCrop {
-                node_id: roi.node_id.clone(),
-                x: roi.x,
-                y: roi.y,
-                w: roi.w,
-                h: roi.h,
-                workspace_id: self.active_workspace_id.clone(),
-            })
+            .send_to(
+                &roi_host,
+                crate::transport::OutgoingReq::ImageCrop {
+                    node_id: roi.node_id.clone(),
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                    workspace_id: self.active_workspace_id.clone(),
+                },
+            )
             .is_err()
         {
             self.status = "capture: transport closed".to_string();
             self.window.request_redraw();
             return;
         }
+        self.pending_roi_capture_host = Some(roi_host);
         self.status = format!("capturing ROI {}×{} of {} → LLM…", roi.w, roi.h, name);
         self.window.request_redraw();
     }
@@ -13476,6 +13538,17 @@ impl State {
                     done,
                     final_name,
                 } => {
+                    // ADR 0042 L2a codex review, item F: an ack must come
+                    // from the upload's OWN pinned host — a switch away
+                    // mid-upload leaves the transfer running in the
+                    // background, and its acks must keep driving THIS
+                    // upload rather than being ignored (event_host, not
+                    // active_host) or, worse, misapplied to whatever a
+                    // differently-hosted upload happens to be active now.
+                    if self.upload.as_ref().map(|u| &u.host) != Some(&event_host) {
+                        tracing::debug!(%event_host, "file.upload ack from a non-owning host — dropped");
+                        continue;
+                    }
                     if done {
                         // Current file finished. Count it against the batch and
                         // advance: `start_next_file` starts the next file, or —
@@ -13500,6 +13573,25 @@ impl State {
                 }
                 crate::transport::IncomingEvt::FileTransferFailed { op, message } => {
                     if op == "upload" {
+                        // ADR 0042 L2a codex review, item F: a failure
+                        // from a non-owning host must not abort THIS
+                        // upload's batch — e.g. a stray failure on a host
+                        // this FE has since switched away from. Falls
+                        // back to the batch's own pinned host in the
+                        // narrow between-files window where `self.upload`
+                        // is momentarily `None` but the batch is still
+                        // live (so a legitimate same-host failure isn't
+                        // dropped just because no file is mid-flight).
+                        let owner = self
+                            .upload
+                            .as_ref()
+                            .map(|u| u.host.clone())
+                            .or_else(|| self.upload_batch.as_ref().map(|b| b.host.clone()));
+                        if owner.as_ref() != Some(&event_host) {
+                            tracing::debug!(%event_host, ?owner,
+                                "file.upload failure from a non-owning host — dropped");
+                            continue;
+                        }
                         // A backend upload failure aborts the whole batch — the
                         // remaining files are dropped rather than uploaded into
                         // an ambiguous state.
@@ -13519,6 +13611,17 @@ impl State {
                     src_w,
                     src_h,
                 } => {
+                    // ADR 0042 L2a codex review, item F: only the host
+                    // capture_roi actually pinned may drive this reply's
+                    // side effect (the LLM-pane paste + focus move) — a
+                    // stray/late reply from a non-owning host (or one
+                    // that arrives after a second capture_roi already
+                    // consumed the pin) is dropped.
+                    if self.pending_roi_capture_host.take() != Some(event_host.clone()) {
+                        tracing::debug!(%event_host, %node_id,
+                            "image.cropped from a non-owning/stale host — dropped");
+                        continue;
+                    }
                     tracing::info!(%node_id, %path, w, h, "image.cropped received → pasting to LLM pane");
                     // ADR 0022: paste a ready-to-send "look at this" line into
                     // the LLM pane (BL pty). No trailing Enter — the user can
@@ -13567,6 +13670,14 @@ impl State {
                     self.window.request_redraw();
                 }
                 crate::transport::IncomingEvt::ImageCropFailed { node_id, message } => {
+                    // Same owner check as ImageCropped above -- a failure
+                    // from a non-owning/stale host must not clobber the
+                    // status line for whatever the user is doing now.
+                    if self.pending_roi_capture_host.take() != Some(event_host.clone()) {
+                        tracing::debug!(%event_host, %node_id,
+                            "image.crop failure from a non-owning/stale host — dropped");
+                        continue;
+                    }
                     let name = node_id
                         .rsplit(['/', '\\'])
                         .next()
@@ -24972,6 +25083,32 @@ mod tests {
         assert_ne!(
             row_host, reply_event_host,
             "a same-numbered pane's reply from a non-owning host must be dropped, not painted"
+        );
+    }
+
+    #[test]
+    fn upload_owner_gate_ignores_a_non_owning_hosts_ack() {
+        // ADR 0042 L2a codex review, item F: an UploadState pins the
+        // host it's uploading to at start (reusing the field slot that
+        // used to be the dead UploadState.dir_node_id). A
+        // FileUploadAck/FileTransferFailed is applied only when its
+        // event_host matches that pin -- mirrors the
+        // `self.upload.as_ref().map(|u| &u.host) != Some(&event_host)`
+        // gate in the real handlers, without needing a GPU-backed State
+        // (upload holds a live std::fs::File, which isn't test-friendly
+        // to construct).
+        let upload_host: HostKey = "alpha".to_string();
+        let owning_ack_host: HostKey = "alpha".to_string();
+        let stray_ack_host: HostKey = "beta".to_string();
+        assert_eq!(
+            Some(&upload_host),
+            Some(&owning_ack_host),
+            "an ack from the pinned host is accepted"
+        );
+        assert_ne!(
+            Some(&upload_host),
+            Some(&stray_ack_host),
+            "an ack from any OTHER host is dropped, even mid-batch"
         );
     }
 
