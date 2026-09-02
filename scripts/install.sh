@@ -36,6 +36,18 @@ GLIBC_FLOOR_FE="2.35"
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Refuse characters a shell-embedded path (systemd unit ExecStart, JSON
+# manifest, sed substitution, launcher heredocs) cannot carry safely.
+# Explicit rejection over silent corruption. Shared by --prefix and the
+# project root ($HOME) — deploy/sotd.service's ExecStart now embeds both
+# inside a shell string, where a stray quote breaks the unit.
+reject_unsafe_path_chars() {  # <label> <value>
+    case "$2" in
+        *[\&\|\;\"\'\\\`]*|*' '*|*'	'*)
+            die "unsupported characters in $1 '$2' — no spaces, quotes, backslashes, or shell metacharacters" ;;
+    esac
+}
+
 # ---- hosts.toml editing --------------------------------------------------------
 # The installer owns exactly TWO things in hosts.toml: the value of
 # `default_host`, and the presence of an entry for the role's own host. Every
@@ -213,17 +225,16 @@ while [ $# -gt 0 ]; do
     shift
 done
 # Canonicalize the prefix (a relative one produces a repo/current symlink
-# whose target resolves from repo/, i.e. a broken link) and refuse characters
-# the systemd-unit sed, JSON manifest, and launcher heredocs cannot carry
-# safely. Explicit rejection over silent corruption.
+# whose target resolves from repo/, i.e. a broken link), then reject unsafe
+# characters in both the prefix and the project root — deploy/sotd.service's
+# ExecStart embeds @SOT_PROJECT_ROOT@ ($HOME) inside a shell string too, so a
+# stray quote there breaks the unit exactly like it would in the prefix.
 case "$PREFIX" in
     /*) ;;
     *) PREFIX="$(pwd)/$PREFIX" ;;
 esac
-case "$PREFIX" in
-    *[\&\|\;\"\'\\\`]*|*' '*|*'	'*)
-        die "unsupported characters in prefix '$PREFIX' — no spaces, quotes, backslashes, or shell metacharacters" ;;
-esac
+reject_unsafe_path_chars "prefix" "$PREFIX"
+reject_unsafe_path_chars 'project root ($HOME)' "$HOME"
 
 # ---- the role gate -------------------------------------------------------------
 # Runs BEFORE the role is resolved, so it can refuse a flag, and after the
