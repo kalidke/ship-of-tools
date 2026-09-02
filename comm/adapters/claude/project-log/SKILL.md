@@ -42,9 +42,10 @@ title and a human title into a slug:
 
 ```bash
 # NOTE (skill-text rule): Claude Code substitutes positional-argument tokens
-# ($0, $1, ... and $ARGUMENTS) into a skill's text when the skill is invoked
-# with arguments, so NOTHING below may use a shell positional parameter or
-# awk's $0 — the helpers are stdin filters and awk uses $(0).
+# (a dollar sign followed by a digit, and the all-arguments variable) into a
+# skill's text when the skill is invoked with arguments, so NOTHING below may
+# use a shell positional parameter or awk's whole-line variable — the helpers
+# are stdin filters and awk uses the parenthesized form of that variable.
 titleize() { # stdin "foo-bar_baz" -> "Foo Bar Baz"
   tr -- '-_' '  ' | awk '{for(i=1;i<=NF;i++)$i=toupper(substr($i,1,1)) substr($i,2); print}'
 }
