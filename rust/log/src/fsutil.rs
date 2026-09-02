@@ -717,13 +717,18 @@ pub fn rename_noreplace_raw(from: &Path, to: &Path) -> Result<()> {
     use std::os::unix::ffi::OsStrExt;
     let f = CString::new(from.as_os_str().as_bytes()).map_err(|_| Error::State("nul in path".into()))?;
     let t = CString::new(to.as_os_str().as_bytes()).map_err(|_| Error::State("nul in path".into()))?;
+    // Raw syscall, not `libc::renameat2`: the wrapper exists only in the
+    // glibc bindings, and the release build targets musl (the backend has
+    // depended on this crate since ADR 0042 L1a). Same shape `voyage.rs`
+    // already uses for RENAME_EXCHANGE.
     let rc = unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             f.as_ptr(),
             libc::AT_FDCWD,
             t.as_ptr(),
-            libc::RENAME_NOREPLACE,
+            libc::RENAME_NOREPLACE as libc::c_uint,
         )
     };
     if rc == 0 {
