@@ -80,8 +80,15 @@ function New-Fixture {
 function New-TestPipeName { 'test-sot-ld-' + [guid]::NewGuid().ToString('N').Substring(0, 8) }
 
 function Test-PipeListed([string]$Name) {
-    $path = '\\.\pipe\' + $Name
-    ([System.IO.Directory]::GetFiles('\\.\pipe\')) -contains $path
+    # try/catch even though $ErrorActionPreference is 'Stop' at file scope --
+    # a transient enumeration failure here must fail one Check, not crash the
+    # whole suite (mirrors sot-local-daemon.ps1's own Test-SotPipeOpen).
+    try {
+        $path = '\\.\pipe\' + $Name
+        return ([System.IO.Directory]::GetFiles('\\.\pipe\')) -contains $path
+    } catch {
+        return $false
+    }
 }
 function Wait-Pipe([string]$Name, [int]$TimeoutMs = 5000) {
     $elapsed = 0
