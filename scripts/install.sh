@@ -140,12 +140,24 @@ installer_manifest_state() {  # <prefix>
     printf 'known:%s' "$role"
 }
 
+# Extract the sotd binary path from a unit's ExecStart line. Two shapes:
+# the old direct form (ExecStart=<bin>/sotd ...) and the current form that
+# sources ~/.bashrc through a shell before exec'ing (ExecStart=/bin/bash -c
+# '...; exec "<bin>/sotd" ...'). One regex covers both: an optional
+# `exec "` prefix — present only in the wrapped form — before the path,
+# which runs to the next space or quote either way. Pure (stdin -> stdout),
+# so it is testable without systemctl or a real unit file
+# (scripts/tests/installer-state.sh).
+installer_unit_owner_path() {
+    sed -n -E 's/^ExecStart=(.*exec ")?([^ "]+)"?.*/\2/p' | head -1
+}
+
 # The program an existing user-level sotd.service runs, if there is one. A
 # source install has no manifest but owns this same fixed unit name, so the
 # manifest alone would miss it.
 installer_unit_owner() {
     command -v systemctl >/dev/null 2>&1 || return 0
-    systemctl --user cat sotd.service 2>/dev/null | sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' | head -1
+    systemctl --user cat sotd.service 2>/dev/null | installer_unit_owner_path
 }
 
 # "allow" | "refuse:<why>". Pure, so the decision matrix is testable without
