@@ -615,8 +615,10 @@ pub struct WorkspaceInfo {
     /// the daemon runs on (no host indirection yet — that's L2/L3).
     #[allow(dead_code)]
     pub state_dir: Option<String>,
-    /// The supervisor-lane phase (ADR 0041 Lifecycle, snake_case) or
-    /// `"unreachable"` — `Some` only for `runtime == "capsule"` rows.
+    /// The supervisor-lane phase (ADR 0041 Lifecycle, snake_case),
+    /// `"stopped"` (its state directory was never created — no supervisor
+    /// has ever run for it), or `"unreachable"` (the lane could not be
+    /// queried at all) — `Some` only for `runtime == "capsule"` rows.
     /// Folded into the Sessions row's glance line (`capsule_phase_tag`).
     #[allow(dead_code)]
     pub phase: Option<String>,
