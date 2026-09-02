@@ -136,7 +136,8 @@ jobs:
       # fixture hosts.toml, pure text processing, hermetic and fast.
       - name: Test tunnel plan (bash)
         if: matrix.os == 'ubuntu-latest'
-        run: scripts/tests/test-tunnel-plan.sh
+        run: bash scripts/tests/test-tunnel-plan.sh
+        working-directory: .
 
       # PR #148 Codex review F10: hermetic + fast, so it rides along in this
       # existing ubuntu leg rather than a dedicated job. Only comm-spawn.sh's
