@@ -2180,6 +2180,38 @@ fn hosts_mode_row(name: &str, connected: bool, is_active: bool, is_default: bool
     }
 }
 
+/// Guard + mutation core of `try_expand_hosts_root_local` (Codex round,
+/// PR #172): requires BOTH `mode == Mode::Hosts` and the exact root id
+/// `"hosts:"` (depth zero) — `kind == "hosts"` alone doesn't rule out
+/// some other row incidentally carrying that kind string, and doesn't
+/// rule out firing while a DIFFERENT mode's tree happens to be showing.
+/// Declines (returns `false`) for any other row, an already-expanded
+/// root, or the wrong mode. No `State` dependency beyond the tree itself
+/// and the freshly-built `children`, so this is directly unit-testable —
+/// `try_expand_selected`'s own dispatch, minus the redraw.
+///
+/// Marks the row `expanded` at REQUEST time, then splices via
+/// `apply_children` — never `populate_hosts_tree`'s own `set_root`, which
+/// treats a currently-collapsed same-id root as "the user closed this,
+/// keep it collapsed" and would silently no-op here (the same contract
+/// `try_expand_session_host_local` relies on for `session_host`).
+fn expand_hosts_root(tree: &mut TreeView, mode: Mode, children: Vec<TreeNode>) -> bool {
+    if mode != Mode::Hosts {
+        return false;
+    }
+    let Some(row) = tree.rows.get(tree.selected) else {
+        return false;
+    };
+    if row.node.id != "hosts:" || row.expanded {
+        return false;
+    }
+    if let Some(r) = tree.rows.get_mut(tree.selected) {
+        r.expanded = true;
+    }
+    tree.apply_children("hosts:", children);
+    true
+}
+
 /// Build the `(parent_id, pane rows)` a `tmux.list_panes` reply for
 /// `session` on `host` splices into the Sessions tree (ADR 0042 L2a). Pure
 /// — no `State` dependency — so "the row built from host B's reply carries
@@ -7438,30 +7470,15 @@ impl State {
     /// (first live shakedown fix): its children come from `conns` +
     /// `host_connected`, already held in memory (`hosts_tree_children`,
     /// the same builder `populate_hosts_tree` uses on mode entry) — no
-    /// server round trip needed to rebuild them. Declines (returns
-    /// `false`) for any other row kind, or once already expanded, so
-    /// `try_expand_selected` falls through to its normal path.
-    ///
-    /// Uses `apply_children`, not `populate_hosts_tree`'s own `set_root`:
-    /// `set_root` treats a currently-COLLAPSED same-id root as "the user
-    /// closed this, keep it collapsed" and would silently no-op here. The
-    /// fix mirrors `try_expand_session_host_local` immediately above —
-    /// mark the row `expanded` at REQUEST time, then splice: exactly the
-    /// contract `apply_children` itself documents (a reply/splice for a
-    /// still-collapsed parent is dropped).
+    /// server round trip needed to rebuild them. The guard + mutation
+    /// itself is `expand_hosts_root`, a pure free function (Codex round,
+    /// PR #172) — see its own doc for why it checks BOTH `mode` and the
+    /// exact root id, not just a row's `kind`.
     fn try_expand_hosts_root_local(&mut self) -> bool {
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
-            return false;
-        };
-        if row.node.kind != "hosts" || row.expanded {
-            return false;
-        }
-        let parent_id = row.node.id.clone();
         let children = self.hosts_tree_children();
-        if let Some(r) = self.tree.rows.get_mut(self.tree.selected) {
-            r.expanded = true;
+        if !expand_hosts_root(&mut self.tree, self.mode, children) {
+            return false;
         }
-        self.tree.apply_children(&parent_id, children);
         self.window.request_redraw();
         true
     }
@@ -24567,19 +24584,17 @@ mod tests {
     }
 
     #[test]
-    fn hosts_root_repopulates_after_collapse_then_reexpand_via_apply_children_not_set_root() {
+    fn expand_hosts_root_repopulates_after_collapse_then_reexpand() {
         // Mode::Hosts's own bug (first live shakedown): its root's children
         // used to be built only on mode ENTRY (`populate_hosts_tree` ->
         // `set_root`); collapsing then re-expanding the root without
         // leaving the mode took the generic `TreeChildren` wire path,
         // which has no server-side handler for the synthetic "hosts:" id
-        // and left the root empty. `try_expand_hosts_root_local`'s fix is
-        // to mark the row `expanded` at REQUEST time (same contract every
-        // local expand here uses) and go through `apply_children` instead
-        // of `populate_hosts_tree`'s own `set_root` — this pins BOTH
-        // halves: `apply_children` (mark-then-splice) actually
-        // repopulates a collapsed root, while `set_root` on that same
-        // still-collapsed root would not (the bug this fix avoids).
+        // and left the root empty. Goes through the actual guarded
+        // function (Codex round, PR #172) rather than a hand-flipped
+        // `expanded` -- proves the real dispatch path, not just
+        // `apply_children`'s general mechanics (already covered by
+        // `apply_children_ignores_reply_for_collapsed_parent`).
         let mut t = TreeView::new();
         t.set_root(
             node("hosts:", "hosts", true),
@@ -24590,43 +24605,51 @@ mod tests {
         assert_eq!(t.rows.len(), 1);
         assert!(!t.rows[0].expanded);
 
-        // The fix: mark expanded first, then apply_children (never set_root).
-        t.rows[0].expanded = true;
-        t.apply_children(
-            "hosts:",
-            vec![
-                node("hosts:local", "local", false),
-                node("hosts:beta", "beta", false),
-            ],
-        );
+        let fresh = vec![
+            node("hosts:local", "local", false),
+            node("hosts:beta", "beta", false),
+        ];
+        assert!(expand_hosts_root(&mut t, Mode::Hosts, fresh));
         assert_eq!(
             t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
             vec!["hosts:", "hosts:local", "hosts:beta"]
         );
         assert!(t.rows[0].expanded);
+    }
 
-        // Contrast: re-seeding the SAME still-collapsed root through
-        // `set_root` instead stays empty — exactly the bug.
-        let mut via_set_root = TreeView::new();
-        via_set_root.set_root(
+    #[test]
+    fn expand_hosts_root_declines_outside_mode_hosts_or_off_the_root_row() {
+        // Codex round, PR #172: the guard checks BOTH `mode == Mode::Hosts`
+        // and the exact root id "hosts:" -- not just a row's `kind`, which
+        // can't rule out some other mode's tree incidentally carrying a
+        // "hosts:"-shaped row, or the cursor sitting on a CHILD instead of
+        // the root.
+        let mut wrong_mode = TreeView::new();
+        wrong_mode.set_root(
             node("hosts:", "hosts", true),
             vec![node("hosts:local", "local", false)],
         );
-        via_set_root.selected = 0;
-        assert!(via_set_root.collapse_selected());
-        via_set_root.set_root(
+        wrong_mode.selected = 0;
+        assert!(wrong_mode.collapse_selected());
+        assert!(!expand_hosts_root(
+            &mut wrong_mode,
+            Mode::Sessions,
+            vec![node("hosts:local", "local", false)],
+        ));
+        assert_eq!(wrong_mode.rows.len(), 1, "declined -- stays collapsed");
+        assert!(!wrong_mode.rows[0].expanded);
+
+        let mut off_root = TreeView::new();
+        off_root.set_root(
             node("hosts:", "hosts", true),
-            vec![
-                node("hosts:local", "local", false),
-                node("hosts:beta", "beta", false),
-            ],
+            vec![node("hosts:local", "local", false)],
         );
-        assert_eq!(
-            via_set_root.rows.len(),
-            1,
-            "set_root on a collapsed root stays collapsed and empty"
-        );
-        assert!(!via_set_root.rows[0].expanded);
+        off_root.selected = 1; // on the child row, not the root
+        assert!(!expand_hosts_root(
+            &mut off_root,
+            Mode::Hosts,
+            vec![node("hosts:local", "local", false)],
+        ));
     }
 
     #[test]
