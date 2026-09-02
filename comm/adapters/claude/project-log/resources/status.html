@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Where the work stands now: one paragraph per campaign, what is next, what blocks. Rewritten in place; history lives in the journal.">
+  <title>Where the work stands · project record</title>
+  <link rel="stylesheet" href="assets/site.css">
+  <link rel="stylesheet" href="assets/katex/katex.min.css">
+  <script defer src="assets/katex/katex.min.js"></script>
+  <script defer src="assets/katex/contrib/auto-render.min.js"></script>
+  <script defer src="assets/site.js"></script>
+</head>
+<body data-root="." data-page="status.html" data-kind="Status">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header data-site-header></header>
+  <div class="site-layout">
+    <aside data-site-nav></aside>
+    <main id="main" class="content">
+      <p class="eyebrow">Status · Current state only</p>
+      <h1>Where the work stands</h1>
+      <p class="lead">
+        This page describes the present. It is rewritten in place whenever the state
+        changes and never recites history; the <a href="journal/index.html">journal</a>
+        does that. Last rewritten YYYY-MM-DD.
+      </p>
+
+      <div class="callout">
+        <span class="callout-title">In short</span>
+        Three to five sentences on where the whole project stands today.
+      </div>
+
+      <h2 id="campaign">Campaign name</h2>
+      <p>
+        <!-- one of: badge-planned, badge-running, badge-complete, badge-qualified, badge-superseded -->
+        <span class="badge badge-planned">Planned</span>
+        One paragraph: what is done, what is in progress, what the evidence says.
+      </p>
+      <p>
+        <strong>Next:</strong> the next concrete step. <strong>Blocks:</strong> none, or
+        what is waiting on whom.
+      </p>
+
+      <h2 id="record">This record</h2>
+      <p>
+        <span class="badge badge-planned">Planned</span>
+        Which charter pages are frozen, what is still being written.
+      </p>
+
+      <h2 id="next">Next actions</h2>
+      <ol>
+        <li>The first next action.</li>
+        <li>The second.</li>
+      </ol>
+
+      <nav data-page-sequence></nav>
+    </main>
+    <aside data-page-toc></aside>
+  </div>
+  <footer data-site-footer></footer>
+</body>
+</html>

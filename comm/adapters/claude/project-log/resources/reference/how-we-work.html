@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="How this project record and repository are kept: the three tiers, the experiment page, the journal, plain-language rules, and where code lives.">
+  <title>How we work · project record</title>
+  <link rel="stylesheet" href="../assets/site.css">
+  <link rel="stylesheet" href="../assets/katex/katex.min.css">
+  <script defer src="../assets/katex/katex.min.js"></script>
+  <script defer src="../assets/katex/contrib/auto-render.min.js"></script>
+  <script defer src="../assets/site.js"></script>
+</head>
+<body data-root=".." data-page="reference/how-we-work.html" data-kind="How we work">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header data-site-header></header>
+  <div class="site-layout">
+    <aside data-site-nav></aside>
+    <main id="main" class="content">
+      <p class="eyebrow">Reference · Conventions</p>
+      <h1>How we work</h1>
+      <p class="lead">
+        This page is the single statement of how the record and the repository are kept.
+        Everything else in the record follows it.
+      </p>
+
+      <div class="callout">
+        <span class="callout-title">In short</span>
+        The record has three tiers that change at three speeds: a frozen charter, a
+        living status page, and an append-only journal. The unit of the record is the
+        experiment page, written as a small scientific method. Every page starts in plain
+        words and gets more detailed as you read down. Code lives in modules with tests
+        or in thin runner scripts, and scratch work lives in one disposable folder.
+      </div>
+
+      <h2 id="tiers">Three tiers, three speeds</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Tier</th><th>Holds</th><th>Changes</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Charter</strong> (<code>charter/</code>)</td><td>The goals, the questions, the concepts, the theory, the definitions of what is measured.</td><td>Frozen. A change is a dated amendment block at the top of the page, never an in-place edit. Each page carries the date and commit at which it was frozen.</td></tr>
+            <tr><td><strong>Status</strong> (<code>status.html</code>)</td><td>Where each campaign stands, what is next, what blocks.</td><td>Rewritten in place whenever the state changes. Describes the present only; never recites history.</td></tr>
+            <tr><td><strong>Journal</strong> (<code>journal/</code>)</td><td>Dated entries: what was done, decided, found, or abandoned.</td><td>Append only. An entry is never edited after the day it is written; a correction is a new entry that links back.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Experiment pages and reference pages sit outside the tiers: an experiment page is
+        updated until its status is complete or superseded, and reference pages are
+        living lookups.
+      </p>
+
+      <h2 id="experiment-page">The experiment page</h2>
+      <p>
+        Every experiment gets one page, started from <code>templates/experiment.html</code>,
+        with the sections below in this order. There are two kinds, marked by a kind badge
+        on the status line and listed in separate navigation sections: a
+        <strong>computational</strong> experiment runs code on simulated or recorded data
+        and its Methods name the inputs, the seeds, the command, and the code at a
+        commit; a <strong>wet-lab</strong> experiment runs on physical samples and its
+        Methods name the sample, the preparation and measurement protocol, and the
+        analysis pipeline. The scientific form is the same for both.
+      </p>
+      <ol>
+        <li><strong>Status badge:</strong> planned, running, complete, qualified, or superseded.</li>
+        <li><strong>In short:</strong> three to five sentences, no symbols, no numbers. The question, the answer so far, and what it does and does not license.</li>
+        <li><strong>Hypothesis:</strong> what we expect and what would show it wrong. For a quantitative test, the null and the pass margin, fixed before the run.</li>
+        <li><strong>Methods:</strong> what is held fixed and what is under test, the inputs, the seeds, the command, and links to the protocol and the code at a commit.</li>
+        <li><strong>Results:</strong> tables and figures. Every number traces to an output row.</li>
+        <li><strong>Conclusions:</strong> the verdict, what it means for the program, and the next step it implies.</li>
+        <li><strong>Provenance:</strong> commit, environment hash, seeds, output paths, date, and who ran it.</li>
+      </ol>
+      <p>
+        Pages are grouped by campaign under <code>experiments/</code>. A campaign overview
+        is a table of its experiment pages with their badges.
+      </p>
+
+      <h2 id="plain-language">Plain-language rules</h2>
+      <p>
+        The reader knows the field and does not know this project.
+      </p>
+      <ul>
+        <li><strong>Assumed:</strong> the field's standard vocabulary. The glossary lists these terms in one line each, for completeness only.</li>
+        <li><strong>Introduced in plain words on first use per page, then named, then linked to the glossary:</strong> every term this project coined and every method the field does not use daily.</li>
+        <li>Every page opens with an <strong>In short</strong> block. No symbol appears above the first heading.</li>
+        <li>Theory pages keep their derivations and carry one plain sentence before each equation block saying what the equation states.</li>
+        <li>Numbers go in tables, not sentences. One idea per paragraph. A reader can stop at any heading with a true picture.</li>
+        <li>Use the project's own words for the same thing everywhere; do not introduce a synonym for a defined term.</li>
+      </ul>
+
+      <h2 id="process">What happens when</h2>
+      <ul>
+        <li><strong>A result lands.</strong> The runner writes its output with a provenance row. A journal entry records what ran and links the row and the commit. The experiment page is written or updated. The campaign overview and the status page are updated in place.</li>
+        <li><strong>The plan changes.</strong> A journal entry says what changed and why. The status page is rewritten. The charter is untouched unless a question or a definition itself changed; then a dated amendment.</li>
+        <li><strong>Something is abandoned.</strong> A journal entry, nothing else, unless a reader would otherwise repeat it, in which case one line on the status page.</li>
+        <li><strong>A review lands.</strong> Findings that change the approach or a result go into a charter amendment, the status page, or the experiment page. Everything else is one line in the journal. Normative documents carry no caveat lists.</li>
+      </ul>
+
+      <h2 id="code">Where code lives</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Place</th><th>Rule</th></tr></thead>
+          <tbody>
+            <tr><td><code>src/</code>, <code>test/</code></td><td>The reusable package. Code enters when a second experiment needs it or the charter cites it. Docstrings, tests, an API overview.</td></tr>
+            <tr><td><code>experiments/&lt;campaign&gt;/</code></td><td>One folder per campaign with its own environment. <code>PROTOCOL.md</code> is the normative specification the code implements and lives next to it. <code>src/</code> is a module holding all logic. <code>scripts/</code> are thin runners that parse arguments, call the module, and print a sentinel. <code>test/</code> holds the checks. <code>output/&lt;experiment&gt;/&lt;seed&gt;/</code> holds logs and result rows, which are committed; caches are not.</td></tr>
+            <tr><td><code>project-log/figures/</code></td><td>Figures the record cites. A figure from an experiment run is copied here from <code>output/</code>; a figure that exists only to illustrate a page is generated straight here. The record is self-contained.</td></tr>
+            <tr><td><code>dev/</code></td><td>Scratch: plans, notes, spikes. Disposable, and never cited by the record. Work is promoted from here to an experiment module and then to the package.</td></tr>
+            <tr><td><code>data/</code></td><td>A link to shared storage. Nothing under it is tracked.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Provenance is computed before any output file is opened, so a dirty flag means the
+        code was dirty. Dependencies are added with the language's package manager and the
+        environment files are committed.
+      </p>
+
+      <h2 id="site">The record itself</h2>
+      <ul>
+        <li>Hand-written HTML with no build step. Scripts generate figures only.</li>
+        <li>The navigation list and the site name live at the top of <code>assets/site.js</code> and are edited by hand when a page is added. A section with no pages is not shown.</li>
+        <li>Clicking a link to a record page swaps only the content column in place; the sidebar is rendered once per load and never moves.</li>
+        <li>Math renders from a vendored copy of KaTeX under <code>assets/katex/</code>, so pages render offline and when hosted.</li>
+        <li>New experiment pages start from <code>templates/experiment.html</code>; new journal entries start from <code>templates/journal-entry.html</code>, are named <code>YYYY-MM-DD-slug.html</code>, and get one line in the journal index.</li>
+        <li><code>assets/VERSION</code> records the template version; refreshing <code>assets/</code> and <code>templates/</code> never touches page content.</li>
+      </ul>
+
+      <nav data-page-sequence></nav>
+    </main>
+    <aside data-page-toc></aside>
+  </div>
+  <footer data-site-footer></footer>
+</body>
+</html>

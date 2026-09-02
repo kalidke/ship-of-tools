@@ -24,8 +24,10 @@ If Ship of Tools is in the global env instead of a local checkout, drop `--proje
 This:
 1. Copies `comm/core/scripts/*` → `~/.sot-comm/bin/`
 2. Copies the Claude skill adapters (`sot-comm`, `sot-install`,
-   `sot-session-start`, `sot-be-session-start`, `sot-fe-session-start`) →
-   `~/.claude/skills/`
+   `sot-session-start`, `sot-be-session-start`, `sot-fe-session-start`,
+   `project-log`, and others) → `~/.claude/skills/`, each skill's whole
+   directory (not just `SKILL.md`), so a skill's own `resources/` (e.g.
+   `project-log`'s vendored templates) travels with it
 3. Copies Codex skills (`sot-comm`, `sot-session-start`,
    `sot-be-session-start`, `sot-fe-session-start`) → `$CODEX_HOME/skills/`
    (default `~/.codex/skills/`)

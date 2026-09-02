@@ -9,6 +9,28 @@
 > forward is retired (opt-in via `SOT_LEGACY_FORWARDS=1` for pre-v0.5.0
 > backends). Port 1241 remains the loopback port Bonito binds on the backend.
 
+> **Display-stack integration (2026-09-01):** a consumer no longer has to call
+> `wglshow` explicitly. `ShipToolsRepl` pushes a `WGLDisplay <: Base.AbstractDisplay`
+> onto the display stack at REPL boot (`serve`, unconditionally — one struct,
+> no WGLMakie load). A package extension, `ShipToolsReplWGLMakieExt`
+> (`[weakdeps] WGLMakie`), loads only once WGLMakie does — directly or
+> transitively through a dependency — and adds the one method that makes it
+> real: `Base.display(::WGLDisplay, ::Makie.FigureLike) = wglshow(fig)`, plus
+> `Makie.inline!(true)` in the extension's `__init__` so Makie's own
+> one-argument `display(fig)` doesn't bypass the display stack. Two
+> constraints kept this lazy: no WGLMakie load at REPL boot, and no global
+> backend activation at boot — both live in the extension, which only loads
+> when the consumer's own `using`/dependency graph already loaded WGLMakie.
+> `wglshow(fig; port=…)` is unchanged and still the way to pin a port
+> explicitly; `display(fig)` is the zero-ceremony path for everyone else.
+> Boot-order gotcha: `ShipToolsRepl` also declares
+> `Base.displayable(::WGLDisplay, ::MIME"text/html") = true` (base package,
+> no Makie) — Bonito's own `__init__` pushes a `BrowserDisplay` of its own
+> only when `has_html_display()` reads false at WGLMakie load time, and
+> since Bonito loads *after* `WGLDisplay` is already on the stack, an
+> unclaimed html MIME here would let Bonito's display land on top and
+> capture every `display(fig)` before `WGLDisplay` saw it.
+
 The full path works and was confirmed by the maintainer in a real FE browser:
 `wglshow(fig)` → Bonito serves the figure on `127.0.0.1:1241` → the REPL emits a
 `browser` frame → the FE auto-opens the OS browser → **interactive** figure

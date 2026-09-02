@@ -154,6 +154,15 @@ fn all_sealed_frames(root: &Path) -> Vec<sot_log::Envelope> {
 /// scenarios are TIMING-based (fixed settling sleeps), so they serialize
 /// through one lock — parallel test scheduling starved the sleeps and
 /// produced order-dependent flakes.
+/// The operator schedule IS the rig's clock: each test's delays were tuned
+/// on a workstation, and hosted CI runners have repeatedly been too slow for
+/// them — a Turn sent 150 ms after `producer_ready` had not registered before
+/// the next command, so summaries ended with turns=0 (four sightings across
+/// three different tests on hosted ubuntu, never locally). One uniform scale
+/// keeps every schedule's SHAPE and buys the margin; there is no per-test
+/// tuning to drift.
+const RIG_CLOCK_SCALE: u64 = 4;
+
 fn drive(cfg: ClaudeConfig, cmds: Vec<(u64, OperatorCmd)>) -> sot_log::claude::ClaudeSummary {
     static RIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _serial = RIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -166,7 +175,7 @@ fn drive(cfg: ClaudeConfig, cmds: Vec<(u64, OperatorCmd)>) -> sot_log::claude::C
     // producer_ready frame to hit the open segment instead.
     wait_for_open_segment_bytes(&root, b"producer_ready", &handle);
     for (delay_ms, cmd) in cmds {
-        std::thread::sleep(Duration::from_millis(delay_ms));
+        std::thread::sleep(Duration::from_millis(delay_ms * RIG_CLOCK_SCALE));
         let _ = tx.send(cmd);
     }
     drop(tx);
