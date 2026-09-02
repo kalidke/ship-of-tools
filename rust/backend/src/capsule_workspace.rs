@@ -102,7 +102,11 @@ pub const UNREACHABLE_PHASE: &str = "unreachable";
 /// doc deliberately folds every such failure (connect refused, a foreign/
 /// undetermined challenge, a timeout) into one `Err` without saying which,
 /// so a query against an EXISTING directory can never be reclassified as
-/// "never started" either.
+/// "never started" either. One narrow race this accepts (Codex round, PR
+/// #172): a `workspace.list` landing in the brief window where a resumed
+/// supervisor's directory is still being (re-)created reads "stopped" too
+/// — bounded by the spawn call itself and self-correcting on the very
+/// next list once the directory (and the supervisor behind it) exists.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const NEVER_STARTED_PHASE: &str = "stopped";
 
