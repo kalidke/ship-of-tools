@@ -700,9 +700,14 @@ foreach ($item in $tunnelPlan) {
 # FRONTEND before staging. FAIL-OPEN at every step: pull failure (offline,
 # conflict) or build failure (broken main) logs to the supervisor log and
 # launches the existing staged/dev binary — a broken update path must never
-# brick the launcher. -NoUpdate skips.
+# brick the launcher. -NoUpdate skips. -Local skips too (2026-09-02 Codex
+# round): the self-update prelude only ever SETS SOT_LAUNCH_REBUILD when
+# -not $Local, but the var is process environment, not a fresh local --
+# an inherited '1' from an earlier invocation in the same shell must not
+# make a later -Local run rebuild (and stop the daemon for it); -Local
+# is documented as a freshness-free debug path with no exception.
 # ---------------------------------------------------------------------------
-if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate) {
+if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate -and -not $Local) {
     # The git pull moved to the self-update prelude at the top; here we only
     # REBUILD, and only when that pull succeeded (the SOT_LAUNCH_REBUILD marker)
     # so exactly one cargo build runs in the final invocation. Consume the marker.
