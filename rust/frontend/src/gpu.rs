@@ -6358,8 +6358,16 @@ impl State {
             // (populated parks drop refreshes under the empty-only rule).
             Mode::Sessions => {
                 self.tmux_capture_fired_for = None;
-                if let Err(e) = self.send(OutgoingReq::WorkspaceList) {
-                    tracing::warn!(error = %e, "drop workspace.list request — channel closed");
+                // ADR 0042 L2a codex review, item A: Sessions mode's tree
+                // spans EVERY connected host (host-grouped), so entering
+                // it is exactly the "explicit global refresh" case — fan
+                // out to every connection, not just active_host, or a
+                // non-active host's rows go stale/empty while the user is
+                // looking straight at them.
+                for (host, _) in &self.conns {
+                    if let Err(e) = self.send_to(host, OutgoingReq::WorkspaceList) {
+                        tracing::warn!(error = %e, %host, "drop workspace.list request — channel closed");
+                    }
                 }
             }
             Mode::Hosts => {
@@ -7685,8 +7693,12 @@ impl State {
                 }
                 // Global scopes don't depend on the workspace; an empty view
                 // here just means they were never loaded this session.
+                // ADR 0042 L2a codex review, item A: same fan-out as
+                // enter_mode's Sessions arm — the tree spans every host.
                 Mode::Sessions => {
-                    let _ = self.send(crate::transport::OutgoingReq::WorkspaceList);
+                    for (host, _) in &self.conns {
+                        let _ = self.send_to(host, crate::transport::OutgoingReq::WorkspaceList);
+                    }
                 }
                 Mode::Hosts => self.populate_hosts_tree(),
             }
@@ -11054,6 +11066,15 @@ impl State {
                     // already in progress" (an oversized-chunk frame that reset
                     // the transport used to strand it forever).
                     //
+                    // ADR 0042 L2a codex review, item A: EVERY host's own
+                    // Connected requests ITS OWN workspace list, not just
+                    // active_host's — transport.rs's hello-time fetch is
+                    // tree.root only (no workspace.list), so a non-active
+                    // host's Sessions-tree node used to stay unreachable
+                    // (no children) until the user manually expanded it.
+                    // send_to(&event_host, ...) rather than self.send: this
+                    // fires for every connection, active or not.
+                    let _ = self.send_to(&event_host, crate::transport::OutgoingReq::WorkspaceList);
                     // ADR 0042 L2a: everything from here to the end of this
                     // arm is "MY connection just came up, resume MY view" —
                     // gated on the active host so a NON-active host's own
@@ -11069,22 +11090,19 @@ impl State {
                                 Some(std::time::Instant::now() + NOTIFY_STICKY);
                         }
                         self.rebuild_connection_status();
-                        // Prime the slug→label cache so the status line shows
-                        // the friendly workspace label even on a fresh launch
-                        // that resumed into a non-default workspace (Sessions
-                        // mode isn't visited; the reply just refreshes
-                        // `workspace_labels` and re-renders the status). Cheap;
-                        // the reply is small.
-                        let _ = self.send(crate::transport::OutgoingReq::WorkspaceList);
                         // B5 resume: the transport's hello-time TreeRoot always
                         // requests "files" against the *default* workspace. If
                         // we restored into a different mode — or restored into
                         // Files but with an `active_workspace_id` set (ADR
                         // 0014) — fire the right request now.
                         match self.mode {
-                            Mode::Sessions => {
-                                let _ = self.send(crate::transport::OutgoingReq::WorkspaceList);
-                            }
+                            // ADR 0042 L2a codex review, item A: no separate
+                            // fetch here — the unconditional per-Connected
+                            // send_to(&event_host, WorkspaceList) above
+                            // already covers this host (and every other),
+                            // so a second identical request to the SAME
+                            // host would just be a redundant round trip.
+                            Mode::Sessions => {}
                             Mode::Modules => {
                                 let _ = self.send(crate::transport::OutgoingReq::ProjectScan {
                                     workspace_id: self.active_workspace_id.clone(),
@@ -25152,6 +25170,47 @@ mod tests {
         assert_eq!(
             lists["alpha"][0].slug, "three",
             "alpha's list is the new one"
+        );
+    }
+
+    #[test]
+    fn every_hosts_connected_requests_its_own_workspace_list() {
+        // ADR 0042 L2a codex review, item A: `Connected` used to fire
+        // OutgoingReq::WorkspaceList only for active_host (`self.send`);
+        // every other host connected silently and its Sessions-tree node
+        // stayed unreachable until manually expanded. The real fix routes
+        // via `send_to(&event_host, ...)` on EVERY Connected -- proven
+        // here as two connections (alpha active, beta not) each getting
+        // their OWN WorkspaceList request through `route_send_to`
+        // (the production `send_to` body, per `route_send_to`'s own
+        // doc), and the resulting per-host replies folding into a
+        // union with both hosts present (the same invariant
+        // `union_replace_leaves_the_other_hosts_list_intact` pins).
+        let (conns, mut rxs) = fake_conns();
+        // "alpha" is active; "local" connects too, non-active. Both fire
+        // send_to(&event_host, WorkspaceList) — the fix's whole point is
+        // that the non-active one is NOT skipped.
+        for host in ["local", "alpha"] {
+            route_send_to(&conns, &host.to_string(), OutgoingReq::WorkspaceList).unwrap();
+        }
+        assert!(
+            rxs.get_mut("local").unwrap().try_recv().is_ok(),
+            "the non-active host (\"local\") still got its own request"
+        );
+        assert!(
+            rxs.get_mut("alpha").unwrap().try_recv().is_ok(),
+            "the active host got its request too"
+        );
+
+        // Both hosts' replies land and union into one map, neither
+        // clobbering the other (mirrors the real workspace_lists.insert).
+        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        lists.insert("local".to_string(), vec![ws_info("home", "sot-be-home")]);
+        lists.insert("alpha".to_string(), vec![ws_info("sot", "sot-be-sot")]);
+        assert_eq!(
+            lists.len(),
+            2,
+            "both hosts' lists are present after both replies land"
         );
     }
 
