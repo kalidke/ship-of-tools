@@ -3310,6 +3310,16 @@ struct State {
     /// has nothing to attach to off Windows.
     #[cfg(windows)]
     attach_term: Option<sot_log::fe_client_win::FeAttachClient>,
+    /// ADR 0041 step 6 U3 ruling (f): `fe-inbox.jsonl`'s "last inbox
+    /// evidence" read at FE PROCESS START (`State::new`), BEFORE the
+    /// fe-command watcher thread or anything else appends to that file
+    /// (Codex review round, finding 10: reading this lazily at first
+    /// drawer-open time let intervening traffic corrupt the baseline).
+    /// Cloned into every `FeAttachClient::attach` call this process ever
+    /// makes; `None` when no evidence exists yet (the marker's own
+    /// contract: "No baseline, no marker").
+    #[cfg(windows)]
+    fe_down_baseline_evidence: Option<String>,
     /// Last `(cols, rows)` the local terminal's PTY was sized to. `None`
     /// until the drawer rect is first observed; drives resize-on-change
     /// (mirrors `pty_size` for the LLM pane).
@@ -3918,6 +3928,20 @@ impl State {
         // "settings loaded" twice and could disagree if the file changed
         // mid-startup.
         let settings = Settings::load_layered();
+        // ADR 0041 step 6 U3 ruling (f): "No baseline, no marker" -- read
+        // BEFORE anything else in this process (this watcher, the fe-command
+        // watcher spawned later in `resumed`, an incoming relay message) can
+        // append to fe-inbox.jsonl (Codex review round, finding 10: an
+        // earlier version read this lazily at first Terminal-drawer open,
+        // so an inbound message arriving between process start and the
+        // user opening the drawer became this run's OWN baseline instead
+        // of prior evidence). Cheap and harmless off-Windows / off-flag —
+        // one file read, never referenced again if attach-only never
+        // constructs a client.
+        #[cfg(windows)]
+        let fe_down_baseline_evidence = fe_inbox_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| sot_log::fe_client::last_evidence_ts(&s));
         // Cross-platform window icon, decoded at runtime from the logo PNG that is
         // embedded into the binary at compile time — no Windows .rc/winres
         // resource compiler, so the build needs no extra tooling and is identical
@@ -4598,6 +4622,8 @@ impl State {
             local_term: None,
             #[cfg(windows)]
             attach_term: None,
+            #[cfg(windows)]
+            fe_down_baseline_evidence,
             term_size: None,
             term_scroll: 0,
             repo_dir,
@@ -12398,61 +12424,81 @@ impl State {
         !self.flash_starts.is_empty()
     }
 
-    /// ADR 0041 step 6 U3: the Terminal drawer's attach-only backend.
-    /// Lazily attaches on first open (mirrors `LocalTerminal::spawn`'s own
-    /// lazy-spawn site above), then drains checkpoint/output/notice/
-    /// status/terminal/fe_down events every redraw. Windows-only: this
-    /// method's caller (`redraw`, just above) only reaches it when
-    /// `settings.attach_only` is on, which is itself read only inside a
-    /// `#[cfg(windows)]` block — see that call site's own doc.
+    /// ADR 0041 step 6 U3: constructs the attach-only backend the first
+    /// time the Terminal drawer opens with `drawer.attach_only` on
+    /// (mirrors `LocalTerminal::spawn`'s own lazy-spawn site). Gated by
+    /// the caller on `self.drawer == DrawerContent::Terminal` — spawning
+    /// is a user-visible-drawer-only act; PUMPING the client once it
+    /// exists is not (see `pump_attach_term`'s own doc).
     #[cfg(windows)]
-    fn pump_attach_term(&mut self) {
-        if self.attach_term.is_none() {
-            let Some(state_dir) = crate::paths::sot_state_dir() else {
-                tracing::warn!("attach-only: no per-machine state dir resolved");
-                self.status = "attach-only terminal failed: no per-machine state dir".to_string();
+    fn spawn_attach_term(&mut self) {
+        let Some(state_dir) = crate::paths::sot_state_dir() else {
+            tracing::warn!("attach-only: no per-machine state dir resolved");
+            self.status = "attach-only terminal failed: no per-machine state dir".to_string();
+            self.drawer = DrawerContent::Closed;
+            return;
+        };
+        let controller_id = self_comm_handle();
+        let fe_down_to = self_comm_handle();
+        // Ruling (f), Codex review round finding 10: the SAME baseline
+        // captured once at FE process start (`State::new`) — never a
+        // fresh read here, which would let traffic since startup become
+        // this run's own false baseline.
+        let fe_down_last_evidence = self.fe_down_baseline_evidence.clone();
+        let waker = self.window.clone();
+        match sot_log::fe_client_win::FeAttachClient::attach(
+            state_dir,
+            80,
+            24,
+            controller_id,
+            fe_down_to,
+            fe_down_last_evidence,
+            Box::new(move || waker.request_redraw()),
+        ) {
+            Ok(c) => {
+                tracing::info!("fe attach-only client attaching");
+                self.attach_term = Some(c);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to start attach-only client");
+                self.status = format!("attach-only terminal failed: {e}");
                 self.drawer = DrawerContent::Closed;
-                return;
-            };
-            let controller_id = self_comm_handle();
-            let fe_down_to = self_comm_handle();
-            let fe_down_last_evidence = fe_inbox_path()
-                .and_then(|p| std::fs::read_to_string(p).ok())
-                .and_then(|s| sot_log::fe_client::last_evidence_ts(&s));
-            let waker = self.window.clone();
-            match sot_log::fe_client_win::FeAttachClient::attach(
-                state_dir,
-                80,
-                24,
-                controller_id,
-                fe_down_to,
-                fe_down_last_evidence,
-                Box::new(move || waker.request_redraw()),
-            ) {
-                Ok(c) => {
-                    tracing::info!("fe attach-only client attaching");
-                    self.attach_term = Some(c);
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to start attach-only client");
-                    self.status = format!("attach-only terminal failed: {e}");
-                    self.drawer = DrawerContent::Closed;
-                }
             }
         }
+    }
+
+    /// ADR 0041 step 6 U3: drains checkpoint/output/notice/status/
+    /// terminal/fe_down events from an EXISTING attach client. Called by
+    /// the caller on every redraw whenever `self.attach_term.is_some()`
+    /// — deliberately NOT gated on `self.drawer` (Codex review round,
+    /// finding 2): the quit dispatcher's own `ShouldExit` outcome must
+    /// reach `self.should_exit` even while the drawer is closed, or a
+    /// window-close request issued with the Terminal drawer hidden would
+    /// never actually exit.
+    #[cfg(windows)]
+    fn pump_attach_term(&mut self) {
         let Some(t) = self.attach_term.as_mut() else { return };
-        t.pump();
+        let changed = t.pump();
         t.screen_mut().set_scrollback(self.term_scroll as usize);
         self.term_scroll = t.screen().scrollback().min(u16::MAX as usize) as u16;
-        if let Some(notice) = t.notice() {
-            self.status = notice.to_string();
-        } else if let Some(msg) = t.quit_message() {
-            self.status = msg.to_string();
-        } else if t.is_dead() {
-            self.status = t.status_line().to_string();
+        // Codex review round, finding 11: status text (queue overflow/
+        // expiry, geometry refusal, pen loss, input-delivery-unknown,
+        // ...) must reach the drawer independently of `is_dead()` — the
+        // first landing only copied `status_line()` once the client was
+        // already terminal, so every one of those still-live diagnostics
+        // was invisible. `notice`/`quit_message` are the more urgent
+        // overlays and still take priority when present.
+        if changed {
+            if let Some(notice) = t.notice() {
+                self.status = notice.to_string();
+            } else if let Some(msg) = t.quit_message() {
+                self.status = msg.to_string();
+            } else {
+                self.status = t.status_line().to_string();
+            }
         }
         for marker in t.drain_fe_down_markers() {
-            if let Err(e) = append_agent_message_result(&marker) {
+            if let Err(e) = append_fe_down_marker(&marker) {
                 // Ruling (f): a marker that exists so a failure is not
                 // quiet cannot fail quietly itself.
                 self.status = format!("fe_down marker append failed: {e}");
@@ -12840,10 +12886,22 @@ impl State {
         #[cfg(not(windows))]
         let use_attach_only = false;
 
-        if self.drawer == DrawerContent::Terminal && use_attach_only {
-            #[cfg(windows)]
+        // ADR 0041 step 6 U3 ruling (a), Codex review round finding 2:
+        // spawn (gated on the drawer being open) is separate from pump
+        // (which must run on EVERY redraw regardless of drawer
+        // visibility, so a quit dispatched while the drawer is closed
+        // still reaches `should_exit` — see `pump_attach_term`'s own
+        // doc for why gating pump on visibility would starve it).
+        #[cfg(windows)]
+        if self.drawer == DrawerContent::Terminal && use_attach_only && self.attach_term.is_none() {
+            self.spawn_attach_term();
+        }
+        #[cfg(windows)]
+        if self.attach_term.is_some() {
             self.pump_attach_term();
-        } else if self.drawer == DrawerContent::Terminal {
+        }
+
+        if self.drawer == DrawerContent::Terminal && !use_attach_only {
             if self.local_term.is_none() {
                 let shell = crate::term::resolve_shell(self.settings.terminal_shell.as_deref());
                 let waker = self.window.clone();
@@ -15901,15 +15959,65 @@ fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) ->
     }
 }
 
-/// Append one `agent.message`-shaped payload to `fe-inbox.jsonl` (creating
-/// the file/dir if needed), re-serializing it verbatim as a single line.
-/// Returns the `io::Error` on any failure (no state dir, dir creation,
-/// serialize, open, or write) rather than only logging it — ADR 0041 step
-/// 6 U3's `fe_down` marker needs this to surface a VISIBLE drawer error
-/// ("a marker that exists so a failure is not quiet cannot fail quietly
-/// itself"); [`append_agent_message`] below is the pre-existing
-/// log-and-continue wrapper every OTHER caller keeps using unchanged.
-fn append_agent_message_result(payload: &serde_json::Value) -> std::io::Result<()> {
+/// Append one `agent.message` evt payload to `fe-inbox.jsonl` (creating the
+/// file/dir if needed). Re-serializes the payload verbatim as a single line.
+/// Non-fatal on IO error: log and continue — a missed relay must not take
+/// down the frontend. UNCHANGED from before ADR 0041 step 6 U3 (Codex
+/// review round, finding 12: an earlier version of this file routed this
+/// through a shared `Result`-returning helper, which collapsed these
+/// per-stage diagnostics into one generic "append failed" message for
+/// EVERY caller, including this one — a behavior change outside the
+/// attach-only feature's own flag). [`append_fe_down_marker`] below is a
+/// SEPARATE, `Result`-returning function used ONLY by the `fe_down`
+/// marker, which needs to surface a visible drawer error on failure; it
+/// does not wrap or share code with this one.
+fn append_agent_message(payload: &serde_json::Value) {
+    let Some(path) = fe_inbox_path() else {
+        tracing::warn!("agent.message: no state dir; dropping");
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(error = %e, "agent.message: create state dir failed");
+            return;
+        }
+    }
+    let mut line = match serde_json::to_string(payload) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "agent.message: serialize failed");
+            return;
+        }
+    };
+    line.push('\n');
+    use std::io::Write;
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(mut f) => {
+            if let Err(e) = f.write_all(line.as_bytes()) {
+                tracing::warn!(error = %e, ?path, "agent.message: append failed");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, ?path, "agent.message: open inbox failed"),
+    }
+}
+
+/// Append one `fe_down` marker to `fe-inbox.jsonl` (creating the file/dir
+/// if needed), re-serializing it verbatim as a single line. Returns the
+/// `io::Error` on any failure (no state dir, dir creation, serialize,
+/// open, or write) rather than only logging it — ADR 0041 step 6 U3's
+/// `fe_down` marker needs this to surface a VISIBLE drawer error ("a
+/// marker that exists so a failure is not quiet cannot fail quietly
+/// itself"). Deliberately NOT shared with [`append_agent_message`] above
+/// (Codex review round, finding 12) — that function's own diagnostics
+/// must stay exactly what they were before this feature existed.
+/// Windows-only: `pump_attach_term`, its only caller, is itself
+/// `#[cfg(windows)]`.
+#[cfg(windows)]
+fn append_fe_down_marker(payload: &serde_json::Value) -> std::io::Result<()> {
     let Some(path) = fe_inbox_path() else {
         return Err(std::io::Error::other("no state dir resolved"));
     };
@@ -15921,15 +16029,6 @@ fn append_agent_message_result(payload: &serde_json::Value) -> std::io::Result<(
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
     f.write_all(line.as_bytes())
-}
-
-/// Non-fatal wrapper: log and continue on IO error — a missed relay must
-/// not take down the frontend. Every caller except the `fe_down` marker
-/// (which needs the `Result` above) uses this.
-fn append_agent_message(payload: &serde_json::Value) {
-    if let Err(e) = append_agent_message_result(payload) {
-        tracing::warn!(error = %e, "agent.message: append failed");
-    }
 }
 
 /// A control command raised through the FE command-file channel (ADR 0019).
