@@ -248,15 +248,22 @@ pub fn resolve_connections(
         if is_default {
             default_matched = true;
         }
-        let pipe = if is_default && cli.socket.is_some() {
-            cli.socket.clone()
+        // Codex review (PR #163): when the CLI overrides the default
+        // host, the whole endpoint set comes from the CLI ONLY -- pipe
+        // AND tcp together, never mixed with the entry's own hosts.toml
+        // values. A mixed set (CLI tcp + the entry's own stale socket,
+        // say) would have transport.rs try that stale socket FIRST
+        // (pipe-before-tcp is its own fallback order) and never even
+        // attempt the tunnel the launcher just opened unless the stale
+        // socket connect failed outright.
+        let cli_overrides_default = is_default && (cli.socket.is_some() || cli.tcp.is_some());
+        let (pipe, tcp) = if cli_overrides_default {
+            (cli.socket.clone(), cli.tcp.clone())
         } else {
-            h.socket.as_ref().map(PathBuf::from)
-        };
-        let tcp = if is_default && cli.tcp.is_some() {
-            cli.tcp.clone()
-        } else {
-            h.tcp_port.map(|p| format!("127.0.0.1:{p}"))
+            (
+                h.socket.as_ref().map(PathBuf::from),
+                h.tcp_port.map(|p| format!("127.0.0.1:{p}")),
+            )
         };
         if pipe.is_none() && tcp.is_none() {
             tracing::info!(host = %h.name, "hosts.toml entry has no endpoint reachable without a launcher action; skipping");
@@ -482,6 +489,38 @@ tcp_port = 18743
         // tunnel the launcher actually opened).
         assert_eq!(alpha.1.tcp.as_deref(), Some("127.0.0.1:18743"));
         assert!(alpha.1.token.is_none());
+    }
+
+    #[test]
+    fn resolve_connections_cli_tcp_override_does_not_leak_the_entrys_own_socket() {
+        // Codex review (PR #163): a default_host entry that ALSO has its
+        // own (possibly stale) socket set must not have that socket
+        // survive alongside a CLI tcp override -- the whole endpoint set
+        // comes from the CLI ONLY once it overrides at all, so
+        // transport.rs's pipe-tried-first fallback order can't reach for
+        // the stale socket before the tunnel the launcher just opened.
+        let cfg = parse(
+            r#"
+default_host = "beta"
+
+[host.beta]
+socket = "/run/user/1000/stale-beta.sock"
+tcp_port = 18744
+"#,
+        );
+        let cli = CliOverride {
+            socket: None,
+            tcp: Some("127.0.0.1:9999".to_string()),
+            token: None,
+        };
+        let conns = resolve_connections(&cfg, &cli);
+        let beta = conns.iter().find(|(h, _)| h == "beta").unwrap();
+        assert_eq!(beta.1.tcp.as_deref(), Some("127.0.0.1:9999"));
+        assert!(
+            beta.1.pipe.is_none(),
+            "the entry's own socket must not leak in once the CLI overrides, got {:?}",
+            beta.1.pipe
+        );
     }
 
     #[test]
