@@ -60,29 +60,54 @@ function Read-SotHosts {
 # hosts.toml declaration order, ready for the caller to turn into an
 # `ssh -L <local_port>:<remote-or-queried-socket> <ssh_alias>` forward.
 #
-# tcp_port is REQUIRED per remote -- except the one entry whose ssh_alias
-# equals $DefaultAlias (today's single-tunnel `default_host`), which falls
-# back to $DefaultPort (SOT_TCP_PORT / 18743) for compatibility with
-# hosts.toml files written before this slice. A remote missing tcp_port
-# (and not the default) comes back with local_port = $null and a non-empty
-# `error` naming the host and the field -- the caller logs it and moves on
-# (nonfatal per host, ADR 0042 L2b design E); it is never a hard stop for
-# every OTHER host's tunnel.
+# `local` is EXCLUDED unconditionally (codex follow-up) -- it is
+# socket-only (see hosts.rs's resolve_connections doc), so an ssh_alias
+# accidentally left on a [host.local] section must never turn it into a
+# tunnel target, the same way a stray tcp_port on it must never either.
+#
+# tcp_port is REQUIRED per remote -- except the one entry whose NAME
+# (the hosts.toml key, NOT its ssh_alias -- codex follow-up: identity is
+# the key, the alias is only the SSH destination and nothing stops two
+# hosts from sharing one) equals $DefaultHost (today's single-tunnel
+# `default_host`), which falls back to $DefaultPort (SOT_TCP_PORT / 18743)
+# for compatibility with hosts.toml files written before this slice. A
+# remote missing tcp_port (and not the default), or with a malformed one
+# (parsed via TryParse, never a throwing cast -- a bad value must be a
+# per-host plan error, not an all-host abort under the callers'
+# $ErrorActionPreference = 'Stop'), comes back with local_port = $null and
+# a non-empty `error` naming the host and the reason.
+#
+# Two hosts sharing one tcp_port is NOT checked here (owner ruling, codex
+# follow-up round 2): detected once, in rust/frontend/src/hosts.rs's
+# resolve_connections. A second `ssh -L` on an already-bound local port
+# fails to bind on its own and is already nonfatal (this plan's caller
+# treats a failed ssh -fN the same as any other unreachable host) -- which
+# is all the launcher itself needs; a second detector here would just be
+# the same check twice.
+#
+# Nonfatal per host (ADR 0042 L2b design E): never a hard stop for every
+# OTHER host's tunnel.
 function Get-TunnelPlan {
     param(
         [hashtable]$Cfg,
-        [string]$DefaultAlias,
+        [string]$DefaultHost,
         [int]$DefaultPort = 18743
     )
     $plan = @()
     foreach ($name in $Cfg.order) {
+        if ($name -eq 'local') { continue }   # socket-only, never tunneled
         $entry = $Cfg.hosts[$name]
         if (-not $entry.ssh_alias) { continue }   # local-socket host, not a tunnel target
-        $isDefault = ($DefaultAlias -and $entry.ssh_alias -eq $DefaultAlias)
+        $isDefault = ($DefaultHost -and $name -eq $DefaultHost)
         $port = $null
         $portErr = $null
         if ($entry.tcp_port) {
-            $port = [int]$entry.tcp_port
+            $parsedPort = 0
+            if ([int]::TryParse($entry.tcp_port, [ref]$parsedPort)) {
+                $port = $parsedPort
+            } else {
+                $portErr = "host '$name' has a malformed tcp_port '$($entry.tcp_port)'"
+            }
         } elseif ($isDefault) {
             $port = $DefaultPort
         } else {
