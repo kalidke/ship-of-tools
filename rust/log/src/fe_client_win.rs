@@ -85,7 +85,7 @@
 use crate::challenge::{self, ChallengeOutcome, ChallengedProcess};
 use crate::exchange::{SupervisorLaneExchange, VoyageMgmtExchange, SUPERVISOR_LANE_BUILD_ID};
 use crate::fe_client::{
-    self, FeDownBaseline, InputWireOutcome, OutstandingSlot, QuitDispatcher,
+    self, FeDownBaseline, InputWireOutcome, OutstandingSlot, QuitDispatcher, QuitState,
     ReconnectDecision, ReconnectState, Role, TakeAction, TakeTransaction,
 };
 use crate::pipe_win::{self, PipeClient};
@@ -122,14 +122,6 @@ const WRITE_BUDGET: Duration = Duration::from_secs(2);
 /// (ruling (d)) must become visible promptly, but polling faster than
 /// this buys nothing beyond load.
 const LIVENESS_POLL_INTERVAL: Duration = Duration::from_secs(2);
-/// How often the worker polls `query` while a quit is `Verifying`
-/// (Codex review round, finding 1: "after record_closed, query the
-/// operation until record_verified"). `query` is a fast stateless read
-/// (Lifecycle: "the FE never blocks on an O(history) walk") even though
-/// what it reports on can take a while server-side, so polling this
-/// much faster than the liveness cadence costs little and keeps the
-/// "ending session…" window responsive.
-const QUIT_QUERY_INTERVAL: Duration = Duration::from_secs(1);
 /// The worker's own message-loop tick — bounds how promptly a command
 /// (input/resize/quit) is serviced and how often the pure tick-driven
 /// timers (quit cutoff, checkpoint-in-flight retry, backoff) advance.
@@ -1174,15 +1166,40 @@ fn iso_now() -> String {
     format!("{y:04}-{m2:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
-/// Submits `end_run` on the (already-connected) supervisor lane and
-/// applies its OWN reply (per Lifecycle, this arrives AT `record_closed`
-/// — see `fe_client::QuitDispatcher::on_operation_state`'s own doc for
-/// why that is not yet exit-worthy). Call sites keep polling `query` via
-/// [`maybe_poll_quit_query`] afterward, every tick, until
-/// `record_verified` or another terminal outcome (ruling (a), Codex
-/// review round finding 1). Idempotent — a `quit` already in flight
-/// (Ending/Verifying/terminal) makes this a no-op, so applying a
-/// LATCHED quit at the top of a fresh episode can never double-fire.
+/// The read budget for each poll inside `run_quit`'s own loop — SHORT
+/// (not `QUIT_CUTOFF`) because a timeout here is not a failure, it is
+/// the cue to send `query` (see the loop's own doc for why that must
+/// happen well inside the supervisor lane's 5 s idle deadline).
+const QUIT_POLL_READ_BUDGET: Duration = Duration::from_secs(2);
+
+/// Submits `end_run` on the (already-connected) supervisor lane, THEN
+/// LOOPS — entirely within this call — until the dispatcher reaches a
+/// terminal state (`Ended`/`Failed`/`Refused`/`OutcomeUnknown`).
+///
+/// Second-pass fix (first real-Windows run): `end_run` tears the capsule
+/// down, which closes the ATTACH connection — so a design that returned
+/// after the deferred `record_closed` reply and left `query` polling to
+/// the STEADY-STATE loop never actually verified anything, because that
+/// loop exits on the attach connection's own disconnect the moment
+/// `end_run` succeeds (`Verifying` forever, the caller's own deadline
+/// the only thing that ever fired). The quit path must not depend on the
+/// attach connection at all — its pipe going away is exactly what a
+/// successful end_run does. A second, related hazard: the supervisor
+/// lane evicts a connection idle for its own 5 s deadline, so a single
+/// long blocking read waiting out the FULL 90 s `QUIT_CUTOFF` for the
+/// deferred reply could itself lose that reply to idle eviction if the
+/// real teardown ran past 5 s. Both are fixed by the SAME loop: read
+/// with the SHORT [`QUIT_POLL_READ_BUDGET`]; on a timeout or any read
+/// error, send `query` instead of giving up — which both advances
+/// verification AND is itself lane traffic that satisfies the idle
+/// deadline, so a teardown slower than 5 s never loses the connection.
+/// `tick` against the dispatcher's own `QUIT_CUTOFF` runs every
+/// iteration, so the loop still gives up (`OutcomeUnknown`) at the SAME
+/// 90 s bound the dispatcher always had.
+///
+/// Idempotent — a `quit` already in flight (Ending/Verifying/terminal)
+/// makes this a no-op, so applying a LATCHED quit at the top of a fresh
+/// episode can never double-fire.
 fn run_quit(
     supervisor_conn: &PipeClient,
     sup_reader: &mut FrameReader,
@@ -1205,55 +1222,44 @@ fn run_quit(
         )));
     }
     let cmd = SupervisorRequest::Command {
-        operation_id,
+        operation_id: operation_id.clone(),
         op: SupervisorOp::EndRun { reason, voyage: voyage.to_string() },
     };
-    if let Ok(bytes) = wire::encode_supervisor_request(&cmd) {
-        if write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET).is_ok() {
-            // The command's own reply is bounded by the SAME cutoff
-            // `QuitDispatcher::tick` uses, so a blocking wait here and
-            // the dispatcher's own elapsed-time check agree on one
-            // bound rather than stacking two.
-            if let Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(state))) =
-                sup_reader.next_frame(supervisor_conn, Instant::now() + fe_client::QUIT_CUTOFF)
-            {
-                quit.on_operation_state(state);
-            }
-        }
-    }
-    emit(ClientEvent::QuitMessage(quit.message()));
-}
-
-/// While `quit` is `Ending`/`Verifying`, polls `query{operation_id}`
-/// every [`QUIT_QUERY_INTERVAL`] and applies the reply — the mechanism
-/// that actually reaches `record_verified` after the command's own
-/// `record_closed` reply (ruling (a), Codex review round finding 1:
-/// "after record_closed, query the operation until record_verified").
-/// A no-op whenever `quit` is not currently waiting on anything, or the
-/// interval has not yet elapsed since the last poll.
-fn maybe_poll_quit_query(
-    supervisor_conn: &PipeClient,
-    sup_reader: &mut FrameReader,
-    quit: &mut QuitDispatcher,
-    next_quit_query_at: &mut Instant,
-    now: Instant,
-    emit: &dyn Fn(ClientEvent),
-) {
-    let Some(operation_id) = quit.operation_id() else {
-        return;
+    let sent = match wire::encode_supervisor_request(&cmd) {
+        Ok(bytes) => write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET).is_ok(),
+        Err(_) => false,
     };
-    if now < *next_quit_query_at {
+    emit(ClientEvent::QuitMessage(quit.message()));
+    if !sent {
         return;
     }
-    *next_quit_query_at = now + QUIT_QUERY_INTERVAL;
-    let q = SupervisorRequest::Query { operation_id: operation_id.to_string() };
-    if let Ok(bytes) = wire::encode_supervisor_request(&q) {
-        if write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET).is_ok() {
-            if let Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(state))) =
-                sup_reader.next_frame(supervisor_conn, Instant::now() + STATUS_BUDGET)
-            {
+
+    loop {
+        let now = Instant::now();
+        quit.tick(now);
+        let terminal = matches!(
+            quit.state(),
+            QuitState::Ended | QuitState::Failed { .. } | QuitState::Refused { .. } | QuitState::OutcomeUnknown
+        );
+        if terminal {
+            emit(ClientEvent::QuitMessage(quit.message()));
+            return;
+        }
+        match sup_reader.next_frame(supervisor_conn, now + QUIT_POLL_READ_BUDGET) {
+            Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(state))) => {
                 quit.on_operation_state(state);
                 emit(ClientEvent::QuitMessage(quit.message()));
+            }
+            Ok(_) => {} // an unrelated frame; keep waiting
+            Err(_) => {
+                // Timeout, EOF, or a wire error: `query` both advances
+                // verification and is itself traffic that keeps the
+                // lane's own 5 s idle deadline satisfied.
+                if let Ok(bytes) =
+                    wire::encode_supervisor_request(&SupervisorRequest::Query { operation_id: operation_id.clone() })
+                {
+                    let _ = write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET);
+                }
             }
         }
     }
@@ -1340,7 +1346,6 @@ fn run_steady_state(
         let _ = events_tx.send(e);
         wake();
     };
-    let mut next_quit_query_at = Instant::now();
 
     loop {
         match cmd_rx.recv_timeout(WORKER_TICK) {
@@ -1387,8 +1392,12 @@ fn run_steady_state(
                 }
             }
             Ok(WorkerMsg::Quit(reason)) => {
+                // `run_quit` now loops internally (entirely within this
+                // call) until the dispatcher reaches a terminal state --
+                // see its own doc for why verification cannot depend on
+                // this steady-state loop running again (the attach
+                // connection dies with the capsule end_run tears down).
                 run_quit(supervisor_conn, sup_reader, voyage, reason, quit, outstanding, &emit);
-                next_quit_query_at = Instant::now() + QUIT_QUERY_INTERVAL;
             }
             Ok(WorkerMsg::Frame(frame)) => {
                 match handle_attach_frame(
@@ -1408,7 +1417,6 @@ fn run_steady_state(
 
         let now = Instant::now();
         quit.tick(now);
-        maybe_poll_quit_query(supervisor_conn, sup_reader, quit, &mut next_quit_query_at, now, &emit);
         if quit.should_exit() {
             return SteadyOutcome::QuitEnded;
         }
