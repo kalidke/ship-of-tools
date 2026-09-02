@@ -3858,6 +3858,7 @@ dependencies = [
  "sot-log",
  "sot-protocol",
  "sot-updater",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

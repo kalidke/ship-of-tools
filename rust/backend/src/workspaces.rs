@@ -1129,6 +1129,29 @@ mod tests {
         assert_eq!(resolved.project_root, PathBuf::from("/p/alpha-renamed"));
     }
 
+    /// ADR 0042 slice L1a: `insert`'s own doc says the id-preserving
+    /// re-insert (same slug) takes "the REST of the metadata" from the
+    /// NEW `ws` — `runtime` must be no exception. Before `insert`'s own
+    /// fix, the reconstruction branch called `Workspace::meta_only`
+    /// (which always defaults `runtime` to "tmux" internally) without
+    /// threading the incoming `ws.runtime` through at all, so EVERY
+    /// same-slug reinsert silently reset it to "tmux" regardless of what
+    /// the caller passed — exactly the "id-preserving refresh" a second
+    /// `workspace.create` for an existing capsule workspace's slug is
+    /// (`handlers.rs`'s own duplicate-root gate comment names this case),
+    /// which still sets `runtime = "capsule"` on every call.
+    #[test]
+    fn registry_reinsert_takes_the_new_runtime_not_metas_default() {
+        let reg = Workspaces::new();
+        let ws = Workspace::from_label("alpha", PathBuf::from("/p/alpha"), false, "none".into(), String::new(), String::new());
+        reg.insert(ws);
+        let mut again = Workspace::from_label("alpha", PathBuf::from("/p/alpha-renamed"), false, "none".into(), String::new(), String::new());
+        again.runtime = "capsule".to_string();
+        reg.insert(again);
+        let resolved = reg.resolve(Some("alpha")).unwrap();
+        assert_eq!(resolved.runtime, "capsule");
+    }
+
     #[test]
     fn parse_kv_top_level_only() {
         let text = r#"
@@ -1185,6 +1208,36 @@ created      = 1700000000
         assert_eq!(ws.label, "Alpha.jl");
         assert_eq!(ws.project_root, PathBuf::from("/home/u/Alpha.jl"));
         assert_eq!(ws.tmux_session, "sot-be-alpha");
+        // ADR 0042 slice L1a: a toml predating the `runtime` key defaults
+        // to "tmux" — byte-for-byte today's behaviour.
+        assert_eq!(ws.runtime, "tmux");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_toml_canonical_round_trips_capsule_runtime() {
+        let dir = std::env::temp_dir().join(format!(
+            "sot-ws-test-capsule-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("beta.toml");
+        std::fs::write(
+            &p,
+            r#"
+workspace_id = "ws-beta-1"
+slug         = "beta"
+label        = "Beta.jl"
+project_root = "/home/u/Beta.jl"
+tmux_session = "sot-be-beta"
+created      = 1700000000
+runtime      = "capsule"
+"#,
+        )
+        .unwrap();
+        let ws = load_toml(&p, false).unwrap().unwrap();
+        assert_eq!(ws.runtime, "capsule");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
