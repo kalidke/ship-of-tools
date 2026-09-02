@@ -194,26 +194,30 @@ test override now also needs a resolvable binary pair to know what to
 stop, where it previously didn't — accepted, since a running daemon keeps
 its own binary resolvable at its original location while it runs.
 
-(D) **Every launch ensures the local daemon.** The ensure moved out of the
-`-Local`-only block to run on every launch, right after the staged-update
-apply and before either mode's frontend starts. A pending update (the
-apply step's own staged-update pointer) stops the local daemon first, so
-it never pins a binary about to be replaced — checked, not unconditional,
-so an ordinary launch pays nothing extra. `-Local` still hard-errors on
-failure; the default mode fails open (the `local` row just shows
-unreachable).
+(D) **Every launch ensures the local daemon, exactly once.** A pending
+update (the apply step's own staged-update pointer) stops the local
+daemon first, so it never pins a binary about to be replaced — checked,
+not unconditional, so an ordinary launch pays nothing extra. `-Local`
+still hard-errors on failure; the default mode fails open (the `local`
+row just shows unreachable).
 
 **2026-09-02:** the dev freshness pass (`SOT_LAUNCH_REBUILD`, git pull then
 cargo rebuild) now ALSO rebuilds the sotd.exe/sot-capsule.exe pair — a
 second, non-fatal cargo invocation right after the frontend's, with its
-OWN stop-first guard (same pinned-image reason as above) — and the ensure
-above runs again right after, restarting the daemon on the fresh pair, so
-a dev box's local daemon now restarts on every launch that rebuilds.
-`sot-local-daemon.ps1`'s pipe-path query also now distinguishes a
-genuinely absent pair from a resolvable-but-STALE one (pre-0.6, no Windows
-pipe derivation, so it answers with something other than a `\\.\pipe\`
-path, logged verbatim): the predicate for "can this daemon derive its pipe
-name" is the binary's VERSION, not merely its presence on disk.
+OWN stop-first guard (same pinned-image reason as above). That made the
+freshness rebuild the SECOND thing in the launcher able to replace those
+binaries, so the ensure moved to run ONCE, after BOTH of them: after the
+per-remote SSH/tunnel section (now explicitly gated `-not $Local`, since
+the ensure no longer sits above it to give `-Local` its early exit) and
+after the freshness rebuild — never before either. One ensure call per
+launch, always seeing whatever pair is current, not the two calls (one
+before the tunnels, one re-ensuring after the rebuild) an earlier pass at
+this fix used. `sot-local-daemon.ps1`'s pipe-path query also now
+distinguishes a genuinely absent pair from a resolvable-but-STALE one
+(pre-0.6, no Windows pipe derivation, so it answers with something other
+than a `\\.\pipe\` path, logged verbatim): the predicate for "can this
+daemon derive its pipe name" is the binary's VERSION, not merely its
+presence on disk.
 
 (E) **One tunnel per remote.** Both launchers now iterate every
 `[host.<name>]` entry with an `ssh_alias` and open its own SSH forward,
