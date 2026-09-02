@@ -5508,6 +5508,16 @@ impl State {
         if self.try_expand_session_host_local() {
             return true;
         }
+        // Mode::Hosts root: children are built only on mode ENTRY
+        // (`enter_mode` → `populate_hosts_tree`) — collapsing then
+        // re-expanding the root without leaving the mode took the generic
+        // `TreeChildren` wire path below, which has no server-side handler
+        // for the synthetic "hosts:" id and left the root empty (first
+        // live shakedown fix). Same local-expansion seam as
+        // `try_expand_session_host_local` above.
+        if self.try_expand_hosts_root_local() {
+            return true;
+        }
         let Some(row) = self.tree.rows.get(self.tree.selected) else {
             return false;
         };
@@ -7422,6 +7432,38 @@ impl State {
             r.expanded = true;
         }
         self.tree.apply_children(&parent_id, kids);
+        self.window.request_redraw();
+        true
+    }
+
+    /// Local (no wire round-trip) re-expansion of the Mode::Hosts ROOT row
+    /// (first live shakedown fix): its children come from `conns` +
+    /// `host_connected`, already held in memory (`hosts_tree_children`,
+    /// the same builder `populate_hosts_tree` uses on mode entry) — no
+    /// server round trip needed to rebuild them. Declines (returns
+    /// `false`) for any other row kind, or once already expanded, so
+    /// `try_expand_selected` falls through to its normal path.
+    ///
+    /// Uses `apply_children`, not `populate_hosts_tree`'s own `set_root`:
+    /// `set_root` treats a currently-COLLAPSED same-id root as "the user
+    /// closed this, keep it collapsed" and would silently no-op here. The
+    /// fix mirrors `try_expand_session_host_local` immediately above —
+    /// mark the row `expanded` at REQUEST time, then splice: exactly the
+    /// contract `apply_children` itself documents (a reply/splice for a
+    /// still-collapsed parent is dropped).
+    fn try_expand_hosts_root_local(&mut self) -> bool {
+        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+            return false;
+        };
+        if row.node.kind != "hosts" || row.expanded {
+            return false;
+        }
+        let parent_id = row.node.id.clone();
+        let children = self.hosts_tree_children();
+        if let Some(r) = self.tree.rows.get_mut(self.tree.selected) {
+            r.expanded = true;
+        }
+        self.tree.apply_children(&parent_id, children);
         self.window.request_redraw();
         true
     }
@@ -24488,6 +24530,69 @@ mod tests {
         t.apply_children("r", vec![node("a", "a", true)]);
         assert!(!t.rows[0].expanded);
         assert_eq!(t.rows.len(), 1);
+    }
+
+    #[test]
+    fn hosts_root_repopulates_after_collapse_then_reexpand_via_apply_children_not_set_root() {
+        // Mode::Hosts's own bug (first live shakedown): its root's children
+        // used to be built only on mode ENTRY (`populate_hosts_tree` ->
+        // `set_root`); collapsing then re-expanding the root without
+        // leaving the mode took the generic `TreeChildren` wire path,
+        // which has no server-side handler for the synthetic "hosts:" id
+        // and left the root empty. `try_expand_hosts_root_local`'s fix is
+        // to mark the row `expanded` at REQUEST time (same contract every
+        // local expand here uses) and go through `apply_children` instead
+        // of `populate_hosts_tree`'s own `set_root` — this pins BOTH
+        // halves: `apply_children` (mark-then-splice) actually
+        // repopulates a collapsed root, while `set_root` on that same
+        // still-collapsed root would not (the bug this fix avoids).
+        let mut t = TreeView::new();
+        t.set_root(
+            node("hosts:", "hosts", true),
+            vec![node("hosts:local", "local", false)],
+        );
+        t.selected = 0;
+        assert!(t.collapse_selected());
+        assert_eq!(t.rows.len(), 1);
+        assert!(!t.rows[0].expanded);
+
+        // The fix: mark expanded first, then apply_children (never set_root).
+        t.rows[0].expanded = true;
+        t.apply_children(
+            "hosts:",
+            vec![
+                node("hosts:local", "local", false),
+                node("hosts:beta", "beta", false),
+            ],
+        );
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["hosts:", "hosts:local", "hosts:beta"]
+        );
+        assert!(t.rows[0].expanded);
+
+        // Contrast: re-seeding the SAME still-collapsed root through
+        // `set_root` instead stays empty — exactly the bug.
+        let mut via_set_root = TreeView::new();
+        via_set_root.set_root(
+            node("hosts:", "hosts", true),
+            vec![node("hosts:local", "local", false)],
+        );
+        via_set_root.selected = 0;
+        assert!(via_set_root.collapse_selected());
+        via_set_root.set_root(
+            node("hosts:", "hosts", true),
+            vec![
+                node("hosts:local", "local", false),
+                node("hosts:beta", "beta", false),
+            ],
+        );
+        assert_eq!(
+            via_set_root.rows.len(),
+            1,
+            "set_root on a collapsed root stays collapsed and empty"
+        );
+        assert!(!via_set_root.rows[0].expanded);
     }
 
     #[test]
