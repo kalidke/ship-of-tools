@@ -22,7 +22,12 @@ The user wants to send a note to the *other-OS* Claude session through the repo-
 
    ---
    ```
-   Use UTC. Append to the bottom of the file. Don't rewrite earlier entries.
+   Take the timestamp FROM THE SHELL, never by hand: `date -u +%Y-%m-%dT%H:%MZ`
+   (PowerShell: `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mmZ')`).
+   An entry whose timestamp is empty or malformed is invisible to every
+   `/bus-sync` forever — the cursor only collects entries STRICTLY newer than
+   itself (one such entry hid a release note for a day). Append to the bottom
+   of the file. Don't rewrite earlier entries.
 
 4. **Commit and push:**
    - `git add <ops>/claude-bus/from-<side>.md`
