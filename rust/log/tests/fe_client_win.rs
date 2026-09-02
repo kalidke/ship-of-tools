@@ -38,6 +38,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Real-process tests are SERIALIZED (same reason and mechanism as
+/// `supervisor_win`'s `SERIAL`): each spawns a supervisor, a capsule and a
+/// shell, and a two-core runner is the shared resource.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn capsule_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sot-capsule"))
 }
@@ -263,6 +271,7 @@ fn end_run_and_wait_verified(conn: &PipeClient, voyage: &str) {
 
 #[test]
 fn attach_as_watcher_receives_the_checkpoint() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -302,6 +311,7 @@ fn attach_as_watcher_receives_the_checkpoint() {
 
 #[test]
 fn first_input_takes_the_pen_and_resize_precedes_the_flush() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -391,6 +401,7 @@ fn first_input_takes_the_pen_and_resize_precedes_the_flush() {
 
 #[test]
 fn end_run_from_the_quit_dispatcher_gets_record_closed() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -455,6 +466,7 @@ fn end_run_from_the_quit_dispatcher_gets_record_closed() {
 
 #[test]
 fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkpoint() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
