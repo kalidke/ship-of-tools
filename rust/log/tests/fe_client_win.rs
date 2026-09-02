@@ -52,12 +52,23 @@ fn capsule_exe() -> PathBuf {
 
 /// Reaps a spawned child on every exit path (a panicking assertion
 /// included) — identical shape to `tests/supervisor_win.rs`'s own guard.
+/// Codex review round, finding 14: the wait after `kill()` is bounded by
+/// the SAME `poll_until` every other wait in this file uses, rather than
+/// an unbounded `Child::wait()` — a `Drop` that could itself hang would
+/// turn one failing test into a wedged whole binary.
 struct KillGuard(Option<Child>);
 impl Drop for KillGuard {
     fn drop(&mut self) {
         if let Some(mut c) = self.0.take() {
             let _ = c.kill();
-            let _ = c.wait();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < deadline {
+                if matches!(c.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            eprintln!("KillGuard: process did not exit within 30s of kill(); abandoning the wait");
         }
     }
 }
@@ -131,21 +142,48 @@ fn command(conn: &PipeClient, operation_id: &str, op: SupervisorOp) -> Superviso
     }
 }
 
+/// One bounded, cancellable `PipeClient::read` — Codex review round,
+/// finding 14: mirrors `tests/e2e_pipe.rs`'s own `read_bounded` (the
+/// `sot_log::deadline` module this pattern is built on is crate-private,
+/// unreachable from an external `tests/*.rs` binary, so this file keeps
+/// its own copy of the idiom rather than the machinery). Spawns a worker
+/// thread that owns the actual blocking read; `PipeClient::cancel`,
+/// called from THIS thread, unblocks it from another thread.
+fn read_bounded(conn: &Arc<PipeClient>, label: &'static str, timeout: Duration) -> Vec<u8> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker_conn = Arc::clone(conn);
+    let jh = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        let n = worker_conn.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(buf[..n].to_vec());
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(bytes) => {
+            let _ = jh.join();
+            bytes
+        }
+        Err(_) => {
+            conn.cancel();
+            let _ = jh.join();
+            panic!("timed out waiting for {label}");
+        }
+    }
+}
+
 /// The capsule's OWN pid, read off the voyage pipe's mgmt sub-lane
 /// (`probe`/`status`/`shutdown` — the step-5 lane, distinct from the
 /// supervisor lane above). A throwaway connection: the mgmt lane accepts
 /// unrelated probe/status connections freely alongside an already-attached
 /// watcher (this test's own `FeAttachClient`), per step 5's design.
 fn capsule_pid(voyage: &str) -> u32 {
-    let conn = connect_voyage_pipe(voyage).expect("connect voyage pipe for mgmt status");
+    let conn = Arc::new(connect_voyage_pipe(voyage).expect("connect voyage pipe for mgmt status"));
     let bytes = sot_log::wire::encode_mgmt_request(&MgmtRequest::Status).unwrap();
     conn.write_all(&bytes).unwrap();
     let mut splitter = sot_log::wire::FrameSplitter::new();
-    let mut buf = [0u8; 4096];
     loop {
-        let n = conn.read(&mut buf).expect("read mgmt status_ok");
-        assert!(n > 0, "unexpected EOF waiting for mgmt status_ok");
-        let (frames, err) = splitter.feed(&buf[..n]);
+        let chunk = read_bounded(&conn, "mgmt status_ok", Duration::from_secs(10));
+        assert!(!chunk.is_empty(), "unexpected EOF waiting for mgmt status_ok");
+        let (frames, err) = splitter.feed(&chunk);
         assert_eq!(err, None, "unexpected wire error decoding mgmt status_ok");
         for f in frames {
             if let sot_log::wire::DecodedFrame::MgmtReply(MgmtReply::StatusOk { pid, .. }) = f {
@@ -396,11 +434,17 @@ fn first_input_takes_the_pen_and_resize_precedes_the_flush() {
 }
 
 // -----------------------------------------------------------------------
-// Ruling: end_run from the quit dispatcher gets record_closed
+// Ruling: end_run from the quit dispatcher reaches record_verified
 // -----------------------------------------------------------------------
 
+/// Codex review round, finding 1 + finding 14: `should_exit()` is now
+/// gated on `record_verified`, not merely `record_closed` (the original
+/// bug: the dispatcher exited the instant the command's own DEFERRED
+/// reply arrived, without ever querying for verification) — so THIS
+/// TEST's own `exited` assertion below is itself the client-visible
+/// proof of `record_verified`, not just `record_closed`.
 #[test]
-fn end_run_from_the_quit_dispatcher_gets_record_closed() {
+fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
@@ -445,7 +489,10 @@ fn end_run_from_the_quit_dispatcher_gets_record_closed() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(exited, "quit dispatcher never reached should_exit (record_closed) within 60s");
+    assert!(
+        exited,
+        "quit dispatcher never reached should_exit (client-visible record_verified) within 60s"
+    );
 
     // Independent corroboration, over a SEPARATE connection: the
     // supervisor ends up serving ENDED-NO-RESPAWN, exactly what a
