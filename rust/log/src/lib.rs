@@ -110,6 +110,12 @@ pub mod state_dir;
 // matching `challenge`/`classify`/`lease`/`probe`: Windows-only, and
 // `tests/supervisor_win.rs` needs to reach it.
 pub mod supervisor;
+// ADR 0042 slice L1a: the small PRODUCTION supervisor-lane client for a
+// non-FE, non-test caller (the backend daemon's own capsule workspace
+// runtime) -- `pub`, matching `supervisor`/`challenge`/`fe_client_win`:
+// Windows-only, and `sot-backend` (a separate crate) needs to reach it.
+#[cfg(windows)]
+pub mod supervisor_client;
 pub mod verify;
 pub mod voyage;
 pub mod wire;

@@ -355,11 +355,23 @@ pub fn connect_and_challenge_with_build_for_test(
     Ok((conn, outcome))
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(pipe_win::PipeClient, ChallengedProcess)> {
-    let (conn, outcome) =
-        connect_and_challenge_with_build_for_test(h, crate::exchange::SUPERVISOR_LANE_BUILD_ID)?;
-    match outcome {
+/// The production analog of [`connect_and_challenge_with_build_for_test`]:
+/// connect the supervisor lane by state-dir hash and run the full
+/// same-connection challenge with THIS build's own identity, folding
+/// `Foreign`/`Undetermined` straight into `Err` — a production caller
+/// (today: [`crate::supervisor_client`], ADR 0042 L1a) has no use for
+/// telling those two apart any further than "not a proven connection to
+/// my own supervisor". `pub(crate)` so that sibling module can reach it
+/// without the `test-support` feature a normal, non-test consumer must
+/// never need to enable (see this crate's own `Cargo.toml`).
+pub(crate) fn connect_and_challenge(
+    h: &str,
+    build: &str,
+    deadline: Instant,
+) -> crate::Result<(pipe_win::PipeClient, ChallengedProcess)> {
+    let conn = pipe_win::connect_supervisor_pipe_unchallenged(h)?;
+    let mut exchange = crate::exchange::SupervisorLaneExchange::new(build.to_string());
+    match challenge::challenge(&conn, &mut exchange, deadline) {
         ChallengeOutcome::Proven(process) => Ok((conn, process)),
         ChallengeOutcome::Foreign => Err(err_state("supervisor lane challenge: foreign")),
         ChallengeOutcome::Undetermined => Err(err_state("supervisor lane challenge: undetermined")),
@@ -367,7 +379,20 @@ pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(pipe_win::PipeC
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn request_for_test(
+pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(pipe_win::PipeClient, ChallengedProcess)> {
+    connect_and_challenge(
+        h,
+        crate::exchange::SUPERVISOR_LANE_BUILD_ID,
+        Instant::now() + Duration::from_secs(2),
+    )
+}
+
+/// Encode `request`, write it, and read back exactly one reply — the one
+/// request/reply round trip every supervisor-lane caller needs after its
+/// own connect+challenge, factored out so [`request_for_test`] (test-only)
+/// and [`crate::supervisor_client`] (the production, non-test-gated
+/// caller) share one implementation rather than two that could drift.
+pub(crate) fn send_and_read(
     conn: &pipe_win::PipeClient,
     request: &SupervisorRequest,
     deadline: Instant,
@@ -378,6 +403,15 @@ pub fn request_for_test(
         DecodedFrame::SupervisorReply(reply) => Ok(reply),
         other => Err(err_state(format!("expected a SupervisorReply, got {other:?}"))),
     }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn request_for_test(
+    conn: &pipe_win::PipeClient,
+    request: &SupervisorRequest,
+    deadline: Instant,
+) -> crate::Result<SupervisorReply> {
+    send_and_read(conn, request, deadline)
 }
 
 // ---------------------------------------------------------------------
@@ -418,7 +452,10 @@ fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
     }
 }
 
-fn err_state(msg: impl Into<String>) -> crate::Error {
+/// `pub(crate)`: [`crate::supervisor_client`] (ADR 0042 L1a) reuses this
+/// same "malformed/unexpected protocol shape" error shape rather than
+/// minting a second one.
+pub(crate) fn err_state(msg: impl Into<String>) -> crate::Error {
     crate::Error::State(msg.into())
 }
 
