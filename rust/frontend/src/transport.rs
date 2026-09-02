@@ -411,6 +411,17 @@ pub enum IncomingEvt {
     PtyBytes {
         bytes: Vec<u8>,
     },
+    /// ADR 0042 slice L1b: a `pty.open` came back refused with
+    /// `code: "attach_direct"` — the currently-targeted row is actually
+    /// a capsule workspace (a stale `workspace.list` cache, or the
+    /// reconnect re-fire racing a runtime flip). `state_dir` is the
+    /// daemon's own resolution of the path when it could compute one;
+    /// `None` if it couldn't (no state root configured). The chrome
+    /// switches the session pane to the attach path using this instead
+    /// of waiting for the next `workspace.list` to self-correct.
+    PtyAttachDirect {
+        state_dir: Option<String>,
+    },
     /// Raw event we don't handle in the spike yet — kept for visibility.
     Event {
         op: String,
@@ -594,6 +605,20 @@ pub struct WorkspaceInfo {
     /// "" from a daemon that predates the field. Mirrors the `lifecycle`
     /// repl.frame evt for FEs that (re)connect mid-boot.
     pub repl_state: String,
+    /// ADR 0042 slice L1a/L1b: `"tmux"` | `"capsule"` — which runtime
+    /// hosts this workspace's agent pane. `""` from a daemon that
+    /// predates L1a; the chrome treats that exactly like `"tmux"`
+    /// (`pane_backend_for`), so an old daemon changes nothing.
+    pub runtime: String,
+    /// The capsule's state directory (host-local absolute path) —
+    /// `Some` only for `runtime == "capsule"` rows. L1b is single-host:
+    /// the frontend attaches to this path directly on the SAME machine
+    /// the daemon runs on (no host indirection yet — that's L2/L3).
+    pub state_dir: Option<String>,
+    /// The supervisor-lane phase (ADR 0041 Lifecycle, snake_case) or
+    /// `"unreachable"` — `Some` only for `runtime == "capsule"` rows.
+    /// Surfaced on the Sessions row as a badge (`capsule_phase_badge`).
+    pub phase: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2639,6 +2664,25 @@ where
     }
 }
 
+/// ADR 0042 slice L1b: is `payload` a `pty.open` refusal carrying
+/// `code: "attach_direct"` (the daemon's answer for a capsule-runtime
+/// workspace, `rust/backend/src/server.rs`'s `PTY_OPEN` arm)? `Some(dir)`
+/// (possibly `None` inside, when the daemon couldn't resolve a state root)
+/// when it is; `None` for every other response shape — an ordinary size
+/// confirmation, a DIFFERENT error code, or anything unparseable — so the
+/// caller falls through to the normal `PtyOpenRes` parse for those.
+fn attach_direct_state_dir(payload: &Value) -> Option<Option<String>> {
+    if payload.get("code").and_then(|v| v.as_str()) != Some("attach_direct") {
+        return None;
+    }
+    Some(
+        payload
+            .get("state_dir")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    )
+}
+
 /// Route a frame to the right `IncomingEvt`. Replies look up `id` in the
 /// pending map to decide how to deserialize; everything else falls through
 /// to the catch-all `Event` evt so the GPU thread can at least see it.
@@ -3239,18 +3283,29 @@ fn handle_response_frame(
                     }
                 }
             }
-            PendingKind::PtyOpen => match serde_json::from_value::<PtyOpenRes>(frame.payload) {
-                Ok(res) => {
-                    let _ = evt_tx.send(IncomingEvt::PtyOpened {
-                        cols: res.cols,
-                        rows: res.rows,
-                        pane_command: res.pane_command,
-                    });
+            PendingKind::PtyOpen => {
+                // ADR 0042 slice L1b: checked BEFORE the `PtyOpenRes`
+                // parse below (which requires `cols`/`rows` and would
+                // just fail-and-warn on this envelope) — a capsule row's
+                // `pty.open` is refused with `{error, code:
+                // "attach_direct", state_dir}`, never a size confirmation.
+                if let Some(state_dir) = attach_direct_state_dir(&frame.payload) {
+                    let _ = evt_tx.send(IncomingEvt::PtyAttachDirect { state_dir });
+                    return;
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "pty.open res parse failed");
+                match serde_json::from_value::<PtyOpenRes>(frame.payload) {
+                    Ok(res) => {
+                        let _ = evt_tx.send(IncomingEvt::PtyOpened {
+                            cols: res.cols,
+                            rows: res.rows,
+                            pane_command: res.pane_command,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "pty.open res parse failed");
+                    }
                 }
-            },
+            }
             PendingKind::TmuxListSessions => {
                 match serde_json::from_value::<TmuxListSessionsRes>(frame.payload) {
                     Ok(res) => {
@@ -3366,6 +3421,9 @@ fn handle_response_frame(
                                 agent_summary: w.agent_summary,
                                 agent_status_at: w.agent_status_at,
                                 repl_state: w.repl_state,
+                                runtime: w.runtime,
+                                state_dir: w.state_dir,
+                                phase: w.phase,
                             })
                             .collect();
                         let _ = evt_tx.send(IncomingEvt::Workspaces { workspaces });
@@ -4021,5 +4079,106 @@ mod tests {
             &events[0],
             IncomingEvt::FigureGetFailed { url } if url == "figures/never-sent.png"
         ));
+    }
+
+    // --- ADR 0042 slice L1b: the attach_direct switch. ---
+
+    #[test]
+    fn attach_direct_state_dir_extracts_the_path_when_present() {
+        let payload = serde_json::json!({
+            "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
+            "code": "attach_direct",
+            "state_dir": "/state/workspaces/ws-1",
+        });
+        assert_eq!(
+            attach_direct_state_dir(&payload),
+            Some(Some("/state/workspaces/ws-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn attach_direct_state_dir_tolerates_a_missing_path() {
+        // Still an attach_direct refusal — the daemon just couldn't
+        // resolve a state root — not "no refusal at all".
+        let payload = serde_json::json!({
+            "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
+            "code": "attach_direct",
+            "state_dir": serde_json::Value::Null,
+        });
+        assert_eq!(attach_direct_state_dir(&payload), Some(None));
+    }
+
+    #[test]
+    fn attach_direct_state_dir_declines_every_other_response_shape() {
+        // An ordinary size-confirmation reply.
+        let ok = serde_json::json!({"cols": 80, "rows": 24, "pane_command": null});
+        assert_eq!(attach_direct_state_dir(&ok), None);
+        // A DIFFERENT error code must not be mistaken for attach_direct —
+        // only the exact literal switches the pane to the attach path.
+        let other_error = serde_json::json!({"error": "boom", "code": "bad_target"});
+        assert_eq!(attach_direct_state_dir(&other_error), None);
+    }
+
+    /// Real-seam regression, same shape as `figure_get_error_envelope_...`
+    /// above: an `attach_direct` refusal to `pty.open`, driven through the
+    /// actual `handle_response_frame` dispatcher, must produce exactly one
+    /// `PtyAttachDirect` carrying the daemon's `state_dir` — and must NOT
+    /// fall through to a `pty.open res parse failed` warn-and-drop (the
+    /// pre-L1b behavior for any unparseable `PtyOpenRes`).
+    #[test]
+    fn attach_direct_reply_emits_exactly_one_pty_attach_direct() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+        pending.insert(9, PendingKind::PtyOpen);
+        let frame = Frame::res(
+            9,
+            op::PTY_OPEN,
+            serde_json::json!({
+                "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
+                "code": "attach_direct",
+                "state_dir": "/state/workspaces/ws-9",
+            }),
+        );
+        handle_response_frame(frame, None, &mut pending, &evt_tx);
+
+        let events: Vec<IncomingEvt> = evt_rx.try_iter().collect();
+        assert_eq!(
+            events.len(),
+            1,
+            "exactly one event for one attach_direct reply, got {events:?}"
+        );
+        match &events[0] {
+            IncomingEvt::PtyAttachDirect { state_dir } => {
+                assert_eq!(state_dir.as_deref(), Some("/state/workspaces/ws-9"));
+            }
+            other => panic!("expected PtyAttachDirect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ordinary_pty_opened_reply_is_unaffected_by_the_attach_direct_check() {
+        // Same dispatcher, a ROUTINE size-confirmation reply — must still
+        // produce `PtyOpened`, not `PtyAttachDirect`, byte-for-byte the
+        // pre-L1b behavior for a tmux row.
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+        pending.insert(11, PendingKind::PtyOpen);
+        let frame = Frame::res(
+            11,
+            op::PTY_OPEN,
+            serde_json::json!({"cols": 80, "rows": 24, "pane_command": "claude"}),
+        );
+        handle_response_frame(frame, None, &mut pending, &evt_tx);
+
+        let events: Vec<IncomingEvt> = evt_rx.try_iter().collect();
+        assert_eq!(events.len(), 1, "got {events:?}");
+        match &events[0] {
+            IncomingEvt::PtyOpened { cols, rows, pane_command } => {
+                assert_eq!(*cols, 80);
+                assert_eq!(*rows, 24);
+                assert_eq!(pane_command.as_deref(), Some("claude"));
+            }
+            other => panic!("expected PtyOpened, got {other:?}"),
+        }
     }
 }
