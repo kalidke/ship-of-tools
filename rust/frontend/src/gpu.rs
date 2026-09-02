@@ -7155,6 +7155,15 @@ impl State {
             return;
         };
         self.enter_mode(Mode::Sessions);
+        // Rebuild the Sessions tree synchronously from whatever
+        // `workspace_lists` already holds, BEFORE searching (Codex round,
+        // PR #172): `enter_mode`'s own Sessions arm only fans out wire
+        // requests, so a parked or never-built tree would have no
+        // `sessions:host:<name>` row to find below even when the data is
+        // already cached locally and no round trip is actually needed.
+        // Genuinely missing data (first-ever fetch still in flight) still
+        // lands degraded below -- the cursor simply stays put.
+        self.rebuild_and_install_sessions_tree();
         let host_row_id = format!("sessions:host:{name}");
         if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == host_row_id) {
             self.tree.selected = idx;
