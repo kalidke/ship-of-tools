@@ -2257,6 +2257,57 @@ struct WsAutostart {
     task: String,
 }
 
+/// ADR 0042 slice L1b: which backend feeds a workspace's session (BL)
+/// pane, cached per tmux_session from each `workspace.list` reply.
+/// `state_dir` is `None` off a capsule row (or when the daemon couldn't
+/// resolve one for a capsule row — `try_attach_capsule_pane` falls back
+/// to `pty.open` in that case, which the daemon then refuses with
+/// `attach_direct` carrying its own resolution).
+#[derive(Clone)]
+struct WorkspaceRuntime {
+    runtime: String,
+    // Read only from `try_attach_capsule_pane`'s `#[cfg(windows)]` half
+    // (capsule has nothing to attach to off Windows) — a non-Windows
+    // build never reads it, hence the allow.
+    #[allow(dead_code)]
+    state_dir: Option<String>,
+}
+
+/// ADR 0042 slice L1b: which transport feeds the session pane. Keyed off
+/// the wire `runtime` string by explicit match, not by "anything but
+/// tmux" — an old daemon's `""`, a legacy `"tmux"`, and any future
+/// runtime this build doesn't know about all resolve to `Tmux`, so an
+/// unrecognized value degrades to today's `pty.open` path (something
+/// that already works) rather than silently attaching nowhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneBackend {
+    Tmux,
+    Capsule,
+}
+
+fn pane_backend_for(runtime: &str) -> PaneBackend {
+    match runtime {
+        "capsule" => PaneBackend::Capsule,
+        _ => PaneBackend::Tmux,
+    }
+}
+
+/// ADR 0042 slice L1b: the Sessions-row badge token for a capsule
+/// workspace's supervisor phase (ADR 0041 Lifecycle, snake_case, plus
+/// `"unreachable"`) — same `<flag>` / `<flag>_<detail>` convention as
+/// this tree's other badges (`"default"`, `"kernel"`, `"repl_starting"`).
+fn capsule_phase_badge(phase: &str) -> String {
+    format!("phase_{phase}")
+}
+
+/// ADR 0042 slice L1b: the short human-readable tag folded into a
+/// capsule row's glance line — separate from `capsule_phase_badge`
+/// because the badge token is a stable machine-readable identifier
+/// while this is cosmetic and free to reword.
+fn capsule_phase_tag(phase: &str) -> String {
+    format!("[{phase}]")
+}
+
 /// Phase of the post-launch task delivery to a spawned agent, driven from the
 /// event loop (`advance_delivery`) so each step waits for the pane to settle
 /// and re-checks the pinned target — never a blind timer.
@@ -2870,6 +2921,13 @@ struct State {
     /// session up here to decide whether to launch claude + deliver the
     /// bootstrap. Keyed by tmux_session (what attach receives).
     workspace_autostart: HashMap<String, WsAutostart>,
+    /// ADR 0042 slice L1b: tmux_session → runtime/state_dir, from each
+    /// `workspace.list` reply — same keying as `workspace_autostart`
+    /// (what `attach_session_to_bl` receives). `try_attach_capsule_pane`
+    /// reads this to decide the session pane's backend; absent entry
+    /// (not yet fetched, or a daemon that predates L1a) behaves like a
+    /// tmux row (`pane_backend_for`'s own default).
+    workspace_runtime: HashMap<String, WorkspaceRuntime>,
     /// tmux sessions whose claude auto-start is CONFIRMED up — recorded only
     /// by the `advance_autostart_scan` sniff (4171) when it actually sees ccb
     /// running, so a re-attach doesn't spawn a second claude. In-memory only:
@@ -3310,6 +3368,18 @@ struct State {
     /// has nothing to attach to off Windows.
     #[cfg(windows)]
     attach_term: Option<sot_log::fe_client_win::FeAttachClient>,
+    /// ADR 0042 slice L1b: the session (BL) pane's OWN attach client —
+    /// live when the selected workspace row's cached `runtime ==
+    /// "capsule"`. A SEPARATE client from `attach_term`: the drawer and
+    /// the session pane are different terminal surfaces with different
+    /// tenants (ADR 0041 "one drawer, tenant fixed" vs every workspace
+    /// being an ordinary peer session, ADR 0042). Set/cleared only by
+    /// `try_attach_capsule_pane` (selection changes) and the
+    /// `PtyAttachDirect` defensive handler. `None` on every non-Windows
+    /// build (capsule has nothing to attach to off Windows) and whenever
+    /// the selected row is a tmux workspace.
+    #[cfg(windows)]
+    pane_attach_term: Option<sot_log::fe_client_win::FeAttachClient>,
     /// ADR 0041 step 6 U3 ruling (f): `fe-inbox.jsonl`'s "last inbox
     /// evidence" read at FE PROCESS START (`State::new`), BEFORE the
     /// fe-command watcher thread or anything else appends to that file
@@ -3845,12 +3915,23 @@ fn bracketed_paste_bytes(text: &str) -> Vec<u8> {
 /// bracketed-paste blob. Returns `false` (and logs at warn) on clipboard or
 /// transport failure so the caller can fall through without panicking;
 /// otherwise `true`.
+///
+/// ADR 0042 slice L1b: when the session pane is a capsule attach
+/// (`pane_attach_term` live), the paste goes straight to the client's own
+/// `send_input` — a local call on its already-open connection, not a wire
+/// `pty.write` (that op targets the tmux pty, which doesn't exist for a
+/// capsule row).
 fn forward_clipboard_paste_to_llm(state: &mut State) -> bool {
     let Some(text) = read_clipboard_text() else {
         return false;
     };
     let bytes = bracketed_paste_bytes(&text);
     state.pty_scroll = 0;
+    #[cfg(windows)]
+    if let Some(t) = state.pane_attach_term.as_mut() {
+        t.send_input(&bytes);
+        return true;
+    }
     if let Err(e) = state.req_tx.send(OutgoingReq::PtyWrite { bytes }) {
         tracing::warn!(error = %e, "drop pty.write (paste) — channel closed");
         return false;
@@ -4492,6 +4573,7 @@ impl State {
             workspace_slugs: Vec::new(),
             default_workspace_slug: None,
             workspace_autostart: HashMap::new(),
+            workspace_runtime: HashMap::new(),
             autostarted_sessions: std::collections::HashSet::new(),
             launching_sessions: HashMap::new(),
             pending_autostart: None,
@@ -4622,6 +4704,8 @@ impl State {
             local_term: None,
             #[cfg(windows)]
             attach_term: None,
+            #[cfg(windows)]
+            pane_attach_term: None,
             #[cfg(windows)]
             fe_down_baseline_evidence,
             term_size: None,
@@ -7074,11 +7158,21 @@ impl State {
     /// own default, which restores the most-recently-active pane).
     /// Sends a `pty.open` carrying the new target; backend kills the
     /// existing pty and respawns against the new session.
+    ///
+    /// ADR 0042 slice L1b: `try_attach_capsule_pane` runs first and, when
+    /// the cached row is a capsule workspace, takes over the switch
+    /// entirely (spawns/replaces `pane_attach_term`, sets
+    /// `bl_pane_target`, returns) — everything below it is the ORIGINAL
+    /// tmux path, byte-for-byte unchanged, reached only when that helper
+    /// declines (tmux row, unknown row, or a non-Windows build).
     fn attach_session_to_bl(&mut self, session_name: String) {
         if self.bl_pane_target.as_deref() == Some(session_name.as_str()) {
             // Already attached — no-op rather than churn the pty.
             self.status = format!("already attached · {session_name}");
             self.window.request_redraw();
+            return;
+        }
+        if self.try_attach_capsule_pane(&session_name) {
             return;
         }
         let (cols, rows) = self.pty_size.unwrap_or((80, 24));
@@ -7106,6 +7200,131 @@ impl State {
         // single boot path is the wrapper.
         self.window.request_redraw();
         self.persist_resume_state();
+    }
+
+    /// ADR 0042 slice L1b: the capsule half of `attach_session_to_bl`.
+    /// Returns `true` iff it took over the switch — the caller's `pty.open`
+    /// path is skipped in that case.
+    ///
+    /// ALWAYS drops any existing `pane_attach_term` first ("deselecting
+    /// detaches; a watcher leaving costs nothing," ADR 0042 L1), even when
+    /// this row turns out not to be a capsule — otherwise a capsule→tmux
+    /// switch would leak the old attach client. The runtime lookup and
+    /// `PaneBackend` decision run on EVERY platform (pure, cheap, and this
+    /// is the real production path a non-Windows frontend would also take
+    /// against a future remote host, not just a test-only shape) — only
+    /// the actual attach-client construction is `#[cfg(windows)]`, mirroring
+    /// the drawer's own gate on `attach_term`. Declines (returns `false`)
+    /// when: `session_name` has no cached `workspace.list` entry yet
+    /// (first-visit race — the caller's `pty.open` will succeed for a tmux
+    /// row, or be refused `attach_direct` for a capsule one, which the
+    /// defensive handler then corrects); the cached entry's runtime isn't
+    /// `"capsule"`; this is a non-Windows build; or a capsule entry is
+    /// missing `state_dir` (defensive — L1a always sets it alongside
+    /// `runtime`, but a partially-degraded daemon reply shouldn't attach to
+    /// a path that doesn't exist).
+    fn try_attach_capsule_pane(&mut self, session_name: &str) -> bool {
+        #[cfg(windows)]
+        {
+            self.pane_attach_term = None;
+        }
+        let Some(info) = self.workspace_runtime.get(session_name).cloned() else {
+            return false;
+        };
+        if pane_backend_for(&info.runtime) != PaneBackend::Capsule {
+            return false;
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+        #[cfg(windows)]
+        {
+            let Some(dir) = info.state_dir else {
+                tracing::warn!(
+                    %session_name,
+                    "capsule row with no state_dir in the cached entry — falling back to pty.open"
+                );
+                return false;
+            };
+            let (cols, rows) = self.pty_size.unwrap_or((80, 24));
+            self.spawn_pane_attach_term(std::path::PathBuf::from(dir), cols, rows);
+            self.bl_pane_target = Some(session_name.to_string());
+            self.status = format!("attached BL → {session_name} (capsule)");
+            self.window.request_redraw();
+            self.persist_resume_state();
+            true
+        }
+    }
+
+    /// ADR 0042 slice L1b: constructs the session pane's OWN attach
+    /// client against `state_dir` — mirrors `spawn_attach_term`'s
+    /// construction of the drawer's `attach_term`, with two deliberate
+    /// differences: `fe_down_last_evidence` is always `None` (this
+    /// client's markers are the drawer's alone per ADR 0042 L1's own
+    /// "fe_down markers ... NOT written" — `FeDownBaseline::capture(None)`
+    /// makes `marker_for_attach` return `None` forever, so nothing this
+    /// client ever produces reaches fe-inbox), and the initial size is
+    /// the CALLER's `(cols, rows)` (the session pane's current rect) not
+    /// the drawer's 80×24 default — a freshly-selected row should show at
+    /// its real size on the very first paint, not resize a frame later.
+    #[cfg(windows)]
+    fn spawn_pane_attach_term(&mut self, state_dir: std::path::PathBuf, cols: u16, rows: u16) {
+        let controller_id = self_comm_handle();
+        let fe_down_to = self_comm_handle();
+        let waker = self.window.clone();
+        match sot_log::fe_client_win::FeAttachClient::attach(
+            state_dir,
+            cols,
+            rows,
+            controller_id,
+            fe_down_to,
+            None,
+            Box::new(move || waker.request_redraw()),
+        ) {
+            Ok(c) => {
+                tracing::info!("session pane: capsule attach client attaching");
+                self.pane_attach_term = Some(c);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "session pane: capsule attach client failed to start");
+                self.status = format!("session attach failed: {e}");
+            }
+        }
+    }
+
+    /// ADR 0042 slice L1b: drains checkpoint/output/notice/status/
+    /// terminal events from the session pane's `pane_attach_term` —
+    /// mirrors `pump_attach_term`'s own drain/status contract, applied to
+    /// `pty_scroll` (the session pane's scrollback offset) rather than
+    /// `term_scroll`. Called EVERY redraw regardless of what's on screen
+    /// (the session pane, unlike the drawer, is always visible — there is
+    /// no visibility gate to mirror here).
+    ///
+    /// Deliberately does NOT call `should_exit()`/`drain_fe_down_markers()`:
+    /// this client is never asked to quit (ending a capsule workspace is
+    /// `workspace.destroy`, Sessions-mode `D`, already routed through
+    /// `end_run` on the daemon side — ADR 0042 L1a — not an FE quit
+    /// dispatcher; the session pane is not the drawer's fixed tenant), and
+    /// `fe_down_last_evidence: None` at construction means
+    /// `pending_fe_down_markers` can never receive anything to drain.
+    #[cfg(windows)]
+    fn pump_pane_attach_term(&mut self) {
+        let Some(t) = self.pane_attach_term.as_mut() else {
+            return;
+        };
+        let changed = t.pump();
+        t.screen_mut().set_scrollback(self.pty_scroll as usize);
+        self.pty_scroll = t.screen().scrollback().min(u16::MAX as usize) as u16;
+        if changed {
+            if let Some(notice) = t.notice() {
+                self.status = notice.to_string();
+            } else if let Some(msg) = t.quit_message() {
+                self.status = msg.to_string();
+            } else {
+                self.status = t.status_line().to_string();
+            }
+        }
     }
 
     /// Decide an armed pre-launch sniff (contract b). Once tmux's replayed
@@ -7667,6 +7886,20 @@ impl State {
         if pane_cols == 0 {
             return false;
         }
+        // ADR 0042 slice L1b: same source as the paint path (`redraw`'s
+        // `pty_screen`) — a capsule attach's own screen when one is
+        // live, else the tmux `pty_terminal`. Selecting text against the
+        // wrong (idle) screen would copy stale or blank content. Cfg-split
+        // (rather than an `Option::unwrap_or_else` fed a statically-`None`
+        // non-Windows branch) so a non-Windows build reads `pty_terminal`
+        // directly with no dead indirection.
+        #[cfg(windows)]
+        let screen = self
+            .pane_attach_term
+            .as_ref()
+            .map(|t| t.screen())
+            .unwrap_or_else(|| self.pty_terminal.screen());
+        #[cfg(not(windows))]
         let screen = self.pty_terminal.screen();
         let mut out = String::new();
         for row in sr..=er {
@@ -9698,17 +9931,32 @@ impl State {
                     // with the old transport. Re-fire PtyOpen so the BL
                     // pane resumes streaming bytes instead of sitting on
                     // its pre-suspend buffer.
-                    if let Some(target) = self.bl_pane_target.clone() {
-                        let (cols, rows) = self.pty_size.unwrap_or((80, 24));
-                        let _ = self.req_tx.send(crate::transport::OutgoingReq::PtyOpen {
-                            cols,
-                            rows,
-                            target: Some(target),
-                            // #5 guard: a reconnect re-attach (sleep /
-                            // tunnel drop) is NOT a user switch — re-stream
-                            // the existing target, don't yank the foreground.
-                            user_switch: false,
-                        });
+                    //
+                    // ADR 0042 slice L1b: skipped when the session pane is
+                    // a capsule attach — `pane_attach_term` owns its OWN
+                    // reconnect episode/backoff on a SEPARATE connection
+                    // (the capsule's attach lane, not this daemon JSON
+                    // transport), so it needs no help from this daemon
+                    // reconnect handler. Re-firing anyway would just be
+                    // refused `attach_direct` (harmless, but a wasted
+                    // round trip on every reconnect).
+                    #[cfg(windows)]
+                    let pane_is_capsule = self.pane_attach_term.is_some();
+                    #[cfg(not(windows))]
+                    let pane_is_capsule = false;
+                    if !pane_is_capsule {
+                        if let Some(target) = self.bl_pane_target.clone() {
+                            let (cols, rows) = self.pty_size.unwrap_or((80, 24));
+                            let _ = self.req_tx.send(crate::transport::OutgoingReq::PtyOpen {
+                                cols,
+                                rows,
+                                target: Some(target),
+                                // #5 guard: a reconnect re-attach (sleep /
+                                // tunnel drop) is NOT a user switch — re-stream
+                                // the existing target, don't yank the foreground.
+                                user_switch: false,
+                            });
+                        }
                     }
                     // And re-fire preview for the currently-cursored node
                     // so any file changes that landed while we were
@@ -11250,6 +11498,59 @@ impl State {
                         self.delivery = Some(d);
                     }
                 }
+                crate::transport::IncomingEvt::PtyAttachDirect { state_dir } => {
+                    // ADR 0042 slice L1b defensive path: `pty.open` was
+                    // refused because the currently-targeted row is
+                    // actually a capsule (a stale `workspace.list` cache,
+                    // or a race with the runtime flip). Switch the
+                    // session pane to the attach path right now, using
+                    // the daemon's own `state_dir` resolution, instead of
+                    // waiting for the next `workspace.list` reply.
+                    #[cfg(windows)]
+                    {
+                        if let Some(target) = self.bl_pane_target.clone() {
+                            match state_dir {
+                                Some(dir) => {
+                                    // Correct the cache so the NEXT switch
+                                    // to this row goes straight to the
+                                    // attach path without needing this
+                                    // fallback again.
+                                    self.workspace_runtime.insert(
+                                        target.clone(),
+                                        WorkspaceRuntime {
+                                            runtime: "capsule".to_string(),
+                                            state_dir: Some(dir.clone()),
+                                        },
+                                    );
+                                    let (cols, rows) = self.pty_size.unwrap_or((80, 24));
+                                    self.spawn_pane_attach_term(
+                                        std::path::PathBuf::from(dir),
+                                        cols,
+                                        rows,
+                                    );
+                                    self.status =
+                                        format!("attached BL → {target} (capsule, corrected)");
+                                }
+                                None => {
+                                    tracing::warn!(%target,
+                                        "pty.open refused attach_direct with no state_dir");
+                                    self.status = format!(
+                                        "'{target}' is a capsule workspace but no state_dir was returned"
+                                    );
+                                }
+                            }
+                        }
+                        self.window.request_redraw();
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        let _ = state_dir;
+                        tracing::warn!(
+                            "pty.open refused attach_direct on a non-Windows build (unexpected — \
+                             capsule workspaces are Windows-only through L1)"
+                        );
+                    }
+                }
                 crate::transport::IncomingEvt::PtyBytes { bytes } => {
                     self.pty_terminal.process(&bytes);
                     // Feed the auto-start delivery settle-clock: output on the
@@ -12117,6 +12418,7 @@ impl State {
                     self.default_workspace_slug = None;
                     self.workspace_project_roots.clear();
                     self.workspace_autostart.clear();
+                    self.workspace_runtime.clear();
                     self.workspace_states.clear();
                     self.workspace_id_slugs.clear();
                     for w in &workspaces {
@@ -12186,6 +12488,16 @@ impl State {
                                 autostart_claude: w.autostart_claude,
                                 agent_name: w.agent_name.clone(),
                                 task: String::new(),
+                            },
+                        );
+                        // ADR 0042 slice L1b: same keying as
+                        // `workspace_autostart` above — `attach_session_to_bl`
+                        // reads this to pick the session pane's backend.
+                        self.workspace_runtime.insert(
+                            w.tmux_session.clone(),
+                            WorkspaceRuntime {
+                                runtime: w.runtime.clone(),
+                                state_dir: w.state_dir.clone(),
                             },
                         );
                         if w.is_default {
@@ -12296,6 +12608,20 @@ impl State {
                         if w.repl_state == "starting" {
                             badges.push("repl_starting".to_string());
                         }
+                        // ADR 0042 slice L1b: the supervisor's own phase —
+                        // `phase` is `Some` only for capsule rows (L1a), so
+                        // this is a no-op for every tmux row and for a
+                        // daemon that predates the field. Badge token
+                        // mirrors `repl_starting`'s convention; the human
+                        // tag rides the glance line below since nothing
+                        // renders `badges` today (same two-places pattern
+                        // `repl_starting` already uses).
+                        let capsule_phase = (w.runtime == "capsule")
+                            .then_some(w.phase.as_deref())
+                            .flatten();
+                        if let Some(phase) = capsule_phase {
+                            badges.push(capsule_phase_badge(phase));
+                        }
                         // The glance line. With agent state present, the
                         // agent's one-line summary is the default at-a-glance
                         // text (what it's doing now / just finished) — far more
@@ -12318,6 +12644,14 @@ impl State {
                             format!("julia starting (precompiling)… · {glance_base}")
                         } else {
                             glance_base
+                        };
+                        // ADR 0042 slice L1b: prefix the capsule phase tag
+                        // ("ready" included — a healthy capsule confirming
+                        // is as informative here as a booting REPL is
+                        // above) so it's visible without a new widget.
+                        let glance = match capsule_phase {
+                            Some(phase) => format!("{} {glance}", capsule_phase_tag(phase)),
+                            None => glance,
                         };
                         let label = if w.label.is_empty() {
                             w.slug.clone()
@@ -12865,11 +13199,26 @@ impl State {
         // internally when the requested offset exceeds the buffered
         // rows, so we read the actual offset back to keep State in
         // sync with what the emulator agreed to.
-        self.pty_terminal
-            .screen_mut()
-            .set_scrollback(self.pty_scroll as usize);
-        let actual_pty_scroll = self.pty_terminal.screen().scrollback();
-        self.pty_scroll = actual_pty_scroll.min(u16::MAX as usize) as u16;
+        // ADR 0042 slice L1b: when the session pane is a capsule attach
+        // (`pane_attach_term` live), `pump_pane_attach_term` owns
+        // `pty_scroll` — applying it to `pty_terminal` too would clobber
+        // it with the idle tmux parser's own (empty) scrollback every
+        // frame. `pty_terminal` only drives `pty_scroll` on the tmux path.
+        #[cfg(windows)]
+        let pane_is_capsule = self.pane_attach_term.is_some();
+        #[cfg(not(windows))]
+        let pane_is_capsule = false;
+        #[cfg(windows)]
+        if pane_is_capsule {
+            self.pump_pane_attach_term();
+        }
+        if !pane_is_capsule {
+            self.pty_terminal
+                .screen_mut()
+                .set_scrollback(self.pty_scroll as usize);
+            let actual_pty_scroll = self.pty_terminal.screen().scrollback();
+            self.pty_scroll = actual_pty_scroll.min(u16::MAX as usize) as u16;
+        }
         // Local terminal drawer (G2/G3): lazily spawn the OS shell the
         // first time the Terminal drawer is shown, then drain any pending
         // output into its parser before we borrow its screen for the draw.
@@ -12975,6 +13324,22 @@ impl State {
         // (self.terminal, not self.pty_terminal), Rust's split-borrow
         // rules let us hold both at once. The local terminal's screen is
         // borrowed the same way when the Terminal drawer is active.
+        // ADR 0042 slice L1b: `pane_attach_term`'s screen wins when the
+        // session pane is a capsule attach — same `vt100-ctt` type as
+        // `pty_terminal`'s (the frontend's `vt100` name and `sot_log`'s
+        // `vt100_ctt` name both resolve to the workspace-patched fork, so
+        // this is a plain `Option::unwrap_or_else`, not a conversion).
+        // Cfg-split rather than an always-`None` non-Windows branch fed
+        // to `unwrap_or_else` (mirrors `copy_llm_selection`'s own split)
+        // so a non-Windows build reads `pty_terminal` with no dead
+        // indirection.
+        #[cfg(windows)]
+        let pty_screen = self
+            .pane_attach_term
+            .as_ref()
+            .map(|t| t.screen())
+            .unwrap_or_else(|| self.pty_terminal.screen());
+        #[cfg(not(windows))]
         let pty_screen = self.pty_terminal.screen();
         #[cfg(windows)]
         let attach_screen = self.attach_term.as_ref().map(|t| t.screen());
@@ -13904,7 +14269,27 @@ impl State {
                 .pty_size
                 .map(|prev| prev != (cols, rows))
                 .unwrap_or(false);
-            if need_open {
+            if pane_is_capsule {
+                // ADR 0042 slice L1b: the capsule client's connection is
+                // owned entirely by `try_attach_capsule_pane`/
+                // `spawn_pane_attach_term` (fired from
+                // `attach_session_to_bl` on selection change) — there is
+                // no `pty.open`/`pty.resize` wire request for a capsule
+                // row (the daemon refuses both with `attach_direct`).
+                // This block only keeps an ALREADY-LIVE client's viewport
+                // in sync with the pane rect, mirroring the drawer's own
+                // attach-client resize below (`term_size_observed`).
+                if need_open || need_resize {
+                    #[cfg(windows)]
+                    if let Some(t) = self.pane_attach_term.as_mut() {
+                        t.resize(cols, rows);
+                    }
+                    self.pty_size = Some((cols, rows));
+                    if need_resize {
+                        self.pty_scroll = 0;
+                    }
+                }
+            } else if need_open {
                 if let Err(e) = self.req_tx.send(OutgoingReq::PtyOpen {
                     cols,
                     rows,
@@ -16520,6 +16905,33 @@ impl ApplicationHandler for App {
                         state.window.request_redraw();
                     }
                     PaneFocus::Llm => {
+                        // ADR 0042 slice L1b: a capsule pane keeps REAL
+                        // local scrollback (its own `vt100-ctt` parser,
+                        // same as the drawer's attach client) — unlike
+                        // tmux's in-place-repaint model below, there's no
+                        // remote ring to forward to, so this mirrors the
+                        // drawer's own Repl-focus wheel arm: forward as
+                        // SGR only when the remote app grabbed the mouse,
+                        // else walk the local ring via `pty_scroll`
+                        // (applied in `redraw`). No throttle — this is a
+                        // local call on an already-open connection, not a
+                        // wire round trip through the daemon.
+                        #[cfg(windows)]
+                        if let Some(t) = state.pane_attach_term.as_mut() {
+                            if t.mouse_tracking_on() {
+                                let button = if rows_above > 0 { 64 } else { 65 };
+                                let n = rows_above.unsigned_abs().min(8);
+                                let seq = format!("\x1b[<{button};1;1M");
+                                for _ in 0..n {
+                                    t.send_input(seq.as_bytes());
+                                }
+                            } else {
+                                let new = (state.pty_scroll as i32 + rows_above).max(0);
+                                state.pty_scroll = new as u16;
+                            }
+                            state.window.request_redraw();
+                            return;
+                        }
                         // Tmux owns scrollback; our vt100-ctt ring stays
                         // empty because tmux uses cursor-positioned
                         // redraws. Forward wheel events to the pty as
@@ -18862,7 +19274,24 @@ impl ApplicationHandler for App {
                                 _ => None,
                             };
                             if let Some(up) = scroll {
-                                if let Err(e) =
+                                // ADR 0042 slice L1b: same local-ring
+                                // convention as the wheel arm above — a
+                                // capsule pane pages its OWN scrollback
+                                // (`pty_scroll`, applied in `redraw`), not
+                                // a wire `pty.scroll` (that op pages TMUX
+                                // copy-mode, which doesn't exist for a
+                                // capsule row).
+                                #[cfg(windows)]
+                                let is_capsule = state.pane_attach_term.is_some();
+                                #[cfg(not(windows))]
+                                let is_capsule = false;
+                                if is_capsule {
+                                    let page_step =
+                                        (state.pane_rects.llm.height as i32 / 3).max(1);
+                                    let delta = if up { page_step } else { -page_step };
+                                    let new = (state.pty_scroll as i32 + delta).max(0);
+                                    state.pty_scroll = new as u16;
+                                } else if let Err(e) =
                                     state.req_tx.send(OutgoingReq::PtyScroll { up })
                                 {
                                     tracing::warn!(error = %e, "drop pty.scroll — channel closed");
@@ -18879,6 +19308,20 @@ impl ApplicationHandler for App {
                             // typing is always at the bottom of the
                             // LLM pane next to the prompt.
                             state.pty_scroll = 0;
+                            // ADR 0042 slice L1b: a capsule pane's input
+                            // goes to the attach client's own `send_input`
+                            // (a local call on its already-open
+                            // connection — take-on-first-input is handled
+                            // inside it), not a wire `pty.write`.
+                            #[cfg(windows)]
+                            if let Some(t) = state.pane_attach_term.as_mut() {
+                                t.send_input(&bytes);
+                            } else if let Err(e) =
+                                state.req_tx.send(OutgoingReq::PtyWrite { bytes })
+                            {
+                                tracing::warn!(error = %e, "drop pty.write — channel closed");
+                            }
+                            #[cfg(not(windows))]
                             if let Err(e) = state.req_tx.send(OutgoingReq::PtyWrite { bytes }) {
                                 tracing::warn!(error = %e, "drop pty.write — channel closed");
                             }
@@ -23110,5 +23553,94 @@ mod repl_lifecycle_render_tests {
         let ids = HashMap::new();
         assert_eq!(lifecycle_key_of(None, &ids, Some("home")), "home");
         assert_eq!(lifecycle_key_of(None, &ids, None), "<default>");
+    }
+}
+
+/// ADR 0042 slice L1b: runtime keying, the attach_direct switch, and
+/// phase → badge mapping. Pure functions, Linux-run.
+#[cfg(test)]
+mod capsule_pane_tests {
+    use super::*;
+
+    #[test]
+    fn pane_backend_for_matches_the_literal_capsule_string_only() {
+        assert_eq!(pane_backend_for("capsule"), PaneBackend::Capsule);
+        // A daemon that predates L1a sends "" (never "capsule"); a legacy
+        // row is the literal "tmux"; anything else is a future runtime
+        // this build doesn't know about. All three degrade to Tmux — the
+        // one path that already works — rather than silently attaching
+        // nowhere.
+        assert_eq!(pane_backend_for(""), PaneBackend::Tmux);
+        assert_eq!(pane_backend_for("tmux"), PaneBackend::Tmux);
+        assert_eq!(pane_backend_for("something-future"), PaneBackend::Tmux);
+        // Case matters — the wire contract is the exact lowercase literal,
+        // not a case-insensitive match.
+        assert_eq!(pane_backend_for("Capsule"), PaneBackend::Tmux);
+    }
+
+    #[test]
+    fn capsule_phase_badge_and_tag_cover_every_lifecycle_phase() {
+        // ADR 0041 Lifecycle's five phases plus the lane-unreachable case
+        // (`capsule_workspace::phase_str`/`UNREACHABLE_PHASE` on the
+        // daemon side) — every value `phase` can carry on the wire.
+        for phase in [
+            "starting",
+            "ready",
+            "ending",
+            "ended_no_respawn",
+            "terminal",
+            "unreachable",
+        ] {
+            assert_eq!(capsule_phase_badge(phase), format!("phase_{phase}"));
+            assert_eq!(capsule_phase_tag(phase), format!("[{phase}]"));
+        }
+    }
+
+    #[test]
+    fn capsule_phase_badge_is_distinct_from_the_human_tag() {
+        // The badge is a stable machine token (matches the `default` /
+        // `kernel` / `repl_starting` badge convention); the tag is cosmetic
+        // glance-line text. They must not collide even though both derive
+        // from the same `phase` string.
+        assert_ne!(capsule_phase_badge("ready"), capsule_phase_tag("ready"));
+    }
+
+    // The `attach_direct` switch itself (parsing the daemon's refusal
+    // payload) is tested where it lives — `transport.rs`'s own test
+    // module (`attach_direct_state_dir_*`, plus a real-seam test driven
+    // through `handle_response_frame`) — rather than a reimplementation
+    // here.
+
+    #[test]
+    fn workspace_runtime_cache_round_trips_through_pane_backend_for() {
+        // The shape `try_attach_capsule_pane` actually reads: a
+        // `workspace.list` reply landing as cached `WorkspaceRuntime`
+        // entries, keyed by tmux_session, then resolved through
+        // `pane_backend_for`.
+        let mut cache: HashMap<String, WorkspaceRuntime> = HashMap::new();
+        cache.insert(
+            "sot-be-alpha".to_string(),
+            WorkspaceRuntime {
+                runtime: "capsule".to_string(),
+                state_dir: Some("/state/workspaces/ws-alpha".to_string()),
+            },
+        );
+        cache.insert(
+            "sot-be-beta".to_string(),
+            WorkspaceRuntime {
+                runtime: "tmux".to_string(),
+                state_dir: None,
+            },
+        );
+        let alpha = cache.get("sot-be-alpha").expect("inserted above");
+        assert_eq!(pane_backend_for(&alpha.runtime), PaneBackend::Capsule);
+        assert_eq!(alpha.state_dir.as_deref(), Some("/state/workspaces/ws-alpha"));
+        let beta = cache.get("sot-be-beta").expect("inserted above");
+        assert_eq!(pane_backend_for(&beta.runtime), PaneBackend::Tmux);
+        // A row `switch_to_workspace` hasn't fetched yet (no cache entry)
+        // is the same "fall back to pty.open" outcome as a tmux row — the
+        // absent-entry case `try_attach_capsule_pane` itself handles via
+        // `HashMap::get` returning `None`.
+        assert!(cache.get("sot-be-never-listed").is_none());
     }
 }
