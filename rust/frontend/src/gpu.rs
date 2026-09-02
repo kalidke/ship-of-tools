@@ -74,10 +74,12 @@ enum Mode {
     Files,
     Modules,
     Sessions,
-    /// ADR 0015 — host registry picker. Lists entries from
-    /// `hosts.toml`; Enter persists `last_host` to state-toml so the
-    /// next launcher run targets the chosen host. Doesn't change the
-    /// live transport — switching hosts means quit + relaunch.
+    /// ADR 0042 L2a — live connected/unreachable status list for every
+    /// `hosts.toml` entry (superseded ADR 0015's "pick one, persist
+    /// `last_host`, Ctrl+Q + relaunch": every host is already a live
+    /// connection, nothing to relaunch into). Enter moves the
+    /// Sessions-mode cursor to the picked host's node
+    /// (`pick_host_under_cursor`).
     Hosts,
 }
 

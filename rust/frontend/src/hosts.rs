@@ -1,10 +1,14 @@
-// hosts.rs — host registry parsing for in-app target selection (ADR 0015).
+// hosts.rs — host registry parsing + connection-set resolution (ADR 0015
+// registry format; ADR 0042 L2a targeting model — see that ADR's note on
+// ADR 0015's superseded status).
 //
 // The frontend reads `.sot/hosts.toml` (or its layered fallbacks) at
-// startup so `Mode::Hosts` can render a picker. Selecting an entry
-// persists `last_host` in `state-<hostname>.toml`; the launcher reads
-// that on next launch and aims the SSH tunnel + spawn at the chosen
-// host. We don't manage tunnels from Rust — the launcher does that.
+// startup and opens ONE CONNECTION PER REACHABLE ENTRY (resolve_connections),
+// local-first then hosts.toml order — `Mode::Hosts` is a live
+// connected/unreachable status list over the same set, not a picker. We
+// don't manage tunnels from Rust — the launcher does that; the launcher's
+// own `last_host` read (a separate, PowerShell-side mechanism, unrelated to
+// this file) is untouched by L2a — see ADR 0015's superseded note.
 //
 // Format (deliberately simple — same shape PowerShell can regex-parse):
 //

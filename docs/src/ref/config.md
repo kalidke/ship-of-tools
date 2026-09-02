@@ -132,9 +132,14 @@ PowerShell side does not layer).
 
 ### `[host.<name>]`
 
-One section per host. The frontend's Hosts mode lists every `[host.<name>]`
-section; picking one writes `last_host` to `state-<hostname>.toml`, and the next
-launch resolves that name back to its entry here.
+One section per host. The frontend opens one connection per section that
+has a reachable endpoint (a `socket` or a `tcp_port`), local-first then
+file order — every configured host is live at once, not a single picked
+target. The Hosts mode lists every entry with its live
+connected/unreachable status; Enter moves the Sessions-mode cursor to
+that host's node (it doesn't pick a target for the launcher — see ADR
+0042 slice L2a; ADR 0015's `last_host`-based single-host picker is
+superseded).
 
 | Key | Type | Meaning |
 |-----|------|---------|
