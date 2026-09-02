@@ -19526,26 +19526,55 @@ impl ApplicationHandler for App {
                                 // fallback would otherwise reach whatever
                                 // tmux pty it still has open from the
                                 // PREVIOUS row.
-                                match state.pane_feed {
-                                    PaneFeed::Capsule => {
-                                        let page_step =
-                                            (state.pane_rects.llm.height as i32 / 3).max(1);
-                                        let delta = if up { page_step } else { -page_step };
-                                        let new = (state.pty_scroll as i32 + delta).max(0);
-                                        state.pty_scroll = new as u16;
-                                    }
-                                    PaneFeed::Pending => {}
-                                    PaneFeed::Tmux => {
-                                        if let Err(e) =
-                                            state.req_tx.send(OutgoingReq::PtyScroll { up })
-                                        {
-                                            tracing::warn!(error = %e, "drop pty.scroll — channel closed");
+                                //
+                                // ADR 0042 slice L1b fix 4: a capsule
+                                // row's ALTERNATE-SCREEN app (vim, less)
+                                // must receive the raw key instead of
+                                // having it consumed as a local-ring
+                                // page, matching the drawer's own
+                                // PgUp/PgDn arm — `capsule_alt_screen`
+                                // gates the early return below so that
+                                // case falls through to the ordinary
+                                // `key_to_pty_bytes` forward further
+                                // down. Tmux rows keep intercepting
+                                // unconditionally: tmux's own copy-mode
+                                // paging has never checked
+                                // alternate-screen here (byte-for-byte
+                                // the pre-L1b convention).
+                                #[cfg(windows)]
+                                let capsule_alt_screen = state.pane_feed == PaneFeed::Capsule
+                                    && state
+                                        .pane_attach_term
+                                        .as_ref()
+                                        .map(|t| t.screen().alternate_screen())
+                                        .unwrap_or(false);
+                                #[cfg(not(windows))]
+                                let capsule_alt_screen = false;
+                                if !capsule_alt_screen {
+                                    match state.pane_feed {
+                                        PaneFeed::Capsule => {
+                                            let page_step =
+                                                (state.pane_rects.llm.height as i32 / 3).max(1);
+                                            let delta = if up { page_step } else { -page_step };
+                                            let new = (state.pty_scroll as i32 + delta).max(0);
+                                            state.pty_scroll = new as u16;
+                                        }
+                                        PaneFeed::Pending => {}
+                                        PaneFeed::Tmux => {
+                                            if let Err(e) =
+                                                state.req_tx.send(OutgoingReq::PtyScroll { up })
+                                            {
+                                                tracing::warn!(error = %e, "drop pty.scroll — channel closed");
+                                            }
                                         }
                                     }
+                                    state.last_key = Some(label);
+                                    state.window.request_redraw();
+                                    return;
                                 }
-                                state.last_key = Some(label);
-                                state.window.request_redraw();
-                                return;
+                                // `capsule_alt_screen`: fall through to the
+                                // raw-byte forward below, exactly like the
+                                // drawer's own escape hatch.
                             }
                         }
                         let bytes: Option<Vec<u8>> = key_to_pty_bytes(&event.logical_key, ctrl, shift);
