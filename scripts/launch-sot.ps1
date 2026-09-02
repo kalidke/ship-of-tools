@@ -767,24 +767,40 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate -and -not $Local) {
         # freshness block (the single per-launch ensure, see its own comment) restarts
         # it on whatever pair is current once this rebuild is done -- so on
         # a dev box, every launch that rebuilds also restarts the local
-        # daemon. A locally-spawned capsule supervisor (sot-capsule.exe,
-        # once running) survives that restart by design (ADR 0042 L1a: the
-        # daemon re-adopts it via --resume on its next start) -- but while
-        # alive it still pins sot-capsule.exe on disk, so this rebuild can
-        # fail to overwrite THAT file too even after the stop below;
-        # tolerated here (non-fatal), the durable answer is U4's upgrade
-        # transaction.
-        if (Test-Path $sotLocalDaemon) {
-            Write-SupLog 'freshness: stopping local daemon before backend rebuild (a running sotd.exe pins its own image)'
-            $stopOut2 = & $sotLocalDaemon -Stop 6>&1 2>&1
-            foreach ($l in @($stopOut2)) { if ("$l".Trim()) { Write-SupLog "$l" } }
-        }
-        Write-SupLog "freshness: cargo build -p sot-backend -p sot-log"
-        $capOut = cargo build --release -p sot-backend -p sot-log --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-SupLog "freshness: backend pair rebuild FAILED (non-fatal, continuing with whatever pair exists). tail: $($capOut | Select-Object -Last 3)"
+        # daemon.
+        #
+        # Mixed-version pair guard (2026-09-02 Codex round): a locally-spawned
+        # capsule supervisor (sot-capsule.exe) is a SEPARATE, detached process
+        # from sotd (ADR 0042 L1a) -- the -Stop above only unpins sotd.exe, not
+        # a still-running capsule's own mapped image. Rebuilding anyway would
+        # publish a fresh sotd.exe next to the OLD sot-capsule.exe, and the
+        # ensure right after this whole block would then start that MISMATCHED
+        # pair. No versioned target dir to build into instead, so the smallest
+        # fix is to skip the rebuild entirely -- both the stop (nothing to
+        # unpin if nothing is about to overwrite it) and the cargo build --
+        # whenever a sot-capsule.exe is running from this dev bin dir. The
+        # durable answer is U4's upgrade transaction.
+        $devBinDir = Split-Path $backendExe -Parent
+        $capsuleSessionsAlive = @(Get-CimInstance Win32_Process -Filter "Name='sot-capsule.exe'" -ErrorAction SilentlyContinue |
+            Where-Object {
+                ($_.ExecutablePath -and $_.ExecutablePath -like "$devBinDir*") -or
+                ($_.CommandLine -and $_.CommandLine -like "*$devBinDir*")
+            })
+        if ($capsuleSessionsAlive.Count -gt 0) {
+            Write-SupLog "freshness: local capsule sessions alive - pair not rebuilt; the durable answer is U4's upgrade transaction"
         } else {
-            Write-SupLog "freshness: backend pair (sotd.exe, sot-capsule.exe) rebuilt"
+            if (Test-Path $sotLocalDaemon) {
+                Write-SupLog 'freshness: stopping local daemon before backend rebuild (a running sotd.exe pins its own image)'
+                $stopOut2 = & $sotLocalDaemon -Stop 6>&1 2>&1
+                foreach ($l in @($stopOut2)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+            }
+            Write-SupLog "freshness: cargo build -p sot-backend -p sot-log"
+            $capOut = cargo build --release -p sot-backend -p sot-log --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-SupLog "freshness: backend pair rebuild FAILED (non-fatal, continuing with whatever pair exists). tail: $($capOut | Select-Object -Last 3)"
+            } else {
+                Write-SupLog "freshness: backend pair (sotd.exe, sot-capsule.exe) rebuilt"
+            }
         }
         }
     } finally {
