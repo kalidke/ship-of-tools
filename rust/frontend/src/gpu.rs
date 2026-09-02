@@ -2404,7 +2404,7 @@ const AUTOSTART_LAUNCH_HOLD: std::time::Duration = std::time::Duration::from_sec
 /// surfaced via status), while a false negative re-introduces the spam.
 fn pane_shows_running_claude(contents: &str) -> bool {
     let c = contents.to_lowercase();
-    const MARKERS: [&str; 7] = [
+    const MARKERS: [&str; 8] = [
         "for shortcuts",      // idle footer: "? for shortcuts"
         "esc to interrupt",   // working footer
         "bypass permissions", // --dangerously-skip-permissions banner
@@ -2415,6 +2415,11 @@ fn pane_shows_running_claude(contents: &str) -> bool {
                      // flag-independent — catches a claude started
                      // WITHOUT --dangerously-skip-permissions, whose
                      // footer carries no "bypass permissions" banner.
+        "auto mode on", // --permission-mode auto banner (2.1.258+, the
+                        // owner-ruling default): "auto mode on" replaces
+                        // "bypass permissions on" and the footer carries
+                        // neither "for shortcuts" nor "for agents" —
+                        // verified live via a probe pane, 2026-09-02.
     ];
     MARKERS.iter().any(|m| c.contains(m))
 }
@@ -21607,6 +21612,13 @@ mod tests {
         ));
         assert!(pane_shows_running_claude(
             "                    ← for agents"
+        ));
+        // --permission-mode auto footer (Claude Code 2.1.258, the
+        // owner-ruling default) — captured live from a probe pane,
+        // 2026-09-02: "auto mode on" replaces "bypass permissions on" and
+        // neither "for shortcuts" nor "for agents" appear.
+        assert!(pane_shows_running_claude(
+            "⏵⏵ auto mode on (shift+tab to cycle) · 1 agent"
         ));
     }
 

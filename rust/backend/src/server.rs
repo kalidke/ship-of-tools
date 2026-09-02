@@ -155,6 +155,12 @@ pub(crate) fn pane_activity(contents: &str) -> &'static str {
         "bypassing permissions",
         "for shortcuts",
         "for agents",
+        // Claude Code 2.1.258+ under --permission-mode auto (the owner-ruling
+        // default, replacing --dangerously-skip-permissions): the footer
+        // reads "auto mode on" instead of "bypass permissions on", and
+        // carries neither "for shortcuts" nor "for agents" — verified live
+        // via a probe pane, 2026-09-02.
+        "auto mode on",
     ];
     if !PRESENT.iter().any(|m| footer.contains(m)) {
         return "";
@@ -2110,6 +2116,11 @@ mod tests {
     // permission hint). The working one adds the live generation status line.
     const IDLE_FOOTER: &str = "──────────────────\n❯ \n──────────────────\n  Opus 4 [abc] ·think:max | v2.1.177 | Ship of Tools:main | 0 uncommitted\n  Session: 155k (in:155k out:3) | $253.27\n  ⏵⏵ bypass permissions on · 1 monitor";
     const WORKING_FOOTER: &str = "● Bash(echo hi)\n  ⎿  Running…\n\n✢ Ionizing… (2m 55s · ↓ 12.3k tokens)\n\n──────────────────\n❯ \n──────────────────\n  Session: 155k (in:155k out:3) | $253.27\n  ⏵⏵ bypass permissions on · 1 monitor";
+    // --permission-mode auto footers (2.1.258): "auto mode on" replaces
+    // "bypass permissions on" and neither "for shortcuts" nor "for agents"
+    // appear — captured live from a probe pane, 2026-09-02.
+    const AUTO_IDLE_FOOTER: &str = "──────────────────\n❯ \n──────────────────\n  Fable 5.1 [66b99a4f] ·think:xhigh | v2.1.258 | Ship of Tools:main | 0 uncommitted\n  Session: 12k (in:12k out:1) | $0.10\n  ⏵⏵ auto mode on (shift+tab to cycle) · 1 agent";
+    const AUTO_WORKING_FOOTER: &str = "✢ Ionizing… (2m 55s · ↓ 12.3k tokens)\n\n──────────────────\n❯ \n──────────────────\n  Session: 12k (in:12k out:1) | $0.10\n  ⏵⏵ auto mode on (shift+tab to cycle) · 1 agent";
 
     #[test]
     fn no_claude_marker_is_empty() {
@@ -2134,6 +2145,20 @@ mod tests {
             pane_activity("? for shortcuts\n✻ Working… (12s · esc to interrupt)"),
             "working"
         );
+    }
+
+    #[test]
+    fn auto_mode_idle_footer_is_idle() {
+        // --permission-mode auto (owner ruling, replacing
+        // --dangerously-skip-permissions): the footer carries "auto mode on"
+        // instead of "bypass permissions on" — must still resolve idle at
+        // the prompt, not fall back to registry state.
+        assert_eq!(pane_activity(AUTO_IDLE_FOOTER), "idle");
+    }
+
+    #[test]
+    fn auto_mode_working_footer_is_working() {
+        assert_eq!(pane_activity(AUTO_WORKING_FOOTER), "working");
     }
 
     #[test]
