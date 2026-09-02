@@ -25891,9 +25891,10 @@ mod capsule_pane_tests {
 
     #[test]
     fn capsule_phase_tag_covers_every_lifecycle_phase() {
-        // ADR 0041 Lifecycle's five phases plus the lane-unreachable case
-        // (`capsule_workspace::phase_str`/`UNREACHABLE_PHASE` on the
-        // daemon side) — every value `phase` can carry on the wire.
+        // ADR 0041 Lifecycle's five phases, the lane-unreachable case, and
+        // the never-started case (`capsule_workspace::phase_str`/
+        // `UNREACHABLE_PHASE`/`NEVER_STARTED_PHASE` on the daemon side) —
+        // every value `phase` can carry on the wire.
         for phase in [
             "starting",
             "ready",
@@ -25901,6 +25902,7 @@ mod capsule_pane_tests {
             "ended_no_respawn",
             "terminal",
             "unreachable",
+            "stopped",
         ] {
             assert_eq!(capsule_phase_tag(phase), format!("[{phase}]"));
         }
