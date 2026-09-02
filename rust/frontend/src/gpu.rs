@@ -1967,15 +1967,20 @@ impl TreeView {
 // NON-active slots. Every mode/workspace change goes through
 // `swap_active_tree`, the single stash/load seam.
 
-/// Workspace half of a tree key. `Workspace` carries the normalized key
-/// (`"<default>"` for the daemon-default workspace — the same literal
-/// `State::current_workspace_key` uses, so reply-keying and active-keying
-/// can never disagree about the default workspace's identity). Sessions and
-/// Hosts trees are machine-level, not project-level, so they key as
-/// `Global` and survive workspace switches untouched.
+/// Workspace half of a tree key. `Workspace` carries the host-qualified
+/// key (ADR 0042 L2a, Codex review PR #163: a bare slug collided across
+/// hosts — switching from "sot" on host A to "sot" on host B early-returned
+/// in `swap_active_tree` on an equal key and left A's tree showing under
+/// B's context). The second element is the SAME normalized literal
+/// `State::current_workspace_key` has always produced (`"<default>"` for
+/// the daemon-default workspace), just paired with the host now, so
+/// reply-keying and active-keying still can never disagree about the
+/// default workspace's identity WITHIN a host. Sessions and Hosts trees
+/// are machine-level, not project-level, so they key as `Global` and
+/// survive workspace switches (and host switches) untouched.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum TreeScope {
-    Workspace(String),
+    Workspace(WsKey),
     Global,
 }
 
@@ -1984,9 +1989,9 @@ type TreeKey = (Mode, TreeScope);
 /// The scope a mode's tree lives in: per-workspace for the project-derived
 /// trees (Files, Modules), global for the machine-level ones (Sessions,
 /// Hosts).
-fn mode_scope(mode: Mode, ws_key: &str) -> TreeScope {
+fn mode_scope(mode: Mode, ws_key: &WsKey) -> TreeScope {
     match mode {
-        Mode::Files | Mode::Modules => TreeScope::Workspace(ws_key.to_string()),
+        Mode::Files | Mode::Modules => TreeScope::Workspace(ws_key.clone()),
         Mode::Sessions | Mode::Hosts => TreeScope::Global,
     }
 }
@@ -2063,20 +2068,25 @@ struct FreshWorkspaceCaches {
 
 /// The connection `default_host`/startup `active_host` resolve to (ADR
 /// 0042 L2a), shared by both: `configured_default` (`hosts_config
-/// .default_host`) when set — guaranteed to name a live connection by
-/// `resolve_connections`'s own contract (either the matching hosts.toml
-/// entry or its CLI-only synthesized fallback) — else the first connection
-/// in `conns`' display order (local-first, then hosts.toml order), else
-/// `fallback` (offline mode, no connections at all). "Local first" is the
-/// TREE order, not the initial selection: a daily launch must land on the
-/// configured default's resumed workspace, not an empty local host just
-/// because it sorts first.
+/// .default_host`) when set AND present in `conns` — the actual resolved
+/// connection set, the one source of truth this checks directly rather
+/// than trusting `resolve_connections`'s internal bookkeeping (a
+/// `default_host` entry with neither `socket` nor `tcp_port` set is
+/// SKIPPED there, not synthesized, so the configured NAME can survive
+/// with zero live connection behind it — a phantom default that failed
+/// every `send`) — else the first connection in `conns`' display order
+/// (local-first, then hosts.toml order), else `fallback` (offline mode,
+/// no connections at all). "Local first" is the TREE order, not the
+/// initial selection: a daily launch must land on the configured
+/// default's resumed workspace, not an empty local host just because it
+/// sorts first — but only when that default is actually reachable.
 fn resolve_default_host(
     configured_default: Option<HostKey>,
     conns: &[(HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)],
     fallback: HostKey,
 ) -> HostKey {
     configured_default
+        .filter(|h| conns.iter().any(|(ch, _)| ch == h))
         .or_else(|| conns.first().map(|(h, _)| h.clone()))
         .unwrap_or(fallback)
 }
@@ -2305,10 +2315,10 @@ impl TreeStore {
     /// parked rows, and the non-empty slot would suppress the fresh
     /// tree.root the empty-slot loader gate otherwise fires. Global slots
     /// (Sessions/Hosts) are machine-level and survive by design.
-    fn purge_workspace(&mut self, ws_key: &str) {
+    fn purge_workspace(&mut self, ws_key: &WsKey) {
         for mode in [Mode::Files, Mode::Modules] {
             self.slots
-                .remove(&(mode, TreeScope::Workspace(ws_key.to_string())));
+                .remove(&(mode, TreeScope::Workspace(ws_key.clone())));
         }
     }
 }
@@ -3332,28 +3342,40 @@ struct State {
     workspace_picker: Option<WorkspacePicker>,
     /// Per-workspace NavTree snapshots. Captured when the user
     /// switches away from a workspace; restored when they switch back.
-    /// Keyed by workspace slug ("<default>" for the daemon-default).
-    /// Means switching workspaces doesn't lose cursor position or the
-    /// expanded-folder shape of the file tree.
-    workspace_ui_snapshots: HashMap<String, WorkspaceUiSnapshot>,
+    /// Keyed by `WsKey` (ADR 0042 L2a, Codex review PR #163: bare-slug
+    /// keying let "sot" on host A and "sot" on host B share a slot --
+    /// `"<default>"` for the daemon-default within a host). Means
+    /// switching workspaces (or hosts) doesn't lose cursor position or
+    /// the expanded-folder shape of the file tree.
+    workspace_ui_snapshots: HashMap<WsKey, WorkspaceUiSnapshot>,
     /// Per-workspace REPL snapshots. Captured separately from the UI
     /// snapshot because `ReplEvalDone` replies can land for workspaces
     /// the user has swapped away from, and those need to mutate the
-    /// owning workspace's log directly. Keyed the same way (`<default>`
-    /// for the daemon-default workspace).
-    workspace_repl_snapshots: HashMap<String, WorkspaceReplSnapshot>,
-    /// Tracks which workspace each in-flight eval belongs to. Set at
-    /// `submit_repl_input` time using the live `active_workspace_id`;
-    /// consumed by `ReplEvalDone` so the reply can route to the right
-    /// workspace's log even if the user has swapped away.
-    eval_id_workspace: HashMap<u64, String>,
+    /// owning workspace's log directly. Keyed the same way (`WsKey`,
+    /// `"<default>"` for the daemon-default workspace within a host).
+    workspace_repl_snapshots: HashMap<WsKey, WorkspaceReplSnapshot>,
+    /// Tracks which host+workspace each in-flight eval belongs to. Set at
+    /// `submit_repl_input` time using the live `active_host`/
+    /// `active_workspace_id`; consumed by `ReplEvalDone`/`ReplFrameStreamed`/
+    /// `ReplRunFileDone` so a reply routes to the right workspace's log even
+    /// if the user has swapped away. Keyed by `(HostKey, eval_id)` (ADR 0042
+    /// L2a, Codex review PR #163): each host's daemon independently assigns
+    /// eval ids from its own counter (confirmed on the backend side --
+    /// `EXEC_EVAL_ID` is a per-process static in rust/backend/src/handlers.rs
+    /// -- and the FE's own `repl_eval_counter` resets per workspace-key too),
+    /// so a bare `eval_id` collides the moment two hosts both have an eval
+    /// id 1 in flight. The VALUE stays a `WsKey`, not a bare slug, for the
+    /// same reason every other cache in this file moved off bare slugs.
+    eval_id_workspace: HashMap<(HostKey, u64), WsKey>,
     /// Per-eval display info for an in-flight streaming `repl.run_file`,
     /// stashed when the *acceptance* ack lands (it carries the resolved
     /// basename/project/fresh but a 0 elapsed — the run hasn't happened yet)
     /// and consumed when the streamed `Done` frame finalizes, so the
-    /// completion status line shows the real elapsed. Keyed by eval_id:
+    /// completion status line shows the real elapsed. Keyed by `(HostKey,
+    /// eval_id)` -- same collision reasoning as `eval_id_workspace` (two
+    /// hosts' daemons independently assign eval ids). Value:
     /// `(basename, project_dir, fresh)`.
-    repl_runfile_status: HashMap<u64, (String, Option<String>, bool)>,
+    repl_runfile_status: HashMap<(HostKey, u64), (String, Option<String>, bool)>,
     /// Shaped annotation body for the latest `concept.read` reply, ready
     /// for the chrome's concept pane to render. `None` when the cursored
     /// row has no annotation; rebuilt on every event so we don't pay the
@@ -3402,10 +3424,12 @@ struct State {
     /// One-shot PER WORKSPACE: on a workspace's first Files-mode `tree.root`
     /// where nothing else (ADR-0017 resume, `--start-selected`) placed the
     /// cursor, default it to the project README so a fresh session opens
-    /// onto rendered docs instead of the bare root row. Keys are
-    /// `current_workspace_key()`; presence = already defaulted (or resumed)
-    /// once, so refreshes never yank the cursor.
-    nav_readme_defaulted: std::collections::HashSet<String>,
+    /// onto rendered docs instead of the bare root row. Keys are `WsKey`
+    /// (`active_ws_key()`, ADR 0042 L2a -- was bare `current_workspace_key()`,
+    /// which let two hosts' same-slug workspaces share a one-shot marker);
+    /// presence = already defaulted (or resumed) once, so refreshes never
+    /// yank the cursor.
+    nav_readme_defaulted: std::collections::HashSet<WsKey>,
     /// One-shot from `--auto-expand`; consumed after `pending_initial_selection`
     /// lands. Fires the same outgoing request the Enter/Right key would,
     /// so capture tests can verify expanded states.
@@ -3838,14 +3862,17 @@ struct State {
     /// and takes draw precedence over both edit and the normal preview.
     help_open: bool,
     preview_help: Option<MarkdownPreview>,
-    /// ADR 0030 §2: a persistent, blocking "update needed" message shown when
-    /// the backend refused the handshake on a protocol-version skew. `Some`
-    /// holds the pre-formatted body (versions + protocols + dev fix hint);
-    /// while set it takes draw precedence over help, edit, and the normal
-    /// preview (it renders where the help overlay does, reusing that path).
-    /// Cleared on the next successful `Connected`. `preview_fatal` is the
-    /// shaped buffer, rebuilt on set + on resize (mirrors `preview_help`).
-    protocol_mismatch: Option<String>,
+    /// ADR 0030 §2 / ADR 0042 L2a: a persistent, blocking "update needed"
+    /// message shown when a host's daemon refuses the handshake on a
+    /// protocol-version skew. Keyed by `HostKey` — each host's own hello
+    /// answers for itself — so ONE stale/optional remote can't block the
+    /// whole UI while every other (healthy) host works fine; only
+    /// `active_host`'s entry is projected to the blocking overlay (see
+    /// `rebuild_fatal_overlay`/`show_fatal`). A host's entry is removed on
+    /// its own next successful `Connected` (not every host's). `preview_fatal`
+    /// is the shaped buffer for whichever host is CURRENTLY active, rebuilt
+    /// on set + on resize + on an active-host switch (mirrors `preview_help`).
+    protocol_mismatch: HashMap<HostKey, String>,
     preview_fatal: Option<MarkdownPreview>,
     /// Cache of MathJax-rendered SVGs keyed by `(latex, display)`.
     /// Populated by `IncomingEvt::MathRendered`; consumed by the
@@ -5112,7 +5139,7 @@ impl State {
             preview_edit: None,
             help_open: cli.start_help,
             preview_help: None,
-            protocol_mismatch: None,
+            protocol_mismatch: HashMap::new(),
             preview_fatal: None,
             math_cache: std::collections::HashMap::new(),
             math_pending: std::collections::HashSet::new(),
@@ -5942,6 +5969,17 @@ impl State {
         self.reply_ws_key(self.active_workspace_id.as_deref())
     }
 
+    /// The host-qualified sibling of `current_workspace_key` (ADR 0042
+    /// L2a, Codex review PR #163): `(active_host, current_workspace_key())`
+    /// -- what every host-aware workspace-view map (`TreeScope::Workspace`,
+    /// the UI/REPL snapshot maps, `nav_readme_defaulted`) is actually keyed
+    /// by now. `current_workspace_key()` itself stays bare -- it's still
+    /// the wire-level `workspace_id` normalization AND half of this pair,
+    /// not a value to retype.
+    fn active_ws_key(&self) -> WsKey {
+        (self.active_host.clone(), self.current_workspace_key())
+    }
+
     /// Caption-store key for an fe-command's `workspace` argument. The wire
     /// spells the default workspace three ways (`""`, `"default"`,
     /// `"<default>"`, per `preview_targets_active_ws`) plus its real slug;
@@ -6012,39 +6050,47 @@ impl State {
             return;
         };
         const DEFAULT_KEY: &str = "<default>";
-        if let Some(v) = self.workspace_ui_snapshots.remove(&slug) {
+        // ADR 0042 L2a: `default_workspace_slug` is scoped to
+        // `active_host`'s own default (its own doc comment) -- so this
+        // migration operates on active_host's WsKey space specifically.
+        // Every map it touches is host-qualified now; migrating the wrong
+        // host's entries would be a silent no-op (miss) at best.
+        let host = self.active_host.clone();
+        let from_key: WsKey = (host.clone(), slug.clone());
+        let to_key: WsKey = (host.clone(), DEFAULT_KEY.to_string());
+        if let Some(v) = self.workspace_ui_snapshots.remove(&from_key) {
             self.workspace_ui_snapshots
-                .entry(DEFAULT_KEY.to_string())
+                .entry(to_key.clone())
                 .or_insert(v);
         }
-        if let Some(v) = self.workspace_repl_snapshots.remove(&slug) {
+        if let Some(v) = self.workspace_repl_snapshots.remove(&from_key) {
             self.workspace_repl_snapshots
-                .entry(DEFAULT_KEY.to_string())
+                .entry(to_key.clone())
                 .or_insert(v);
         }
-        for v in self.eval_id_workspace.values_mut() {
-            if *v == slug {
-                *v = DEFAULT_KEY.to_string();
+        for (k, v) in self.eval_id_workspace.iter_mut() {
+            if k.0 == host && *v == from_key {
+                *v = to_key.clone();
             }
         }
         // The README-defaulted one-shot marker is keyed the same way (an
         // ADR-0017 resume can restore the active ws BY SLUG pre-learn); a
         // slug-keyed marker left behind would let the README default fire a
         // second time and yank the cursor (codex r4).
-        if self.nav_readme_defaulted.remove(&slug) {
-            self.nav_readme_defaulted.insert(DEFAULT_KEY.to_string());
+        if self.nav_readme_defaulted.remove(&from_key) {
+            self.nav_readme_defaulted.insert(to_key.clone());
         }
         for mode in [Mode::Files, Mode::Modules] {
-            let from = (mode, TreeScope::Workspace(slug.clone()));
+            let from = (mode, TreeScope::Workspace(from_key.clone()));
             if let Some(slot) = self.tree_store.take(&from) {
-                let to = (mode, TreeScope::Workspace(DEFAULT_KEY.to_string()));
+                let to = (mode, TreeScope::Workspace(to_key.clone()));
                 match self.tree_store.take(&to) {
                     None => self.tree_store.stash(to, slot),
                     Some(existing) => {
                         // Target existed — the default-keyed slot wins; put
                         // it back and drop the slug-keyed one.
                         self.tree_store.stash(to, existing);
-                        tracing::debug!(?mode, %slug,
+                        tracing::debug!(?mode, %slug, %host,
                             "learn-migration: dropped slug-keyed tree slot (default-keyed slot exists)");
                     }
                 }
@@ -6053,12 +6099,9 @@ impl State {
     }
 
     /// The key `self.tree` currently belongs to. Computed, never stored —
-    /// so it can't drift from `(self.mode, active workspace)`.
+    /// so it can't drift from `(self.mode, active host, active workspace)`.
     fn active_tree_key(&self) -> TreeKey {
-        (
-            self.mode,
-            mode_scope(self.mode, &self.current_workspace_key()),
-        )
+        (self.mode, mode_scope(self.mode, &self.active_ws_key()))
     }
 
     /// The single stash/load seam for the active tree. Every mode or
@@ -6902,16 +6945,17 @@ impl State {
             })
             .collect();
         // Cursor lands on the active host so a fresh `h`-press shows where
-        // the current view actually is.
-        let cursor = self
-            .hosts_config
-            .hosts
-            .iter()
-            .position(|h| h.name == self.active_host)
-            .unwrap_or(0);
+        // the current view actually is. Codex review (PR #163): the OLD
+        // version computed a position into `hosts_config.hosts` (0 =
+        // first host) and used it directly as `self.tree.selected` — off
+        // by one, since row 0 of the rendered tree is the ROOT ("hosts:")
+        // and the first host lands at row 1. Restoring by NODE ID against
+        // the actual post-`set_root` rows sidesteps that arithmetic
+        // entirely rather than just patching the +1.
         self.tree.set_root(root, children);
-        if self.tree.rows.len() > cursor {
-            self.tree.selected = cursor;
+        let want_id = format!("hosts:{}", self.active_host);
+        if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == want_id) {
+            self.tree.selected = idx;
         }
         self.window.request_redraw();
     }
@@ -7259,7 +7303,7 @@ impl State {
     /// mode-bearing UI bit: nav tree + scroll + focus, preview source
     /// for repaint, concept slot, drift bookkeeping, pty target.
     fn snapshot_current_workspace_ui(&mut self) {
-        let key = self.current_workspace_key();
+        let key = self.active_ws_key();
         self.workspace_ui_snapshots.insert(
             key,
             WorkspaceUiSnapshot {
@@ -7289,7 +7333,7 @@ impl State {
     /// re-fetch in that case and the preview repaints from the cached
     /// source. Returns `false` if there's no prior state for this
     /// workspace — caller falls back to fetching fresh.
-    fn restore_workspace_ui(&mut self, key: &str) -> bool {
+    fn restore_workspace_ui(&mut self, key: &WsKey) -> bool {
         let Some(snap) = self.workspace_ui_snapshots.get(key).cloned() else {
             return false;
         };
@@ -7374,7 +7418,7 @@ impl State {
     /// `snapshot_current_workspace_ui` so leaving a workspace mid-eval
     /// (or mid-typing) survives the round trip.
     fn snapshot_current_workspace_repl(&mut self) {
-        let key = self.current_workspace_key();
+        let key = self.active_ws_key();
         self.workspace_repl_snapshots.insert(
             key,
             WorkspaceReplSnapshot {
@@ -7391,7 +7435,7 @@ impl State {
 
     /// Restore REPL state from a per-workspace snapshot. Returns true
     /// if a snapshot was found; otherwise resets to a clean REPL.
-    fn restore_workspace_repl(&mut self, key: &str) -> bool {
+    fn restore_workspace_repl(&mut self, key: &WsKey) -> bool {
         if let Some(snap) = self.workspace_repl_snapshots.get(key).cloned() {
             self.repl_log = snap.repl_log;
             self.repl_input = snap.repl_input;
@@ -7458,6 +7502,14 @@ impl State {
         // snapshot-restore below has settled the entering mode.
         let old_tree_key = self.active_tree_key();
         self.active_host = host;
+        // ADR 0042 L2a: preview_fatal is a lazily-rebuilt PROJECTION of
+        // protocol_mismatch for whichever host is active (rebuild_fatal_overlay
+        // only refills it when it's None) -- an active-host switch must
+        // invalidate it, or a stale overlay built for the DEPARTING host
+        // could keep showing (or a real mismatch on the ENTERING host could
+        // stay hidden behind an empty cached buffer) until something else
+        // happens to clear it.
+        self.preview_fatal = None;
         self.active_workspace_id = slug.clone();
         // A workspace change invalidates any one-shot reveal armed for the
         // PREVIOUS workspace. Its `tree.root` reply is dropped by the TreeRoot
@@ -7490,7 +7542,7 @@ impl State {
             // own doc).
             self.attach_session_to_bl(self.active_host.clone(), target);
         }
-        let key = self.current_workspace_key();
+        let key = self.active_ws_key();
         // Restore REPL state independently of the UI snapshot — they
         // travel in parallel and either may be missing (e.g. a first
         // visit to a workspace whose UI is already cached has no REPL
@@ -10565,7 +10617,7 @@ impl State {
     /// buffer shaped to the preview width — so it reuses the same overlay paint
     /// path. No-op (clears the buffer) when no mismatch is set.
     fn rebuild_fatal_overlay(&mut self) {
-        let Some(body) = self.protocol_mismatch.clone() else {
+        let Some(body) = self.protocol_mismatch.get(&self.active_host).cloned() else {
             self.preview_fatal = None;
             return;
         };
@@ -10683,11 +10735,14 @@ impl State {
         self.history_saved = None;
         self.repl_eval_counter = self.repl_eval_counter.saturating_add(1);
         let eval_id = self.repl_eval_counter;
-        // Tag the eval with the workspace it belongs to so a `ReplEvalDone`
-        // reply arriving after a swap routes back to the right log.
-        let workspace_key = self.current_workspace_key();
+        // Tag the eval with the host+workspace it belongs to so a
+        // `ReplEvalDone` reply arriving after a swap routes back to the
+        // right log -- and, since this key also disambiguates which
+        // HOST'S eval_id 1 this is, to the right host's log too.
+        let owner_key: HostKey = self.active_host.clone();
+        let workspace_key = self.active_ws_key();
         self.eval_id_workspace
-            .insert(eval_id, workspace_key.clone());
+            .insert((owner_key, eval_id), workspace_key.clone());
         // Bound the scrollback at a reasonable cap so a long session
         // doesn't accumulate forever. Trim from the front.
         if self.repl_log.len() >= 256 {
@@ -10822,7 +10877,14 @@ impl State {
                     // ADR 0030 §2: a clean hello means the protocol skew (if
                     // any) is resolved — clear the blocking "update needed"
                     // overlay so the chrome returns to normal.
-                    self.protocol_mismatch = None;
+                    // ADR 0042 L2a: only THIS host's mismatch entry is
+                    // resolved -- a clean hello from host A must not erase
+                    // host B's still-real mismatch. Clearing preview_fatal
+                    // unconditionally is still correct: it's a projection
+                    // of active_host's entry, rebuilt lazily at draw time
+                    // either way (harmless extra rebuild if this wasn't
+                    // the active host's mismatch to begin with).
+                    self.protocol_mismatch.remove(&event_host);
                     self.preview_fatal = None;
                     // An in-flight file.upload can't survive a transport reset —
                     // its chunk/ack loop is broken and any daemon-side partial is
@@ -10966,7 +11028,12 @@ impl State {
                     // overlay (rebuilt lazily in the draw once md_rect_px is
                     // known, so it wraps to the real preview width) and mirror
                     // a short line to the status bar.
-                    self.protocol_mismatch = Some(message);
+                    // ADR 0042 L2a: per-host -- a stale/optional remote's
+                    // mismatch must not block the whole UI while every
+                    // other (healthy) host works fine. Only active_host's
+                    // entry is ever projected to the blocking overlay
+                    // (rebuild_fatal_overlay/show_fatal).
+                    self.protocol_mismatch.insert(event_host.clone(), message);
                     self.preview_fatal = None;
                     self.status = "protocol mismatch · update needed (see preview)".to_string();
                 }
@@ -10988,7 +11055,10 @@ impl State {
                     // tree.
                     let reply_key: TreeKey = (
                         Mode::Files,
-                        TreeScope::Workspace(self.reply_ws_key(workspace_id.as_deref())),
+                        TreeScope::Workspace((
+                            event_host.clone(),
+                            self.reply_ws_key(workspace_id.as_deref()),
+                        )),
                     );
                     if reply_key != self.active_tree_key() {
                         // Park ONLY into an empty slot: a root-only rebuild
@@ -11081,7 +11151,7 @@ impl State {
                     // then lands after (and clobbers) the captured preview —
                     // the first-row "pretend we already fired" suppression
                     // below only holds while the cursor stays on row 0.
-                    let ws_key = self.current_workspace_key();
+                    let ws_key = self.active_ws_key();
                     let readme_default = matches!(self.mode, Mode::Files)
                         && self.capture_preview.is_none()
                         && self.nav_readme_defaulted.insert(ws_key);
@@ -11166,7 +11236,10 @@ impl State {
                     // splices into ITS OWN slot, not the active view.
                     let reply_key: TreeKey = (
                         Mode::Files,
-                        TreeScope::Workspace(self.reply_ws_key(workspace_id.as_deref())),
+                        TreeScope::Workspace((
+                            event_host.clone(),
+                            self.reply_ws_key(workspace_id.as_deref()),
+                        )),
                     );
                     if reply_key != self.active_tree_key() {
                         tracing::info!(?workspace_id, active = ?self.active_workspace_id,
@@ -11204,7 +11277,10 @@ impl State {
                     // abort that reveal. Trace and move on.
                     let reply_key: TreeKey = (
                         Mode::Files,
-                        TreeScope::Workspace(self.reply_ws_key(workspace_id.as_deref())),
+                        TreeScope::Workspace((
+                            event_host.clone(),
+                            self.reply_ws_key(workspace_id.as_deref()),
+                        )),
                     );
                     if reply_key != self.active_tree_key() {
                         tracing::info!(?workspace_id, %parent_id, %error,
@@ -11261,7 +11337,10 @@ impl State {
                     let rows = scan_to_tree_rows(&modules);
                     let reply_key: TreeKey = (
                         Mode::Modules,
-                        TreeScope::Workspace(self.reply_ws_key(workspace_id.as_deref())),
+                        TreeScope::Workspace((
+                            event_host.clone(),
+                            self.reply_ws_key(workspace_id.as_deref()),
+                        )),
                     );
                     if reply_key != self.active_tree_key() {
                         tracing::info!(?reply_key, active = ?self.active_tree_key(),
@@ -11322,7 +11401,10 @@ impl State {
                     // this is the alternate/legacy Modules loader).
                     let reply_key: TreeKey = (
                         Mode::Modules,
-                        TreeScope::Workspace(self.reply_ws_key(workspace_id.as_deref())),
+                        TreeScope::Workspace((
+                            event_host.clone(),
+                            self.reply_ws_key(workspace_id.as_deref()),
+                        )),
                     );
                     if reply_key != self.active_tree_key() {
                         // Same empty-slot-only rule as the TreeRoot park: a
@@ -11353,12 +11435,18 @@ impl State {
                     // un-latch let the redraw loop re-fire every frame
                     // against a fast-failing kernel (the ~4.7k req/s storm).
                     //
-                    // Ws-gated like the FileParsed success path (codex r3):
-                    // the counter is keyed by workspace-RELATIVE path, so a
-                    // late failure fired for another workspace would advance
-                    // THIS workspace's backoff (or hit its retry cap) for a
-                    // colliding path it never parsed.
-                    if self.reply_ws_key(workspace_id.as_deref()) == self.current_workspace_key() {
+                    // Ws-gated like the FileParsed success path (codex r3);
+                    // host-qualified too (ADR 0042 L2a) for the same
+                    // reasoning -- the counter is keyed by workspace-RELATIVE
+                    // path, so a late failure fired for another workspace
+                    // (or another HOST's colliding path) would advance THIS
+                    // workspace's backoff (or hit its retry cap) for a path
+                    // it never parsed.
+                    let failed_ws_key: WsKey = (
+                        event_host.clone(),
+                        self.reply_ws_key(workspace_id.as_deref()),
+                    );
+                    if failed_ws_key == self.active_ws_key() {
                         let e = self
                             .file_parse_retry
                             .entry(path)
@@ -11374,6 +11462,12 @@ impl State {
                     definitions,
                 } => {
                     let reply_ws = self.reply_ws_key(workspace_id.as_deref());
+                    // ADR 0042 L2a: host-qualified -- two hosts can each
+                    // have a workspace at the same slug, and the drift
+                    // check's collision concern below (a shared relative
+                    // path across two PROJECTS) applies at least as much
+                    // across two HOSTS.
+                    let reply_ws_key: WsKey = (event_host.clone(), reply_ws);
                     // Drift-badge bookkeeping is ACTIVE-workspace state (both
                     // maps are per-workspace snapshotted), and the drift
                     // check's `path` is workspace-RELATIVE (`files:` strip) —
@@ -11383,7 +11477,7 @@ impl State {
                     // drift verdict. Gate on the reply's workspace. The
                     // skipped insert isn't lost: the owning workspace's
                     // restore drops hash-less fire-latches and re-fires.
-                    if reply_ws == self.current_workspace_key() {
+                    if reply_ws_key == self.active_ws_key() {
                         self.file_parse_retry.remove(&path);
                         self.file_ast_hashes.insert(path.clone(), ast_hash);
                     }
@@ -11394,12 +11488,13 @@ impl State {
                     // expansion callers consume it here. Same wire shape,
                     // both consumers happy. Routed by the reply's TREE key:
                     // the splice lands in the active view only when
-                    // (Modules, reply ws) is what's on screen; otherwise in
-                    // that key's parked slot — module `path`s are absolute,
-                    // but two workspaces CAN define the same module file
-                    // (a shared package checked out twice), and the old
-                    // active-tree lookup would cross-splice them.
-                    let reply_key: TreeKey = (Mode::Modules, TreeScope::Workspace(reply_ws));
+                    // (Modules, reply host+ws) is what's on screen; otherwise
+                    // in that key's parked slot — module `path`s are
+                    // absolute, but two workspaces CAN define the same
+                    // module file (a shared package checked out twice, or
+                    // now two hosts running the same project), and a
+                    // host-blind lookup would cross-splice them.
+                    let reply_key: TreeKey = (Mode::Modules, TreeScope::Workspace(reply_ws_key));
                     let splice_active = reply_key == self.active_tree_key();
                     let module_id = {
                         let view = if splice_active {
@@ -11482,7 +11577,10 @@ impl State {
                     let parent_id = format!("modules:{module}:{name}");
                     let reply_key: TreeKey = (
                         Mode::Modules,
-                        TreeScope::Workspace(self.reply_ws_key(workspace_id.as_deref())),
+                        TreeScope::Workspace((
+                            event_host.clone(),
+                            self.reply_ws_key(workspace_id.as_deref()),
+                        )),
                     );
                     let splice_active = reply_key == self.active_tree_key();
                     let exists = {
@@ -11923,14 +12021,21 @@ impl State {
                     // a legacy synchronous-collect ack (real frames/elapsed)
                     // finalizes + removes inline.
                     let acceptance = frames.is_empty() && elapsed_ms == 0;
+                    // ADR 0042 L2a: the owner key is now (host, eval_id) --
+                    // each host's daemon assigns eval ids independently, so
+                    // a bare eval_id alone can't disambiguate whose "1" this
+                    // reply is for. event_host is exactly that host: this
+                    // reply arrived over that connection, so no other host's
+                    // eval_id could have produced it.
+                    let owner_id = (event_host.clone(), eval_id);
                     let owner = if acceptance {
-                        self.eval_id_workspace.get(&eval_id).cloned()
+                        self.eval_id_workspace.get(&owner_id).cloned()
                     } else {
-                        self.eval_id_workspace.remove(&eval_id)
+                        self.eval_id_workspace.remove(&owner_id)
                     };
-                    let active_key = self.current_workspace_key();
-                    match owner.as_deref() {
-                        Some(key) if key != active_key.as_str() => {
+                    let active_key = self.active_ws_key();
+                    match owner.as_ref() {
+                        Some(key) if key != &active_key => {
                             if let Some(snap) = self.workspace_repl_snapshots.get_mut(key) {
                                 if let Some(entry) =
                                     snap.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
@@ -12036,14 +12141,21 @@ impl State {
                         origin, display, ..
                     } = &frame
                     {
-                        if !self.eval_id_workspace.contains_key(&eval_id) {
+                        let owner_id = (event_host.clone(), eval_id);
+                        if !self.eval_id_workspace.contains_key(&owner_id) {
                             // Normalize the wire hint through the SAME collapse
                             // current_workspace_key uses: a run in the default
                             // workspace can arrive addressed by its SLUG, and a
                             // raw comparison against "<default>" would route the
                             // entry (and every subsequent frame) to a snapshot
-                            // key that no longer exists.
-                            let key = self.reply_ws_key(workspace_id.as_deref());
+                            // key that no longer exists. Host-qualified (ADR
+                            // 0042 L2a): this frame's own event_host, since a
+                            // session-originated run can arrive for a
+                            // NON-active host.
+                            let key: WsKey = (
+                                event_host.clone(),
+                                self.reply_ws_key(workspace_id.as_deref()),
+                            );
                             let label = format!("{origin} ▸ {display}");
                             let new_entry = ReplEntry {
                                 eval_id,
@@ -12054,23 +12166,24 @@ impl State {
                                 pkg_mode: false,
                                 origin: Some(label),
                             };
-                            let active_key = self.current_workspace_key();
+                            let active_key = self.active_ws_key();
                             if key == active_key {
                                 if self.repl_log.len() >= 256 {
                                     self.repl_log.remove(0);
                                 }
                                 self.repl_log.push(new_entry);
-                                self.eval_id_workspace.insert(eval_id, key);
+                                self.eval_id_workspace.insert(owner_id, key);
                             } else if let Some(snap) = self.workspace_repl_snapshots.get_mut(&key) {
                                 if snap.repl_log.len() >= 256 {
                                     snap.repl_log.remove(0);
                                 }
                                 snap.repl_log.push(new_entry);
-                                self.eval_id_workspace.insert(eval_id, key);
+                                self.eval_id_workspace.insert(owner_id, key);
                             } else {
                                 tracing::debug!(
                                     eval_id,
-                                    key,
+                                    host = %key.0,
+                                    slug = %key.1,
                                     "repl.frame: started for workspace with no snapshot — skipping"
                                 );
                             }
@@ -12122,10 +12235,11 @@ impl State {
                         } else {
                             None
                         };
-                        let owner = self.eval_id_workspace.get(&eval_id).cloned();
-                        let active_key = self.current_workspace_key();
-                        let entry: Option<&mut ReplEntry> = match owner.as_deref() {
-                            Some(key) if key != active_key.as_str() => {
+                        let owner_id = (event_host.clone(), eval_id);
+                        let owner = self.eval_id_workspace.get(&owner_id).cloned();
+                        let active_key = self.active_ws_key();
+                        let entry: Option<&mut ReplEntry> = match owner.as_ref() {
+                            Some(key) if key != &active_key => {
                                 self.workspace_repl_snapshots.get_mut(key).and_then(|snap| {
                                     snap.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
                                 })
@@ -12162,9 +12276,9 @@ impl State {
                             // routing key (and, for run_file, the status) for us. Drop
                             // the key and finalize the run_file status with the real
                             // elapsed (the ack's was a 0 placeholder, sent pre-run).
-                            self.eval_id_workspace.remove(&eval_id);
+                            self.eval_id_workspace.remove(&owner_id);
                             if let Some((basename, project_dir, fresh)) =
-                                self.repl_runfile_status.remove(&eval_id)
+                                self.repl_runfile_status.remove(&owner_id)
                             {
                                 self.status = if fresh {
                                     let proj = project_dir.as_deref().unwrap_or("(no project)");
@@ -13028,7 +13142,10 @@ impl State {
                             // Purge through the SAME key collapse the maps are
                             // written with — a destroyed default-by-slug must
                             // remove the "<default>" entries, not miss them.
-                            let ws_key = self.reply_ws_key(Some(info.slug.as_str()));
+                            let ws_key: WsKey = (
+                                event_host.clone(),
+                                self.reply_ws_key(Some(info.slug.as_str())),
+                            );
                             self.workspace_ui_snapshots.remove(&ws_key);
                             self.workspace_repl_snapshots.remove(&ws_key);
                             // The tree slots died with the snapshot on main;
@@ -13302,8 +13419,12 @@ impl State {
                     // arrives before any frame, so removing the key here would
                     // orphan a swapped-away eval's frames. The Done frame drops
                     // the key. Legacy/Err paths remove inline below.
-                    let owner = self.eval_id_workspace.get(&eval_id).cloned();
-                    let active_key = self.current_workspace_key();
+                    // ADR 0042 L2a: owner keyed by (event_host, eval_id) --
+                    // this reply's own host, since a session-originated
+                    // repl.run_file run can complete on a NON-active host.
+                    let owner_id = (event_host.clone(), eval_id);
+                    let owner = self.eval_id_workspace.get(&owner_id).cloned();
+                    let active_key = self.active_ws_key();
                     match &result {
                         Ok(info) => {
                             let frames = info.frames.clone();
@@ -13325,7 +13446,7 @@ impl State {
                             // legacy synchronous-collect Ok finalizes inline.
                             if frames.is_empty() && elapsed == 0 {
                                 self.repl_runfile_status.insert(
-                                    eval_id,
+                                    owner_id,
                                     (basename.clone(), info.project_dir.clone(), info.fresh),
                                 );
                                 self.status = if info.fresh {
@@ -13336,9 +13457,9 @@ impl State {
                                     format!("running '{basename}' (existing repl)…")
                                 };
                             } else {
-                                self.eval_id_workspace.remove(&eval_id);
-                                match owner.as_deref() {
-                                    Some(key) if key != active_key.as_str() => {
+                                self.eval_id_workspace.remove(&owner_id);
+                                match owner.as_ref() {
+                                    Some(key) if key != &active_key => {
                                         if let Some(snap) =
                                             self.workspace_repl_snapshots.get_mut(key)
                                         {
@@ -13383,7 +13504,7 @@ impl State {
                             tracing::warn!(error = %msg, "repl.run_file failed");
                             // The run failed to start — terminal, no Done frame
                             // will follow, so drop the routing key here.
-                            self.eval_id_workspace.remove(&eval_id);
+                            self.eval_id_workspace.remove(&owner_id);
                             // Mark the pre-registered entry done with an
                             // error frame so the drawer reflects the
                             // failure instead of spinning forever.
@@ -13391,8 +13512,8 @@ impl State {
                                 message: msg.clone(),
                                 stacktrace: Vec::new(),
                             };
-                            match owner.as_deref() {
-                                Some(key) if key != active_key.as_str() => {
+                            match owner.as_ref() {
+                                Some(key) if key != &active_key => {
                                     if let Some(snap) = self.workspace_repl_snapshots.get_mut(key) {
                                         if let Some(entry) =
                                             snap.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
@@ -15403,7 +15524,7 @@ impl State {
         // ADR 0030 §2: the protocol-mismatch overlay is a hard block — it takes
         // the preview pane over EVERYTHING (help included) until a clean
         // reconnect clears it. Rebuilt lazily below once md_rect_px is known.
-        let show_fatal = self.protocol_mismatch.is_some();
+        let show_fatal = self.protocol_mismatch.contains_key(&self.active_host);
         // Help overlay takes the preview pane over everything else when open.
         let show_help = !show_fatal && self.help_open && self.preview_help.is_some();
         let show_png = self.preview_png.is_some() && !show_help && !show_fatal;
@@ -17901,7 +18022,15 @@ impl ApplicationHandler for App {
                         shift,
                     )
                 {
-                    state.reconnect_now.notify_one();
+                    // ADR 0042 L2a (Codex review, PR #163): ONE shared
+                    // `reconnect_now` Arc<Notify> is cloned into EVERY
+                    // host's transport::spawn task, so multiple hosts can
+                    // simultaneously be sitting in their own backoff sleep
+                    // when F5 fires. `notify_one()` wakes at most ONE of
+                    // them (arbitrary which); `notify_waiters()` wakes
+                    // every task CURRENTLY awaiting it, matching "reconnect
+                    // now" meaning every connection, not a coin flip.
+                    state.reconnect_now.notify_waiters();
                     state.last_key = Some(label);
                     state.window.request_redraw();
                     return;
@@ -19025,10 +19154,11 @@ impl ApplicationHandler for App {
                                 // run's output alongside everything else.
                                 state.repl_eval_counter = state.repl_eval_counter.saturating_add(1);
                                 let eval_id = state.repl_eval_counter;
-                                let workspace_key = state.current_workspace_key();
+                                let owner_host = state.active_host.clone();
+                                let workspace_key = state.active_ws_key();
                                 state
                                     .eval_id_workspace
-                                    .insert(eval_id, workspace_key.clone());
+                                    .insert((owner_host, eval_id), workspace_key.clone());
                                 if state.repl_log.len() >= 256 {
                                     let excess = state.repl_log.len() - 255;
                                     state.repl_log.drain(0..excess);
@@ -22725,8 +22855,11 @@ mod tests {
     #[test]
     fn tree_key_normalization_covers_default_and_mismatch() {
         // No default slug known (boot): only None means the default ws.
+        // ADR 0042 L2a: mode_scope takes a WsKey now -- pin a fixed host so
+        // this test still isolates the slug-collapse behavior it's for.
         let k = |ws: Option<&str>| -> TreeKey {
-            (Mode::Files, mode_scope(Mode::Files, &ws_key_of(ws, None)))
+            let wk: WsKey = ("h".to_string(), ws_key_of(ws, None));
+            (Mode::Files, mode_scope(Mode::Files, &wk))
         };
         assert_eq!(k(Some("hs-tirf")), k(Some("hs-tirf")));
         assert_eq!(k(None), k(None));
@@ -22753,16 +22886,21 @@ mod tests {
         assert_eq!(ws_key_of(Some("mypkg"), Some("other")), "mypkg");
         // Mode is half the key: same ws, different mode → different slot
         // (the set_flat hole — a Modules scan can never key to a Files view).
+        let wk_a: WsKey = ("h".to_string(), "a".to_string());
         assert_ne!(
-            (Mode::Files, mode_scope(Mode::Files, "a")),
-            (Mode::Modules, mode_scope(Mode::Modules, "a"))
+            (Mode::Files, mode_scope(Mode::Files, &wk_a)),
+            (Mode::Modules, mode_scope(Mode::Modules, &wk_a))
         );
-        // Sessions/Hosts are machine-level: Global, workspace-independent.
+        // Sessions/Hosts are machine-level: Global, workspace-independent
+        // (and host-independent — the tree isn't per-host in scope).
+        let wk_ws_a: WsKey = ("h".to_string(), "wsA".to_string());
+        let wk_ws_b: WsKey = ("h".to_string(), "wsB".to_string());
         assert_eq!(
-            mode_scope(Mode::Sessions, "wsA"),
-            mode_scope(Mode::Sessions, "wsB")
+            mode_scope(Mode::Sessions, &wk_ws_a),
+            mode_scope(Mode::Sessions, &wk_ws_b)
         );
-        assert_eq!(mode_scope(Mode::Hosts, "anything"), TreeScope::Global);
+        let wk_any: WsKey = ("h".to_string(), "anything".to_string());
+        assert_eq!(mode_scope(Mode::Hosts, &wk_any), TreeScope::Global);
     }
 
     /// TreeStore slot isolation + round-trip: an install into one key's slot
@@ -22773,9 +22911,18 @@ mod tests {
     #[test]
     fn tree_store_isolates_slots_and_round_trips() {
         let mut store = TreeStore::new();
-        let key_files_a: TreeKey = (Mode::Files, TreeScope::Workspace("wsA".into()));
-        let key_files_b: TreeKey = (Mode::Files, TreeScope::Workspace("wsB".into()));
-        let key_mods_a: TreeKey = (Mode::Modules, TreeScope::Workspace("wsA".into()));
+        let key_files_a: TreeKey = (
+            Mode::Files,
+            TreeScope::Workspace(("h".to_string(), "wsA".to_string())),
+        );
+        let key_files_b: TreeKey = (
+            Mode::Files,
+            TreeScope::Workspace(("h".to_string(), "wsB".to_string())),
+        );
+        let key_mods_a: TreeKey = (
+            Mode::Modules,
+            TreeScope::Workspace(("h".to_string(), "wsA".to_string())),
+        );
         let key_sessions: TreeKey = (Mode::Sessions, TreeScope::Global);
 
         // Install into (Files, wsA) — as the routed non-active branch does.
@@ -24479,6 +24626,57 @@ mod tests {
     }
 
     #[test]
+    fn same_slug_across_hosts_produces_distinct_ws_keys_and_snapshot_slots() {
+        // ADR 0042 L2a codex review, item B: workspace_ui_snapshots (and
+        // every sibling map) used to key by bare slug, so switching from
+        // "sot" on host alpha to "sot" on host beta was the SAME map key
+        // — restore_workspace_ui found alpha's stashed snapshot and
+        // repainted it under beta. WsKey = (host, slug) makes the two
+        // entries distinct slots, so a same-slug cross-host switch can
+        // only ever hit its own host's entry.
+        let key_alpha: WsKey = ("alpha".to_string(), "sot".to_string());
+        let key_beta: WsKey = ("beta".to_string(), "sot".to_string());
+        assert_ne!(
+            key_alpha, key_beta,
+            "same slug on two different hosts must not collide"
+        );
+
+        let mut snaps: HashMap<WsKey, &'static str> = HashMap::new();
+        snaps.insert(key_alpha.clone(), "alpha's snapshot");
+        snaps.insert(key_beta.clone(), "beta's snapshot");
+        assert_eq!(snaps.get(&key_alpha), Some(&"alpha's snapshot"));
+        assert_eq!(
+            snaps.get(&key_beta),
+            Some(&"beta's snapshot"),
+            "beta's own snapshot must survive alpha's insert under the same slug"
+        );
+    }
+
+    #[test]
+    fn eval_id_workspace_owner_disambiguates_same_eval_id_across_hosts() {
+        // ADR 0042 L2a codex review, item C: both daemons independently
+        // count evals from 1 (EXEC_EVAL_ID is a per-process backend
+        // static), so a bare `eval_id` key would let host beta's id-1
+        // reply resolve against host alpha's routing entry (or land
+        // alpha's frames in beta's workspace). Keying by (HostKey,
+        // eval_id) — the same `owner_id = (event_host.clone(), eval_id)`
+        // shape every ReplEvalDone/ReplFrameStreamed/ReplRunFileDone
+        // handler builds — keeps the two hosts' "1" apart.
+        let mut owners: HashMap<(HostKey, u64), WsKey> = HashMap::new();
+        let key_alpha: WsKey = ("alpha".to_string(), "<default>".to_string());
+        let key_beta: WsKey = ("beta".to_string(), "<default>".to_string());
+        owners.insert(("alpha".to_string(), 1), key_alpha.clone());
+        owners.insert(("beta".to_string(), 1), key_beta.clone());
+
+        // A reply tagged event_host=beta, eval_id=1 resolves to beta's
+        // workspace even though the bare eval_id (1) also matches alpha's
+        // entry.
+        let owner_id = ("beta".to_string(), 1u64);
+        assert_eq!(owners.get(&owner_id), Some(&key_beta));
+        assert_ne!(owners.get(&owner_id), Some(&key_alpha));
+    }
+
+    #[test]
     fn union_replace_leaves_the_other_hosts_list_intact() {
         // The actual per-host-replace step (`workspace_lists.insert`) is a
         // bare HashMap insert — this test proves the INVARIANT it exists
@@ -24684,6 +24882,34 @@ mod tests {
         // No connections at all (offline mode) → the fallback name.
         assert_eq!(
             resolve_default_host(None, &[], "offline".to_string()),
+            "offline"
+        );
+    }
+
+    #[test]
+    fn resolve_default_host_ignores_a_configured_default_with_no_connection() {
+        // Codex review (PR #163): resolve_connections SKIPS a hosts.toml
+        // entry with neither socket nor tcp_port -- so a configured
+        // default_host name can survive with ZERO live connection behind
+        // it (a phantom active host every send fails against). The
+        // resolved conns list is the one source of truth; a configured
+        // name absent from it must not win.
+        let (conns, _rxs) = fake_conns(); // ["local", "alpha"], in that order
+        assert_eq!(
+            resolve_default_host(
+                Some("nonexistent".to_string()),
+                &conns,
+                "offline".to_string()
+            ),
+            "local",
+            "an endpointless configured default falls through to conns[0], not itself"
+        );
+        // Absent default (None) with no connections either -> offline,
+        // unchanged from the existing coverage above; restated here next
+        // to the endpointless case so the two "no real default" paths
+        // read together.
+        assert_eq!(
+            resolve_default_host(Some("nonexistent".to_string()), &[], "offline".to_string()),
             "offline"
         );
     }
