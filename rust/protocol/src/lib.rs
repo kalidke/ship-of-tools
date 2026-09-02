@@ -38,7 +38,11 @@ pub use ops::{
     WorkspaceDestroyReq, WorkspaceDestroyRes,
     WorkspaceListEntry, WorkspaceListReq, WorkspaceListRes,
 };
-pub use session_socket::{current_uid, is_private_dir, runtime_sot_dir, session_socket_path, slug};
+// `is_private_dir` stays module-private to `session_socket` (not
+// re-exported here): nothing outside that module calls it directly
+// (`runtime_sot_dir` is its only caller), so a crate-root re-export would
+// be dead weight -- codex follow-up, ADR 0042 L2b.
+pub use session_socket::{current_uid, runtime_sot_dir, session_socket_path, slug};
 
 use serde::{Deserialize, Serialize};
 
