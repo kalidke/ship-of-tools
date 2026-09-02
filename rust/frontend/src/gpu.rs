@@ -2263,13 +2263,18 @@ struct WsAutostart {
 /// resolve one for a capsule row — `try_attach_capsule_pane` falls back
 /// to `pty.open` in that case, which the daemon then refuses with
 /// `attach_direct` carrying its own resolution).
+///
+/// ADR 0042 slice L1b fix 5: `#[cfg(windows)]` — capsule has nothing to
+/// attach to off Windows, so this cache (both its type and the
+/// `State::workspace_runtime` field that holds it) is populated and
+/// read ONLY from Windows code. Unlike `WorkspaceInfo`'s own
+/// `runtime`/`state_dir`/`phase` (which stay deserializable on every
+/// platform — the wire contract doesn't fork by FE OS), this is a pure
+/// derived cache with no cross-platform obligation.
+#[cfg(windows)]
 #[derive(Clone)]
 struct WorkspaceRuntime {
     runtime: String,
-    // Read only from `try_attach_capsule_pane`'s `#[cfg(windows)]` half
-    // (capsule has nothing to attach to off Windows) — a non-Windows
-    // build never reads it, hence the allow.
-    #[allow(dead_code)]
     state_dir: Option<String>,
 }
 
@@ -2279,12 +2284,22 @@ struct WorkspaceRuntime {
 /// runtime this build doesn't know about all resolve to `Tmux`, so an
 /// unrecognized value degrades to today's `pty.open` path (something
 /// that already works) rather than silently attaching nowhere.
+///
+/// Its one production call site (`try_attach_capsule_pane`) is
+/// `#[cfg(windows)]` (fix 5 — capsule has nothing to attach to off
+/// Windows), so a non-Windows, non-test build sees this as dead;
+/// `#[allow(dead_code)]` keeps it compiled unconditionally rather than
+/// `#[cfg(windows)]`-gating it away, so `capsule_pane_tests` (Linux-run,
+/// per the unit-testable-runtime-keying requirement) can still exercise
+/// it directly.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaneBackend {
     Tmux,
     Capsule,
 }
 
+#[allow(dead_code)]
 fn pane_backend_for(runtime: &str) -> PaneBackend {
     match runtime {
         "capsule" => PaneBackend::Capsule,
@@ -2325,18 +2340,11 @@ fn pending_input_room(buffered_len: usize, incoming_len: usize, cap: usize) -> u
     incoming_len.min(room)
 }
 
-/// ADR 0042 slice L1b: the Sessions-row badge token for a capsule
-/// workspace's supervisor phase (ADR 0041 Lifecycle, snake_case, plus
-/// `"unreachable"`) — same `<flag>` / `<flag>_<detail>` convention as
-/// this tree's other badges (`"default"`, `"kernel"`, `"repl_starting"`).
-fn capsule_phase_badge(phase: &str) -> String {
-    format!("phase_{phase}")
-}
-
-/// ADR 0042 slice L1b: the short human-readable tag folded into a
-/// capsule row's glance line — separate from `capsule_phase_badge`
-/// because the badge token is a stable machine-readable identifier
-/// while this is cosmetic and free to reword.
+/// ADR 0042 slice L1b: the capsule row's supervisor phase (ADR 0041
+/// Lifecycle, snake_case, plus `"unreachable"`), folded into the
+/// Sessions-row glance line — the ONLY place this phase is surfaced;
+/// nothing renders the tree's `badges` vec today (deletion pressure: a
+/// second, invisible `badges` entry would name no observable invariant).
 fn capsule_phase_tag(phase: &str) -> String {
     format!("[{phase}]")
 }
@@ -2959,7 +2967,9 @@ struct State {
     /// (what `attach_session_to_bl` receives). `try_attach_capsule_pane`
     /// reads this to decide the session pane's backend; absent entry
     /// (not yet fetched, or a daemon that predates L1a) behaves like a
-    /// tmux row (`pane_backend_for`'s own default).
+    /// tmux row (`pane_backend_for`'s own default). fix 5: `#[cfg(windows)]`
+    /// — see `WorkspaceRuntime`'s own doc for why.
+    #[cfg(windows)]
     workspace_runtime: HashMap<String, WorkspaceRuntime>,
     /// tmux sessions whose claude auto-start is CONFIRMED up — recorded only
     /// by the `advance_autostart_scan` sniff (4171) when it actually sees ccb
@@ -4616,6 +4626,7 @@ impl State {
             workspace_slugs: Vec::new(),
             default_workspace_slug: None,
             workspace_autostart: HashMap::new(),
+            #[cfg(windows)]
             workspace_runtime: HashMap::new(),
             autostarted_sessions: std::collections::HashSet::new(),
             launching_sessions: HashMap::new(),
@@ -7261,20 +7272,23 @@ impl State {
     /// ALWAYS drops any existing `pane_attach_term` first ("deselecting
     /// detaches; a watcher leaving costs nothing," ADR 0042 L1), even when
     /// this row turns out not to be a capsule — otherwise a capsule→tmux
-    /// switch would leak the old attach client. The runtime lookup and
-    /// `PaneBackend` decision run on EVERY platform (pure, cheap, and this
-    /// is the real production path a non-Windows frontend would also take
-    /// against a future remote host, not just a test-only shape) — only
-    /// the actual attach-client construction is `#[cfg(windows)]`, mirroring
-    /// the drawer's own gate on `attach_term`. Declines (returns `false`)
-    /// when: `session_name` has no cached `workspace.list` entry yet
-    /// (first-visit race — the caller's `pty.open` will succeed for a tmux
-    /// row, or be refused `attach_direct` for a capsule one, which the
-    /// defensive handler then corrects); the cached entry's runtime isn't
-    /// `"capsule"`; this is a non-Windows build; or a capsule entry is
-    /// missing `state_dir` (defensive — L1a always sets it alongside
-    /// `runtime`, but a partially-degraded daemon reply shouldn't attach to
-    /// a path that doesn't exist).
+    /// switch would leak the old attach client.
+    ///
+    /// ADR 0042 slice L1b fix 5: the runtime-cache LOOKUP and the
+    /// `PaneBackend` decision are `#[cfg(windows)]`, same as the actual
+    /// attach-client construction — a non-Windows build must behave
+    /// byte-for-byte like `main`, which has no idea `runtime`/`state_dir`
+    /// exist, so it always declines with `PaneFeed::Tmux` regardless of
+    /// what a (today impossible, but not this build's job to assume)
+    /// remote daemon might report. Declines (returns `false`) when:
+    /// `session_name` has no cached `workspace.list` entry yet (first-visit
+    /// race — the caller's `pty.open` will succeed for a tmux row, or be
+    /// refused `attach_direct` for a capsule one, which the defensive
+    /// handler then corrects); the cached entry's runtime isn't `"capsule"`;
+    /// this is a non-Windows build; or a capsule entry is missing
+    /// `state_dir` (defensive — L1a always sets it alongside `runtime`, but
+    /// a partially-degraded daemon reply shouldn't attach to a path that
+    /// doesn't exist).
     ///
     /// ADR 0042 slice L1b fix 2: sets `pane_feed` on EVERY exit path (see
     /// `PaneFeed`'s own doc for why "no client" alone can't answer "is
@@ -7287,25 +7301,32 @@ impl State {
     /// `attach_direct` again, which re-drives a retry through that
     /// handler), `Capsule` only once the client is actually live.
     fn try_attach_capsule_pane(&mut self, session_name: &str) -> bool {
-        #[cfg(windows)]
-        {
-            self.pane_attach_term = None;
-        }
-        let Some(info) = self.workspace_runtime.get(session_name).cloned() else {
-            self.pane_feed = PaneFeed::Pending;
-            return false;
-        };
-        if pane_backend_for(&info.runtime) != PaneBackend::Capsule {
-            self.pane_feed = PaneFeed::Tmux;
-            return false;
-        }
+        // ADR 0042 slice L1b fix 5: the runtime-cache LOOKUP is
+        // Windows-only too, not just the attach-client construction —
+        // `workspace_runtime` is never populated off Windows either (its
+        // own population site is gated the same way), so this was
+        // already functionally a permanent miss there; gating the read
+        // explicitly makes that fact auditable instead of implicit.
         #[cfg(not(windows))]
         {
+            let _ = session_name;
             self.pane_feed = PaneFeed::Tmux;
             false
         }
         #[cfg(windows)]
         {
+            self.pane_attach_term = None;
+        }
+        #[cfg(windows)]
+        {
+            let Some(info) = self.workspace_runtime.get(session_name).cloned() else {
+                self.pane_feed = PaneFeed::Pending;
+                return false;
+            };
+            if pane_backend_for(&info.runtime) != PaneBackend::Capsule {
+                self.pane_feed = PaneFeed::Tmux;
+                return false;
+            }
             let Some(dir) = info.state_dir else {
                 tracing::warn!(
                     %session_name,
@@ -10105,9 +10126,9 @@ impl State {
                     // reconnect episode/backoff on a SEPARATE connection
                     // (the capsule's attach lane, not this daemon JSON
                     // transport), so it needs no help from this daemon
-                    // reconnect handler. Re-firing anyway would just be
-                    // refused `attach_direct` (harmless, but a wasted
-                    // round trip on every reconnect).
+                    // reconnect handler and re-firing would only be a
+                    // redundant round trip against a row already
+                    // correctly attached.
                     #[cfg(windows)]
                     let pane_is_capsule = self.pane_attach_term.is_some();
                     #[cfg(not(windows))]
@@ -12629,6 +12650,13 @@ impl State {
                     self.default_workspace_slug = None;
                     self.workspace_project_roots.clear();
                     self.workspace_autostart.clear();
+                    // ADR 0042 slice L1b fix 5: cache POPULATION is
+                    // cfg-gated the same as its consumption
+                    // (`try_attach_capsule_pane`) — a non-Windows build
+                    // never has anywhere to attach a capsule, so it must
+                    // behave byte-for-byte like `main`, which doesn't
+                    // know these wire fields exist at all.
+                    #[cfg(windows)]
                     self.workspace_runtime.clear();
                     self.workspace_states.clear();
                     self.workspace_id_slugs.clear();
@@ -12704,6 +12732,8 @@ impl State {
                         // ADR 0042 slice L1b: same keying as
                         // `workspace_autostart` above — `attach_session_to_bl`
                         // reads this to pick the session pane's backend.
+                        // fix 5: Windows-only, matching the clear() above.
+                        #[cfg(windows)]
                         self.workspace_runtime.insert(
                             w.tmux_session.clone(),
                             WorkspaceRuntime {
@@ -12819,20 +12849,19 @@ impl State {
                         if w.repl_state == "starting" {
                             badges.push("repl_starting".to_string());
                         }
-                        // ADR 0042 slice L1b: the supervisor's own phase —
-                        // `phase` is `Some` only for capsule rows (L1a), so
-                        // this is a no-op for every tmux row and for a
-                        // daemon that predates the field. Badge token
-                        // mirrors `repl_starting`'s convention; the human
-                        // tag rides the glance line below since nothing
-                        // renders `badges` today (same two-places pattern
-                        // `repl_starting` already uses).
-                        let capsule_phase = (w.runtime == "capsule")
-                            .then_some(w.phase.as_deref())
-                            .flatten();
-                        if let Some(phase) = capsule_phase {
-                            badges.push(capsule_phase_badge(phase));
-                        }
+                        // ADR 0042 slice L1b fix 5: Windows-only — a
+                        // non-Windows build must render byte-for-byte
+                        // like `main`, which has no idea these wire
+                        // fields exist (capsule has nowhere to attach
+                        // off Windows). `phase` is `Some` only for
+                        // capsule rows (L1a) even on Windows, so this is
+                        // already a no-op for every tmux row and for a
+                        // daemon that predates the field.
+                        #[cfg(windows)]
+                        let capsule_phase =
+                            (w.runtime == "capsule").then_some(w.phase.as_deref()).flatten();
+                        #[cfg(not(windows))]
+                        let capsule_phase: Option<&str> = None;
                         // The glance line. With agent state present, the
                         // agent's one-line summary is the default at-a-glance
                         // text (what it's doing now / just finished) — far more
@@ -12859,7 +12888,11 @@ impl State {
                         // ADR 0042 slice L1b: prefix the capsule phase tag
                         // ("ready" included — a healthy capsule confirming
                         // is as informative here as a booting REPL is
-                        // above) so it's visible without a new widget.
+                        // above) — the ONLY place this phase becomes
+                        // visible; nothing renders `badges` today (deletion
+                        // pressure: a `badges`-vec entry that names no
+                        // observable invariant is dead weight, not a
+                        // second surface).
                         let glance = match capsule_phase {
                             Some(phase) => format!("{} {glance}", capsule_phase_tag(phase)),
                             None => glance,
@@ -23858,7 +23891,7 @@ mod capsule_pane_tests {
     }
 
     #[test]
-    fn capsule_phase_badge_and_tag_cover_every_lifecycle_phase() {
+    fn capsule_phase_tag_covers_every_lifecycle_phase() {
         // ADR 0041 Lifecycle's five phases plus the lane-unreachable case
         // (`capsule_workspace::phase_str`/`UNREACHABLE_PHASE` on the
         // daemon side) — every value `phase` can carry on the wire.
@@ -23870,56 +23903,15 @@ mod capsule_pane_tests {
             "terminal",
             "unreachable",
         ] {
-            assert_eq!(capsule_phase_badge(phase), format!("phase_{phase}"));
             assert_eq!(capsule_phase_tag(phase), format!("[{phase}]"));
         }
-    }
-
-    #[test]
-    fn capsule_phase_badge_is_distinct_from_the_human_tag() {
-        // The badge is a stable machine token (matches the `default` /
-        // `kernel` / `repl_starting` badge convention); the tag is cosmetic
-        // glance-line text. They must not collide even though both derive
-        // from the same `phase` string.
-        assert_ne!(capsule_phase_badge("ready"), capsule_phase_tag("ready"));
     }
 
     // The `attach_direct` switch itself (parsing the daemon's refusal
     // payload) is tested where it lives — `transport.rs`'s own test
     // module (`attach_direct_state_dir_*`, plus a real-seam test driven
     // through `handle_response_frame`) — rather than a reimplementation
-    // here.
-
-    #[test]
-    fn workspace_runtime_cache_round_trips_through_pane_backend_for() {
-        // The shape `try_attach_capsule_pane` actually reads: a
-        // `workspace.list` reply landing as cached `WorkspaceRuntime`
-        // entries, keyed by tmux_session, then resolved through
-        // `pane_backend_for`.
-        let mut cache: HashMap<String, WorkspaceRuntime> = HashMap::new();
-        cache.insert(
-            "sot-be-alpha".to_string(),
-            WorkspaceRuntime {
-                runtime: "capsule".to_string(),
-                state_dir: Some("/state/workspaces/ws-alpha".to_string()),
-            },
-        );
-        cache.insert(
-            "sot-be-beta".to_string(),
-            WorkspaceRuntime {
-                runtime: "tmux".to_string(),
-                state_dir: None,
-            },
-        );
-        let alpha = cache.get("sot-be-alpha").expect("inserted above");
-        assert_eq!(pane_backend_for(&alpha.runtime), PaneBackend::Capsule);
-        assert_eq!(alpha.state_dir.as_deref(), Some("/state/workspaces/ws-alpha"));
-        let beta = cache.get("sot-be-beta").expect("inserted above");
-        assert_eq!(pane_backend_for(&beta.runtime), PaneBackend::Tmux);
-        // A row `switch_to_workspace` hasn't fetched yet (no cache entry)
-        // is the same "fall back to pty.open" outcome as a tmux row — the
-        // absent-entry case `try_attach_capsule_pane` itself handles via
-        // `HashMap::get` returning `None`.
-        assert!(cache.get("sot-be-never-listed").is_none());
-    }
+    // here. Runtime-cache wiring (`WorkspaceRuntime`/`workspace_runtime`)
+    // is exercised the same way — no standalone HashMap-round-trip test:
+    // it would only re-check `pane_backend_for`, already covered above.
 }

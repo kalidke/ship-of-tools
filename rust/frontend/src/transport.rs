@@ -614,15 +614,25 @@ pub struct WorkspaceInfo {
     /// hosts this workspace's agent pane. `""` from a daemon that
     /// predates L1a; the chrome treats that exactly like `"tmux"`
     /// (`pane_backend_for`), so an old daemon changes nothing.
+    ///
+    /// Deserialized on every platform (the wire contract doesn't fork by
+    /// FE OS) but read by gpu.rs only from `#[cfg(windows)]` call sites —
+    /// L1b fix 5: capsule has nothing to attach to off Windows, so a
+    /// non-Windows build must behave byte-for-byte like `main`, which
+    /// has no idea these fields exist. Hence the allow below, on all
+    /// three: parsed everywhere, acted on nowhere but Windows.
+    #[allow(dead_code)]
     pub runtime: String,
     /// The capsule's state directory (host-local absolute path) —
     /// `Some` only for `runtime == "capsule"` rows. L1b is single-host:
     /// the frontend attaches to this path directly on the SAME machine
     /// the daemon runs on (no host indirection yet — that's L2/L3).
+    #[allow(dead_code)]
     pub state_dir: Option<String>,
     /// The supervisor-lane phase (ADR 0041 Lifecycle, snake_case) or
     /// `"unreachable"` — `Some` only for `runtime == "capsule"` rows.
-    /// Surfaced on the Sessions row as a badge (`capsule_phase_badge`).
+    /// Folded into the Sessions row's glance line (`capsule_phase_tag`).
+    #[allow(dead_code)]
     pub phase: Option<String>,
 }
 
