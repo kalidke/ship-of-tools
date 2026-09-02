@@ -362,6 +362,16 @@ struct Inner {
     /// watcher spawns (2026-07-10 multiwatch). Installed once at startup via
     /// `set_watch_bus`, before workspace registration; `None` in tests.
     watch_bus: Option<(Session, broadcast::Sender<PreviewChanged>)>,
+    /// ADR 0042 slice L1a (Codex review finding 6): workspace ids whose
+    /// capsule supervisor watchdog gave up — the ADR 0041 launcher
+    /// restart sequence (1/3/7/15/30s, at most 5 in 60s) exhausted
+    /// without a live authority. `workspace.list` reads this BEFORE ever
+    /// querying that workspace's (confirmed-gone) lane again, reporting
+    /// `phase: "terminal"` loudly rather than a misleading fresh
+    /// `"unreachable"` that implies the next probe might succeed. Never
+    /// cleared automatically — only a fresh `workspace.create`/resume
+    /// (a new watchdog) or daemon restart starts over.
+    capsule_terminal: std::collections::HashSet<String>,
 }
 
 impl Workspaces {
@@ -521,6 +531,35 @@ impl Workspaces {
     pub fn pane_activity(&self, session: &str) -> String {
         let g = self.inner.read().expect("workspaces lock");
         g.pane_activity.get(session).cloned().unwrap_or_default()
+    }
+
+    /// ADR 0042 slice L1a: mark `workspace_id`'s capsule supervisor
+    /// watchdog as having given up (the restart budget exhausted with no
+    /// live authority). See `Inner::capsule_terminal`'s own doc.
+    /// `#[cfg_attr(not(windows), allow(dead_code))]`: pure, portable
+    /// bookkeeping, but its only real caller is the Windows-only
+    /// watchdog (`capsule_workspace.rs`) — matching that module's own
+    /// precedent for a function whose ONLY callers are windows-gated.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn mark_capsule_terminal(&self, workspace_id: &str) {
+        let mut g = self.inner.write().expect("workspaces lock");
+        g.capsule_terminal.insert(workspace_id.to_string());
+    }
+
+    /// `true` iff `mark_capsule_terminal` was ever called for this id.
+    pub fn is_capsule_terminal(&self, workspace_id: &str) -> bool {
+        let g = self.inner.read().expect("workspaces lock");
+        g.capsule_terminal.contains(workspace_id)
+    }
+
+    /// Clears a previously-marked terminal flag — a fresh
+    /// `workspace.create`/resume (a new watchdog) starts over. No-op if
+    /// never marked. Same windows-only-caller reasoning as
+    /// `mark_capsule_terminal` above.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn clear_capsule_terminal(&self, workspace_id: &str) {
+        let mut g = self.inner.write().expect("workspaces lock");
+        g.capsule_terminal.remove(workspace_id);
     }
 
     /// Current default workspace id, if one has been set. Consumed by

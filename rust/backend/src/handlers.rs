@@ -3861,6 +3861,27 @@ pub async fn handle_workspace_create(
         "none".to_string()
     };
     let autostart = agent_kind != "none";
+    // ADR 0042 slice L1a, Codex review finding 9: validated BEFORE any
+    // state mutation, on Windows only (every new workspace is a capsule
+    // there — the tmux path below accepts every agent kind unchanged on
+    // every other host). `agent_argv` is the same function the spawn
+    // itself uses, so this is the real check, not a second guess at it —
+    // "codex" (no known Windows launcher yet) is refused here rather
+    // than silently launching a bare shell nobody asked for.
+    #[cfg(windows)]
+    let capsule_argv = match crate::capsule_workspace::agent_argv(&agent_kind) {
+        Ok(argv) => argv,
+        Err(detail) => {
+            let payload = json!({
+                "error": detail,
+                "code": "unsupported_agent_on_windows",
+            });
+            return Ok(vec![(
+                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                None,
+            )]);
+        }
+    };
     let mut ws_seed = crate::workspaces::Workspace::from_label(
         &req.label,
         project_root.clone(),
@@ -3959,52 +3980,67 @@ pub async fn handle_workspace_create(
         }
     }
 
-    // ADR 0042 slice L1a: the capsule spawn. State dir first (created here,
-    // per the ADR's own "use the sot-log state-dir helper for the root;
-    // create the dir" instruction — `sot-capsule supervise` also creates it
-    // idempotently on its own first act, so this is defensive, not required),
-    // then the DETACHED spawn so the supervisor survives this daemon's own
-    // exit. Non-fatal on every failure, same posture as the tmux path above
-    // ("we don't fail the op if tmux misbehaves"): the workspace row is
-    // already registered and persisted: an operator can retry the attach (or
-    // restart the daemon, which resume-scans on startup) rather than losing
-    // the workspace's identity over a spawn hiccup.
+    // ADR 0042 slice L1a, Codex review finding 1: the capsule spawn — and,
+    // unlike the tmux path above, a SYNCHRONOUS failure here FAILS the
+    // whole op: "a capsule workspace with no supervisor is not a
+    // workspace." State dir created first (defensive — `sot-capsule
+    // supervise` also creates it idempotently on its own first act), then
+    // the DETACHED spawn-and-watch so the supervisor survives this
+    // daemon's own exit and its exit is handled going forward (finding 6).
+    // On ANY failure to reach a running supervisor, roll back the
+    // registry row and its persisted toml (the state directory itself is
+    // allowed to remain — a leftover, harmless, and the ADR's own record
+    // persists by design) and refuse the op with the real error text.
     #[cfg(windows)]
     {
-        match sot_log::state_dir::sot_state_dir() {
-            None => tracing::warn!(
-                "workspace.create: could not resolve this machine's state root (%LOCALAPPDATA% unset) -- capsule has no home"
-            ),
+        let spawn_result: std::result::Result<bool, String> = match sot_log::state_dir::sot_state_dir() {
+            None => Err("could not resolve this machine's state root (%LOCALAPPDATA% unset)".to_string()),
             Some(state_root) => {
                 let state_dir = crate::capsule_workspace::state_dir_for(&state_root, &ws_handle.workspace_id);
-                if let Err(e) = std::fs::create_dir_all(&state_dir) {
-                    tracing::warn!(error = %e, state_dir = ?state_dir, "workspace.create: could not create capsule state dir");
-                } else {
-                    match crate::capsule_workspace::sot_capsule_exe() {
-                        Err(e) => tracing::warn!(error = %e, "workspace.create: could not locate sot-capsule.exe next to this daemon"),
-                        Ok(exe) => {
-                            let argv = crate::capsule_workspace::agent_argv(&agent_kind);
-                            match crate::capsule_workspace::spawn_detached_supervisor(
-                                &exe,
-                                &state_dir,
-                                crate::capsule_workspace::StartMode::Start,
-                                &argv,
-                                &project_root,
-                            ) {
-                                Ok(spawned) => {
-                                    // Detached on purpose: the daemon must
-                                    // never be this process's kill domain.
-                                    std::mem::drop(spawned.child);
-                                    tracing::info!(
-                                        workspace_id = %ws_handle.workspace_id, degraded = spawned.degraded,
-                                        "workspace.create: capsule supervisor spawned"
-                                    );
-                                }
-                                Err(e) => tracing::warn!(error = %e, "workspace.create: capsule supervisor spawn failed"),
-                            }
-                        }
+                match std::fs::create_dir_all(&state_dir) {
+                    Err(e) => Err(format!("could not create capsule state dir {state_dir:?}: {e}")),
+                    Ok(()) => match crate::capsule_workspace::sot_capsule_exe() {
+                        Err(e) => Err(format!("could not locate sot-capsule.exe next to this daemon: {e}")),
+                        Ok(exe) => crate::capsule_workspace::spawn_and_watch(
+                            &exe,
+                            &state_dir,
+                            crate::capsule_workspace::StartMode::Start,
+                            &capsule_argv,
+                            &project_root,
+                            &req.agent_name,
+                            ws_handle.workspace_id.clone(),
+                            workspaces.clone(),
+                        )
+                        .map_err(|e| format!("capsule supervisor spawn failed: {e}")),
+                    },
+                }
+            }
+        };
+        match spawn_result {
+            Ok(degraded) => {
+                tracing::info!(workspace_id = %ws_handle.workspace_id, degraded, "workspace.create: capsule supervisor spawned");
+            }
+            Err(detail) => {
+                tracing::warn!(workspace_id = %ws_handle.workspace_id, error = %detail, "workspace.create: capsule spawn failed; rolling back");
+                let _ = workspaces.remove_by_id(&ws_handle.workspace_id);
+                for toml_path in [
+                    crate::workspaces::toml_path_for(&ws_handle.slug),
+                    crate::workspaces::legacy_toml_path_for(&ws_handle.slug),
+                ] {
+                    match std::fs::remove_file(&toml_path) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => tracing::warn!(error = %e, path = ?toml_path, "workspace.create rollback: toml remove failed"),
                     }
                 }
+                let payload = json!({
+                    "error": format!("capsule workspace could not be started: {detail}"),
+                    "code": "capsule_spawn_failed",
+                });
+                return Ok(vec![(
+                    Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                    None,
+                )]);
             }
         }
     }
@@ -4036,48 +4072,65 @@ pub async fn handle_workspace_create(
     )])
 }
 
-/// ADR 0042 slice L1a: `workspace.destroy` on a capsule workspace ends its
-/// run over the supervisor lane (`end_run {reason, voyage}`, the ADR's own
-/// daemon-side 30s bound — inside the FE-quit 90s ceiling) rather than
-/// killing a tmux session that never existed for it. The outcome is
-/// reported honestly via `tracing`, never silently assumed; the state
-/// directory is NEVER deleted here — the record persists by design.
-/// Windows-only body: a no-op elsewhere, since no workspace has
-/// `runtime == "capsule"` on any other host in this unit.
-async fn destroy_capsule_workspace(workspace_id: &str, slug: &str) {
+/// ADR 0042 slice L1a (Codex review finding 3): whether a capsule
+/// workspace's row (and its persisted toml) may be safely removed by
+/// `workspace.destroy`.
+enum CapsuleDestroyOutcome {
+    /// `record_closed` or `record_verified` was reached (or there was no
+    /// leg to end at all — `None`) — the row may be removed. The state
+    /// directory is NEVER deleted here regardless — the record persists
+    /// by design. Carries a debug-formatted description of the outcome
+    /// (never the concrete `sot_log::supervisor_client::EndRunOutcome`
+    /// type itself, which is Windows-only — this enum's own definition
+    /// must stay portable so it compiles on every platform, matching
+    /// this whole function's own `#[cfg(windows)]`/`#[cfg(not(windows))]`
+    /// split internally rather than at the type level). Never
+    /// constructed off Windows in this unit (see the `Kept`-only
+    /// `#[cfg(not(windows))]` arm below).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Removable(Option<String>),
+    /// The lane could not be reached at all, or answered but did not end
+    /// the run (refused / failed / outcome-unknown) — the row and its
+    /// toml MUST be kept: a live or unreachable run must never be
+    /// orphaned by a delete.
+    Kept { detail: String },
+}
+
+async fn destroy_capsule_workspace(workspace_id: &str, slug: &str) -> CapsuleDestroyOutcome {
     #[cfg(windows)]
     {
         let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
-            tracing::warn!(
-                workspace_id = %workspace_id,
-                "workspace.destroy: could not resolve this machine's state root; capsule left running"
-            );
-            return;
+            return CapsuleDestroyOutcome::Kept {
+                detail: "could not resolve this machine's state root (%LOCALAPPDATA% unset)".to_string(),
+            };
         };
         let state_dir = crate::capsule_workspace::state_dir_for(&state_root, workspace_id);
         let reason = format!("workspace '{slug}' deleted");
-        let outcome = tokio::task::spawn_blocking(move || {
-            crate::capsule_workspace::end_run(&state_dir, &reason, std::time::Duration::from_secs(30))
-        })
-        .await;
+        let outcome =
+            tokio::task::spawn_blocking(move || crate::capsule_workspace::end_run(&state_dir, &reason)).await;
         match outcome {
-            Ok(Ok(Some(outcome))) => {
-                tracing::info!(workspace_id = %workspace_id, outcome = ?outcome, "workspace.destroy: capsule end_run outcome");
+            Ok(Ok(None)) => CapsuleDestroyOutcome::Removable(None),
+            Ok(Ok(Some(o))) => {
+                use sot_log::supervisor_client::EndRunOutcome as O;
+                match &o {
+                    O::RecordVerified | O::RecordClosed => CapsuleDestroyOutcome::Removable(Some(format!("{o:?}"))),
+                    O::Failed(detail) => CapsuleDestroyOutcome::Kept { detail: format!("end_run failed: {detail}") },
+                    O::Refused(detail) => CapsuleDestroyOutcome::Kept { detail: format!("end_run refused: {detail}") },
+                    O::OutcomeUnknown => CapsuleDestroyOutcome::Kept {
+                        detail: "end_run outcome unknown (the ADR's own 90s cutoff elapsed with no terminal reply)".to_string(),
+                    },
+                }
             }
-            Ok(Ok(None)) => {
-                tracing::info!(workspace_id = %workspace_id, "workspace.destroy: capsule had no leg to end");
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(workspace_id = %workspace_id, error = %e, "workspace.destroy: capsule end_run failed");
-            }
-            Err(join_err) => {
-                tracing::warn!(workspace_id = %workspace_id, error = %join_err, "workspace.destroy: capsule end_run task panicked");
-            }
+            Ok(Err(e)) => CapsuleDestroyOutcome::Kept { detail: format!("supervisor lane unreachable: {e}") },
+            Err(join_err) => CapsuleDestroyOutcome::Kept { detail: format!("end_run task panicked: {join_err}") },
         }
     }
     #[cfg(not(windows))]
     {
         let _ = (workspace_id, slug);
+        // Unreachable in practice: no workspace has `runtime == "capsule"`
+        // off Windows in this unit (see `Workspace::runtime`'s own doc).
+        CapsuleDestroyOutcome::Kept { detail: "capsule runtime is Windows-only".to_string() }
     }
 }
 
@@ -4129,13 +4182,32 @@ pub async fn handle_workspace_destroy(
     let tmux_session = ws.tmux_session.clone();
     let agent_name = ws.agent_name.clone();
 
-    // ADR 0042 slice L1a: a capsule workspace has no tmux session to
-    // kill at all — end its run over the supervisor lane instead.
-    // `tmux_killed` stays `false` for it, accurately: no tmux session
-    // ever existed to kill.
+    // ADR 0042 slice L1a, Codex review finding 3: a capsule workspace has
+    // no tmux session to kill at all — end its run over the supervisor
+    // lane instead, and — unlike the tmux kill, which is a best-effort UX
+    // nicety — a capsule whose run did NOT reach `record_closed`/
+    // `record_verified` STOPS the whole delete here: the row and its
+    // toml are kept, and the caller sees a typed error, so a live or
+    // unreachable run is never orphaned by a delete that silently
+    // "succeeded" out from under it.
     let tmux_killed = if ws.runtime == "capsule" {
-        destroy_capsule_workspace(&workspace_id, &slug).await;
-        false
+        match destroy_capsule_workspace(&workspace_id, &slug).await {
+            CapsuleDestroyOutcome::Removable(outcome) => {
+                tracing::info!(workspace_id = %workspace_id, outcome = ?outcome, "workspace.destroy: capsule run ended; removing the row");
+                false // no tmux session ever existed to kill -- accurate, not a failure
+            }
+            CapsuleDestroyOutcome::Kept { detail } => {
+                tracing::warn!(workspace_id = %workspace_id, detail = %detail, "workspace.destroy: capsule run not confirmed ended; keeping the row");
+                let payload = json!({
+                    "error": format!("capsule workspace could not be safely deleted: {detail}"),
+                    "code": "capsule_end_not_reached",
+                });
+                return Ok(vec![(
+                    Frame::res(req_id, op::WORKSPACE_DESTROY, payload),
+                    None,
+                )]);
+            }
+        }
     } else {
         // Kill the tmux session. Failure is non-fatal — usually means the
         // session wasn't running anyway. We surface the bool so the
@@ -4536,42 +4608,52 @@ pub async fn handle_workspace_list(
         stored.to_string()
     };
     let ws_list = workspaces.list();
-    // ADR 0042 slice L1a: query every capsule workspace's supervisor lane
-    // CONCURRENTLY, each on its own blocking task (the sot-log client is
-    // synchronous pipe I/O), bounded so `workspace.list` never blocks the
-    // daemon's other work beyond a few seconds regardless of how many
-    // capsule workspaces exist or how unresponsive their lanes are. Kept
-    // unconditional (not itself `#[cfg(windows)]`) so both platforms share
-    // one code shape; only `capsule_workspace::phase_of` is windows-only,
-    // and no workspace has `runtime == "capsule"` on any other host in
-    // this unit, so the query set is always empty there.
+    // ADR 0042 slice L1a, Codex review finding 11: query every capsule
+    // workspace's supervisor lane under FIXED-WIDTH concurrency (a
+    // semaphore, the same `LANE_CONCURRENCY` bound the startup
+    // resume-scan uses — finding 10) and ONE absolute deadline over the
+    // WHOLE gather, never a fresh per-row budget (which let total call
+    // time grow unboundedly with row count, and handed a wedged task a
+    // brand-new allowance every time its own handle happened to be
+    // reached). A workspace already marked `capsule_terminal` (finding 6
+    // — its watchdog gave up) is never queried at all; its phase is
+    // "terminal", not a fresh "unreachable" that would misleadingly
+    // imply the next probe might succeed. Kept unconditional (not itself
+    // `#[cfg(windows)]`) so both platforms share one code shape; only
+    // `capsule_workspace::phase_of` is windows-only, and no workspace has
+    // `runtime == "capsule"` on any other host in this unit, so the
+    // query set is always empty there.
     #[cfg(windows)]
     let phases: std::collections::HashMap<String, String> = {
-        let mut handles = Vec::new();
-        for ws in &ws_list {
-            if ws.runtime != "capsule" {
-                continue;
-            }
-            let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
-                continue;
-            };
-            let dir = crate::capsule_workspace::state_dir_for(&state_root, &ws.workspace_id);
-            let id = ws.workspace_id.clone();
-            handles.push(tokio::task::spawn_blocking(move || {
-                (id, crate::capsule_workspace::phase_of(&dir).to_string())
+        let candidates: Vec<(String, std::path::PathBuf)> = match sot_log::state_dir::sot_state_dir() {
+            Some(root) => ws_list
+                .iter()
+                .filter(|ws| ws.runtime == "capsule" && !workspaces.is_capsule_terminal(&ws.workspace_id))
+                .map(|ws| (ws.workspace_id.clone(), crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id)))
+                .collect(),
+            None => Vec::new(),
+        };
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(crate::capsule_workspace::LANE_CONCURRENCY));
+        let mut handles = Vec::with_capacity(candidates.len());
+        for (id, dir) in candidates {
+            let permit = semaphore.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = permit.acquire_owned().await;
+                let phase = tokio::task::spawn_blocking(move || crate::capsule_workspace::phase_of(&dir))
+                    .await
+                    .unwrap_or(crate::capsule_workspace::UNREACHABLE_PHASE);
+                (id, phase.to_string())
             }));
         }
         let mut out = std::collections::HashMap::new();
-        for h in handles {
-            // `query_status`'s own worst case is ~9s (connect 2s + hello
-            // 2s + status 5s); this outer bound is belt-and-braces
-            // against a wedged blocking task, not the primary budget.
-            if let Ok(Ok((id, phase))) =
-                tokio::time::timeout(std::time::Duration::from_secs(12), h).await
-            {
-                out.insert(id, phase);
+        let gather = async {
+            for h in handles {
+                if let Ok((id, phase)) = h.await {
+                    out.insert(id, phase);
+                }
             }
-        }
+        };
+        let _ = tokio::time::timeout(crate::capsule_workspace::LIST_LANE_DEADLINE, gather).await;
         out
     };
     #[cfg(not(windows))]
@@ -4615,19 +4697,28 @@ pub async fn handle_workspace_list(
             // ADR 0042 slice L1a: `state_dir` is a pure function of the
             // state root + workspace_id (no I/O, no query) so it's
             // available even when the phase query below failed or timed
-            // out; `phase` falls back to "unreachable" in exactly that
-            // case ("failure -> unreachable" — see `capsule_workspace`'s
-            // own doc). Both stay `None` for a `"tmux"` row.
+            // out. `phase` — Codex review finding 6 — checks
+            // `capsule_terminal` FIRST: a workspace whose watchdog gave
+            // up is never re-queried, and reports "terminal" (loud and
+            // final) rather than a fresh "unreachable" that misleadingly
+            // implies the next probe might still succeed; otherwise it
+            // falls back to "unreachable" for an unresolved/failed query
+            // ("failure -> unreachable" — see `capsule_workspace`'s own
+            // doc). Both stay `None` for a `"tmux"` row.
             let (state_dir, phase) = if ws.runtime == "capsule" {
                 let state_dir = sot_log::state_dir::sot_state_dir().map(|root| {
                     crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id)
                         .to_string_lossy()
                         .into_owned()
                 });
-                let phase = phases
-                    .get(&ws.workspace_id)
-                    .cloned()
-                    .unwrap_or_else(|| crate::capsule_workspace::UNREACHABLE_PHASE.to_string());
+                let phase = if workspaces.is_capsule_terminal(&ws.workspace_id) {
+                    crate::capsule_workspace::phase_str(sot_log::wire::SupervisorPhase::Terminal).to_string()
+                } else {
+                    phases
+                        .get(&ws.workspace_id)
+                        .cloned()
+                        .unwrap_or_else(|| crate::capsule_workspace::UNREACHABLE_PHASE.to_string())
+                };
                 (state_dir, Some(phase))
             } else {
                 (None, None)

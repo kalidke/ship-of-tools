@@ -7,14 +7,14 @@
 //
 // Split deliberately into PURE helpers (no OS call: the state-dir path
 // arithmetic, the phase-to-wire-string mapping, the agent argv choice)
-// and the WINDOWS-ONLY runtime (spawning, querying, ending a supervisor
-// over `sot_log::supervisor_client`). The pure half is compiled and
-// unit-tested on every platform — ADR 0042 L1a's own gate runs
-// `cargo test --workspace` on Linux, and gating path/string arithmetic
-// behind `#[cfg(windows)]` would only prevent that gate from ever
-// exercising it. On non-Windows hosts nothing in this module is called at
-// all: `workspace.create` keeps today's tmux path unchanged (see
-// `workspaces.rs`/`handlers.rs`).
+// and the WINDOWS-ONLY runtime (spawning, watching, querying, ending a
+// supervisor over `sot_log::supervisor_client`). The pure half is
+// compiled and unit-tested on every platform — ADR 0042 L1a's own gate
+// runs `cargo test --workspace` on Linux, and gating path/string
+// arithmetic behind `#[cfg(windows)]` would only prevent that gate from
+// ever exercising it. On non-Windows hosts nothing in this module is
+// called at all: `workspace.create` keeps today's tmux path unchanged
+// (see `workspaces.rs`/`handlers.rs`).
 
 use std::path::{Path, PathBuf};
 
@@ -42,27 +42,23 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 /// same flags `ccb` itself execs with (`claude --dangerously-skip-
 /// permissions /sot-session-start`), relying on `claude` being on the
 /// daemon's own PATH — a detached child inherits it, same as any spawned
-/// process. Anything else (`"none"`, and `"codex"`, which has no known
-/// Windows launcher either) falls back to the bare platform shell rather
-/// than guessing at a command that does not exist — an argued limitation,
-/// not a silent one; a Windows codex launcher is future work.
-// `#[cfg_attr(not(windows), allow(dead_code))]` on the four items below,
-// matching `sot_log::lib.rs`'s own `host_handshake`/`deadline` precedent:
-// each is portable and pure (so its OWN unit tests run on every
-// platform), but its only PRODUCTION caller lives inside this module's
-// `#[cfg(windows)] mod windows_runtime` — so a non-Windows, non-test build
-// (`cargo check`/`cargo clippy` without `--tests`) genuinely has none,
-// and would otherwise warn on code that is real, not dead, on the
-// platform it exists for.
+/// process. `"none"` is the explicit bare platform shell. Every other
+/// kind (`"codex"` included — no known Windows launcher exists) is
+/// REFUSED (ADR 0042 L1a, Codex review finding 9): silently substituting
+/// `cmd.exe` for a kind the caller explicitly asked for would launch
+/// something the caller never requested and never learn about it.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn agent_argv(agent_kind: &str) -> Vec<String> {
+pub fn agent_argv(agent_kind: &str) -> Result<Vec<String>, String> {
     match agent_kind {
-        "claude" => vec![
+        "none" => Ok(vec!["cmd.exe".to_string()]),
+        "claude" => Ok(vec![
             "claude".to_string(),
             "--dangerously-skip-permissions".to_string(),
             "/sot-session-start".to_string(),
-        ],
-        _ => vec!["cmd.exe".to_string()],
+        ]),
+        other => Err(format!(
+            "agent {other:?} has no Windows capsule launcher yet (only \"claude\" and \"none\" are supported on this host)"
+        )),
     }
 }
 
@@ -111,13 +107,79 @@ pub fn phase_str(phase: sot_log::wire::SupervisorPhase) -> &'static str {
     }
 }
 
+/// ADR 0042 L1a (Codex review finding 6): the daemon's own watchdog
+/// restart budget for a capsule supervisor — ADR 0041's own launcher
+/// restart sequence ("restart with `--resume` on the launcher's shipped
+/// 1/3/7/15/30 s sequence, at most 5 restarts in 60 s, then stop and
+/// report"). The daemon has become that launcher for every capsule
+/// workspace it creates or resumes, so this is the ADR's own row, not
+/// new policy.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const RESTART_BACKOFFS: [std::time::Duration; 5] = [
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(3),
+    std::time::Duration::from_secs(7),
+    std::time::Duration::from_secs(15),
+    std::time::Duration::from_secs(30),
+];
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const MAX_RESTARTS_PER_WINDOW: usize = 5;
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// ADR 0042 L1a (Codex review findings 10/11): "a small semaphore over
+/// spawns" — the SAME fixed-width bound reused for both the startup
+/// resume-scan's concurrent spawns and `workspace.list`'s concurrent
+/// lane queries, rather than two independently-invented numbers.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const LANE_CONCURRENCY: usize = 4;
+
+/// ADR 0042 L1a, Codex review finding 11: ONE absolute deadline over
+/// `workspace.list`'s WHOLE lane-query gather — never a fresh budget per
+/// row, which let total call time grow with row count. Generous over a
+/// single `query_status` call's own worst case (connect 2s + hello 2s +
+/// status 5s ~= 9s) to give `LANE_CONCURRENCY`-wide batches room to
+/// drain; a row not yet resolved when this expires simply reports
+/// "unreachable" — never blocks the ones that did answer.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const LIST_LANE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Environment variables scrubbed from the spawned supervisor's (and
+/// hence its capsule leg's) environment before launch — the exact list
+/// `comm/adapters/claude/bin/ccb` unsets, for the identical reason: a
+/// spawning parent's own Claude Code nesting markers make a fresh
+/// `claude` mis-detect itself as nested/forked and exit silently.
+/// `CLAUDECODE`/`AI_AGENT`/`CLAUDE_CODE_SESSION_ID` make it think it is
+/// running INSIDE another claude; `CLAUDE_CODE_FORK_SUBAGENT`/
+/// `CLAUDE_CODE_CHILD_SESSION`/`CLAUDE_CODE_TEAMMATE_MODE`/
+/// `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` make it think it is a forked/
+/// teammate session. A daemon started from within a claude session (or
+/// restarted by one) would otherwise propagate every one of these into
+/// every capsule it spawns (ADR 0042 L1a, Codex review finding 9).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
+    "CLAUDE_CODE_FORK_SUBAGENT",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_TEAMMATE_MODE",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+    "CLAUDECODE",
+    "AI_AGENT",
+    "CLAUDE_CODE_SESSION_ID",
+];
+
 #[cfg(windows)]
 mod windows_runtime {
-    use super::{agent_argv, mode_flag, StartMode};
+    use super::{
+        agent_argv, mode_flag, StartMode, LANE_CONCURRENCY, MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB,
+        RESTART_BACKOFFS, RESTART_WINDOW,
+    };
     use crate::workspaces::Workspaces;
     use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
-    use std::process::{Child, Command, Stdio};
+    use std::sync::Arc;
+    use std::time::Instant;
+    use std::process::Stdio;
+    use tokio::process::{Child, Command};
 
     /// `DETACHED_PROCESS` (Win32): the child gets no console of its own —
     /// right for a background authority that is never an interactive
@@ -139,6 +201,11 @@ mod windows_runtime {
     /// Win32 `ERROR_ACCESS_DENIED` — what a denied breakaway attempt
     /// reports on `CreateProcess`.
     const ERROR_ACCESS_DENIED: i32 = 5;
+    /// `sot-capsule supervise`'s own clean-exit code (`EXIT_CLEAN`).
+    const EXIT_CLEAN: i32 = 0;
+    /// `sot-capsule supervise`'s own terminal-failure exit code
+    /// (`EXIT_TERMINAL`) — ambiguous on its own (see [`wait_and_classify`]).
+    const EXIT_TERMINAL: i32 = 69;
 
     /// `sot-capsule[.exe]`, resolved next to the daemon's own executable —
     /// "the `sot-capsule` binary path: next to the daemon's own
@@ -153,24 +220,28 @@ mod windows_runtime {
     }
 
     /// What [`spawn_detached_supervisor`] reports about how the spawn went.
-    pub struct SpawnedSupervisor {
-        pub child: Child,
+    struct SpawnedSupervisor {
+        child: Child,
         /// `true` iff the breakaway attempt was denied and this
         /// supervisor was spawned still inside the daemon's own job — it
         /// will die if that job is ever closed with
-        /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Logged at spawn time;
-        /// nothing in ADR 0042 L1a's scope asks a client to see this.
-        pub degraded: bool,
+        /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Recorded on the wire via
+        /// `--survival degraded` (ADR 0042 L1a, Codex review finding 7),
+        /// so the capsule's own status/record are truthful, not merely
+        /// logged here.
+        degraded: bool,
     }
 
     /// Spawn `sot-capsule.exe supervise <state_dir> <--start|--resume>
-    /// --assume-no-rollback-target -- <agent argv>` DETACHED, so the
-    /// supervisor authority survives the daemon's own exit — the daemon
-    /// must not be its kill domain (ADR 0042 L1a). `--assume-no-rollback-
-    /// target` is mandatory: `sot_log::supervisor::supervise` itself
-    /// refuses (exit 69) without it pre-U4 (no release-apply transaction
-    /// exists yet to supply real rollout evidence — see that function's
-    /// own doc).
+    /// --survival <normal|degraded> --assume-no-rollback-target --
+    /// <agent argv>` DETACHED, so the supervisor authority survives the
+    /// daemon's own exit — the daemon must not be its kill domain (ADR
+    /// 0042 L1a). `--assume-no-rollback-target` is mandatory:
+    /// `sot_log::supervisor::supervise` itself refuses (exit 69) without
+    /// it pre-U4. The nesting env vars are scrubbed and `SOT_COMM_NAME`
+    /// exported (Codex review finding 9) — the same contract
+    /// `boot_wrapper_command`'s tmux path already gives every autostart
+    /// workspace.
     ///
     /// Attempts `CREATE_BREAKAWAY_FROM_JOB` unconditionally alongside
     /// `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`: a denied breakaway
@@ -178,20 +249,25 @@ mod windows_runtime {
     /// failure (a missing binary, an invalid argv, …), which is exactly
     /// the signal that separates "retry without it, DEGRADED" from
     /// "propagate the real error".
-    pub fn spawn_detached_supervisor(
+    fn spawn_detached_supervisor(
         sot_capsule_exe: &Path,
         state_dir: &Path,
         mode: StartMode,
         agent_argv: &[String],
         cwd: &Path,
+        agent_name: &str,
     ) -> std::io::Result<SpawnedSupervisor> {
         let base_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
-        let build = |flags: u32| -> Command {
-            use std::os::windows::process::CommandExt;
+        let build = |flags: u32, survival: &str| -> Command {
+            // `tokio::process::Command` re-exposes `.creation_flags()`
+            // natively (no `std::os::windows::process::CommandExt`
+            // import needed, unlike `std::process::Command`).
             let mut cmd = Command::new(sot_capsule_exe);
             cmd.arg("supervise")
                 .arg(state_dir)
                 .arg(mode_flag(mode))
+                .arg("--survival")
+                .arg(survival)
                 .arg("--assume-no-rollback-target")
                 .arg("--")
                 .args(agent_argv)
@@ -200,16 +276,22 @@ mod windows_runtime {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
+            for var in NESTING_ENV_VARS_TO_SCRUB {
+                cmd.env_remove(var);
+            }
+            if !agent_name.is_empty() {
+                cmd.env("SOT_COMM_NAME", agent_name);
+            }
             cmd
         };
-        match build(base_flags | CREATE_BREAKAWAY_FROM_JOB).spawn() {
+        match build(base_flags | CREATE_BREAKAWAY_FROM_JOB, "normal").spawn() {
             Ok(child) => Ok(SpawnedSupervisor { child, degraded: false }),
             Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
                 tracing::warn!(
                     state_dir = ?state_dir,
                     "capsule supervisor breakaway denied — spawning DEGRADED (still in the daemon's job)"
                 );
-                let child = build(base_flags).spawn()?;
+                let child = build(base_flags, "degraded").spawn()?;
                 Ok(SpawnedSupervisor { child, degraded: true })
             }
             Err(e) => Err(e),
@@ -218,7 +300,8 @@ mod windows_runtime {
 
     /// One capsule workspace's supervisor-lane status, as the daemon's
     /// own wire vocabulary — never the raw `sot_log` types, so
-    /// `handlers.rs` has nothing Windows-specific to import.
+    /// `handlers.rs` has nothing Windows-specific to import. BLOCKING —
+    /// callers run it via `spawn_blocking`.
     pub fn phase_of(state_dir: &Path) -> &'static str {
         match sot_log::supervisor_client::query_status(state_dir) {
             Ok(report) => super::phase_str(report.phase),
@@ -230,105 +313,272 @@ mod windows_runtime {
     }
 
     /// `workspace.delete` on a capsule workspace: send `end_run {reason,
-    /// voyage}` on the lane and wait (bounded — ADR 0042 L1a's own daemon-
-    /// side 30s ceiling, inside the ADR's FE-quit 90s bound), reporting
-    /// the outcome honestly. `Ok(None)` means the workspace never had a
-    /// leg to end (no voyage observed yet — nothing to do). The state
-    /// directory is NEVER deleted here: the record persists by design.
+    /// voyage}` on the lane (bounded by `sot_log::supervisor_client::
+    /// end_run`'s own ADR-pinned 90s cutoff — see that function's own
+    /// doc), reporting the outcome honestly. `Ok(None)` means the
+    /// workspace never had a leg to end (no voyage observed yet —
+    /// nothing to do). The state directory is NEVER deleted here: the
+    /// record persists by design. BLOCKING — callers run it via
+    /// `spawn_blocking`.
     pub fn end_run(
         state_dir: &Path,
         reason: &str,
-        budget: std::time::Duration,
     ) -> std::io::Result<Option<sot_log::supervisor_client::EndRunOutcome>> {
         let status = sot_log::supervisor_client::query_status(state_dir)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         let Some(voyage) = status.voyage else {
             return Ok(None);
         };
-        let outcome = sot_log::supervisor_client::end_run(state_dir, &voyage, reason, budget)
+        let outcome = sot_log::supervisor_client::end_run(state_dir, &voyage, reason)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         Ok(Some(outcome))
     }
 
-    /// On daemon startup: scan `<state-root>/workspaces/*/` (ADR 0042
-    /// L1a) and, for each state dir with a valid `drawer.voyage` pointer,
-    /// spawn `sot-capsule supervise <dir> --resume …` DETACHED — the
-    /// supervisor itself decides adopt-vs-spawn (ADR 0041's start-mode
-    /// table); the daemon never does. A dir with no valid pointer yet
-    /// (a workspace whose FIRST leg never got that far) is skipped — its
-    /// own `--start` already ran once at create time and either finished
-    /// publishing the pointer or the workspace was never really live.
+    /// Spawn a capsule's supervisor authority AND hand it to a watchdog
+    /// task together (ADR 0042 L1a, Codex review finding 6: "hand every
+    /// spawned Child to a waiter task") — the daemon has become ADR
+    /// 0041's own launcher for every capsule workspace it creates or
+    /// resumes. Returns synchronously once the FIRST spawn attempt is
+    /// known to have succeeded or failed, so a caller (`workspace.create`,
+    /// finding 1) can roll back on a synchronous failure; the watchdog
+    /// itself then runs entirely in the background. Clears any prior
+    /// `capsule_terminal` mark for this workspace — a fresh spawn is a
+    /// fresh chance.
+    pub fn spawn_and_watch(
+        sot_capsule_exe: &Path,
+        state_dir: &Path,
+        mode: StartMode,
+        agent_argv: &[String],
+        cwd: &Path,
+        agent_name: &str,
+        workspace_id: String,
+        workspaces: Workspaces,
+    ) -> std::io::Result<bool> {
+        let spawned = spawn_detached_supervisor(sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name)?;
+        let degraded = spawned.degraded;
+        workspaces.clear_capsule_terminal(&workspace_id);
+        spawn_watchdog(
+            workspace_id,
+            sot_capsule_exe.to_path_buf(),
+            state_dir.to_path_buf(),
+            agent_argv.to_vec(),
+            cwd.to_path_buf(),
+            agent_name.to_string(),
+            spawned.child,
+            workspaces,
+        );
+        Ok(degraded)
+    }
+
+    /// What one leg's exit means for the watchdog's own decision —
+    /// ADR 0042 L1a, Codex review finding 6.
+    enum LegOutcome {
+        /// Exit 0 (`EXIT_CLEAN`): the run ended normally. Never
+        /// restarted — the lane (or its absence) already says
+        /// everything a client needs.
+        Clean,
+        /// Exit 69 (`EXIT_TERMINAL`) but the lane still answers: this
+        /// leg lost the race for `supervisor.lock` against another
+        /// already-running authority — expected, not a crash.
+        ForeignFence,
+        /// Anything else: a genuine crash needing the restart sequence.
+        Crash,
+    }
+
+    /// Waits for `child` to exit and classifies the result. Exit 69 is
+    /// ambiguous on its own (a losing race for the fence against another
+    /// live authority ALSO exits 69, indistinguishably from a genuine
+    /// terminal failure), so this queries the lane ONCE before deciding —
+    /// an answering lane means another authority holds the fence
+    /// (expected, logged at debug); a silent one is treated as the crash
+    /// it looks like. The query is BLOCKING sot_log I/O, run via
+    /// `spawn_blocking` so it never stalls the async runtime.
+    async fn wait_and_classify(child: &mut Child, state_dir: &Path, workspace_id: &str) -> LegOutcome {
+        let status = match child.wait().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: wait() failed; treating as a crash");
+                return LegOutcome::Crash;
+            }
+        };
+        match status.code() {
+            Some(EXIT_CLEAN) => LegOutcome::Clean,
+            Some(EXIT_TERMINAL) => {
+                let dir = state_dir.to_path_buf();
+                let answered = tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&dir).is_ok())
+                    .await
+                    .unwrap_or(false);
+                if answered {
+                    tracing::debug!(workspace_id = %workspace_id, "capsule supervisor exited 69 but the lane still answers -- another authority holds the fence");
+                    LegOutcome::ForeignFence
+                } else {
+                    LegOutcome::Crash
+                }
+            }
+            _ => LegOutcome::Crash,
+        }
+    }
+
+    /// The watchdog itself: waits for the leg to exit, classifies it, and
+    /// on a crash restarts with `--resume` under ADR 0041's own launcher
+    /// restart sequence (`RESTART_BACKOFFS`, at most `MAX_RESTARTS_PER_
+    /// WINDOW` within `RESTART_WINDOW`), then stops and marks the
+    /// workspace `capsule_terminal` — LOUDLY, via `Workspaces::
+    /// mark_capsule_terminal`, which `workspace.list` reads before ever
+    /// touching the (confirmed-gone) lane again.
+    fn spawn_watchdog(
+        workspace_id: String,
+        sot_capsule_exe: PathBuf,
+        state_dir: PathBuf,
+        argv: Vec<String>,
+        cwd: PathBuf,
+        agent_name: String,
+        child: Child,
+        workspaces: Workspaces,
+    ) {
+        tokio::spawn(async move {
+            let mut child_opt = Some(child);
+            let mut restart_times: Vec<Instant> = Vec::new();
+            loop {
+                let outcome = match child_opt.as_mut() {
+                    Some(c) => wait_and_classify(c, &state_dir, &workspace_id).await,
+                    // A previous restart attempt itself failed to spawn
+                    // (no live child to wait on) -- counts as another
+                    // crash against the same budget.
+                    None => LegOutcome::Crash,
+                };
+                child_opt = None;
+                match outcome {
+                    LegOutcome::Clean | LegOutcome::ForeignFence => return,
+                    LegOutcome::Crash => {
+                        let now = Instant::now();
+                        restart_times.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
+                        if restart_times.len() >= MAX_RESTARTS_PER_WINDOW {
+                            tracing::error!(
+                                workspace_id = %workspace_id, window = ?RESTART_WINDOW, max = MAX_RESTARTS_PER_WINDOW,
+                                "capsule supervisor watchdog: restart budget exhausted -- giving up, marking terminal"
+                            );
+                            workspaces.mark_capsule_terminal(&workspace_id);
+                            return;
+                        }
+                        let backoff = RESTART_BACKOFFS[restart_times.len().min(RESTART_BACKOFFS.len() - 1)];
+                        tracing::warn!(
+                            workspace_id = %workspace_id, backoff = ?backoff, attempt = restart_times.len() + 1,
+                            "capsule supervisor watchdog: crashed, restarting with --resume"
+                        );
+                        tokio::time::sleep(backoff).await;
+                        restart_times.push(Instant::now());
+                        match spawn_detached_supervisor(&sot_capsule_exe, &state_dir, StartMode::Resume, &argv, &cwd, &agent_name) {
+                            Ok(spawned) => child_opt = Some(spawned.child),
+                            Err(e) => {
+                                tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: restart spawn failed");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// On daemon startup: resume every REGISTERED capsule workspace's
+    /// supervisor (ADR 0042 L1a) — `--resume` unconditionally, letting
+    /// the supervisor's own start-mode table decide adopt-vs-spawn.
+    /// Codex review finding 8: a workspace whose FIRST leg crashed
+    /// BEFORE ever publishing `drawer.voyage` (the exact pre-pointer
+    /// crash window) still gets `--resume` here — gating on the pointer
+    /// first, as an earlier version did, silently abandoned exactly that
+    /// workspace forever, when `--resume` with no leg is defined to
+    /// spawn (ADR 0041's own table). A state directory with NO matching
+    /// registry entry is left COMPLETELY untouched, logged once (ADR
+    /// 0042: "the daemon's workspace list is the list" — an orphan is
+    /// not addressable through any op, so resuming it would create a
+    /// live, unaddressable process; deleted, the bare-shell fallback an
+    /// earlier version used here).
     ///
-    /// Agent argv is reconstructed from `workspaces`' own registry (the
-    /// SAME persisted metadata `workspace.create` wrote) when a matching
-    /// entry exists — needed because `--resume` may still have to spawn a
-    /// fresh leg (ADR 0041: "`--resume` | open or recovering, no live
-    /// capsule | RECOVER and spawn a new leg"), which requires the same
-    /// producer argv `--start` used. A state dir with NO matching
-    /// registry entry (an orphan — e.g. its toml was lost) is still
-    /// resumed with a safe bare-shell fallback argv, logged loudly: an
-    /// adopted-but-nameless capsule is recoverable and inspectable; an
-    /// abandoned live one is not.
-    pub fn resume_all(state_root: &Path, workspaces: &Workspaces) {
+    /// Runs off the startup critical path (finding 10): `server.rs`
+    /// calls this via `tokio::spawn`, never awaited, and every spawn
+    /// inside it is bounded to `LANE_CONCURRENCY` concurrent attempts via
+    /// a semaphore — thousands of preserved workspaces cannot turn this
+    /// into an unbounded synchronous fan-out before the listener binds.
+    pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
+        let Ok(sot_capsule) = sot_capsule_exe() else {
+            tracing::warn!("capsule workspace resume-scan: could not locate sot-capsule.exe next to this daemon");
+            return;
+        };
+        let candidates: Vec<(String, PathBuf, Vec<String>, PathBuf, String)> = workspaces
+            .list()
+            .into_iter()
+            .filter(|ws| ws.runtime == "capsule")
+            .filter_map(|ws| match agent_argv(&ws.agent) {
+                Ok(argv) => Some((
+                    ws.workspace_id.clone(),
+                    super::state_dir_for(&state_root, &ws.workspace_id),
+                    argv,
+                    ws.project_root.clone(),
+                    ws.agent_name.clone(),
+                )),
+                Err(e) => {
+                    tracing::warn!(
+                        workspace_id = %ws.workspace_id, error = %e,
+                        "capsule workspace resume-scan: registry entry has an unsupported agent kind; skipping"
+                    );
+                    None
+                }
+            })
+            .collect();
+
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(LANE_CONCURRENCY));
+        let mut joins = Vec::with_capacity(candidates.len());
+        for (workspace_id, state_dir, argv, cwd, agent_name) in candidates {
+            let permit = semaphore.clone();
+            let sot_capsule = sot_capsule.clone();
+            let workspaces = workspaces.clone();
+            joins.push(tokio::spawn(async move {
+                let _permit = permit.acquire_owned().await;
+                match spawn_and_watch(&sot_capsule, &state_dir, StartMode::Resume, &argv, &cwd, &agent_name, workspace_id.clone(), workspaces) {
+                    Ok(degraded) => {
+                        tracing::info!(workspace_id = %workspace_id, degraded, "capsule workspace supervisor resumed");
+                    }
+                    Err(e) => {
+                        tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule workspace supervisor resume spawn failed");
+                    }
+                }
+            }));
+        }
+        for j in joins {
+            let _ = j.await;
+        }
+
+        log_registryless_state_dirs(&state_root, &workspaces);
+    }
+
+    /// One log line naming every `<state-root>/workspaces/*` directory
+    /// with no matching registry entry — diagnostic only, never acted on
+    /// (see [`resume_all`]'s own doc).
+    fn log_registryless_state_dirs(state_root: &Path, workspaces: &Workspaces) {
         let dir = state_root.join("workspaces");
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
             Err(e) if e.kind() == ErrorKind::NotFound => return,
             Err(e) => {
-                tracing::warn!(dir = ?dir, error = %e, "capsule workspace resume-scan: could not read state root");
+                tracing::debug!(dir = ?dir, error = %e, "capsule workspace resume-scan: could not read the state root for the registryless-directory log sweep");
                 return;
             }
         };
-        let Ok(sot_capsule) = sot_capsule_exe() else {
-            tracing::warn!("capsule workspace resume-scan: could not locate sot-capsule.exe next to this daemon");
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let workspace_id = match path.file_name().and_then(|n| n.to_str()) {
-                Some(s) => s.to_string(),
-                None => continue,
-            };
-            match sot_log::pointer::validate(&path) {
-                sot_log::pointer::PointerState::Valid(_) => {}
-                _ => continue, // no adoptable voyage yet -- nothing to resume
-            }
-            let ws = workspaces.resolve(Some(&workspace_id));
-            let (argv, cwd) = match &ws {
-                Some(ws) if ws.runtime == "capsule" => {
-                    (agent_argv(&ws.agent), ws.project_root.clone())
-                }
-                _ => {
-                    tracing::warn!(
-                        workspace_id = %workspace_id,
-                        "capsule workspace resume-scan: no matching registry entry -- \
-                         resuming with a bare-shell fallback argv"
-                    );
-                    (agent_argv("none"), std::env::temp_dir())
-                }
-            };
-            match spawn_detached_supervisor(&sot_capsule, &path, StartMode::Resume, &argv, &cwd) {
-                Ok(spawned) => {
-                    // Detached on purpose (ADR 0042 L1a: the daemon must
-                    // not be its kill domain) -- forget the handle rather
-                    // than reap it, exactly like a fresh `workspace.create`
-                    // spawn does.
-                    std::mem::drop(spawned.child);
-                    tracing::info!(
-                        workspace_id = %workspace_id, degraded = spawned.degraded,
-                        "capsule workspace supervisor resumed"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        workspace_id = %workspace_id, error = %e,
-                        "capsule workspace supervisor resume spawn failed"
-                    );
-                }
-            }
+        let known: std::collections::HashSet<String> =
+            workspaces.list().into_iter().map(|ws| ws.workspace_id.clone()).collect();
+        let orphans: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .filter(|id| !known.contains(id))
+            .collect();
+        if !orphans.is_empty() {
+            tracing::warn!(
+                count = orphans.len(), ids = ?orphans,
+                "capsule workspace resume-scan: state directories with no matching registry entry -- \
+                 left untouched (ADR 0042: the workspace list is the list)"
+            );
         }
     }
 }
@@ -352,16 +602,20 @@ mod tests {
     #[test]
     fn agent_argv_claude_matches_ccbs_own_flags() {
         assert_eq!(
-            agent_argv("claude"),
+            agent_argv("claude").unwrap(),
             vec!["claude", "--dangerously-skip-permissions", "/sot-session-start"]
         );
     }
 
     #[test]
-    fn agent_argv_falls_back_to_the_platform_shell_for_none_and_unknown_kinds() {
-        assert_eq!(agent_argv("none"), vec!["cmd.exe"]);
-        assert_eq!(agent_argv("codex"), vec!["cmd.exe"]);
-        assert_eq!(agent_argv("bogus"), vec!["cmd.exe"]);
+    fn agent_argv_none_is_the_bare_shell() {
+        assert_eq!(agent_argv("none").unwrap(), vec!["cmd.exe"]);
+    }
+
+    #[test]
+    fn agent_argv_rejects_unsupported_kinds() {
+        assert!(agent_argv("codex").is_err());
+        assert!(agent_argv("bogus").is_err());
     }
 
     #[test]
@@ -392,5 +646,34 @@ mod tests {
         ] {
             assert_ne!(phase_str(p), UNREACHABLE_PHASE);
         }
+    }
+
+    #[test]
+    fn restart_budget_numbers_match_adr_0041s_own_launcher_table() {
+        assert_eq!(RESTART_BACKOFFS.len(), 5);
+        assert_eq!(MAX_RESTARTS_PER_WINDOW, 5);
+        assert_eq!(RESTART_WINDOW, std::time::Duration::from_secs(60));
+        assert_eq!(
+            RESTART_BACKOFFS.map(|d| d.as_secs()),
+            [1, 3, 7, 15, 30]
+        );
+    }
+
+    #[test]
+    fn nesting_env_scrub_list_matches_ccb() {
+        // Mirrors comm/adapters/claude/bin/ccb's own `unset` line
+        // exactly -- see that file for the reasoning per variable.
+        assert_eq!(
+            NESTING_ENV_VARS_TO_SCRUB,
+            &[
+                "CLAUDE_CODE_FORK_SUBAGENT",
+                "CLAUDE_CODE_CHILD_SESSION",
+                "CLAUDE_CODE_TEAMMATE_MODE",
+                "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+                "CLAUDECODE",
+                "AI_AGENT",
+                "CLAUDE_CODE_SESSION_ID",
+            ]
+        );
     }
 }

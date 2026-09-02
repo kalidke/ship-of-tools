@@ -238,6 +238,16 @@ pub async fn run(opts: Opts) -> Result<()> {
                 .map(|s| s.to_string())
         })
         .unwrap_or_else(|| "home".to_string());
+    // ADR 0042 slice L1a, Codex review finding 5: the default workspace's
+    // OWN `runtime` must survive this re-registration. `scan_disk` (just
+    // above) already loaded it correctly from its toml if one exists —
+    // read it back BEFORE constructing a fresh seed, whose own
+    // `Workspace::from_label` default ("tmux") would otherwise silently
+    // clobber a scanned capsule default back to tmux on every restart
+    // (`insert`'s own "new metadata wins" semantics, working exactly as
+    // designed, applied to the wrong source of truth). `None` means a
+    // genuinely first-ever launch on this machine.
+    let existing_default = workspaces.resolve(Some(&paths::slug(&default_label)));
     let mut default_ws_seed = Workspace::from_label(
         &default_label,
         files_mode.root_path().to_path_buf(),
@@ -246,6 +256,15 @@ pub async fn run(opts: Opts) -> Result<()> {
         String::new(),
         String::new(),
     );
+    default_ws_seed.runtime = match &existing_default {
+        Some(existing) => existing.runtime.clone(),
+        // First-ever launch: every NEW workspace is a capsule on
+        // Windows, no knob (ADR 0042 L1a) — the daemon's own home/
+        // default row is no exception. Every other host keeps
+        // `from_label`'s own "tmux" default, untouched.
+        None if cfg!(windows) => "capsule".to_string(),
+        None => default_ws_seed.runtime.clone(),
+    };
     // Display the Ship of Tools home/default workspace as ".SoT" — the leading
     // dot is cosmetic (the FE strip renders the label) and marks it as "home".
     // Only the LABEL changes; the slug (hence the tmux session `sot-be-sot` and
@@ -272,8 +291,11 @@ pub async fn run(opts: Opts) -> Result<()> {
     // in Sessions mode alongside any user-created workspaces. `tmux
     // new-session -A` is idempotent — already-alive sessions are a
     // no-op. Failure is logged but non-fatal (a head-less host with no
-    // tmux server still serves the protocol fine).
-    {
+    // tmux server still serves the protocol fine). ADR 0042 slice L1a,
+    // Codex review finding 5: skipped entirely for a capsule default —
+    // it has no tmux session to ensure; its supervisor is picked up by
+    // the resume-scan below, alongside every other capsule row.
+    if default_ws.runtime != "capsule" {
         let tmux_name = default_ws.tmux_session.clone();
         let cwd = default_ws.project_root.clone();
         let slug = default_ws.slug.clone();
@@ -291,19 +313,24 @@ pub async fn run(opts: Opts) -> Result<()> {
         .await;
     }
 
-    // ADR 0042 slice L1a: adopt every capsule workspace's supervisor on
-    // this daemon's own startup — the counterpart of the tmux-session
-    // ensure block just above, for the OTHER runtime. `sot-capsule
+    // ADR 0042 slice L1a: adopt every REGISTERED capsule workspace's
+    // supervisor on this daemon's own startup — the counterpart of the
+    // tmux-session ensure block just above, for the OTHER runtime. This
+    // naturally covers the default workspace too when it is a capsule
+    // (just marked/preserved above): one registry pass, one code path,
+    // no separate "spawn the default's own supervisor" step. `sot-capsule
     // supervise --resume` decides adopt-vs-spawn itself (ADR 0041's
-    // start-mode table); this only has to find and (re)spawn the
-    // authority. Fast (process spawns only, no waiting on readiness) so
-    // it runs inline rather than detached, unlike the tmux env-heal sweep
-    // below. Windows-only: `workspace.create` never marks a workspace
-    // `"capsule"` on any other host in this unit (see `handlers.rs`), so
-    // there is nothing to resume there.
+    // start-mode table), including for a workspace whose state directory
+    // does not exist yet at all ("no leg at all -> spawn a new leg").
+    // Codex review finding 10: runs OFF the startup critical path (a
+    // detached task, never awaited) with its own bounded concurrency —
+    // see `capsule_workspace::resume_all`'s own doc. Windows-only:
+    // `workspace.create` never marks a workspace `"capsule"` on any
+    // other host in this unit (see `handlers.rs`), so there is nothing
+    // to resume there.
     #[cfg(windows)]
     if let Some(state_root) = sot_log::state_dir::sot_state_dir() {
-        crate::capsule_workspace::resume_all(&state_root, &workspaces);
+        tokio::spawn(crate::capsule_workspace::resume_all(state_root, workspaces.clone()));
     } else {
         tracing::warn!(
             "capsule workspace resume-scan skipped: could not resolve this machine's state root \
