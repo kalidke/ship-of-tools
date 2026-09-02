@@ -92,7 +92,9 @@ default_host = "myserver"
 [host.myserver]
 ssh_alias   = "myserver"
 remote_repo = "/home/me/projects/ship-of-tools"
-tcp_port    = 18743  # local side of the SSH forward
+# tcp_port: local side of the SSH forward (no parser here strips an
+# inline comment, so this note lives on its own line, not after the value)
+tcp_port    = 18743
 # remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
 ```
 

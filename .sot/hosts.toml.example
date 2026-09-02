@@ -32,10 +32,20 @@
 default_host = "myserver"
 
 [host.myserver]
-ssh_alias = "myserver"                       # entry in your ~/.ssh/config
-remote_repo = "/home/me/path/to/project"     # project root the daemon serves
-tcp_port = 18743                             # local side of the SSH forward -- required (default_host may omit; see above)
-# remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"  # optional; queried if omitted
+# None of this project's hosts.toml parsers (Rust, PowerShell, bash) strip
+# an inline comment -- a trailing `# ...` on an active key=value line
+# becomes part of the value verbatim (see the required-tcp_port note
+# above for what that does to a bare number). Comments below live on
+# their OWN line, one per key, so this file is safe to copy verbatim.
+#
+# ssh_alias: entry in your ~/.ssh/config
+ssh_alias = "myserver"
+# remote_repo: project root the daemon serves
+remote_repo = "/home/me/path/to/project"
+# tcp_port: local side of the SSH forward -- required (default_host may omit; see above)
+tcp_port = 18743
+# remote_socket (optional; queried if omitted):
+# remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
 remote_home = "/home/me"
 
 # A second remote — its OWN tunnel, opened alongside myserver's, not instead
