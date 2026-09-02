@@ -2101,6 +2101,16 @@ fn resolve_default_host(
 /// `has_list` (not `connected`) drives `has_children`: a host can be
 /// connected but simply not have answered `workspace.list` yet, and either
 /// way there's nothing to expand into until it has.
+///
+/// First live shakedown fix: `badges` alone never reached the screen —
+/// nothing renders the tree's generic `badges` vec (see `capsule_phase_tag`'s
+/// own doc on the ONE place a status phase is surfaced). Every OTHER
+/// visible status in this tree is baked straight into `label` text
+/// (`build_session_row`'s `capsule_phase_tag` prefix); this bakes host
+/// status in the same way, as a bracketed tag, so it draws the way every
+/// other badge here actually does. Connected, non-current hosts stay
+/// quiet — nothing to shout about — so a healthy multi-host list doesn't
+/// drown in tags; `unreachable` and `current` always show.
 fn host_tree_node(host: &HostKey, connected: bool, has_list: bool, is_active: bool) -> TreeNode {
     let mut badges = vec![if connected {
         "connected"
@@ -2111,11 +2121,23 @@ fn host_tree_node(host: &HostKey, connected: bool, has_list: bool, is_active: bo
     if is_active {
         badges.push("current".to_string());
     }
+    let mut tags = Vec::new();
+    if !connected {
+        tags.push("[unreachable]");
+    }
+    if is_active {
+        tags.push("[current]");
+    }
+    let label = if tags.is_empty() {
+        format!("{HOST_DIVIDER_GLYPH} {host}")
+    } else {
+        format!("{HOST_DIVIDER_GLYPH} {host} {}", tags.join(" "))
+    };
     let mut payload = serde_json::Map::new();
     payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
     TreeNode {
         id: format!("sessions:host:{host}"),
-        label: format!("{HOST_DIVIDER_GLYPH} {host}"),
+        label,
         kind: "session_host".to_string(),
         has_children: has_list,
         badges,
@@ -25501,6 +25523,35 @@ mod tests {
         assert_eq!(dropped.id, after.id);
         assert!(dropped.badges.iter().any(|b| b == "unreachable"));
         assert!(!dropped.badges.iter().any(|b| b == "connected"));
+    }
+
+    #[test]
+    fn host_tree_node_status_draws_in_the_label_not_just_the_unrendered_badges_vec() {
+        // First live shakedown fix: nothing renders the tree's generic
+        // `badges` vec (see `capsule_phase_tag`'s doc), so a healthy,
+        // non-active host must say nothing extra, while `unreachable` and
+        // `current` must show up as bracketed tags IN THE LABEL — the same
+        // way every other status in this tree actually draws.
+        let quiet = host_tree_node(&"alpha".to_string(), true, true, false);
+        assert_eq!(quiet.label, format!("{HOST_DIVIDER_GLYPH} alpha"));
+
+        let unreachable = host_tree_node(&"alpha".to_string(), false, true, false);
+        assert_eq!(
+            unreachable.label,
+            format!("{HOST_DIVIDER_GLYPH} alpha [unreachable]")
+        );
+
+        let current = host_tree_node(&"alpha".to_string(), true, true, true);
+        assert_eq!(
+            current.label,
+            format!("{HOST_DIVIDER_GLYPH} alpha [current]")
+        );
+
+        let both = host_tree_node(&"alpha".to_string(), false, true, true);
+        assert_eq!(
+            both.label,
+            format!("{HOST_DIVIDER_GLYPH} alpha [unreachable] [current]")
+        );
     }
 
     #[test]
