@@ -606,6 +606,19 @@ if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
         -e "s|@SOT_APPLY@|$PREFIX/bin/sot-apply|" \
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
         "$BINDIR/sotd.service" > "$HOME/.config/systemd/user/sotd.service"
+    # A systemd user service never sees the login shell's profile, so the
+    # Julia depot the user's shells run on must be carried into the unit
+    # explicitly — otherwise every kernel and REPL the daemon spawns runs off
+    # Julia's DEFAULT depot (a different, possibly stale or network-mounted
+    # one), precompiling twice and missing packages the shell resolved.
+    # Written as a drop-in next to the unit, only when the installing shell
+    # has a depot set; re-running the installer refreshes it.
+    if [ -n "${JULIA_DEPOT_PATH:-}" ]; then
+        mkdir -p "$HOME/.config/systemd/user/sotd.service.d"
+        printf '[Service]\nEnvironment=JULIA_DEPOT_PATH=%s\n' "$JULIA_DEPOT_PATH" \
+            > "$HOME/.config/systemd/user/sotd.service.d/depot.conf"
+        say "sotd depot drop-in: JULIA_DEPOT_PATH=$JULIA_DEPOT_PATH"
+    fi
     systemctl --user daemon-reload
     if [ -f "$HOME/.config/systemd/user/sot-tmux.service" ]; then
         systemctl --user enable --now sot-tmux.service
