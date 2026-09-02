@@ -219,10 +219,16 @@ async fn validate_tree(dir: &Path, top: &str) -> Result<()> {
         }
         seen.push(name);
     }
+    // ADR 0042 slice L1a, Codex review finding 1 (BLOCKER): `sot-capsule`
+    // now ships in every release archive (see `release.yml`'s own
+    // packaging steps) — required here too, so a staged update missing
+    // it (a damaged upload, a manually-assembled archive) fails
+    // verification loudly instead of installing a daemon that can spawn
+    // no capsule workspaces at all.
     let required: &[&str] = if top.ends_with("windows-x86_64") {
-        &["sot.exe", "sotd.exe"]
+        &["sot.exe", "sotd.exe", "sot-capsule.exe"]
     } else {
-        &["sot", "sotd"]
+        &["sot", "sotd", "sot-capsule"]
     };
     for want in required {
         if !seen.iter().any(|s| s == want) {
@@ -288,6 +294,11 @@ mod tests {
         tokio::fs::create_dir_all(&stage).await.unwrap();
         tokio::fs::write(stage.join("sot"), b"fe").await.unwrap();
         tokio::fs::write(stage.join("sotd"), b"be").await.unwrap();
+        // ADR 0042 slice L1a: `sot-capsule` is required now too (see
+        // `validate_tree`'s own comment) -- omitting it here would make
+        // this "complete archive" fixture fail its own success assertion
+        // below.
+        tokio::fs::write(stage.join("sot-capsule"), b"cap").await.unwrap();
         tokio::fs::write(stage.join("sotd.service"), b"unit").await.unwrap();
         let archive = base.join(format!("{TOP}.tar.gz"));
         let st = std::process::Command::new("tar")

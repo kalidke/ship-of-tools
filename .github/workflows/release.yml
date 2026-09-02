@@ -98,6 +98,19 @@ jobs:
           else
             cp rust/target/release/sot rust/target/release/sotd "$stage/"
           fi
+          # ADR 0042 slice L1a, Codex review finding 1: `sot-capsule`
+          # ships alongside `sotd` on every platform the "Build release
+          # binaries" step above (`cargo build --release --workspace`)
+          # already produces it for — it was never copied into the
+          # staged archive at all before this, on ANY platform (the
+          # daemon's own `capsule_workspace::sot_capsule_exe()` resolves
+          # it next to itself via `current_exe().parent()`, which the
+          # install layout can only honor if it is actually shipped).
+          # `sot-capsule` builds on Unix at the runner's own glibc floor
+          # (unlike `sotd`, it is not rebuilt musl-static here — no
+          # workspace op spawns it from Rust on this platform yet, so
+          # there is no cross-distro requirement to satisfy).
+          cp rust/target/release/sot-capsule "$stage/"
           cp deploy/sotd.service deploy/sot-tmux.service "$stage/"
           # The offline apply/rollback script rides in the archive so a staged
           # update always carries its own applier (Phase C3).
@@ -110,7 +123,14 @@ jobs:
           $v = "${{ steps.ver.outputs.version }}"
           $stage = "sot-$v-${{ matrix.target }}"
           New-Item -ItemType Directory -Path $stage | Out-Null
-          Copy-Item rust/target/release/sot.exe, rust/target/release/sotd.exe $stage/
+          # ADR 0042 slice L1a, Codex review finding 1 (BLOCKER): a
+          # released Windows install had no capsule runtime at all --
+          # `sot-capsule.exe` was built (part of `cargo build --release
+          # --workspace` above) but never copied into the staged
+          # archive, so `capsule_workspace::sot_capsule_exe()`'s
+          # `current_exe().parent()` lookup found nothing and every
+          # `workspace.create` failed its spawn.
+          Copy-Item rust/target/release/sot.exe, rust/target/release/sotd.exe, rust/target/release/sot-capsule.exe $stage/
           Compress-Archive -Path $stage -DestinationPath "$stage.zip"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -235,6 +255,15 @@ jobs:
               throw "VERSION MISMATCH for ${b}: $got"
             }
           }
+          # ADR 0042 slice L1a, Codex review finding 1 (BLOCKER): a
+          # released Windows install with no `sot-capsule.exe` cannot
+          # launch a single capsule workspace -- caught here, not by a
+          # user's first `workspace.create`. Existence-only: unlike
+          # `sot`/`sotd`, `sot-capsule` has no `--version` flag (it is a
+          # supervised worker binary, not a user-facing product build),
+          # so there is no version string to assert against.
+          $capsuleExe = Join-Path $d.FullName "sot-capsule.exe"
+          if (-not (Test-Path $capsuleExe)) { throw "missing sot-capsule.exe in archive" }
 
   smoke-macos:
     # Headless artifact smoke: prove the macOS binary boots and answers on its
