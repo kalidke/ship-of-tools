@@ -12,6 +12,7 @@
 pub mod codec;
 pub mod ir;
 pub mod ops;
+pub mod session_socket;
 
 pub use codec::{read_frame, write_frame};
 pub use ir::{BlobDescriptor, PreviewPayload, TreeNode};
@@ -37,6 +38,7 @@ pub use ops::{
     WorkspaceDestroyReq, WorkspaceDestroyRes,
     WorkspaceListEntry, WorkspaceListReq, WorkspaceListRes,
 };
+pub use session_socket::{current_uid, is_private_dir, runtime_sot_dir, session_socket_path, slug};
 
 use serde::{Deserialize, Serialize};
 

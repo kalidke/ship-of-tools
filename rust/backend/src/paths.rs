@@ -192,33 +192,21 @@ mod path_tests {
 ///   "Foo Bar"      → "foo-bar"
 ///   "/abs/path"    → "abs-path"
 ///   "  "           → "default"
-pub fn slug(label: &str) -> String {
-    let mut out = String::with_capacity(label.len());
-    let mut last_dash = false;
-    for ch in label.chars() {
-        let c = ch.to_ascii_lowercase();
-        // Translate `.` to `_` *before* the keep check — tmux session
-        // names can't contain `.` so a slug with a dot would be
-        // mis-named on creation and unfindable on reverse lookup.
-        let c = if c == '.' { '_' } else { c };
-        let keep = c.is_ascii_alphanumeric() || c == '_' || c == '-';
-        if keep {
-            out.push(c);
-            last_dash = c == '-';
-        } else if !last_dash && !out.is_empty() {
-            out.push('-');
-            last_dash = true;
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    if out.is_empty() {
-        "default".to_string()
-    } else {
-        out
-    }
-}
+///
+/// ADR 0042 L2b: `slug`, `session_socket_path` and the private-runtime-dir
+/// resolution it needs (`runtime_sot_dir`, `is_private_dir`, `current_uid`)
+/// moved to `sot_protocol::session_socket` — the ONE derivation of a
+/// daemon's per-user endpoint, so the frontend can call the exact same
+/// function for its implicit "local" connection (`hosts::resolve_connections`)
+/// instead of guessing. Re-exported here (except `is_private_dir`, which
+/// nothing in this crate calls directly any more — `runtime_sot_dir` is its
+/// only caller, and that moved too) so every existing `paths::slug(...)` /
+/// `paths::session_socket_path(...)` call site in this crate, and the
+/// `tmux_session_name`/`tmux_socket_path`/`secure_private_dir`/
+/// `secure_socket_dir` below that still need the shared helpers, keep
+/// working unchanged. See that module for the Windows named-pipe branch and
+/// the moved doc comments/tests.
+pub use sot_protocol::{current_uid, runtime_sot_dir, session_socket_path, slug};
 
 /// Conventional tmux session name for a backend with the given label.
 /// Not currently consumed inside the backend — kept here as the
@@ -227,30 +215,6 @@ pub fn slug(label: &str) -> String {
 #[allow(dead_code)]
 pub fn tmux_session_name(label: &str) -> String {
     format!("sot-be-{}", slug(label))
-}
-
-/// Conventional Unix socket path for a backend with the given label.
-/// The root is per-user, not just per-machine: `$XDG_RUNTIME_DIR/sot` when
-/// that directory is private, then `/run/user/<uid>/sot`, then a private
-/// `/tmp/sot-<uid>` fallback.
-pub fn session_socket_path(label: &str) -> PathBuf {
-    let mut p = runtime_sot_dir();
-    p.push("sessions");
-    p.push(format!("{}.sock", slug(label)));
-    p
-}
-
-/// Per-user runtime root for Ship of Tools sockets.
-pub fn runtime_sot_dir() -> PathBuf {
-    if let Some(dir) = private_xdg_runtime_dir() {
-        return dir.join("sot");
-    }
-    let uid = current_uid();
-    let run_user_dir = PathBuf::from(format!("/run/user/{uid}"));
-    if is_private_dir(&run_user_dir) {
-        return run_user_dir.join("sot");
-    }
-    PathBuf::from(format!("/tmp/sot-{uid}"))
 }
 
 /// Private per-user tmux server socket (security review): tmux's OWN
@@ -293,75 +257,6 @@ pub fn tmux_socket_path() -> PathBuf {
         return PathBuf::from(sock);
     }
     runtime_sot_dir().join("tmux.sock")
-}
-
-/// `$XDG_RUNTIME_DIR` if it's set, exists, and is owner-only (no group/other
-/// bits). A world/group-accessible or missing runtime dir falls through to
-/// the next resolution tier rather than being trusted. Split into an env
-/// read (this) + a pure path check (`is_private_dir`) so the safety logic is
-/// unit-testable against real temp dirs without mutating `$XDG_RUNTIME_DIR`
-/// — a process-global env var other tests in this binary touch concurrently
-/// (see `main.rs`'s `trim_token_contents`/`read_token_file_at` split, done
-/// for the identical reason).
-#[cfg(unix)]
-fn private_xdg_runtime_dir() -> Option<PathBuf> {
-    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
-    if is_private_dir(&dir) {
-        Some(dir)
-    } else {
-        None
-    }
-}
-#[cfg(not(unix))]
-fn private_xdg_runtime_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
-}
-
-/// `true` if `dir` exists, is a REAL directory (not a symlink to one),
-/// owned by THIS process's uid, and owner-only (no group/other bits).
-///
-/// Uses `symlink_metadata` (lstat — does NOT follow a symlink) rather than
-/// `metadata`, and checks ownership, not just mode (security review, F1: a
-/// hostile local user who can write into `$XDG_RUNTIME_DIR`'s parent could
-/// otherwise plant a symlink there, or — if `$XDG_RUNTIME_DIR` itself were
-/// ever attacker-writable, e.g. a misconfigured shared runtime dir — an
-/// attacker-owned 0700 directory, and the old `metadata`-plus-mode-only
-/// check would have followed/trusted either).
-#[cfg(unix)]
-fn is_private_dir(dir: &Path) -> bool {
-    let Ok(meta) = std::fs::symlink_metadata(dir) else {
-        return false;
-    };
-    if meta.file_type().is_symlink() {
-        return false;
-    }
-    if !meta.is_dir() {
-        return false;
-    }
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    if meta.uid() != current_uid() {
-        return false;
-    }
-    meta.permissions().mode() & 0o077 == 0
-}
-#[cfg(not(unix))]
-fn is_private_dir(dir: &Path) -> bool {
-    dir.is_dir()
-}
-
-/// Numeric uid for path derivation (`/run/user/<uid>`, `/tmp/sot-<uid>`).
-/// `0` on non-Unix, where these two tiers are never reached in practice
-/// (Windows sessions don't run tmux at all — this function exists so the
-/// module compiles everywhere, not because the value is meaningful there).
-#[cfg(unix)]
-fn current_uid() -> u32 {
-    // SAFETY: getuid() takes no arguments, has no preconditions, and cannot
-    // fail.
-    unsafe { libc::getuid() }
-}
-#[cfg(not(unix))]
-fn current_uid() -> u32 {
-    0
 }
 
 /// `${XDG_STATE_HOME:-~/.local/state}/sot` — private, persistent runtime
@@ -512,45 +407,15 @@ pub fn secure_socket_dir(dir: &Path) -> Result<()> {
     secure_private_dir(dir)
 }
 
+// `slug`/`session_socket_path`'s own unit tests (including
+// `session_socket_path_honours_xdg_runtime_dir` and the Windows named-pipe
+// tests) moved with them to `sot_protocol::session_socket` (ADR 0042 L2b) —
+// see that module. What stays here only exercises what's still DEFINED
+// here: `tmux_session_name`'s use of the (now re-exported) `slug`, and
+// `tmux_socket_path`'s env override.
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn slug_lowercases_alnum_preserved() {
-        assert_eq!(slug("MyPackage"), "mypackage");
-        assert_eq!(slug("Foo123"), "foo123");
-    }
-
-    #[test]
-    fn slug_collapses_separators() {
-        assert_eq!(slug("Foo Bar"), "foo-bar");
-        assert_eq!(slug("a / b"), "a-b");
-        assert_eq!(slug("a___b"), "a___b"); // underscores kept
-        assert_eq!(slug("a   b"), "a-b");
-    }
-
-    #[test]
-    fn slug_strips_trailing_dashes() {
-        assert_eq!(slug("foo / "), "foo");
-        assert_eq!(slug("foo /// "), "foo");
-    }
-
-    #[test]
-    fn slug_replaces_dots_with_underscore() {
-        // Tmux silently substitutes `.` with `_` in session names, so we
-        // produce the substituted form up-front and avoid a round-trip
-        // mismatch between the registry and `tmux ls`.
-        assert_eq!(slug("MyPackage.jl"), "mypackage_jl");
-        assert_eq!(slug("foo-bar"), "foo-bar");
-    }
-
-    #[test]
-    fn slug_defaults_on_empty() {
-        assert_eq!(slug(""), "default");
-        assert_eq!(slug("   "), "default");
-        assert_eq!(slug("///"), "default");
-    }
 
     #[test]
     fn tmux_session_name_uses_slug() {
@@ -573,125 +438,13 @@ mod tests {
         std::env::set_var("SOT_TMUX_SOCK", &expected);
         assert_eq!(tmux_socket_path(), expected);
     }
-
-    #[test]
-    fn session_socket_path_honours_xdg_runtime_dir() {
-        // Temporarily override XDG_RUNTIME_DIR so the test is hermetic.
-        // SAFETY: tests in this module don't run concurrently against
-        // each other in a single test process (they're &self with no
-        // shared mutable state) — but we restore the env on drop.
-        struct Guard(Option<std::ffi::OsString>);
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-                    None => std::env::remove_var("XDG_RUNTIME_DIR"),
-                }
-            }
-        }
-        let _g = Guard(std::env::var_os("XDG_RUNTIME_DIR"));
-        let runtime = std::env::temp_dir().join(format!("sot-runtime-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&runtime);
-        std::fs::create_dir_all(&runtime).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        std::env::set_var("XDG_RUNTIME_DIR", &runtime);
-        let p = session_socket_path("MyPackage.jl");
-        assert_eq!(
-            p,
-            runtime
-                .join("sot")
-                .join("sessions")
-                .join("mypackage_jl.sock")
-        );
-        let _ = std::fs::remove_dir_all(&runtime);
-    }
 }
 
-/// `tmux_socket_path`'s tier-1 safety check (`is_private_dir`), exercised
-/// against real temp dirs with controlled permissions — deliberately NOT
-/// via `$XDG_RUNTIME_DIR` mutation, for the same env-var-race reason noted
-/// on `private_xdg_runtime_dir`'s doc comment.
-#[cfg(all(test, unix))]
-mod is_private_dir_tests {
-    use super::is_private_dir;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn scratch_dir(name: &str) -> PathBuf {
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!(
-            "sot-paths-test-{}-{}-{name}",
-            std::process::id(),
-            n
-        ))
-    }
-
-    #[test]
-    fn owner_only_dir_is_private() {
-        let d = scratch_dir("owner-only");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(is_private_dir(&d));
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn group_readable_dir_is_not_private() {
-        let d = scratch_dir("group-readable");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o750)).unwrap();
-        assert!(!is_private_dir(&d));
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn world_readable_dir_is_not_private() {
-        let d = scratch_dir("world-readable");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(!is_private_dir(&d));
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn missing_dir_is_not_private() {
-        let d = scratch_dir("missing");
-        assert!(!is_private_dir(&d));
-    }
-
-    #[test]
-    fn a_file_is_not_a_private_dir() {
-        let d = scratch_dir("a-file");
-        std::fs::write(&d, b"not a dir").unwrap();
-        assert!(!is_private_dir(&d));
-        let _ = std::fs::remove_file(&d);
-    }
-
-    #[test]
-    fn symlink_to_a_private_dir_is_rejected() {
-        // The hijack case (F1): even a symlink pointing at an otherwise-
-        // valid owner-only dir must be rejected — trusting it would let an
-        // attacker who controls the symlink redirect us anywhere later by
-        // repointing it, and `is_private_dir` must reject based on the
-        // PATH's own type (lstat), not what it resolves to.
-        let target = scratch_dir("symlink-target");
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let link = scratch_dir("symlink-link");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        assert!(!is_private_dir(&link));
-        let _ = std::fs::remove_file(&link);
-        let _ = std::fs::remove_dir_all(&target);
-    }
-}
-
+/// `is_private_dir`'s own tests moved to `sot_protocol::session_socket`
+/// with the function (ADR 0042 L2b) — see that module's
+/// `is_private_dir_tests`. `secure_private_dir`'s tests (below) still
+/// exercise `current_uid` (re-exported above) directly.
+///
 /// `secure_private_dir` — the create-or-verify guard for the tmux socket's
 /// parent dir (F1: this is the function that actually closes the hijack
 /// hole, since `tmux.rs`/`pty.rs` call THIS, not `is_private_dir` directly).
