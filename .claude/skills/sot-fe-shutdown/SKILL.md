@@ -10,7 +10,7 @@ Deterministic teardown of the **local** frontend, its transport, and (ADR
 (workspaces, tmux sessions, kernel + REPL) are **left running on purpose** —
 the persistent-backend model (ADR 0010/0013) is what lets `claude --continue`
 resume later. The LOCAL `sotd` is different: it's a launcher-managed daemon
-this same machine started (ADR 0042 L1c), so this skill stops it too, last —
+`-Local` started on this same machine (ADR 0042 L1c), so this skill stops it too, last —
 its capsule workspace supervisors (`sot-capsule.exe`) are NOT stopped by
 this, on either host: they are separate detached processes and the daemon
 re-adopts them via `--resume` on its next start, which is exactly what a
