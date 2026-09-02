@@ -138,7 +138,7 @@ parts:
 
   ```toml
   [terminal]
-  resume_command = "claude --dangerously-skip-permissions --continue /sot-fe-session-start"
+  resume_command = "claude --permission-mode auto --continue /sot-fe-session-start"
   ```
 
   Session continuity is decoupled from process survival: the terminal session

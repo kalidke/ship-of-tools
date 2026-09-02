@@ -55,7 +55,7 @@ out-of-range values warn and fall back to the default.
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `resume_command` | string | `claude --dangerously-skip-permissions --continue /sot-fe-session-start` | Command auto-run in the Terminal drawer when the supervisor respawns the frontend after a self-relaunch (`--relaunched`). It resumes the session without permission prompts. |
+| `resume_command` | string | `claude --permission-mode auto --continue /sot-fe-session-start` | Command auto-run in the Terminal drawer when the supervisor respawns the frontend after a self-relaunch (`--relaunched`). It resumes the session without permission prompts. |
 
 The `resume_command` is spelled out in full (not a personal shell shortcut) so it
 is portable to any machine with `claude` on `PATH`. The trailing positional
@@ -98,7 +98,7 @@ drawer        = "repl"
 drawer_height = "0.35"
 
 [terminal]
-resume_command = "claude --dangerously-skip-permissions --continue /sot-fe-session-start"
+resume_command = "claude --permission-mode auto --continue /sot-fe-session-start"
 
 [gpu]
 power_preference = "low"        # low (integrated, default) | high (discrete)

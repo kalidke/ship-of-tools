@@ -44,7 +44,7 @@
 //                                   # (Unix) or pwsh.exe → powershell.exe
 //                                   # → cmd.exe (Windows). Omit to use
 //                                   # the platform default.
-//   resume_command = "claude --dangerously-skip-permissions --continue /sot-fe-session-start"
+//   resume_command = "claude --permission-mode auto --continue /sot-fe-session-start"
 //                                   # Auto-run in the Terminal drawer when
 //                                   # the supervisor respawns us after a
 //                                   # self-relaunch (--relaunched, ADR 0017).
@@ -205,7 +205,7 @@ const DRAWER_MAX: f32 = 0.80;
 /// permission-prompt mode, where the session can't act until a human clicks
 /// through prompts the relaunched drawer never shows — observed 2026-07-09.
 pub const DEFAULT_RESUME_COMMAND: &str =
-    "claude --dangerously-skip-permissions --continue /sot-fe-session-start";
+    "claude --permission-mode auto --continue /sot-fe-session-start";
 
 impl LayoutPreset {
     /// Built-in default for ultrawide aspects (>1.9). Matches the

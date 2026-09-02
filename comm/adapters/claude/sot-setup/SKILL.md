@@ -288,7 +288,7 @@ remote_home = "/home/<user>"
 ADR-0017 resume command:
 ```toml
 [terminal]
-resume_command = "claude --dangerously-skip-permissions --continue /sot-fe-session-start"
+resume_command = "claude --permission-mode auto --continue /sot-fe-session-start"
 # shell = "..."   # optional override; default auto-resolves (pwsh→powershell→cmd / $SHELL→bash→sh)
 
 [layout]
