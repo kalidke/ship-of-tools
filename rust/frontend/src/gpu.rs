@@ -2123,6 +2123,93 @@ fn host_tree_node(host: &HostKey, connected: bool, has_list: bool, is_active: bo
     }
 }
 
+/// One host's `host`-kind row for Mode::Hosts's flat list (first live
+/// shakedown fix) — pure, no `State` dependency, mirroring `host_tree_node`
+/// above: every LIVE connection gets a row (membership + `connected`/
+/// `current` all come from the caller's already-resolved connection set),
+/// `hosts_config` supplying only the `default` badge and `endpoint` text.
+fn hosts_mode_row(
+    name: &str,
+    connected: bool,
+    is_active: bool,
+    is_default: bool,
+    endpoint: &str,
+) -> TreeNode {
+    let mut badges = Vec::new();
+    if is_active {
+        badges.push("current".to_string());
+    }
+    if is_default {
+        badges.push("default".to_string());
+    }
+    badges.push(
+        if connected {
+            "connected"
+        } else {
+            "unreachable"
+        }
+        .to_string(),
+    );
+    let status_word = if connected {
+        "connected"
+    } else {
+        "unreachable"
+    };
+    let label = format!("{name} · {status_word} · {endpoint}");
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "name".to_string(),
+        serde_json::Value::String(name.to_string()),
+    );
+    TreeNode {
+        id: format!("hosts:{name}"),
+        label,
+        kind: "host".to_string(),
+        has_children: false,
+        badges,
+        payload,
+    }
+}
+
+/// Display-only endpoint text for a Hosts-mode row — pure, no `State`
+/// dependency. `local` is socket-only (`resolve_connections`'s own "local
+/// ignores tcp_port and ssh_alias" contract, ADR 0042 L2b): an explicit
+/// `[host.local]` `socket` overrides, else the same derived pipe `sotd
+/// --label local` uses. Every other host reads `hosts_config` the way it
+/// always did; absent from `hosts_config` entirely (the CLI-only
+/// synthetic fallback connection) has no entry to describe.
+fn host_endpoint_display(hosts_config: &crate::hosts::HostsConfig, name: &str) -> String {
+    if name == "local" {
+        return hosts_config
+            .find("local")
+            .and_then(|h| h.socket.clone())
+            .unwrap_or_else(|| {
+                sot_protocol::session_socket_path("local")
+                    .display()
+                    .to_string()
+            });
+    }
+    let Some(h) = hosts_config.find(name) else {
+        return "(no endpoint)".to_string();
+    };
+    if let Some(port) = h.tcp_port {
+        let local = if let Some(alias) = h.ssh_alias.as_deref() {
+            format!("{alias}:{port}")
+        } else {
+            format!("127.0.0.1:{port}")
+        };
+        if let Some(sock) = h.remote_socket.as_deref() {
+            format!("{local} -> {sock}")
+        } else {
+            local
+        }
+    } else if let Some(sock) = h.socket.as_deref() {
+        sock.to_string()
+    } else {
+        "(no endpoint)".to_string()
+    }
+}
+
 /// Build the `(parent_id, pane rows)` a `tmux.list_panes` reply for
 /// `session` on `host` splices into the Sessions tree (ADR 0042 L2a). Pure
 /// — no `State` dependency — so "the row built from host B's reply carries
@@ -6980,9 +7067,10 @@ impl State {
         self.fe_state_sig = Some(sig);
     }
 
-    /// Rebuild the nav tree from `hosts_config` + `host_connected`. Called
-    /// on entering `Mode::Hosts`. Each `[host.<name>]` section becomes one
-    /// row showing live connected/unreachable status.
+    /// Rebuild the nav tree from `conns` + `host_connected`. Called on
+    /// entering `Mode::Hosts`. Each LIVE connection — `local` (implicit,
+    /// ADR 0042 L2b) plus every `[host.<name>]` section that resolved to
+    /// one — becomes one row showing live connected/unreachable status.
     ///
     /// ADR 0042 L2a: this was ADR 0015's "pick one, Ctrl+Q + relaunch"
     /// single-host switch (superseded — see that ADR's note); every
@@ -6991,6 +7079,14 @@ impl State {
     /// live status list. `pick_host_under_cursor` (Enter) moves the
     /// Sessions-mode cursor to the host's node instead of persisting a
     /// launcher target.
+    ///
+    /// First live shakedown fix: the OLD version iterated
+    /// `hosts_config.hosts` directly, so `local` — which needs no
+    /// `hosts.toml` entry at all (ADR 0042 L2b) — never got a row. Iterating
+    /// `ordered_hosts()` (== `conns`, local-first display order — the SAME
+    /// source `build_sessions_tree` already uses for its host-grouped rows)
+    /// makes the two host lists agree, with `hosts_config` consulted only
+    /// for the cosmetic `default` badge and endpoint text.
     fn populate_hosts_tree(&mut self) {
         let root = TreeNode {
             id: "hosts:".to_string(),
@@ -7000,64 +7096,7 @@ impl State {
             badges: Vec::new(),
             payload: Default::default(),
         };
-        let children: Vec<TreeNode> = self
-            .hosts_config
-            .hosts
-            .iter()
-            .map(|h| {
-                let connected = self.host_connected.get(&h.name).copied().unwrap_or(false);
-                let mut badges = Vec::new();
-                if h.name == self.active_host {
-                    badges.push("current".to_string());
-                }
-                if self.hosts_config.default_host.as_deref() == Some(h.name.as_str()) {
-                    badges.push("default".to_string());
-                }
-                badges.push(
-                    if connected {
-                        "connected"
-                    } else {
-                        "unreachable"
-                    }
-                    .to_string(),
-                );
-                let endpoint = if let Some(port) = h.tcp_port {
-                    let local = if let Some(alias) = h.ssh_alias.as_deref() {
-                        format!("{alias}:{port}")
-                    } else {
-                        format!("127.0.0.1:{port}")
-                    };
-                    if let Some(sock) = h.remote_socket.as_deref() {
-                        format!("{local} -> {sock}")
-                    } else {
-                        local
-                    }
-                } else if let Some(sock) = h.socket.as_deref() {
-                    sock.to_string()
-                } else {
-                    "(no endpoint)".to_string()
-                };
-                let status_word = if connected {
-                    "connected"
-                } else {
-                    "unreachable"
-                };
-                let label = format!("{} · {status_word} · {endpoint}", h.name);
-                let mut payload = serde_json::Map::new();
-                payload.insert(
-                    "name".to_string(),
-                    serde_json::Value::String(h.name.clone()),
-                );
-                TreeNode {
-                    id: format!("hosts:{}", h.name),
-                    label,
-                    kind: "host".to_string(),
-                    has_children: false,
-                    badges,
-                    payload,
-                }
-            })
-            .collect();
+        let children = self.hosts_tree_children();
         // Cursor lands on the active host so a fresh `h`-press shows where
         // the current view actually is. Codex review (PR #163): the OLD
         // version computed a position into `hosts_config.hosts` (0 =
@@ -7072,6 +7111,27 @@ impl State {
             self.tree.selected = idx;
         }
         self.window.request_redraw();
+    }
+
+    /// The Hosts-mode root's children, in `ordered_hosts()` (local-first)
+    /// display order — the pure per-call rebuild `populate_hosts_tree` and
+    /// `try_expand_hosts_root_local` both delegate to, so a mode-entry
+    /// refresh and a root re-expand can never drift apart. `hosts_config`
+    /// is consulted only for the `default` badge and the endpoint text —
+    /// membership and connected/unreachable/current status come from
+    /// `conns`/`host_connected`, which is the only way `local` (no
+    /// `hosts.toml` entry required, ADR 0042 L2b) gets a row at all.
+    fn hosts_tree_children(&self) -> Vec<TreeNode> {
+        self.ordered_hosts()
+            .into_iter()
+            .map(|name| {
+                let connected = self.host_connected.get(&name).copied().unwrap_or(false);
+                let is_active = name == self.active_host;
+                let is_default = self.hosts_config.default_host.as_deref() == Some(name.as_str());
+                let endpoint = host_endpoint_display(&self.hosts_config, &name);
+                hosts_mode_row(&name, connected, is_active, is_default, &endpoint)
+            })
+            .collect()
     }
 
     /// Mode::Hosts Enter handler (ADR 0042 L2a) — moves the Sessions-mode
@@ -25336,6 +25396,82 @@ mod tests {
         assert_eq!(dropped.id, after.id);
         assert!(dropped.badges.iter().any(|b| b == "unreachable"));
         assert!(!dropped.badges.iter().any(|b| b == "connected"));
+    }
+
+    #[test]
+    fn hosts_mode_row_id_and_badges_come_only_from_the_caller() {
+        // Mode::Hosts's own per-row builder (first live shakedown fix):
+        // membership/connected/current/default are all caller-supplied —
+        // this row-builder itself never touches `hosts_config`, matching
+        // `hosts_tree_children`'s contract that `local` (no `hosts.toml`
+        // entry) gets a row exactly like any configured host.
+        let row = hosts_mode_row("local", true, true, false, "\\\\.\\pipe\\sot-local");
+        assert_eq!(row.id, "hosts:local");
+        assert_eq!(row.kind, "host");
+        assert!(!row.has_children);
+        assert_eq!(row.label, "local · connected · \\\\.\\pipe\\sot-local");
+        assert!(row.badges.iter().any(|b| b == "current"));
+        assert!(row.badges.iter().any(|b| b == "connected"));
+        assert!(!row.badges.iter().any(|b| b == "default"));
+
+        let unreachable_default = hosts_mode_row("beta", false, false, true, "127.0.0.1:18743");
+        assert_eq!(
+            unreachable_default.label,
+            "beta · unreachable · 127.0.0.1:18743"
+        );
+        assert!(unreachable_default.badges.iter().any(|b| b == "default"));
+        assert!(unreachable_default
+            .badges
+            .iter()
+            .any(|b| b == "unreachable"));
+        assert!(!unreachable_default.badges.iter().any(|b| b == "current"));
+    }
+
+    #[test]
+    fn host_endpoint_display_local_derives_the_daemons_own_socket_when_unconfigured() {
+        // ADR 0042 L2b: `local` needs no `hosts.toml` entry at all — the
+        // Hosts-mode row must still show a real endpoint, the same one
+        // `resolve_connections` derives for the actual connection.
+        let cfg = crate::hosts::HostsConfig::default();
+        assert_eq!(
+            host_endpoint_display(&cfg, "local"),
+            sot_protocol::session_socket_path("local")
+                .display()
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn host_endpoint_display_local_socket_override_wins() {
+        let cfg = crate::hosts::parse(
+            r#"
+[host.local]
+socket = "\\.\pipe\sot-local"
+"#,
+        );
+        assert_eq!(host_endpoint_display(&cfg, "local"), r"\\.\pipe\sot-local");
+    }
+
+    #[test]
+    fn host_endpoint_display_reads_hosts_toml_for_a_remote_entry() {
+        let cfg = crate::hosts::parse(
+            r#"
+[host.beta]
+ssh_alias = "beta"
+tcp_port = 18743
+remote_socket = "/run/user/4242/sot/sessions/sot.sock"
+"#,
+        );
+        assert_eq!(
+            host_endpoint_display(&cfg, "beta"),
+            "beta:18743 -> /run/user/4242/sot/sessions/sot.sock"
+        );
+    }
+
+    #[test]
+    fn host_endpoint_display_missing_entry_has_no_endpoint() {
+        let cfg = crate::hosts::HostsConfig::default();
+        assert_eq!(host_endpoint_display(&cfg, "ghost"), "(no endpoint)");
     }
 
     #[test]
