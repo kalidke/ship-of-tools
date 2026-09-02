@@ -75,6 +75,73 @@ the backend daemon, which is what the drawer's agent already does.
   screen comes back from the checkpoint; the daemon is restarted and the
   workspace is re-adopted; `end_run` ends it and the record verifies.
 
+**Amendment 2026-09-02 — L1c: the launcher starts and stops the local
+daemon.** L1a shipped the daemon-side capsule runtime and L1b the frontend's
+attach pane; this closes the remaining gap the decision paragraph above
+asserted ("the frontend machine runs its own `sotd`") but the ADR text never
+specified: getting a local `sotd` running at all, unattended, before either
+of those can do anything. `scripts/launch-sot.ps1`'s `-Local` switch now
+ensures one, idempotently, on the fixed per-user named pipe
+`\\.\pipe\sot-<user>-local` (`sotd --label`'s own auto-derivation is a Unix
+runtime-dir scheme with no Windows branch, so this pipe name is constructed
+explicitly, following the one real Windows precedent already in the repo,
+`hosts.toml`'s `[host.local] socket = "\\.\pipe\sot-local"`), with
+`--project-root` the user's home and `--label local` — the same
+project-root-is-home and `--label` convention the backend host's own `sotd
+--project-root $HOME --label sot` already uses. Scoped to `-Local` for now,
+not every launch mode: nothing in the default (remote-tunnel) flow consumes
+the local daemon until L2 (frontend holds one connection per host, local
+included) — which is also when this ensure moves to every launch — and
+starting it unconditionally today would let it pin `<prefix>\bin\sotd.exe`
+(a mapped image while the process runs, on Windows) before the default
+launch's own apply/rebuild step gets a chance to update it: pure exposure,
+no benefit yet. Binary+capsule resolution prefers the COMPLETE dev pair
+(`sotd.exe` AND `sot-capsule.exe` both present in the dev checkout's
+`rust\target\release`) over the complete install pair, refusing only when
+NEITHER pair is complete — matching, not opposing, the frontend's own
+dev-build-first resolution: `-Local` runs the dev frontend from this same
+checkout, so the daemon and its capsule runtime (L1a's own
+`current_exe().parent()` resolution) must come from that same origin or a
+dev frontend ends up talking to an older installed `sot-capsule.exe` —
+exactly the skew ADR 0041's "same release" rule warns about. The daemon is
+spawned detached, so it outlives the launcher and every frontend relaunch;
+`-Local` connects the frontend to this persistent daemon instead of
+spawning a fresh per-session one, as it used to. `scripts/shutdown-sot.ps1`
+stops it LAST, after the frontend and tunnel are already down — sotd has no
+clean-stop IPC op and installs no signal handler on either platform
+(Linux's own `sotd.service` has no `ExecStop` either, so its "graceful"
+stop is already just systemd's unhandled default SIGTERM), so
+`Stop-Process` is what "clean stop" reduces to here. Capsule workspace
+supervisors (`sot-capsule.exe`) are never touched by this — they are
+separate detached processes and the one authority over a workspace's live
+state, and the daemon re-adopts every still-running one via `--resume` the
+next time it starts, which is exactly what a shutdown-and-relaunch does.
+Liveness (the idempotency check, the readiness wait, and stop confirmation)
+is a bounded named-pipe CONNECT probe, not a namespace listing — a pipe
+NAME persists under `\\.\pipe\` while any dead client still holds a handle
+to it, so presence there is not health. Logic lives in a new standalone
+`scripts/sot-local-daemon.ps1` (start/`-Stop`), tested by
+`scripts/tests/test-local-daemon.ps1` on the Windows CI leg.
+
+Three properties this slice relies on without building them further: (1)
+the daemon is started with a plain `Start-Process`; it outlives the
+launcher and every frontend respawn only when the launcher itself runs
+outside a kill-on-close job, which is how the shortcut and a console both
+start it — the same assumption the launcher's own frontend-supervisor loop
+already rests on. (2) the fixed per-user pipe has the same trust model as
+the loopback tunnel port — a hostile co-user on a shared Windows box could
+squat either name; a personal workstation is the deployment target. (3)
+upgrade transaction: a running daemon pins its `sotd.exe` and a running
+supervisor pins its `sot-capsule.exe` as mapped images — rebuilding the
+backend from the checkout requires stopping the local daemon first
+(`sot-local-daemon.ps1 -Stop` or the shutdown script); the general,
+versioned-runtime-dir answer is U4's upgrade transaction (see "What is
+deliberately NOT built" below).
+
+Out of scope here: connecting the frontend to the local daemon in the
+default (remote-tunnel) launch mode, and starting the local daemon on every
+launch mode — both are L2's "one connection per host" below.
+
 ### L2 — one connection per host, one tree
 
 - The frontend holds one transport per host in `hosts.toml` that it can
@@ -113,6 +180,12 @@ the backend daemon, which is what the drawer's agent already does.
   the transport; L3 proxies over it.
 - No cross-host session moves, forks or timelines: those are ADR 0037's
   "later, cheaply" list and stay there.
+- No versioned-runtime-dir / atomic-swap answer for L1c's OWN
+  launcher-managed local `sotd.exe`/`sot-capsule.exe`: while running they
+  are mapped images (Windows) that a rebuild-from-checkout cannot replace in
+  place, so a dev must stop the local daemon first
+  (`sot-local-daemon.ps1 -Stop` or the shutdown script); the general answer
+  is U4's upgrade transaction, same as above.
 
 ## Open questions for the maintainer
 
