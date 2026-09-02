@@ -2089,6 +2089,63 @@ fn host_tree_node(host: &HostKey, connected: bool, has_list: bool, is_active: bo
     }
 }
 
+/// Build the `(parent_id, pane rows)` a `tmux.list_panes` reply for
+/// `session` on `host` splices into the Sessions tree (ADR 0042 L2a). Pure
+/// — no `State` dependency — so "the row built from host B's reply carries
+/// host B, not whichever host happens to share the session name" is
+/// directly unit-testable. `parent_id` and every row id are host-qualified
+/// to match `build_session_row`'s session-row id scheme; every row's
+/// `payload.host` is `host` — the REPLYING connection, not a name lookup.
+fn pane_tree_children(
+    host: &HostKey,
+    session: &str,
+    panes: Vec<sot_protocol::TmuxPane>,
+) -> (String, Vec<TreeNode>) {
+    let parent_id = format!("sessions:{host}:{session}");
+    let children = panes
+        .into_iter()
+        .map(|p| {
+            let mut payload = serde_json::Map::new();
+            payload.insert(
+                "session".to_string(),
+                serde_json::Value::String(p.session.clone()),
+            );
+            payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
+            payload.insert(
+                "window_index".to_string(),
+                serde_json::json!(p.window_index),
+            );
+            payload.insert("pane_index".to_string(), serde_json::json!(p.pane_index));
+            payload.insert(
+                "command".to_string(),
+                serde_json::Value::String(p.command.clone()),
+            );
+            payload.insert("pid".to_string(), serde_json::json!(p.pid));
+            payload.insert("width".to_string(), serde_json::json!(p.width));
+            payload.insert("height".to_string(), serde_json::json!(p.height));
+            payload.insert("active".to_string(), serde_json::json!(p.active));
+            payload.insert(
+                "tmux_pane_id".to_string(),
+                serde_json::Value::String(p.id.clone()),
+            );
+            let label = if p.title.is_empty() {
+                format!("{} · {}", p.id, p.command)
+            } else {
+                format!("{} · {} ({})", p.id, p.title, p.command)
+            };
+            TreeNode {
+                id: format!("sessions:{host}:{session}/{}", p.id),
+                label,
+                kind: "pane".to_string(),
+                has_children: false,
+                badges: Vec::new(),
+                payload,
+            }
+        })
+        .collect();
+    (parent_id, children)
+}
+
 /// Pure core of the ADR 0042 L2a workspace-cache rebuild: given the union
 /// (`ordered_hosts` for display order, `lists` for each host's last-known
 /// `workspace.list`) and `active_host`, computes every workspace-scoped
@@ -5225,6 +5282,16 @@ impl State {
         if !row.node.has_children || row.expanded {
             return false;
         }
+        // ADR 0042 L2a: expanding a `session` row (→ tmux.list_panes) must
+        // target THAT row's own host, not `active_host` — the cursor can
+        // sit on a non-active host's row without having switched to it.
+        // `None` for every other kind means "route via self.send as
+        // before" (unchanged behavior).
+        let target_host = if row.node.kind == "session" {
+            self.selected_session_host()
+        } else {
+            None
+        };
         let outgoing = if row.node.kind == "modules" {
             // Modules-mode root re-expansion: re-request `project.scan`
             // for the whole package tree. `tree.children` is files-mode-
@@ -5289,7 +5356,11 @@ impl State {
             })
         };
         if let Some(req) = outgoing {
-            if let Err(e) = self.send(req) {
+            let sent = match &target_host {
+                Some(host) => self.send_to(host, req),
+                None => self.send(req),
+            };
+            if let Err(e) = sent {
                 tracing::warn!(error = %e, "drop expand request — channel closed");
                 return false;
             }
@@ -6875,20 +6946,6 @@ impl State {
         self.conns.iter().map(|(h, _)| h.clone()).collect()
     }
 
-    /// Which host owns tmux session `name` — scans `workspace_lists`
-    /// (ADR 0042 L2a) rather than trusting the selected row's own payload,
-    /// since a `pane` row (spliced in from a separate `tmux.list_panes`
-    /// reply) doesn't carry a `host` field the way a `session`/
-    /// `session_host` row does. Used wherever a tmux session name is the
-    /// only handle in hand (Sessions-Enter attach).
-    fn host_for_tmux_session(&self, name: &str) -> Option<HostKey> {
-        self.workspace_lists.iter().find_map(|(host, list)| {
-            list.iter()
-                .any(|w| w.tmux_session == name)
-                .then(|| host.clone())
-        })
-    }
-
     /// Clear + rebuild every workspace-scoped cache from the union of every
     /// host's last-known `workspace.list` (`workspace_lists`), in `conns`
     /// order (ADR 0042 L2a). Called whenever ANY host's slice of the union
@@ -7832,6 +7889,26 @@ impl State {
                 .map(String::from);
         }
         None
+    }
+
+    /// The cursored `session`/`pane` row's OWN host (ADR 0042 L2a). Both
+    /// row kinds carry `payload.host` — `session` rows from
+    /// `build_session_row`, `pane` rows from the `TmuxPanes` reply handler
+    /// (stamped from that reply's own `event_host`, since two hosts can
+    /// both report a `sot-be-sot` session and matching by NAME alone would
+    /// pick whichever host happens to have one, silently wrong). `None`
+    /// for any other row kind or a row from a daemon old enough not to
+    /// send the field.
+    fn selected_session_host(&self) -> Option<HostKey> {
+        let row = self.tree.rows.get(self.tree.selected)?;
+        if row.node.kind != "session" && row.node.kind != "pane" {
+            return None;
+        }
+        row.node
+            .payload
+            .get("host")
+            .and_then(|v| v.as_str())
+            .map(String::from)
     }
 
     /// True while a recent auto-start launch into `session` is still inside
@@ -12711,48 +12788,15 @@ impl State {
                         tracing::debug!(count = panes.len(), "tmux.panes (server-wide)");
                         continue;
                     };
-                    let parent_id = format!("sessions:{session}");
-                    let children: Vec<TreeNode> = panes
-                        .into_iter()
-                        .map(|p| {
-                            let mut payload = serde_json::Map::new();
-                            payload.insert(
-                                "session".to_string(),
-                                serde_json::Value::String(p.session.clone()),
-                            );
-                            payload.insert(
-                                "window_index".to_string(),
-                                serde_json::json!(p.window_index),
-                            );
-                            payload
-                                .insert("pane_index".to_string(), serde_json::json!(p.pane_index));
-                            payload.insert(
-                                "command".to_string(),
-                                serde_json::Value::String(p.command.clone()),
-                            );
-                            payload.insert("pid".to_string(), serde_json::json!(p.pid));
-                            payload.insert("width".to_string(), serde_json::json!(p.width));
-                            payload.insert("height".to_string(), serde_json::json!(p.height));
-                            payload.insert("active".to_string(), serde_json::json!(p.active));
-                            payload.insert(
-                                "tmux_pane_id".to_string(),
-                                serde_json::Value::String(p.id.clone()),
-                            );
-                            let label = if p.title.is_empty() {
-                                format!("{} · {}", p.id, p.command)
-                            } else {
-                                format!("{} · {} ({})", p.id, p.title, p.command)
-                            };
-                            TreeNode {
-                                id: format!("sessions:{session}/{}", p.id),
-                                label,
-                                kind: "pane".to_string(),
-                                has_children: false,
-                                badges: Vec::new(),
-                                payload,
-                            }
-                        })
-                        .collect();
+                    // ADR 0042 L2a: this reply is tagged with the host that
+                    // answered it (`event_host`) — `pane_tree_children`
+                    // stamps it on every row and host-qualifies both the
+                    // splice target and each row's id, matching a session
+                    // by bare NAME alone picks whichever host happens to
+                    // have one (every host's default workspace is
+                    // `sot-be-<slug>` too — exactly the collision this
+                    // slice exists to remove).
+                    let (parent_id, children) = pane_tree_children(&event_host, &session, panes);
                     // Same Global-key routing as TmuxSessions.
                     let reply_key: TreeKey = (Mode::Sessions, TreeScope::Global);
                     if reply_key != self.active_tree_key() {
@@ -18608,15 +18652,15 @@ impl ApplicationHandler for App {
                                                     .strip_prefix("sot-be-")
                                                     .map(|s| s.to_string());
                                                 if slug.is_some() {
-                                                    // ADR 0042 L2a: resolve
-                                                    // the row's own host —
-                                                    // a `pane` row doesn't
-                                                    // carry one in its
-                                                    // payload, so scan the
-                                                    // per-host lists instead
-                                                    // of trusting the row.
+                                                    // ADR 0042 L2a: the
+                                                    // cursored row's OWN
+                                                    // host — both `session`
+                                                    // and `pane` rows carry
+                                                    // `payload.host`,
+                                                    // stamped at the reply
+                                                    // that built them.
                                                     let host = state
-                                                        .host_for_tmux_session(&session_name)
+                                                        .selected_session_host()
                                                         .unwrap_or_else(|| {
                                                             state.active_host.clone()
                                                         });
@@ -24499,6 +24543,49 @@ mod tests {
             children[1].badges
         );
         assert!(!children[1].has_children, "no list yet → no children");
+    }
+
+    #[test]
+    fn pane_row_host_matches_the_replying_connection_not_a_same_named_session_elsewhere() {
+        // Every host's default workspace tmux session is named
+        // "sot-be-sot" — matching a row to a host by NAME ALONE cannot
+        // tell two hosts' rows apart. The row must carry whichever host's
+        // OWN reply built it, not a lookup that could land on either.
+        fn pane(id: &str) -> sot_protocol::TmuxPane {
+            sot_protocol::TmuxPane {
+                id: id.to_string(),
+                session: "sot-be-sot".to_string(),
+                window_index: 0,
+                pane_index: 0,
+                title: String::new(),
+                command: "julia".to_string(),
+                pid: 1,
+                width: 80,
+                height: 24,
+                active: true,
+            }
+        }
+        let (parent_a, rows_a) =
+            pane_tree_children(&"alpha".to_string(), "sot-be-sot", vec![pane("%1")]);
+        let (parent_b, rows_b) =
+            pane_tree_children(&"beta".to_string(), "sot-be-sot", vec![pane("%1")]);
+
+        assert_ne!(
+            parent_a, parent_b,
+            "same session name, different hosts → different splice targets"
+        );
+        assert_eq!(
+            rows_a[0].payload.get("host").and_then(|v| v.as_str()),
+            Some("alpha")
+        );
+        assert_eq!(
+            rows_b[0].payload.get("host").and_then(|v| v.as_str()),
+            Some("beta")
+        );
+        // The row built from B's reply must never be attributable to A —
+        // this is the actual collision the fix removes.
+        assert_ne!(rows_b[0].payload.get("host"), rows_a[0].payload.get("host"));
+        assert_ne!(rows_a[0].id, rows_b[0].id, "row ids are host-qualified too");
     }
 }
 
