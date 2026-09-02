@@ -9,6 +9,14 @@
 # The SSH local-forward is started fresh each launch and torn down
 # when the frontend exits.
 #
+# ADR 0042 L1c: every launch (this default mode too, not only -Local) also
+# ensures a LOCAL sotd is running on a fixed per-user named pipe -- "the
+# frontend machine runs its own sotd", idempotently and detached, so it
+# outlives this launch. See scripts/sot-local-daemon.ps1. This default
+# connection is unchanged by that -- the frontend still only talks to the
+# remote backend here; the local daemon runs alongside until a later slice
+# connects the frontend to both.
+#
 # Overrides (env vars):
 #   SOT_HOST         SSH alias for the backend host       (default: none — see .sot/hosts.toml)
 #   SOT_REMOTE_REPO  Path to the repo on the remote       (default: none — see .sot/hosts.toml)
@@ -202,39 +210,55 @@ if (-not (Test-Path $frontendExe) -and -not (Test-Path $alreadyStaged)) {
 }
 
 # ---------------------------------------------------------------------------
-# Local-only mode (-Local): spawn a fresh per-session backend on a
-# named pipe and connect via that. Preserved for offline / debugging.
+# Local daemon (ADR 0042 L1c): "the frontend machine runs its own sotd" --
+# EVERY launch mode (not just -Local) ensures a per-user sotd is running on
+# a fixed named pipe, idempotently and detached, so it is there for -Local
+# today and for L2 (frontend holds one connection per host, local included)
+# once that lands. Logic lives in sot-local-daemon.ps1 so it is independently
+# testable (scripts/tests/test-local-daemon.ps1) and shared with
+# shutdown-sot.ps1's stop path -- see that script's header for the binary
+# resolution order, the pipe-naming rationale, and why -Stop reduces to
+# Stop-Process. Fail-open: a missing sotd.exe or a missing sot-capsule.exe
+# sibling logs a clear reason and this launch CONTINUES -- the local daemon
+# is additive and must never block the existing remote-tunnel or -Local
+# connection. Not gated behind -NoUpdate/-RestartBackend: it's an idempotent
+# liveness check with no git/cargo/network dependency of its own.
+# ---------------------------------------------------------------------------
+$sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
+$localPipeName = "sot-$env:USERNAME-local"
+$localPipePath = '\\.\pipe\' + $localPipeName
+$localDaemonReady = $false
+if (Test-Path $sotLocalDaemon) {
+    $localOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) 6>&1 2>&1
+    foreach ($l in @($localOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+    $localDaemonReady = ($LASTEXITCODE -eq 0)
+} else {
+    Write-SupLog "local daemon: sot-local-daemon.ps1 missing at $sotLocalDaemon - skipping"
+}
+
+# ---------------------------------------------------------------------------
+# Local-only mode (-Local): connect the frontend to the persistent local
+# daemon ensured above, on its fixed per-user pipe. Replaces the old
+# fresh-per-session GUID-pipe backend spawn+kill -- the local daemon is now
+# shared/persistent (started once, outlives this launch) exactly like the
+# remote one, so there is nothing for this block to spawn or tear down.
+# Preserved for offline / debugging / talking to the local host directly.
 # ---------------------------------------------------------------------------
 if ($Local) {
     Stop-Splash   # -Local is a debug path with no freshness phases; skip the splash
-    if (-not (Test-Path $backendExe)) {
+    if (-not $localDaemonReady) {
         [System.Windows.Forms.MessageBox]::Show(
-            "sotd.exe not found at $backendExe`n`nBuild it first:`n  cd $repo\rust; cargo build --release",
+            "Local sotd is not answering on $localPipePath.`n`nSee %LOCALAPPDATA%\sot\logs\sotd-local.log for why (missing sotd.exe / sot-capsule.exe, or it did not come up in time).",
             'Ship of Tools launcher',
             'OK', 'Error') | Out-Null
         exit 1
     }
-    $pipeName = 'sot-' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
-    $pipePath = '\\.\pipe\' + $pipeName
-    $backend = Start-Process -FilePath $backendExe `
-        -ArgumentList @('--socket', $pipePath, '--project-root', $repo.Path) `
-        -RedirectStandardOutput $backendStdout `
-        -RedirectStandardError $backendStderr `
+    Start-Process -FilePath $frontendExe `
+        -ArgumentList @('--socket', $localPipePath) `
+        -RedirectStandardOutput $frontendStdout `
+        -RedirectStandardError $frontendStderr `
         -WindowStyle Hidden `
-        -PassThru
-    Start-Sleep -Milliseconds 300
-    try {
-        Start-Process -FilePath $frontendExe `
-            -ArgumentList @('--socket', $pipePath) `
-            -RedirectStandardOutput $frontendStdout `
-            -RedirectStandardError $frontendStderr `
-            -WindowStyle Hidden `
-            -Wait
-    } finally {
-        if ($backend -and -not $backend.HasExited) {
-            try { Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue } catch {}
-        }
-    }
+        -Wait
     exit 0
 }
 
