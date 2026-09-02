@@ -207,17 +207,20 @@ $sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
 # that might replace those files out from under it. Checked, never
 # unconditional: only when an update is actually about to land --
 # sot-apply.ps1's own staged-update pointer (about to be consumed by the
-# apply call right below), which is the ONLY thing in this launcher that
-# replaces sotd.exe/sot-capsule.exe -- never on every launch, which would
-# pay a stop/restart on every idle click. -NoUpdate skips it, same as the
-# apply step it guards.
+# apply call right below) -- never on every launch, which would pay a
+# stop/restart on every idle click. -NoUpdate skips it, same as the apply
+# step it guards.
 #
 # Codex follow-up: SOT_LAUNCH_REBUILD (set by the self-update prelude on a
-# successful git pull) used to also trigger this -- deleted. The rebuild
-# block it guards is `cargo build --release -p sot-frontend` ONLY (see
-# below); that never touches sotd.exe/sot-capsule.exe, so stopping the
-# local daemon for it bought nothing but a pointless stop/restart on every
-# launch that pulled fresh source.
+# successful git pull) used to also trigger this -- deleted, and still
+# correctly excluded: the dev freshness rebuild block SOT_LAUNCH_REBUILD
+# guards used to be `cargo build --release -p sot-frontend` ONLY, so
+# stopping the local daemon for it bought nothing but a pointless
+# stop/restart on every launch that pulled fresh source. That block now
+# ALSO rebuilds the sotd.exe/sot-capsule.exe pair (2026-09-02 field report
+# -- see its own comment further below), but it stops the daemon itself,
+# right before ITS OWN pair rebuild -- gating THIS earlier stop on
+# SOT_LAUNCH_REBUILD too would just double the stop/restart for no benefit.
 if (-not $NoUpdate -and (Test-Path $sotLocalDaemon)) {
     $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
     if ($updatePending) {
@@ -256,10 +259,14 @@ if (-not (Test-Path $frontendExe) -and -not (Test-Path $alreadyStaged)) {
 # adds it implicitly, ADR 0042 L2b design B), whether -Local's own
 # connection or one row of the default mode's multi-host tree. Positioned
 # right after the staged-update apply above (a freshly applied
-# sotd.exe/sot-capsule.exe, if one landed, is what the ensure below sees --
-# the frontend's OWN freshness rebuild further below never touches the
-# daemon binaries, so there's nothing else to wait on here) and before
-# either mode launches its frontend. See scripts/sot-local-daemon.ps1 for
+# sotd.exe/sot-capsule.exe, if one landed, is what THIS ensure sees) and
+# before either mode launches its frontend. The dev freshness rebuild
+# further below now ALSO rebuilds sotd.exe/sot-capsule.exe (2026-09-02
+# field report), stopping this daemon first and re-running this SAME
+# ensure logic afterward -- so on a dev box that rebuilds, this call is
+# the FIRST of two per launch, and the daemon that ends up running is
+# whichever pair was current when the SECOND (post-rebuild) call ran.
+# See scripts/sot-local-daemon.ps1 for
 # the binary resolution order, the pipe-naming derivation (now queried from
 # the daemon itself, ADR 0042 L2b design C) and why -Stop reduces to
 # Stop-Process.
@@ -739,6 +746,11 @@ foreach ($item in $tunnelPlan) {
 # launches the existing staged/dev binary — a broken update path must never
 # brick the launcher. -NoUpdate skips.
 # ---------------------------------------------------------------------------
+# Set when the backend-pair rebuild below stops the local daemon, so the
+# re-ensure right after this whole freshness block knows to restart it --
+# regardless of whether that rebuild itself succeeded, a stopped daemon
+# must not be left down for the rest of THIS launch.
+$backendPairStopped = $false
 if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate) {
     # The git pull moved to the self-update prelude at the top; here we only
     # REBUILD, and only when that pull succeeded (the SOT_LAUNCH_REBUILD marker)
@@ -774,10 +786,68 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate) {
         } else {
             Write-SupLog "freshness: frontend rebuilt"
         }
+
+        # Backend pair (sotd.exe, sot-capsule.exe) -- a SECOND cargo
+        # invocation, always attempted after the frontend one above
+        # regardless of its outcome (independent packages), and NON-FATAL:
+        # a failure here logs and the launch continues with whatever pair
+        # already exists. 2026-09-02 field report: this rebuild used to be
+        # frontend-only, so a dev box's local sotd.exe/sot-capsule.exe went
+        # stale for weeks -- a COMPLETE but pre-0.6 pair with no Windows
+        # pipe derivation, which sot-local-daemon.ps1 then misreported as
+        # an ABSENT pair rather than a stale one (see its own header and
+        # the diagnostic split there).
+        #
+        # The pair spans TWO packages, not one: `sotd` is sot-backend's own
+        # [[bin]], `sot-capsule` is an auto-discovered src/bin of sot-log --
+        # building sot-backend alone is NOT enough to produce sot-capsule.exe.
+        #
+        # Stop-first is REQUIRED here, not merely prudent: a RUNNING local
+        # daemon pins both files as mapped images on Windows -- reproduced
+        # on the reporting box, with sotd.exe running from this same
+        # target\release, `cargo build --release -p sot-backend` failed
+        # with "Access is denied. (os error 5)" and left the old binaries
+        # in place. The "Local daemon ensure" step right after this whole
+        # freshness block (unchanged code, see its own comment) restarts
+        # it on whatever pair is current once this rebuild is done -- so on
+        # a dev box, every launch that rebuilds also restarts the local
+        # daemon. A locally-spawned capsule supervisor (sot-capsule.exe,
+        # once running) survives that restart by design (ADR 0042 L1a: the
+        # daemon re-adopts it via --resume on its next start) -- but while
+        # alive it still pins sot-capsule.exe on disk, so this rebuild can
+        # fail to overwrite THAT file too even after the stop below;
+        # tolerated here (non-fatal), the durable answer is U4's upgrade
+        # transaction.
+        if (Test-Path $sotLocalDaemon) {
+            Write-SupLog 'freshness: stopping local daemon before backend rebuild (a running sotd.exe pins its own image)'
+            $stopOut2 = & $sotLocalDaemon -Stop 6>&1 2>&1
+            foreach ($l in @($stopOut2)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+        }
+        $backendPairStopped = $true
+        Write-SupLog "freshness: cargo build -p sot-backend -p sot-log"
+        $capOut = cargo build --release -p sot-backend -p sot-log --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-SupLog "freshness: backend pair rebuild FAILED (non-fatal, continuing with whatever pair exists). tail: $($capOut | Select-Object -Last 3)"
+        } else {
+            Write-SupLog "freshness: backend pair (sotd.exe, sot-capsule.exe) rebuilt"
+        }
         }
     } finally {
         $ErrorActionPreference = $savedEAP
     }
+}
+# Re-ensure the local daemon if the backend-pair rebuild just stopped it --
+# left down for the rest of THIS launch otherwise, regardless of whether
+# that rebuild succeeded. The earlier "Local daemon ensure" block already
+# ran once against whatever pair existed before this rebuild; this is the
+# SECOND, post-rebuild call the comment there refers to, and it is what
+# updates $localDaemonReady (used by the "nothing reachable" check below)
+# to reflect the pair actually running now.
+if ($backendPairStopped -and (Test-Path $sotLocalDaemon)) {
+    Write-SupLog 'freshness: re-ensuring local daemon on the (possibly) rebuilt pair'
+    $reEnsureOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) 6>&1 2>&1
+    foreach ($l in @($reEnsureOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+    $localDaemonReady = ($LASTEXITCODE -eq 0)
 }
 
 # The frontend runs from a *staged copy* under %LOCALAPPDATA%\sot\bin so a
