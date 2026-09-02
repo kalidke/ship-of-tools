@@ -114,11 +114,29 @@ jobs:
         run: .\scripts\tests\test-local-daemon.ps1
         working-directory: .
 
+      # ADR 0042 L2b design E: Read-SotHosts/Get-TunnelPlan (scripts/
+      # sot-hosts.ps1), the one-tunnel-per-remote plan both launchers open,
+      # against a fixture hosts.toml -- pure text processing, no ssh, no
+      # network, so this needs neither a built sotd.exe nor CI's own
+      # $env:CI-gated real-daemon sections. Same 5.1 host as the steps above.
+      - name: Test tunnel plan
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: .\scripts\tests\test-tunnel-plan.ps1
+        working-directory: .
+
       - name: Parse shell launchers
         if: matrix.os == 'ubuntu-latest'
         working-directory: scripts
         run: |
           for f in *.sh; do bash -n "$f" && echo "ok: $f"; done
+
+      # ADR 0042 L2b design E: the bash-side sibling of the PowerShell tunnel
+      # plan test above -- scripts/sot-hosts.sh's sot_tunnel_plan against a
+      # fixture hosts.toml, pure text processing, hermetic and fast.
+      - name: Test tunnel plan (bash)
+        if: matrix.os == 'ubuntu-latest'
+        run: scripts/tests/test-tunnel-plan.sh
 
       # PR #148 Codex review F10: hermetic + fast, so it rides along in this
       # existing ubuntu leg rather than a dedicated job. Only comm-spawn.sh's

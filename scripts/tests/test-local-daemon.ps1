@@ -1,6 +1,7 @@
 # test-local-daemon.ps1 -- regression harness for scripts/sot-local-daemon.ps1
 # (ADR 0042 L1c: -Local starts a local sotd, idempotently and detached, and
-# shutdown-sot.ps1 stops it last).
+# shutdown-sot.ps1 stops it last; L2b design C: the pipe name is queried
+# from the daemon itself -- section 6 -- and every launch mode ensures it).
 #
 # Section 0 syntax-parses every .ps1 this unit touched -- this repo's CI has
 # no PSScriptAnalyzer (grepped: zero hits repo-wide), only the
@@ -15,15 +16,17 @@
 # NEVER executed by anything sot-local-daemon.ps1 does (only Test-Path'd), so
 # a placeholder file is exactly as good as a real one for every case here.
 #
-# Sections 3-5 need a REAL, runnable sotd.exe (it must actually bind a named
-# pipe) -- sourced from rust\target\debug\sotd.exe, which the SAME CI job
-# already builds one step earlier (`cargo build --workspace --locked`, no
-# --release => target\debug; see .github/workflows/rust.yml). Falls back to
-# a release build for a local dev run. On CI ($env:CI, set by GitHub) a
-# missing real sotd.exe is a FAIL -- that job already built one, so its
-# absence means something upstream broke, not "nothing to test here"; off
-# CI (a dev box that hasn't built anything) it SKIPs instead, so this file
-# stays runnable without a build.
+# Sections 3-6 need a REAL, runnable sotd.exe (it must actually bind a named
+# pipe, and section 6 must actually answer `session-socket-path`) -- sourced
+# from rust\target\debug\sotd.exe, which the SAME CI job already builds one
+# step earlier (`cargo build --workspace --locked`, no --release =>
+# target\debug; see .github/workflows/rust.yml). Falls back to a release
+# build for a local dev run. On CI ($env:CI, set by GitHub) a missing real
+# sotd.exe is a FAIL -- that job already built one, so its absence means
+# something upstream broke, not "nothing to test here"; off CI (a dev box
+# that hasn't built anything) it SKIPs instead, so this file stays runnable
+# without a build. Section 6 additionally only runs ON CI even when a real
+# sotd.exe IS present -- see its own comment for why.
 #
 # Before touching a REAL sotd.exe, sections 3-5 redirect HOME/USERPROFILE/
 # LOCALAPPDATA/XDG_STATE_HOME/XDG_CONFIG_HOME at directories under the test
@@ -172,11 +175,12 @@ try {
 
     if (-not $haveRealSotd) {
         if ($env:CI) {
-            Check '3-5. real sotd.exe present for process-behavior tests' $false 'no rust\target\{debug,release}\sotd.exe on a CI leg that already built the workspace -- upstream build gap, not a skip'
+            Check '3-6. real sotd.exe present for process-behavior tests' $false 'no rust\target\{debug,release}\sotd.exe on a CI leg that already built the workspace -- upstream build gap, not a skip'
         } else {
             Note-Skip '3. start when absent' 'no rust\target\{debug,release}\sotd.exe built on this box'
             Note-Skip '4. no second start when the pipe already answers' 'no rust\target\{debug,release}\sotd.exe built on this box'
             Note-Skip '5. shutdown stops the daemon and leaves a fake supervisor alone' 'no rust\target\{debug,release}\sotd.exe built on this box'
+            Note-Skip '6. derive pipe name from sotd session-socket-path' 'no rust\target\{debug,release}\sotd.exe built on this box'
         }
     } else {
         # Isolate the REAL daemon's own state from the real developer
@@ -246,6 +250,42 @@ try {
         Start-Sleep -Milliseconds 300
         $fakeSup.Refresh()
         Check 'fake supervisor left alone' (-not $fakeSup.HasExited) 'fake supervisor was killed too'
+
+        Write-Host "`n=== 6. pipe name comes from 'sotd session-socket-path local', not a hardcoded guess ===" -ForegroundColor Cyan
+        # ADR 0042 L2b design C: no -PipeName override here -- the script
+        # must resolve $daemonExe itself and query IT for the pipe path,
+        # exactly the path every real launch takes. CI-only: this exercises
+        # the REAL per-user pipe (`\\.\pipe\sot-<the CI user>-local`, since
+        # only HOME/USERPROFILE/LOCALAPPDATA/XDG_* are redirected above, not
+        # USERNAME) -- safe on an ephemeral CI runner, but skipped on a dev
+        # box where it could collide with a genuinely running local daemon.
+        if (-not $env:CI) {
+            Note-Skip '6. derive pipe name from sotd session-socket-path' 'only run on CI -- exercises the REAL per-user pipe name'
+        } else {
+            $expectedPipe = (& $realSotd session-socket-path local | Select-Object -First 1)
+            if ($expectedPipe) { $expectedPipe = $expectedPipe.ToString().Trim() }
+            Check 'sotd itself derives a Windows named-pipe path' ($expectedPipe -like '\\.\pipe\sot-*-local') "got: $expectedPipe"
+            $p6 = Join-Path $root 'p6'
+            New-Fixture -Prefix $p6 -WithCapsule -SotdSource $realSotd
+            try {
+                $out6 = & $script -Prefix $p6 -DevBinDir 'C:\sot-test-does-not-exist' -ProjectRoot $spacedProjectRoot 6>&1 2>&1
+                $exit6 = $LASTEXITCODE
+                Check 'exit code 0 (started via the derived pipe)' ($exit6 -eq 0) "got $exit6; log: $out6"
+                Check 'log names the derived pipe path' ((($out6 -join ' ')) -match [regex]::Escape($expectedPipe)) "log was: $out6"
+                $pipeName6 = $expectedPipe.Substring(9)   # strip '\\.\pipe\'
+                Check 'derived pipe answers' (Wait-Pipe $pipeName6) 'pipe never opened'
+                $procs6 = @(Get-DaemonProcs $expectedPipe)
+                Check 'exactly one sotd.exe on the derived pipe' ($procs6.Count -eq 1) "found $($procs6.Count)"
+            } finally {
+                # -Stop's OWN derive path, under test here too -- and the
+                # guaranteed cleanup for this section regardless of which
+                # Check above failed.
+                $null = & $script -Stop -Prefix $p6 -DevBinDir 'C:\sot-test-does-not-exist' -ProjectRoot $spacedProjectRoot 6>&1 2>&1
+                Start-Sleep -Milliseconds 200
+                Get-DaemonProcs $expectedPipe | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            }
+            Check 'derived pipe gone after stop' (Wait-PipeGone $pipeName6) 'pipe still answering after -Stop'
+        }
     }
 } finally {
     # ONE place for every cleanup this file owes, so a terminating error
