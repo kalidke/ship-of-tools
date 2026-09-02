@@ -863,12 +863,12 @@ fn run_worker(
                 }
             }
         }
-        let (supervisor_conn, mut sup_reader) = supervisor_connected.expect("checked Some above");
+        let (mut supervisor_conn, mut sup_reader) = supervisor_connected.expect("checked Some above");
 
         // A latched quit only needs the supervisor lane -- apply it now,
         // rather than waiting for a full attach that a quit makes moot.
         if let Some(reason) = latched_quit_reason.take() {
-            run_quit(&supervisor_conn, &mut sup_reader, &voyage, reason, &mut quit, &mut outstanding, &emit);
+            run_quit(&mut supervisor_conn, &mut sup_reader, &h, &voyage, reason, &mut quit, &mut outstanding, &emit);
             if quit.should_exit() {
                 emit(ClientEvent::ShouldExit);
                 return;
@@ -1027,6 +1027,7 @@ fn run_worker(
             &cmd_rx,
             &events_tx,
             &wake,
+            &h,
             &shared_conn,
             &mut supervisor_conn,
             &mut sup_reader,
@@ -1166,43 +1167,68 @@ fn iso_now() -> String {
     format!("{y:04}-{m2:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
-/// The read budget for each poll inside `run_quit`'s own loop — SHORT
-/// (not `QUIT_CUTOFF`) because a timeout here is not a failure, it is
-/// the cue to send `query` (see the loop's own doc for why that must
-/// happen well inside the supervisor lane's 5 s idle deadline).
-const QUIT_POLL_READ_BUDGET: Duration = Duration::from_secs(2);
+/// Steady heartbeat cadence for `run_quit`'s own loop, chosen against a
+/// CONFIRMED read of U2's own idle-eviction code (`supervisor.rs`'s
+/// `service_lane`/`handle_lane_bytes`): a connection's idle clock
+/// (`Conn::last_activity`, evicted past `LANE_IDLE_DEADLINE` = 5 s) is
+/// reset in EXACTLY ONE place — `handle_lane_bytes`'s own
+/// `conn.last_activity = now;`, which runs only when the SERVER
+/// RECEIVES a `TransportEvent::Bytes` from the CLIENT. The SERVER
+/// SENDING a reply (`TransportEvent::Sent`) never touches it — that
+/// event only drives the unrelated `pending_close`/refusal-flush
+/// bookkeeping. So a client that writes `end_run` and then only READS,
+/// waiting for the deferred reply, is indistinguishable from an idle
+/// connection to the SERVER, which can close it mid-teardown before the
+/// reply it is computing ever goes out — confirmed by real-Windows
+/// evidence on `285ad0d9`: `RecordClosed` arrived, `Verifying` began,
+/// then nothing for 60 s (a 2 s-budget read-then-query design still left
+/// up to ~2 s of silence between attempts, and every subsequent `query`
+/// write was swallowed by `let _ = write_bounded(..)`, so the eviction
+/// was never even detected). 1 s gives 5x margin under the 5 s deadline.
+const QUIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Submits `end_run` on the (already-connected) supervisor lane, THEN
 /// LOOPS — entirely within this call — until the dispatcher reaches a
-/// terminal state (`Ended`/`Failed`/`Refused`/`OutcomeUnknown`).
+/// terminal state (`Ended`/`Failed`/`Refused`/`OutcomeUnknown`), sending
+/// `query { operation_id }` every [`QUIT_HEARTBEAT_INTERVAL`] and never
+/// blocking a read past that same interval (see the constant's own doc
+/// for why: ONLY outbound bytes reset the supervisor lane's idle clock,
+/// so a read that outlasts the heartbeat is exactly the silence that
+/// gets this connection evicted mid-wait).
 ///
-/// Second-pass fix (first real-Windows run): `end_run` tears the capsule
-/// down, which closes the ATTACH connection — so a design that returned
-/// after the deferred `record_closed` reply and left `query` polling to
-/// the STEADY-STATE loop never actually verified anything, because that
-/// loop exits on the attach connection's own disconnect the moment
-/// `end_run` succeeds (`Verifying` forever, the caller's own deadline
-/// the only thing that ever fired). The quit path must not depend on the
-/// attach connection at all — its pipe going away is exactly what a
-/// successful end_run does. A second, related hazard: the supervisor
-/// lane evicts a connection idle for its own 5 s deadline, so a single
-/// long blocking read waiting out the FULL 90 s `QUIT_CUTOFF` for the
-/// deferred reply could itself lose that reply to idle eviction if the
-/// real teardown ran past 5 s. Both are fixed by the SAME loop: read
-/// with the SHORT [`QUIT_POLL_READ_BUDGET`]; on a timeout or any read
-/// error, send `query` instead of giving up — which both advances
-/// verification AND is itself lane traffic that satisfies the idle
-/// deadline, so a teardown slower than 5 s never loses the connection.
-/// `tick` against the dispatcher's own `QUIT_CUTOFF` runs every
-/// iteration, so the loop still gives up (`OutcomeUnknown`) at the SAME
-/// 90 s bound the dispatcher always had.
+/// This is the THIRD pass (first real-Windows run diagnostics): the
+/// second pass's read-then-query-on-timeout design still left gaps wide
+/// enough to lose the connection under a slow enough teardown, and, once
+/// lost, could not recover — every write after that point was silently
+/// discarded. This pass never trusts the CURRENT connection to still be
+/// good: any write error, `Eof`, `Io`, or read timeout on it
+/// unconditionally RECONNECTS the supervisor lane
+/// ([`reconnect_supervisor_lane_for_quit`]) and continues querying the
+/// SAME durable `operation_id` — safe because the authority's own
+/// operation journal (ADR 0041 Lifecycle: "`operation_id` is durable for
+/// MUTATING ops") is exactly what a fresh `hello` and `query` can read
+/// back, so there is nothing about the OLD connection worth preserving.
+/// No write in this loop is ever swallowed (`let _ = write_bounded(..)`
+/// silently discarding a failure is what let the second pass spin for
+/// 60 s against a connection already gone) — every write's own result
+/// feeds the SAME reconnect decision a read failure does. `tick` against
+/// the dispatcher's own `QUIT_CUTOFF` (90 s) each iteration is the ONLY
+/// terminal bound: a lane that cannot be reconnected within it still
+/// yields `OutcomeUnknown`, exactly as before this pass.
+///
+/// The quit path never touches the ATTACH connection at all — the
+/// capsule's own pipe going away is exactly what a successful `end_run`
+/// does, so depending on it (as the steady-state loop that used to poll
+/// `query` did) can never be correct here.
 ///
 /// Idempotent — a `quit` already in flight (Ending/Verifying/terminal)
 /// makes this a no-op, so applying a LATCHED quit at the top of a fresh
 /// episode can never double-fire.
+#[allow(clippy::too_many_arguments)]
 fn run_quit(
-    supervisor_conn: &PipeClient,
+    supervisor_conn: &mut PipeClient,
     sup_reader: &mut FrameReader,
+    h: &str,
     voyage: &str,
     reason: String,
     quit: &mut QuitDispatcher,
@@ -1225,15 +1251,22 @@ fn run_quit(
         operation_id: operation_id.clone(),
         op: SupervisorOp::EndRun { reason, voyage: voyage.to_string() },
     };
-    let sent = match wire::encode_supervisor_request(&cmd) {
-        Ok(bytes) => write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET).is_ok(),
-        Err(_) => false,
-    };
-    emit(ClientEvent::QuitMessage(quit.message()));
-    if !sent {
-        return;
+    match wire::encode_supervisor_request(&cmd) {
+        Ok(bytes) => {
+            if let Err(e) = write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET) {
+                // Not swallowed (Codex review round): a failed write here
+                // is exactly as recoverable as one later -- the loop
+                // below reconnects and queries the SAME operation_id,
+                // which the authority's own journal already has.
+                eprintln!("fe-client quit: end_run write failed ({e}); reconnecting and querying");
+                reconnect_supervisor_lane_for_quit(supervisor_conn, sup_reader, h);
+            }
+        }
+        Err(e) => eprintln!("fe-client quit: end_run encode failed ({e}); will query for its outcome anyway"),
     }
+    emit(ClientEvent::QuitMessage(quit.message()));
 
+    let mut last_query_sent_at: Option<Instant> = None;
     loop {
         let now = Instant::now();
         quit.tick(now);
@@ -1245,7 +1278,26 @@ fn run_quit(
             emit(ClientEvent::QuitMessage(quit.message()));
             return;
         }
-        match sup_reader.next_frame(supervisor_conn, now + QUIT_POLL_READ_BUDGET) {
+
+        let heartbeat_due = last_query_sent_at
+            .map(|t| now.duration_since(t) >= QUIT_HEARTBEAT_INTERVAL)
+            .unwrap_or(true);
+        if heartbeat_due {
+            last_query_sent_at = Some(now);
+            let q = SupervisorRequest::Query { operation_id: operation_id.clone() };
+            match wire::encode_supervisor_request(&q) {
+                Ok(bytes) => {
+                    if let Err(e) = write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET) {
+                        eprintln!("fe-client quit: query write failed ({e}); reconnecting");
+                        reconnect_supervisor_lane_for_quit(supervisor_conn, sup_reader, h);
+                        continue;
+                    }
+                }
+                Err(e) => eprintln!("fe-client quit: query encode failed ({e}); will retry next heartbeat"),
+            }
+        }
+
+        match sup_reader.next_frame(supervisor_conn, now + QUIT_HEARTBEAT_INTERVAL) {
             Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(state))) => {
                 eprintln!("fe-client quit: operation state {state:?}");
                 quit.on_operation_state(state);
@@ -1254,16 +1306,35 @@ fn run_quit(
             Ok(other) => {
                 eprintln!("fe-client quit: unrelated frame while waiting: {other:?}");
             }
-            Err(_) => {
-                // Timeout, EOF, or a wire error: `query` both advances
-                // verification and is itself traffic that keeps the
-                // lane's own 5 s idle deadline satisfied.
-                if let Ok(bytes) =
-                    wire::encode_supervisor_request(&SupervisorRequest::Query { operation_id: operation_id.clone() })
-                {
-                    let _ = write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET);
-                }
+            Err(e) => {
+                // Timeout, EOF, or a wire error alike: the ruling this
+                // pass implements treats ALL of them as "this connection
+                // can no longer be trusted" -- reconnect unconditionally
+                // rather than try to distinguish a merely-slow reply
+                // from a silently-evicted connection, which is exactly
+                // the distinction the second pass got wrong.
+                eprintln!("fe-client quit: read failed ({e}); reconnecting");
+                reconnect_supervisor_lane_for_quit(supervisor_conn, sup_reader, h);
             }
+        }
+    }
+}
+
+/// Reconnects the supervisor lane in place, for [`run_quit`]'s own use.
+/// Best-effort and silent-on-failure BY DESIGN (beyond the one stderr
+/// line): the caller's own loop simply tries again next iteration,
+/// bounded overall by `QuitDispatcher::tick`'s 90 s cutoff -- there is
+/// no separate retry budget to manage here, unlike the reconnect EPISODE
+/// loop the rest of this module drives for the attach lane.
+fn reconnect_supervisor_lane_for_quit(supervisor_conn: &mut PipeClient, sup_reader: &mut FrameReader, h: &str) {
+    match connect_supervisor_lane(h) {
+        Ok((conn, _proven)) => {
+            *supervisor_conn = conn;
+            *sup_reader = FrameReader::new();
+            eprintln!("fe-client quit: reconnected the supervisor lane");
+        }
+        Err(e) => {
+            eprintln!("fe-client quit: reconnect failed ({e}); will retry");
         }
     }
 }
@@ -1330,6 +1401,7 @@ fn run_steady_state(
     cmd_rx: &Receiver<WorkerMsg>,
     events_tx: &Sender<ClientEvent>,
     wake: &(dyn Fn() + Send),
+    h: &str,
     attach_conn: &Arc<PipeClient>,
     supervisor_conn: &mut PipeClient,
     sup_reader: &mut FrameReader,
@@ -1400,7 +1472,7 @@ fn run_steady_state(
                 // see its own doc for why verification cannot depend on
                 // this steady-state loop running again (the attach
                 // connection dies with the capsule end_run tears down).
-                run_quit(supervisor_conn, sup_reader, voyage, reason, quit, outstanding, &emit);
+                run_quit(supervisor_conn, sup_reader, h, voyage, reason, quit, outstanding, &emit);
             }
             Ok(WorkerMsg::Frame(frame)) => {
                 match handle_attach_frame(

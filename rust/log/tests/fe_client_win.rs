@@ -118,6 +118,19 @@ fn status(conn: &PipeClient) -> (Option<String>, Option<u64>, SupervisorPhase) {
     }
 }
 
+/// As [`status`], but never panics — `Err`'s own text names what went
+/// wrong. Mirrors `tests/supervisor_win.rs`'s own helper of the same
+/// name (this crate's leaf-helper-duplication convention). Used only
+/// where a connection MAY legitimately be gone (a diagnostic path that
+/// must not itself panic and hide the real failure).
+fn try_status(conn: &PipeClient) -> Result<(Option<String>, Option<u64>, SupervisorPhase), String> {
+    match request_for_test(conn, &SupervisorRequest::Status, Instant::now() + Duration::from_secs(5)) {
+        Ok(SupervisorReply::StatusOk { voyage, leg, phase, .. }) => Ok((voyage, leg, phase)),
+        Ok(other) => Err(format!("expected StatusOk, got {other:?}")),
+        Err(e) => Err(format!("{e}")),
+    }
+}
+
 fn wait_for_ready(conn: &PipeClient, timeout: Duration) -> (String, u64) {
     poll_until(
         || match status(conn) {
@@ -496,26 +509,34 @@ fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
         std::thread::sleep(Duration::from_millis(50));
     }
     if !exited {
-        // Name the stuck state: the dispatcher's own message (Refused/Failed
-        // carry their reason) and what the authority says over a separate
-        // connection.
-        let diag = status(&conn);
+        // Codex review round (evidence from 285ad0d9's real-Windows run):
+        // `conn` (opened before the 60s quit-wait loop, never itself used
+        // during it) can ALSO have idled out under the supervisor lane's
+        // own 5s deadline by now — using it here panicked INSIDE the
+        // diagnostic, hiding the real failure. A FRESH connection (ruling
+        // 4) is the honest way to ask the authority what it thinks right
+        // now; `try_status` (never panics) keeps this path from replacing
+        // the real panic message with a connection error instead.
+        let diag = wait_for_lane(&h, Duration::from_secs(10));
         panic!(
             "quit dispatcher never reached should_exit (client-visible record_verified) within 60s; \
              quit message: {:?}; authority status (voyage, leg, phase): {:?}",
             client.quit_message(),
-            diag
+            try_status(&diag)
         );
     }
 
-    // Independent corroboration, over a SEPARATE connection: the
-    // supervisor ends up serving ENDED-NO-RESPAWN, exactly what a
-    // `record_closed` end_run leaves behind (ADR 0041 Lifecycle: "An
-    // ended authority stays serviceable"). POLLED, not asserted at once:
-    // the lane replies `record_closed` the moment the record is closed
-    // (B3, the deferred reply) while the authority is still ENDING —
-    // verification (`record_verified`) and the phase transition land
-    // after it. First real-Windows run caught exactly that: Ending.
+    // Independent corroboration: the supervisor ends up serving
+    // ENDED-NO-RESPAWN, exactly what a `record_closed` end_run leaves
+    // behind (ADR 0041 Lifecycle: "An ended authority stays
+    // serviceable"). A FRESH connection (ruling 4, same reasoning as the
+    // diagnostic above) — `conn` has been idle since before the quit was
+    // even requested. POLLED, not asserted at once: the lane replies
+    // `record_closed` the moment the record is closed (B3, the deferred
+    // reply) while the authority is still ENDING — verification
+    // (`record_verified`) and the phase transition land after it. First
+    // real-Windows run caught exactly that: Ending.
+    let conn = wait_for_lane(&h, Duration::from_secs(10));
     let corroborated = {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
