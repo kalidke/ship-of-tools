@@ -207,17 +207,20 @@ $sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
 # that might replace those files out from under it. Checked, never
 # unconditional: only when an update is actually about to land --
 # sot-apply.ps1's own staged-update pointer (about to be consumed by the
-# apply call right below), which is the ONLY thing in this launcher that
-# replaces sotd.exe/sot-capsule.exe -- never on every launch, which would
-# pay a stop/restart on every idle click. -NoUpdate skips it, same as the
-# apply step it guards.
+# apply call right below) -- never on every launch, which would pay a
+# stop/restart on every idle click. -NoUpdate skips it, same as the apply
+# step it guards.
 #
 # Codex follow-up: SOT_LAUNCH_REBUILD (set by the self-update prelude on a
-# successful git pull) used to also trigger this -- deleted. The rebuild
-# block it guards is `cargo build --release -p sot-frontend` ONLY (see
-# below); that never touches sotd.exe/sot-capsule.exe, so stopping the
-# local daemon for it bought nothing but a pointless stop/restart on every
-# launch that pulled fresh source.
+# successful git pull) used to also trigger this -- deleted, and still
+# correctly excluded: the dev freshness rebuild block SOT_LAUNCH_REBUILD
+# guards used to be `cargo build --release -p sot-frontend` ONLY, so
+# stopping the local daemon for it bought nothing but a pointless
+# stop/restart on every launch that pulled fresh source. That block now
+# ALSO rebuilds the sotd.exe/sot-capsule.exe pair (2026-09-02 field report
+# -- see its own comment further below), but it stops the daemon itself,
+# right before ITS OWN pair rebuild -- gating THIS earlier stop on
+# SOT_LAUNCH_REBUILD too would just double the stop/restart for no benefit.
 if (-not $NoUpdate -and (Test-Path $sotLocalDaemon)) {
     $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
     if ($updatePending) {
@@ -250,57 +253,15 @@ if (-not (Test-Path $frontendExe) -and -not (Test-Path $alreadyStaged)) {
 }
 
 # ---------------------------------------------------------------------------
-# Local daemon ensure (ADR 0042 L2b design D): EVERY launch mode ensures the
-# persistent, per-user local sotd is running now, not just -Local -- the
-# frontend always holds a "local" connection (hosts::resolve_connections
-# adds it implicitly, ADR 0042 L2b design B), whether -Local's own
-# connection or one row of the default mode's multi-host tree. Positioned
-# right after the staged-update apply above (a freshly applied
-# sotd.exe/sot-capsule.exe, if one landed, is what the ensure below sees --
-# the frontend's OWN freshness rebuild further below never touches the
-# daemon binaries, so there's nothing else to wait on here) and before
-# either mode launches its frontend. See scripts/sot-local-daemon.ps1 for
-# the binary resolution order, the pipe-naming derivation (now queried from
-# the daemon itself, ADR 0042 L2b design C) and why -Stop reduces to
-# Stop-Process.
-#
-# Fail-open in the DEFAULT mode: a local daemon that won't come up just
-# means the "local" row in Hosts mode shows unreachable -- the remote
-# tunnel(s) this mode exists for are unaffected. -Local has nothing else to
-# fall back to, so it keeps today's hard error dialog.
-# ---------------------------------------------------------------------------
-if ($Local) { Stop-Splash }   # -Local is a debug path with no other progress UI
-$localDaemonReady = $false
-if (Test-Path $sotLocalDaemon) {
-    $localOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) 6>&1 2>&1
-    foreach ($l in @($localOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
-    $localDaemonReady = ($LASTEXITCODE -eq 0)
-} else {
-    Write-SupLog "local daemon: sot-local-daemon.ps1 missing at $sotLocalDaemon"
-}
-
-if ($Local) {
-    if (-not $localDaemonReady) {
-        [System.Windows.Forms.MessageBox]::Show(
-            "Local sotd is not answering.`n`nSee %LOCALAPPDATA%\sot\logs\sotd-local.log for why (no complete sotd.exe+sot-capsule.exe pair, or it did not come up in time).",
-            'Ship of Tools launcher',
-            'OK', 'Error') | Out-Null
-        exit 1
-    }
-    # No --socket: the frontend derives the local connection itself
-    # (hosts::resolve_connections, ADR 0042 L2b design B) from the exact
-    # same function sot-local-daemon.ps1 just used to start it on.
-    Start-Process -FilePath $frontendExe `
-        -RedirectStandardOutput $frontendStdout `
-        -RedirectStandardError $frontendStderr `
-        -WindowStyle Hidden `
-        -Wait
-    exit 0
-}
-if (-not $localDaemonReady) {
-    Write-SupLog "local daemon: not ready - continuing without it (fail-open; the 'local' host will show unreachable)"
-}
-
+# Everything from here through the end of the per-remote tunnel loop below
+# is DEFAULT-MODE ONLY (2026-09-02, ONE-ensure simplification). -Local now
+# skips it via this explicit gate, rather than via the old "Local daemon
+# ensure" block's early exit that used to sit ABOVE this section -- that
+# block moved to run once, after the freshness rebuild below (see its own
+# comment there for why). Left NOT reindented on purpose: this wraps the
+# pre-existing "Default: SSH-to-remote backend" section as-is, to keep
+# the diff reviewable.
+if (-not $Local) {
 # ---------------------------------------------------------------------------
 # Default: SSH-to-remote backend.
 #
@@ -482,8 +443,9 @@ done
 # through the same nonfatal plan every other host uses -- log, continue,
 # let the frontend show it unreachable and reconnect. $defaultRemoteOk
 # gates: whether $sshArgs/Start-SotTunnel below is worth building at all,
-# and (combined with $localDaemonReady, checked earlier) the ONE error
-# dialog that remains -- see "nothing at all can start" further down.
+# and (combined with $localDaemonReady, computed further below, after
+# the freshness rebuild) the ONE error dialog that remains -- see
+# "nothing at all can start" further down.
 $defaultRemoteOk = $false
 if ($backendHost -and $remoteRepo) {
     $remoteCmd = New-RemoteEnsureCommand -RemoteRepo $remoteRepo -RemoteSocketOverride $remoteSocket -Restart $RestartBackend
@@ -727,6 +689,7 @@ foreach ($item in $tunnelPlan) {
         Write-SupLog "tunnel: host '$($item.host)' failed to start ssh - $($_.Exception.Message)"
     }
 }
+}   # end: default-mode only (see the -not $Local gate above)
 
 # ---------------------------------------------------------------------------
 # Self-relaunch supervisor (ADR 0017).
@@ -737,9 +700,14 @@ foreach ($item in $tunnelPlan) {
 # FRONTEND before staging. FAIL-OPEN at every step: pull failure (offline,
 # conflict) or build failure (broken main) logs to the supervisor log and
 # launches the existing staged/dev binary — a broken update path must never
-# brick the launcher. -NoUpdate skips.
+# brick the launcher. -NoUpdate skips. -Local skips too (2026-09-02 Codex
+# round): the self-update prelude only ever SETS SOT_LAUNCH_REBUILD when
+# -not $Local, but the var is process environment, not a fresh local --
+# an inherited '1' from an earlier invocation in the same shell must not
+# make a later -Local run rebuild (and stop the daemon for it); -Local
+# is documented as a freshness-free debug path with no exception.
 # ---------------------------------------------------------------------------
-if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate) {
+if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate -and -not $Local) {
     # The git pull moved to the self-update prelude at the top; here we only
     # REBUILD, and only when that pull succeeded (the SOT_LAUNCH_REBUILD marker)
     # so exactly one cargo build runs in the final invocation. Consume the marker.
@@ -774,10 +742,130 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate) {
         } else {
             Write-SupLog "freshness: frontend rebuilt"
         }
+
+        # Backend pair (sotd.exe, sot-capsule.exe) -- a SECOND cargo
+        # invocation, always attempted after the frontend one above
+        # regardless of its outcome (independent packages), and NON-FATAL:
+        # a failure here logs and the launch continues with whatever pair
+        # already exists. 2026-09-02 field report: this rebuild used to be
+        # frontend-only, so a dev box's local sotd.exe/sot-capsule.exe went
+        # stale for weeks -- a COMPLETE but pre-0.6 pair with no Windows
+        # pipe derivation, which sot-local-daemon.ps1 then misreported as
+        # an ABSENT pair rather than a stale one (see its own header and
+        # the diagnostic split there).
+        #
+        # The pair spans TWO packages, not one: `sotd` is sot-backend's own
+        # [[bin]], `sot-capsule` is an auto-discovered src/bin of sot-log --
+        # building sot-backend alone is NOT enough to produce sot-capsule.exe.
+        #
+        # Stop-first is REQUIRED here, not merely prudent: a RUNNING local
+        # daemon pins both files as mapped images on Windows -- reproduced
+        # on the reporting box, with sotd.exe running from this same
+        # target\release, `cargo build --release -p sot-backend` failed
+        # with "Access is denied. (os error 5)" and left the old binaries
+        # in place. The "Local daemon ensure" step right after this whole
+        # freshness block (the single per-launch ensure, see its own comment) restarts
+        # it on whatever pair is current once this rebuild is done -- so on
+        # a dev box, every launch that rebuilds also restarts the local
+        # daemon.
+        #
+        # Mixed-version pair guard (2026-09-02 Codex round): a locally-spawned
+        # capsule supervisor (sot-capsule.exe) is a SEPARATE, detached process
+        # from sotd (ADR 0042 L1a) -- the -Stop above only unpins sotd.exe, not
+        # a still-running capsule's own mapped image. Rebuilding anyway would
+        # publish a fresh sotd.exe next to the OLD sot-capsule.exe, and the
+        # ensure right after this whole block would then start that MISMATCHED
+        # pair. No versioned target dir to build into instead, so the smallest
+        # fix is to skip the rebuild entirely -- both the stop (nothing to
+        # unpin if nothing is about to overwrite it) and the cargo build --
+        # whenever a sot-capsule.exe is running from this dev bin dir. The
+        # durable answer is U4's upgrade transaction.
+        $devBinDir = Split-Path $backendExe -Parent
+        $capsuleSessionsAlive = @(Get-CimInstance Win32_Process -Filter "Name='sot-capsule.exe'" -ErrorAction SilentlyContinue |
+            Where-Object {
+                ($_.ExecutablePath -and $_.ExecutablePath -like "$devBinDir*") -or
+                ($_.CommandLine -and $_.CommandLine -like "*$devBinDir*")
+            })
+        if ($capsuleSessionsAlive.Count -gt 0) {
+            Write-SupLog "freshness: local capsule sessions alive - pair not rebuilt; the durable answer is U4's upgrade transaction"
+        } else {
+            if (Test-Path $sotLocalDaemon) {
+                Write-SupLog 'freshness: stopping local daemon before backend rebuild (a running sotd.exe pins its own image)'
+                $stopOut2 = & $sotLocalDaemon -Stop 6>&1 2>&1
+                foreach ($l in @($stopOut2)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+            }
+            Write-SupLog "freshness: cargo build -p sot-backend -p sot-log"
+            $capOut = cargo build --release -p sot-backend -p sot-log --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-SupLog "freshness: backend pair rebuild FAILED (non-fatal, continuing with whatever pair exists). tail: $($capOut | Select-Object -Last 3)"
+            } else {
+                Write-SupLog "freshness: backend pair (sotd.exe, sot-capsule.exe) rebuilt"
+            }
+        }
         }
     } finally {
         $ErrorActionPreference = $savedEAP
     }
+}
+# ---------------------------------------------------------------------------
+# Local daemon ensure (ADR 0042 L2b design D; ONE-ensure simplification
+# 2026-09-02): EVERY launch mode ensures the persistent, per-user local
+# sotd is running now, not just -Local -- the frontend always holds a
+# "local" connection (hosts::resolve_connections adds it implicitly, ADR
+# 0042 L2b design B), whether -Local's own connection or one row of the
+# default mode's multi-host tree.
+#
+# Positioned here -- after BOTH steps in this launcher that can replace
+# sotd.exe/sot-capsule.exe: the staged-update apply (near the top) and the
+# dev freshness rebuild (just above, with its own stop-first guard) -- so
+# this is the ONE ensure call per launch, always seeing whatever pair is
+# current. It used to run before the SSH/tunnel section too, needing a
+# second post-rebuild call (and a $backendPairStopped gate) to restart the
+# daemon on a fresh pair; both are deleted now that there is only one call,
+# made once everything that could invalidate an earlier one has run. The
+# SSH/tunnel section above is explicitly gated on `-not $Local` (see its
+# own header) so it still never runs for -Local, even though this ensure
+# no longer sits before it.
+#
+# See scripts/sot-local-daemon.ps1 for the binary resolution order, the
+# pipe-naming derivation (queried from the daemon itself, ADR 0042 L2b
+# design C) and why -Stop reduces to Stop-Process.
+#
+# Fail-open in the DEFAULT mode: a local daemon that won't come up just
+# means the "local" row in Hosts mode shows unreachable -- the remote
+# tunnel(s) this mode exists for are unaffected. -Local has nothing else to
+# fall back to, so it keeps today's hard error dialog.
+# ---------------------------------------------------------------------------
+if ($Local) { Stop-Splash }   # -Local is a debug path with no other progress UI
+$localDaemonReady = $false
+if (Test-Path $sotLocalDaemon) {
+    $localOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) 6>&1 2>&1
+    foreach ($l in @($localOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+    $localDaemonReady = ($LASTEXITCODE -eq 0)
+} else {
+    Write-SupLog "local daemon: sot-local-daemon.ps1 missing at $sotLocalDaemon"
+}
+
+if ($Local) {
+    if (-not $localDaemonReady) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Local sotd is not answering.`n`nSee %LOCALAPPDATA%\sot\logs\sotd-local.log for why (no complete sotd.exe+sot-capsule.exe pair, or it did not come up in time).",
+            'Ship of Tools launcher',
+            'OK', 'Error') | Out-Null
+        exit 1
+    }
+    # No --socket: the frontend derives the local connection itself
+    # (hosts::resolve_connections, ADR 0042 L2b design B) from the exact
+    # same function sot-local-daemon.ps1 just used to start it on.
+    Start-Process -FilePath $frontendExe `
+        -RedirectStandardOutput $frontendStdout `
+        -RedirectStandardError $frontendStderr `
+        -WindowStyle Hidden `
+        -Wait
+    exit 0
+}
+if (-not $localDaemonReady) {
+    Write-SupLog "local daemon: not ready - continuing without it (fail-open; the 'local' host will show unreachable)"
 }
 
 # The frontend runs from a *staged copy* under %LOCALAPPDATA%\sot\bin so a

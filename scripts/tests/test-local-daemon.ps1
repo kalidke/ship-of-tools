@@ -173,6 +173,43 @@ try {
     $lines2 = (Get-Content $log1).Count
     Check 'log grew, was not truncated' ($lines2 -gt $lines1) "was $lines1 lines, now $lines2"
 
+    Write-Host "`n=== 2b. unlaunchable placeholder sotd.exe -- distinct diagnostic from an absent pair ===" -ForegroundColor Cyan
+    # A field report hit a COMPLETE but WEEKS-STALE dev pair taking the
+    # ABSENT-pair refusal (section 1's message) -- blaming absence when the
+    # pair was merely too old to answer `session-socket-path local` with a
+    # Windows pipe path. This exercises the OTHER half of that fix: a
+    # COMPLETE pair (both files present, -WithCapsule, so $daemonExe
+    # resolves and the query is actually attempted) but a PLACEHOLDER
+    # sotd.exe.
+    #
+    # No -PipeName override here -- that would skip the query entirely and
+    # defeat the point. This file has no existing pattern for an
+    # EXECUTABLE fake (every fake binary elsewhere in this suite, including
+    # sot-capsule.exe, is Test-Path'd only, per the file header -- never
+    # invoked), so introducing a .cmd/.ps1 stand-in would be new machinery
+    # for one case. A placeholder is enough on its own: PowerShell cannot
+    # LAUNCH it at all (not a valid Win32 application) -- confirmed on CI,
+    # where this raised a terminating NativeCommandFailed before the
+    # try/catch fix -- so it exercises the "could not execute" diagnostic,
+    # NOT the stale-pipe one (that needs a process that actually RAN and
+    # printed a non-pipe value; this file has no fake-executable pattern to
+    # produce one). The query's SUCCESS path, and a real pre-0.6-shaped
+    # answer, are both out of scope here -- section 6 below covers a real
+    # sotd.exe answering with a genuine \\.\pipe\ path.
+    $p2b = Join-Path $root 'p2b'
+    New-Fixture -Prefix $p2b -WithCapsule
+    $out2b = & $script -Prefix $p2b -DevBinDir 'C:\sot-test-does-not-exist' -ProjectRoot $root 6>&1 2>&1
+    $exit2b = $LASTEXITCODE
+    Check 'exit code 1' ($exit2b -eq 1) "got $exit2b; log: $out2b"
+    Check 'refused as unlaunchable, not as absent' ((($out2b -join ' ')) -match 'REFUSED: could not execute') "log was: $out2b"
+
+    # Same distinct diagnostic under -Stop (the fix applies before the
+    # $Stop branch, so both paths share it).
+    $outStop2b = & $script -Stop -Prefix $p2b -DevBinDir 'C:\sot-test-does-not-exist' -ProjectRoot $root 6>&1 2>&1
+    $exitStop2b = $LASTEXITCODE
+    Check '-Stop: exit code 1' ($exitStop2b -eq 1) "got $exitStop2b; log: $outStop2b"
+    Check '-Stop: refused as unlaunchable, not as absent' ((($outStop2b -join ' ')) -match 'REFUSED: could not execute') "log was: $outStop2b"
+
     if (-not $haveRealSotd) {
         if ($env:CI) {
             Check '3-6. real sotd.exe present for process-behavior tests' $false 'no rust\target\{debug,release}\sotd.exe on a CI leg that already built the workspace -- upstream build gap, not a skip'

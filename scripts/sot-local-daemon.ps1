@@ -208,11 +208,41 @@ if ($Stop) {
 }
 
 # ---- pipe path: queried from the daemon, not constructed here (design C) ---
+# $queriedRaw tracks whether a query was actually attempted and what it
+# came back with, verbatim -- so the refusal below can tell "no binary to
+# ask" apart from "asked a resolved sotd.exe, got something that is not a
+# \\.\pipe\ path" (a STALE pre-0.6 sotd.exe, which predates the Windows
+# branch in session_socket_path -- ADR 0042 L1c/L2b -- and so answers with
+# a Unix-shaped socket path instead, or nothing at all). A field report hit
+# exactly this: a COMPLETE but WEEKS-STALE dev pair took the absent-pair
+# branch below, blaming absence when the pair was merely stale.
+$queriedRaw = $null
+# $queryFailed distinguishes "the process never ran at all" (unexecutable
+# placeholder, ACL denial, wrong format -- CreateProcess itself failed) from
+# "it ran and printed something that is not a pipe path" (a real pre-0.6
+# sotd.exe, which has no Windows branch in session_socket_path yet). Both
+# used to collapse into the same empty $queriedRaw; $LASTEXITCODE cannot
+# tell them apart either -- it is unset/stale when the process never
+# started -- so the catch below sets its own flag instead.
+$queryFailed = $false
+$queryError = $null
 if ($PipeName) {
     $PipePath = '\\.\pipe\' + $PipeName
 } elseif ($daemonExe) {
-    $queried = (& $daemonExe session-socket-path local | Select-Object -First 1)
-    $PipePath = if ($queried) { $queried.ToString().Trim() } else { $null }
+    # try/catch + 2>$null: a stale or unexecutable sotd.exe must yield an
+    # EMPTY answer (the diagnostic branch below), not a NativeCommandFailed
+    # record -- under a caller whose ErrorActionPreference is Stop (the test
+    # harness, any strict launcher) that record is terminating on 5.1 and
+    # kills the caller instead of reaching the message.
+    try {
+        $queried = (& $daemonExe session-socket-path local 2>$null | Select-Object -First 1)
+    } catch {
+        $queried = $null
+        $queryFailed = $true
+        $queryError = $_.Exception.Message
+    }
+    $queriedRaw = if ($queried) { $queried.ToString().Trim() } else { '' }
+    $PipePath = if ($queriedRaw) { $queriedRaw } else { $null }
     if ($PipePath -and $PipePath.StartsWith('\\.\pipe\')) {
         $PipeName = $PipePath.Substring(9)
     } else {
@@ -223,7 +253,19 @@ if ($PipeName) {
 }
 
 if (-not $PipePath -or -not $PipeName) {
-    if ($Stop) {
+    if ($queryFailed) {
+        # $daemonExe resolved but could not even be LAUNCHED -- distinct
+        # from both "no pair found" and the stale-pipe branch below: the
+        # file is present but cannot answer the query at all (not a valid
+        # Win32 application, an ACL denial, etc.).
+        Write-LocalDaemonLog "REFUSED: could not execute $daemonExe ($queryError)"
+    } elseif ($null -ne $queriedRaw) {
+        # $daemonExe resolved and RAN, but not with a \\.\pipe\ path --
+        # distinct from "no pair found" below, and the message the field
+        # report needed: the pair is PRESENT, just too old to derive a
+        # Windows pipe name.
+        Write-LocalDaemonLog "REFUSED: $daemonExe session-socket-path local returned '$queriedRaw' (not a \\.\pipe\ path) - stale sotd.exe (pre-0.6, no Windows pipe derivation) - rebuild the pair"
+    } elseif ($Stop) {
         Write-LocalDaemonLog "REFUSED: no sotd.exe found to derive the pipe name (checked dev $DevBinDir and install $installBinDir)"
     } else {
         Write-LocalDaemonLog "REFUSED: no complete sotd.exe+sot-capsule.exe pair found to derive the pipe name (checked dev $DevBinDir and install $installBinDir)"
