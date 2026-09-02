@@ -12,8 +12,8 @@
 #
 # Binary+capsule resolution: the COMPLETE DEV pair (sotd.exe AND
 # sot-capsule.exe both present in <DevBinDir>) wins over the COMPLETE
-# install pair (<prefix>\bin\); refuse only when NEITHER pair is complete.
-# This MATCHES the frontend's own dev-build-first resolution in
+# install pair (<prefix>\bin\); refuse to START only when NEITHER pair is
+# complete. This MATCHES the frontend's own dev-build-first resolution in
 # launch-sot.ps1, deliberately: a dev checkout's frontend and this daemon
 # (and its capsule runtime) must come from the SAME origin, or a dev
 # frontend ends up talking to an older installed sot-capsule.exe -- exactly
@@ -25,6 +25,12 @@
 # `current_exe().parent()`), so a daemon started from a directory missing
 # that file can create workspaces that immediately fail to spawn. Refuse to
 # start rather than run degraded.
+#
+# -Stop is different (codex follow-up): it only needs a resolvable
+# sotd.exe, not the complete pair, to query the pipe name from -- stopping
+# never spawns a capsule, so a missing/moved sot-capsule.exe is irrelevant
+# to it, and the daemon being stopped is presumably already running with
+# its own sotd.exe still resolvable at that same location regardless.
 #
 # Pipe naming (ADR 0042 L2b design C): resolved FIRST (the section above),
 # THEN queried from the daemon itself -- `& $daemonExe session-socket-path
@@ -171,13 +177,34 @@ function Test-CompletePair {
     (Test-Path (Join-Path $Dir 'sotd.exe')) -and (Test-Path (Join-Path $Dir 'sot-capsule.exe'))
 }
 
-# ---- resolve the binary FIRST (unchanged preference order) -----------------
+function Find-SotdExe {
+    param([string]$Dir)
+    $exe = Join-Path $Dir 'sotd.exe'
+    if (Test-Path $exe) { return $exe }
+    return $null
+}
+
+# ---- resolve the binary FIRST (unchanged dev-then-install preference) ------
+# Codex follow-up: -Stop only needs a resolvable sotd.exe to query the pipe
+# name from -- sot-capsule.exe is a START requirement (a daemon that can't
+# spawn capsule workspaces should never be started fresh), not a stop one.
+# The daemon -Stop is trying to reach is presumably already running, with
+# whatever sotd.exe it started from still resolvable at that same location
+# (a running process pins its own binary as a mapped image) -- requiring
+# the CURRENT resolution to also find a sibling sot-capsule.exe would
+# refuse to stop a daemon whose capsule binary was since removed/moved,
+# for no safety benefit (stopping never spawns a capsule).
 $installBinDir = Join-Path $Prefix 'bin'
 $daemonExe = $null
-if (Test-CompletePair $DevBinDir) {
-    $daemonExe = Join-Path $DevBinDir 'sotd.exe'
-} elseif (Test-CompletePair $installBinDir) {
-    $daemonExe = Join-Path $installBinDir 'sotd.exe'
+if ($Stop) {
+    $daemonExe = Find-SotdExe $DevBinDir
+    if (-not $daemonExe) { $daemonExe = Find-SotdExe $installBinDir }
+} else {
+    if (Test-CompletePair $DevBinDir) {
+        $daemonExe = Join-Path $DevBinDir 'sotd.exe'
+    } elseif (Test-CompletePair $installBinDir) {
+        $daemonExe = Join-Path $installBinDir 'sotd.exe'
+    }
 }
 
 # ---- pipe path: queried from the daemon, not constructed here (design C) ---
@@ -196,7 +223,11 @@ if ($PipeName) {
 }
 
 if (-not $PipePath -or -not $PipeName) {
-    Write-LocalDaemonLog "REFUSED: no complete sotd.exe+sot-capsule.exe pair found to derive the pipe name (checked dev $DevBinDir and install $installBinDir)"
+    if ($Stop) {
+        Write-LocalDaemonLog "REFUSED: no sotd.exe found to derive the pipe name (checked dev $DevBinDir and install $installBinDir)"
+    } else {
+        Write-LocalDaemonLog "REFUSED: no complete sotd.exe+sot-capsule.exe pair found to derive the pipe name (checked dev $DevBinDir and install $installBinDir)"
+    }
     exit 1
 }
 
