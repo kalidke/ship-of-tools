@@ -2101,26 +2101,115 @@ fn resolve_default_host(
 /// `has_list` (not `connected`) drives `has_children`: a host can be
 /// connected but simply not have answered `workspace.list` yet, and either
 /// way there's nothing to expand into until it has.
+///
+/// First live shakedown fix: `badges` alone never reached the screen —
+/// nothing renders the tree's generic `badges` vec (see `capsule_phase_tag`'s
+/// own doc on the ONE place a status phase is surfaced). Every OTHER
+/// visible status in this tree is baked straight into `label` text
+/// (`build_session_row`'s `capsule_phase_tag` prefix); this bakes host
+/// status in the same way, as a bracketed tag, so it draws the way every
+/// other badge here actually does. Connected, non-current hosts stay
+/// quiet — nothing to shout about — so a healthy multi-host list doesn't
+/// drown in tags; `unreachable` and `current` always show. `badges` itself
+/// is deleted (Codex round, PR #172): nothing ever read it, and computing
+/// it alongside the SAME status this label already carries was pure
+/// duplication — the label is the one source of truth now.
 fn host_tree_node(host: &HostKey, connected: bool, has_list: bool, is_active: bool) -> TreeNode {
-    let mut badges = vec![if connected {
-        "connected"
-    } else {
-        "unreachable"
+    let mut tags = Vec::new();
+    if !connected {
+        tags.push("[unreachable]");
     }
-    .to_string()];
     if is_active {
-        badges.push("current".to_string());
+        tags.push("[current]");
     }
+    let label = if tags.is_empty() {
+        format!("{HOST_DIVIDER_GLYPH} {host}")
+    } else {
+        format!("{HOST_DIVIDER_GLYPH} {host} {}", tags.join(" "))
+    };
     let mut payload = serde_json::Map::new();
     payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
     TreeNode {
         id: format!("sessions:host:{host}"),
-        label: format!("{HOST_DIVIDER_GLYPH} {host}"),
+        label,
         kind: "session_host".to_string(),
         has_children: has_list,
-        badges,
+        badges: Vec::new(),
         payload,
     }
+}
+
+/// One host's `host`-kind row for Mode::Hosts's flat list (first live
+/// shakedown fix) — pure, no `State` dependency, mirroring `host_tree_node`
+/// above: every LIVE connection gets a row (membership + `connected`/
+/// `current`/`default` all come from the caller's already-resolved
+/// connection set). `current`/`default` are baked into the label as
+/// bracketed tags, the same way `host_tree_node` bakes its own status
+/// (Codex round, PR #172) — `badges` is deleted for the same reason: it's
+/// unread, and duplicated exactly what the label already says.
+fn hosts_mode_row(name: &str, connected: bool, is_active: bool, is_default: bool) -> TreeNode {
+    let status_word = if connected {
+        "connected"
+    } else {
+        "unreachable"
+    };
+    let mut tags = Vec::new();
+    if is_default {
+        tags.push("[default]");
+    }
+    if is_active {
+        tags.push("[current]");
+    }
+    let label = if tags.is_empty() {
+        format!("{name} · {status_word}")
+    } else {
+        format!("{name} · {status_word} {}", tags.join(" "))
+    };
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "name".to_string(),
+        serde_json::Value::String(name.to_string()),
+    );
+    TreeNode {
+        id: format!("hosts:{name}"),
+        label,
+        kind: "host".to_string(),
+        has_children: false,
+        badges: Vec::new(),
+        payload,
+    }
+}
+
+/// Guard + mutation core of `try_expand_hosts_root_local` (Codex round,
+/// PR #172): requires BOTH `mode == Mode::Hosts` and the exact root id
+/// `"hosts:"` (depth zero) — `kind == "hosts"` alone doesn't rule out
+/// some other row incidentally carrying that kind string, and doesn't
+/// rule out firing while a DIFFERENT mode's tree happens to be showing.
+/// Declines (returns `false`) for any other row, an already-expanded
+/// root, or the wrong mode. No `State` dependency beyond the tree itself
+/// and the freshly-built `children`, so this is directly unit-testable —
+/// `try_expand_selected`'s own dispatch, minus the redraw.
+///
+/// Marks the row `expanded` at REQUEST time, then splices via
+/// `apply_children` — never `populate_hosts_tree`'s own `set_root`, which
+/// treats a currently-collapsed same-id root as "the user closed this,
+/// keep it collapsed" and would silently no-op here (the same contract
+/// `try_expand_session_host_local` relies on for `session_host`).
+fn expand_hosts_root(tree: &mut TreeView, mode: Mode, children: Vec<TreeNode>) -> bool {
+    if mode != Mode::Hosts {
+        return false;
+    }
+    let Some(row) = tree.rows.get(tree.selected) else {
+        return false;
+    };
+    if row.node.id != "hosts:" || row.expanded {
+        return false;
+    }
+    if let Some(r) = tree.rows.get_mut(tree.selected) {
+        r.expanded = true;
+    }
+    tree.apply_children("hosts:", children);
+    true
 }
 
 /// Build the `(parent_id, pane rows)` a `tmux.list_panes` reply for
@@ -5421,6 +5510,16 @@ impl State {
         if self.try_expand_session_host_local() {
             return true;
         }
+        // Mode::Hosts root: children are built only on mode ENTRY
+        // (`enter_mode` → `populate_hosts_tree`) — collapsing then
+        // re-expanding the root without leaving the mode took the generic
+        // `TreeChildren` wire path below, which has no server-side handler
+        // for the synthetic "hosts:" id and left the root empty (first
+        // live shakedown fix). Same local-expansion seam as
+        // `try_expand_session_host_local` above.
+        if self.try_expand_hosts_root_local() {
+            return true;
+        }
         let Some(row) = self.tree.rows.get(self.tree.selected) else {
             return false;
         };
@@ -6417,6 +6516,7 @@ impl State {
             }
             Mode::Hosts => {
                 self.populate_hosts_tree();
+                self.select_active_host();
             }
         }
         self.persist_resume_state();
@@ -6980,9 +7080,10 @@ impl State {
         self.fe_state_sig = Some(sig);
     }
 
-    /// Rebuild the nav tree from `hosts_config` + `host_connected`. Called
-    /// on entering `Mode::Hosts`. Each `[host.<name>]` section becomes one
-    /// row showing live connected/unreachable status.
+    /// Rebuild the nav tree from `conns` + `host_connected`. Called on
+    /// entering `Mode::Hosts`. Each LIVE connection — `local` (implicit,
+    /// ADR 0042 L2b) plus every `[host.<name>]` section that resolved to
+    /// one — becomes one row showing live connected/unreachable status.
     ///
     /// ADR 0042 L2a: this was ADR 0015's "pick one, Ctrl+Q + relaunch"
     /// single-host switch (superseded — see that ADR's note); every
@@ -6991,6 +7092,19 @@ impl State {
     /// live status list. `pick_host_under_cursor` (Enter) moves the
     /// Sessions-mode cursor to the host's node instead of persisting a
     /// launcher target.
+    ///
+    /// First live shakedown fix: the OLD version iterated
+    /// `hosts_config.hosts` directly, so `local` — which needs no
+    /// `hosts.toml` entry at all (ADR 0042 L2b) — never got a row. Iterating
+    /// `ordered_hosts()` (== `conns`, local-first display order — the SAME
+    /// source `build_sessions_tree` already uses for its host-grouped rows)
+    /// makes the two host lists agree, with `hosts_config` consulted only
+    /// for the cosmetic `default` badge. A per-row endpoint string used to
+    /// live here too — deleted (Codex round, PR #172): it re-read
+    /// `hosts_config` and could disagree with the endpoint the connection
+    /// actually resolved to (a CLI override, or the CLI-only synthesized
+    /// host) — the row is name + status + markers now; the endpoint was
+    /// decoration that could lie.
     fn populate_hosts_tree(&mut self) {
         let root = TreeNode {
             id: "hosts:".to_string(),
@@ -7000,78 +7114,55 @@ impl State {
             badges: Vec::new(),
             payload: Default::default(),
         };
-        let children: Vec<TreeNode> = self
-            .hosts_config
-            .hosts
-            .iter()
-            .map(|h| {
-                let connected = self.host_connected.get(&h.name).copied().unwrap_or(false);
-                let mut badges = Vec::new();
-                if h.name == self.active_host {
-                    badges.push("current".to_string());
-                }
-                if self.hosts_config.default_host.as_deref() == Some(h.name.as_str()) {
-                    badges.push("default".to_string());
-                }
-                badges.push(
-                    if connected {
-                        "connected"
-                    } else {
-                        "unreachable"
-                    }
-                    .to_string(),
-                );
-                let endpoint = if let Some(port) = h.tcp_port {
-                    let local = if let Some(alias) = h.ssh_alias.as_deref() {
-                        format!("{alias}:{port}")
-                    } else {
-                        format!("127.0.0.1:{port}")
-                    };
-                    if let Some(sock) = h.remote_socket.as_deref() {
-                        format!("{local} -> {sock}")
-                    } else {
-                        local
-                    }
-                } else if let Some(sock) = h.socket.as_deref() {
-                    sock.to_string()
-                } else {
-                    "(no endpoint)".to_string()
-                };
-                let status_word = if connected {
-                    "connected"
-                } else {
-                    "unreachable"
-                };
-                let label = format!("{} · {status_word} · {endpoint}", h.name);
-                let mut payload = serde_json::Map::new();
-                payload.insert(
-                    "name".to_string(),
-                    serde_json::Value::String(h.name.clone()),
-                );
-                TreeNode {
-                    id: format!("hosts:{}", h.name),
-                    label,
-                    kind: "host".to_string(),
-                    has_children: false,
-                    badges,
-                    payload,
-                }
-            })
-            .collect();
-        // Cursor lands on the active host so a fresh `h`-press shows where
-        // the current view actually is. Codex review (PR #163): the OLD
-        // version computed a position into `hosts_config.hosts` (0 =
-        // first host) and used it directly as `self.tree.selected` — off
-        // by one, since row 0 of the rendered tree is the ROOT ("hosts:")
-        // and the first host lands at row 1. Restoring by NODE ID against
-        // the actual post-`set_root` rows sidesteps that arithmetic
-        // entirely rather than just patching the +1.
+        let children = self.hosts_tree_children();
+        // A LIVE refresh (connect/disconnect while Hosts mode is active)
+        // must not move the cursor out from under the user (Codex round,
+        // PR #172) -- `set_root` re-seeding the SAME root id already
+        // re-anchors the previously-selected row by node id on its own.
+        // Landing on the active host at all is `select_active_host`'s job,
+        // called only for a genuinely FIRST population (mode entry, a
+        // first-visited workspace, resume).
         self.tree.set_root(root, children);
+        self.window.request_redraw();
+    }
+
+    /// Point the Hosts-mode cursor at the active host -- called only when
+    /// the view is being newly populated (mode entry, a first-visited
+    /// workspace, resume), never after `populate_hosts_tree` alone on a
+    /// live refresh: `set_root`'s own id-based reanchor already keeps a
+    /// refresh's cursor where the user left it (Codex round, PR #172).
+    /// Codex review (PR #163): the OLD version computed a position into
+    /// `hosts_config.hosts` (0 = first host) and used it directly as
+    /// `self.tree.selected` -- off by one, since row 0 of the rendered
+    /// tree is the ROOT ("hosts:") and the first host lands at row 1.
+    /// Restoring by NODE ID against the actual post-`set_root` rows
+    /// sidesteps that arithmetic entirely rather than just patching the
+    /// +1.
+    fn select_active_host(&mut self) {
         let want_id = format!("hosts:{}", self.active_host);
         if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == want_id) {
             self.tree.selected = idx;
         }
-        self.window.request_redraw();
+    }
+
+    /// The Hosts-mode root's children, in `ordered_hosts()` (local-first)
+    /// display order — the pure per-call rebuild `populate_hosts_tree` and
+    /// `try_expand_hosts_root_local` both delegate to, so a mode-entry
+    /// refresh and a root re-expand can never drift apart. `hosts_config`
+    /// is consulted only for the `default` badge — membership and
+    /// connected/unreachable/current status come from
+    /// `conns`/`host_connected`, which is the only way `local` (no
+    /// `hosts.toml` entry required, ADR 0042 L2b) gets a row at all.
+    fn hosts_tree_children(&self) -> Vec<TreeNode> {
+        self.ordered_hosts()
+            .into_iter()
+            .map(|name| {
+                let connected = self.host_connected.get(&name).copied().unwrap_or(false);
+                let is_active = name == self.active_host;
+                let is_default = self.hosts_config.default_host.as_deref() == Some(name.as_str());
+                hosts_mode_row(&name, connected, is_active, is_default)
+            })
+            .collect()
     }
 
     /// Mode::Hosts Enter handler (ADR 0042 L2a) — moves the Sessions-mode
@@ -7096,6 +7187,15 @@ impl State {
             return;
         };
         self.enter_mode(Mode::Sessions);
+        // Rebuild the Sessions tree synchronously from whatever
+        // `workspace_lists` already holds, BEFORE searching (Codex round,
+        // PR #172): `enter_mode`'s own Sessions arm only fans out wire
+        // requests, so a parked or never-built tree would have no
+        // `sessions:host:<name>` row to find below even when the data is
+        // already cached locally and no round trip is actually needed.
+        // Genuinely missing data (first-ever fetch still in flight) still
+        // lands degraded below -- the cursor simply stays put.
+        self.rebuild_and_install_sessions_tree();
         let host_row_id = format!("sessions:host:{name}");
         if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == host_row_id) {
             self.tree.selected = idx;
@@ -7362,6 +7462,23 @@ impl State {
             r.expanded = true;
         }
         self.tree.apply_children(&parent_id, kids);
+        self.window.request_redraw();
+        true
+    }
+
+    /// Local (no wire round-trip) re-expansion of the Mode::Hosts ROOT row
+    /// (first live shakedown fix): its children come from `conns` +
+    /// `host_connected`, already held in memory (`hosts_tree_children`,
+    /// the same builder `populate_hosts_tree` uses on mode entry) — no
+    /// server round trip needed to rebuild them. The guard + mutation
+    /// itself is `expand_hosts_root`, a pure free function (Codex round,
+    /// PR #172) — see its own doc for why it checks BOTH `mode` and the
+    /// exact root id, not just a row's `kind`.
+    fn try_expand_hosts_root_local(&mut self) -> bool {
+        let children = self.hosts_tree_children();
+        if !expand_hosts_root(&mut self.tree, self.mode, children) {
+            return false;
+        }
         self.window.request_redraw();
         true
     }
@@ -7745,7 +7862,10 @@ impl State {
                         let _ = self.send_to(host, crate::transport::OutgoingReq::WorkspaceList);
                     }
                 }
-                Mode::Hosts => self.populate_hosts_tree(),
+                Mode::Hosts => {
+                    self.populate_hosts_tree();
+                    self.select_active_host();
+                }
             }
         }
         // Refresh the workspace list so kernel_running / new rows stay
@@ -11191,8 +11311,11 @@ impl State {
                                 // hosts tree is sourced from `hosts.toml`
                                 // on the frontend side. Populate once on
                                 // resume; subsequent `h` re-entries call
-                                // `populate_hosts_tree` directly.
+                                // `populate_hosts_tree` directly. A resume
+                                // is a first population too, so land on
+                                // the active host same as mode entry.
                                 self.populate_hosts_tree();
+                                self.select_active_host();
                             }
                         }
                         // Reconnect after laptop sleep / SSH-tunnel drop:
@@ -24431,6 +24554,105 @@ mod tests {
     }
 
     #[test]
+    fn hosts_tree_refresh_keeps_the_cursor_on_the_host_it_was_on() {
+        // Codex round, PR #172: `populate_hosts_tree` used to reposition
+        // the cursor to the ACTIVE host on every call, including a live
+        // refresh (a connect/disconnect while Hosts mode is active) --
+        // stealing the cursor out from under a user looking at some OTHER
+        // host. `set_root` re-seeding the SAME root id ("hosts:") already
+        // re-anchors the previously-selected row by node id on its own;
+        // a refresh should trust that instead of forcing a fresh position.
+        let mut t = TreeView::new();
+        t.set_root(
+            node("hosts:", "hosts", true),
+            vec![
+                node("hosts:local", "local", false),
+                node("hosts:beta", "beta", false),
+            ],
+        );
+        t.selected = 2; // cursor on "beta", not the active host
+                        // A refresh re-seeds the same root -- no cursor repositioning,
+                        // just the id-based reanchor `set_root` already does.
+        t.set_root(
+            node("hosts:", "hosts", true),
+            vec![
+                node("hosts:local", "local", false),
+                node("hosts:beta", "beta", false),
+            ],
+        );
+        assert_eq!(t.rows[t.selected].node.id, "hosts:beta");
+    }
+
+    #[test]
+    fn expand_hosts_root_repopulates_after_collapse_then_reexpand() {
+        // Mode::Hosts's own bug (first live shakedown): its root's children
+        // used to be built only on mode ENTRY (`populate_hosts_tree` ->
+        // `set_root`); collapsing then re-expanding the root without
+        // leaving the mode took the generic `TreeChildren` wire path,
+        // which has no server-side handler for the synthetic "hosts:" id
+        // and left the root empty. Goes through the actual guarded
+        // function (Codex round, PR #172) rather than a hand-flipped
+        // `expanded` -- proves the real dispatch path, not just
+        // `apply_children`'s general mechanics (already covered by
+        // `apply_children_ignores_reply_for_collapsed_parent`).
+        let mut t = TreeView::new();
+        t.set_root(
+            node("hosts:", "hosts", true),
+            vec![node("hosts:local", "local", false)],
+        );
+        t.selected = 0;
+        assert!(t.collapse_selected());
+        assert_eq!(t.rows.len(), 1);
+        assert!(!t.rows[0].expanded);
+
+        let fresh = vec![
+            node("hosts:local", "local", false),
+            node("hosts:beta", "beta", false),
+        ];
+        assert!(expand_hosts_root(&mut t, Mode::Hosts, fresh));
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["hosts:", "hosts:local", "hosts:beta"]
+        );
+        assert!(t.rows[0].expanded);
+    }
+
+    #[test]
+    fn expand_hosts_root_declines_outside_mode_hosts_or_off_the_root_row() {
+        // Codex round, PR #172: the guard checks BOTH `mode == Mode::Hosts`
+        // and the exact root id "hosts:" -- not just a row's `kind`, which
+        // can't rule out some other mode's tree incidentally carrying a
+        // "hosts:"-shaped row, or the cursor sitting on a CHILD instead of
+        // the root.
+        let mut wrong_mode = TreeView::new();
+        wrong_mode.set_root(
+            node("hosts:", "hosts", true),
+            vec![node("hosts:local", "local", false)],
+        );
+        wrong_mode.selected = 0;
+        assert!(wrong_mode.collapse_selected());
+        assert!(!expand_hosts_root(
+            &mut wrong_mode,
+            Mode::Sessions,
+            vec![node("hosts:local", "local", false)],
+        ));
+        assert_eq!(wrong_mode.rows.len(), 1, "declined -- stays collapsed");
+        assert!(!wrong_mode.rows[0].expanded);
+
+        let mut off_root = TreeView::new();
+        off_root.set_root(
+            node("hosts:", "hosts", true),
+            vec![node("hosts:local", "local", false)],
+        );
+        off_root.selected = 1; // on the child row, not the root
+        assert!(!expand_hosts_root(
+            &mut off_root,
+            Mode::Hosts,
+            vec![node("hosts:local", "local", false)],
+        ));
+    }
+
+    #[test]
     fn apply_children_drops_saved_subtree_when_child_became_a_leaf() {
         // Codex finding (ghost subtree): an expanded DIRECTORY replaced by a
         // same-named node that is no longer a container (kind change or
@@ -25300,42 +25522,99 @@ mod tests {
 
         assert_eq!(children.len(), 2, "every configured host gets a node");
         assert_eq!(children[0].id, "sessions:host:alpha");
-        assert!(children[0].badges.iter().any(|b| b == "connected"));
+        // alpha is connected AND active -- quiet status, "[current]" marker.
+        assert_eq!(
+            children[0].label,
+            format!("{HOST_DIVIDER_GLYPH} alpha [current]")
+        );
         assert!(children[0].has_children);
 
         assert_eq!(children[1].id, "sessions:host:beta");
         assert!(
-            children[1].badges.iter().any(|b| b == "unreachable"),
-            "no list yet → unreachable badge, got {:?}",
-            children[1].badges
+            children[1].label.contains("[unreachable]"),
+            "no list yet → unreachable marker, got {:?}",
+            children[1].label
         );
         assert!(!children[1].has_children, "no list yet → no children");
     }
 
     #[test]
-    fn host_node_badge_flips_live_with_connected_status_same_row_id() {
+    fn host_node_label_flips_live_with_connected_status_same_row_id() {
         // ADR 0042 L2a codex review, item L: on Connected/Disconnected the
         // tree is rebuilt so a node doesn't stay `unreachable` after
         // connecting or `connected` after dropping. `host_tree_node` is
         // the pure per-row seam that rebuild calls on every trigger (a
         // workspace.list reply, or now a bare Connected/Disconnected too)
         // — this pins that re-deriving the SAME row id with a flipped
-        // `connected` flag flips the badge, and (crucially for
-        // `set_root`'s cursor/expansion preservation) the id itself never
-        // changes across the flip.
+        // `connected` flag flips the drawn status (Codex round, PR #172:
+        // badges are gone, the label is the one source of truth), and
+        // (crucially for `set_root`'s cursor/expansion preservation) the
+        // id itself never changes across the flip.
         let before = host_tree_node(&"alpha".to_string(), false, false, true);
         let after = host_tree_node(&"alpha".to_string(), true, true, true);
         assert_eq!(before.id, after.id, "same host → same row id, always");
-        assert!(before.badges.iter().any(|b| b == "unreachable"));
-        assert!(!before.badges.iter().any(|b| b == "connected"));
-        assert!(after.badges.iter().any(|b| b == "connected"));
-        assert!(!after.badges.iter().any(|b| b == "unreachable"));
+        assert!(before.label.contains("[unreachable]"));
+        assert!(after.label.contains("[current]"));
+        assert!(!after.label.contains("[unreachable]"));
 
         // And the reverse direction (a live Disconnected).
         let dropped = host_tree_node(&"alpha".to_string(), false, true, true);
         assert_eq!(dropped.id, after.id);
-        assert!(dropped.badges.iter().any(|b| b == "unreachable"));
-        assert!(!dropped.badges.iter().any(|b| b == "connected"));
+        assert!(dropped.label.contains("[unreachable]"));
+    }
+
+    #[test]
+    fn host_tree_node_status_draws_in_the_label_not_just_the_unrendered_badges_vec() {
+        // First live shakedown fix: nothing renders the tree's generic
+        // `badges` vec (see `capsule_phase_tag`'s doc), so a healthy,
+        // non-active host must say nothing extra, while `unreachable` and
+        // `current` must show up as bracketed tags IN THE LABEL — the same
+        // way every other status in this tree actually draws.
+        let quiet = host_tree_node(&"alpha".to_string(), true, true, false);
+        assert_eq!(quiet.label, format!("{HOST_DIVIDER_GLYPH} alpha"));
+
+        let unreachable = host_tree_node(&"alpha".to_string(), false, true, false);
+        assert_eq!(
+            unreachable.label,
+            format!("{HOST_DIVIDER_GLYPH} alpha [unreachable]")
+        );
+
+        let current = host_tree_node(&"alpha".to_string(), true, true, true);
+        assert_eq!(
+            current.label,
+            format!("{HOST_DIVIDER_GLYPH} alpha [current]")
+        );
+
+        let both = host_tree_node(&"alpha".to_string(), false, true, true);
+        assert_eq!(
+            both.label,
+            format!("{HOST_DIVIDER_GLYPH} alpha [unreachable] [current]")
+        );
+    }
+
+    #[test]
+    fn hosts_mode_row_label_and_id_come_only_from_the_caller() {
+        // Mode::Hosts's own per-row builder (first live shakedown fix;
+        // Codex round, PR #172 dropped the endpoint text and `badges` --
+        // `[current]`/`[default]` are baked into the label instead, the
+        // one source of truth since nothing reads `badges`):
+        // membership/connected/current/default are all caller-supplied --
+        // this row-builder itself never touches `hosts_config`, matching
+        // `hosts_tree_children`'s contract that `local` (no `hosts.toml`
+        // entry) gets a row exactly like any configured host.
+        let row = hosts_mode_row("local", true, true, false);
+        assert_eq!(row.id, "hosts:local");
+        assert_eq!(row.kind, "host");
+        assert!(!row.has_children);
+        assert_eq!(row.label, "local · connected [current]");
+        assert!(row.badges.is_empty());
+
+        let unreachable_default = hosts_mode_row("beta", false, false, true);
+        assert_eq!(unreachable_default.label, "beta · unreachable [default]");
+        assert!(unreachable_default.badges.is_empty());
+
+        let quiet = hosts_mode_row("gamma", true, false, false);
+        assert_eq!(quiet.label, "gamma · connected");
     }
 
     #[test]
@@ -25595,23 +25874,6 @@ mod capsule_pane_tests {
         // Saturating: a buffer somehow already PAST cap has zero room,
         // not an underflow panic.
         assert_eq!(pending_input_room(cap + 500, 100, cap), 0);
-    }
-
-    #[test]
-    fn capsule_phase_tag_covers_every_lifecycle_phase() {
-        // ADR 0041 Lifecycle's five phases plus the lane-unreachable case
-        // (`capsule_workspace::phase_str`/`UNREACHABLE_PHASE` on the
-        // daemon side) — every value `phase` can carry on the wire.
-        for phase in [
-            "starting",
-            "ready",
-            "ending",
-            "ended_no_respawn",
-            "terminal",
-            "unreachable",
-        ] {
-            assert_eq!(capsule_phase_tag(phase), format!("[{phase}]"));
-        }
     }
 
     #[test]

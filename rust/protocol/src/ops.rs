@@ -1218,9 +1218,11 @@ pub struct WorkspaceListEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_dir: Option<String>,
     /// The capsule's supervisor-lane phase (ADR 0041 Lifecycle: STARTING |
-    /// READY | ENDING | ENDED-NO-RESPAWN | TERMINAL, snake_case) or
-    /// `"unreachable"` when the lane could not be queried at all — present
-    /// only for `runtime == "capsule"` rows, same reasoning as `state_dir`.
+    /// READY | ENDING | ENDED-NO-RESPAWN | TERMINAL, snake_case), `"stopped"`
+    /// when its state directory was never created (no supervisor has ever
+    /// run for it), or `"unreachable"` when the lane could not be queried
+    /// at all — present only for `runtime == "capsule"` rows, same
+    /// reasoning as `state_dir`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
 }

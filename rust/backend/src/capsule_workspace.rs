@@ -90,6 +90,39 @@ pub enum StartMode {
 /// lane that DID answer.
 pub const UNREACHABLE_PHASE: &str = "unreachable";
 
+/// The wire phase string for a capsule workspace whose state directory has
+/// never been created — `state_dir_for`'s own contract (this module's top
+/// doc: "this daemon only creates the directory itself before spawning")
+/// means the directory is created ONCE, right before the FIRST spawn, and
+/// `end_run`'s own doc records that it is never deleted afterward — so its
+/// absence is a hard, durable signal that no supervisor has EVER run for
+/// this workspace. Distinct from [`UNREACHABLE_PHASE`]: a directory that
+/// DOES exist means a supervisor was spawned at least once, so a lane that
+/// fails to answer against it stays "unreachable" — `query_status`'s own
+/// doc deliberately folds every such failure (connect refused, a foreign/
+/// undetermined challenge, a timeout) into one `Err` without saying which,
+/// so a query against an EXISTING directory can never be reclassified as
+/// "never started" either. One narrow race this accepts (Codex round, PR
+/// #172): a `workspace.list` landing in the brief window where a resumed
+/// supervisor's directory is still being (re-)created reads "stopped" too
+/// — bounded by the spawn call itself and self-correcting on the very
+/// next list once the directory (and the supervisor behind it) exists.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const NEVER_STARTED_PHASE: &str = "stopped";
+
+/// Whether a capsule workspace's supervisor lane is even worth querying,
+/// given its state directory's existence — pure, no I/O itself (the
+/// caller supplies `dir_exists`, e.g. `phase_of`'s `state_dir.is_dir()`).
+/// `None` means "query it, we can't tell from this alone"; `Some(..)`
+/// short-circuits a connect attempt that cannot possibly succeed — no
+/// pipe was ever created for a state directory that was never created
+/// either, so `phase_of` skips straight to [`NEVER_STARTED_PHASE`] rather
+/// than waiting out a connect budget destined to fail.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn phase_for_missing_state_dir(dir_exists: bool) -> Option<&'static str> {
+    (!dir_exists).then_some(NEVER_STARTED_PHASE)
+}
+
 /// Map the supervisor lane's own phase to the wire string
 /// `workspace.list` reports — snake_case, matching every other
 /// wire-enum-as-string in this protocol (`repl_state`, `agent_state`).
@@ -303,7 +336,17 @@ mod windows_runtime {
     /// own wire vocabulary — never the raw `sot_log` types, so
     /// `handlers.rs` has nothing Windows-specific to import. BLOCKING —
     /// callers run it via `spawn_blocking`.
+    ///
+    /// First live shakedown fix: a workspace whose state directory was
+    /// never created (no supervisor has EVER run — `phase_for_missing_
+    /// state_dir`'s own doc) short-circuits to `NEVER_STARTED_PHASE`
+    /// ("stopped") BEFORE attempting a connect that cannot possibly
+    /// succeed; only a directory that DOES exist falls through to the
+    /// real query, where a failure stays `UNREACHABLE_PHASE`.
     pub fn phase_of(state_dir: &Path) -> &'static str {
+        if let Some(phase) = super::phase_for_missing_state_dir(state_dir.is_dir()) {
+            return phase;
+        }
         match sot_log::supervisor_client::query_status(state_dir) {
             Ok(report) => super::phase_str(report.phase),
             Err(e) => {
@@ -633,6 +676,38 @@ mod tests {
         assert_eq!(phase_str(SupervisorPhase::Ending), "ending");
         assert_eq!(phase_str(SupervisorPhase::EndedNoRespawn), "ended_no_respawn");
         assert_eq!(phase_str(SupervisorPhase::Terminal), "terminal");
+    }
+
+    #[test]
+    fn never_started_phase_is_distinct_from_unreachable_and_every_answered_phase() {
+        // First live shakedown fix: a capsule workspace nobody has ever
+        // started must read as quietly "stopped", not as the loud
+        // "unreachable" a query FAILURE reports — the two must never
+        // collide with each other or with any answered lifecycle phase.
+        use sot_log::wire::SupervisorPhase;
+        assert_ne!(NEVER_STARTED_PHASE, UNREACHABLE_PHASE);
+        for p in [
+            SupervisorPhase::Starting,
+            SupervisorPhase::Ready,
+            SupervisorPhase::Ending,
+            SupervisorPhase::EndedNoRespawn,
+            SupervisorPhase::Terminal,
+        ] {
+            assert_ne!(phase_str(p), NEVER_STARTED_PHASE);
+        }
+    }
+
+    #[test]
+    fn phase_for_missing_state_dir_only_fires_when_the_directory_is_absent() {
+        // A directory that exists means a supervisor was spawned at least
+        // once (`state_dir_for`'s own contract) — that case defers to the
+        // real query (`None`) rather than guessing; only a genuinely
+        // absent directory short-circuits to `NEVER_STARTED_PHASE`.
+        assert_eq!(
+            phase_for_missing_state_dir(false),
+            Some(NEVER_STARTED_PHASE)
+        );
+        assert_eq!(phase_for_missing_state_dir(true), None);
     }
 
     #[test]
