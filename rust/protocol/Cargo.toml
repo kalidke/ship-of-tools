@@ -10,3 +10,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# `session_socket::current_uid` (getuid, for the private-runtime-dir checks
+# `session_socket_path`'s Unix branch relies on) -- already a workspace
+# dependency (rust/backend already pins the same version), so this adds
+# nothing new to the lockfile; confined to Unix the same way sot-log confines
+# its own platform-only deps (see that crate's Cargo.toml).
+libc = { workspace = true }

@@ -12,6 +12,7 @@
 pub mod codec;
 pub mod ir;
 pub mod ops;
+pub mod session_socket;
 
 pub use codec::{read_frame, write_frame};
 pub use ir::{BlobDescriptor, PreviewPayload, TreeNode};
@@ -37,6 +38,11 @@ pub use ops::{
     WorkspaceDestroyReq, WorkspaceDestroyRes,
     WorkspaceListEntry, WorkspaceListReq, WorkspaceListRes,
 };
+// `is_private_dir` stays module-private to `session_socket` (not
+// re-exported here): nothing outside that module calls it directly
+// (`runtime_sot_dir` is its only caller), so a crate-root re-export would
+// be dead weight -- codex follow-up, ADR 0042 L2b.
+pub use session_socket::{current_uid, runtime_sot_dir, session_socket_path, slug};
 
 use serde::{Deserialize, Serialize};
 

@@ -128,7 +128,7 @@ PowerShell side does not layer).
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `default_host` | string | *(none)* | The host the launcher connects to. The launcher resolves the target as: env vars (`SOT_HOST` etc.) → `default_host` → error ("no backend host configured") if neither resolves. (Pre-ADR-0042-L2a this also fell back to a persisted `last_host` the launcher read from frontend state; that step is deleted — see the note below.) |
+| `default_host` | string | *(none)* | The one remote host the CLI `--socket`/`--tcp` override targets, and whose `tcp_port` may be omitted (falls back to `SOT_TCP_PORT`/18743). The launcher resolves it as: env vars (`SOT_HOST` etc.) → `default_host` → error ("no backend host configured") if neither resolves — but it is no longer the only tunnel the launcher opens (ADR 0042 L2b design E, below). (Pre-ADR-0042-L2a this also fell back to a persisted `last_host` the launcher read from frontend state; that step is deleted — see the note below.) |
 
 ### `[host.<name>]`
 
@@ -141,18 +141,25 @@ that host's node (it doesn't pick a target for the launcher — see ADR
 0042 slice L2a; ADR 0015's `last_host`-based single-host picker is
 superseded).
 
+**`local` needs no section at all.** The frontend always holds a
+connection to this machine's own daemon, and every launch mode ensures
+that daemon is running (ADR 0042 L2b designs B and D) — no `hosts.toml`
+entry required. A `[host.local]` section is only for overriding its
+derived `socket` (see that key below); every other key on it is ignored,
+since local is never SSH-tunneled.
+
 | Key | Type | Meaning |
 |-----|------|---------|
-| `ssh_alias` | string | SSH alias for the remote host (an entry in your `~/.ssh/config`). |
+| `ssh_alias` | string | SSH alias for the remote host (an entry in your `~/.ssh/config`). Presence of this key is what makes a section a tunnel target (ADR 0042 L2b design E) — the launcher opens one SSH forward per section that has it, not just `default_host`'s. |
 | `remote_repo` | string | Absolute path to the project repo on the remote host. |
-| `tcp_port` | integer | Local TCP port for the SSH-forwarded backend connection. The remote side should terminate at the per-user backend socket. |
+| `tcp_port` | integer | Local TCP port for the SSH-forwarded backend connection. The remote side should terminate at the per-user backend socket. **Required** for every remote except `default_host`, which may omit it (falls back to `SOT_TCP_PORT`/18743 for compatibility); a remote missing it gets no tunnel — the launcher logs one line naming the host and moves on, it does not fail the whole launch. |
 | `remote_socket` | string | Optional remote Unix socket path for the backend control channel. If omitted, launchers query `sotd session-socket-path sot` on the remote host. |
 | `remote_home` | string | Absolute home directory on the remote host. |
-| `socket` | string | **Local-host form** — a named-pipe / socket path instead of SSH (no remote). On Windows this uses single backslashes, e.g. `\\.\pipe\sot-local`, because values are not escape-processed. |
+| `socket` | string | **Local-host form** — a named-pipe / socket path instead of SSH (no remote). Only meaningful on `[host.local]`, to override the derived pipe path (`sot_protocol::session_socket_path("local")`, ADR 0042 L2b design A) — every other host resolves its endpoint from `tcp_port` instead. On Windows this uses single backslashes, e.g. `\\.\pipe\sot-local`, because values are not escape-processed. |
 
 A remote host sets `ssh_alias` / `remote_repo` / `tcp_port` (and usually
-`remote_home`); `remote_socket` is optional and normally discovered. A local
-backend on the same machine sets `socket` instead.
+`remote_home`); `remote_socket` is optional and normally discovered. `local`
+needs nothing at all unless overriding its derived `socket`.
 
 ### Backend tmux socket
 
@@ -202,7 +209,15 @@ tcp_port = 18743
 # remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
 remote_home = "/home/me"
 
-# A local backend on the same machine (no SSH):
+# A second remote -- its OWN tunnel, opened alongside myserver's, not
+# instead of it (ADR 0042 L2b design E). tcp_port is required here (this
+# isn't default_host).
+[host.otherbox]
+ssh_alias = "otherbox"
+remote_repo = "/home/me/ship-of-tools"
+tcp_port = 18744
+
+# "local" needs no section -- see above. Only to override its derived pipe:
 # [host.local]
 # socket = "\\.\pipe\sot-local"
 

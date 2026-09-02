@@ -1,6 +1,6 @@
 ---
 name: sot-fe-shutdown
-description: Deterministically clean up and shut down the LOCAL Ship of Tools frontend — kill the supervisor, then the FE, wait for the daemon to detach the client cleanly, then tear the SSH tunnel, then stop the local sotd (order matters — see below), leaving the REMOTE sotd + workspaces running by design. Use when the user says "clean up and shut down", "shut down the FE", "tear it all down", "close everything", or "/sot-fe-shutdown". NOT for a relaunch (that's the ADR-0017 sentinel) — this is a real quit with no respawn.
+description: Deterministically clean up and shut down the LOCAL Ship of Tools frontend — kill the supervisor, then the FE, wait for every remote daemon to detach the client cleanly, then tear every SSH tunnel (one per configured remote), then stop the local sotd (order matters — see below), leaving every REMOTE sotd + workspaces running by design. Use when the user says "clean up and shut down", "shut down the FE", "tear it all down", "close everything", or "/sot-fe-shutdown". NOT for a relaunch (that's the ADR-0017 sentinel) — this is a real quit with no respawn.
 ---
 
 # sot-fe-shutdown
@@ -21,17 +21,17 @@ shutdown-and-later-relaunch is.
 Two problems make an ad-hoc "just kill it" unreliable:
 
 1. **Ordering** (confirmed against the daemon code):
-   a `Stop-Process` on a **live** FE makes the OS send FIN over the
-   **still-open** tunnel → the daemon reads EOF → drops the client
-   (`connections=N-1`) **immediately**. But if the **tunnel dies first**, the
-   FIN can't propagate and the client is stranded as a **ghost** until the
+   a `Stop-Process` on a **live** FE makes the OS send FIN over every
+   **still-open** tunnel → each remote daemon reads EOF → drops that client
+   (`connections=N-1`) **immediately**. But if a **tunnel dies first**, its
+   FIN can't propagate and that client is stranded as a **ghost** until the
    ADR-0027 keepalive reaper fires (~50 s). That ghost is the "FE not detaching
-   on close" bug. So the order must be: **supervisor → FE → wait → tunnel →
+   on close" bug. So the order must be: **supervisor → FE → wait → tunnels →
    local sotd**. Killing the supervisor first stops it respawning the FE or
-   racing us to tear the tunnel; the local `sotd` comes LAST because (in
-   `-Local` mode) the FE is its only client, and stopping a daemon while its
-   own client is still attached is the same class of bug as tearing the
-   tunnel too early.
+   racing us to tear a tunnel; the local `sotd` comes LAST because the FE
+   (across every host it was connected to, local included — ADR 0042 L2b) is
+   its only client, and stopping a daemon while its own client is still
+   attached is the same class of bug as tearing a tunnel too early.
 
 2. **Self-suicide**: this session runs *inside* the FE's Terminal drawer, so
    killing the FE kills this session mid-procedure. The teardown must therefore
@@ -60,10 +60,11 @@ in that script; keep orchestration here.
 
    The script: kills the supervisor(s) (`launch-{sot,devenv}.ps1`) → kills the
    FE(s) (`sot.exe`) → waits ~2 s for the daemon to deregister → (best-effort)
-   confirms `frontend disconnected … connections=N-1` in the REMOTE backend's
-   journal → kills only the tunnel `ssh` forwarding this port → stops the
-   LOCAL `sotd` on its per-user pipe (via `sot-local-daemon.ps1 -Stop`) →
-   verifies nothing local remains. It leaves the REMOTE `sotd` alone.
+   confirms `frontend disconnected … connections=N-1` in the `-SshAlias`
+   backend's journal → kills every tunnel `ssh` it started (one per
+   configured remote, `.sot/hosts.toml` — ADR 0042 L2b) → stops the LOCAL
+   `sotd` on its per-user pipe (via `sot-local-daemon.ps1 -Stop`) → verifies
+   nothing local remains. It leaves every REMOTE `sotd` alone.
 
 3. **This session ends here** the moment the FE dies. There is nothing more to
    do on this turn — do not try to verify inline (the shell is gone).
@@ -89,8 +90,9 @@ in that script; keep orchestration here.
   on either host — it is the one authority over that workspace's live state,
   survives its daemon by design, and is re-adopted on the daemon's next
   `--resume`.
-- The tunnel is matched by its `-L <port>:127.0.0.1:<port>` forward, so
-  unrelated `ssh` sessions on the box are never touched. The local daemon is
+- Each tunnel is matched by its own `-L <port>:...` forward (one per
+  configured remote — ADR 0042 L2b design E), so unrelated `ssh` sessions on
+  the box are never touched. The local daemon is
   matched by process name `sotd.exe` AND its own per-user pipe name in the
   command line, so an unrelated `sotd.exe` (a different label/pipe) is never
   touched either.

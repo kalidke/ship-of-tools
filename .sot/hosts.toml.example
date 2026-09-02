@@ -13,11 +13,15 @@
 # The frontend's `Mode::Hosts` lists every `[host.<name>]` section — every
 # entry is a live connection at once (ADR 0042 slice L2a), not a single
 # picked target, so Enter there just navigates the Sessions-mode cursor
-# to that host's node. The LAUNCHER only ever routes its one SSH tunnel
-# to `default_host` below (env vars can override); it no longer reads
-# any persisted "last picked host" from frontend state (that ADR-0015
-# mechanism — a `last_host` written to `state-<hostname>.toml` — is
-# retired; the field now means something else entirely on the frontend
+# to that host's node. The LAUNCHER opens ONE SSH TUNNEL PER REMOTE entry
+# (every `[host.<name>]` with an `ssh_alias` — ADR 0042 L2b design E), not
+# just `default_host`; `default_host` below only picks which host the CLI
+# `--socket`/`--tcp` overrides (env vars can override that choice) and may
+# omit `tcp_port` (falls back to 18743/$SOT_TCP_PORT) for compatibility —
+# every OTHER remote must set `tcp_port` itself. The launcher no longer
+# reads any persisted "last picked host" from frontend state (that
+# ADR-0015 mechanism — a `last_host` written to `state-<hostname>.toml` —
+# is retired; the field now means something else entirely on the frontend
 # side and the launcher doesn't read it at all).
 #
 # Frontend↔backend transport is SSH to a per-user remote socket. `tcp_port`
@@ -28,13 +32,26 @@
 default_host = "myserver"
 
 [host.myserver]
-ssh_alias = "myserver"                       # entry in your ~/.ssh/config
-remote_repo = "/home/me/path/to/project"     # project root the daemon serves
-tcp_port = 18743                             # local side of the SSH forward
-# remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"  # optional; queried if omitted
+# None of this project's hosts.toml parsers (Rust, PowerShell, bash) strip
+# an inline comment -- a trailing `# ...` on an active key=value line
+# becomes part of the value verbatim (see the required-tcp_port note
+# above for what that does to a bare number). Comments below live on
+# their OWN line, one per key, so this file is safe to copy verbatim.
+#
+# ssh_alias: entry in your ~/.ssh/config
+ssh_alias = "myserver"
+# remote_repo: project root the daemon serves
+remote_repo = "/home/me/path/to/project"
+# tcp_port: local side of the SSH forward -- required (default_host may omit; see above)
+tcp_port = 18743
+# remote_socket (optional; queried if omitted):
+# remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
 remote_home = "/home/me"
 
-# A second remote:
+# A second remote — its OWN tunnel, opened alongside myserver's, not instead
+# of it (ADR 0042 L2b design E). tcp_port is REQUIRED here (this isn't
+# default_host): if it's missing, the launcher logs one line naming the
+# host and skips just this one's tunnel, rather than failing the whole launch.
 #
 # [host.otherbox]
 # ssh_alias = "otherbox"
@@ -42,12 +59,11 @@ remote_home = "/home/me"
 # tcp_port = 18744
 # remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
 #
-# A local entry (no SSH; backend on the same machine). Note the parser
-# passes values through verbatim — no TOML escape processing — so
-# Windows pipe paths use single backslashes:
-#
-# [host.local]
-# socket = "\\.\pipe\sot-local"
+# "local" (this machine's own backend) needs NO entry here at all — every
+# launch ensures a local sotd and the frontend always connects to it first,
+# implicitly (ADR 0042 L2b). A [host.local] section is only for the rare
+# case of overriding its derived socket/pipe path; nothing else on it
+# (ssh_alias, tcp_port, ...) has any effect, since local is never tunneled.
 
 # Hosts sampled for the Ctrl+M server-monitor drawer (ADR 0020). Each line is
 # <display-name> = "<ssh-alias>". The host whose name (or alias) matches this

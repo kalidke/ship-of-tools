@@ -1,16 +1,18 @@
 // hosts.rs — host registry parsing + connection-set resolution (ADR 0015
-// registry format; ADR 0042 L2a targeting model — see that ADR's note on
-// ADR 0015's superseded status).
+// registry format; ADR 0042 L2a targeting model, L2b implicit local — see
+// that ADR's note on ADR 0015's superseded status).
 //
 // The frontend reads `.sot/hosts.toml` (or its layered fallbacks) at
 // startup and opens ONE CONNECTION PER REACHABLE ENTRY (resolve_connections),
-// local-first then hosts.toml order — `Mode::Hosts` is a live
-// connected/unreachable status list over the same set, not a picker. We
-// don't manage tunnels from Rust — the launcher does that, routing its one
-// SSH tunnel to `default_host` (env vars can override); its own former
-// `last_host` read (a separate, PowerShell-side mechanism reading a field
-// that has since been repurposed for something FE-internal — see
-// state_persistence.rs's field doc) is DELETED (codex review item I).
+// local always first (implicit — ADR 0042 L2b, no hosts.toml entry needed)
+// then hosts.toml order — `Mode::Hosts` is a live connected/unreachable
+// status list over the same set, not a picker. We don't manage tunnels from
+// Rust — the launcher does that, opening one SSH tunnel per configured
+// remote (ADR 0042 L2b design E) and ensuring the local daemon on every
+// launch (design D); its own former `last_host` read (a separate,
+// PowerShell-side mechanism reading a field that has since been repurposed
+// for something FE-internal — see state_persistence.rs's field doc) is
+// DELETED (codex review item I).
 //
 // Format (deliberately simple — same shape PowerShell can regex-parse):
 //
@@ -22,11 +24,12 @@
 //   tcp_port    = 18743
 //   remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"  # optional override
 //
-//   [host.local]
-//   socket = "\\\\.\\pipe\\sot-local"
+// "local" needs no section at all — its endpoint is derived
+// (`sot_protocol::session_socket_path("local")`, ADR 0042 L2b design B). A
+// `[host.local]` section is only for overriding that derived `socket`.
 //
-// Missing/malformed files resolve to an empty registry; the chrome
-// just shows "no hosts configured" in the picker.
+// Missing/malformed files resolve to a registry with just the implicit
+// local entry; the chrome shows every OTHER host as "no hosts configured".
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -214,28 +217,61 @@ pub struct CliOverride {
 /// Resolve the startup connection set: one `(HostKey, TransportConfig)` per
 /// `hosts.toml` entry that has an endpoint reachable from this machine
 /// without a launcher action (a `socket` or a `tcp_port`), in display order
-/// — the `local` entry first if present, then `hosts.toml` order otherwise.
+/// — `local` always first, then `hosts.toml` order for everything else.
 /// `default_host`'s endpoint is overridden by `cli` when set, matching the
-/// pre-L2a contract where the CLI flags were the only source. An entry with
-/// neither `socket` nor `tcp_port` (and not the CLI-overridden default) is
-/// skipped with one log line — no endpoint reachable without a launcher
-/// action.
+/// pre-L2a contract where the CLI flags were the only source. A non-local
+/// entry with neither `socket` nor `tcp_port` (and not the CLI-overridden
+/// default) is skipped with one log line — no endpoint reachable without a
+/// launcher action.
+///
+/// ADR 0042 L2b design B: "local" is now IMPLICIT — the frontend always
+/// holds a connection to this machine's own daemon, with no `hosts.toml`
+/// entry required. Its endpoint defaults to
+/// `sot_protocol::session_socket_path("local")`, the SAME derivation `sotd
+/// --label local` uses for its own `--socket` (ADR 0042 L2b design A), so
+/// the frontend and the daemon can never land on two different paths for
+/// the same machine. An explicit `[host.local]` section overrides ONLY its
+/// `socket` field — `local` is SOCKET-ONLY: `ssh_alias`/`remote_repo`/
+/// `tcp_port`/etc. on it are ignored outright (never folded into the
+/// general tcp_port branch below), because local has no launcher-managed
+/// tunnel. `local` can still be `default_host`, in which case the `cli`
+/// override applies to it exactly like any other default host.
 ///
 /// Compatibility fallback: when no `hosts.toml` entry matches
 /// `default_host` — including the common case of no `hosts.toml` at all —
-/// but `cli` gives an endpoint anyway, one synthetic connection is added so
-/// the pre-L2a CLI-only flow (`--socket`/`--tcp` with no host registry,
-/// e.g. local dev / tests) still opens exactly the one connection it always
-/// did. Named after `default_host` if set, else `"default"`.
+/// but `cli` gives an endpoint anyway, one synthetic connection is added
+/// (after `local`) so the pre-L2a CLI-only flow (`--socket`/`--tcp` with no
+/// host registry, e.g. local dev / tests) still opens exactly one
+/// ADDITIONAL connection, as it always did. Named after `default_host` if
+/// set, else `"default"`.
+///
+/// Codex follow-up: two `hosts.toml` entries declaring the same `tcp_port`
+/// would both resolve to `127.0.0.1:<port>` — the SECOND one's label would
+/// then silently reach the FIRST one's daemon instead of its own (loopback
+/// forwards don't disambiguate by hostname). Skipped instead, in
+/// declaration order, with one log line naming both hosts.
 pub fn resolve_connections(
     cfg: &HostsConfig,
     cli: &CliOverride,
 ) -> Vec<(HostKey, crate::transport::TransportConfig)> {
     let default_name = cfg.default_host.clone();
-    let mut ordered: Vec<&HostEntry> = Vec::with_capacity(cfg.hosts.len());
-    if let Some(local) = cfg.hosts.iter().find(|h| h.name == "local") {
-        ordered.push(local);
-    }
+    let synthetic_local = HostEntry {
+        name: "local".to_string(),
+        ssh_alias: None,
+        remote_repo: None,
+        tcp_port: None,
+        remote_socket: None,
+        socket: None,
+        remote_home: None,
+    };
+    let local_entry = cfg
+        .hosts
+        .iter()
+        .find(|h| h.name == "local")
+        .unwrap_or(&synthetic_local);
+
+    let mut ordered: Vec<&HostEntry> = Vec::with_capacity(cfg.hosts.len() + 1);
+    ordered.push(local_entry);
     for h in &cfg.hosts {
         if h.name != "local" {
             ordered.push(h);
@@ -244,6 +280,7 @@ pub fn resolve_connections(
 
     let mut out = Vec::new();
     let mut default_matched = false;
+    let mut claimed_tcp: HashMap<String, HostKey> = HashMap::new();
     for h in ordered {
         let is_default = default_name.as_deref() == Some(h.name.as_str());
         if is_default {
@@ -260,6 +297,17 @@ pub fn resolve_connections(
         let cli_overrides_default = is_default && (cli.socket.is_some() || cli.tcp.is_some());
         let (pipe, tcp) = if cli_overrides_default {
             (cli.socket.clone(), cli.tcp.clone())
+        } else if h.name == "local" {
+            // "local" is socket-only (codex follow-up): ssh_alias/tcp_port
+            // on a [host.local] section are ignored, never tunneled --
+            // only an explicit `socket` overrides the derived pipe.
+            (
+                h.socket
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .or_else(|| Some(sot_protocol::session_socket_path("local"))),
+                None,
+            )
         } else {
             (
                 h.socket.as_ref().map(PathBuf::from),
@@ -270,6 +318,13 @@ pub fn resolve_connections(
             tracing::info!(host = %h.name, "hosts.toml entry has no endpoint reachable without a launcher action; skipping");
             continue;
         }
+        if let Some(t) = &tcp {
+            if let Some(existing) = claimed_tcp.get(t) {
+                tracing::warn!(host = %h.name, existing_host = %existing, endpoint = %t, "duplicate tcp_port with another host; skipping to avoid reaching the wrong daemon");
+                continue;
+            }
+            claimed_tcp.insert(t.clone(), h.name.clone());
+        }
         let token = if is_default { cli.token.clone() } else { None };
         out.push((
             h.name.clone(),
@@ -279,17 +334,29 @@ pub fn resolve_connections(
 
     if !default_matched && (cli.socket.is_some() || cli.tcp.is_some()) {
         let name = default_name.unwrap_or_else(|| "default".to_string());
-        out.insert(
-            0,
-            (
-                name,
-                crate::transport::TransportConfig {
-                    pipe: cli.socket.clone(),
-                    tcp: cli.tcp.clone(),
-                    token: cli.token.clone(),
-                },
-            ),
-        );
+        let duplicate = cli
+            .tcp
+            .as_ref()
+            .and_then(|t| claimed_tcp.get(t).map(|existing| (t.clone(), existing.clone())));
+        if let Some((endpoint, existing)) = duplicate {
+            tracing::warn!(host = %name, existing_host = %existing, %endpoint, "duplicate tcp endpoint with another host; skipping the CLI-only fallback connection");
+        } else {
+            // Inserted AFTER local (index 1, never 0): "local" is always first
+            // per the contract above, even in this compatibility fallback --
+            // `out` always has at least the local entry by this point, since
+            // its derived endpoint means it is never skipped.
+            out.insert(
+                1,
+                (
+                    name,
+                    crate::transport::TransportConfig {
+                        pipe: cli.socket.clone(),
+                        tcp: cli.tcp.clone(),
+                        token: cli.token.clone(),
+                    },
+                ),
+            );
+        }
     }
     out
 }
@@ -420,7 +487,7 @@ ssh_alias = "host-a"
         assert_eq!(cfg.hosts[0].ssh_alias.as_deref(), Some("host-a"));
     }
 
-    // --- resolve_connections (ADR 0042 L2a) ---
+    // --- resolve_connections (ADR 0042 L2a, L2b implicit local) ---
 
     #[test]
     fn resolve_connections_orders_local_first_then_hosts_toml_order() {
@@ -443,6 +510,35 @@ tcp_port = 18743
         // local first, then hosts.toml declaration order (beta, alpha) —
         // NOT alphabetical, NOT default-host-first.
         assert_eq!(names, vec!["local", "beta", "alpha"]);
+        // An explicit [host.local] socket overrides the derived endpoint —
+        // design B's "nothing else" carve-out.
+        let local = &conns[0];
+        assert_eq!(local.1.pipe, Some(PathBuf::from(r"\\.\pipe\sot-local")));
+    }
+
+    #[test]
+    fn resolve_connections_implicit_local_derives_the_daemons_own_endpoint() {
+        // No [host.local] section at all -- ADR 0042 L2b design B: local is
+        // implicit, first, and its endpoint is whatever the daemon itself
+        // would derive for `--label local`. Asserting equality against a
+        // second call to the SAME function is the actual regression this
+        // guards: resolve_connections must never grow a second, divergent
+        // way to compute this path.
+        let cfg = parse(
+            r#"
+[host.beta]
+tcp_port = 18744
+"#,
+        );
+        let conns = resolve_connections(&cfg, &CliOverride::default());
+        let names: Vec<&str> = conns.iter().map(|(h, _)| h.as_str()).collect();
+        assert_eq!(names, vec!["local", "beta"]);
+        let local = &conns[0];
+        assert_eq!(
+            local.1.pipe,
+            Some(sot_protocol::session_socket_path("local"))
+        );
+        assert!(local.1.tcp.is_none());
     }
 
     #[test]
@@ -458,7 +554,10 @@ ssh_alias = "somewhere"
         );
         let conns = resolve_connections(&cfg, &CliOverride::default());
         let names: Vec<&str> = conns.iter().map(|(h, _)| h.as_str()).collect();
-        assert_eq!(names, vec!["reachable"]);
+        // "local" is always present (implicit) even though this hosts.toml
+        // never mentions it; "unreachable" has neither socket nor tcp_port
+        // and is not local, so it's still skipped.
+        assert_eq!(names, vec!["local", "reachable"]);
     }
 
     #[test]
@@ -525,10 +624,12 @@ tcp_port = 18744
     }
 
     #[test]
-    fn resolve_connections_cli_only_synthesizes_one_connection_with_no_hosts_toml() {
+    fn resolve_connections_cli_only_synthesizes_one_additional_connection_with_no_hosts_toml() {
         // Pre-L2a compatibility: `--socket`/`--tcp` with no hosts.toml at
         // all (the common local-dev/test invocation) must still open
-        // exactly one connection, as it always did.
+        // exactly one ADDITIONAL connection (named "default"), as it always
+        // did -- ADR 0042 L2b adds the implicit "local" entry ahead of it,
+        // never in place of it.
         let cfg = HostsConfig::default();
         let cli = CliOverride {
             socket: None,
@@ -536,15 +637,68 @@ tcp_port = 18744
             token: None,
         };
         let conns = resolve_connections(&cfg, &cli);
-        assert_eq!(conns.len(), 1);
-        assert_eq!(conns[0].0, "default");
-        assert_eq!(conns[0].1.tcp.as_deref(), Some("127.0.0.1:18743"));
+        assert_eq!(conns.len(), 2);
+        assert_eq!(conns[0].0, "local");
+        assert_eq!(conns[1].0, "default");
+        assert_eq!(conns[1].1.tcp.as_deref(), Some("127.0.0.1:18743"));
     }
 
     #[test]
-    fn resolve_connections_no_endpoint_anywhere_yields_empty_set() {
+    fn resolve_connections_empty_hosts_toml_still_yields_implicit_local() {
+        // ADR 0042 L2b: "no hosts.toml at all" used to mean "no connection
+        // at all" absent a CLI override. It now always means "the implicit
+        // local connection, and nothing else" -- the frontend never has
+        // zero hosts.
         let cfg = HostsConfig::default();
         let conns = resolve_connections(&cfg, &CliOverride::default());
-        assert!(conns.is_empty());
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0].0, "local");
+        assert_eq!(
+            conns[0].1.pipe,
+            Some(sot_protocol::session_socket_path("local"))
+        );
+    }
+
+    #[test]
+    fn resolve_connections_duplicate_tcp_port_skips_the_later_host() {
+        // Codex follow-up: two hosts on the same tcp_port would both
+        // loopback-forward to 127.0.0.1:<port> -- the second one's label
+        // would silently reach the first one's daemon. The later
+        // declaration (alpha, since beta is declared first) is skipped.
+        let cfg = parse(
+            r#"
+[host.beta]
+tcp_port = 18743
+
+[host.alpha]
+tcp_port = 18743
+"#,
+        );
+        let conns = resolve_connections(&cfg, &CliOverride::default());
+        let names: Vec<&str> = conns.iter().map(|(h, _)| h.as_str()).collect();
+        assert_eq!(names, vec!["local", "beta"]);
+    }
+
+    #[test]
+    fn resolve_connections_local_ignores_tcp_port_and_ssh_alias() {
+        // Codex follow-up: [host.local] is SOCKET-ONLY -- a stray
+        // ssh_alias/tcp_port on it (a plausible copy-paste from a remote
+        // section) must never turn it into a tunneled connection. Absent
+        // an explicit `socket`, it still resolves to the derived pipe.
+        let cfg = parse(
+            r#"
+[host.local]
+ssh_alias = "myserver"
+tcp_port = 18743
+"#,
+        );
+        let conns = resolve_connections(&cfg, &CliOverride::default());
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0].0, "local");
+        assert!(conns[0].1.tcp.is_none());
+        assert_eq!(
+            conns[0].1.pipe,
+            Some(sot_protocol::session_socket_path("local"))
+        );
     }
 }
