@@ -2023,17 +2023,19 @@ fn ws_key_of(workspace_id: Option<&str>, default_slug: Option<&str>) -> String {
 /// matches — the `started`-frame lesson) or `None` for the legacy singleton
 /// (= the default workspace's slug, "<default>" until the first list reply
 /// resolves it). An unknown hint is stored as-is: it may already be a slug.
-/// ADR 0042 L2a: returns a `WsKey`, not a bare slug — `repl_lifecycle` is
-/// host-scoped (two hosts' REPL processes are entirely separate), so every
-/// key this resolves to needs the frame's own `host` (the connection that
-/// delivered it). `id_slugs` already carries the correct host per entry
-/// (built per-host in `rebuild_workspace_caches`); `host` is only the
-/// fallback for the `None`-hint and unknown-hint cases, where the frame's
-/// own connection is the only host information available.
+/// ADR 0042 L2a codex review, item J: `id_slugs` is keyed by `(host, id)`,
+/// not a bare id — a canonical workspace_id is `slug+pid+time`, but a
+/// LEGACY id (older workspaces, or a daemon that hasn't rotated to the
+/// new scheme) is just the bare slug, so two hosts' same-slug legacy ids
+/// collide on a bare-id key. `host` (the frame's OWN connection, always
+/// correct) resolves the lookup — never trusted from whatever the map
+/// entry happened to store, which is exactly the class of bug a
+/// bare-id key could produce (a same-id collision silently returning
+/// the WRONG host's slug).
 fn lifecycle_key_of(
     host: &str,
     wire_hint: Option<&str>,
-    id_slugs: &HashMap<String, WsKey>,
+    id_slugs: &HashMap<(HostKey, String), WsKey>,
     default_slug: Option<&str>,
 ) -> WsKey {
     match wire_hint {
@@ -2042,7 +2044,7 @@ fn lifecycle_key_of(
             default_slug.unwrap_or("<default>").to_string(),
         ),
         Some(h) => id_slugs
-            .get(h)
+            .get(&(host.to_string(), h.to_string()))
             .cloned()
             .unwrap_or_else(|| (host.to_string(), h.to_string())),
     }
@@ -2057,7 +2059,7 @@ struct FreshWorkspaceCaches {
     workspace_labels: HashMap<WsKey, String>,
     workspace_project_roots: HashMap<WsKey, String>,
     workspace_states: HashMap<WsKey, (String, String)>,
-    workspace_id_slugs: HashMap<String, WsKey>,
+    workspace_id_slugs: HashMap<(HostKey, String), WsKey>,
     /// Only the entries an old-daemon-safe insert would touch (non-empty
     /// `repl_state`) — `repl_lifecycle` itself is never cleared, so the
     /// caller inserts these rather than replacing the whole map.
@@ -2222,7 +2224,7 @@ fn fresh_workspace_caches(
                 (w.agent_state.clone(), w.agent_status_at.clone()),
             );
             out.workspace_id_slugs
-                .insert(w.workspace_id.clone(), ws_key.clone());
+                .insert((host.clone(), w.workspace_id.clone()), ws_key.clone());
             if !w.repl_state.is_empty() {
                 out.repl_lifecycle
                     .insert(ws_key.clone(), w.repl_state.clone());
@@ -3249,16 +3251,21 @@ struct State {
     /// NOT cleared on `workspace.list` — an old daemon sends empty
     /// `repl_state`, and frame-driven entries must survive it.
     repl_lifecycle: HashMap<WsKey, String>,
-    /// Canonical workspace_id → `(host, slug)`, from each host's own
-    /// `workspace.list` reply. Lifecycle frames stamp the CANONICAL id
+    /// `(host, canonical workspace_id)` → `(host, slug)`, from each host's
+    /// own `workspace.list` reply. Lifecycle frames stamp the CANONICAL id
     /// (`ws-<slug>-<hash>`) — the Repl supervisor's identity — while every
     /// FE surface keys by `WsKey` (the `started`-frame lesson, 2026-07-16:
     /// a canonical-id compare against slug keys silently never matches).
-    /// This map is the translation at the frame boundary. The canonical id
-    /// itself is presumed globally unique (daemon-generated, hash-suffixed)
-    /// so the OUTER key stays a bare `String`; only the resolved VALUE
-    /// needs the host to disambiguate which daemon's slug it names.
-    workspace_id_slugs: HashMap<String, WsKey>,
+    /// This map is the translation at the frame boundary.
+    /// ADR 0042 L2a codex review, item J: the OUTER key is now
+    /// host-qualified — a canonical id is `slug+pid+time`, but a LEGACY
+    /// id is just the bare slug, so two hosts' same-slug legacy ids
+    /// collided on a bare-id key (whichever host inserted last silently
+    /// won, and a lookup from the OTHER host's frame resolved to the
+    /// wrong slug). Looked up via the frame's own `event_host`
+    /// (`lifecycle_key_of`'s `host` param), never trusted from the
+    /// entry's own value.
+    workspace_id_slugs: HashMap<(HostKey, String), WsKey>,
     /// Badge floor (ADR 0025 §1): `WsKey` (host, slug) → workspace-relative
     /// path of a `nav.preview` result that arrived for a workspace the FE
     /// wasn't viewing. Instead of silently dropping the off-workspace
@@ -24963,14 +24970,28 @@ mod tests {
     fn fresh_workspace_caches_workspace_id_slugs_resolves_to_the_right_host() {
         // The canonical workspace_id → WsKey translation (repl.frame
         // lifecycle routing) must carry the ORIGINATING host, not
-        // whichever host happens to be active.
+        // whichever host happens to be active. ADR 0042 L2a codex review,
+        // item J: the map's OWN key is host-qualified too, so a same-id
+        // lookup can only ever resolve against the querying host's own
+        // entry (a legacy id is bare-slug and DOES collide across hosts).
         let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
         lists.insert("beta".to_string(), vec![ws_info("sot", "sot-be-sot")]);
         let ordered = vec!["beta".to_string()];
         let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
         assert_eq!(
-            fresh.workspace_id_slugs.get("ws-sot-0000"),
+            fresh
+                .workspace_id_slugs
+                .get(&("beta".to_string(), "ws-sot-0000".to_string())),
             Some(&("beta".to_string(), "sot".to_string()))
+        );
+        // A query for the SAME canonical id under a DIFFERENT host misses
+        // entirely -- the collision a bare-id key used to paper over.
+        assert_eq!(
+            fresh
+                .workspace_id_slugs
+                .get(&("alpha".to_string(), "ws-sot-0000".to_string())),
+            None,
+            "the same canonical id under a different host must not resolve"
         );
     }
 
@@ -25432,9 +25453,9 @@ mod repl_lifecycle_render_tests {
         // HOST that `workspace_id_slugs` recorded for the id, which can
         // differ from the frame's own connection (`host` below) — the
         // lookup wins over the fallback whenever the id IS known.
-        let mut ids: HashMap<String, WsKey> = HashMap::new();
+        let mut ids: HashMap<(HostKey, String), WsKey> = HashMap::new();
         ids.insert(
-            "ws-alpha-1a2b".to_string(),
+            ("myhost".to_string(), "ws-alpha-1a2b".to_string()),
             ("myhost".to_string(), "alpha".to_string()),
         );
         assert_eq!(
@@ -25447,6 +25468,14 @@ mod repl_lifecycle_render_tests {
             lifecycle_key_of("myhost", Some("beta"), &ids, Some("home")),
             ("myhost".to_string(), "beta".to_string())
         );
+        // ADR 0042 L2a codex review, item J: the SAME canonical id under a
+        // DIFFERENT host must not resolve — otherwise ws-alpha-1a2b known
+        // only to "myhost" would leak into "otherhost"'s lookup.
+        assert_eq!(
+            lifecycle_key_of("otherhost", Some("ws-alpha-1a2b"), &ids, Some("home")),
+            ("otherhost".to_string(), "ws-alpha-1a2b".to_string()),
+            "an id known only to a different host falls through to the unknown-hint case"
+        );
     }
 
     #[test]
@@ -25455,7 +25484,7 @@ mod repl_lifecycle_render_tests {
         // workspace. Resolve to its slug once known, "<default>" before the
         // first workspace.list reply (transient; the list's repl_state
         // catch-up re-keys it). Always under the frame's own host.
-        let ids: HashMap<String, WsKey> = HashMap::new();
+        let ids: HashMap<(HostKey, String), WsKey> = HashMap::new();
         assert_eq!(
             lifecycle_key_of("myhost", None, &ids, Some("home")),
             ("myhost".to_string(), "home".to_string())
