@@ -32,7 +32,9 @@
 #                 auto-detected from the running sotd
 #
 # Env: SOT_COMM_SPAWN_WAIT (boot wait, default 6s)
-#      SOT_COMM_LAUNCH (default 'claude --permission-mode auto')
+#      SOT_COMM_LAUNCH (default: builds `ccb` — SOT_COMM_NAME=<name>
+#                 $HOME/.local/bin/ccb, see the LAUNCH assignment below;
+#                 ccb itself execs `claude --permission-mode auto`)
 #
 # Rollback contract (Codex review F9, hardened in round 2 findings 1 & 2):
 # an EXIT trap is armed BEFORE either write path can happen (right after
