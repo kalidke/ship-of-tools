@@ -562,6 +562,21 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
+    // Establish the WATCHER connection BEFORE submitting end_run, not
+    // after: once submitted, admission runs on the main loop's own next
+    // tick and end_run's own reconciliation (mark_closed -> verify_voyage
+    // -> finish, all on ONE background worker thread with no built-in
+    // pause anywhere in between) is free to race straight through
+    // `accepted` to a terminal record with nothing gating it to the main
+    // loop's pace. A watcher connection opened only AFTER submission has
+    // to win its own connect+hello+challenge round trip -- each hop
+    // gated by the main loop's own tick -- against that race, which a
+    // loaded runner does not guarantee (this is what actually flaked:
+    // three of five `windows-2022` runs, always this same poll). Opening
+    // it first removes the race instead of just widening it: the watcher
+    // is already live before there is anything to observe.
+    let query_conn = wait_for_lane(&h, Duration::from_secs(10));
+
     // Submit end_run on a SEPARATE thread: its own reply is deferred to
     // record_closed (B3), which may not arrive before this test kills
     // the supervisor -- block on it in the background rather than in
@@ -571,15 +586,26 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
         command(&conn_for_command, "op-recover", SupervisorOp::EndRun { reason: "test".into(), voyage })
     });
 
-    // Prove the operation is genuinely NONTERMINAL before killing --
-    // poll a FRESH connection's `query` for `accepted` (durably
-    // journaled, per ADR 0041's own "before the first irreversible act")
-    // rather than assuming a fixed sleep landed before completion.
-    let query_conn = wait_for_lane(&h, Duration::from_secs(10));
+    // Prove the operation is genuinely NONTERMINAL before killing -- poll
+    // the watcher connection's `query` for `accepted` OR `record_closed`
+    // (durably journaled, per ADR 0041's own "before the first
+    // irreversible act"). Both, not just `accepted`, count as proof here:
+    // `poll_to_terminal` above already draws this exact line (`Accepted |
+    // RecordClosed` are its own two non-terminal arms), and end_run's
+    // worker can legitimately reach `record_closed` (the writer already
+    // confirmed exited, B3) before this poll's very first sample --
+    // requiring the single, momentary `accepted` instant specifically is
+    // an unforced, narrower bar than "genuinely nonterminal" needs.
     poll_until(
-        || matches!(query(&query_conn, "op-recover"), SupervisorOperationState::Accepted).then_some(()),
+        || {
+            matches!(
+                query(&query_conn, "op-recover"),
+                SupervisorOperationState::Accepted | SupervisorOperationState::RecordClosed
+            )
+            .then_some(())
+        },
         Duration::from_secs(10),
-        "the end_run operation to be admitted (accepted) before this test kills the supervisor",
+        "the end_run operation to be admitted (accepted or record_closed) before this test kills the supervisor",
     );
 
     // Kill the supervisor -- simulating a crash mid end_run. The LEG
