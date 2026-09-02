@@ -8,6 +8,16 @@ license.workspace = true
 [dependencies]
 sot-protocol = { path = "../protocol" }
 sot-updater = { path = "../updater" }
+# ADR 0042 slice L1a: the capsule workspace runtime (Windows-only in this
+# unit) calls `sot_log::state_dir`/`supervisor_client`. Unconditional, not
+# `[target.'cfg(windows)'.dependencies]`, matching how `sot-frontend`
+# already depends on this same crate (its own `paths::sot_state_dir`
+# delegates to `sot_log::state_dir::sot_state_dir` on every platform) --
+# sot-log's own Cargo.toml already confines its Windows-only pieces
+# (`windows-sys`, `vt100-ctt`) to `[target.'cfg(windows)'.dependencies]`,
+# so a non-Windows build of THIS crate pulls in nothing new merely by
+# depending on the library.
+sot-log = { path = "../log" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -41,3 +51,6 @@ path = "src/main.rs"
 # `start_paused` test runtime (site_serve's bind-fallback test collapses the
 # 10x300ms preferred-port retry loop instead of really sleeping through it).
 tokio = { workspace = true, features = ["test-util"] }
+# ADR 0042 slice L1a: `tests/capsule_workspaces.rs`'s own isolated
+# project/state/config roots (matching `sot-log`'s own dev-dependency use).
+tempfile = { workspace = true }

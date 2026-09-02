@@ -354,6 +354,9 @@ mod tests {
         tokio::fs::create_dir_all(&build).await.unwrap();
         tokio::fs::write(build.join("sot"), b"fe-binary").await.unwrap();
         tokio::fs::write(build.join("sotd"), b"be-binary").await.unwrap();
+        // ADR 0042 slice L1a: `sot-capsule` is a required file in every
+        // release archive now (see `archive.rs`'s own `validate_tree`).
+        tokio::fs::write(build.join("sot-capsule"), b"capsule-binary").await.unwrap();
         tokio::fs::write(build.join("sotd.service"), b"unit").await.unwrap();
         let archive = release.join(&asset);
         let st = std::process::Command::new("tar")

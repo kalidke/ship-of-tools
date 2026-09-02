@@ -115,8 +115,11 @@ const HELLO_BUDGET: Duration = Duration::from_secs(2);
 const STATUS_BUDGET: Duration = Duration::from_secs(5);
 /// Ordinary lane-operation write budget (connect/write halves of the
 /// Lifecycle "one budget" triple; the read half is `STATUS_BUDGET` or,
-/// for `command`/`query`, the same 5 s figure).
-const WRITE_BUDGET: Duration = Duration::from_secs(2);
+/// for `command`/`query`, the same 5 s figure). `pub(crate)`: shared with
+/// [`run_end_run_and_wait`]'s own callers (ADR 0042 L1a, Codex review
+/// finding 4 — `supervisor_client::end_run` reuses this exact budget
+/// rather than inventing its own).
+pub(crate) const WRITE_BUDGET: Duration = Duration::from_secs(2);
 /// How often the worker polls the supervisor lane for `status` during
 /// steady state — a still-answering authority's phase transition
 /// (ruling (d)) must become visible promptly, but polling faster than
@@ -157,8 +160,11 @@ const SCROLLBACK_ROWS: usize = 5000;
 // `cancel()`-issuing watchdog).
 // -----------------------------------------------------------------------
 
+/// `pub(crate)`: shared with [`run_end_run_and_wait`]'s own callers (ADR
+/// 0042 L1a, Codex review finding 4 — one lane-I/O error vocabulary, not
+/// two).
 #[derive(Debug)]
-enum LaneError {
+pub(crate) enum LaneError {
     Io(std::io::Error),
     Timeout,
     Eof,
@@ -183,7 +189,7 @@ fn is_access_denied(e: &std::io::Error) -> bool {
     e.raw_os_error() == Some(5) || e.kind() == ErrorKind::PermissionDenied
 }
 
-fn write_bounded(conn: &PipeClient, bytes: &[u8], deadline: Instant) -> Result<(), LaneError> {
+pub(crate) fn write_bounded(conn: &PipeClient, bytes: &[u8], deadline: Instant) -> Result<(), LaneError> {
     match crate::deadline::run_with_deadline(deadline, || conn.cancel(), || conn.write_all(bytes)) {
         Some(Ok(())) => Ok(()),
         Some(Err(e)) => Err(LaneError::Io(pipe_err_to_io(e))),
@@ -191,7 +197,7 @@ fn write_bounded(conn: &PipeClient, bytes: &[u8], deadline: Instant) -> Result<(
     }
 }
 
-fn pipe_err_to_io(e: pipe_win::PipeError) -> std::io::Error {
+pub(crate) fn pipe_err_to_io(e: pipe_win::PipeError) -> std::io::Error {
     match e {
         pipe_win::PipeError::Io { source, .. } => source,
         other => std::io::Error::other(other.to_string()),
@@ -206,18 +212,19 @@ fn pipe_err_to_io(e: pipe_win::PipeError) -> std::io::Error {
 /// corruption, correctly, since THEIR protocol is exactly one round
 /// trip), the mgmt/supervisor lane and the attach lane both keep being
 /// used afterward, so a bundled extra frame here is ordinary traffic
-/// that must be preserved for the caller's NEXT read.
-struct FrameReader {
+/// that must be preserved for the caller's NEXT read. `pub(crate)`:
+/// shared with [`run_end_run_and_wait`]'s own callers (ADR 0042 L1a).
+pub(crate) struct FrameReader {
     splitter: wire::FrameSplitter,
     pending: VecDeque<DecodedFrame>,
 }
 
 impl FrameReader {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { splitter: wire::FrameSplitter::new(), pending: VecDeque::new() }
     }
 
-    fn next_frame(&mut self, conn: &PipeClient, deadline: Instant) -> Result<DecodedFrame, LaneError> {
+    pub(crate) fn next_frame(&mut self, conn: &PipeClient, deadline: Instant) -> Result<DecodedFrame, LaneError> {
         if let Some(f) = self.pending.pop_front() {
             return Ok(f);
         }
@@ -1185,11 +1192,11 @@ fn iso_now() -> String {
 /// up to ~2 s of silence between attempts, and every subsequent `query`
 /// write was swallowed by `let _ = write_bounded(..)`, so the eviction
 /// was never even detected). 1 s gives 5x margin under the 5 s deadline.
-const QUIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+pub(crate) const QUIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Submits `end_run` on the (already-connected) supervisor lane, THEN
-/// LOOPS — entirely within this call — until the dispatcher reaches a
-/// terminal state (`Ended`/`Failed`/`Refused`/`OutcomeUnknown`), sending
+/// LOOPS — entirely within this call — until `quit` reaches a terminal
+/// state (`Ended`/`Failed`/`Refused`/`OutcomeUnknown`), sending
 /// `query { operation_id }` every [`QUIT_HEARTBEAT_INTERVAL`] and never
 /// blocking a read past that same interval (see the constant's own doc
 /// for why: ONLY outbound bytes reset the supervisor lane's idle clock,
@@ -1202,28 +1209,128 @@ const QUIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 /// lost, could not recover — every write after that point was silently
 /// discarded. This pass never trusts the CURRENT connection to still be
 /// good: any write error, `Eof`, `Io`, or read timeout on it
-/// unconditionally RECONNECTS the supervisor lane
-/// ([`reconnect_supervisor_lane_for_quit`]) and continues querying the
-/// SAME durable `operation_id` — safe because the authority's own
-/// operation journal (ADR 0041 Lifecycle: "`operation_id` is durable for
-/// MUTATING ops") is exactly what a fresh `hello` and `query` can read
-/// back, so there is nothing about the OLD connection worth preserving.
-/// No write in this loop is ever swallowed (`let _ = write_bounded(..)`
-/// silently discarding a failure is what let the second pass spin for
-/// 60 s against a connection already gone) — every write's own result
-/// feeds the SAME reconnect decision a read failure does. `tick` against
-/// the dispatcher's own `QUIT_CUTOFF` (90 s) each iteration is the ONLY
-/// terminal bound: a lane that cannot be reconnected within it still
-/// yields `OutcomeUnknown`, exactly as before this pass.
-///
-/// The quit path never touches the ATTACH connection at all — the
-/// capsule's own pipe going away is exactly what a successful `end_run`
-/// does, so depending on it (as the steady-state loop that used to poll
-/// `query` did) can never be correct here.
+/// unconditionally RECONNECTS the supervisor lane via the caller-supplied
+/// `reconnect` and continues querying the SAME durable `operation_id` —
+/// safe because the authority's own operation journal (ADR 0041
+/// Lifecycle: "`operation_id` is durable for MUTATING ops") is exactly
+/// what a fresh `hello` and `query` can read back, so there is nothing
+/// about the OLD connection worth preserving. No write in this loop is
+/// ever swallowed (`let _ = write_bounded(..)` silently discarding a
+/// failure is what let the second pass spin for 60 s against a
+/// connection already gone) — every write's own result feeds the SAME
+/// reconnect decision a read failure does. `tick` against `quit`'s own
+/// `fe_client::QUIT_CUTOFF` (90 s, ADR 0041's own bound-graph figure)
+/// each iteration is the ONLY terminal bound: a lane that cannot be
+/// reconnected within it still yields `OutcomeUnknown`.
 ///
 /// Idempotent — a `quit` already in flight (Ending/Verifying/terminal)
 /// makes this a no-op, so applying a LATCHED quit at the top of a fresh
 /// episode can never double-fire.
+///
+/// `on_transition` fires once right after the initial send, once per
+/// operation-state reply, and once more at the terminal return —
+/// [`run_quit`] (this module's own FE caller) passes a closure that
+/// emits `QuitMessage` events at exactly those points, unchanged from
+/// before this function was extracted; a caller with no UI (ADR 0042
+/// L1a's `supervisor_client::end_run`, the daemon's own caller) passes a
+/// no-op. Shared by both — ONE lane-operation loop (Codex review finding
+/// 4), not two: `supervisor_client::end_run` no longer carries its own
+/// state machine or invented budget.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_end_run_and_wait(
+    conn: &mut PipeClient,
+    reader: &mut FrameReader,
+    mut reconnect: impl FnMut(&mut PipeClient, &mut FrameReader),
+    quit: &mut QuitDispatcher,
+    operation_id: String,
+    reason: String,
+    voyage: &str,
+    mut on_transition: impl FnMut(&QuitDispatcher),
+) {
+    if !quit.request_quit(operation_id.clone(), Instant::now()) {
+        return; // already ending/verifying/terminal -- idempotent
+    }
+    let cmd = SupervisorRequest::Command {
+        operation_id: operation_id.clone(),
+        op: SupervisorOp::EndRun { reason, voyage: voyage.to_string() },
+    };
+    match wire::encode_supervisor_request(&cmd) {
+        Ok(bytes) => {
+            if let Err(e) = write_bounded(conn, &bytes, Instant::now() + WRITE_BUDGET) {
+                // Not swallowed (Codex review round): a failed write here
+                // is exactly as recoverable as one later -- the loop
+                // below reconnects and queries the SAME operation_id,
+                // which the authority's own journal already has.
+                eprintln!("lane end_run: write failed ({e}); reconnecting and querying");
+                reconnect(conn, reader);
+            }
+        }
+        Err(e) => eprintln!("lane end_run: encode failed ({e}); will query for its outcome anyway"),
+    }
+    on_transition(quit);
+
+    let mut last_query_sent_at: Option<Instant> = None;
+    loop {
+        let now = Instant::now();
+        quit.tick(now);
+        let terminal = matches!(
+            quit.state(),
+            QuitState::Ended | QuitState::Failed { .. } | QuitState::Refused { .. } | QuitState::OutcomeUnknown
+        );
+        if terminal {
+            on_transition(quit);
+            return;
+        }
+
+        let heartbeat_due = last_query_sent_at
+            .map(|t| now.duration_since(t) >= QUIT_HEARTBEAT_INTERVAL)
+            .unwrap_or(true);
+        if heartbeat_due {
+            last_query_sent_at = Some(now);
+            let q = SupervisorRequest::Query { operation_id: operation_id.clone() };
+            match wire::encode_supervisor_request(&q) {
+                Ok(bytes) => {
+                    if let Err(e) = write_bounded(conn, &bytes, Instant::now() + WRITE_BUDGET) {
+                        eprintln!("lane end_run: query write failed ({e}); reconnecting");
+                        reconnect(conn, reader);
+                        continue;
+                    }
+                }
+                Err(e) => eprintln!("lane end_run: query encode failed ({e}); will retry next heartbeat"),
+            }
+        }
+
+        match reader.next_frame(conn, now + QUIT_HEARTBEAT_INTERVAL) {
+            Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(state))) => {
+                eprintln!("lane end_run: operation state {state:?}");
+                quit.on_operation_state(state);
+                on_transition(quit);
+            }
+            Ok(other) => {
+                eprintln!("lane end_run: unrelated frame while waiting: {other:?}");
+            }
+            Err(e) => {
+                // Timeout, EOF, or a wire error alike: the ruling this
+                // pass implements treats ALL of them as "this connection
+                // can no longer be trusted" -- reconnect unconditionally
+                // rather than try to distinguish a merely-slow reply
+                // from a silently-evicted connection, which is exactly
+                // the distinction the second pass got wrong.
+                eprintln!("lane end_run: read failed ({e}); reconnecting");
+                reconnect(conn, reader);
+            }
+        }
+    }
+}
+
+/// The FE's own wrapping around [`run_end_run_and_wait`]: cancels any
+/// outstanding input (Ruling (c), Codex review round finding 6 — never
+/// dropped silently) before the transaction starts, and emits
+/// `QuitMessage` events at every transition. The quit path never touches
+/// the ATTACH connection at all — the capsule's own pipe going away is
+/// exactly what a successful `end_run` does, so depending on it (as the
+/// steady-state loop that used to poll `query` did) can never be correct
+/// here.
 #[allow(clippy::too_many_arguments)]
 fn run_quit(
     supervisor_conn: &mut PipeClient,
@@ -1236,88 +1343,29 @@ fn run_quit(
     emit: &dyn Fn(ClientEvent),
 ) {
     let operation_id = format!("fe-quit-{}", uuid::Uuid::now_v7());
-    if !quit.request_quit(operation_id.clone(), Instant::now()) {
-        return; // already ending/verifying/terminal -- idempotent
-    }
-    // Ruling (c), Codex review round finding 6: an input outstanding
-    // when quit is requested is reported, never dropped silently.
-    if let Some(o) = outstanding.cancel_for_quit() {
-        emit(ClientEvent::Status(format!(
-            "input canceled by quit \u{2014} {} byte(s) not confirmed",
-            o.bytes.len()
-        )));
-    }
-    let cmd = SupervisorRequest::Command {
-        operation_id: operation_id.clone(),
-        op: SupervisorOp::EndRun { reason, voyage: voyage.to_string() },
-    };
-    match wire::encode_supervisor_request(&cmd) {
-        Ok(bytes) => {
-            if let Err(e) = write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET) {
-                // Not swallowed (Codex review round): a failed write here
-                // is exactly as recoverable as one later -- the loop
-                // below reconnects and queries the SAME operation_id,
-                // which the authority's own journal already has.
-                eprintln!("fe-client quit: end_run write failed ({e}); reconnecting and querying");
-                reconnect_supervisor_lane_for_quit(supervisor_conn, sup_reader, h);
-            }
-        }
-        Err(e) => eprintln!("fe-client quit: end_run encode failed ({e}); will query for its outcome anyway"),
-    }
-    emit(ClientEvent::QuitMessage(quit.message()));
-
-    let mut last_query_sent_at: Option<Instant> = None;
-    loop {
-        let now = Instant::now();
-        quit.tick(now);
-        let terminal = matches!(
-            quit.state(),
-            QuitState::Ended | QuitState::Failed { .. } | QuitState::Refused { .. } | QuitState::OutcomeUnknown
-        );
-        if terminal {
-            emit(ClientEvent::QuitMessage(quit.message()));
-            return;
-        }
-
-        let heartbeat_due = last_query_sent_at
-            .map(|t| now.duration_since(t) >= QUIT_HEARTBEAT_INTERVAL)
-            .unwrap_or(true);
-        if heartbeat_due {
-            last_query_sent_at = Some(now);
-            let q = SupervisorRequest::Query { operation_id: operation_id.clone() };
-            match wire::encode_supervisor_request(&q) {
-                Ok(bytes) => {
-                    if let Err(e) = write_bounded(supervisor_conn, &bytes, Instant::now() + WRITE_BUDGET) {
-                        eprintln!("fe-client quit: query write failed ({e}); reconnecting");
-                        reconnect_supervisor_lane_for_quit(supervisor_conn, sup_reader, h);
-                        continue;
-                    }
-                }
-                Err(e) => eprintln!("fe-client quit: query encode failed ({e}); will retry next heartbeat"),
-            }
-        }
-
-        match sup_reader.next_frame(supervisor_conn, now + QUIT_HEARTBEAT_INTERVAL) {
-            Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(state))) => {
-                eprintln!("fe-client quit: operation state {state:?}");
-                quit.on_operation_state(state);
-                emit(ClientEvent::QuitMessage(quit.message()));
-            }
-            Ok(other) => {
-                eprintln!("fe-client quit: unrelated frame while waiting: {other:?}");
-            }
-            Err(e) => {
-                // Timeout, EOF, or a wire error alike: the ruling this
-                // pass implements treats ALL of them as "this connection
-                // can no longer be trusted" -- reconnect unconditionally
-                // rather than try to distinguish a merely-slow reply
-                // from a silently-evicted connection, which is exactly
-                // the distinction the second pass got wrong.
-                eprintln!("fe-client quit: read failed ({e}); reconnecting");
-                reconnect_supervisor_lane_for_quit(supervisor_conn, sup_reader, h);
-            }
+    // Mirrors `run_end_run_and_wait`'s own `request_quit` gate: this is
+    // the SAME "is state currently Idle" condition that function checks
+    // moments later, read here (nothing else mutates `quit` in between)
+    // so the outstanding-input cancel — a ONE-TIME side effect — fires
+    // only on the call that actually starts the ending transaction.
+    if matches!(quit.state(), QuitState::Idle) {
+        if let Some(o) = outstanding.cancel_for_quit() {
+            emit(ClientEvent::Status(format!(
+                "input canceled by quit \u{2014} {} byte(s) not confirmed",
+                o.bytes.len()
+            )));
         }
     }
+    run_end_run_and_wait(
+        supervisor_conn,
+        sup_reader,
+        |conn, reader| reconnect_supervisor_lane_for_quit(conn, reader, h),
+        quit,
+        operation_id,
+        reason,
+        voyage,
+        |quit| emit(ClientEvent::QuitMessage(quit.message())),
+    );
 }
 
 /// Reconnects the supervisor lane in place, for [`run_quit`]'s own use.

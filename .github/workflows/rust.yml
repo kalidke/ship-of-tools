@@ -221,6 +221,27 @@ jobs:
       - name: Test fe_client_win (FE attach-only client, real process)
         timeout-minutes: 20
         run: cargo test -p sot-log --test fe_client_win -- --nocapture
+      # ADR 0042 slice L1a: `sot-capsule` lives in the sot-log package, a
+      # DIFFERENT crate than `sotd` (sot-backend) — `cargo test -p
+      # sot-backend` builds `sotd.exe` itself (CARGO_BIN_EXE_sotd, same
+      # package as the test) but has no reason to build a binary from a
+      # dependency crate, so it's built explicitly here, into the SAME
+      # target dir `sotd.exe` lands in — exactly the sibling-executable
+      # layout the daemon's own `capsule_workspace::sot_capsule_exe()`
+      # (current_exe().parent()) assumes in production.
+      - name: Build sot-capsule (for the backend capsule-workspace test below)
+        timeout-minutes: 5
+        run: cargo build -p sot-log --bin sot-capsule
+      # --test capsule_workspaces: ADR 0042 slice L1a, the daemon's capsule
+      # workspace runtime -- a real `sotd` spawning a real, DETACHED
+      # `sot-capsule supervise` for workspace.create, workspace.list
+      # reaching phase "ready", pty.open's attach_direct refusal, adoption
+      # by a fresh `sotd` after the first one is killed (the supervisor
+      # must have survived), and workspace.destroy ending the run without
+      # deleting the state directory.
+      - name: Test capsule_workspaces (daemon capsule workspace runtime, real process)
+        timeout-minutes: 15
+        run: cargo test -p sot-backend --test capsule_workspaces -- --nocapture
 
   p2-e2e:
     name: P2 e2e (real helper, offline)

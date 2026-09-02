@@ -80,7 +80,7 @@ if [ "${1:-}" = "--rollback" ]; then
         log "install already at last-good $LG_TAG — nothing to roll back"; exit 0
     fi
     log "ROLLING BACK to $LG_TAG (marking $BAD_TAG bad for $TARGET)"
-    for b in sot sotd sot-apply; do
+    for b in sot sotd sot-capsule sot-apply; do
         [ -f "$PREFIX/bin/$b.prev" ] && cp -p "$PREFIX/bin/$b.prev" "$PREFIX/bin/$b"
     done
     ln -sfn "$LG_CHECKOUT" "$PREFIX/repo/current"
@@ -187,7 +187,7 @@ PREV_CHECKOUT="$(readlink "$PREFIX/repo/current" 2>/dev/null || echo "")"
 # ---- the flip: binaries, then pointers — all-or-restore ----------------------
 restore_previous() {
     log "$1 — restoring previous binaries and pointers"
-    for r in sot sotd sot-apply; do
+    for r in sot sotd sot-capsule sot-apply; do
         [ -f "$PREFIX/bin/$r.prev" ] && cp -p "$PREFIX/bin/$r.prev" "$PREFIX/bin/$r"
     done
     if [ -n "$PREV_CHECKOUT" ]; then
@@ -201,7 +201,7 @@ restore_previous() {
 
 # sot-apply itself is in the list: the new-inode mv is safe against the
 # RUNNING copy of this script (sh keeps its fd on the old inode).
-for b in sot sotd sot-apply; do
+for b in sot sotd sot-capsule sot-apply; do
     [ -f "$STAGED/$b" ] || continue
     [ -f "$PREFIX/bin/$b" ] && cp -p "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev" 2>/dev/null
     if ! install -m 0755 "$STAGED/$b" "$PREFIX/bin/$b.new" 2>/dev/null \

@@ -215,7 +215,7 @@ if ($Rollback) {
     # binaries is the part that actually rescues the machine; the checkout flip
     # is a nicety that only some layouts have.
     $restored = @()
-    foreach ($b in @('sot.exe', 'sotd.exe')) {
+    foreach ($b in @('sot.exe', 'sotd.exe', 'sot-capsule.exe')) {
         $prev = Join-Path $BinDir "$b.prev"
         if (Test-Path -LiteralPath $prev) {
             Copy-Item -LiteralPath $prev -Destination (Join-Path $BinDir $b) -Force -ErrorAction SilentlyContinue
@@ -348,7 +348,7 @@ Move-Item -LiteralPath $lgTmp -Destination $LastGood -Force -ErrorAction Silentl
 # ---- the flip: binaries, then pointers -- all-or-restore ---------------------
 function Restore-Previous([string]$why) {
     Write-ApplyLog "$why -- restoring previous binaries and pointers"
-    foreach ($r in @('sot.exe', 'sotd.exe')) {
+    foreach ($r in @('sot.exe', 'sotd.exe', 'sot-capsule.exe')) {
         $prev = Join-Path $BinDir "$r.prev"
         if (Test-Path -LiteralPath $prev) {
             Copy-Item -LiteralPath $prev -Destination (Join-Path $BinDir $r) -Force -ErrorAction SilentlyContinue
@@ -364,7 +364,7 @@ function Restore-Previous([string]$why) {
 }
 
 if (-not (Test-Path -LiteralPath $BinDir)) { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
-foreach ($b in @('sot.exe', 'sotd.exe')) {
+foreach ($b in @('sot.exe', 'sotd.exe', 'sot-capsule.exe')) {
     $src = Join-Path $staged $b
     if (-not (Test-Path -LiteralPath $src)) { continue }
     $dst = Join-Path $BinDir $b

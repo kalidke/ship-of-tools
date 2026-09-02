@@ -198,7 +198,7 @@ use crate::segment::RetentionClass;
 use crate::verify;
 use crate::voyage::VoyageStore;
 use crate::wire::{
-    self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
+    self, DecodedFrame, Survival, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
     SupervisorRequest,
 };
 use std::collections::HashMap;
@@ -298,6 +298,19 @@ pub struct SuperviseConfig {
     pub cols: u16,
     pub rows: u16,
     pub assume_no_rollback_target: bool,
+    /// ADR 0042 slice L1a (Codex review finding 7): the spawner's own
+    /// breakaway outcome, supplied here rather than inferred (ADR 0041
+    /// decision 11: "Survival is supplied, never inferred... Deriving it
+    /// from `IsProcessInJob` observation would cross the ADR's
+    /// observation-is-not-authority line"). Threaded into every leg this
+    /// authority spawns (`build_run_command`'s own `--survival` flag) so
+    /// `status_ok.survival` and the sealed voyage's own record are
+    /// truthful for a supervisor itself spawned DEGRADED (still inside
+    /// its own parent's job, because the parent's breakaway attempt was
+    /// denied) — the marker must be RECORDED, not merely logged.
+    /// Defaults to `Normal` for every existing manual invocation that
+    /// predates this field.
+    pub survival: Survival,
 }
 
 /// `sot-capsule supervise`'s own entry point — never panics by design;
@@ -355,11 +368,23 @@ pub fn connect_and_challenge_with_build_for_test(
     Ok((conn, outcome))
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(pipe_win::PipeClient, ChallengedProcess)> {
-    let (conn, outcome) =
-        connect_and_challenge_with_build_for_test(h, crate::exchange::SUPERVISOR_LANE_BUILD_ID)?;
-    match outcome {
+/// The production analog of [`connect_and_challenge_with_build_for_test`]:
+/// connect the supervisor lane by state-dir hash and run the full
+/// same-connection challenge with THIS build's own identity, folding
+/// `Foreign`/`Undetermined` straight into `Err` — a production caller
+/// (today: [`crate::supervisor_client`], ADR 0042 L1a) has no use for
+/// telling those two apart any further than "not a proven connection to
+/// my own supervisor". `pub(crate)` so that sibling module can reach it
+/// without the `test-support` feature a normal, non-test consumer must
+/// never need to enable (see this crate's own `Cargo.toml`).
+pub(crate) fn connect_and_challenge(
+    h: &str,
+    build: &str,
+    deadline: Instant,
+) -> crate::Result<(pipe_win::PipeClient, ChallengedProcess)> {
+    let conn = pipe_win::connect_supervisor_pipe_unchallenged(h)?;
+    let mut exchange = crate::exchange::SupervisorLaneExchange::new(build.to_string());
+    match challenge::challenge(&conn, &mut exchange, deadline) {
         ChallengeOutcome::Proven(process) => Ok((conn, process)),
         ChallengeOutcome::Foreign => Err(err_state("supervisor lane challenge: foreign")),
         ChallengeOutcome::Undetermined => Err(err_state("supervisor lane challenge: undetermined")),
@@ -367,7 +392,20 @@ pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(pipe_win::PipeC
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn request_for_test(
+pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(pipe_win::PipeClient, ChallengedProcess)> {
+    connect_and_challenge(
+        h,
+        crate::exchange::SUPERVISOR_LANE_BUILD_ID,
+        Instant::now() + Duration::from_secs(2),
+    )
+}
+
+/// Encode `request`, write it, and read back exactly one reply — the one
+/// request/reply round trip every supervisor-lane caller needs after its
+/// own connect+challenge, factored out so [`request_for_test`] (test-only)
+/// and [`crate::supervisor_client`] (the production, non-test-gated
+/// caller) share one implementation rather than two that could drift.
+pub(crate) fn send_and_read(
     conn: &pipe_win::PipeClient,
     request: &SupervisorRequest,
     deadline: Instant,
@@ -378,6 +416,15 @@ pub fn request_for_test(
         DecodedFrame::SupervisorReply(reply) => Ok(reply),
         other => Err(err_state(format!("expected a SupervisorReply, got {other:?}"))),
     }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn request_for_test(
+    conn: &pipe_win::PipeClient,
+    request: &SupervisorRequest,
+    deadline: Instant,
+) -> crate::Result<SupervisorReply> {
+    send_and_read(conn, request, deadline)
 }
 
 // ---------------------------------------------------------------------
@@ -418,7 +465,10 @@ fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
     }
 }
 
-fn err_state(msg: impl Into<String>) -> crate::Error {
+/// `pub(crate)`: [`crate::supervisor_client`] (ADR 0042 L1a) reuses this
+/// same "malformed/unexpected protocol shape" error shape rather than
+/// minting a second one.
+pub(crate) fn err_state(msg: impl Into<String>) -> crate::Error {
     crate::Error::State(msg.into())
 }
 
@@ -571,6 +621,12 @@ fn leg_was_stable(state_dir: &Path, voyage_id: &str) -> bool {
     }
 }
 
+// ADR 0042 slice L1a added `survival` as an 8th parameter (Codex review
+// finding 7) — matching this file's own existing precedent
+// (`run_quit`-equivalent lane loops) for a constructor whose every
+// parameter is load-bearing and independently documented at its call
+// sites, rather than a struct that would only exist to satisfy this lint.
+#[allow(clippy::too_many_arguments)]
 fn build_run_command(
     capsule_exe: &Path,
     voyage_root: &Path,
@@ -578,8 +634,13 @@ fn build_run_command(
     cols: u16,
     rows: u16,
     lease_name: &str,
+    survival: Survival,
     producer_argv: &[String],
 ) -> std::process::Command {
+    let survival_flag = match survival {
+        Survival::Normal => "normal",
+        Survival::Degraded => "degraded",
+    };
     let mut command = std::process::Command::new(capsule_exe);
     command
         .arg("run")
@@ -591,6 +652,8 @@ fn build_run_command(
         .arg(rows.to_string())
         .arg("--parent-lease-name")
         .arg(lease_name)
+        .arg("--survival")
+        .arg(survival_flag)
         .arg("--assume-no-rollback-target")
         .arg("--")
         .args(producer_argv);
@@ -1195,6 +1258,9 @@ fn spawn_initial_probe(
     (rx, handle)
 }
 
+// Same 8th `survival` parameter (ADR 0042 L1a, Codex review finding 7)
+// and the same reasoning as `build_run_command`'s own attribute above.
+#[allow(clippy::too_many_arguments)]
 fn spawn_owned_spawn_attempt(
     capsule_exe: PathBuf,
     voyage_root: PathBuf,
@@ -1202,13 +1268,14 @@ fn spawn_owned_spawn_attempt(
     cols: u16,
     rows: u16,
     lease_name: String,
+    survival: Survival,
     producer_argv: Vec<String>,
 ) -> (mpsc::Receiver<ProbeOutcome<ChallengedProcess>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
         let readiness_cutoff = Instant::now() + READINESS_CUTOFF;
         let mut command =
-            build_run_command(&capsule_exe, &voyage_root, &voyage_id, cols, rows, &lease_name, &producer_argv);
+            build_run_command(&capsule_exe, &voyage_root, &voyage_id, cols, rows, &lease_name, survival, &producer_argv);
         let outcome = classify::probe_owned_spawn(
             &RealProbeOps,
             &mut command,
@@ -1960,6 +2027,7 @@ fn respawn_or_terminal(
         config.cols,
         config.rows,
         lease_name.to_string(),
+        config.survival,
         config.producer_argv.clone(),
     );
     Lifecycle::Spawning { rx, handle, started_at: Instant::now() }
@@ -2082,6 +2150,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                                 config.cols,
                                 config.rows,
                                 lease_name.clone(),
+                                config.survival,
                                 config.producer_argv.clone(),
                             );
                             Lifecycle::Spawning { rx, handle, started_at: now }
@@ -2290,6 +2359,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                         config.cols,
                         config.rows,
                         lease_name.clone(),
+                        config.survival,
                         config.producer_argv.clone(),
                     );
                     Lifecycle::Spawning { rx, handle, started_at: now }

@@ -238,6 +238,16 @@ pub async fn run(opts: Opts) -> Result<()> {
                 .map(|s| s.to_string())
         })
         .unwrap_or_else(|| "home".to_string());
+    // ADR 0042 slice L1a, Codex review finding 5: the default workspace's
+    // OWN `runtime` must survive this re-registration. `scan_disk` (just
+    // above) already loaded it correctly from its toml if one exists —
+    // read it back BEFORE constructing a fresh seed, whose own
+    // `Workspace::from_label` default ("tmux") would otherwise silently
+    // clobber a scanned capsule default back to tmux on every restart
+    // (`insert`'s own "new metadata wins" semantics, working exactly as
+    // designed, applied to the wrong source of truth). `None` means a
+    // genuinely first-ever launch on this machine.
+    let existing_default = workspaces.resolve(Some(&paths::slug(&default_label)));
     let mut default_ws_seed = Workspace::from_label(
         &default_label,
         files_mode.root_path().to_path_buf(),
@@ -246,6 +256,15 @@ pub async fn run(opts: Opts) -> Result<()> {
         String::new(),
         String::new(),
     );
+    default_ws_seed.runtime = match &existing_default {
+        Some(existing) => existing.runtime.clone(),
+        // First-ever launch: every NEW workspace is a capsule on
+        // Windows, no knob (ADR 0042 L1a) — the daemon's own home/
+        // default row is no exception. Every other host keeps
+        // `from_label`'s own "tmux" default, untouched.
+        None if cfg!(windows) => "capsule".to_string(),
+        None => default_ws_seed.runtime.clone(),
+    };
     // Display the Ship of Tools home/default workspace as ".SoT" — the leading
     // dot is cosmetic (the FE strip renders the label) and marks it as "home".
     // Only the LABEL changes; the slug (hence the tmux session `sot-be-sot` and
@@ -272,8 +291,11 @@ pub async fn run(opts: Opts) -> Result<()> {
     // in Sessions mode alongside any user-created workspaces. `tmux
     // new-session -A` is idempotent — already-alive sessions are a
     // no-op. Failure is logged but non-fatal (a head-less host with no
-    // tmux server still serves the protocol fine).
-    {
+    // tmux server still serves the protocol fine). ADR 0042 slice L1a,
+    // Codex review finding 5: skipped entirely for a capsule default —
+    // it has no tmux session to ensure; its supervisor is picked up by
+    // the resume-scan below, alongside every other capsule row.
+    if default_ws.runtime != "capsule" {
         let tmux_name = default_ws.tmux_session.clone();
         let cwd = default_ws.project_root.clone();
         let slug = default_ws.slug.clone();
@@ -289,6 +311,31 @@ pub async fn run(opts: Opts) -> Result<()> {
             }
         })
         .await;
+    }
+
+    // ADR 0042 slice L1a: adopt every REGISTERED capsule workspace's
+    // supervisor on this daemon's own startup — the counterpart of the
+    // tmux-session ensure block just above, for the OTHER runtime. This
+    // naturally covers the default workspace too when it is a capsule
+    // (just marked/preserved above): one registry pass, one code path,
+    // no separate "spawn the default's own supervisor" step. `sot-capsule
+    // supervise --resume` decides adopt-vs-spawn itself (ADR 0041's
+    // start-mode table), including for a workspace whose state directory
+    // does not exist yet at all ("no leg at all -> spawn a new leg").
+    // Codex review finding 10: runs OFF the startup critical path (a
+    // detached task, never awaited) with its own bounded concurrency —
+    // see `capsule_workspace::resume_all`'s own doc. Windows-only:
+    // `workspace.create` never marks a workspace `"capsule"` on any
+    // other host in this unit (see `handlers.rs`), so there is nothing
+    // to resume there.
+    #[cfg(windows)]
+    if let Some(state_root) = sot_log::state_dir::sot_state_dir() {
+        tokio::spawn(crate::capsule_workspace::resume_all(state_root, workspaces.clone()));
+    } else {
+        tracing::warn!(
+            "capsule workspace resume-scan skipped: could not resolve this machine's state root \
+             (neither %LOCALAPPDATA% is set)"
+        );
     }
 
     // Heal the SOT_* awareness env on every registered workspace's live tmux
@@ -1268,6 +1315,27 @@ where
                 // can gate FE nav commands on its workspace. `None` for the
                 // home-base default (no matching workspace).
                 let requested_slug = workspaces.slug_for_tmux(requested_target);
+                // ADR 0042 slice L1a: a capsule workspace has no tmux
+                // session to attach `Pty::spawn` to at all — refused
+                // before any of the tmux logic below runs (existing-pty
+                // resize, re-target, or a fresh spawn alike), never
+                // proxied. The frontend attaches directly (L1b, the U3
+                // client) using the `state_dir` this carries.
+                if let Some(ws) = workspaces.workspace_for_tmux(requested_target) {
+                    if ws.runtime == "capsule" {
+                        let state_dir = sot_log::state_dir::sot_state_dir()
+                            .map(|root| crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id))
+                            .map(|p| p.to_string_lossy().into_owned());
+                        let payload = serde_json::json!({
+                            "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
+                            "code": "attach_direct",
+                            "state_dir": state_dir,
+                        });
+                        write_frame_to(&mut tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
+                            .await?;
+                        continue;
+                    }
+                }
                 if let Some(existing) = pty.as_ref() {
                     // Same target → just resize, keep the existing pty.
                     // Different target (Sessions-mode re-attach, ADR 0013)

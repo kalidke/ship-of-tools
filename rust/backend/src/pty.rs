@@ -734,6 +734,15 @@ fn session_exists(name: &str) -> bool {
 /// foreground guard (ADR §5) prevents a double launch if a user later navigates
 /// in. Spawn this as a detached `tokio::spawn` from `handle_workspace_create`;
 /// it must NOT block the `workspace.create` response on the multi-second boot.
+///
+/// ADR 0042 slice L1a: its one call site in `handlers.rs` is now
+/// `#[cfg(not(windows))]` (a tmux-and-`ccb`-shaped boot ritual has no
+/// Windows counterpart — capsule workspaces exec their producer directly,
+/// no wait-for-attach wrapper needed), so a Windows build genuinely has
+/// no caller. `#[cfg_attr(windows, allow(dead_code))]` rather than
+/// deleting the function: it stays real, tested code for the tmux
+/// runtime that still exists on every other host.
+#[cfg_attr(windows, allow(dead_code))]
 pub async fn boot_workspace_claude(
     session: String,
     agent_name: String,

@@ -94,6 +94,17 @@ pub struct Workspace {
     /// auto-starting claude. Plain metadata; persisted in the toml and
     /// defaulted to "" when absent.
     pub task: String,
+    /// ADR 0042 slice L1a: `"tmux"` | `"capsule"` — which runtime hosts
+    /// this workspace's agent pane. Plain metadata; persisted in the toml
+    /// and defaulted to `"tmux"` for every existing/older toml that lacks
+    /// the key — byte-for-byte today's behaviour for them. `"capsule"`
+    /// workspaces are Windows-only in this unit (`handle_workspace_create`
+    /// is the only writer of `"capsule"`); `tmux_session` is still
+    /// populated for them (the same `sot-be-<slug>` convention) even
+    /// though no real tmux session is ever created — it stays the one
+    /// stable identifier `pty.open`'s `target` field addresses a
+    /// workspace by, for both runtimes uniformly.
+    pub runtime: String,
     files_mode: OnceLock<Arc<FilesMode>>,
     concept: OnceLock<Arc<ConceptStore>>,
     kernel: OnceLock<Kernel>,
@@ -124,6 +135,7 @@ impl std::fmt::Debug for Workspace {
             .field("agent", &self.agent)
             .field("agent_name", &self.agent_name)
             .field("task", &self.task)
+            .field("runtime", &self.runtime)
             .field("files_mode_built", &self.files_mode.get().is_some())
             .field("concept_built", &self.concept.get().is_some())
             .field("kernel_built", &self.kernel.get().is_some())
@@ -157,6 +169,12 @@ impl Workspace {
             agent,
             agent_name,
             task,
+            // Every existing constructor call site predates ADR 0042 L1a
+            // and means "an ordinary tmux workspace" — see this field's
+            // own doc. Callers that need `"capsule"` set it explicitly on
+            // the returned value (workspace.create's Windows branch;
+            // `load_toml`'s canonical-toml `runtime` key).
+            runtime: "tmux".to_string(),
             files_mode: OnceLock::new(),
             concept: OnceLock::new(),
             kernel: OnceLock::new(),
@@ -344,6 +362,16 @@ struct Inner {
     /// watcher spawns (2026-07-10 multiwatch). Installed once at startup via
     /// `set_watch_bus`, before workspace registration; `None` in tests.
     watch_bus: Option<(Session, broadcast::Sender<PreviewChanged>)>,
+    /// ADR 0042 slice L1a (Codex review finding 6): workspace ids whose
+    /// capsule supervisor watchdog gave up — the ADR 0041 launcher
+    /// restart sequence (1/3/7/15/30s, at most 5 in 60s) exhausted
+    /// without a live authority. `workspace.list` reads this BEFORE ever
+    /// querying that workspace's (confirmed-gone) lane again, reporting
+    /// `phase: "terminal"` loudly rather than a misleading fresh
+    /// `"unreachable"` that implies the next probe might succeed. Never
+    /// cleared automatically — only a fresh `workspace.create`/resume
+    /// (a new watchdog) or daemon restart starts over.
+    capsule_terminal: std::collections::HashSet<String>,
 }
 
 impl Workspaces {
@@ -369,7 +397,7 @@ impl Workspaces {
         let final_ws = match preserved_id {
             Some(id) => {
                 // Same slug → keep id, new metadata wins.
-                Workspace::meta_only(
+                let mut w = Workspace::meta_only(
                     id,
                     ws.slug.clone(),
                     ws.label.clone(),
@@ -380,7 +408,12 @@ impl Workspaces {
                     ws.agent.clone(),
                     ws.agent_name.clone(),
                     ws.task.clone(),
-                )
+                );
+                // `meta_only` defaults `runtime` to "tmux" — the incoming
+                // `ws`'s own value (not that default) is the new metadata
+                // that should win here, same as every other field above.
+                w.runtime = ws.runtime.clone();
+                w
             }
             None => ws,
         };
@@ -500,6 +533,35 @@ impl Workspaces {
         g.pane_activity.get(session).cloned().unwrap_or_default()
     }
 
+    /// ADR 0042 slice L1a: mark `workspace_id`'s capsule supervisor
+    /// watchdog as having given up (the restart budget exhausted with no
+    /// live authority). See `Inner::capsule_terminal`'s own doc.
+    /// `#[cfg_attr(not(windows), allow(dead_code))]`: pure, portable
+    /// bookkeeping, but its only real caller is the Windows-only
+    /// watchdog (`capsule_workspace.rs`) — matching that module's own
+    /// precedent for a function whose ONLY callers are windows-gated.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn mark_capsule_terminal(&self, workspace_id: &str) {
+        let mut g = self.inner.write().expect("workspaces lock");
+        g.capsule_terminal.insert(workspace_id.to_string());
+    }
+
+    /// `true` iff `mark_capsule_terminal` was ever called for this id.
+    pub fn is_capsule_terminal(&self, workspace_id: &str) -> bool {
+        let g = self.inner.read().expect("workspaces lock");
+        g.capsule_terminal.contains(workspace_id)
+    }
+
+    /// Clears a previously-marked terminal flag — a fresh
+    /// `workspace.create`/resume (a new watchdog) starts over. No-op if
+    /// never marked. Same windows-only-caller reasoning as
+    /// `mark_capsule_terminal` above.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn clear_capsule_terminal(&self, workspace_id: &str) {
+        let mut g = self.inner.write().expect("workspaces lock");
+        g.capsule_terminal.remove(workspace_id);
+    }
+
     /// Current default workspace id, if one has been set. Consumed by
     /// `workspace.list` to mark the default entry; the frontend uses it
     /// to render a "(default)" badge and skip switch-back logic.
@@ -559,6 +621,18 @@ impl Workspaces {
             .values()
             .find(|ws| ws.tmux_session == target)
             .map(|ws| ws.slug.clone())
+    }
+
+    /// The whole workspace owning `target` (the same identifier
+    /// `project_root_for_tmux`/`slug_for_tmux` match against — see
+    /// `Workspace::runtime`'s own doc for why a capsule workspace still
+    /// has one). ADR 0042 slice L1a: `pty.open` uses this to check
+    /// `runtime` BEFORE falling into any tmux logic, so a capsule
+    /// workspace's target is refused early rather than handed to
+    /// `Pty::spawn`.
+    pub fn workspace_for_tmux(&self, target: &str) -> Option<Arc<Workspace>> {
+        let g = self.inner.read().expect("workspaces lock");
+        g.by_id.values().find(|ws| ws.tmux_session == target).cloned()
     }
 
     pub fn remove_by_id(&self, id: &str) -> Option<Arc<Workspace>> {
@@ -665,7 +739,12 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         });
         let agent_name = kv.get("agent_name").cloned().unwrap_or_default();
         let task = kv.get("task").cloned().unwrap_or_default();
-        return Ok(Some(Workspace::meta_only(
+        // ADR 0042 slice L1a. Older tomls predate this key -> default
+        // "tmux", matching `meta_only`'s own default and preserving
+        // byte-for-byte behaviour for every workspace that predates
+        // capsules.
+        let runtime = kv.get("runtime").cloned().unwrap_or_else(|| "tmux".to_string());
+        let mut ws = Workspace::meta_only(
             workspace_id,
             slug,
             label,
@@ -676,7 +755,9 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
             agent,
             agent_name,
             task,
-        )));
+        );
+        ws.runtime = runtime;
+        return Ok(Some(ws));
     }
 
     if !legacy_ok {
@@ -767,6 +848,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
     // existing `label` limitation rather than introducing a new one.
     body.push_str(&format!("agent_name    = {}\n", toml_quote(&ws.agent_name)));
     body.push_str(&format!("task          = {}\n", toml_quote(&ws.task)));
+    body.push_str(&format!("runtime       = {}\n", toml_quote(&ws.runtime)));
 
     let final_text = if preserved.trim().is_empty() {
         body
@@ -950,6 +1032,7 @@ fn strip_canonical_top_and_kernel(text: &str) -> String {
         "agent",
         "agent_name",
         "task",
+        "runtime",
     ];
     let mut out = String::new();
     let mut in_top = true;
@@ -1085,6 +1168,29 @@ mod tests {
         assert_eq!(resolved.project_root, PathBuf::from("/p/alpha-renamed"));
     }
 
+    /// ADR 0042 slice L1a: `insert`'s own doc says the id-preserving
+    /// re-insert (same slug) takes "the REST of the metadata" from the
+    /// NEW `ws` — `runtime` must be no exception. Before `insert`'s own
+    /// fix, the reconstruction branch called `Workspace::meta_only`
+    /// (which always defaults `runtime` to "tmux" internally) without
+    /// threading the incoming `ws.runtime` through at all, so EVERY
+    /// same-slug reinsert silently reset it to "tmux" regardless of what
+    /// the caller passed — exactly the "id-preserving refresh" a second
+    /// `workspace.create` for an existing capsule workspace's slug is
+    /// (`handlers.rs`'s own duplicate-root gate comment names this case),
+    /// which still sets `runtime = "capsule"` on every call.
+    #[test]
+    fn registry_reinsert_takes_the_new_runtime_not_metas_default() {
+        let reg = Workspaces::new();
+        let ws = Workspace::from_label("alpha", PathBuf::from("/p/alpha"), false, "none".into(), String::new(), String::new());
+        reg.insert(ws);
+        let mut again = Workspace::from_label("alpha", PathBuf::from("/p/alpha-renamed"), false, "none".into(), String::new(), String::new());
+        again.runtime = "capsule".to_string();
+        reg.insert(again);
+        let resolved = reg.resolve(Some("alpha")).unwrap();
+        assert_eq!(resolved.runtime, "capsule");
+    }
+
     #[test]
     fn parse_kv_top_level_only() {
         let text = r#"
@@ -1141,6 +1247,36 @@ created      = 1700000000
         assert_eq!(ws.label, "Alpha.jl");
         assert_eq!(ws.project_root, PathBuf::from("/home/u/Alpha.jl"));
         assert_eq!(ws.tmux_session, "sot-be-alpha");
+        // ADR 0042 slice L1a: a toml predating the `runtime` key defaults
+        // to "tmux" — byte-for-byte today's behaviour.
+        assert_eq!(ws.runtime, "tmux");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_toml_canonical_round_trips_capsule_runtime() {
+        let dir = std::env::temp_dir().join(format!(
+            "sot-ws-test-capsule-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("beta.toml");
+        std::fs::write(
+            &p,
+            r#"
+workspace_id = "ws-beta-1"
+slug         = "beta"
+label        = "Beta.jl"
+project_root = "/home/u/Beta.jl"
+tmux_session = "sot-be-beta"
+created      = 1700000000
+runtime      = "capsule"
+"#,
+        )
+        .unwrap();
+        let ws = load_toml(&p, false).unwrap().unwrap();
+        assert_eq!(ws.runtime, "capsule");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

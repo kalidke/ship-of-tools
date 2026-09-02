@@ -91,7 +91,7 @@ fn main() {
 #[cfg(windows)]
 fn cmd_run(args: &[String]) {
     let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--cols <n>] [--rows <n>] \
-[--parent-lease-name <name>] [--assume-no-rollback-target] -- <cmd> [args...]";
+[--parent-lease-name <name>] [--survival <normal|degraded>] [--assume-no-rollback-target] -- <cmd> [args...]";
     if args.len() < 3 {
         eprintln!("{usage}");
         std::process::exit(2);
@@ -111,6 +111,12 @@ fn cmd_run(args: &[String]) {
     // ADR 0041 step 6 U2: `Some(name)` only when a supervisor spawned
     // this process — see `CapsuleWinConfig::parent_lease_name`'s own doc.
     let mut parent_lease_name: Option<String> = None;
+    // ADR 0042 slice L1a (Codex review finding 7): supplied by the
+    // spawner (`--start`/`--resume`'s own supervisor, via
+    // `build_run_command`'s `--survival`), never inferred — defaults to
+    // `Normal` for a bare manual invocation, matching every existing
+    // caller of this harness that predates the flag.
+    let mut survival = sot_log::wire::Survival::Normal;
     loop {
         match rest.first().map(String::as_str) {
             Some("--cols") if rest.len() > 1 => {
@@ -129,6 +135,17 @@ fn cmd_run(args: &[String]) {
             }
             Some("--parent-lease-name") if rest.len() > 1 => {
                 parent_lease_name = Some(rest[1].clone());
+                rest = &rest[2..];
+            }
+            Some("--survival") if rest.len() > 1 => {
+                survival = match rest[1].as_str() {
+                    "normal" => sot_log::wire::Survival::Normal,
+                    "degraded" => sot_log::wire::Survival::Degraded,
+                    _ => {
+                        eprintln!("{usage}");
+                        std::process::exit(2);
+                    }
+                };
                 rest = &rest[2..];
             }
             Some("--assume-no-rollback-target") => {
@@ -178,9 +195,10 @@ fn cmd_run(args: &[String]) {
         argv,
         cols,
         rows,
-        // Step 6's breakaway attempt is the real source (ADR 0041 decision
-        // 11) — this bin has none yet, so it states the honest default.
-        survival: sot_log::wire::Survival::Normal,
+        // ADR 0042 slice L1a: supplied by `--survival` (a real spawner —
+        // `build_run_command` — now sets it); a bare manual invocation
+        // still defaults to the honest `Normal`.
+        survival,
         rollout_evidence,
         parent_lease_name,
     };
@@ -227,7 +245,7 @@ fn cmd_run(args: &[String]) {
 #[cfg(windows)]
 fn cmd_supervise(args: &[String]) {
     let usage = "usage: sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
-[--rows <n>] --assume-no-rollback-target -- <cmd> [args...]";
+[--rows <n>] [--survival <normal|degraded>] --assume-no-rollback-target -- <cmd> [args...]";
     if args.len() < 3 {
         eprintln!("{usage}");
         std::process::exit(2);
@@ -245,6 +263,12 @@ fn cmd_supervise(args: &[String]) {
     let mut cols: u16 = 80;
     let mut rows: u16 = 24;
     let mut assume_no_rollback_target = false;
+    // ADR 0042 slice L1a (Codex review finding 7): the spawner's own
+    // breakaway outcome, threaded into every leg via `SuperviseConfig`
+    // (see that field's own doc) — defaults to `Normal` for a bare
+    // manual invocation, matching every existing caller of this CLI that
+    // predates the flag.
+    let mut survival = sot_log::wire::Survival::Normal;
     loop {
         match rest.first().map(String::as_str) {
             Some("--cols") if rest.len() > 1 => {
@@ -259,6 +283,17 @@ fn cmd_supervise(args: &[String]) {
                     eprintln!("{usage}");
                     std::process::exit(2);
                 });
+                rest = &rest[2..];
+            }
+            Some("--survival") if rest.len() > 1 => {
+                survival = match rest[1].as_str() {
+                    "normal" => sot_log::wire::Survival::Normal,
+                    "degraded" => sot_log::wire::Survival::Degraded,
+                    _ => {
+                        eprintln!("{usage}");
+                        std::process::exit(2);
+                    }
+                };
                 rest = &rest[2..];
             }
             Some("--assume-no-rollback-target") => {
@@ -280,6 +315,7 @@ fn cmd_supervise(args: &[String]) {
         cols,
         rows,
         assume_no_rollback_target,
+        survival,
     };
     std::process::exit(sot_log::supervisor::supervise(config));
 }
