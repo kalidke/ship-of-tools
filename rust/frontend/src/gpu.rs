@@ -2061,6 +2061,26 @@ struct FreshWorkspaceCaches {
     default_workspace_slug: Option<String>,
 }
 
+/// The connection `default_host`/startup `active_host` resolve to (ADR
+/// 0042 L2a), shared by both: `configured_default` (`hosts_config
+/// .default_host`) when set — guaranteed to name a live connection by
+/// `resolve_connections`'s own contract (either the matching hosts.toml
+/// entry or its CLI-only synthesized fallback) — else the first connection
+/// in `conns`' display order (local-first, then hosts.toml order), else
+/// `fallback` (offline mode, no connections at all). "Local first" is the
+/// TREE order, not the initial selection: a daily launch must land on the
+/// configured default's resumed workspace, not an empty local host just
+/// because it sorts first.
+fn resolve_default_host(
+    configured_default: Option<HostKey>,
+    conns: &[(HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)],
+    fallback: HostKey,
+) -> HostKey {
+    configured_default
+        .or_else(|| conns.first().map(|(h, _)| h.clone()))
+        .unwrap_or(fallback)
+}
+
 /// One host's `session_host` node in the Sessions tree (ADR 0042 L2a) —
 /// pure, no `State` dependency, so `build_sessions_tree`'s "every configured
 /// host shows up, connected or not" behavior is directly unit-testable.
@@ -4342,15 +4362,14 @@ impl State {
         )>,
     ) -> Result<Self> {
         // ADR 0042 L2a: the connection every "current view" op targets
-        // until the user switches workspaces — the first connection in
-        // display order (local-first, then hosts.toml order; see
-        // `hosts::resolve_connections`). Offline mode (`conns` empty) still
-        // needs a name for status-line/tree purposes even with nothing to
-        // route to.
-        let active_host: crate::hosts::HostKey = conns
-            .first()
-            .map(|(h, _)| h.clone())
-            .unwrap_or_else(|| "offline".to_string());
+        // until the user switches workspaces. Same resolution as
+        // `default_host()` (`resolve_default_host`, shared) — `self`
+        // doesn't exist yet, so `hosts_config` is loaded fresh here.
+        let active_host: crate::hosts::HostKey = resolve_default_host(
+            crate::hosts::load().default_host,
+            &conns,
+            "offline".to_string(),
+        );
         // Restore previous window geometry on launch. Saved in logical
         // pixels so cross-DPR launches behave sensibly. Defaults are
         // ~50% bigger than the spike's original 1024×700.
@@ -6915,24 +6934,20 @@ impl State {
     }
 
     /// Display order for every host with a workspace list: `conns`' order
-    /// (local-first, then hosts.toml order — fixed at startup, see
-    /// `hosts::resolve_connections`), filtered to hosts `workspace_lists`
-    /// actually has an entry for (skips a host that has never answered a
-    /// `workspace.list`, e.g. still mid-hello).
     /// `default_host` (ADR 0042 L2a) — the drawer's fixed home. Distinct
     /// from `active_host`: switching to a workspace on another host moves
     /// `active_host`, but the drawer (Terminal/Monitor/Repl overlay pane,
     /// ADR 0041's fixed-tenant "one drawer") never follows — "no drawer
-    /// host switching". `hosts_config.default_host` when set, else the
-    /// first connection in display order (same "local first" convention
-    /// `resolve_connections` uses), else `active_host` as a last resort
-    /// (offline mode, no connections at all).
+    /// host switching". Delegates to `resolve_default_host` — the same
+    /// resolution `State::new` uses for the STARTUP `active_host` (a daily
+    /// launch must land on the configured default's resumed workspace, not
+    /// an empty local host just because it sorts first).
     fn default_host(&self) -> HostKey {
-        self.hosts_config
-            .default_host
-            .clone()
-            .or_else(|| self.conns.first().map(|(h, _)| h.clone()))
-            .unwrap_or_else(|| self.active_host.clone())
+        resolve_default_host(
+            self.hosts_config.default_host.clone(),
+            &self.conns,
+            self.active_host.clone(),
+        )
     }
 
     /// Every connection in display order (ADR 0042 L2a) — local-first,
@@ -24586,6 +24601,31 @@ mod tests {
         // this is the actual collision the fix removes.
         assert_ne!(rows_b[0].payload.get("host"), rows_a[0].payload.get("host"));
         assert_ne!(rows_a[0].id, rows_b[0].id, "row ids are host-qualified too");
+    }
+
+    #[test]
+    fn startup_active_host_prefers_configured_default_over_conns_first() {
+        // "Local first" is the TREE order (ordered_hosts), not the initial
+        // selection: a daily launch must land on the configured
+        // default_host's resumed workspace, not an empty local host just
+        // because it sorts first in conns.
+        let (conns, _rxs) = fake_conns(); // ["local", "alpha"], in that order
+        assert_eq!(
+            resolve_default_host(Some("alpha".to_string()), &conns, "offline".to_string()),
+            "alpha",
+            "configured default_host wins even though 'local' is conns[0]"
+        );
+        // No configured default_host → falls back to conns[0] (unchanged
+        // pre-fix behavior for a registry with no default_host set).
+        assert_eq!(
+            resolve_default_host(None, &conns, "offline".to_string()),
+            "local"
+        );
+        // No connections at all (offline mode) → the fallback name.
+        assert_eq!(
+            resolve_default_host(None, &[], "offline".to_string()),
+            "offline"
+        );
     }
 }
 
