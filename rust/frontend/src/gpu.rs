@@ -12427,30 +12427,32 @@ impl State {
                          ROI x={x} y={y}, {w}×{h} px. Cropped PNG: {path}"
                     );
                     let bytes = bracketed_paste_bytes(&msg);
-                    if self
-                        .req_tx
-                        .send(crate::transport::OutgoingReq::PtyWrite { bytes })
-                        .is_ok()
-                    {
-                        // Focus follows the paste: the capture key's whole
-                        // point is to ask the agent about what you're looking
-                        // at, and the pasted line is deliberately unsent (no
-                        // trailing Enter) so you can add context first. Landing
-                        // focus here removes the Ctrl+Arrow hop that every
-                        // capture used to require. Moved on the REPLY, not on
-                        // the keypress, so a crop that fails leaves focus in
-                        // the Preview pane where the image still is — see the
-                        // ImageCropFailed arm, which deliberately does not move
-                        // focus.
-                        // A hidden LLM pane can't show the paste it was just
-                        // handed — drop wide-preview so the pane (and the
-                        // focus move) are actually visible.
-                        self.wide_preview = false;
-                        self.focus = PaneFocus::Llm;
-                        self.status = format!("ROI {w}×{h} of {name} → LLM pane · Enter to send");
-                    } else {
-                        self.status = "capture: paste to LLM failed (transport closed)".to_string();
-                    }
+                    // ADR 0042 slice L1b fix 3: routed through the ONE
+                    // session-pane input dispatcher, exactly like
+                    // `forward_clipboard_paste_to_llm` — a live capsule
+                    // gets `send_input` on its own connection, a pending
+                    // resolution buffers, and only a confirmed tmux row
+                    // reaches the daemon's `pty.write`. Before this fix
+                    // the ROI paste always went straight to `pty.write`,
+                    // landing in whatever tmux pty the daemon still had
+                    // open even while a capsule was live and selected.
+                    self.send_pane_input(&bytes);
+                    // Focus follows the paste: the capture key's whole
+                    // point is to ask the agent about what you're looking
+                    // at, and the pasted line is deliberately unsent (no
+                    // trailing Enter) so you can add context first. Landing
+                    // focus here removes the Ctrl+Arrow hop that every
+                    // capture used to require. Moved on the REPLY, not on
+                    // the keypress, so a crop that fails leaves focus in
+                    // the Preview pane where the image still is — see the
+                    // ImageCropFailed arm, which deliberately does not move
+                    // focus.
+                    // A hidden LLM pane can't show the paste it was just
+                    // handed — drop wide-preview so the pane (and the
+                    // focus move) are actually visible.
+                    self.wide_preview = false;
+                    self.focus = PaneFocus::Llm;
+                    self.status = format!("ROI {w}×{h} of {name} → LLM pane · Enter to send");
                     self.window.request_redraw();
                 }
                 crate::transport::IncomingEvt::ImageCropFailed { node_id, message } => {
