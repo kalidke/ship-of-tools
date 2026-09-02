@@ -23,7 +23,8 @@ The user wants to send a note to the *other-OS* Claude session through the repo-
    ---
    ```
    Take the timestamp FROM THE SHELL, never by hand: `date -u +%Y-%m-%dT%H:%MZ`
-   (PowerShell: `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mmZ')`).
+   (PowerShell: `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH\:mmZ')` — the
+   colon is escaped because `:` is culture-sensitive in .NET format strings).
    An entry whose timestamp is empty or malformed is invisible to every
    `/bus-sync` forever — the cursor only collects entries STRICTLY newer than
    itself (one such entry hid a release note for a day). Append to the bottom

@@ -17,6 +17,9 @@ The user wants to see what the other-OS Claude session has said since the last s
    - Open `<ops>/claude-bus/from-<other-side>.md`.
    - Each entry starts with `## YYYY-MM-DDTHH:MMZ — …` and ends at the next `---` separator (or EOF).
    - Collect entries whose timestamp is *strictly newer* than the cursor.
+   - If an entry header is malformed (empty or unparseable timestamp), warn the
+     user and stop WITHOUT advancing the cursor — a silent skip loses the entry
+     for good.
 
 5. **Present the new entries to the user**:
    - If none, say so concisely ("bus is quiet — no new entries from <other-side>").
