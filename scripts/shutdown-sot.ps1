@@ -127,11 +127,14 @@ foreach ($t in Get-Tun) { W "kill tunnel pid=$($t.ProcessId)"; Stop-Process -Id 
 #    down. Capsule workspace supervisors are NOT stopped here - they are the
 #    point (separate detached processes; sotd re-adopts them on its next
 #    start). Delegated to sot-local-daemon.ps1 so the pipe-name/process-match
-#    logic isn't duplicated here.
+#    logic has ONE home -- its own -Stop exit code (0 = confirmed down) is
+#    what step 6 reports below, not a second CIM query of the same process.
 $sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
+$localDaemonDown = $false
 if (Test-Path $sotLocalDaemon) {
     $localOut = & $sotLocalDaemon -Stop 6>&1 2>&1
     foreach ($l in @($localOut)) { if ("$l".Trim()) { W "$l" } }
+    $localDaemonDown = ($LASTEXITCODE -eq 0)
 } else {
     W "sot-local-daemon.ps1 missing at $sotLocalDaemon - cannot stop the local daemon"
 }
@@ -141,7 +144,7 @@ Start-Sleep -Milliseconds 500
 $feN = (Get-FE | Measure-Object).Count
 $supN = (Get-Sup | Measure-Object).Count
 $tunN = (Get-Tun | Measure-Object).Count
-$localDaemonN = (Get-CimInstance Win32_Process -Filter "Name='sotd.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains("sot-$env:USERNAME-local") } | Measure-Object).Count
+$localDaemonN = if ($localDaemonDown) { 0 } else { 1 }
 W "post: FE=$feN supervisor=$supN tunnel=$tunN localDaemon=$localDaemonN"
 if (($feN + $supN + $tunN + $localDaemonN) -eq 0) { W "CLEAN - local frontend and local daemon fully torn down; remote sotd left running by design." }
 else { W "WARNING - residue remains (FE=$feN sup=$supN tun=$tunN localDaemon=$localDaemonN); inspect manually." }
