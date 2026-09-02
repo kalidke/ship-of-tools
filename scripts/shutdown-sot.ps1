@@ -49,7 +49,12 @@
 
 [CmdletBinding()]
 param(
-    [int]$TcpPort = 18743,      # loopback port the tunnel forwards (matches SOT_TCP_PORT)
+    # Codex follow-up, item 8: resolved the SAME way launch-sot.ps1 resolves
+    # $tcpPort -- $env:SOT_TCP_PORT first, else 18743 -- so an env-overridden
+    # default-host tunnel is still matched and killed here without having to
+    # pass -TcpPort explicitly every time. An explicit -TcpPort still wins
+    # over both (this is only the PARAMETER's default value).
+    [int]$TcpPort = $(if ($env:SOT_TCP_PORT) { [int]$env:SOT_TCP_PORT } else { 18743 }),
     [string]$SshAlias = $(if ($env:SOT_HOST) { $env:SOT_HOST } else { $null }), # host whose sotd we verify the detach against
     [switch]$SkipDaemonVerify   # skip the journal round-trip (offline / faster)
 )
@@ -89,7 +94,18 @@ function W([string]$m) { "$(Get-Date -Format o)  $m" | Tee-Object -FilePath $log
 . (Join-Path $PSScriptRoot 'sot-hosts.ps1')
 $repo = Resolve-Path -Path (Join-Path $PSScriptRoot '..')
 $hostsCfg = Read-SotHosts -Path (Join-Path $repo '.sot\hosts.toml')
-$tunnelPlan = Get-TunnelPlan -Cfg $hostsCfg -DefaultAlias $SshAlias -DefaultPort $TcpPort
+# Codex follow-up, item 7: Get-TunnelPlan's default-host match is by
+# hosts.toml KEY, not ssh_alias -- $SshAlias above is (and stays) an SSH
+# destination for the journal-verification ssh calls, a different identity.
+# Resolve the KEY the same way launch-sot.ps1's $activeHostName does.
+$activeHostName = if ($env:SOT_HOST_NAME) {
+    $env:SOT_HOST_NAME
+} elseif ($hostsCfg.default_host) {
+    $hostsCfg.default_host
+} else {
+    $null
+}
+$tunnelPlan = Get-TunnelPlan -Cfg $hostsCfg -DefaultHost $activeHostName -DefaultPort $TcpPort
 $tunnelPorts = @($TcpPort) + (
     $tunnelPlan | Where-Object { $_.local_port } | ForEach-Object { $_.local_port }
 ) | Sort-Object -Unique
@@ -167,6 +183,15 @@ $supN = (Get-Sup | Measure-Object).Count
 $tunN = (Get-Tun | Measure-Object).Count
 $localDaemonN = if ($localDaemonDown) { 0 } else { 1 }
 W "post: FE=$feN supervisor=$supN tunnel=$tunN localDaemon=$localDaemonN"
-if (($feN + $supN + $tunN + $localDaemonN) -eq 0) { W "CLEAN - local frontend and local daemon fully torn down; remote sotd left running by design." }
-else { W "WARNING - residue remains (FE=$feN sup=$supN tun=$tunN localDaemon=$localDaemonN); inspect manually." }
+$residue = $feN + $supN + $tunN + $localDaemonN
+if ($residue -eq 0) {
+    W "CLEAN - local frontend and local daemon fully torn down; remote sotd left running by design."
+} else {
+    W "WARNING - residue remains (FE=$feN sup=$supN tun=$tunN localDaemon=$localDaemonN); inspect manually."
+}
 W "=== shutdown-sot done ==="
+# Codex follow-up, item 10: a non-zero exit when residue remains, so a
+# caller (the /sot-fe-shutdown skill, or anyone scripting this) can tell
+# CLEAN from WARNING without parsing the log.
+if ($residue -ne 0) { exit 1 }
+exit 0
