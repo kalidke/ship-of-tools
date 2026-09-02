@@ -102,17 +102,41 @@ fn main() -> Result<()> {
         ControlFlow::Wait
     });
 
-    // Channel from transport task → GPU thread. std::sync::mpsc because the
-    // GPU thread drains it non-blockingly each redraw; tokio mpsc would
-    // require an async drain.
-    let (evt_tx, evt_rx) = mpsc::channel::<transport::IncomingEvt>();
+    // ADR 0042 L2a: the connection set is every hosts.toml entry with a
+    // reachable endpoint (local first, then hosts.toml order), with the CLI
+    // --socket/--tcp/--token flags overriding whichever entry is
+    // `default_host` — same meaning those flags always had, now scoped to
+    // one host instead of "the only host". No hosts.toml (or no matching
+    // default entry) falls back to exactly the old single-connection
+    // CLI-only behaviour (see `hosts::resolve_connections`).
+    let hosts_cfg = hosts::load();
+    let cli_override = hosts::CliOverride {
+        socket: cli.socket.clone(),
+        tcp: cli.tcp.clone(),
+        token: cli.token.clone(),
+    };
+    let connections = hosts::resolve_connections(&hosts_cfg, &cli_override);
+    tracing::info!(hosts = ?connections.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(), "connection set resolved");
 
-    // Channel from GPU thread → transport task. tokio UnboundedSender::send
-    // is sync, so the keyboard handler can fire requests without blocking
-    // the event loop.
-    let (req_tx, req_rx) = transport::outgoing_channel();
+    // Channel from every transport task → GPU thread, fanned in. std::sync::mpsc
+    // because the GPU thread drains it non-blockingly each redraw; tokio mpsc
+    // would require an async drain. One receiver, N cloned senders (one per
+    // host's transport task) — tagging happens at each transport's own send,
+    // not through a forwarding task.
+    let (evt_tx, evt_rx) = mpsc::channel::<(hosts::HostKey, transport::IncomingEvt)>();
 
-    let rt = if cli.socket.is_some() || cli.tcp.is_some() {
+    // One outgoing-request channel per host: the GPU thread's `conns` sender
+    // half is built here; the receiver half travels with its `TransportConfig`
+    // into `App` until `resumed()` spawns that host's transport task.
+    let mut conns = Vec::with_capacity(connections.len());
+    let mut pending_transports = Vec::with_capacity(connections.len());
+    for (host, config) in connections {
+        let (req_tx, req_rx) = transport::outgoing_channel();
+        conns.push((host.clone(), req_tx));
+        pending_transports.push((host, config, req_rx));
+    }
+
+    let rt = if !pending_transports.is_empty() {
         Some(
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -122,12 +146,12 @@ fn main() -> Result<()> {
         )
     } else {
         tracing::info!(
-            "no --socket / --tcp / $SOT_SOCKET / $SOT_TCP; running offline against bundled samples"
+            "no reachable host (no --socket / --tcp / $SOT_SOCKET / $SOT_TCP / hosts.toml entry); running offline against bundled samples"
         );
         None
     };
 
-    let mut app = gpu::App::new(evt_rx, rt, cli, evt_tx, req_tx, Some(req_rx));
+    let mut app = gpu::App::new(evt_rx, rt, cli, evt_tx, conns, Some(pending_transports));
     event_loop.run_app(&mut app)?;
     Ok(())
 }

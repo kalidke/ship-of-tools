@@ -30,6 +30,7 @@ use ratatui::{
 
 use crate::chrome::WgpuBackend;
 use crate::edit_buffer::EditBuffer;
+use crate::hosts::HostKey;
 use crate::keybindings::{Action, KeyBindings};
 use crate::preview::markdown::{
     FigureMetrics, FigureMetricsMap, MarkdownPreview, MathMetrics, MathMetricsMap,
@@ -41,6 +42,25 @@ use crate::preview::svg::quad_from_svg_bytes;
 use crate::settings::Settings;
 use crate::transport::OutgoingReq;
 use sot_protocol::{ReplFrame, TreeNode};
+
+/// `(host, identifier)` — the composite identity backing every
+/// workspace-scoped cache once workspaces come from more than one daemon
+/// connection (ADR 0042 L2a). `identifier` is a slug, a tmux session name,
+/// or a workspace_id depending on the field — each field's own doc names
+/// which; the shape is reused rather than adding a distinct wrapper per
+/// meaning, since every one of them exists to answer the same question
+/// ("whose is this, and which one on that host"). A bare identifier is
+/// ambiguous the moment two hosts each have one with the same name.
+type WsKey = (HostKey, String);
+
+/// Sessions-tree host-node divider (ADR 0042 L2a, "the wheel icon between
+/// hosts"). No settings/wheel glyph already ships anywhere in the FE's tree
+/// or chrome rendering (surveyed: only `●` — semantically taken, the ADR
+/// 0025 pending-result badge — and box-drawing pane-border glyphs exist);
+/// this is a judgment call under "use the glyph the FE already ships for
+/// something else", argued in the L2a report rather than silently assumed.
+/// A single well-covered Unicode symbol, not a bundled font.
+const HOST_DIVIDER_GLYPH: &str = "⚙";
 
 /// Which root tree the left pane is showing. Files mode → backend's files
 /// hierarchy via `tree.root {mode: "files"}`; Modules mode → kernel's loaded
@@ -453,6 +473,11 @@ struct WorkspaceReplSnapshot {
 /// ccb agent), Shift+Enter commits it as a bare session (no LLM agent); Esc
 /// cancels. Commit chords are keymap-driven (session.create / .create_bare).
 struct WorkspacePicker {
+    /// The connection this picker browses and will create the workspace
+    /// on — the "+ create new" row's own host, fixed for the picker's
+    /// lifetime (ADR 0042 L2a). Every `directory.list`/`workspace.create`
+    /// this picker fires routes via `send_to(&host, ...)`.
+    host: HostKey,
     /// Absolute path of the directory we're currently showing. The
     /// title bar in the NavTree displays this so the user always knows
     /// where they are.
@@ -1989,15 +2014,124 @@ fn ws_key_of(workspace_id: Option<&str>, default_slug: Option<&str>) -> String {
 /// matches — the `started`-frame lesson) or `None` for the legacy singleton
 /// (= the default workspace's slug, "<default>" until the first list reply
 /// resolves it). An unknown hint is stored as-is: it may already be a slug.
+/// ADR 0042 L2a: returns a `WsKey`, not a bare slug — `repl_lifecycle` is
+/// host-scoped (two hosts' REPL processes are entirely separate), so every
+/// key this resolves to needs the frame's own `host` (the connection that
+/// delivered it). `id_slugs` already carries the correct host per entry
+/// (built per-host in `rebuild_workspace_caches`); `host` is only the
+/// fallback for the `None`-hint and unknown-hint cases, where the frame's
+/// own connection is the only host information available.
 fn lifecycle_key_of(
+    host: &str,
     wire_hint: Option<&str>,
-    id_slugs: &HashMap<String, String>,
+    id_slugs: &HashMap<String, WsKey>,
     default_slug: Option<&str>,
-) -> String {
+) -> WsKey {
     match wire_hint {
-        None => default_slug.unwrap_or("<default>").to_string(),
-        Some(h) => id_slugs.get(h).cloned().unwrap_or_else(|| h.to_string()),
+        None => (
+            host.to_string(),
+            default_slug.unwrap_or("<default>").to_string(),
+        ),
+        Some(h) => id_slugs
+            .get(h)
+            .cloned()
+            .unwrap_or_else(|| (host.to_string(), h.to_string())),
     }
+}
+
+/// Output of `fresh_workspace_caches` — everything `State::rebuild_workspace_caches`
+/// applies onto `self` in one pass, minus the one thing that needs history
+/// (flash-on-transition, which stays in the `State` method since it reads
+/// the PRIOR `prev_workspace_states`).
+struct FreshWorkspaceCaches {
+    workspace_slugs: Vec<WsKey>,
+    workspace_labels: HashMap<WsKey, String>,
+    workspace_project_roots: HashMap<WsKey, String>,
+    workspace_states: HashMap<WsKey, (String, String)>,
+    workspace_id_slugs: HashMap<String, WsKey>,
+    /// Only the entries an old-daemon-safe insert would touch (non-empty
+    /// `repl_state`) — `repl_lifecycle` itself is never cleared, so the
+    /// caller inserts these rather than replacing the whole map.
+    repl_lifecycle: HashMap<WsKey, String>,
+    workspace_autostart: HashMap<WsKey, WsAutostart>,
+    #[cfg(windows)]
+    workspace_runtime: HashMap<WsKey, WorkspaceRuntime>,
+    default_workspace_slug: Option<String>,
+}
+
+/// Pure core of the ADR 0042 L2a workspace-cache rebuild: given the union
+/// (`ordered_hosts` for display order, `lists` for each host's last-known
+/// `workspace.list`) and `active_host`, computes every workspace-scoped
+/// cache keyed by `(host, slug)` — no `State` dependency, so "two hosts
+/// each having a workspace with the same slug don't collide" is directly
+/// unit-testable. `default_workspace_slug` resolves only from
+/// `active_host`'s own flagged row — "the default workspace of the
+/// connection we're on".
+fn fresh_workspace_caches(
+    ordered_hosts: &[HostKey],
+    lists: &HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>>,
+    active_host: &HostKey,
+) -> FreshWorkspaceCaches {
+    let mut out = FreshWorkspaceCaches {
+        workspace_slugs: Vec::new(),
+        workspace_labels: HashMap::new(),
+        workspace_project_roots: HashMap::new(),
+        workspace_states: HashMap::new(),
+        workspace_id_slugs: HashMap::new(),
+        repl_lifecycle: HashMap::new(),
+        workspace_autostart: HashMap::new(),
+        #[cfg(windows)]
+        workspace_runtime: HashMap::new(),
+        default_workspace_slug: None,
+    };
+    for host in ordered_hosts {
+        let Some(list) = lists.get(host) else {
+            continue;
+        };
+        for w in list {
+            let ws_key: WsKey = (host.clone(), w.slug.clone());
+            let label = if w.label.is_empty() {
+                w.slug.clone()
+            } else {
+                w.label.clone()
+            };
+            out.workspace_labels.insert(ws_key.clone(), label);
+            out.workspace_project_roots
+                .insert(ws_key.clone(), w.project_root.clone());
+            out.workspace_states.insert(
+                ws_key.clone(),
+                (w.agent_state.clone(), w.agent_status_at.clone()),
+            );
+            out.workspace_id_slugs
+                .insert(w.workspace_id.clone(), ws_key.clone());
+            if !w.repl_state.is_empty() {
+                out.repl_lifecycle
+                    .insert(ws_key.clone(), w.repl_state.clone());
+            }
+            out.workspace_slugs.push(ws_key.clone());
+            let tmux_key: WsKey = (host.clone(), w.tmux_session.clone());
+            out.workspace_autostart.insert(
+                tmux_key.clone(),
+                WsAutostart {
+                    autostart_claude: w.autostart_claude,
+                    agent_name: w.agent_name.clone(),
+                    task: String::new(),
+                },
+            );
+            #[cfg(windows)]
+            out.workspace_runtime.insert(
+                tmux_key,
+                WorkspaceRuntime {
+                    runtime: w.runtime.clone(),
+                    state_dir: w.state_dir.clone(),
+                },
+            );
+            if w.is_default && host == active_host {
+                out.default_workspace_slug = Some(w.slug.clone());
+            }
+        }
+    }
+    out
 }
 
 /// A stored (non-active) tree: the view plus the state that must travel
@@ -2101,21 +2235,37 @@ const BASE_CHROME_ORIGIN_Y: f32 = 12.0;
 /// schedules its own redraw. Tunable if reconnect grows slower.
 const CAPTURE_FRAME: u32 = 30;
 
+/// One host's not-yet-spawned transport: the endpoint config plus the
+/// receiver half of that host's own outgoing-request channel. Held on `App`
+/// until `resumed()` has a window (and thus an `Arc<Window>` to hand each
+/// transport task) — ADR 0042 L2a, the N-host generalisation of the old
+/// single `req_rx`.
+type PendingTransport = (
+    crate::hosts::HostKey,
+    crate::transport::TransportConfig,
+    tokio::sync::mpsc::UnboundedReceiver<crate::transport::OutgoingReq>,
+);
+
 pub struct App {
     state: Option<State>,
     /// Inputs forwarded into State::new the first time the event loop hands
     /// us a window. Held on App rather than constructed inside resumed() so
     /// main.rs can decide whether transport runs.
-    evt_rx: Option<std::sync::mpsc::Receiver<crate::transport::IncomingEvt>>,
+    evt_rx:
+        Option<std::sync::mpsc::Receiver<(crate::hosts::HostKey, crate::transport::IncomingEvt)>>,
     rt: Option<tokio::runtime::Runtime>,
     cli: crate::cli::Cli,
-    evt_tx: Option<std::sync::mpsc::Sender<crate::transport::IncomingEvt>>,
-    /// GPU thread holds the sender; transport task gets the receiver out of
-    /// `req_rx` on first `resumed`. Optional because offline mode doesn't
-    /// spawn transport at all, but the sender lives on State unconditionally
-    /// so keybinding code doesn't need to special-case it.
-    req_tx: tokio::sync::mpsc::UnboundedSender<crate::transport::OutgoingReq>,
-    req_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::transport::OutgoingReq>>,
+    /// Fans in every host's transport task; each clones this once in
+    /// `resumed()` before it's handed off (see `PendingTransport`).
+    evt_tx: Option<std::sync::mpsc::Sender<(crate::hosts::HostKey, crate::transport::IncomingEvt)>>,
+    /// One outgoing-request sender per host, in connection (display) order
+    /// — the send-side half of `PendingTransport`. GPU thread holds these;
+    /// `resumed()` spawns the matching transport task for each.
+    conns: Vec<(
+        crate::hosts::HostKey,
+        tokio::sync::mpsc::UnboundedSender<crate::transport::OutgoingReq>,
+    )>,
+    pending_transports: Option<Vec<PendingTransport>>,
     /// Tracks Ctrl/Shift/Alt/Super state for Ctrl+Arrow pane navigation.
     /// winit 0.30 publishes modifier changes via `WindowEvent::ModifiersChanged`
     /// separately from key presses, so we keep a running copy and consult
@@ -2125,12 +2275,15 @@ pub struct App {
 
 impl App {
     pub fn new(
-        evt_rx: std::sync::mpsc::Receiver<crate::transport::IncomingEvt>,
+        evt_rx: std::sync::mpsc::Receiver<(crate::hosts::HostKey, crate::transport::IncomingEvt)>,
         rt: Option<tokio::runtime::Runtime>,
         cli: crate::cli::Cli,
-        evt_tx: std::sync::mpsc::Sender<crate::transport::IncomingEvt>,
-        req_tx: tokio::sync::mpsc::UnboundedSender<crate::transport::OutgoingReq>,
-        req_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::transport::OutgoingReq>>,
+        evt_tx: std::sync::mpsc::Sender<(crate::hosts::HostKey, crate::transport::IncomingEvt)>,
+        conns: Vec<(
+            crate::hosts::HostKey,
+            tokio::sync::mpsc::UnboundedSender<crate::transport::OutgoingReq>,
+        )>,
+        pending_transports: Option<Vec<PendingTransport>>,
     ) -> Self {
         Self {
             state: None,
@@ -2138,8 +2291,8 @@ impl App {
             rt,
             cli,
             evt_tx: Some(evt_tx),
-            req_tx,
-            req_rx,
+            conns,
+            pending_transports,
             modifiers: winit::keyboard::ModifiersState::empty(),
         }
     }
@@ -2617,8 +2770,9 @@ struct State {
     /// paint into.
     repl_scrollback_px: ScreenRect,
     repl_window: (usize, usize),
-    /// Drained at the top of every redraw; transport task pushes here.
-    evt_rx: std::sync::mpsc::Receiver<crate::transport::IncomingEvt>,
+    /// Drained at the top of every redraw; every host's transport task
+    /// pushes here, tagged with its own `HostKey` (ADR 0042 L2a fan-in).
+    evt_rx: std::sync::mpsc::Receiver<(crate::hosts::HostKey, crate::transport::IncomingEvt)>,
     /// One-line status string for the chrome.
     status: String,
     /// Active NavTree modal prompt (Ctrl+N new-file, future delete-confirm),
@@ -2836,28 +2990,46 @@ struct State {
     /// workspace's FilesMode + Kernel. Set when the user Enters a row
     /// in Sessions mode and persisted to `state-<hostname>.toml` so a
     /// restart resumes in the same workspace.
+    ///
+    /// ADR 0042 L2a: bare, unchanged type — the pair `(active_host,
+    /// active_workspace_id)` is what names the current workspace now that
+    /// there's more than one connection.
     active_workspace_id: Option<String>,
     /// ADR 0015 host registry loaded from `hosts.toml` at startup so
     /// `Mode::Hosts` can render a picker. Empty when the user hasn't
     /// configured any hosts (the picker shows a "no hosts configured"
     /// hint and the launcher uses its env-var defaults).
     hosts_config: crate::hosts::HostsConfig,
-    /// Currently-targeted host slug, sourced from `state-<hostname>.toml`'s
-    /// `last_host` at launch. Mirrors the launcher's view of which
-    /// host the running tunnel points at. Updated when the user picks
-    /// a row in `Mode::Hosts`; the launcher reads this on next launch.
-    /// `None` means "use `hosts.toml::default_host`".
-    selected_host: Option<String>,
+    /// Per-host connection status, derived from each connection's own
+    /// `Connected`/`Disconnected`/`ProtocolMismatch` events (ADR 0042 L2a —
+    /// no new wire signal). Absent or `false` = unreachable (never
+    /// connected, or currently reconnecting); `true` = connected. The
+    /// Sessions tree's host nodes read this to badge status and grey an
+    /// unreachable host's (retained) workspace rows.
+    host_connected: HashMap<crate::hosts::HostKey, bool>,
+    /// The union this refactor is built on (ADR 0042 L2a): host → its most
+    /// recent `workspace.list` reply. A reply from host H replaces only
+    /// H's entry — every other host's last-known list is untouched, so an
+    /// unreachable host keeps showing its (greyed) rows instead of
+    /// vanishing. `rebuild_workspace_caches` and the Sessions tree are
+    /// both derived from this in `conns` order (see `ordered_hosts`), not
+    /// insertion order.
+    workspace_lists: HashMap<crate::hosts::HostKey, Vec<crate::transport::WorkspaceInfo>>,
     /// Two-press confirm for `D` (workspace destroy) in Sessions mode.
-    /// First press arms with the cursor row's workspace_id; second
-    /// press on the same row fires `workspace.destroy`. Cleared by
-    /// any other keypress (snapshot-then-reset at the top of the
-    /// input handler) so a cursor move disarms the trap.
-    pending_destroy_target: Option<String>,
+    /// First press arms with the cursor row's `(host, workspace_id)`;
+    /// second press on the same row fires `workspace.destroy` via
+    /// `send_to` (a destroy targets a specific row, not necessarily the
+    /// active one). Cleared by any other keypress (snapshot-then-reset at
+    /// the top of the input handler) so a cursor move disarms the trap.
+    pending_destroy_target: Option<WsKey>,
     /// Short hostname from the hello response, kept alongside the
     /// daemon's project_root basename so the chrome can rebuild the
     /// "connected · host:workspace · rev N" status line every time the
-    /// active workspace changes — not just at connect time.
+    /// active workspace changes — not just at connect time. ADR 0042 L2a:
+    /// updated only from events whose host is `active_host` — this field
+    /// (and its three siblings below) describe the active connection's
+    /// status line, not every connection; `host_connected` above is the
+    /// per-host status the Sessions tree needs.
     host: Option<String>,
     /// Project_root basename from the hello response. Used as the label
     /// when `active_workspace_id` is None (default workspace) and
@@ -2885,42 +3057,47 @@ struct State {
     /// Tracked separately so post-connect events (workspace switches,
     /// preview.changed bumps) don't render a stale rev.
     last_revision: u64,
-    /// Slug → label map populated from each `workspace.list` reply. Used
-    /// by `rebuild_connection_status` to show a friendly workspace name
-    /// in the chrome status (e.g. "Alpha") rather than the raw slug.
-    workspace_labels: HashMap<String, String>,
-    /// Slug → project_root map populated from each `workspace.list`
-    /// reply. Used to resolve `files:<rel>` node ids to absolute paths
-    /// in the *active* workspace (not the daemon's startup workspace).
-    /// Falls back to `daemon_project_root` if the active workspace
-    /// hasn't appeared in a `workspace.list` reply yet.
-    workspace_project_roots: HashMap<String, String>,
-    /// Slug → (agent_state, agent_status_at) from each `workspace.list`
-    /// reply, so the bottom session strip can colour each name by its
-    /// agent's work-state (the same data the Sessions-mode rows carry in
-    /// their node payload). Refreshes live on the daemon's registry-watch
-    /// `workspace.changed` push; empty entries render with the default
-    /// strip styling.
-    workspace_states: HashMap<String, (String, String)>,
-    /// Slug → REPL child lifecycle ("not_started" | "starting" | "ready" |
-    /// "dead"), fed by BOTH sources: live `lifecycle` repl.frame evts (the
-    /// supervisor announces spawn/first-line/death) and `workspace.list`
-    /// replies (`repl_state`, the reconnect catch-up). The point is the
-    /// *starting* state: the first REPL per workspace precompiles its
-    /// project env (per-package env, #44) — minutes with zero output frames,
-    /// previously indistinguishable from a dead kernel. NOT cleared on
-    /// `workspace.list` — an old daemon sends empty `repl_state`, and
-    /// frame-driven entries must survive it.
-    repl_lifecycle: HashMap<String, String>,
-    /// Canonical workspace_id → slug, from each `workspace.list` reply.
-    /// Lifecycle frames stamp the CANONICAL id (`ws-<slug>-<hash>`) — the
-    /// Repl supervisor's identity — while every FE surface keys by slug
-    /// (the `started`-frame lesson, 2026-07-16: a canonical-id compare
-    /// against slug keys silently never matches). This map is the
-    /// translation at the frame boundary.
-    workspace_id_slugs: HashMap<String, String>,
-    /// Badge floor (ADR 0025 §1): slug → workspace-relative path of a
-    /// `nav.preview` result that arrived for a workspace the FE wasn't
+    /// `(host, slug)` → label map populated from each host's own
+    /// `workspace.list` reply. Used by `rebuild_connection_status` to show
+    /// a friendly workspace name in the chrome status (e.g. "Alpha")
+    /// rather than the raw slug. ADR 0042 L2a: keyed by `WsKey`, not a bare
+    /// slug — two hosts each having a "sot" workspace must not collide.
+    workspace_labels: HashMap<WsKey, String>,
+    /// `(host, slug)` → project_root map populated from each host's own
+    /// `workspace.list` reply. Used to resolve `files:<rel>` node ids to
+    /// absolute paths in the *active* workspace (not the daemon's startup
+    /// workspace). Falls back to `daemon_project_root` if the active
+    /// workspace hasn't appeared in a `workspace.list` reply yet.
+    workspace_project_roots: HashMap<WsKey, String>,
+    /// `(host, slug)` → (agent_state, agent_status_at) from each host's own
+    /// `workspace.list` reply, so the bottom session strip can colour each
+    /// name by its agent's work-state (the same data the Sessions-mode rows
+    /// carry in their node payload). Refreshes live on the daemon's
+    /// registry-watch `workspace.changed` push; empty entries render with
+    /// the default strip styling.
+    workspace_states: HashMap<WsKey, (String, String)>,
+    /// `(host, slug)` → REPL child lifecycle ("not_started" | "starting" |
+    /// "ready" | "dead"), fed by BOTH sources: live `lifecycle` repl.frame
+    /// evts (the supervisor announces spawn/first-line/death) and
+    /// `workspace.list` replies (`repl_state`, the reconnect catch-up). The
+    /// point is the *starting* state: the first REPL per workspace
+    /// precompiles its project env (per-package env, #44) — minutes with
+    /// zero output frames, previously indistinguishable from a dead kernel.
+    /// NOT cleared on `workspace.list` — an old daemon sends empty
+    /// `repl_state`, and frame-driven entries must survive it.
+    repl_lifecycle: HashMap<WsKey, String>,
+    /// Canonical workspace_id → `(host, slug)`, from each host's own
+    /// `workspace.list` reply. Lifecycle frames stamp the CANONICAL id
+    /// (`ws-<slug>-<hash>`) — the Repl supervisor's identity — while every
+    /// FE surface keys by `WsKey` (the `started`-frame lesson, 2026-07-16:
+    /// a canonical-id compare against slug keys silently never matches).
+    /// This map is the translation at the frame boundary. The canonical id
+    /// itself is presumed globally unique (daemon-generated, hash-suffixed)
+    /// so the OUTER key stays a bare `String`; only the resolved VALUE
+    /// needs the host to disambiguate which daemon's slug it names.
+    workspace_id_slugs: HashMap<String, WsKey>,
+    /// Badge floor (ADR 0025 §1): `(host, slug)` → workspace-relative path
+    /// of a `nav.preview` result that arrived for a workspace the FE wasn't
     /// viewing. Instead of silently dropping the off-workspace result (the
     /// bug §1 fixes — a backend session pushes a result to a FE looking at
     /// another workspace and it vanishes), we record it here ("result
@@ -2929,48 +3106,64 @@ struct State {
     /// workspace, `switch_to_workspace` drives the pending preview and clears
     /// the entry, so a result always reaches the user — never dropped. The
     /// future `op::FE_COMMAND` handler will reuse `mark_pending_nav`.
+    /// ADR 0042 L2a: NOT a `WsKey` — the `nav.preview` envelope this is fed
+    /// from carries a bare slug on the wire (no host), and every consumer
+    /// compares against `active_workspace_id`/`default_workspace_slug`
+    /// (also bare, active-host-scoped). Same reasoning as
+    /// `default_workspace_slug`: out of L2a's named cache list, and
+    /// retyping it would need a host this data doesn't carry.
     pending_nav: HashMap<String, String>,
-    /// Slug → the *previous* work-state string we last saw, so the
-    /// `workspace_states` update site can tell a real transition (a slug that
-    /// had a known, different prior state) from a first-ever appearance. Only
-    /// real transitions flash; a slug showing up for the first time does not.
-    prev_workspace_states: HashMap<String, String>,
-    /// Slug → the `Instant` its work-state last changed, driving the
-    /// status-change *flash* (the name brightens toward white then fades over
-    /// `FLASH_SECS`). Entries are pruned once they age past the fade so the
-    /// map stays small, and while any entry is live `about_to_wait` schedules
-    /// a faster repaint so the fade animates.
-    flash_starts: HashMap<String, std::time::Instant>,
+    /// `(host, slug)` → the *previous* work-state string we last saw, so
+    /// the `workspace_states` update site can tell a real transition (a
+    /// slug that had a known, different prior state) from a first-ever
+    /// appearance. Only real transitions flash; a slug showing up for the
+    /// first time does not.
+    prev_workspace_states: HashMap<WsKey, String>,
+    /// `(host, slug)` → the `Instant` its work-state last changed, driving
+    /// the status-change *flash* (the name brightens toward white then
+    /// fades over `FLASH_SECS`). Entries are pruned once they age past the
+    /// fade so the map stays small, and while any entry is live
+    /// `about_to_wait` schedules a faster repaint so the fade animates.
+    flash_starts: HashMap<WsKey, std::time::Instant>,
     /// Selected-session contrast lever (`--contrast-mode`, ADR 0023). `false`
     /// = "bright" (default): the selected/active row pops by going brighter +
     /// bold. `true` = "dim": non-selected rows are dimmed so the selection
     /// pops by contrast. Applied in both the nav rows and the bottom strip.
     contrast_dim: bool,
-    /// Ordered list of workspace slugs from the most recent
-    /// `workspace.list` reply (backend sorts alphabetically by slug).
-    /// Drives the Shift+ArrowLeft / Shift+ArrowRight cycle hotkey (D7) —
-    /// the "next" workspace is the next slug in this vec, wrapping at both
-    /// ends. Empty until the first reply lands.
-    workspace_slugs: Vec<String>,
-    /// Slug of the workspace flagged `is_default` in `workspace.list`.
-    /// Used to interpret `active_workspace_id == None` as "we're on the
-    /// default workspace" when locating the current position in
-    /// `workspace_slugs` during a cycle. `None` until the reply lands.
+    /// Ordered list of `(host, slug)` from the most recent per-host
+    /// `workspace.list` replies (union across every connected host, each
+    /// host's own slugs alphabetical). Drives the Shift+ArrowLeft /
+    /// Shift+ArrowRight cycle hotkey (D7) — the "next" workspace is the
+    /// next entry in this vec, wrapping at both ends. Empty until the
+    /// first reply lands.
+    workspace_slugs: Vec<WsKey>,
+    /// Bare slug of `active_host`'s workspace flagged `is_default` in its
+    /// `workspace.list`. Used to interpret `active_workspace_id == None`
+    /// as "we're on the default workspace". Deliberately NOT a `WsKey`
+    /// (unlike its sibling caches): every consumer (`ws_key_of`,
+    /// `TreeScope::Workspace`, `eval_id_workspace`, the UI/REPL snapshot
+    /// maps) is workspace-cache bookkeeping that predates hosts entirely
+    /// and stays scoped to "the active host's default slug" — out of ADR
+    /// 0042 L2a's named list, and retyping it would ripple into that
+    /// whole layer for no invariant this slice needs. `None` until the
+    /// reply lands.
     default_workspace_slug: Option<String>,
-    /// tmux_session → auto-start info, from each `workspace.list` reply
-    /// (contract b). `attach_session_to_bl` looks the just-attached
-    /// session up here to decide whether to launch claude + deliver the
-    /// bootstrap. Keyed by tmux_session (what attach receives).
-    workspace_autostart: HashMap<String, WsAutostart>,
-    /// ADR 0042 slice L1b: tmux_session → runtime/state_dir, from each
-    /// `workspace.list` reply — same keying as `workspace_autostart`
-    /// (what `attach_session_to_bl` receives). `try_attach_capsule_pane`
-    /// reads this to decide the session pane's backend; absent entry
-    /// (not yet fetched, or a daemon that predates L1a) behaves like a
-    /// tmux row (`pane_backend_for`'s own default). fix 5: `#[cfg(windows)]`
-    /// — see `WorkspaceRuntime`'s own doc for why.
+    /// `(host, tmux_session)` → auto-start info, from each host's own
+    /// `workspace.list` reply (contract b). `attach_session_to_bl` looks
+    /// the just-attached session up here to decide whether to launch
+    /// claude + deliver the bootstrap. ADR 0042 L2a: tmux session names are
+    /// per-daemon process namespaces — two hosts can each have a
+    /// `sot-be-sot` session, so the key carries the host too.
+    workspace_autostart: HashMap<WsKey, WsAutostart>,
+    /// ADR 0042 slice L1b/L2a: `(host, tmux_session)` → runtime/state_dir,
+    /// from each host's own `workspace.list` reply — same keying as
+    /// `workspace_autostart` (what `attach_session_to_bl` receives).
+    /// `try_attach_capsule_pane` reads this to decide the session pane's
+    /// backend; absent entry (not yet fetched, or a daemon that predates
+    /// L1a) behaves like a tmux row (`pane_backend_for`'s own default).
+    /// fix 5: `#[cfg(windows)]` — see `WorkspaceRuntime`'s own doc for why.
     #[cfg(windows)]
-    workspace_runtime: HashMap<String, WorkspaceRuntime>,
+    workspace_runtime: HashMap<WsKey, WorkspaceRuntime>,
     /// tmux sessions whose claude auto-start is CONFIRMED up — recorded only
     /// by the `advance_autostart_scan` sniff (4171) when it actually sees ccb
     /// running, so a re-attach doesn't spawn a second claude. In-memory only:
@@ -3133,10 +3326,22 @@ struct State {
     /// reply lands, so without this memo the walk would re-fire the same
     /// request on every redraw in between.
     start_path_fired: Option<String>,
-    /// Push-side of the GPU→transport channel. `None` in offline mode (no
-    /// transport spawned), in which case Right/Enter on an expandable node
-    /// just no-ops with a chrome hint.
-    req_tx: tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
+    /// Push-side of every host's GPU→transport channel, in connection
+    /// (display) order — ADR 0042 L2a's generalisation of the old single
+    /// `req_tx`. Empty in offline mode (no transport spawned), in which
+    /// case `send`/`send_to` no-op with a chrome hint. Use `self.send(req)`
+    /// (routes to `active_host`) or `self.send_to(host, req)` (routes to a
+    /// specific row's host) rather than reading this directly.
+    conns: Vec<(
+        crate::hosts::HostKey,
+        tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
+    )>,
+    /// The connection every "current view" operation targets — cursor
+    /// state, the active tree, `active_workspace_id`. The pair
+    /// `(active_host, active_workspace_id)` names the current workspace
+    /// (ADR 0042 L2a). Defaults to the first connection in `conns`
+    /// (local-first, then hosts.toml order — see `hosts::resolve_connections`).
+    active_host: crate::hosts::HostKey,
     /// Combined multiplier (`cli.scale * window.scale_factor()`) applied to
     /// all text + cell metrics. Captured once at startup; ScaleFactorChanged
     /// is currently ignored.
@@ -3756,10 +3961,7 @@ fn roi_rects_within_quantization(a: RoiRect, b: RoiRect) -> bool {
     fn close(p: u32, q: u32) -> bool {
         p.abs_diff(q) <= 1
     }
-    close(a.x, b.x)
-        && close(a.y, b.y)
-        && close(a.x + a.w, b.x + b.w)
-        && close(a.y + a.h, b.y + b.h)
+    close(a.x, b.x) && close(a.y, b.y) && close(a.x + a.w, b.x + b.w) && close(a.y + a.h, b.y + b.h)
 }
 
 /// Translate a "desired visible sRGB colour" into the `wgpu::Color` that
@@ -4045,10 +4247,23 @@ const NAV_FIRE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(
 impl State {
     fn new(
         event_loop: &ActiveEventLoop,
-        evt_rx: std::sync::mpsc::Receiver<crate::transport::IncomingEvt>,
+        evt_rx: std::sync::mpsc::Receiver<(crate::hosts::HostKey, crate::transport::IncomingEvt)>,
         cli: &crate::cli::Cli,
-        req_tx: tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
+        conns: Vec<(
+            crate::hosts::HostKey,
+            tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
+        )>,
     ) -> Result<Self> {
+        // ADR 0042 L2a: the connection every "current view" op targets
+        // until the user switches workspaces — the first connection in
+        // display order (local-first, then hosts.toml order; see
+        // `hosts::resolve_connections`). Offline mode (`conns` empty) still
+        // needs a name for status-line/tree purposes even with nothing to
+        // route to.
+        let active_host: crate::hosts::HostKey = conns
+            .first()
+            .map(|(h, _)| h.clone())
+            .unwrap_or_else(|| "offline".to_string());
         // Restore previous window geometry on launch. Saved in logical
         // pixels so cross-DPR launches behave sensibly. Defaults are
         // ~50% bigger than the spike's original 1024×700.
@@ -4606,7 +4821,8 @@ impl State {
                 crate::state_persistence::load().last_workspace_id
             },
             hosts_config: crate::hosts::load(),
-            selected_host: crate::state_persistence::load().last_host,
+            host_connected: HashMap::new(),
+            workspace_lists: HashMap::new(),
             pending_destroy_target: None,
             host: None,
             daemon_root_basename: None,
@@ -4661,7 +4877,8 @@ impl State {
             file_parse_retry: std::collections::HashMap::new(),
             pending_start_path: cli.start_path.clone(),
             start_path_fired: None,
-            req_tx,
+            conns,
+            active_host,
             scale,
             cell_w,
             cell_h,
@@ -4809,22 +5026,33 @@ impl State {
         // neighbours show. A `:state` suffix on an entry also seeds
         // `workspace_states[slug] = (state, now)` so its work-state tone
         // renders; a bare slug carries no state (renders as before).
+        // ADR 0042 L2a: the harness has no real host, so every demo entry
+        // is seeded under one synthetic `"demo"` host — consistent with
+        // `active_host`'s own offline default (`"offline"` when `conns` is
+        // empty, which it always is for these harness flags).
+        let demo_host: HostKey = "demo".to_string();
         if !cli.demo_sessions.is_empty() {
-            state.workspace_slugs = cli.demo_sessions.clone();
+            state.workspace_slugs = cli
+                .demo_sessions
+                .iter()
+                .map(|s| (demo_host.clone(), s.clone()))
+                .collect();
             let now_rfc3339 = chrono::Utc::now().to_rfc3339();
             for (i, s) in cli.demo_sessions.iter().enumerate() {
-                state.workspace_labels.insert(s.clone(), s.clone());
+                let key: WsKey = (demo_host.clone(), s.clone());
+                state.workspace_labels.insert(key.clone(), s.clone());
                 if let Some(Some(st)) = cli.demo_session_states.get(i) {
                     state
                         .workspace_states
-                        .insert(s.clone(), (st.clone(), now_rfc3339.clone()));
+                        .insert(key.clone(), (st.clone(), now_rfc3339.clone()));
                     // Mirror into prev so a later live transition off this
                     // seeded state would flash, not first-appear.
-                    state.prev_workspace_states.insert(s.clone(), st.clone());
+                    state.prev_workspace_states.insert(key, st.clone());
                 }
             }
             let mid = cli.demo_sessions.len() / 2;
             state.active_workspace_id = cli.demo_sessions.get(mid).cloned();
+            state.active_host = demo_host.clone();
         }
         // `--demo-flash a,c` (capture harness): stamp a fresh status-change
         // flash on the listed slugs at startup so a `--capture` shows the
@@ -4832,35 +5060,40 @@ impl State {
         // to a *different* synthetic state so the same slug reads as a real
         // transition under the live diff path (rather than first-appearance).
         for slug in &cli.demo_flash {
+            let key: WsKey = (demo_host.clone(), slug.clone());
             state
                 .flash_starts
-                .insert(slug.clone(), std::time::Instant::now());
+                .insert(key.clone(), std::time::Instant::now());
             // A prior state distinct from whatever was seeded above makes the
             // transition look real; "idle" unless the current seed is idle.
-            let prior = match state.workspace_states.get(slug) {
+            let prior = match state.workspace_states.get(&key) {
                 Some((cur, _)) if cur == "idle" => "working",
                 _ => "idle",
             };
-            state
-                .prev_workspace_states
-                .insert(slug.clone(), prior.to_string());
+            state.prev_workspace_states.insert(key, prior.to_string());
         }
         // `--start-monitor` (capture harness): the drawer was opened at
         // construction; queue the same subscribe + history prefill the
         // Ctrl+M arm sends. The unbounded req channel buffers until the
         // transport connects, so sending here is safe pre-hello.
         if cli.start_monitor {
-            let _ = state
-                .req_tx
-                .send(crate::transport::OutgoingReq::MonitorSubscribe);
-            let _ = state
-                .req_tx
-                .send(crate::transport::OutgoingReq::MonitorHistory {
+            // ADR 0042 L2a: the drawer (Monitor content included) rides
+            // `default_host`'s connection always — it never follows
+            // `active_host` around as the user switches workspaces.
+            let monitor_host = state.default_host();
+            let _ = state.send_to(
+                &monitor_host,
+                crate::transport::OutgoingReq::MonitorSubscribe,
+            );
+            let _ = state.send_to(
+                &monitor_host,
+                crate::transport::OutgoingReq::MonitorHistory {
                     window_s: 300.0,
                     points: 300,
                     until: None,
                     host: None,
-                });
+                },
+            );
             state.monitor_view.subscribed = true;
             state.monitor_dirty = true;
         }
@@ -4909,6 +5142,37 @@ impl State {
         Ok(state)
     }
 
+    /// Send `req` on `active_host`'s connection — the routing for every
+    /// "current view" operation (cursor state, the active tree, anything
+    /// keyed by `active_workspace_id`). ADR 0042 L2a: the mechanical
+    /// replacement for the old single `self.send(req)` — same
+    /// signature, so every such call site becomes `self.send(req)` with no
+    /// other change. A host absent from `conns` (offline mode, or a name
+    /// that never resolved to a connection) reports the request as
+    /// undeliverable via the same `SendError` shape `UnboundedSender::send`
+    /// itself returns, so existing `if let Err(e) = ...` call sites need no
+    /// change to their error handling either.
+    fn send(
+        &self,
+        req: OutgoingReq,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<OutgoingReq>> {
+        self.send_to(&self.active_host.clone(), req)
+    }
+
+    /// Send `req` on `host`'s connection — for ops that target a specific
+    /// tree row rather than whatever's currently active (switch, destroy,
+    /// pty.open/attach on a non-active row; ADR 0042 L2a).
+    fn send_to(
+        &self,
+        host: &crate::hosts::HostKey,
+        req: OutgoingReq,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<OutgoingReq>> {
+        match self.conns.iter().find(|(h, _)| h == host) {
+            Some((_, tx)) => tx.send(req),
+            None => Err(tokio::sync::mpsc::error::SendError(req)),
+        }
+    }
+
     /// Drain incoming transport events and apply them. Called at the top of
     /// each redraw — `request_redraw` from the transport task is what makes
     /// drains actually happen.
@@ -4917,6 +5181,14 @@ impl State {
     /// was queued; callers can use that to chain (e.g. `--auto-expand`
     /// consuming itself after the first successful fire).
     fn try_expand_selected(&mut self) -> bool {
+        // ADR 0042 L2a: a Sessions-tree host node's children are already
+        // in `workspace_lists` — no wire round-trip needed to expand one.
+        // Declines (returns false, falls through below) for any other row
+        // kind. Checked before `row` is bound below — both need to inspect
+        // `self.tree.rows`, and this one also needs `&mut self`.
+        if self.try_expand_session_host_local() {
+            return true;
+        }
         let Some(row) = self.tree.rows.get(self.tree.selected) else {
             return false;
         };
@@ -4987,7 +5259,7 @@ impl State {
             })
         };
         if let Some(req) = outgoing {
-            if let Err(e) = self.req_tx.send(req) {
+            if let Err(e) = self.send(req) {
                 tracing::warn!(error = %e, "drop expand request — channel closed");
                 return false;
             }
@@ -5110,7 +5382,7 @@ impl State {
         // be mistaken for this fetch.
         self.preview_page_raster_pending = None;
         let (fit_w, fit_h) = self.preview_fit_px();
-        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::PreviewGet {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewGet {
             node_id: id.clone(),
             workspace_id: self.active_workspace_id.clone(),
             // Cursor-driven fetch always opens at page 1; the reply's
@@ -5195,7 +5467,7 @@ impl State {
         let node_id = format!("files:{path}");
         // Fire the preview body up front — don't wait on tree expansion.
         let (fit_w, fit_h) = self.preview_fit_px();
-        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::PreviewGet {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewGet {
             node_id: node_id.clone(),
             workspace_id: self.active_workspace_id.clone(),
             page: None,
@@ -5244,8 +5516,11 @@ impl State {
             // adversarial reviews, 2026-07-15). The old stale-workspace
             // conjunct is gone: the active view can only be the active ws's
             // Files tree now.
-            let files_tree_loaded =
-                self.tree.rows.iter().any(|r| r.node.id.starts_with("files:"));
+            let files_tree_loaded = self
+                .tree
+                .rows
+                .iter()
+                .any(|r| r.node.id.starts_with("files:"));
             if files_tree_loaded {
                 // Tree loaded but the target row isn't present yet:
                 // `drive_reveal_step` walks DOWN from whichever ancestor dir IS
@@ -5297,7 +5572,7 @@ impl State {
                 } else {
                     tracing::info!(%node_id,
                         "reveal: files tree not loaded — loading tree.root and arming switch-reveal");
-                    if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
+                    if let Err(e) = self.send(crate::transport::OutgoingReq::TreeRoot {
                         mode: "files".to_string(),
                         workspace_id: self.active_workspace_id.clone(),
                     }) {
@@ -5392,13 +5667,10 @@ impl State {
                     self.reveal_refetched = None;
                     return;
                 }
-                if let Err(e) = self
-                    .req_tx
-                    .send(crate::transport::OutgoingReq::TreeChildren {
-                        parent_id: anc_id.clone(),
-                        workspace_id: self.active_workspace_id.clone(),
-                    })
-                {
+                if let Err(e) = self.send(crate::transport::OutgoingReq::TreeChildren {
+                    parent_id: anc_id.clone(),
+                    workspace_id: self.active_workspace_id.clone(),
+                }) {
                     tracing::warn!(error = %e, %anc_id,
                         "reveal: drop tree.children refresh — channel closed");
                     self.pending_reveal = None;
@@ -5422,13 +5694,10 @@ impl State {
             if self.reveal_awaiting.as_deref() == Some(anc_id.as_str()) {
                 return;
             }
-            if let Err(e) = self
-                .req_tx
-                .send(crate::transport::OutgoingReq::TreeChildren {
-                    parent_id: anc_id.clone(),
-                    workspace_id: self.active_workspace_id.clone(),
-                })
-            {
+            if let Err(e) = self.send(crate::transport::OutgoingReq::TreeChildren {
+                parent_id: anc_id.clone(),
+                workspace_id: self.active_workspace_id.clone(),
+            }) {
                 tracing::warn!(error = %e, %anc_id,
                     "reveal: drop tree.children — channel closed");
                 self.pending_reveal = None;
@@ -5509,7 +5778,13 @@ impl State {
             last_mode: Some(self.mode.label().to_string()),
             last_bl_target: self.bl_pane_target.clone(),
             last_workspace_id: self.active_workspace_id.clone(),
-            last_host: self.selected_host.clone(),
+            // ADR 0042 L2a: no longer written. `last_host` was ADR 0015's
+            // "pick a host, Ctrl+Q + relaunch" single-host-swap signal to
+            // the launcher; L2a's multi-host connection set supersedes it
+            // (docs/adr/0015-hosts-targeting.md carries the superseded
+            // note). The launcher's READ side is untouched — deferred to
+            // a later slice (per-host tunnels) rather than broken here.
+            last_host: None,
             window_w: Some(inner.width),
             window_h: Some(inner.height),
             window_x: pos.as_ref().map(|p| p.x),
@@ -5541,8 +5816,7 @@ impl State {
     /// look up, or a caption addressed to the default workspace is stored
     /// under a key nothing reads.
     fn caption_ws_key(&self, workspace: &str) -> String {
-        let is_default =
-            workspace.is_empty() || workspace == "default" || workspace == "<default>";
+        let is_default = workspace.is_empty() || workspace == "default" || workspace == "<default>";
         if is_default {
             "<default>".to_string()
         } else {
@@ -5557,10 +5831,12 @@ impl State {
         ws_key_of(workspace_id, self.default_workspace_slug.as_deref())
     }
 
-    /// Storage key (a SLUG) for a `lifecycle` repl.frame evt's workspace
-    /// hint — see `lifecycle_key_of` for the translation rules.
-    fn lifecycle_store_key(&self, wire_hint: Option<&str>) -> String {
+    /// Storage key (a `WsKey`) for a `lifecycle` repl.frame evt's workspace
+    /// hint — see `lifecycle_key_of` for the translation rules. `host` is
+    /// the connection that delivered the frame (ADR 0042 L2a).
+    fn lifecycle_store_key(&self, host: &str, wire_hint: Option<&str>) -> WsKey {
         lifecycle_key_of(
+            host,
             wire_hint,
             &self.workspace_id_slugs,
             self.default_workspace_slug.as_deref(),
@@ -5582,8 +5858,9 @@ impl State {
         } else {
             key
         };
+        let ws_key: WsKey = (self.active_host.clone(), slug);
         matches!(
-            self.repl_lifecycle.get(&slug).map(String::as_str),
+            self.repl_lifecycle.get(&ws_key).map(String::as_str),
             Some("starting")
         )
     }
@@ -5719,31 +5996,38 @@ impl State {
     }
 
     /// Cycle to the next or previous workspace in `workspace_slugs`
-    /// order. `direction = +1` walks forward (Shift+Right), `-1` walks
-    /// backward (Shift+Left). Wraps at both ends. Resolves the *current*
-    /// position via `active_workspace_id`, falling back to
-    /// `default_workspace_slug` for "we're on the default workspace".
-    /// No-op until `workspace.list` has populated the cache, and a
-    /// no-op when there's only one workspace registered (nothing to
-    /// cycle to). Routes through `switch_to_workspace` so all the
-    /// snapshot / repaint / BL-retarget machinery fires the same way
-    /// it does for Sessions-Enter.
+    /// order — the UNION across every connected host (ADR 0042 L2a), so
+    /// cycling can cross hosts. `direction = +1` walks forward
+    /// (Shift+Right), `-1` walks backward (Shift+Left). Wraps at both
+    /// ends. Resolves the *current* position by matching BOTH
+    /// `active_host` and the current slug (`active_workspace_id`, falling
+    /// back to `default_workspace_slug` for "we're on the default
+    /// workspace") — a bare-slug match alone would be ambiguous the
+    /// moment two hosts share a slug. No-op until `workspace.list` has
+    /// populated the cache, and a no-op when there's only one workspace
+    /// registered (nothing to cycle to). Routes through
+    /// `switch_to_workspace` so all the snapshot / repaint / BL-retarget
+    /// machinery fires the same way it does for Sessions-Enter.
     fn cycle_workspace(&mut self, direction: i32) {
         if self.workspace_slugs.len() < 2 {
             return;
         }
-        let current = self
+        let current_slug = self
             .active_workspace_id
             .clone()
             .or_else(|| self.default_workspace_slug.clone());
         let n = self.workspace_slugs.len() as i32;
-        let idx = current
+        let idx = current_slug
             .as_deref()
-            .and_then(|s| self.workspace_slugs.iter().position(|x| x == s))
+            .and_then(|s| {
+                self.workspace_slugs
+                    .iter()
+                    .position(|(h, slug)| h == &self.active_host && slug == s)
+            })
             .map(|p| p as i32)
             .unwrap_or(0);
         let next = ((idx + direction).rem_euclid(n)) as usize;
-        let next_slug = self.workspace_slugs[next].clone();
+        let (next_host, next_slug) = self.workspace_slugs[next].clone();
         let tmux_session = format!("sot-be-{next_slug}");
         // Flick the brand wheels in the direction of travel (forward = CW). The
         // per-frame decay + redraw live in the bottom-strip block; nudge the
@@ -5752,7 +6036,7 @@ impl State {
             .clamp(-WHEEL_MAX_VEL, WHEEL_MAX_VEL);
         self.dirty = true;
         self.window.request_redraw();
-        self.switch_to_workspace(Some(next_slug), Some(tmux_session));
+        self.switch_to_workspace(next_host, Some(next_slug), Some(tmux_session));
     }
 
     /// Switch the nav mode and fire that mode's data fetch. Shared by the
@@ -5793,7 +6077,7 @@ impl State {
             // r3). Content staleness is the accepted parked-slot residual.
             Mode::Files => {
                 if self.tree.rows.is_empty() {
-                    if let Err(e) = self.req_tx.send(OutgoingReq::TreeRoot {
+                    if let Err(e) = self.send(OutgoingReq::TreeRoot {
                         mode: "files".to_string(),
                         workspace_id: self.active_workspace_id.clone(),
                     }) {
@@ -5817,7 +6101,7 @@ impl State {
                     // collapsed-parent gate would drop the reply anyway.
                     // Expanded subdirs' own listings keep the accepted
                     // staleness residual (only the root level re-lists here).
-                    if let Err(e) = self.req_tx.send(OutgoingReq::TreeChildren {
+                    if let Err(e) = self.send(OutgoingReq::TreeChildren {
                         parent_id: "files:".to_string(),
                         workspace_id: self.active_workspace_id.clone(),
                     }) {
@@ -5827,7 +6111,7 @@ impl State {
             }
             Mode::Modules => {
                 if self.tree.rows.is_empty() {
-                    if let Err(e) = self.req_tx.send(OutgoingReq::ProjectScan {
+                    if let Err(e) = self.send(OutgoingReq::ProjectScan {
                         workspace_id: self.active_workspace_id.clone(),
                     }) {
                         tracing::warn!(error = %e, "drop project.scan request — channel closed");
@@ -5841,7 +6125,7 @@ impl State {
             // (populated parks drop refreshes under the empty-only rule).
             Mode::Sessions => {
                 self.tmux_capture_fired_for = None;
-                if let Err(e) = self.req_tx.send(OutgoingReq::WorkspaceList) {
+                if let Err(e) = self.send(OutgoingReq::WorkspaceList) {
                     tracing::warn!(error = %e, "drop workspace.list request — channel closed");
                 }
             }
@@ -5935,7 +6219,7 @@ impl State {
     /// the tree to its root — deeper dirs pick up the new visibility on their
     /// next expand (tree.children reads the same flag).
     fn toggle_hidden_files(&mut self) {
-        if let Err(e) = self.req_tx.send(OutgoingReq::ToggleHidden {
+        if let Err(e) = self.send(OutgoingReq::ToggleHidden {
             workspace_id: self.active_workspace_id.clone(),
         }) {
             tracing::warn!(error = %e, "drop nav.toggle_hidden — channel closed");
@@ -5943,7 +6227,7 @@ impl State {
         }
         if matches!(self.mode, Mode::Files) {
             tracing::info!("tree.root requested: toggle_hidden refresh");
-            if let Err(e) = self.req_tx.send(OutgoingReq::TreeRoot {
+            if let Err(e) = self.send(OutgoingReq::TreeRoot {
                 mode: "files".to_string(),
                 workspace_id: self.active_workspace_id.clone(),
             }) {
@@ -6000,9 +6284,7 @@ impl State {
             // named "ab:" yields id "files:ab:", and an ends-with test would
             // let collapsing it cancel a reveal of the SIBLING "files:ab:cd").
             // Deeper ids scope with '/'.
-            let is_root = id
-                .split_once(':')
-                .is_some_and(|(_, rest)| rest.is_empty());
+            let is_root = id.split_once(':').is_some_and(|(_, rest)| rest.is_empty());
             let scoped = if is_root {
                 target != &id && target.starts_with(&id)
             } else {
@@ -6042,13 +6324,10 @@ impl State {
         if !shown_expanded {
             return;
         }
-        if let Err(e) = self
-            .req_tx
-            .send(crate::transport::OutgoingReq::TreeChildren {
-                parent_id: dir_id.to_string(),
-                workspace_id: self.active_workspace_id.clone(),
-            })
-        {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::TreeChildren {
+            parent_id: dir_id.to_string(),
+            workspace_id: self.active_workspace_id.clone(),
+        }) {
             tracing::warn!(error = %e, %dir_id, "drop tree.children (watcher refresh)");
         }
     }
@@ -6061,9 +6340,18 @@ impl State {
             FeCommand::Workspace { slug, boot } => {
                 // null/empty/"default"/"<default>" → the daemon-default
                 // workspace (active_workspace_id = None, keep current BL).
+                // ADR 0042 L2a: the `fe.command` envelope names no host
+                // (no protocol change in this slice) — resolved against
+                // `active_host`, exactly the single-connection behavior
+                // this command always had. Targeting another host is a
+                // later slice's protocol addition.
                 let slug = slug.filter(|s| !s.is_empty() && s != "default" && s != "<default>");
                 if let Some(s) = slug.as_deref() {
-                    if !self.workspace_slugs.iter().any(|x| x == s) {
+                    if !self
+                        .workspace_slugs
+                        .iter()
+                        .any(|(h, x)| h == &self.active_host && x == s)
+                    {
                         tracing::warn!(slug = %s, "fe-command workspace: unknown slug, ignoring");
                         return;
                     }
@@ -6081,7 +6369,7 @@ impl State {
                     if let Some(t) = tmux.as_ref() {
                         let e = self
                             .workspace_autostart
-                            .entry(t.clone())
+                            .entry((self.active_host.clone(), t.clone()))
                             .or_insert_with(|| WsAutostart {
                                 autostart_claude: true,
                                 agent_name: String::new(),
@@ -6091,7 +6379,7 @@ impl State {
                     }
                 }
                 tracing::info!(?slug, boot, "fe-command: switch workspace");
-                self.switch_to_workspace(slug, tmux);
+                self.switch_to_workspace(self.active_host.clone(), slug, tmux);
             }
             FeCommand::CycleWs { dir } => {
                 let dir = if dir == 0 { 1 } else { dir };
@@ -6267,7 +6555,7 @@ impl State {
                     } else {
                         (Some(workspace.clone()), Some(format!("sot-be-{workspace}")))
                     };
-                    self.switch_to_workspace(slug, tmux);
+                    self.switch_to_workspace(self.active_host.clone(), slug, tmux);
                 } else {
                     // Badge floor: record + badge; the pending preview (body +
                     // nav-cursor reveal) is driven when the user next switches
@@ -6402,10 +6690,17 @@ impl State {
         self.fe_state_sig = Some(sig);
     }
 
-    /// Rebuild the nav tree from `hosts_config`. Called on entering
-    /// `Mode::Hosts`. Each `[host.<name>]` section in `hosts.toml`
-    /// becomes one row; the currently-selected host (per state-toml's
-    /// `last_host`) cursor-lands by default, otherwise row 0.
+    /// Rebuild the nav tree from `hosts_config` + `host_connected`. Called
+    /// on entering `Mode::Hosts`. Each `[host.<name>]` section becomes one
+    /// row showing live connected/unreachable status.
+    ///
+    /// ADR 0042 L2a: this was ADR 0015's "pick one, Ctrl+Q + relaunch"
+    /// single-host switch (superseded — see that ADR's note); every
+    /// configured host with a reachable endpoint is now a LIVE, permanent
+    /// connection, so there is nothing left to "pick" — the mode became a
+    /// live status list. `pick_host_under_cursor` (Enter) moves the
+    /// Sessions-mode cursor to the host's node instead of persisting a
+    /// launcher target.
     fn populate_hosts_tree(&mut self) {
         let root = TreeNode {
             id: "hosts:".to_string(),
@@ -6415,22 +6710,27 @@ impl State {
             badges: Vec::new(),
             payload: Default::default(),
         };
-        let selected_now = self
-            .selected_host
-            .clone()
-            .or_else(|| self.hosts_config.default_host.clone());
         let children: Vec<TreeNode> = self
             .hosts_config
             .hosts
             .iter()
             .map(|h| {
+                let connected = self.host_connected.get(&h.name).copied().unwrap_or(false);
                 let mut badges = Vec::new();
-                if Some(h.name.as_str()) == selected_now.as_deref() {
+                if h.name == self.active_host {
                     badges.push("current".to_string());
                 }
                 if self.hosts_config.default_host.as_deref() == Some(h.name.as_str()) {
                     badges.push("default".to_string());
                 }
+                badges.push(
+                    if connected {
+                        "connected"
+                    } else {
+                        "unreachable"
+                    }
+                    .to_string(),
+                );
                 let endpoint = if let Some(port) = h.tcp_port {
                     let local = if let Some(alias) = h.ssh_alias.as_deref() {
                         format!("{alias}:{port}")
@@ -6447,7 +6747,12 @@ impl State {
                 } else {
                     "(no endpoint)".to_string()
                 };
-                let label = format!("{} · {}", h.name, endpoint);
+                let status_word = if connected {
+                    "connected"
+                } else {
+                    "unreachable"
+                };
+                let label = format!("{} · {status_word} · {endpoint}", h.name);
                 let mut payload = serde_json::Map::new();
                 payload.insert(
                     "name".to_string(),
@@ -6463,12 +6768,13 @@ impl State {
                 }
             })
             .collect();
-        // Default-cursor on the currently-selected host so Enter on a
-        // fresh `h`-press confirms the current value rather than the
-        // first row by accident.
-        let cursor = selected_now
-            .as_deref()
-            .and_then(|n| self.hosts_config.hosts.iter().position(|h| h.name == n))
+        // Cursor lands on the active host so a fresh `h`-press shows where
+        // the current view actually is.
+        let cursor = self
+            .hosts_config
+            .hosts
+            .iter()
+            .position(|h| h.name == self.active_host)
             .unwrap_or(0);
         self.tree.set_root(root, children);
         if self.tree.rows.len() > cursor {
@@ -6477,10 +6783,11 @@ impl State {
         self.window.request_redraw();
     }
 
-    /// Mode::Hosts Enter handler — persist the cursor row's host slug
-    /// to `state-<hostname>.toml::last_host`. Doesn't restart anything
-    /// live; surfaces a status message telling the user to Ctrl+Q +
-    /// relaunch to apply.
+    /// Mode::Hosts Enter handler (ADR 0042 L2a) — moves the Sessions-mode
+    /// cursor to the picked host's group node. Replaces ADR 0015's
+    /// "persist `last_host` + Ctrl+Q + relaunch" (deleted; see that ADR's
+    /// superseded note): every host is already a live connection, so
+    /// there's nothing to relaunch into — Enter just navigates there.
     fn pick_host_under_cursor(&mut self) {
         let Some(row) = self.tree.rows.get(self.tree.selected) else {
             return;
@@ -6497,10 +6804,300 @@ impl State {
         else {
             return;
         };
-        self.selected_host = Some(name.clone());
-        self.persist_resume_state();
-        self.status = format!("host = {name} · Ctrl+Q + relaunch to apply");
-        self.populate_hosts_tree();
+        self.enter_mode(Mode::Sessions);
+        let host_row_id = format!("sessions:host:{name}");
+        if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == host_row_id) {
+            self.tree.selected = idx;
+        }
+        self.status = format!("host · {name}");
+        self.window.request_redraw();
+    }
+
+    /// Display order for every host with a workspace list: `conns`' order
+    /// (local-first, then hosts.toml order — fixed at startup, see
+    /// `hosts::resolve_connections`), filtered to hosts `workspace_lists`
+    /// actually has an entry for (skips a host that has never answered a
+    /// `workspace.list`, e.g. still mid-hello).
+    /// `default_host` (ADR 0042 L2a) — the drawer's fixed home. Distinct
+    /// from `active_host`: switching to a workspace on another host moves
+    /// `active_host`, but the drawer (Terminal/Monitor/Repl overlay pane,
+    /// ADR 0041's fixed-tenant "one drawer") never follows — "no drawer
+    /// host switching". `hosts_config.default_host` when set, else the
+    /// first connection in display order (same "local first" convention
+    /// `resolve_connections` uses), else `active_host` as a last resort
+    /// (offline mode, no connections at all).
+    fn default_host(&self) -> HostKey {
+        self.hosts_config
+            .default_host
+            .clone()
+            .or_else(|| self.conns.first().map(|(h, _)| h.clone()))
+            .unwrap_or_else(|| self.active_host.clone())
+    }
+
+    fn ordered_hosts(&self) -> Vec<HostKey> {
+        self.conns
+            .iter()
+            .map(|(h, _)| h.clone())
+            .filter(|h| self.workspace_lists.contains_key(h))
+            .collect()
+    }
+
+    /// Which host owns tmux session `name` — scans `workspace_lists`
+    /// (ADR 0042 L2a) rather than trusting the selected row's own payload,
+    /// since a `pane` row (spliced in from a separate `tmux.list_panes`
+    /// reply) doesn't carry a `host` field the way a `session`/
+    /// `session_host` row does. Used wherever a tmux session name is the
+    /// only handle in hand (Sessions-Enter attach).
+    fn host_for_tmux_session(&self, name: &str) -> Option<HostKey> {
+        self.workspace_lists.iter().find_map(|(host, list)| {
+            list.iter()
+                .any(|w| w.tmux_session == name)
+                .then(|| host.clone())
+        })
+    }
+
+    /// Clear + rebuild every workspace-scoped cache from the union of every
+    /// host's last-known `workspace.list` (`workspace_lists`), in `conns`
+    /// order (ADR 0042 L2a). Called whenever ANY host's slice of the union
+    /// changes, not just the active host's. The union→caches computation
+    /// itself is `fresh_workspace_caches`, a free function with no `State`
+    /// dependency (so "two hosts sharing a slug don't collide" is
+    /// unit-testable); this method applies the result and layers on the
+    /// one thing that genuinely needs history — flash-on-transition
+    /// detection against the PRIOR `prev_workspace_states`.
+    fn rebuild_workspace_caches(&mut self) {
+        let fresh = fresh_workspace_caches(
+            &self.ordered_hosts(),
+            &self.workspace_lists,
+            &self.active_host,
+        );
+        for (key, (state, _)) in &fresh.workspace_states {
+            match self.prev_workspace_states.get(key) {
+                Some(prev) if prev != state => {
+                    self.flash_starts
+                        .insert(key.clone(), std::time::Instant::now());
+                }
+                _ => {}
+            }
+        }
+        // Union-wide, not `.clear()` + reinsert: a host absent from THIS
+        // rebuild (never seen) simply contributes no keys — matches the
+        // pre-L2a "not cleared" contract prev_workspace_states has always
+        // had (a slug missing from this cycle keeps its last-known prior
+        // state rather than losing first-appearance detection on return).
+        for (key, (state, _)) in &fresh.workspace_states {
+            self.prev_workspace_states
+                .insert(key.clone(), state.clone());
+        }
+        self.workspace_slugs = fresh.workspace_slugs;
+        self.workspace_labels = fresh.workspace_labels;
+        self.workspace_project_roots = fresh.workspace_project_roots;
+        self.workspace_states = fresh.workspace_states;
+        self.workspace_id_slugs = fresh.workspace_id_slugs;
+        // repl_lifecycle is NEVER cleared (old-daemon empty repl_state must
+        // not regress a frame-driven entry) — insert, don't replace.
+        for (key, state) in fresh.repl_lifecycle {
+            self.repl_lifecycle.insert(key, state);
+        }
+        self.workspace_autostart = fresh.workspace_autostart;
+        #[cfg(windows)]
+        {
+            self.workspace_runtime = fresh.workspace_runtime;
+        }
+        self.default_workspace_slug = fresh.default_workspace_slug;
+        self.migrate_default_slug_keys();
+        self.rebuild_connection_status();
+    }
+
+    /// Build one `session`-kind `TreeNode` row for workspace `w` on `host` —
+    /// the per-row payload/badges/glance-line logic, unchanged from
+    /// pre-L2a except the row id and payload now carry `host` (ADR 0042
+    /// L2a: two hosts can each report a `sot-be-sot` tmux session, so the
+    /// row id must be host-qualified even though the `name` payload stays
+    /// the bare tmux_session `attach_session_to_bl`/`selected_session_name`
+    /// already key off).
+    fn build_session_row(host: &HostKey, w: &crate::transport::WorkspaceInfo) -> TreeNode {
+        let mut payload = serde_json::Map::new();
+        // `name` stays the tmux session name so the existing
+        // `selected_session_name` / `attach_session_to_bl` paths work
+        // unchanged — routing to the right daemon is `host`'s job now.
+        payload.insert(
+            "name".to_string(),
+            serde_json::Value::String(w.tmux_session.clone()),
+        );
+        payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
+        payload.insert(
+            "workspace_id".to_string(),
+            serde_json::Value::String(w.workspace_id.clone()),
+        );
+        payload.insert(
+            "slug".to_string(),
+            serde_json::Value::String(w.slug.clone()),
+        );
+        payload.insert(
+            "label".to_string(),
+            serde_json::Value::String(w.label.clone()),
+        );
+        payload.insert(
+            "project_root".to_string(),
+            serde_json::Value::String(w.project_root.clone()),
+        );
+        payload.insert(
+            "kernel_running".to_string(),
+            serde_json::Value::Bool(w.kernel_running),
+        );
+        payload.insert(
+            "is_default".to_string(),
+            serde_json::Value::Bool(w.is_default),
+        );
+        payload.insert(
+            "agent_state".to_string(),
+            serde_json::Value::String(w.agent_state.clone()),
+        );
+        payload.insert(
+            "agent_status_at".to_string(),
+            serde_json::Value::String(w.agent_status_at.clone()),
+        );
+        let mut badges = Vec::new();
+        if w.is_default {
+            badges.push("default".to_string());
+        }
+        if w.kernel_running {
+            badges.push("kernel".to_string());
+        }
+        if w.repl_state == "starting" {
+            badges.push("repl_starting".to_string());
+        }
+        #[cfg(windows)]
+        let capsule_phase = (w.runtime == "capsule")
+            .then_some(w.phase.as_deref())
+            .flatten();
+        #[cfg(not(windows))]
+        let capsule_phase: Option<&str> = None;
+        let glance_base = if !w.agent_summary.is_empty() {
+            w.agent_summary.clone()
+        } else if !w.agent_state.is_empty() {
+            w.agent_state.clone()
+        } else {
+            w.project_root.clone()
+        };
+        let glance = if w.repl_state == "starting" {
+            format!("julia starting (precompiling)… · {glance_base}")
+        } else {
+            glance_base
+        };
+        let glance = match capsule_phase {
+            Some(phase) => format!("{} {glance}", capsule_phase_tag(phase)),
+            None => glance,
+        };
+        let label = if w.label.is_empty() {
+            w.slug.clone()
+        } else {
+            format!("{} · {}", w.label, glance)
+        };
+        TreeNode {
+            id: format!("sessions:{host}:{}", w.tmux_session),
+            label,
+            kind: "session".to_string(),
+            has_children: true,
+            badges,
+            payload,
+        }
+    }
+
+    /// Build the host-grouped Sessions tree (ADR 0042 L2a): root → one
+    /// `session_host` node per connected/unreachable host (in
+    /// `ordered_hosts` order — local first, then hosts.toml order), each
+    /// carrying a status badge and the `HOST_DIVIDER_GLYPH` prefix. A host
+    /// node's own children — its `[+ create new]` row and that host's
+    /// session rows — are spliced in locally by `try_expand_selected`'s
+    /// `session_host` arm (the data is already here from `workspace_lists`;
+    /// no wire round-trip needed to expand one). An unreachable host still
+    /// gets a node with its last-known rows — it doesn't vanish.
+    fn build_sessions_tree(&self) -> (TreeNode, Vec<TreeNode>) {
+        let root = TreeNode {
+            id: "sessions:".to_string(),
+            label: "workspaces".to_string(),
+            kind: "sessions".to_string(),
+            has_children: true,
+            badges: Vec::new(),
+            payload: Default::default(),
+        };
+        let children = self
+            .ordered_hosts()
+            .into_iter()
+            .map(|host| {
+                let connected = self.host_connected.get(&host).copied().unwrap_or(false);
+                let mut badges = vec![if connected {
+                    "connected"
+                } else {
+                    "unreachable"
+                }
+                .to_string()];
+                if host == self.active_host {
+                    badges.push("current".to_string());
+                }
+                let mut payload = serde_json::Map::new();
+                payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
+                TreeNode {
+                    id: format!("sessions:host:{host}"),
+                    label: format!("{HOST_DIVIDER_GLYPH} {host}"),
+                    kind: "session_host".to_string(),
+                    has_children: true,
+                    badges,
+                    payload,
+                }
+            })
+            .collect();
+        (root, children)
+    }
+
+    /// Local (no wire round-trip) expansion of a `session_host` row: its
+    /// `[+ create new]` row plus that host's session rows, built from
+    /// `workspace_lists` — the same data `build_sessions_tree` already
+    /// pulled from. Returns `false` (declines) for any other row kind so
+    /// `try_expand_selected` falls through to its normal wire-request path.
+    fn try_expand_session_host_local(&mut self) -> bool {
+        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+            return false;
+        };
+        if row.node.kind != "session_host" || row.expanded {
+            return false;
+        }
+        let Some(host) = row
+            .node
+            .payload
+            .get("host")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        else {
+            return false;
+        };
+        let parent_id = row.node.id.clone();
+        let mut payload = serde_json::Map::new();
+        payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
+        let create_row = TreeNode {
+            id: format!("sessions:{host}:+create"),
+            label: "[+ create new]".to_string(),
+            kind: "session_create".to_string(),
+            has_children: false,
+            badges: Vec::new(),
+            payload,
+        };
+        let mut kids = vec![create_row];
+        if let Some(list) = self.workspace_lists.get(&host).cloned() {
+            kids.extend(list.iter().map(|w| Self::build_session_row(&host, w)));
+        }
+        // `apply_children` requires the parent already marked expanded
+        // (it drops a splice for a collapsed parent — the collapse-race
+        // fix); mark it BEFORE splicing, same order every wire-based
+        // expand uses at request time.
+        if let Some(r) = self.tree.rows.get_mut(self.tree.selected) {
+            r.expanded = true;
+        }
+        self.tree.apply_children(&parent_id, kids);
+        self.window.request_redraw();
+        true
     }
 
     /// Rebuild the chrome status line to reflect the currently active
@@ -6535,12 +7132,15 @@ impl State {
     /// snapshot restore). `None` before the hello response has landed.
     fn active_workspace_label(&self) -> Option<String> {
         match self.active_workspace_id.as_deref() {
-            Some(slug) => Some(
-                self.workspace_labels
-                    .get(slug)
-                    .cloned()
-                    .unwrap_or_else(|| slug.to_string()),
-            ),
+            Some(slug) => {
+                let key: WsKey = (self.active_host.clone(), slug.to_string());
+                Some(
+                    self.workspace_labels
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or_else(|| slug.to_string()),
+                )
+            }
             None => self.daemon_root_basename.clone(),
         }
     }
@@ -6731,13 +7331,25 @@ impl State {
     /// derives it from `paths::tmux_session_name(slug)` semantics —
     /// i.e. `sot-be-<slug>`. The default workspace (`slug = None`)
     /// keeps the current BL pane target.
-    fn switch_to_workspace(&mut self, slug: Option<String>, tmux_session: Option<String>) {
+    ///
+    /// `host` (ADR 0042 L2a) is the row/event's own connection — set as
+    /// `active_host` FIRST, before anything below fires a request, so
+    /// every `self.send(...)` in this function and in the
+    /// `attach_session_to_bl` it calls already routes to the NEW host.
+    /// This is the one choke point: callers don't need `send_to`.
+    fn switch_to_workspace(
+        &mut self,
+        host: HostKey,
+        slug: Option<String>,
+        tmux_session: Option<String>,
+    ) {
         self.snapshot_current_workspace_ui();
         self.snapshot_current_workspace_repl();
         // The departing tree's key, computed while (mode, workspace) still
         // describe what `self.tree` holds. The swap itself runs after the
         // snapshot-restore below has settled the entering mode.
         let old_tree_key = self.active_tree_key();
+        self.active_host = host;
         self.active_workspace_id = slug.clone();
         // A workspace change invalidates any one-shot reveal armed for the
         // PREVIOUS workspace. Its `tree.root` reply is dropped by the TreeRoot
@@ -6823,7 +7435,7 @@ impl State {
             match self.mode {
                 Mode::Files => {
                     tracing::info!("tree.root requested: workspace switch (empty Files slot)");
-                    if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
+                    if let Err(e) = self.send(crate::transport::OutgoingReq::TreeRoot {
                         mode: "files".to_string(),
                         workspace_id: self.active_workspace_id.clone(),
                     }) {
@@ -6834,7 +7446,7 @@ impl State {
                 }
                 Mode::Modules => {
                     tracing::info!("project.scan requested: workspace switch (empty Modules slot)");
-                    if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::ProjectScan {
+                    if let Err(e) = self.send(crate::transport::OutgoingReq::ProjectScan {
                         workspace_id: self.active_workspace_id.clone(),
                     }) {
                         tracing::warn!(error = %e, "drop project.scan after workspace switch");
@@ -6843,9 +7455,7 @@ impl State {
                 // Global scopes don't depend on the workspace; an empty view
                 // here just means they were never loaded this session.
                 Mode::Sessions => {
-                    let _ = self
-                        .req_tx
-                        .send(crate::transport::OutgoingReq::WorkspaceList);
+                    let _ = self.send(crate::transport::OutgoingReq::WorkspaceList);
                 }
                 Mode::Hosts => self.populate_hosts_tree(),
             }
@@ -6853,9 +7463,7 @@ impl State {
         // Refresh the workspace list so kernel_running / new rows stay
         // current — cheap and not user-facing if Sessions mode isn't
         // visible. The reply just updates the cached registry view.
-        let _ = self
-            .req_tx
-            .send(crate::transport::OutgoingReq::WorkspaceList);
+        let _ = self.send(crate::transport::OutgoingReq::WorkspaceList);
         // Update the connection status now so the chrome reflects the
         // new workspace immediately. The attach_session_to_bl call above
         // briefly sets a transient "attached BL → …" message; rebuild
@@ -6880,7 +7488,7 @@ impl State {
                 self.force_files_mode();
                 let node_id = format!("files:{path}");
                 let (fit_w, fit_h) = self.preview_fit_px();
-                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::PreviewGet {
+                if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewGet {
                     node_id: node_id.clone(),
                     workspace_id: self.active_workspace_id.clone(),
                     page: None,
@@ -6944,15 +7552,11 @@ impl State {
                         // resolves and Files mode would keep showing the Modules
                         // tree (Codex R6).
                         if !files_root_inflight {
-                            tracing::info!(
-                                "tree.root requested: badge consume needs a Files tree"
-                            );
-                            if let Err(e) =
-                                self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
-                                    mode: "files".to_string(),
-                                    workspace_id: self.active_workspace_id.clone(),
-                                })
-                            {
+                            tracing::info!("tree.root requested: badge consume needs a Files tree");
+                            if let Err(e) = self.send(crate::transport::OutgoingReq::TreeRoot {
+                                mode: "files".to_string(),
+                                workspace_id: self.active_workspace_id.clone(),
+                            }) {
                                 tracing::warn!(error = %e,
                                     "badge consume: drop tree.root — channel closed");
                                 self.pending_switch_reveal = None;
@@ -6979,54 +7583,54 @@ impl State {
     /// (`begin_create_session` + `confirm_create_session`) was
     /// superseded — users browse to an existing directory rather than
     /// typing a path that might not exist.
-    fn begin_create_session(&mut self) {
+    /// `host` is the connection the new workspace is created ON — the
+    /// Sessions-mode "+ create new" row's own host (ADR 0042 L2a: each
+    /// host group carries its own create row, so this is a row-targeted
+    /// op, routed via `send_to` rather than whatever's currently active).
+    fn begin_create_session(&mut self, host: HostKey) {
         // Default-root for the picker. Priority:
         //   0. `[sessions] new_session_root` setting — the user's configured
         //      projects root (a BACKEND path); the knob for "start the picker
         //      at my dev dir, not $HOME".
         //   1. $SOT_PROJECTS_ROOT — explicit env override, e.g. someone
         //      wants the picker to start under a specific projects dir.
-        //   2. Active host's `remote_home` from hosts.toml — the
+        //   2. The target host's `remote_home` from hosts.toml — the
         //      right answer for the cross-machine case (the picker
         //      browses the backend's filesystem, not the frontend's; the FRONTEND's
         //      $HOME is meaningless to the BACKEND).
         //   3. The launcher-set SOT_REMOTE_HOME, if it propagated.
         //   4. Frontend's own $HOME — useful only for local hosts.
         //   5. Filesystem root.
-        let active_host_home = self
-            .selected_host
-            .as_deref()
-            .or(self.hosts_config.default_host.as_deref())
-            .and_then(|name| {
-                self.hosts_config
-                    .hosts
-                    .iter()
-                    .find(|h| h.name == name)
-                    .and_then(|h| h.remote_home.clone())
-            });
+        let host_home = self
+            .hosts_config
+            .hosts
+            .iter()
+            .find(|h| h.name == host)
+            .and_then(|h| h.remote_home.clone());
         let start = self
             .settings
             .new_session_root
             .clone()
             .or_else(|| std::env::var("SOT_PROJECTS_ROOT").ok())
-            .or(active_host_home)
+            .or(host_home)
             .or_else(|| std::env::var("SOT_REMOTE_HOME").ok())
             .or_else(|| std::env::var("HOME").ok())
             .unwrap_or_else(|| "/".to_string());
         self.workspace_picker = Some(WorkspacePicker {
+            host: host.clone(),
             current_path: start.clone(),
             entries: Vec::new(),
             selected: 0,
         });
-        if let Err(e) = self
-            .req_tx
-            .send(crate::transport::OutgoingReq::DirectoryList {
+        if let Err(e) = self.send_to(
+            &host,
+            crate::transport::OutgoingReq::DirectoryList {
                 path: start.clone(),
-            })
-        {
-            tracing::warn!(error = %e, %start, "drop initial directory.list — channel closed");
+            },
+        ) {
+            tracing::warn!(error = %e, %host, %start, "drop initial directory.list — channel closed");
         }
-        self.status = format!("create workspace · picker @ {start}");
+        self.status = format!("create workspace · {host} · picker @ {start}");
         self.window.request_redraw();
     }
 
@@ -7056,6 +7660,9 @@ impl State {
     /// `current_path` immediately so the title reflects where the user
     /// is going even before the listing lands.
     fn picker_drill_in(&mut self) {
+        let Some(host) = self.workspace_picker.as_ref().map(|p| p.host.clone()) else {
+            return;
+        };
         let next = match self.workspace_picker.as_ref() {
             Some(p) => p.entries.get(p.selected).map(|e| e.path.clone()),
             None => None,
@@ -7066,10 +7673,10 @@ impl State {
                 p.entries.clear();
                 p.selected = 0;
             }
-            if let Err(e) = self
-                .req_tx
-                .send(crate::transport::OutgoingReq::DirectoryList { path: path.clone() })
-            {
+            if let Err(e) = self.send_to(
+                &host,
+                crate::transport::OutgoingReq::DirectoryList { path: path.clone() },
+            ) {
                 tracing::warn!(error = %e, %path, "drop directory.list (drill-in)");
             }
             self.status = format!("picker · {path}");
@@ -7080,6 +7687,9 @@ impl State {
     /// Ascend to the parent of the picker's `current_path`. Re-fires
     /// the listing so the parent's entries populate.
     fn picker_ascend(&mut self) {
+        let Some(host) = self.workspace_picker.as_ref().map(|p| p.host.clone()) else {
+            return;
+        };
         let parent = match self.workspace_picker.as_ref() {
             Some(p) => std::path::Path::new(&p.current_path)
                 .parent()
@@ -7095,10 +7705,10 @@ impl State {
                 p.entries.clear();
                 p.selected = 0;
             }
-            if let Err(e) = self
-                .req_tx
-                .send(crate::transport::OutgoingReq::DirectoryList { path: path.clone() })
-            {
+            if let Err(e) = self.send_to(
+                &host,
+                crate::transport::OutgoingReq::DirectoryList { path: path.clone() },
+            ) {
                 tracing::warn!(error = %e, %path, "drop directory.list (ascend)");
             }
             self.status = format!("picker · {path}");
@@ -7125,21 +7735,30 @@ impl State {
     }
 
     fn commit_workspace_create(&mut self, path: String, agent: &str) {
+        // The picker's own host, not `active_host` (ADR 0042 L2a) — the
+        // "+ create new" row that opened this picker belongs to a specific
+        // host group, and the workspace must be created there regardless
+        // of which connection is currently active.
+        let host = self
+            .workspace_picker
+            .as_ref()
+            .map(|p| p.host.clone())
+            .unwrap_or_else(|| self.active_host.clone());
         let label = std::path::Path::new(&path)
             .file_name()
             .and_then(|n| n.to_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| "workspace".to_string());
-        if let Err(e) = self
-            .req_tx
-            .send(crate::transport::OutgoingReq::WorkspaceCreate {
+        if let Err(e) = self.send_to(
+            &host,
+            crate::transport::OutgoingReq::WorkspaceCreate {
                 label: label.clone(),
                 project_root: path.clone(),
                 autostart_claude: agent == "claude",
                 agent: agent.to_string(),
-            })
-        {
-            tracing::warn!(error = %e, %label, %path, "drop workspace.create — channel closed");
+            },
+        ) {
+            tracing::warn!(error = %e, %host, %label, %path, "drop workspace.create — channel closed");
             self.status = "create failed · channel closed".to_string();
             return;
         }
@@ -7239,7 +7858,7 @@ impl State {
         // target (`Tmux` when the cache confirms it, `Pending` when the
         // row is unknown or a degenerate capsule entry) before declining.
         let (cols, rows) = self.pty_size.unwrap_or((80, 24));
-        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::PtyOpen {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::PtyOpen {
             cols,
             rows,
             target: Some(session_name.clone()),
@@ -7442,10 +8061,7 @@ impl State {
             return;
         }
         let bytes = std::mem::take(&mut self.pane_pending_input);
-        if let Err(e) = self
-            .req_tx
-            .send(crate::transport::OutgoingReq::PtyWrite { bytes })
-        {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::PtyWrite { bytes }) {
             tracing::warn!(error = %e, "drop buffered pty.write on tmux confirm — channel closed");
         }
     }
@@ -7475,7 +8091,7 @@ impl State {
             }
             PaneFeed::Tmux => {}
         }
-        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::PtyWrite {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::PtyWrite {
             bytes: bytes.to_vec(),
         }) {
             tracing::warn!(error = %e, "drop pty.write — channel closed");
@@ -7595,7 +8211,12 @@ impl State {
     /// live terminal client is exactly what a detached session lacks, and why
     /// claude can't self-init there.
     fn autostart_claude_in_pane(&mut self, session: String) {
-        let (task, agent) = match self.workspace_autostart.get(&session) {
+        // ADR 0042 L2a: `attach_session_to_bl`'s `pty.open` always routes
+        // via `self.send` (active_host), so the BL pane we're checking
+        // below is on `active_host` by construction — no separate lookup
+        // needed.
+        let key: WsKey = (self.active_host.clone(), session.clone());
+        let (task, agent) = match self.workspace_autostart.get(&key) {
             Some(info) => (info.task.clone(), info.agent_name.clone()),
             None => return,
         };
@@ -7636,7 +8257,6 @@ impl State {
         tracing::info!(%session, %agent, has_task = !task.is_empty(),
             "autostart: launching ccb in agent pane");
         if self
-            .req_tx
             .send(crate::transport::OutgoingReq::PtyWrite {
                 bytes: launch.into_bytes(),
             })
@@ -7775,9 +8395,7 @@ impl State {
     /// Send one keystroke to the BL pane during delivery. The caller has
     /// already confirmed `bl_pane_target == pinned`.
     fn deliver_write(&self, bytes: Vec<u8>) {
-        let _ = self
-            .req_tx
-            .send(crate::transport::OutgoingReq::PtyWrite { bytes });
+        let _ = self.send(crate::transport::OutgoingReq::PtyWrite { bytes });
     }
 
     /// Sessions-mode (ADR 0013): when the cursored row is a `pane`, fire a
@@ -7807,13 +8425,10 @@ impl State {
             return;
         }
         let target = pane_id.to_string();
-        if let Err(e) = self
-            .req_tx
-            .send(crate::transport::OutgoingReq::TmuxCapturePane {
-                target: target.clone(),
-                lines: 200,
-            })
-        {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::TmuxCapturePane {
+            target: target.clone(),
+            lines: 200,
+        }) {
             tracing::warn!(error = %e, %target, "drop tmux.capture_pane request — channel closed");
             return;
         }
@@ -7854,13 +8469,10 @@ impl State {
             // file-parse check below without re-firing concept.read.
         } else {
             if let Some(t) = target.as_ref() {
-                if let Err(e) = self
-                    .req_tx
-                    .send(crate::transport::OutgoingReq::ConceptRead {
-                        target: t.clone(),
-                        workspace_id: self.active_workspace_id.clone(),
-                    })
-                {
+                if let Err(e) = self.send(crate::transport::OutgoingReq::ConceptRead {
+                    target: t.clone(),
+                    workspace_id: self.active_workspace_id.clone(),
+                }) {
                     tracing::warn!(error = %e, target = %t, "drop concept.read request — channel closed");
                     return;
                 }
@@ -7896,7 +8508,7 @@ impl State {
                 && self.file_parse_fired.insert(path.clone())
             {
                 tracing::debug!(%path, label = %node_label, "→ file.parse for drift check");
-                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::FileParse {
+                if let Err(e) = self.send(crate::transport::OutgoingReq::FileParse {
                     path: path.clone(),
                     workspace_id: self.active_workspace_id.clone(),
                 }) {
@@ -8016,7 +8628,7 @@ impl State {
                 self.needs_md_reflow = true;
                 continue;
             };
-            if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::FigureGet {
+            if let Err(e) = self.send(crate::transport::OutgoingReq::FigureGet {
                 url: url.clone(),
                 node_id,
                 workspace_id: workspace_id.clone(),
@@ -8146,7 +8758,8 @@ impl State {
     fn active_project_root(&self) -> Option<&str> {
         match self.active_workspace_id.as_deref() {
             Some(slug) => {
-                if let Some(root) = self.workspace_project_roots.get(slug) {
+                let key: WsKey = (self.active_host.clone(), slug.to_string());
+                if let Some(root) = self.workspace_project_roots.get(&key) {
                     return Some(root.as_str());
                 }
                 // Lookup miss for a known non-default slug (workspace.list
@@ -8243,7 +8856,7 @@ impl State {
                 .iter()
                 .any(|ext| lower.ends_with(ext));
             if abs.ends_with(".jl") {
-                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::PlutoOpen {
+                if let Err(e) = self.send(crate::transport::OutgoingReq::PlutoOpen {
                     path: abs.to_string(),
                 }) {
                     tracing::warn!(error = %e, "failed to dispatch pluto.open");
@@ -8251,7 +8864,7 @@ impl State {
             } else if is_video {
                 // Video plays in the browser (HTML5 <video>, native HW
                 // decode) — the pane only shows the poster still.
-                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::VideoOpen {
+                if let Err(e) = self.send(crate::transport::OutgoingReq::VideoOpen {
                     path: abs.to_string(),
                 }) {
                     tracing::warn!(error = %e, "failed to dispatch video.open");
@@ -8259,7 +8872,7 @@ impl State {
             } else if lower.ends_with(".qmd") {
                 // Quarto: `o` = quick render (no code execution) →
                 // self-contained HTML in the browser. `O` runs chunks.
-                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::QuartoOpen {
+                if let Err(e) = self.send(crate::transport::OutgoingReq::QuartoOpen {
                     path: abs.to_string(),
                     execute: false,
                 }) {
@@ -8276,10 +8889,7 @@ impl State {
     /// `W` — open the project's built Documenter site in the OS browser
     /// (ADR 0024), deep-linking `path` when it's a built docs page.
     fn docs_open_external(&mut self, path: String) {
-        if let Err(e) = self
-            .req_tx
-            .send(crate::transport::OutgoingReq::DocsOpen { path })
-        {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::DocsOpen { path }) {
             tracing::warn!(error = %e, "failed to dispatch docs.open");
         } else {
             self.status = "docs · opening…".to_string();
@@ -8290,7 +8900,7 @@ impl State {
     fn quarto_open_execute(&mut self, abs: Option<String>) {
         if let Some(abs) = abs.as_deref() {
             if abs.to_ascii_lowercase().ends_with(".qmd") {
-                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::QuartoOpen {
+                if let Err(e) = self.send(crate::transport::OutgoingReq::QuartoOpen {
                     path: abs.to_string(),
                     execute: true,
                 }) {
@@ -8337,13 +8947,10 @@ impl State {
             return;
         }
         let dest = crate::download::non_clobbering_path(&dir, &basename);
-        if let Err(e) = self
-            .req_tx
-            .send(crate::transport::OutgoingReq::FileDownload {
-                path: abs,
-                dest: dest.clone(),
-            })
-        {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::FileDownload {
+            path: abs,
+            dest: dest.clone(),
+        }) {
             tracing::warn!(error = %e, "drop file.download — channel closed");
             return;
         }
@@ -8488,7 +9095,7 @@ impl State {
         if dir_node_id.is_empty() {
             return;
         }
-        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::TreeChildren {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::TreeChildren {
             parent_id: dir_node_id.to_string(),
             workspace_id: self.active_workspace_id.clone(),
         }) {
@@ -8527,7 +9134,7 @@ impl State {
         };
         match read {
             Ok((dir, name, total, sent, offset, eof, bytes)) => {
-                if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::FileUpload {
+                if let Err(e) = self.send(crate::transport::OutgoingReq::FileUpload {
                     dir,
                     name: name.clone(),
                     offset,
@@ -8642,7 +9249,6 @@ impl State {
         tracing::info!(node_id = %roi.node_id, x = roi.x, y = roi.y, w = roi.w, h = roi.h,
             "image.crop requested (capture_roi)");
         if self
-            .req_tx
             .send(crate::transport::OutgoingReq::ImageCrop {
                 node_id: roi.node_id.clone(),
                 x: roi.x,
@@ -8695,7 +9301,7 @@ impl State {
         tracing::info!(ws = %aim.workspace, path = %aim.path, clamped = !contained,
             x = eff.x, y = eff.y, w = eff.w, h = eff.h,
             "preview --roi applied — echoing effective rect");
-        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::AgentSend {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::AgentSend {
             from: self_comm_handle(),
             to: String::new(),
             text: payload.to_string(),
@@ -8825,7 +9431,7 @@ impl State {
         // Isotropic from a single entry: both axes get the same value. The
         // anisotropic (XZ) case is Phase 3 — one number can't describe it, and
         // guessing would be worse than the Phase-1 lateral bar.
-        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::PreviewSetScale {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewSetScale {
             node_id: node_id.clone(),
             nm_per_px,
             workspace_id: self.active_workspace_id.clone(),
@@ -8885,7 +9491,7 @@ impl State {
             self.window.request_redraw();
             return;
         }
-        if let Err(e) = self.req_tx.send(OutgoingReq::FileWrite {
+        if let Err(e) = self.send(OutgoingReq::FileWrite {
             node_id: new_id.clone(),
             content: String::new(),
             expected_version: None,
@@ -8957,7 +9563,7 @@ impl State {
             Some(NavPrompt::ConfirmDelete { node_id, label }) => (node_id.clone(), label.clone()),
             _ => return,
         };
-        if let Err(e) = self.req_tx.send(OutgoingReq::FileDelete {
+        if let Err(e) = self.send(OutgoingReq::FileDelete {
             node_id: node_id.clone(),
             workspace_id: self.active_workspace_id.clone(),
         }) {
@@ -9243,7 +9849,6 @@ impl State {
         let scaled_w = ((fw as f32 * target).round() as u32).clamp(1, 8192);
         let scaled_h = ((fh as f32 * target).round() as u32).clamp(1, 8192);
         if self
-            .req_tx
             .send(crate::transport::OutgoingReq::PreviewGet {
                 node_id,
                 workspace_id: self.active_workspace_id.clone(),
@@ -9503,7 +10108,7 @@ impl State {
             if self.math_cache.contains_key(&key) || self.math_pending.contains(&key) {
                 continue;
             }
-            if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::MathRender {
+            if let Err(e) = self.send(crate::transport::OutgoingReq::MathRender {
                 latex: latex.clone(),
                 display,
             }) {
@@ -9598,14 +10203,11 @@ impl State {
             {
                 continue;
             }
-            if let Err(e) = self
-                .req_tx
-                .send(crate::transport::OutgoingReq::MarkdownTokenize {
-                    lang: lang.clone(),
-                    source_hash,
-                    source,
-                })
-            {
+            if let Err(e) = self.send(crate::transport::OutgoingReq::MarkdownTokenize {
+                lang: lang.clone(),
+                source_hash,
+                source,
+            }) {
                 tracing::warn!(error = %e,
                     "drop markdown.tokenize request — channel closed");
                 continue;
@@ -9909,6 +10511,15 @@ impl State {
         ));
     }
 
+    /// ADR 0042 L2a note: the drawer's Repl content, unlike Terminal and
+    /// Monitor, is deliberately NOT pinned to `default_host` — it's the
+    /// per-workspace Julia REPL (keyed by `active_workspace_id`, one per
+    /// workspace, `repl_lifecycle` tracks each host's independently), so it
+    /// correctly follows `active_host`/`self.send` like every other
+    /// workspace-scoped operation. "No drawer host switching" refers to the
+    /// drawer's fixed TENANT (ADR 0041: one drawer, terminal/monitor/julia
+    /// + the SoT LLM) and its Terminal/Monitor content's home connection —
+    /// not to which workspace's REPL the drawer happens to be showing.
     fn submit_repl_input(&mut self) {
         let code = std::mem::take(&mut self.repl_input);
         if code.trim().is_empty() {
@@ -9946,7 +10557,7 @@ impl State {
         } else {
             None
         };
-        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::ReplEval {
+        if let Err(e) = self.send(crate::transport::OutgoingReq::ReplEval {
             eval_id,
             code,
             mode,
@@ -9983,7 +10594,19 @@ impl State {
     }
 
     fn drain_events(&mut self) {
-        while let Ok(evt) = self.evt_rx.try_recv() {
+        while let Ok((event_host, evt)) = self.evt_rx.try_recv() {
+            // ADR 0042 L2a: every host's transport tags its own sends, so
+            // per-host connection status is exactly this — no new wire
+            // signal, just watching the two evts that already exist.
+            match &evt {
+                crate::transport::IncomingEvt::Connected { .. } => {
+                    self.host_connected.insert(event_host.clone(), true);
+                }
+                crate::transport::IncomingEvt::Disconnected { .. } => {
+                    self.host_connected.insert(event_host.clone(), false);
+                }
+                _ => {}
+            }
             match evt {
                 crate::transport::IncomingEvt::Connected {
                     session_id,
@@ -10017,23 +10640,32 @@ impl State {
                     // workspace changes — not just at hello time. Strip
                     // FQDN to short hostname ("myhost", not "myhost.example
                     // .org") so it fits the nav status row.
-                    self.host = host
-                        .as_deref()
-                        .and_then(|h| h.split('.').next())
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string);
-                    self.daemon_root_basename = project_root.as_deref().and_then(|p| {
-                        p.rsplit(['/', '\\'])
-                            .next()
+                    //
+                    // ADR 0042 L2a: these four fields describe the ACTIVE
+                    // connection's status line, not every connection — a
+                    // Connected from a non-active host still flips
+                    // `host_connected` above (so its tree node updates) but
+                    // must not overwrite what the status line shows for the
+                    // host the user is actually looking at.
+                    if event_host == self.active_host {
+                        self.host = host
+                            .as_deref()
+                            .and_then(|h| h.split('.').next())
                             .filter(|s| !s.is_empty())
-                            .map(str::to_string)
-                    });
-                    self.daemon_project_root = project_root.clone();
-                    // Backend product version for the bottom-edge version
-                    // stamp. Empty (pre-versioning daemon) is kept as `None`
-                    // so the stamp renders `be ?` rather than a blank half.
-                    self.backend_version = Some(backend_version).filter(|v| !v.is_empty());
-                    self.last_revision = revision;
+                            .map(str::to_string);
+                        self.daemon_root_basename = project_root.as_deref().and_then(|p| {
+                            p.rsplit(['/', '\\'])
+                                .next()
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string)
+                        });
+                        self.daemon_project_root = project_root.clone();
+                        // Backend product version for the bottom-edge version
+                        // stamp. Empty (pre-versioning daemon) is kept as `None`
+                        // so the stamp renders `be ?` rather than a blank half.
+                        self.backend_version = Some(backend_version).filter(|v| !v.is_empty());
+                        self.last_revision = revision;
+                    }
                     let _ = session_id;
                     // ADR 0030 §2: a clean hello means the protocol skew (if
                     // any) is resolved — clear the blocking "update needed"
@@ -10046,128 +10678,136 @@ impl State {
                     // remaining batch) so `u` isn't blocked by a ghost "upload ·
                     // already in progress" (an oversized-chunk frame that reset
                     // the transport used to strand it forever).
-                    let had_batch = self.upload_batch.take().is_some();
-                    if self.upload.take().is_some() || had_batch {
-                        self.status =
-                            "upload interrupted by reconnect — press u to retry".to_string();
-                        self.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
-                    }
-                    self.rebuild_connection_status();
-                    // Prime the slug→label cache so the status line shows
-                    // the friendly workspace label even on a fresh launch
-                    // that resumed into a non-default workspace (Sessions
-                    // mode isn't visited; the reply just refreshes
-                    // `workspace_labels` and re-renders the status). Cheap;
-                    // the reply is small.
-                    let _ = self
-                        .req_tx
-                        .send(crate::transport::OutgoingReq::WorkspaceList);
-                    // B5 resume: the transport's hello-time TreeRoot always
-                    // requests "files" against the *default* workspace. If
-                    // we restored into a different mode — or restored into
-                    // Files but with an `active_workspace_id` set (ADR
-                    // 0014) — fire the right request now.
-                    match self.mode {
-                        Mode::Sessions => {
-                            let _ = self
-                                .req_tx
-                                .send(crate::transport::OutgoingReq::WorkspaceList);
-                        }
-                        Mode::Modules => {
-                            let _ = self
-                                .req_tx
-                                .send(crate::transport::OutgoingReq::ProjectScan {
-                                    workspace_id: self.active_workspace_id.clone(),
-                                });
-                        }
-                        Mode::Files => {
-                            if self.active_workspace_id.is_some() {
-                                tracing::info!("tree.root requested: hello/reconnect resume");
-                                let _ = self.req_tx.send(crate::transport::OutgoingReq::TreeRoot {
-                                    mode: "files".to_string(),
-                                    workspace_id: self.active_workspace_id.clone(),
-                                });
-                            }
-                            // Arm the post-rebuild cursor restore for the
-                            // incoming root (whether fired above or by the
-                            // transport's hello-time default fetch). Captured
-                            // NOW, while the pre-reconnect tree is intact.
-                            if let Some(sel) = self
-                                .tree
-                                .rows
-                                .get(self.tree.selected)
-                                .map(|r| r.node.id.clone())
-                                .filter(|id| id.starts_with("files:") && id != "files:")
-                            {
-                                tracing::info!(selected = %sel,
-                                    "resume: arming nav cursor restore for the incoming tree.root");
-                                self.restore_nav_after_resume =
-                                    Some((self.active_workspace_id.clone(), sel));
-                            }
-                        }
-                        Mode::Hosts => {
-                            // ADR 0015: no backend round-trip — the
-                            // hosts tree is sourced from `hosts.toml`
-                            // on the frontend side. Populate once on
-                            // resume; subsequent `h` re-entries call
-                            // `populate_hosts_tree` directly.
-                            self.populate_hosts_tree();
-                        }
-                    }
-                    // Reconnect after laptop sleep / SSH-tunnel drop:
-                    // the backend's tmux master + workspace state survive,
-                    // but the per-connection pty reader/writer pair died
-                    // with the old transport. Re-fire PtyOpen so the BL
-                    // pane resumes streaming bytes instead of sitting on
-                    // its pre-suspend buffer.
                     //
-                    // ADR 0042 slice L1b: skipped when the session pane is
-                    // a capsule attach — `pane_attach_term` owns its OWN
-                    // reconnect episode/backoff on a SEPARATE connection
-                    // (the capsule's attach lane, not this daemon JSON
-                    // transport), so it needs no help from this daemon
-                    // reconnect handler and re-firing would only be a
-                    // redundant round trip against a row already
-                    // correctly attached.
-                    #[cfg(windows)]
-                    let pane_is_capsule = self.pane_attach_term.is_some();
-                    #[cfg(not(windows))]
-                    let pane_is_capsule = false;
-                    if !pane_is_capsule {
-                        if let Some(target) = self.bl_pane_target.clone() {
-                            let (cols, rows) = self.pty_size.unwrap_or((80, 24));
-                            let _ = self.req_tx.send(crate::transport::OutgoingReq::PtyOpen {
-                                cols,
-                                rows,
-                                target: Some(target),
-                                // #5 guard: a reconnect re-attach (sleep /
-                                // tunnel drop) is NOT a user switch — re-stream
-                                // the existing target, don't yank the foreground.
-                                user_switch: false,
+                    // ADR 0042 L2a: everything from here to the end of this
+                    // arm is "MY connection just came up, resume MY view" —
+                    // gated on the active host so a NON-active host's own
+                    // (re)connect (its tree node just flipped to connected
+                    // above) doesn't re-fire the active workspace's resume
+                    // flow redundantly.
+                    if event_host == self.active_host {
+                        let had_batch = self.upload_batch.take().is_some();
+                        if self.upload.take().is_some() || had_batch {
+                            self.status =
+                                "upload interrupted by reconnect — press u to retry".to_string();
+                            self.notify_sticky_until =
+                                Some(std::time::Instant::now() + NOTIFY_STICKY);
+                        }
+                        self.rebuild_connection_status();
+                        // Prime the slug→label cache so the status line shows
+                        // the friendly workspace label even on a fresh launch
+                        // that resumed into a non-default workspace (Sessions
+                        // mode isn't visited; the reply just refreshes
+                        // `workspace_labels` and re-renders the status). Cheap;
+                        // the reply is small.
+                        let _ = self.send(crate::transport::OutgoingReq::WorkspaceList);
+                        // B5 resume: the transport's hello-time TreeRoot always
+                        // requests "files" against the *default* workspace. If
+                        // we restored into a different mode — or restored into
+                        // Files but with an `active_workspace_id` set (ADR
+                        // 0014) — fire the right request now.
+                        match self.mode {
+                            Mode::Sessions => {
+                                let _ = self.send(crate::transport::OutgoingReq::WorkspaceList);
+                            }
+                            Mode::Modules => {
+                                let _ = self.send(crate::transport::OutgoingReq::ProjectScan {
+                                    workspace_id: self.active_workspace_id.clone(),
+                                });
+                            }
+                            Mode::Files => {
+                                if self.active_workspace_id.is_some() {
+                                    tracing::info!("tree.root requested: hello/reconnect resume");
+                                    let _ = self.send(crate::transport::OutgoingReq::TreeRoot {
+                                        mode: "files".to_string(),
+                                        workspace_id: self.active_workspace_id.clone(),
+                                    });
+                                }
+                                // Arm the post-rebuild cursor restore for the
+                                // incoming root (whether fired above or by the
+                                // transport's hello-time default fetch). Captured
+                                // NOW, while the pre-reconnect tree is intact.
+                                if let Some(sel) = self
+                                    .tree
+                                    .rows
+                                    .get(self.tree.selected)
+                                    .map(|r| r.node.id.clone())
+                                    .filter(|id| id.starts_with("files:") && id != "files:")
+                                {
+                                    tracing::info!(selected = %sel,
+                                    "resume: arming nav cursor restore for the incoming tree.root");
+                                    self.restore_nav_after_resume =
+                                        Some((self.active_workspace_id.clone(), sel));
+                                }
+                            }
+                            Mode::Hosts => {
+                                // ADR 0015: no backend round-trip — the
+                                // hosts tree is sourced from `hosts.toml`
+                                // on the frontend side. Populate once on
+                                // resume; subsequent `h` re-entries call
+                                // `populate_hosts_tree` directly.
+                                self.populate_hosts_tree();
+                            }
+                        }
+                        // Reconnect after laptop sleep / SSH-tunnel drop:
+                        // the backend's tmux master + workspace state survive,
+                        // but the per-connection pty reader/writer pair died
+                        // with the old transport. Re-fire PtyOpen so the BL
+                        // pane resumes streaming bytes instead of sitting on
+                        // its pre-suspend buffer.
+                        //
+                        // ADR 0042 slice L1b: skipped when the session pane is
+                        // a capsule attach — `pane_attach_term` owns its OWN
+                        // reconnect episode/backoff on a SEPARATE connection
+                        // (the capsule's attach lane, not this daemon JSON
+                        // transport), so it needs no help from this daemon
+                        // reconnect handler and re-firing would only be a
+                        // redundant round trip against a row already
+                        // correctly attached.
+                        #[cfg(windows)]
+                        let pane_is_capsule = self.pane_attach_term.is_some();
+                        #[cfg(not(windows))]
+                        let pane_is_capsule = false;
+                        if !pane_is_capsule {
+                            if let Some(target) = self.bl_pane_target.clone() {
+                                let (cols, rows) = self.pty_size.unwrap_or((80, 24));
+                                let _ = self.send(crate::transport::OutgoingReq::PtyOpen {
+                                    cols,
+                                    rows,
+                                    target: Some(target),
+                                    // #5 guard: a reconnect re-attach (sleep /
+                                    // tunnel drop) is NOT a user switch — re-stream
+                                    // the existing target, don't yank the foreground.
+                                    user_switch: false,
+                                });
+                            }
+                        }
+                        // And re-fire preview for the currently-cursored node
+                        // so any file changes that landed while we were
+                        // disconnected actually show up. preview_node_id_fired
+                        // is the source of truth for "what the preview pane is
+                        // showing right now".
+                        if let Some(node_id) = self.preview_node_id_fired.clone() {
+                            let (fit_w, fit_h) = self.preview_fit_px();
+                            let _ = self.send(crate::transport::OutgoingReq::PreviewGet {
+                                node_id,
+                                workspace_id: self.active_workspace_id.clone(),
+                                // Hold the page across the reconnect — a
+                                // blip shouldn't yank a paginated preview
+                                // back to page 1.
+                                page: self.preview_page.map(|(p, _)| p),
+                                fit_w,
+                                fit_h,
                             });
                         }
-                    }
-                    // And re-fire preview for the currently-cursored node
-                    // so any file changes that landed while we were
-                    // disconnected actually show up. preview_node_id_fired
-                    // is the source of truth for "what the preview pane is
-                    // showing right now".
-                    if let Some(node_id) = self.preview_node_id_fired.clone() {
-                        let (fit_w, fit_h) = self.preview_fit_px();
-                        let _ = self.req_tx.send(crate::transport::OutgoingReq::PreviewGet {
-                            node_id,
-                            workspace_id: self.active_workspace_id.clone(),
-                            // Hold the page across the reconnect — a
-                            // blip shouldn't yank a paginated preview
-                            // back to page 1.
-                            page: self.preview_page.map(|(p, _)| p),
-                            fit_w,
-                            fit_h,
-                        });
-                    }
+                    } // if event_host == self.active_host
                 }
                 crate::transport::IncomingEvt::Disconnected { reason } => {
-                    self.status = format!("disconnected · {reason}");
+                    if event_host == self.active_host {
+                        self.status = format!("disconnected · {reason}");
+                    } else {
+                        tracing::info!(host = %event_host, %reason, "non-active host disconnected");
+                    }
                 }
                 crate::transport::IncomingEvt::ProtocolMismatch { message } => {
                     // ADR 0030 §2: hard FE/BE version skew. Latch the blocking
@@ -10214,13 +10854,17 @@ impl State {
                             // replies are server-ordered, newest wins (the
                             // double-toggle race, codex r5). Only user-
                             // stashed state (from_reply=false) is sacred.
-                            tracing::info!(?reply_key,
-                                "tree.root parked into its slot (not the active view)");
+                            tracing::info!(
+                                ?reply_key,
+                                "tree.root parked into its slot (not the active view)"
+                            );
                             slot.view.set_root(root, children);
                             slot.from_reply = true;
                         } else {
-                            tracing::info!(?reply_key,
-                                "tree.root dropped — parked slot holds user state");
+                            tracing::info!(
+                                ?reply_key,
+                                "tree.root dropped — parked slot holds user state"
+                            );
                         }
                         continue;
                     }
@@ -10311,15 +10955,13 @@ impl State {
                             let node_id = format!("files:{rel}");
                             tracing::info!(%node_id, "firing --capture-preview");
                             let (fit_w, fit_h) = self.preview_fit_px();
-                            if let Err(e) =
-                                self.req_tx.send(crate::transport::OutgoingReq::PreviewGet {
-                                    node_id: node_id.clone(),
-                                    workspace_id: None,
-                                    page: None,
-                                    fit_w,
-                                    fit_h,
-                                })
-                            {
+                            if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewGet {
+                                node_id: node_id.clone(),
+                                workspace_id: None,
+                                page: None,
+                                fit_w,
+                                fit_h,
+                            }) {
                                 tracing::warn!(error = %e, %node_id, "drop --capture-preview request — channel closed");
                             }
                             // Record the REAL fired node id. The cursor-
@@ -10540,8 +11182,10 @@ impl State {
                             slot.view.set_root(root, children);
                             slot.from_reply = true;
                         } else {
-                            tracing::info!(?reply_key,
-                                "modules.list dropped — parked slot holds user state");
+                            tracing::info!(
+                                ?reply_key,
+                                "modules.list dropped — parked slot holds user state"
+                            );
                         }
                         continue;
                     }
@@ -10603,8 +11247,7 @@ impl State {
                     // but two workspaces CAN define the same module file
                     // (a shared package checked out twice), and the old
                     // active-tree lookup would cross-splice them.
-                    let reply_key: TreeKey =
-                        (Mode::Modules, TreeScope::Workspace(reply_ws));
+                    let reply_key: TreeKey = (Mode::Modules, TreeScope::Workspace(reply_ws));
                     let splice_active = reply_key == self.active_tree_key();
                     let module_id = {
                         let view = if splice_active {
@@ -10930,8 +11573,7 @@ impl State {
                     // where the live pane geometry exists.
                     let drop_aim = match self.pending_roi_aim.as_mut() {
                         Some(aim)
-                            if !aim.ready
-                                && node_id.as_deref() == Some(aim.node_id.as_str()) =>
+                            if !aim.ready && node_id.as_deref() == Some(aim.node_id.as_str()) =>
                         {
                             if is_raster_preview_mime(&mime) && self.preview_png.is_some() {
                                 aim.ready = true;
@@ -11220,15 +11862,17 @@ impl State {
                     // the workspace hint (canonical id → slug translation)
                     // and never near the eval-entry lookup below.
                     if let ReplFrame::Lifecycle { state } = &frame {
-                        let key = self.lifecycle_store_key(workspace_id.as_deref());
-                        tracing::info!(%key, %state, "repl.frame: lifecycle");
+                        let key = self.lifecycle_store_key(&event_host, workspace_id.as_deref());
+                        tracing::info!(host = %key.0, slug = %key.1, %state, "repl.frame: lifecycle");
                         self.repl_lifecycle.insert(key, state.clone());
                         // The Sessions rows bake `repl_state` from the last
                         // workspace.list reply — refresh it so the row's
                         // badge/glance track the transition, not just the
                         // drawer. Rare (2-3 frames per REPL boot) and the
                         // list rebuild already routes/parks correctly by mode.
-                        let _ = self.req_tx.send(OutgoingReq::WorkspaceList);
+                        // Targets the frame's OWN host (ADR 0042 L2a) — the
+                        // frame may not have come from `active_host`.
+                        let _ = self.send_to(&event_host, OutgoingReq::WorkspaceList);
                         self.window.request_redraw();
                         continue;
                     }
@@ -11236,7 +11880,10 @@ impl State {
                     // a drawer entry for a run this FE did NOT originate (a
                     // session's repl.execute), so the run's output frames + the
                     // terminal `done` route to it like any local run.
-                    if let ReplFrame::Started { origin, display, .. } = &frame {
+                    if let ReplFrame::Started {
+                        origin, display, ..
+                    } = &frame
+                    {
                         if !self.eval_id_workspace.contains_key(&eval_id) {
                             // Normalize the wire hint through the SAME collapse
                             // current_workspace_key uses: a run in the default
@@ -11262,9 +11909,7 @@ impl State {
                                 }
                                 self.repl_log.push(new_entry);
                                 self.eval_id_workspace.insert(eval_id, key);
-                            } else if let Some(snap) =
-                                self.workspace_repl_snapshots.get_mut(&key)
-                            {
+                            } else if let Some(snap) = self.workspace_repl_snapshots.get_mut(&key) {
                                 if snap.repl_log.len() >= 256 {
                                     snap.repl_log.remove(0);
                                 }
@@ -11280,102 +11925,106 @@ impl State {
                         }
                         self.window.request_redraw();
                     } else {
-                    let _ = workspace_id;
-                    // ADR 0032: a `browser` frame is an action, not log content —
-                    // the eval served a live interactive artifact (WGLMakie/Bonito
-                    // figure) at a loopback URL. Hand it straight to the OS
-                    // browser-open (reusing the pluto/video/docs path) and skip the
-                    // repl-log append entirely. The URL resolves directly on a
-                    // local FE and via the launcher's `-L` tunnel on a remote one.
-                    if let ReplFrame::Browser { url, open } = &frame {
-                        let url = url.clone();
-                        // `open: false` (`wglshow(fig; open=false)`) — the eval
-                        // is serving for a TARGETED open: some session will
-                        // follow up with `sot-fe open-url <url> --fe <handle>`
-                        // for exactly one FE. Every FE must stay hands-off
-                        // here (auto-opening on all FEs is the multi-client
-                        // layout race the flag exists to avoid); surface the
-                        // URL in the status line so a human at any FE can
-                        // still open it deliberately.
-                        if !open {
-                            tracing::info!(%url, "wgl: browser frame served no-open");
-                            self.status = format!("interactive figure served · {url}");
+                        let _ = workspace_id;
+                        // ADR 0032: a `browser` frame is an action, not log content —
+                        // the eval served a live interactive artifact (WGLMakie/Bonito
+                        // figure) at a loopback URL. Hand it straight to the OS
+                        // browser-open (reusing the pluto/video/docs path) and skip the
+                        // repl-log append entirely. The URL resolves directly on a
+                        // local FE and via the launcher's `-L` tunnel on a remote one.
+                        if let ReplFrame::Browser { url, open } = &frame {
+                            let url = url.clone();
+                            // `open: false` (`wglshow(fig; open=false)`) — the eval
+                            // is serving for a TARGETED open: some session will
+                            // follow up with `sot-fe open-url <url> --fe <handle>`
+                            // for exactly one FE. Every FE must stay hands-off
+                            // here (auto-opening on all FEs is the multi-client
+                            // layout race the flag exists to avoid); surface the
+                            // URL in the status line so a human at any FE can
+                            // still open it deliberately.
+                            if !open {
+                                tracing::info!(%url, "wgl: browser frame served no-open");
+                                self.status = format!("interactive figure served · {url}");
+                                self.window.request_redraw();
+                                continue;
+                            }
+                            self.ensure_proxy_for_url(&url);
+                            match open_url_in_browser(&url) {
+                                Ok(()) => {
+                                    self.status = format!("opened interactive figure · {url}")
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, %url, "wgl: open_url_in_browser failed");
+                                    self.status =
+                                        format!("interactive figure · browser-open failed · {e}");
+                                }
+                            }
                             self.window.request_redraw();
                             continue;
                         }
-                        self.ensure_proxy_for_url(&url);
-                        match open_url_in_browser(&url) {
-                            Ok(()) => {
-                                self.status = format!("opened interactive figure · {url}")
+                        // Capture the terminal-frame flag before `frame` is moved into
+                        // the match below — on Done we run the terminal cleanup the
+                        // acceptance ack intentionally deferred to us.
+                        let done_elapsed = if let ReplFrame::Done { elapsed_ms, .. } = &frame {
+                            Some(*elapsed_ms)
+                        } else {
+                            None
+                        };
+                        let owner = self.eval_id_workspace.get(&eval_id).cloned();
+                        let active_key = self.current_workspace_key();
+                        let entry: Option<&mut ReplEntry> = match owner.as_deref() {
+                            Some(key) if key != active_key.as_str() => {
+                                self.workspace_repl_snapshots.get_mut(key).and_then(|snap| {
+                                    snap.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
+                                })
                             }
-                            Err(e) => {
-                                tracing::warn!(error = %e, %url, "wgl: open_url_in_browser failed");
-                                self.status =
-                                    format!("interactive figure · browser-open failed · {e}");
+                            _ => self.repl_log.iter_mut().find(|e| e.eval_id == eval_id),
+                        };
+                        if let Some(entry) = entry {
+                            match frame {
+                                ReplFrame::Done { elapsed_ms, .. } => {
+                                    tracing::debug!(
+                                        eval_id,
+                                        elapsed_ms,
+                                        "repl.frame: done (finalize)"
+                                    );
+                                    entry.elapsed_ms = elapsed_ms;
+                                    entry.in_flight = false;
+                                }
+                                other => {
+                                    // debug, not info — one line per streamed frame
+                                    // is too noisy for the default log. Raise to
+                                    // RUST_LOG=debug to watch live-append timing.
+                                    tracing::debug!(eval_id, frame = ?other, "repl.frame: append");
+                                    entry.frames.push(other);
+                                }
+                            }
+                        } else {
+                            tracing::warn!(
+                                eval_id,
+                                "repl.frame dropped: no in-flight entry for eval_id"
+                            );
+                        }
+                        if let Some(done_elapsed) = done_elapsed {
+                            // Terminal frame: the acceptance ack deliberately left the
+                            // routing key (and, for run_file, the status) for us. Drop
+                            // the key and finalize the run_file status with the real
+                            // elapsed (the ack's was a 0 placeholder, sent pre-run).
+                            self.eval_id_workspace.remove(&eval_id);
+                            if let Some((basename, project_dir, fresh)) =
+                                self.repl_runfile_status.remove(&eval_id)
+                            {
+                                self.status = if fresh {
+                                    let proj = project_dir.as_deref().unwrap_or("(no project)");
+                                    format!(
+                                    "ran '{basename}' (fresh — project: {proj}, {done_elapsed}ms)"
+                                )
+                                } else {
+                                    format!("ran '{basename}' (existing repl, {done_elapsed}ms)")
+                                };
                             }
                         }
                         self.window.request_redraw();
-                        continue;
-                    }
-                    // Capture the terminal-frame flag before `frame` is moved into
-                    // the match below — on Done we run the terminal cleanup the
-                    // acceptance ack intentionally deferred to us.
-                    let done_elapsed = if let ReplFrame::Done { elapsed_ms, .. } = &frame {
-                        Some(*elapsed_ms)
-                    } else {
-                        None
-                    };
-                    let owner = self.eval_id_workspace.get(&eval_id).cloned();
-                    let active_key = self.current_workspace_key();
-                    let entry: Option<&mut ReplEntry> = match owner.as_deref() {
-                        Some(key) if key != active_key.as_str() => {
-                            self.workspace_repl_snapshots.get_mut(key).and_then(|snap| {
-                                snap.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
-                            })
-                        }
-                        _ => self.repl_log.iter_mut().find(|e| e.eval_id == eval_id),
-                    };
-                    if let Some(entry) = entry {
-                        match frame {
-                            ReplFrame::Done { elapsed_ms, .. } => {
-                                tracing::debug!(eval_id, elapsed_ms, "repl.frame: done (finalize)");
-                                entry.elapsed_ms = elapsed_ms;
-                                entry.in_flight = false;
-                            }
-                            other => {
-                                // debug, not info — one line per streamed frame
-                                // is too noisy for the default log. Raise to
-                                // RUST_LOG=debug to watch live-append timing.
-                                tracing::debug!(eval_id, frame = ?other, "repl.frame: append");
-                                entry.frames.push(other);
-                            }
-                        }
-                    } else {
-                        tracing::warn!(
-                            eval_id,
-                            "repl.frame dropped: no in-flight entry for eval_id"
-                        );
-                    }
-                    if let Some(done_elapsed) = done_elapsed {
-                        // Terminal frame: the acceptance ack deliberately left the
-                        // routing key (and, for run_file, the status) for us. Drop
-                        // the key and finalize the run_file status with the real
-                        // elapsed (the ack's was a 0 placeholder, sent pre-run).
-                        self.eval_id_workspace.remove(&eval_id);
-                        if let Some((basename, project_dir, fresh)) =
-                            self.repl_runfile_status.remove(&eval_id)
-                        {
-                            self.status = if fresh {
-                                let proj = project_dir.as_deref().unwrap_or("(no project)");
-                                format!(
-                                    "ran '{basename}' (fresh — project: {proj}, {done_elapsed}ms)"
-                                )
-                            } else {
-                                format!("ran '{basename}' (existing repl, {done_elapsed}ms)")
-                            };
-                        }
-                    }
-                    self.window.request_redraw();
                     }
                 }
                 crate::transport::IncomingEvt::ConceptWriteDone { target, result } => {
@@ -11493,11 +12142,10 @@ impl State {
                                 // tree.children refresh the upload path uses.
                                 let parent = parent_files_node_id(&node_id);
                                 if let Err(e) =
-                                    self.req_tx
-                                        .send(crate::transport::OutgoingReq::TreeChildren {
-                                            parent_id: parent,
-                                            workspace_id: self.active_workspace_id.clone(),
-                                        })
+                                    self.send(crate::transport::OutgoingReq::TreeChildren {
+                                        parent_id: parent,
+                                        workspace_id: self.active_workspace_id.clone(),
+                                    })
                                 {
                                     tracing::warn!(error = %e,
                                         "drop post-create tree.children refresh");
@@ -11579,11 +12227,10 @@ impl State {
                                 // TreeView reconciliation re-clamps the cursor.
                                 let parent = parent_files_node_id(&node_id);
                                 if let Err(e) =
-                                    self.req_tx
-                                        .send(crate::transport::OutgoingReq::TreeChildren {
-                                            parent_id: parent,
-                                            workspace_id: self.active_workspace_id.clone(),
-                                        })
+                                    self.send(crate::transport::OutgoingReq::TreeChildren {
+                                        parent_id: parent,
+                                        workspace_id: self.active_workspace_id.clone(),
+                                    })
                                 {
                                     tracing::warn!(error = %e,
                                         "drop post-delete tree.children refresh");
@@ -11738,8 +12385,7 @@ impl State {
                                 if still_selected && !already_attached {
                                     match state_dir {
                                         Some(dir) => {
-                                            let (cols, rows) =
-                                                self.pty_size.unwrap_or((80, 24));
+                                            let (cols, rows) = self.pty_size.unwrap_or((80, 24));
                                             if self.spawn_pane_attach_term(
                                                 std::path::PathBuf::from(dir),
                                                 cols,
@@ -11830,9 +12476,7 @@ impl State {
                         // Server pushed a workspace create/destroy; re-list so
                         // the Sessions strip refreshes live (mirror the manual
                         // poll). Idempotent if we triggered the change.
-                        let _ = self
-                            .req_tx
-                            .send(crate::transport::OutgoingReq::WorkspaceList);
+                        let _ = self.send(crate::transport::OutgoingReq::WorkspaceList);
                     } else if op == sot_protocol::op::AGENT_MESSAGE {
                         // Server relayed an agent-to-agent message over the
                         // SSH-forwarded socket. Item 2: a session can drive
@@ -11943,15 +12587,13 @@ impl State {
                             && self.preview_node_id_fired.as_deref() == Some(node_id.as_str())
                         {
                             let (fit_w, fit_h) = self.preview_fit_px();
-                            let _ =
-                                self.req_tx
-                                    .send(crate::transport::OutgoingReq::PreviewGet {
-                                        node_id: node_id.clone(),
-                                        workspace_id: self.active_workspace_id.clone(),
-                                        page: self.preview_page.map(|(p, _)| p),
-                                        fit_w,
-                                        fit_h,
-                                    });
+                            let _ = self.send(crate::transport::OutgoingReq::PreviewGet {
+                                node_id: node_id.clone(),
+                                workspace_id: self.active_workspace_id.clone(),
+                                page: self.preview_page.map(|(p, _)| p),
+                                fit_w,
+                                fit_h,
+                            });
                         }
                     } else {
                         tracing::debug!(%op, "evt");
@@ -12029,7 +12671,8 @@ impl State {
                             slot.from_reply = true;
                         } else {
                             tracing::debug!(
-                                "tmux.sessions dropped — parked Sessions slot holds user state");
+                                "tmux.sessions dropped — parked Sessions slot holds user state"
+                            );
                         }
                         continue;
                     }
@@ -12104,7 +12747,7 @@ impl State {
                             self.status = format!("session created · {name}");
                             // Refresh the workspace list so the new row appears.
                             if matches!(self.mode, Mode::Sessions) {
-                                let _ = self.req_tx.send(OutgoingReq::WorkspaceList);
+                                let _ = self.send(OutgoingReq::WorkspaceList);
                             }
                         }
                         Err(msg) => {
@@ -12117,7 +12760,7 @@ impl State {
                     Ok(name) => {
                         self.status = format!("session killed · {name}");
                         if matches!(self.mode, Mode::Sessions) {
-                            let _ = self.req_tx.send(OutgoingReq::WorkspaceList);
+                            let _ = self.send(OutgoingReq::WorkspaceList);
                         }
                     }
                     Err(msg) => {
@@ -12177,14 +12820,18 @@ impl State {
                             // (matches the autostart_claude: true the
                             // create request carried).
                             self.workspace_autostart.insert(
-                                info.tmux_session.clone(),
+                                (event_host.clone(), info.tmux_session.clone()),
                                 WsAutostart {
                                     autostart_claude: true,
                                     agent_name: String::new(),
                                     task: String::new(),
                                 },
                             );
+                            // The reply arrived over the same connection the
+                            // `workspace.create` request targeted (ADR 0042
+                            // L2a) — `event_host` IS the new workspace's host.
                             self.switch_to_workspace(
+                                event_host.clone(),
                                 Some(info.slug.clone()),
                                 Some(info.tmux_session.clone()),
                             );
@@ -12231,13 +12878,19 @@ impl State {
                             // backend already refused to destroy the
                             // default, so resetting active to None is
                             // always a valid target.
-                            if self
-                                .active_workspace_id
-                                .as_deref()
-                                .map(|s| s == info.slug || s == info.workspace_id)
-                                .unwrap_or(false)
+                            // ADR 0042 L2a: also gated on the destroyed
+                            // workspace's OWN host matching active_host — a
+                            // same-named slug/id destroyed on a DIFFERENT
+                            // host must not bounce us off what we're
+                            // actually viewing.
+                            if self.active_host == event_host
+                                && self
+                                    .active_workspace_id
+                                    .as_deref()
+                                    .map(|s| s == info.slug || s == info.workspace_id)
+                                    .unwrap_or(false)
                             {
-                                self.switch_to_workspace(None, None);
+                                self.switch_to_workspace(event_host.clone(), None, None);
                             }
                             // Clean up per-workspace snapshot maps so a
                             // recreated workspace with the same slug
@@ -12253,8 +12906,9 @@ impl State {
                             // destroyed workspace's Files/Modules slots so a
                             // same-slug recreate starts clean (codex r2 #3).
                             self.tree_store.purge_workspace(&ws_key);
-                            self.workspace_labels.remove(&info.slug);
-                            self.workspace_project_roots.remove(&info.slug);
+                            let destroyed_key: WsKey = (event_host.clone(), info.slug.clone());
+                            self.workspace_labels.remove(&destroyed_key);
+                            self.workspace_project_roots.remove(&destroyed_key);
                             let tmux_note = if info.tmux_killed {
                                 ""
                             } else {
@@ -12269,10 +12923,11 @@ impl State {
                                 "workspace destroyed · '{}'{}{}",
                                 info.label, tmux_note, toml_note
                             );
-                            // Refresh the Sessions tree so the row drops.
+                            // Refresh the Sessions tree so the row drops —
+                            // this host's list specifically (ADR 0042 L2a),
+                            // not necessarily whatever's active.
                             if let Err(e) = self
-                                .req_tx
-                                .send(crate::transport::OutgoingReq::WorkspaceList)
+                                .send_to(&event_host, crate::transport::OutgoingReq::WorkspaceList)
                             {
                                 tracing::warn!(error = %e, "drop workspace.list after destroy");
                             }
@@ -12632,131 +13287,22 @@ impl State {
                     }
                 }
                 crate::transport::IncomingEvt::Workspaces { workspaces } => {
-                    // ADR 0014: Sessions mode now reads from the daemon's
+                    // ADR 0014: Sessions mode reads from the daemon's
                     // workspace registry rather than scanning tmux for the
                     // `sot-be-` prefix. Each row carries the canonical
                     // workspace_id + slug in its payload so the swap
                     // handler doesn't have to parse a session name back
                     // into a slug.
                     //
-                    // Refresh the slug→label cache used by the connection
-                    // status line so a workspace switch shows the friendly
-                    // label (e.g. "Alpha") rather than the raw slug. Also
-                    // re-populate the ordered slug list + default slug
-                    // that drive the Ctrl+PgUp/PgDn cycle hotkey (D7) so
-                    // the cycle order matches whatever the backend last
-                    // reported (alphabetical).
-                    self.workspace_slugs.clear();
-                    self.default_workspace_slug = None;
-                    self.workspace_project_roots.clear();
-                    self.workspace_autostart.clear();
-                    // ADR 0042 slice L1b fix 5: cache POPULATION is
-                    // cfg-gated the same as its consumption
-                    // (`try_attach_capsule_pane`) — a non-Windows build
-                    // never has anywhere to attach a capsule, so it must
-                    // behave byte-for-byte like `main`, which doesn't
-                    // know these wire fields exist at all.
-                    #[cfg(windows)]
-                    self.workspace_runtime.clear();
-                    self.workspace_states.clear();
-                    self.workspace_id_slugs.clear();
-                    for w in &workspaces {
-                        let label = if w.label.is_empty() {
-                            w.slug.clone()
-                        } else {
-                            w.label.clone()
-                        };
-                        self.workspace_labels.insert(w.slug.clone(), label);
-                        self.workspace_project_roots
-                            .insert(w.slug.clone(), w.project_root.clone());
-                        // Work-state for the bottom strip's per-name colour.
-                        self.workspace_states.insert(
-                            w.slug.clone(),
-                            (w.agent_state.clone(), w.agent_status_at.clone()),
-                        );
-                        // Canonical-id → slug for lifecycle-frame routing.
-                        self.workspace_id_slugs
-                            .insert(w.workspace_id.clone(), w.slug.clone());
-                        // REPL lifecycle catch-up. Empty = old daemon
-                        // (pre-field): keep any frame-driven entry rather
-                        // than regressing it; a new daemon always sends at
-                        // least "not_started", so non-empty overwrites.
-                        if !w.repl_state.is_empty() {
-                            self.repl_lifecycle
-                                .insert(w.slug.clone(), w.repl_state.clone());
-                        }
-                        // Status-change flash (ADR 0023): a slug that had a
-                        // *known, different* prior state just transitioned —
-                        // stamp a flash so its name blinks in nav + strip.
-                        // First-ever appearance (no prior entry) does NOT
-                        // flash; `prev_workspace_states` persists across
-                        // events (it isn't cleared above) so first-seen is
-                        // distinguishable from a real change.
-                        match self.prev_workspace_states.get(&w.slug) {
-                            Some(prev) if prev != &w.agent_state => {
-                                self.flash_starts
-                                    .insert(w.slug.clone(), std::time::Instant::now());
-                            }
-                            _ => {}
-                        }
-                        self.prev_workspace_states
-                            .insert(w.slug.clone(), w.agent_state.clone());
-                        self.workspace_slugs.push(w.slug.clone());
-                        // Contract (b): remember per-session auto-start info so
-                        // attach_session_to_bl can launch claude (ccb) on first
-                        // attach. Keyed by tmux_session (what attach uses).
-                        //
-                        // The persisted spawn brief (`w.task`) is deliberately
-                        // DROPPED here (maintainer directive, 2026-06-16): comm-spawn
-                        // now sends task:"" and routes --task as a durable
-                        // post-spawn comm message (backend 3bcfc63), so FE
-                        // brief-delivery is pure redundancy. Worse, the FE
-                        // re-delivered the stored task on every re-attach/switch —
-                        // after a relaunch forgot `autostarted_sessions` —
-                        // re-pasting a stale brief into an already-running agent
-                        // (a stale brief re-injected on a switch
-                        // → the agent choked with a 529). Forcing it empty here
-                        // neutralizes every pre-today workspace's persisted task
-                        // with no per-workspace purge or daemon bounce; ccb's own
-                        // /sot-session-start bootstrap remains the agent's init.
-                        // (`autostart_claude_in_pane` then takes its launch-only
-                        // path, never creating an `AutoStartDelivery`.)
-                        self.workspace_autostart.insert(
-                            w.tmux_session.clone(),
-                            WsAutostart {
-                                autostart_claude: w.autostart_claude,
-                                agent_name: w.agent_name.clone(),
-                                task: String::new(),
-                            },
-                        );
-                        // ADR 0042 slice L1b: same keying as
-                        // `workspace_autostart` above — `attach_session_to_bl`
-                        // reads this to pick the session pane's backend.
-                        // fix 5: Windows-only, matching the clear() above.
-                        #[cfg(windows)]
-                        self.workspace_runtime.insert(
-                            w.tmux_session.clone(),
-                            WorkspaceRuntime {
-                                runtime: w.runtime.clone(),
-                                state_dir: w.state_dir.clone(),
-                            },
-                        );
-                        if w.is_default {
-                            self.default_workspace_slug = Some(w.slug.clone());
-                        }
-                    }
-                    // LEARN-TRANSITION migration (codex r3): before this reply,
-                    // `default_workspace_slug` was None, so anything keyed in
-                    // that window for the default ws ADDRESSED BY SLUG (a
-                    // repl.execute from a BE session, an early parked reply)
-                    // keyed under the raw slug — while every key computed from
-                    // now on collapses to "<default>". Rename those entries so
-                    // they aren't orphaned (a slug-keyed ReplEntry would eat a
-                    // whole eval's stream). Idempotent: no slug-keyed entries →
-                    // no-op; on collision the "<default>"-keyed entry (from
-                    // None-addressed activity — same physical ws) wins.
-                    self.migrate_default_slug_keys();
-                    self.rebuild_connection_status();
+                    // ADR 0042 L2a: this reply is ONE host's list —
+                    // `event_host` names which. Replace only that host's
+                    // slice of the union (every other host's last-known
+                    // list is untouched — an unreachable host keeps
+                    // showing its rows, greyed, rather than vanishing),
+                    // then rebuild every workspace-scoped cache from the
+                    // whole union in one pass.
+                    self.workspace_lists.insert(event_host.clone(), workspaces);
+                    self.rebuild_workspace_caches();
                     // --capture-cycle <N>: simulate N Ctrl+PgDn presses
                     // (negative = Ctrl+PgUp) on the first workspace.list
                     // reply. Consumed once so a re-fetch from a later
@@ -12770,147 +13316,14 @@ impl State {
                         }
                     }
                     // The rest of this handler rebuilds the Sessions-mode
-                    // tree. Routed by key below: when another mode is up the
-                    // rebuilt rows PARK in the (Sessions, Global) slot
-                    // instead of clobbering the active view (the old skip
-                    // dropped them; parking keeps the Sessions tree fresh
-                    // from switch_to_workspace's workspace.list refreshes,
-                    // so entering Sessions shows current rows instantly).
-                    let root = TreeNode {
-                        id: "sessions:".to_string(),
-                        label: "workspaces".to_string(),
-                        kind: "sessions".to_string(),
-                        has_children: true,
-                        badges: Vec::new(),
-                        payload: Default::default(),
-                    };
-                    let create_row = TreeNode {
-                        id: "sessions:+create".to_string(),
-                        label: "[+ create new]".to_string(),
-                        kind: "session_create".to_string(),
-                        has_children: false,
-                        badges: Vec::new(),
-                        payload: Default::default(),
-                    };
-                    let mut children = vec![create_row];
-                    children.extend(workspaces.into_iter().map(|w| {
-                        let mut payload = serde_json::Map::new();
-                        // `name` stays the tmux session name so the
-                        // existing `selected_session_name` /
-                        // `attach_session_to_bl` paths work unchanged.
-                        payload.insert(
-                            "name".to_string(),
-                            serde_json::Value::String(w.tmux_session.clone()),
-                        );
-                        payload.insert(
-                            "workspace_id".to_string(),
-                            serde_json::Value::String(w.workspace_id.clone()),
-                        );
-                        payload.insert(
-                            "slug".to_string(),
-                            serde_json::Value::String(w.slug.clone()),
-                        );
-                        payload.insert(
-                            "label".to_string(),
-                            serde_json::Value::String(w.label.clone()),
-                        );
-                        payload.insert(
-                            "project_root".to_string(),
-                            serde_json::Value::String(w.project_root.clone()),
-                        );
-                        payload.insert(
-                            "kernel_running".to_string(),
-                            serde_json::Value::Bool(w.kernel_running),
-                        );
-                        payload.insert(
-                            "is_default".to_string(),
-                            serde_json::Value::Bool(w.is_default),
-                        );
-                        // State-nav (ADR 0023): carry the agent work-state +
-                        // status timestamp so the render step can colour the
-                        // row and age a stale "working". The summary itself
-                        // rides in the label (the glance line); these two are
-                        // for styling only.
-                        payload.insert(
-                            "agent_state".to_string(),
-                            serde_json::Value::String(w.agent_state.clone()),
-                        );
-                        payload.insert(
-                            "agent_status_at".to_string(),
-                            serde_json::Value::String(w.agent_status_at.clone()),
-                        );
-                        let mut badges = Vec::new();
-                        if w.is_default {
-                            badges.push("default".to_string());
-                        }
-                        if w.kernel_running {
-                            badges.push("kernel".to_string());
-                        }
-                        if w.repl_state == "starting" {
-                            badges.push("repl_starting".to_string());
-                        }
-                        // ADR 0042 slice L1b fix 5: Windows-only — a
-                        // non-Windows build must render byte-for-byte
-                        // like `main`, which has no idea these wire
-                        // fields exist (capsule has nowhere to attach
-                        // off Windows). `phase` is `Some` only for
-                        // capsule rows (L1a) even on Windows, so this is
-                        // already a no-op for every tmux row and for a
-                        // daemon that predates the field.
-                        #[cfg(windows)]
-                        let capsule_phase =
-                            (w.runtime == "capsule").then_some(w.phase.as_deref()).flatten();
-                        #[cfg(not(windows))]
-                        let capsule_phase: Option<&str> = None;
-                        // The glance line. With agent state present, the
-                        // agent's one-line summary is the default at-a-glance
-                        // text (what it's doing now / just finished) — far more
-                        // useful per-session than the project path. Falls back
-                        // to the state word if the summary is empty, and to the
-                        // project root when there's no agent state at all
-                        // (renders exactly as it did pre-state-nav).
-                        let glance_base = if !w.agent_summary.is_empty() {
-                            w.agent_summary.clone()
-                        } else if !w.agent_state.is_empty() {
-                            w.agent_state.clone()
-                        } else {
-                            w.project_root.clone()
-                        };
-                        // A booting REPL headlines the glance: it's transient,
-                        // it explains "why is nothing happening", and without
-                        // it a precompiling first boot reads as a dead kernel
-                        // (the repl_state render this whole seam exists for).
-                        let glance = if w.repl_state == "starting" {
-                            format!("julia starting (precompiling)… · {glance_base}")
-                        } else {
-                            glance_base
-                        };
-                        // ADR 0042 slice L1b: prefix the capsule phase tag
-                        // ("ready" included — a healthy capsule confirming
-                        // is as informative here as a booting REPL is
-                        // above) — the ONLY place this phase becomes
-                        // visible; nothing renders `badges` today (deletion
-                        // pressure: a `badges`-vec entry that names no
-                        // observable invariant is dead weight, not a
-                        // second surface).
-                        let glance = match capsule_phase {
-                            Some(phase) => format!("{} {glance}", capsule_phase_tag(phase)),
-                            None => glance,
-                        };
-                        let label = if w.label.is_empty() {
-                            w.slug.clone()
-                        } else {
-                            format!("{} · {}", w.label, glance)
-                        };
-                        TreeNode {
-                            id: format!("sessions:{}", w.tmux_session),
-                            label,
-                            kind: "session".to_string(),
-                            has_children: true,
-                            badges,
-                            payload,
-                        }
-                    }));
+                    // tree (host-grouped — `build_sessions_tree`). Routed
+                    // by key below: when another mode is up the rebuilt
+                    // rows PARK in the (Sessions, Global) slot instead of
+                    // clobbering the active view (the old skip dropped
+                    // them; parking keeps the Sessions tree fresh from
+                    // switch_to_workspace's workspace.list refreshes, so
+                    // entering Sessions shows current rows instantly).
+                    let (root, children) = self.build_sessions_tree();
                     let reply_key: TreeKey = (Mode::Sessions, TreeScope::Global);
                     if reply_key != self.active_tree_key() {
                         // Reply-over-reply allowed (see the TreeRoot park
@@ -12921,7 +13334,8 @@ impl State {
                             slot.from_reply = true;
                         } else {
                             tracing::debug!(
-                                "workspace.list dropped — parked Sessions slot holds user state");
+                                "workspace.list dropped — parked Sessions slot holds user state"
+                            );
                         }
                         continue;
                     }
@@ -12981,13 +13395,14 @@ impl State {
         self.battery_label = query_battery_label();
     }
 
-    /// Status-change flash factor for `slug` at `now` (1.0 right at the
-    /// transition, fading to 0.0 over `FLASH_SECS`). `0.0` when the slug has
-    /// no live flash. Pure read so both the (immutable-borrow) nav-row build
-    /// and the strip caller can use it.
-    fn flash_factor_for(&self, slug: &str, now: std::time::Instant) -> f32 {
+    /// Status-change flash factor for `(host, slug)` at `now` (1.0 right at
+    /// the transition, fading to 0.0 over `FLASH_SECS`). `0.0` when the
+    /// slug has no live flash. Pure read so both the (immutable-borrow)
+    /// nav-row build and the strip caller can use it.
+    fn flash_factor_for(&self, host: &str, slug: &str, now: std::time::Instant) -> f32 {
+        let key: WsKey = (host.to_string(), slug.to_string());
         self.flash_starts
-            .get(slug)
+            .get(&key)
             .map(|t| flash_factor(now.duration_since(*t).as_secs_f32()))
             .unwrap_or(0.0)
     }
@@ -13055,7 +13470,9 @@ impl State {
     /// never actually exit.
     #[cfg(windows)]
     fn pump_attach_term(&mut self) {
-        let Some(t) = self.attach_term.as_mut() else { return };
+        let Some(t) = self.attach_term.as_mut() else {
+            return;
+        };
         let changed = t.pump();
         t.screen_mut().set_scrollback(self.term_scroll as usize);
         self.term_scroll = t.screen().scrollback().min(u16::MAX as usize) as u16;
@@ -13344,8 +13761,10 @@ impl State {
         // FE/BE version stamp for the bottom chrome edge. Snapshotted here
         // with the other draw locals because the draw closure can't borrow
         // `self` again.
-        let (version_stamp, version_skew) =
-            version_label(&sot_protocol::app_version(), self.backend_version.as_deref());
+        let (version_stamp, version_skew) = version_label(
+            &sot_protocol::app_version(),
+            self.backend_version.as_deref(),
+        );
         let mode = self.mode;
         let focus = self.focus;
         let maximized = self.maximized;
@@ -13590,7 +14009,10 @@ impl State {
         #[cfg(not(windows))]
         let attach_screen: Option<&vt100::Screen> = None;
         let term_screen = if drawer == DrawerContent::Terminal {
-            self.local_term.as_ref().map(|t| t.screen()).or(attach_screen)
+            self.local_term
+                .as_ref()
+                .map(|t| t.screen())
+                .or(attach_screen)
         } else {
             None
         };
@@ -13758,8 +14180,10 @@ impl State {
                     // nav.preview result waiting, keyed by the same slug.
                     let (agent, flash, pending) = if r.node.kind == "session" {
                         let slug = r.node.payload.get("slug").and_then(|v| v.as_str());
-                        let flash = slug
-                            .map(|s| self.flash_factor_for(s, flash_now))
+                        let host = r.node.payload.get("host").and_then(|v| v.as_str());
+                        let flash = host
+                            .zip(slug)
+                            .map(|(h, s)| self.flash_factor_for(h, s, flash_now))
                             .unwrap_or(0.0);
                         let pending = slug
                             .map(|s| self.pending_nav.contains_key(s))
@@ -13885,8 +14309,7 @@ impl State {
                 } else {
                     None
                 };
-                let geom =
-                    crate::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
+                let geom = crate::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
                 // Names preserved so the rest of the closure reads
                 // unchanged: nav = old TL (left column), preview = old
                 // TR (middle column), llm = old BL (rightmost column
@@ -14116,22 +14539,14 @@ impl State {
                         .saturating_sub(nav_rect.x) as usize;
                     let first = nav_scroll as usize;
                     let tree_span = tree_rows_body_start..tree_rows_body_end;
-                    let visible = body_lines
-                        .iter()
-                        .skip(first)
-                        .take(nav_rect.height as usize);
+                    let visible = body_lines.iter().skip(first).take(nav_rect.height as usize);
                     for (vis_idx, line) in visible.enumerate() {
                         if !tree_span.contains(&(first + vis_idx)) {
                             continue;
                         }
-                        let text: String = line
-                            .spans
-                            .iter()
-                            .map(|s| s.content.as_ref())
-                            .collect();
+                        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
                         let cell_w = UnicodeWidthStr::width(text.as_str());
-                        let Some(take) =
-                            nav_spill_take(cell_w, nav_rect.width as usize, max_cells)
+                        let Some(take) = nav_spill_take(cell_w, nav_rect.width as usize, max_cells)
                         else {
                             continue;
                         };
@@ -14549,7 +14964,7 @@ impl State {
                 }
                 PaneFeed::Tmux => {
                     if need_open {
-                        if let Err(e) = self.req_tx.send(OutgoingReq::PtyOpen {
+                        if let Err(e) = self.send(OutgoingReq::PtyOpen {
                             cols,
                             rows,
                             target: self.bl_pane_target.clone(),
@@ -14569,7 +14984,7 @@ impl State {
                             self.pty_size = Some((cols, rows));
                         }
                     } else if need_resize {
-                        if let Err(e) = self.req_tx.send(OutgoingReq::PtyResize { cols, rows }) {
+                        if let Err(e) = self.send(OutgoingReq::PtyResize { cols, rows }) {
                             tracing::warn!(error = %e, "drop pty.resize — channel closed");
                         } else {
                             self.pty_terminal.screen_mut().set_size(rows, cols);
@@ -14679,25 +15094,30 @@ impl State {
         // below — the per-badge layout they need only exists in this block.
         let mut strip_logo_rects: Vec<ScreenRect> = Vec::new();
         if !self.workspace_slugs.is_empty() {
+            // ADR 0042 L2a: `workspace_slugs` is the UNION across every
+            // host, so every parallel vector below keys off the full
+            // `(host, slug)` pair, not the bare slug — two hosts can share
+            // a slug, and the strip must not conflate their state.
             let labels: Vec<String> = self
                 .workspace_slugs
                 .iter()
-                .map(|s| {
+                .map(|(h, s)| {
                     strip_truncate(
                         self.workspace_labels
-                            .get(s)
+                            .get(&(h.clone(), s.clone()))
                             .map(String::as_str)
                             .unwrap_or(s.as_str()),
                     )
                 })
                 .collect();
-            let current = self
+            let current_key: Option<WsKey> = self
                 .active_workspace_id
                 .clone()
-                .or_else(|| self.default_workspace_slug.clone());
-            let active = current
-                .as_deref()
-                .and_then(|s| self.workspace_slugs.iter().position(|x| x == s))
+                .or_else(|| self.default_workspace_slug.clone())
+                .map(|s| (self.active_host.clone(), s));
+            let active = current_key
+                .as_ref()
+                .and_then(|k| self.workspace_slugs.iter().position(|x| x == k))
                 .unwrap_or(0)
                 .min(labels.len().saturating_sub(1));
             let target = session_strip_target(&labels, active, self.cell_w);
@@ -14710,9 +15130,9 @@ impl State {
             let tones: Vec<Option<(AgentTone, bool)>> = self
                 .workspace_slugs
                 .iter()
-                .map(|s| {
+                .map(|(h, s)| {
                     self.workspace_states
-                        .get(s)
+                        .get(&(h.clone(), s.clone()))
                         .and_then(|(st, at)| agent_tone_from(st, at, strip_now))
                 })
                 .collect();
@@ -14721,15 +15141,17 @@ impl State {
             let flashes: Vec<f32> = self
                 .workspace_slugs
                 .iter()
-                .map(|s| self.flash_factor_for(s, flash_now))
+                .map(|(h, s)| self.flash_factor_for(h, s, flash_now))
                 .collect();
             // Per-name badge-floor pending flag, parallel to `labels` (ADR
             // 0025 §1): true when that workspace has a pending nav.preview
-            // result waiting.
+            // result waiting. `pending_nav` stays bare-slug (fed by a
+            // nav.preview envelope that carries no host — see its field
+            // doc) so this checks the slug alone, same as before L2a.
             let pendings: Vec<bool> = self
                 .workspace_slugs
                 .iter()
-                .map(|s| self.pending_nav.contains_key(s))
+                .map(|(_, s)| self.pending_nav.contains_key(s))
                 .collect();
             let strip_lines = session_strip_lines(
                 &labels,
@@ -16675,7 +17097,10 @@ fn append_fe_down_marker(payload: &serde_json::Value) -> std::io::Result<()> {
     let mut line = serde_json::to_string(payload)?;
     line.push('\n');
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
     f.write_all(line.as_bytes())
 }
 
@@ -16777,10 +17202,7 @@ enum FeCommand {
     /// ABSOLUTE backend-side fs path — `docs.open` stats it raw and confines it
     /// to ANY registered workspace, so no workspace switch is needed and
     /// `workspace` is carried for parity/logging only (the backend ignores it).
-    Docs {
-        workspace: String,
-        path: String,
-    },
+    Docs { workspace: String, path: String },
 }
 
 fn fe_cmd_default_dir() -> i32 {
@@ -16800,33 +17222,29 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match State::new(event_loop, evt_rx, &self.cli, self.req_tx.clone()) {
+        match State::new(event_loop, evt_rx, &self.cli, self.conns.clone()) {
             Ok(mut state) => {
-                // Spawn transport once the window exists, since the task
-                // needs an Arc<Window> to call request_redraw on incoming
-                // frames. Either or both of `socket`/`tcp` may be set; the
-                // transport task picks pipe first and falls back to TCP on
-                // connect failure.
-                let any_endpoint = self.cli.socket.is_some() || self.cli.tcp.is_some();
-                if let (Some(rt), true, Some(evt_tx), Some(req_rx)) = (
+                // Spawn one transport task per host once the window exists,
+                // since each task needs an Arc<Window> to call
+                // request_redraw on incoming frames (ADR 0042 L2a). Every
+                // host's sender clones the same `evt_tx` — fan-in, tagged at
+                // each transport's own send, not through a forwarding task.
+                if let (Some(rt), Some(evt_tx), Some(transports)) = (
                     self.rt.as_ref(),
-                    any_endpoint,
                     self.evt_tx.take(),
-                    self.req_rx.take(),
+                    self.pending_transports.take(),
                 ) {
-                    let config = crate::transport::TransportConfig {
-                        pipe: self.cli.socket.clone(),
-                        tcp: self.cli.tcp.clone(),
-                        token: self.cli.token.clone(),
-                    };
-                    crate::transport::spawn(
-                        rt,
-                        config,
-                        evt_tx,
-                        req_rx,
-                        state.window.clone(),
-                        state.reconnect_now.clone(),
-                    );
+                    for (host, config, req_rx) in transports {
+                        crate::transport::spawn(
+                            rt,
+                            host,
+                            config,
+                            evt_tx.clone(),
+                            req_rx,
+                            state.window.clone(),
+                            state.reconnect_now.clone(),
+                        );
+                    }
                     // ADR 0035: spawn the proxy manager whenever a tcp endpoint
                     // is configured (the manager just waits for listeners). It
                     // arms only when the transport actually connects over tcp —
@@ -16835,6 +17253,13 @@ impl ApplicationHandler for App {
                     // the CLI shape. The manager owns the async accept loop; the
                     // GPU thread hands it synchronously-bound listeners so a
                     // port is listening before the browser launches.
+                    //
+                    // ADR 0042 L2a scope: still tied to the CLI `--tcp` flag
+                    // alone, i.e. `default_host`'s own connection — a REMOTE
+                    // FE's tcp control tunnel is a `default_host` concept
+                    // (the launcher's own tunnel), and per-host proxying for
+                    // every OTHER host is out of scope here (open question
+                    // for a later slice, see the L2a report).
                     if let Some(daemon_tcp) = self.cli.tcp.clone() {
                         let (ltx, lrx) = tokio::sync::mpsc::unbounded_channel();
                         crate::proxy_listen::spawn_proxy_manager(
@@ -16851,7 +17276,7 @@ impl ApplicationHandler for App {
                 // unified Modules/Types tree. Mostly for `--capture`,
                 // where we can't inject `m` mid-run.
                 if state.mode == Mode::Modules {
-                    if let Err(e) = state.req_tx.send(OutgoingReq::ProjectScan {
+                    if let Err(e) = state.send(OutgoingReq::ProjectScan {
                         workspace_id: state.active_workspace_id.clone(),
                     }) {
                         tracing::warn!(error = %e, "drop initial project.scan request");
@@ -17127,7 +17552,8 @@ impl ApplicationHandler for App {
                         // applied in redraw). Sign: positive rows_above = up =
                         // older = larger offset, matching the REPL pane.
                         #[cfg(windows)]
-                        let attach_mouse_on = state.attach_term.as_ref().map(|t| t.mouse_tracking_on());
+                        let attach_mouse_on =
+                            state.attach_term.as_ref().map(|t| t.mouse_tracking_on());
                         #[cfg(not(windows))]
                         let attach_mouse_on: Option<bool> = None;
                         let mouse_on = state
@@ -17233,7 +17659,7 @@ impl ApplicationHandler for App {
                         state.last_pty_wheel_at = Some(now);
                         let button = if rows_above > 0 { 64 } else { 65 };
                         let seq = format!("\x1b[<{};1;1M", button);
-                        if let Err(e) = state.req_tx.send(OutgoingReq::PtyWrite {
+                        if let Err(e) = state.send(OutgoingReq::PtyWrite {
                             bytes: seq.into_bytes(),
                         }) {
                             tracing::warn!(error = %e, "drop pty.write (wheel) — channel closed");
@@ -17724,28 +18150,34 @@ impl ApplicationHandler for App {
                         // 0020): subscribe + prefill on open, unsubscribe on
                         // close. Backend sampling is always-on; this just gates
                         // this connection's live stream to when the drawer is up.
+                        // ADR 0042 L2a: always `default_host` — the drawer
+                        // never follows `active_host`.
                         if state.drawer == DrawerContent::Monitor && !state.monitor_view.subscribed
                         {
-                            let _ = state
-                                .req_tx
-                                .send(crate::transport::OutgoingReq::MonitorSubscribe);
-                            let _ =
-                                state
-                                    .req_tx
-                                    .send(crate::transport::OutgoingReq::MonitorHistory {
-                                        window_s: 300.0,
-                                        points: 300,
-                                        until: None,
-                                        host: None,
-                                    });
+                            let monitor_host = state.default_host();
+                            let _ = state.send_to(
+                                &monitor_host,
+                                crate::transport::OutgoingReq::MonitorSubscribe,
+                            );
+                            let _ = state.send_to(
+                                &monitor_host,
+                                crate::transport::OutgoingReq::MonitorHistory {
+                                    window_s: 300.0,
+                                    points: 300,
+                                    until: None,
+                                    host: None,
+                                },
+                            );
                             state.monitor_view.subscribed = true;
                             state.monitor_dirty = true;
                         } else if state.drawer != DrawerContent::Monitor
                             && state.monitor_view.subscribed
                         {
-                            let _ = state
-                                .req_tx
-                                .send(crate::transport::OutgoingReq::MonitorUnsubscribe);
+                            let monitor_host = state.default_host();
+                            let _ = state.send_to(
+                                &monitor_host,
+                                crate::transport::OutgoingReq::MonitorUnsubscribe,
+                            );
                             state.monitor_view.subscribed = false;
                         }
                         state.last_key = Some(label);
@@ -17979,8 +18411,10 @@ impl ApplicationHandler for App {
                             match &event.logical_key {
                                 Key::Named(NamedKey::Enter) if !event.repeat => {
                                     // Route Enter to whichever text prompt is open.
-                                    if matches!(state.nav_prompt, Some(NavPrompt::ScaleEntry { .. }))
-                                    {
+                                    if matches!(
+                                        state.nav_prompt,
+                                        Some(NavPrompt::ScaleEntry { .. })
+                                    ) {
                                         state.confirm_scale_entry();
                                     } else {
                                         state.confirm_create_file();
@@ -18114,21 +18548,25 @@ impl ApplicationHandler for App {
                                     // it. We don't tear down the live
                                     // transport — that would require a
                                     // sentinel-file protocol with the
-                                    // launcher. v1 is "set + quit +
-                                    // relaunch" (Ctrl+Q exits cleanly,
-                                    // shortcut respawns the supervisor).
+                                    // launcher. ADR 0042 L2a: every host is
+                                    // already a live connection, so Enter
+                                    // just navigates the Sessions-mode
+                                    // cursor to that host's node (ADR
+                                    // 0015's relaunch flow is deleted).
                                     state.pick_host_under_cursor();
                                     return;
                                 }
                                 if is_enter && matches!(state.mode, Mode::Sessions) {
-                                    let kind = state
-                                        .tree
-                                        .rows
-                                        .get(state.tree.selected)
-                                        .map(|r| r.node.kind.clone());
+                                    let row = state.tree.rows.get(state.tree.selected);
+                                    let kind = row.map(|r| r.node.kind.clone());
                                     match kind.as_deref() {
                                         Some("session_create") => {
-                                            state.begin_create_session();
+                                            let host = row
+                                                .and_then(|r| r.node.payload.get("host"))
+                                                .and_then(|v| v.as_str())
+                                                .map(str::to_string)
+                                                .unwrap_or_else(|| state.active_host.clone());
+                                            state.begin_create_session(host);
                                             return;
                                         }
                                         Some("session") | Some("pane") => {
@@ -18147,7 +18585,20 @@ impl ApplicationHandler for App {
                                                     .strip_prefix("sot-be-")
                                                     .map(|s| s.to_string());
                                                 if slug.is_some() {
+                                                    // ADR 0042 L2a: resolve
+                                                    // the row's own host —
+                                                    // a `pane` row doesn't
+                                                    // carry one in its
+                                                    // payload, so scan the
+                                                    // per-host lists instead
+                                                    // of trusting the row.
+                                                    let host = state
+                                                        .host_for_tmux_session(&session_name)
+                                                        .unwrap_or_else(|| {
+                                                            state.active_host.clone()
+                                                        });
                                                     state.switch_to_workspace(
+                                                        host,
                                                         slug,
                                                         Some(session_name),
                                                     );
@@ -18280,6 +18731,16 @@ impl ApplicationHandler for App {
                                     .get("workspace_id")
                                     .and_then(|v| v.as_str())
                                     .map(str::to_string);
+                                // ADR 0042 L2a: destroy targets the ROW's
+                                // own host, not `active_host` — routed via
+                                // `send_to`.
+                                let target_host = row
+                                    .node
+                                    .payload
+                                    .get("host")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| state.active_host.clone());
                                 let target_label = row
                                     .node
                                     .payload
@@ -18294,8 +18755,10 @@ impl ApplicationHandler for App {
                                     state.window.request_redraw();
                                     return;
                                 };
-                                if was_destroy_pending.as_deref() == Some(target_id.as_str()) {
-                                    if let Err(e) = state.req_tx.send(
+                                let target: WsKey = (target_host.clone(), target_id.clone());
+                                if was_destroy_pending.as_ref() == Some(&target) {
+                                    if let Err(e) = state.send_to(
+                                        &target_host,
                                         crate::transport::OutgoingReq::WorkspaceDestroy {
                                             workspace_id: target_id.clone(),
                                         },
@@ -18309,7 +18772,7 @@ impl ApplicationHandler for App {
                                     }
                                     state.window.request_redraw();
                                 } else {
-                                    state.pending_destroy_target = Some(target_id);
+                                    state.pending_destroy_target = Some(target);
                                     state.status =
                                         format!("press D again to destroy '{target_label}' · any other key cancels");
                                     state.window.request_redraw();
@@ -18439,14 +18902,12 @@ impl ApplicationHandler for App {
                                     origin: None,
                                 });
                                 if let Err(e) =
-                                    state
-                                        .req_tx
-                                        .send(crate::transport::OutgoingReq::ReplRunFile {
-                                            eval_id,
-                                            path: abs.clone(),
-                                            fresh,
-                                            workspace_id: state.active_workspace_id.clone(),
-                                        })
+                                    state.send(crate::transport::OutgoingReq::ReplRunFile {
+                                        eval_id,
+                                        path: abs.clone(),
+                                        fresh,
+                                        workspace_id: state.active_workspace_id.clone(),
+                                    })
                                 {
                                     tracing::warn!(error = %e,
                                         "failed to dispatch repl.run_file");
@@ -18565,8 +19026,10 @@ impl ApplicationHandler for App {
                             let h = state.pane_rects.repl.height as i32;
                             let page_step = (h / 3).max(1);
                             #[cfg(windows)]
-                            let attach_alt_screen =
-                                state.attach_term.as_ref().map(|t| t.screen().alternate_screen());
+                            let attach_alt_screen = state
+                                .attach_term
+                                .as_ref()
+                                .map(|t| t.screen().alternate_screen());
                             #[cfg(not(windows))]
                             let attach_alt_screen: Option<bool> = None;
                             let alt_screen = state
@@ -18657,11 +19120,11 @@ impl ApplicationHandler for App {
                             // instead of typing a literal 'c'.
                             Key::Character(s) if ctrl && s.as_str() == "c" => {
                                 if state.repl_log.iter().any(|e| e.in_flight) {
-                                    if let Err(e) = state.req_tx.send(
-                                        crate::transport::OutgoingReq::ReplInterrupt {
+                                    if let Err(e) =
+                                        state.send(crate::transport::OutgoingReq::ReplInterrupt {
                                             workspace_id: state.active_workspace_id.clone(),
-                                        },
-                                    ) {
+                                        })
+                                    {
                                         tracing::warn!(error = %e, "drop repl.interrupt - channel closed");
                                     } else {
                                         tracing::info!("repl.interrupt dispatched (Ctrl+C)");
@@ -18829,23 +19292,19 @@ impl ApplicationHandler for App {
                                         let ws = state.active_workspace_id.clone();
                                         if let Some(node_id) = edit.file_node_id.clone() {
                                             state.pending_file_edit = Some(node_id.clone());
-                                            if let Err(e) =
-                                                state.req_tx.send(OutgoingReq::FileRead {
-                                                    node_id,
-                                                    workspace_id: ws,
-                                                })
-                                            {
+                                            if let Err(e) = state.send(OutgoingReq::FileRead {
+                                                node_id,
+                                                workspace_id: ws,
+                                            }) {
                                                 tracing::warn!(error = %e,
                                                     "drop file.read for stale reload");
                                             }
                                         } else {
                                             let target = edit.target.clone();
-                                            if let Err(e) =
-                                                state.req_tx.send(OutgoingReq::ConceptRead {
-                                                    target,
-                                                    workspace_id: ws,
-                                                })
-                                            {
+                                            if let Err(e) = state.send(OutgoingReq::ConceptRead {
+                                                target,
+                                                workspace_id: ws,
+                                            }) {
                                                 tracing::warn!(error = %e,
                                                     "drop concept.read for stale reload");
                                             }
@@ -18905,7 +19364,7 @@ impl ApplicationHandler for App {
                                         // General-file save → file.write, gated
                                         // on the version we read (conflict-aware).
                                         let expected_version = edit.file_version.clone();
-                                        if let Err(e) = state.req_tx.send(OutgoingReq::FileWrite {
+                                        if let Err(e) = state.send(OutgoingReq::FileWrite {
                                             node_id,
                                             content,
                                             expected_version,
@@ -18918,14 +19377,12 @@ impl ApplicationHandler for App {
                                         // Concept-annotation save (existing path).
                                         let target = edit.target.clone();
                                         let expected = edit.expected_ast_hash.clone();
-                                        if let Err(e) =
-                                            state.req_tx.send(OutgoingReq::ConceptWrite {
-                                                target,
-                                                content,
-                                                expected_ast_hash: expected,
-                                                workspace_id: ws,
-                                            })
-                                        {
+                                        if let Err(e) = state.send(OutgoingReq::ConceptWrite {
+                                            target,
+                                            content,
+                                            expected_ast_hash: expected,
+                                            workspace_id: ws,
+                                        }) {
                                             tracing::warn!(error = %e,
                                                 "drop concept.write — channel closed");
                                         }
@@ -19124,7 +19581,7 @@ impl ApplicationHandler for App {
                                                 // any pending zoom re-raster.
                                                 state.preview_page_raster_pending = None;
                                                 let (fit_w, fit_h) = state.preview_fit_px();
-                                                if let Err(e) = state.req_tx.send(
+                                                if let Err(e) = state.send(
                                                     crate::transport::OutgoingReq::PreviewGet {
                                                         node_id,
                                                         workspace_id: state
@@ -19282,8 +19739,7 @@ impl ApplicationHandler for App {
                                 if state.preview_scale.is_some() {
                                     state.scalebar_on = !state.scalebar_on;
                                 } else if !state.begin_scale_entry() {
-                                    state.status =
-                                        "scalebar · no image previewed".to_string();
+                                    state.status = "scalebar · no image previewed".to_string();
                                 }
                             } else {
                                 handled = false;
@@ -19422,12 +19878,10 @@ impl ApplicationHandler for App {
                                     if let Some(node_id) = state.preview_node_id_fired.clone() {
                                         if node_id.starts_with("files:") {
                                             let ws = state.active_workspace_id.clone();
-                                            if let Err(e) =
-                                                state.req_tx.send(OutgoingReq::FileRead {
-                                                    node_id: node_id.clone(),
-                                                    workspace_id: ws,
-                                                })
-                                            {
+                                            if let Err(e) = state.send(OutgoingReq::FileRead {
+                                                node_id: node_id.clone(),
+                                                workspace_id: ws,
+                                            }) {
                                                 tracing::warn!(error = %e, "drop file.read for edit-enter");
                                             } else {
                                                 state.pending_file_edit = Some(node_id);
@@ -19595,7 +20049,7 @@ impl ApplicationHandler for App {
                                         PaneFeed::Pending => {}
                                         PaneFeed::Tmux => {
                                             if let Err(e) =
-                                                state.req_tx.send(OutgoingReq::PtyScroll { up })
+                                                state.send(OutgoingReq::PtyScroll { up })
                                             {
                                                 tracing::warn!(error = %e, "drop pty.scroll — channel closed");
                                             }
@@ -19610,7 +20064,8 @@ impl ApplicationHandler for App {
                                 // drawer's own escape hatch.
                             }
                         }
-                        let bytes: Option<Vec<u8>> = key_to_pty_bytes(&event.logical_key, ctrl, shift);
+                        let bytes: Option<Vec<u8>> =
+                            key_to_pty_bytes(&event.logical_key, ctrl, shift);
                         if let Some(bytes) = bytes {
                             // Any byte we send to the pty snaps the
                             // view back to live so what the user is
@@ -19967,7 +20422,9 @@ fn build_repl_lines(
                     "(julia starting — precompiling this workspace's environment; \
                      a first run can take minutes…)"
                         .to_string(),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::DIM),
                 )]));
             } else {
                 // Still streaming — a dim indicator AFTER the live frames so
@@ -21018,7 +21475,12 @@ mod tests {
             );
         }
         failed.clear(); // the one thing a genuine markdown reload does
-        assert!(!figure_already_handled(false, &pending, &failed, "figures/dead.png"));
+        assert!(!figure_already_handled(
+            false,
+            &pending,
+            &failed,
+            "figures/dead.png"
+        ));
     }
 
     // --- Bug 2 / round 2 provenance fix: `o`/`W`/`O` must route against
@@ -21293,7 +21755,10 @@ mod tests {
         // No caption → the image gets the whole pane (the pre-caption behaviour
         // must be bit-identical, since most previews have no caption).
         let full = image_rect_for_caption(pane, 0.0);
-        assert_eq!((full.x, full.y, full.w, full.h), (pane.x, pane.y, pane.w, pane.h));
+        assert_eq!(
+            (full.x, full.y, full.w, full.h),
+            (pane.x, pane.y, pane.w, pane.h)
+        );
         // With a caption the image shrinks by EXACTLY the band, and only in h —
         // a drifting x/w would shift the letterbox and skew the ROI mapping.
         let band_h = 64.0;
@@ -21484,17 +21949,15 @@ mod tests {
             let py = pan.1.clamp(-sy * 0.5, sy * 0.5);
             let cx = img.x + img.w * 0.5 - cw * 0.5 + px;
             let cy = img.y + img.h * 0.5 - ch * 0.5 + py;
-            let (x, y, w, h) = visible_roi_px(
-                cx, cy, cw, ch, img.x, img.y, img.w, img.h, src_w, src_h,
-            )
-            .expect("view visible");
+            let (x, y, w, h) =
+                visible_roi_px(cx, cy, cw, ch, img.x, img.y, img.w, img.h, src_w, src_h)
+                    .expect("view visible");
             RoiRect { x, y, w, h }
         };
         // A user view: zoomed well in, panned off-centre — then saved.
         let saved = readback(9.7, (313.0, -211.0));
         // First restore (the B→A flip) and its write-through readback.
-        let (z1, p1) =
-            solve_roi_view(img.w, img.h, lw, lh, zoom_max, src_w, src_h, saved).unwrap();
+        let (z1, p1) = solve_roi_view(img.w, img.h, lw, lh, zoom_max, src_w, src_h, saved).unwrap();
         let echo = readback(z1, p1);
         assert!(
             roi_rects_within_quantization(saved, echo),
@@ -21545,10 +22008,8 @@ mod tests {
             let py = pan.1.clamp(-sy * 0.5, sy * 0.5);
             let cx = img.x + img.w * 0.5 - cw * 0.5 + px;
             let cy = img.y + img.h * 0.5 - ch * 0.5 + py;
-            let (ex, ey, ew, eh) = visible_roi_px(
-                cx, cy, cw, ch, img.x, img.y, img.w, img.h, src_w, src_h,
-            )
-            .unwrap();
+            let (ex, ey, ew, eh) =
+                visible_roi_px(cx, cy, cw, ch, img.x, img.y, img.w, img.h, src_w, src_h).unwrap();
             assert!(
                 ex <= saved.x + 1 && ey <= saved.y + 1,
                 "lost the region start: ({ex},{ey})"
@@ -22176,18 +22637,21 @@ mod tests {
         let key_sessions: TreeKey = (Mode::Sessions, TreeScope::Global);
 
         // Install into (Files, wsA) — as the routed non-active branch does.
-        store
-            .slot_mut(key_files_a.clone())
-            .view
-            .set_root(node("files:", "a", true), vec![node("files:x.jl", "x.jl", false)]);
+        store.slot_mut(key_files_a.clone()).view.set_root(
+            node("files:", "a", true),
+            vec![node("files:x.jl", "x.jl", false)],
+        );
         // (a) another workspace's Files slot is untouched…
         assert!(store.take(&key_files_b).is_none());
         // (b) …and so is the SAME workspace's Modules slot (mode is in the key).
-        store.slot_mut(key_mods_a.clone()).view.set_flat(vec![TreeRow {
-            node: node("modules:M", "M", false),
-            depth: 0,
-            expanded: false,
-        }]);
+        store
+            .slot_mut(key_mods_a.clone())
+            .view
+            .set_flat(vec![TreeRow {
+                node: node("modules:M", "M", false),
+                depth: 0,
+                expanded: false,
+            }]);
         // (e) the Global Sessions slot is independent of any workspace slot.
         store
             .slot_mut(key_sessions.clone())
@@ -22211,7 +22675,11 @@ mod tests {
         // never be handed modules: rows.
         assert!(store.take(&key_files_a).is_none());
         let mods = store.take(&key_mods_a).expect("wsA Modules slot present");
-        assert!(mods.view.rows.iter().all(|r| r.node.id.starts_with("modules:")));
+        assert!(mods
+            .view
+            .rows
+            .iter()
+            .all(|r| r.node.id.starts_with("modules:")));
         assert!(store.take(&key_sessions).is_some());
     }
 
@@ -23192,9 +23660,9 @@ mod tests {
             vec![node("a/1", "a1", false), node("a/2", "a2", false)],
         );
         t.selected = 3; // nested, on a/2
-        // Root refresh: same surviving children plus a newcomer (the
-        // temp-file case). `a` must stay expanded with its subtree intact,
-        // the cursor must stay on a/2, and the newcomer arrives collapsed.
+                        // Root refresh: same surviving children plus a newcomer (the
+                        // temp-file case). `a` must stay expanded with its subtree intact,
+                        // the cursor must stay on a/2, and the newcomer arrives collapsed.
         t.apply_children(
             "r",
             vec![
@@ -23226,10 +23694,14 @@ mod tests {
         t.rows[1].expanded = true; // request-time expand mark (see contract)
         t.apply_children("a", vec![node("a/1", "a1", false)]);
         t.selected = 2; // nested, on a/1
-        // Same-root re-seed with a newcomer: `a` keeps its subtree + cursor.
+                        // Same-root re-seed with a newcomer: `a` keeps its subtree + cursor.
         t.set_root(
             node("r", "r", true),
-            vec![node("a", "a", true), node("b", "b", false), node("c", "c", false)],
+            vec![
+                node("a", "a", true),
+                node("b", "b", false),
+                node("c", "c", false),
+            ],
         );
         assert_eq!(
             t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
@@ -23300,7 +23772,10 @@ mod tests {
         t.selected = 1; // on `a`
         assert!(t.collapse_selected());
         // The stale reply arrives for the now-collapsed `a`.
-        t.apply_children("a", vec![node("a/1", "a1", false), node("a/2", "a2", false)]);
+        t.apply_children(
+            "a",
+            vec![node("a/1", "a1", false), node("a/2", "a2", false)],
+        );
         assert_eq!(
             t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
             vec!["r", "a"]
@@ -23346,8 +23821,8 @@ mod tests {
         t.rows[1].expanded = true; // request-time expand mark (see contract)
         t.apply_children("a", vec![node("a/1", "a1", false)]);
         t.selected = 2; // on a/1
-        // `a` vanished from the fresh listing: its subtree goes with it,
-        // and the orphaned cursor falls back to the refreshed parent.
+                        // `a` vanished from the fresh listing: its subtree goes with it,
+                        // and the orphaned cursor falls back to the refreshed parent.
         t.apply_children("r", vec![node("b", "b", false)]);
         assert_eq!(
             t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
@@ -23750,6 +24225,222 @@ mod tests {
         );
         assert!(pos.is_none());
     }
+
+    // --- ADR 0042 L2a: multi-host connection set, workspace-cache union,
+    // and per-host routing. ---
+
+    /// Minimal `WorkspaceInfo` for cache/tree tests — every field a real
+    /// `workspace.list` row carries, defaulted to the empty/false case so
+    /// each test only names what it cares about.
+    fn ws_info(slug: &str, tmux_session: &str) -> crate::transport::WorkspaceInfo {
+        crate::transport::WorkspaceInfo {
+            workspace_id: format!("ws-{slug}-0000"),
+            slug: slug.to_string(),
+            label: String::new(),
+            project_root: format!("/projects/{slug}"),
+            tmux_session: tmux_session.to_string(),
+            kernel_running: false,
+            is_default: false,
+            autostart_claude: false,
+            agent_name: String::new(),
+            task: String::new(),
+            agent_state: String::new(),
+            agent_summary: String::new(),
+            agent_status_at: String::new(),
+            repl_state: String::new(),
+            runtime: String::new(),
+            state_dir: None,
+            phase: None,
+        }
+    }
+
+    #[test]
+    fn fresh_workspace_caches_two_hosts_sharing_a_slug_do_not_collide() {
+        // The invariant this whole slice exists for: two hosts each
+        // reporting a workspace named "sot" must produce TWO distinct
+        // cache entries, not one clobbering the other.
+        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        let mut alpha_ws = ws_info("sot", "sot-be-sot");
+        alpha_ws.project_root = "/projects/alpha-sot".to_string();
+        let mut beta_ws = ws_info("sot", "sot-be-sot");
+        beta_ws.project_root = "/projects/beta-sot".to_string();
+        lists.insert("alpha".to_string(), vec![alpha_ws]);
+        lists.insert("beta".to_string(), vec![beta_ws]);
+        let ordered = vec!["alpha".to_string(), "beta".to_string()];
+        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
+
+        assert_eq!(
+            fresh.workspace_slugs.len(),
+            2,
+            "one entry per host, not one merged entry"
+        );
+        let alpha_key: WsKey = ("alpha".to_string(), "sot".to_string());
+        let beta_key: WsKey = ("beta".to_string(), "sot".to_string());
+        assert_eq!(
+            fresh
+                .workspace_project_roots
+                .get(&alpha_key)
+                .map(String::as_str),
+            Some("/projects/alpha-sot")
+        );
+        assert_eq!(
+            fresh
+                .workspace_project_roots
+                .get(&beta_key)
+                .map(String::as_str),
+            Some("/projects/beta-sot")
+        );
+        // Same-named tmux sessions on different hosts must also resolve
+        // to distinct autostart entries.
+        assert!(fresh
+            .workspace_autostart
+            .contains_key(&("alpha".to_string(), "sot-be-sot".to_string())));
+        assert!(fresh
+            .workspace_autostart
+            .contains_key(&("beta".to_string(), "sot-be-sot".to_string())));
+    }
+
+    #[test]
+    fn fresh_workspace_caches_default_slug_is_scoped_to_active_host() {
+        // Each host's OWN `is_default` row exists; only active_host's
+        // should set `default_workspace_slug` (a bare slug — the pair
+        // with `active_host` is what the caller actually needs).
+        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        let mut alpha_default = ws_info("home", "sot-be-home");
+        alpha_default.is_default = true;
+        let mut beta_default = ws_info("root", "sot-be-root");
+        beta_default.is_default = true;
+        lists.insert("alpha".to_string(), vec![alpha_default]);
+        lists.insert("beta".to_string(), vec![beta_default]);
+        let ordered = vec!["alpha".to_string(), "beta".to_string()];
+
+        let fresh_alpha = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
+        assert_eq!(fresh_alpha.default_workspace_slug.as_deref(), Some("home"));
+
+        let fresh_beta = fresh_workspace_caches(&ordered, &lists, &"beta".to_string());
+        assert_eq!(fresh_beta.default_workspace_slug.as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn fresh_workspace_caches_workspace_id_slugs_resolves_to_the_right_host() {
+        // The canonical workspace_id → WsKey translation (repl.frame
+        // lifecycle routing) must carry the ORIGINATING host, not
+        // whichever host happens to be active.
+        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        lists.insert("beta".to_string(), vec![ws_info("sot", "sot-be-sot")]);
+        let ordered = vec!["beta".to_string()];
+        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
+        assert_eq!(
+            fresh.workspace_id_slugs.get("ws-sot-0000"),
+            Some(&("beta".to_string(), "sot".to_string()))
+        );
+    }
+
+    #[test]
+    fn union_replace_leaves_the_other_hosts_list_intact() {
+        // The actual per-host-replace step (`workspace_lists.insert`) is a
+        // bare HashMap insert — this test proves the INVARIANT it exists
+        // for: replacing host A's slice must not disturb host B's, exactly
+        // like a real `IncomingEvt::Workspaces` reply from A shouldn't
+        // clobber B's last-known (possibly now-unreachable) list.
+        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        lists.insert("alpha".to_string(), vec![ws_info("one", "sot-be-one")]);
+        lists.insert("beta".to_string(), vec![ws_info("two", "sot-be-two")]);
+
+        // A fresh reply from alpha with a DIFFERENT workspace set.
+        lists.insert("alpha".to_string(), vec![ws_info("three", "sot-be-three")]);
+
+        assert_eq!(lists.get("beta").map(Vec::len), Some(1));
+        assert_eq!(lists["beta"][0].slug, "two", "beta's list is untouched");
+        assert_eq!(
+            lists["alpha"][0].slug, "three",
+            "alpha's list is the new one"
+        );
+    }
+
+    #[test]
+    fn fresh_workspace_caches_skips_a_host_with_no_list_yet() {
+        // ordered_hosts includes every connection, but a host that hasn't
+        // answered workspace.list yet (still mid-hello) contributes no
+        // rows rather than panicking on a missing map entry.
+        let lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        let ordered = vec!["alpha".to_string(), "beta".to_string()];
+        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
+        assert!(fresh.workspace_slugs.is_empty());
+        assert!(fresh.default_workspace_slug.is_none());
+    }
+
+    /// A fake `req_tx`: `Vec<(HostKey, UnboundedSender<OutgoingReq>)>` is
+    /// exactly `State::conns`' own type, so `State::send`/`send_to`'s
+    /// routing logic (`self.conns.iter().find(...)`) is exercised here
+    /// verbatim, without constructing a GPU-backed `State`.
+    fn fake_conns() -> (
+        Vec<(HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)>,
+        HashMap<HostKey, tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>>,
+    ) {
+        let mut conns = Vec::new();
+        let mut rxs = HashMap::new();
+        for host in ["local", "alpha"] {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            conns.push((host.to_string(), tx));
+            rxs.insert(host.to_string(), rx);
+        }
+        (conns, rxs)
+    }
+
+    /// Mirrors `State::send`/`send_to`'s exact bodies (they're `&self`
+    /// methods with no other dependency) so the routing rule — `send` →
+    /// `active_host`, `send_to` → the named host — is provable without a
+    /// GPU-backed `State`.
+    fn route_send(
+        conns: &[(HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)],
+        active_host: &HostKey,
+        req: OutgoingReq,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<OutgoingReq>> {
+        route_send_to(conns, active_host, req)
+    }
+    fn route_send_to(
+        conns: &[(HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)],
+        host: &HostKey,
+        req: OutgoingReq,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<OutgoingReq>> {
+        match conns.iter().find(|(h, _)| h == host) {
+            Some((_, tx)) => tx.send(req),
+            None => Err(tokio::sync::mpsc::error::SendError(req)),
+        }
+    }
+
+    #[test]
+    fn send_routes_to_active_host() {
+        let (conns, mut rxs) = fake_conns();
+        route_send(&conns, &"alpha".to_string(), OutgoingReq::WorkspaceList).unwrap();
+        assert!(rxs.get_mut("alpha").unwrap().try_recv().is_ok());
+        assert!(rxs.get_mut("local").unwrap().try_recv().is_err());
+    }
+
+    #[test]
+    fn send_to_routes_to_the_named_host_not_active() {
+        let (conns, mut rxs) = fake_conns();
+        // active_host is "alpha", but send_to explicitly targets "local" —
+        // a row-scoped op (e.g. workspace.destroy on a non-active row).
+        route_send_to(&conns, &"local".to_string(), OutgoingReq::WorkspaceList).unwrap();
+        assert!(rxs.get_mut("local").unwrap().try_recv().is_ok());
+        assert!(rxs.get_mut("alpha").unwrap().try_recv().is_err());
+    }
+
+    #[test]
+    fn send_to_unknown_host_errs_instead_of_silently_dropping() {
+        let (conns, _rxs) = fake_conns();
+        let err = route_send_to(
+            &conns,
+            &"nonexistent".to_string(),
+            OutgoingReq::WorkspaceList,
+        );
+        assert!(
+            err.is_err(),
+            "an unrouteable host must surface as an error, not vanish"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -23829,15 +24520,25 @@ mod repl_lifecycle_render_tests {
         // Lifecycle frames stamp the CANONICAL workspace id; every FE surface
         // keys by slug (the `started`-frame lesson: a canonical-id key
         // silently never matches). The map from the last workspace.list is
-        // the translation.
-        let mut ids = HashMap::new();
-        ids.insert("ws-alpha-1a2b".to_string(), "alpha".to_string());
-        assert_eq!(
-            lifecycle_key_of(Some("ws-alpha-1a2b"), &ids, Some("home")),
-            "alpha"
+        // the translation. ADR 0042 L2a: the returned `WsKey` carries the
+        // HOST that `workspace_id_slugs` recorded for the id, which can
+        // differ from the frame's own connection (`host` below) — the
+        // lookup wins over the fallback whenever the id IS known.
+        let mut ids: HashMap<String, WsKey> = HashMap::new();
+        ids.insert(
+            "ws-alpha-1a2b".to_string(),
+            ("myhost".to_string(), "alpha".to_string()),
         );
-        // Already-a-slug (or unknown) hints store as-is rather than dropping.
-        assert_eq!(lifecycle_key_of(Some("beta"), &ids, Some("home")), "beta");
+        assert_eq!(
+            lifecycle_key_of("myhost", Some("ws-alpha-1a2b"), &ids, Some("home")),
+            ("myhost".to_string(), "alpha".to_string())
+        );
+        // Already-a-slug (or unknown) hints store as-is, under the frame's
+        // OWN host (the only host information available for an unknown id).
+        assert_eq!(
+            lifecycle_key_of("myhost", Some("beta"), &ids, Some("home")),
+            ("myhost".to_string(), "beta".to_string())
+        );
     }
 
     #[test]
@@ -23845,10 +24546,16 @@ mod repl_lifecycle_render_tests {
         // The legacy singleton REPL stamps no workspace id: it IS the default
         // workspace. Resolve to its slug once known, "<default>" before the
         // first workspace.list reply (transient; the list's repl_state
-        // catch-up re-keys it).
-        let ids = HashMap::new();
-        assert_eq!(lifecycle_key_of(None, &ids, Some("home")), "home");
-        assert_eq!(lifecycle_key_of(None, &ids, None), "<default>");
+        // catch-up re-keys it). Always under the frame's own host.
+        let ids: HashMap<String, WsKey> = HashMap::new();
+        assert_eq!(
+            lifecycle_key_of("myhost", None, &ids, Some("home")),
+            ("myhost".to_string(), "home".to_string())
+        );
+        assert_eq!(
+            lifecycle_key_of("myhost", None, &ids, None),
+            ("myhost".to_string(), "<default>".to_string())
+        );
     }
 }
 
