@@ -3232,23 +3232,26 @@ struct State {
     /// so the OUTER key stays a bare `String`; only the resolved VALUE
     /// needs the host to disambiguate which daemon's slug it names.
     workspace_id_slugs: HashMap<String, WsKey>,
-    /// Badge floor (ADR 0025 §1): `(host, slug)` → workspace-relative path
-    /// of a `nav.preview` result that arrived for a workspace the FE wasn't
-    /// viewing. Instead of silently dropping the off-workspace result (the
-    /// bug §1 fixes — a backend session pushes a result to a FE looking at
-    /// another workspace and it vanishes), we record it here ("result
-    /// pending") and badge that workspace's row/strip name non-disruptively.
-    /// Latest-wins per workspace. When the user later *switches* to the
-    /// workspace, `switch_to_workspace` drives the pending preview and clears
-    /// the entry, so a result always reaches the user — never dropped. The
-    /// future `op::FE_COMMAND` handler will reuse `mark_pending_nav`.
-    /// ADR 0042 L2a: NOT a `WsKey` — the `nav.preview` envelope this is fed
-    /// from carries a bare slug on the wire (no host), and every consumer
-    /// compares against `active_workspace_id`/`default_workspace_slug`
-    /// (also bare, active-host-scoped). Same reasoning as
-    /// `default_workspace_slug`: out of L2a's named cache list, and
-    /// retyping it would need a host this data doesn't carry.
-    pending_nav: HashMap<String, String>,
+    /// Badge floor (ADR 0025 §1): `WsKey` (host, slug) → workspace-relative
+    /// path of a `nav.preview` result that arrived for a workspace the FE
+    /// wasn't viewing. Instead of silently dropping the off-workspace
+    /// result (the bug §1 fixes — a backend session pushes a result to a FE
+    /// looking at another workspace and it vanishes), we record it here
+    /// ("result pending") and badge that workspace's row/strip name
+    /// non-disruptively. Latest-wins per workspace. When the user later
+    /// *switches* to the workspace, `switch_to_workspace` drives the
+    /// pending preview and clears the entry, so a result always reaches
+    /// the user — never dropped. `dispatch_fe_command`'s `Preview`/`Reveal`
+    /// arms reuse `mark_pending_nav` too.
+    /// ADR 0042 L2a codex review, item E: keyed by `WsKey`, not a bare
+    /// slug. The `nav.preview` ENVELOPE itself carries no host field, but
+    /// the EVENT delivering it does (`event_host`, tagged by whichever
+    /// connection received the `agent.message` push) — the same slug on
+    /// two hosts is exactly the collision `WsKey` exists to prevent
+    /// everywhere else, and a bare-slug compare here let a same-slug
+    /// nav.preview from a NON-active host be mistaken for one targeting
+    /// our active workspace.
+    pending_nav: HashMap<WsKey, String>,
     /// `(host, slug)` → the *previous* work-state string we last saw, so
     /// the `workspace_states` update site can tell a real transition (a
     /// slug that had a known, different prior state) from a first-ever
@@ -5579,9 +5582,9 @@ impl State {
     /// the floor's contract: a result always reaches the user, never silently
     /// dropped. Latest-wins per workspace. The future `op::FE_COMMAND` handler
     /// will reuse this method.
-    fn mark_pending_nav(&mut self, ws: String, path: String) {
+    fn mark_pending_nav(&mut self, host: HostKey, ws: String, path: String) {
         self.status = pending_nav_status(&ws, &path);
-        self.pending_nav.insert(ws, path);
+        self.pending_nav.insert((host, ws), path);
         self.window.request_redraw();
     }
 
@@ -5594,18 +5597,23 @@ impl State {
     /// resolves them directly, so no tree expansion is required to show the
     /// file. (Cursor-reveal — expanding the tree to select the row — is a
     /// follow-up; the preview pane is the payload of `nav.preview`.)
-    fn handle_nav_envelope(&mut self, env: &NavEnvelope) {
+    fn handle_nav_envelope(&mut self, host: &HostKey, env: &NavEnvelope) {
         let current = self
             .active_workspace_id
             .clone()
             .or_else(|| self.default_workspace_slug.clone());
-        if current.as_deref() != Some(env.workspace.as_str()) {
+        // ADR 0042 L2a codex review, item E: the slug alone isn't enough
+        // — two hosts can share a slug (their own default workspace, say),
+        // so this must also confirm the push arrived on active_host.
+        if host != &self.active_host || current.as_deref() != Some(env.workspace.as_str()) {
             // Badge floor (ADR 0025 §1): the result targets a workspace we're
-            // not viewing. Don't silently drop it — record + badge it so it
-            // reaches the user when they switch to that workspace.
-            tracing::debug!(target_ws = %env.workspace, ?current,
-                "nav.preview targets a non-active workspace — badging as pending (not chat)");
-            self.mark_pending_nav(env.workspace.clone(), env.path.clone());
+            // not viewing (or arrived from a non-active host). Don't silently
+            // drop it — record + badge it so it reaches the user when they
+            // switch to that workspace.
+            tracing::debug!(target_host = %host, target_ws = %env.workspace, ?current,
+                active_host = %self.active_host,
+                "nav.preview targets a non-active (host, workspace) — badging as pending (not chat)");
+            self.mark_pending_nav(host.clone(), env.workspace.clone(), env.path.clone());
             return;
         }
         // Drive both panes via the shared same-ws open: preview body now, and a
@@ -6737,7 +6745,11 @@ impl State {
                 // blanket agent broadcast can never force-switch the view.
                 if urgent {
                     tracing::info!(%workspace, %path, "fe-command: preview (user-requested focus capture)");
-                    self.mark_pending_nav(workspace.clone(), path.clone());
+                    self.mark_pending_nav(
+                        self.active_host.clone(),
+                        workspace.clone(),
+                        path.clone(),
+                    );
                     let is_default =
                         workspace.is_empty() || workspace == "default" || workspace == "<default>";
                     let (slug, tmux) = if is_default {
@@ -6751,7 +6763,7 @@ impl State {
                     // nav-cursor reveal) is driven when the user next switches
                     // to `workspace` (see `switch_to_workspace`).
                     tracing::info!(%workspace, %path, "fe-command: preview (badge)");
-                    self.mark_pending_nav(workspace, path);
+                    self.mark_pending_nav(self.active_host.clone(), workspace, path);
                 }
             }
             FeCommand::Reveal {
@@ -7659,13 +7671,15 @@ impl State {
         // had a pending `nav.preview` result, drive it now and clear the badge.
         // Resolve the switched-to slug the same way `handle_nav_envelope`'s gate
         // does (active id, falling back to the default workspace's slug) so the
-        // key matches what `mark_pending_nav` recorded.
+        // key matches what `mark_pending_nav` recorded. `self.active_host` is
+        // already the switched-to host at this point (set earlier in this fn).
         let switched_slug = self
             .active_workspace_id
             .clone()
             .or_else(|| self.default_workspace_slug.clone());
         if let Some(slug) = switched_slug {
-            if let Some(path) = self.pending_nav.remove(&slug) {
+            let pending_key: WsKey = (self.active_host.clone(), slug.clone());
+            if let Some(path) = self.pending_nav.remove(&pending_key) {
                 // Through the store seam: a workspace restored in Modules mode
                 // parks its Modules tree and brings in its Files slot (empty on
                 // a first visit) — never shows modules: rows under Files.
@@ -12872,7 +12886,12 @@ impl State {
                         // Server pushed a workspace create/destroy; re-list so
                         // the Sessions strip refreshes live (mirror the manual
                         // poll). Idempotent if we triggered the change.
-                        let _ = self.send(crate::transport::OutgoingReq::WorkspaceList);
+                        // ADR 0042 L2a codex review, item E: ask the host
+                        // that actually pushed this event, not active_host
+                        // — a non-active host's workspace churn used to
+                        // silently re-query the WRONG connection.
+                        let _ =
+                            self.send_to(&event_host, crate::transport::OutgoingReq::WorkspaceList);
                     } else if op == sot_protocol::op::AGENT_MESSAGE {
                         // Server relayed an agent-to-agent message over the
                         // SSH-forwarded socket. Item 2: a session can drive
@@ -12886,7 +12905,7 @@ impl State {
                         // workspace.changed push leg).
                         let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
                         if let Some(env) = parse_nav_envelope(text) {
-                            self.handle_nav_envelope(&env);
+                            self.handle_nav_envelope(&event_host, &env);
                         } else {
                             append_agent_message(&payload);
                         }
@@ -12931,6 +12950,22 @@ impl State {
                         // replaced the path-only scheme). Duplicate copies from
                         // overlapping watchers re-fire the same idempotent
                         // refresh; cheap.
+                        //
+                        // ADR 0042 L2a codex review, item E: `active_ws` /
+                        // `active_project_root()` below describe active_host's
+                        // OWN view -- there is no per-host parked preview
+                        // state to update for a non-active host, so a change
+                        // reported by any other host has nothing valid to
+                        // resolve against here. Without this gate a
+                        // coincidental node_id/path match against the
+                        // ACTIVE host's tag/root (e.g. two projects both
+                        // having "src/main.jl") could repaint the visible
+                        // pane with a non-active host's file content.
+                        if event_host != self.active_host {
+                            tracing::debug!(%event_host, active_host = %self.active_host,
+                                "preview.changed from a non-active host — dropped");
+                            continue;
+                        }
                         let event_ws = payload.get("workspace_id").and_then(|v| v.as_str());
                         let event_node = payload.get("node_id").and_then(|v| v.as_str());
                         let event_path = payload.get("path").and_then(|v| v.as_str());
@@ -12983,13 +13018,16 @@ impl State {
                             && self.preview_node_id_fired.as_deref() == Some(node_id.as_str())
                         {
                             let (fit_w, fit_h) = self.preview_fit_px();
-                            let _ = self.send(crate::transport::OutgoingReq::PreviewGet {
-                                node_id: node_id.clone(),
-                                workspace_id: self.active_workspace_id.clone(),
-                                page: self.preview_page.map(|(p, _)| p),
-                                fit_w,
-                                fit_h,
-                            });
+                            let _ = self.send_to(
+                                &event_host,
+                                crate::transport::OutgoingReq::PreviewGet {
+                                    node_id: node_id.clone(),
+                                    workspace_id: self.active_workspace_id.clone(),
+                                    page: self.preview_page.map(|(p, _)| p),
+                                    fit_w,
+                                    fit_h,
+                                },
+                            );
                         }
                     } else {
                         tracing::debug!(%op, "evt");
@@ -14547,7 +14585,10 @@ impl State {
                     // rows (kind "session"), keyed by the row's slug so it
                     // matches the bottom strip. `pending` (badge floor, ADR
                     // 0025 §1) is set when that workspace has a pending
-                    // nav.preview result waiting, keyed by the same slug.
+                    // nav.preview result waiting, keyed by the row's own
+                    // (host, slug) — ADR 0042 L2a codex review item E: a
+                    // slug-only check couldn't tell this host's row apart
+                    // from another host's same-slug pending badge.
                     let (agent, flash, pending) = if r.node.kind == "session" {
                         let slug = r.node.payload.get("slug").and_then(|v| v.as_str());
                         let host = r.node.payload.get("host").and_then(|v| v.as_str());
@@ -14555,8 +14596,12 @@ impl State {
                             .zip(slug)
                             .map(|(h, s)| self.flash_factor_for(h, s, flash_now))
                             .unwrap_or(0.0);
-                        let pending = slug
-                            .map(|s| self.pending_nav.contains_key(s))
+                        let pending = host
+                            .zip(slug)
+                            .map(|(h, s)| {
+                                self.pending_nav
+                                    .contains_key(&(h.to_string(), s.to_string()))
+                            })
                             .unwrap_or(false);
                         (agent_tone_for(&r.node.payload, now), flash, pending)
                     } else {
@@ -15529,13 +15574,12 @@ impl State {
                 .collect();
             // Per-name badge-floor pending flag, parallel to `labels` (ADR
             // 0025 §1): true when that workspace has a pending nav.preview
-            // result waiting. `pending_nav` stays bare-slug (fed by a
-            // nav.preview envelope that carries no host — see its field
-            // doc) so this checks the slug alone, same as before L2a.
+            // result waiting, keyed by the same (host, slug) WsKey pair
+            // pending_nav uses (ADR 0042 L2a codex review, item E).
             let pendings: Vec<bool> = self
                 .workspace_slugs
                 .iter()
-                .map(|(_, s)| self.pending_nav.contains_key(s))
+                .map(|(h, s)| self.pending_nav.contains_key(&(h.clone(), s.clone())))
                 .collect();
             let strip_lines = session_strip_lines(
                 &labels,
@@ -22973,25 +23017,39 @@ mod tests {
     }
 
     #[test]
-    fn pending_nav_insert_is_latest_wins() {
-        // The pending_nav map is the badge-floor state mark_pending_nav writes:
-        // keyed by workspace slug, latest path wins (a newer off-workspace
-        // result supersedes the older one for the same workspace). This mirrors
-        // mark_pending_nav's `insert` without needing a full State.
-        let mut pending_nav: HashMap<String, String> = HashMap::new();
-        pending_nav.insert("mypackage".to_string(), "src/a.jl".to_string());
-        pending_nav.insert("other".to_string(), "src/b.jl".to_string());
-        // Latest-wins on the same workspace.
-        pending_nav.insert("mypackage".to_string(), "src/c.jl".to_string());
-        assert_eq!(pending_nav.len(), 2, "one entry per workspace");
+    fn pending_nav_insert_is_latest_wins_and_host_qualified() {
+        // The pending_nav map is the badge-floor state mark_pending_nav
+        // writes: keyed by WsKey (host, slug) -- ADR 0042 L2a codex review
+        // item E, was a bare slug -- latest path wins per (host, slug),
+        // and the SAME slug on two DIFFERENT hosts are separate entries
+        // (the collision a bare-slug key used to let a non-active host's
+        // nav.preview be mistaken for the active host's own badge). This
+        // mirrors mark_pending_nav's `insert` without needing a full State.
+        let mut pending_nav: HashMap<WsKey, String> = HashMap::new();
+        let alpha_pkg: WsKey = ("alpha".to_string(), "mypackage".to_string());
+        let alpha_other: WsKey = ("alpha".to_string(), "other".to_string());
+        let beta_pkg: WsKey = ("beta".to_string(), "mypackage".to_string());
+        pending_nav.insert(alpha_pkg.clone(), "src/a.jl".to_string());
+        pending_nav.insert(alpha_other.clone(), "src/b.jl".to_string());
+        pending_nav.insert(beta_pkg.clone(), "src/z.jl".to_string());
+        // Latest-wins on the same (host, workspace).
+        pending_nav.insert(alpha_pkg.clone(), "src/c.jl".to_string());
+        assert_eq!(pending_nav.len(), 3, "one entry per (host, workspace)");
         assert_eq!(
-            pending_nav.get("mypackage").map(String::as_str),
+            pending_nav.get(&alpha_pkg).map(String::as_str),
             Some("src/c.jl"),
-            "latest result for a workspace supersedes the earlier one"
+            "latest result for a (host, workspace) supersedes the earlier one"
         );
         assert_eq!(
-            pending_nav.get("other").map(String::as_str),
+            pending_nav.get(&alpha_other).map(String::as_str),
             Some("src/b.jl")
+        );
+        // beta's "mypackage" is untouched by alpha's inserts, even though
+        // the slug is identical.
+        assert_eq!(
+            pending_nav.get(&beta_pkg).map(String::as_str),
+            Some("src/z.jl"),
+            "a same-slug entry on a different host must not collide"
         );
     }
 
