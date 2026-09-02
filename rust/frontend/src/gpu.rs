@@ -7268,8 +7268,19 @@ impl State {
     /// the CALLER's `(cols, rows)` (the session pane's current rect) not
     /// the drawer's 80×24 default — a freshly-selected row should show at
     /// its real size on the very first paint, not resize a frame later.
+    ///
+    /// ADR 0042 slice L1b fix 1: unconditionally drops any existing
+    /// `pane_attach_term` BEFORE constructing the new one — the single
+    /// enforcement point for "never two clients alive," independent of
+    /// caller discipline. Constructing first and only then overwriting
+    /// the field would briefly hold two live clients (two connections,
+    /// two controller ids) against possibly the same lane, which is what
+    /// let `try_attach_capsule_pane`'s own pre-drop and the
+    /// `PtyAttachDirect` handler (which had no pre-drop of its own)
+    /// disagree before this fix.
     #[cfg(windows)]
     fn spawn_pane_attach_term(&mut self, state_dir: std::path::PathBuf, cols: u16, rows: u16) {
+        self.pane_attach_term = None;
         let controller_id = self_comm_handle();
         let fe_down_to = self_comm_handle();
         let waker = self.window.clone();
@@ -11498,57 +11509,78 @@ impl State {
                         self.delivery = Some(d);
                     }
                 }
-                crate::transport::IncomingEvt::PtyAttachDirect { state_dir } => {
-                    // ADR 0042 slice L1b defensive path: `pty.open` was
-                    // refused because the currently-targeted row is
-                    // actually a capsule (a stale `workspace.list` cache,
-                    // or a race with the runtime flip). Switch the
-                    // session pane to the attach path right now, using
-                    // the daemon's own `state_dir` resolution, instead of
-                    // waiting for the next `workspace.list` reply.
+                crate::transport::IncomingEvt::PtyAttachDirect { target, state_dir } => {
+                    // ADR 0042 slice L1b fix 1: this reply is about
+                    // `target` — the ORIGINAL request's own target,
+                    // carried end to end through `PendingKind::PtyOpen`
+                    // — never whatever `bl_pane_target` happens to be
+                    // when the (possibly stale/delayed) reply lands. A
+                    // user switch to a DIFFERENT row between the
+                    // `pty.open` send and this reply must not
+                    // misattribute the cache correction or the attach.
                     #[cfg(windows)]
                     {
-                        if let Some(target) = self.bl_pane_target.clone() {
-                            match state_dir {
-                                Some(dir) => {
-                                    // Correct the cache so the NEXT switch
-                                    // to this row goes straight to the
-                                    // attach path without needing this
-                                    // fallback again.
-                                    self.workspace_runtime.insert(
-                                        target.clone(),
-                                        WorkspaceRuntime {
-                                            runtime: "capsule".to_string(),
-                                            state_dir: Some(dir.clone()),
-                                        },
-                                    );
-                                    let (cols, rows) = self.pty_size.unwrap_or((80, 24));
-                                    self.spawn_pane_attach_term(
-                                        std::path::PathBuf::from(dir),
-                                        cols,
-                                        rows,
-                                    );
-                                    self.status =
-                                        format!("attached BL → {target} (capsule, corrected)");
+                        match target {
+                            None => {
+                                tracing::warn!(
+                                    "pty.open refused attach_direct for a targetless \
+                                     (default) request — no row identity to correct or attach"
+                                );
+                            }
+                            Some(target) => {
+                                // Correct the cache for THIS row
+                                // regardless of whether it's still
+                                // selected — the next switch to it goes
+                                // straight to the attach path without
+                                // needing this fallback again.
+                                self.workspace_runtime.insert(
+                                    target.clone(),
+                                    WorkspaceRuntime {
+                                        runtime: "capsule".to_string(),
+                                        state_dir: state_dir.clone(),
+                                    },
+                                );
+                                let still_selected =
+                                    self.bl_pane_target.as_deref() == Some(target.as_str());
+                                // Already corrected by an earlier reply
+                                // (or a fresh cache-hit switch) — a
+                                // duplicate/late refusal for the SAME
+                                // still-selected row must not spawn a
+                                // second client alongside the live one.
+                                let already_attached = self.pane_attach_term.is_some();
+                                if still_selected && !already_attached {
+                                    match state_dir {
+                                        Some(dir) => {
+                                            let (cols, rows) =
+                                                self.pty_size.unwrap_or((80, 24));
+                                            self.spawn_pane_attach_term(
+                                                std::path::PathBuf::from(dir),
+                                                cols,
+                                                rows,
+                                            );
+                                            self.status = format!(
+                                                "attached BL → {target} (capsule, corrected)"
+                                            );
+                                        }
+                                        None => {
+                                            tracing::warn!(%target,
+                                                "pty.open refused attach_direct with no state_dir");
+                                            self.status = format!(
+                                                "'{target}' is a capsule workspace but no state_dir was returned"
+                                            );
+                                        }
+                                    }
                                 }
-                                None => {
-                                    tracing::warn!(%target,
-                                        "pty.open refused attach_direct with no state_dir");
-                                    self.status = format!(
-                                        "'{target}' is a capsule workspace but no state_dir was returned"
-                                    );
-                                }
+                                // `!still_selected`: the user moved on —
+                                // the cache correction above is all this
+                                // reply does.
                             }
                         }
                         self.window.request_redraw();
                     }
                     #[cfg(not(windows))]
                     {
-                        let _ = state_dir;
-                        tracing::warn!(
-                            "pty.open refused attach_direct on a non-Windows build (unexpected — \
-                             capsule workspaces are Windows-only through L1)"
-                        );
+                        let _ = (target, state_dir);
                     }
                 }
                 crate::transport::IncomingEvt::PtyBytes { bytes } => {

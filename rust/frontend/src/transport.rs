@@ -412,14 +412,19 @@ pub enum IncomingEvt {
         bytes: Vec<u8>,
     },
     /// ADR 0042 slice L1b: a `pty.open` came back refused with
-    /// `code: "attach_direct"` — the currently-targeted row is actually
-    /// a capsule workspace (a stale `workspace.list` cache, or the
-    /// reconnect re-fire racing a runtime flip). `state_dir` is the
-    /// daemon's own resolution of the path when it could compute one;
-    /// `None` if it couldn't (no state root configured). The chrome
-    /// switches the session pane to the attach path using this instead
-    /// of waiting for the next `workspace.list` to self-correct.
+    /// `code: "attach_direct"` — the row THIS REQUEST targeted (mirrors
+    /// `PtyOpenReq.target`, carried through `PendingKind::PtyOpen`) is
+    /// actually a capsule workspace (a stale `workspace.list` cache, or
+    /// the reconnect re-fire racing a runtime flip). `target` is what
+    /// this specific reply is ABOUT — never assume it's whatever row is
+    /// currently selected, which a later switch can have changed by the
+    /// time a stale reply lands (L1b fix 1). `state_dir` is the daemon's
+    /// own resolution of the path when it could compute one; `None` if
+    /// it couldn't (no state root configured). The chrome switches that
+    /// row's session pane to the attach path using this instead of
+    /// waiting for the next `workspace.list` to self-correct.
     PtyAttachDirect {
+        target: Option<String>,
         state_dir: Option<String>,
     },
     /// Raw event we don't handle in the spike yet — kept for visibility.
@@ -1243,7 +1248,14 @@ enum PendingKind {
     ReplEval {
         eval_id: u64,
     },
-    PtyOpen,
+    /// ADR 0042 slice L1b fix 1: carries the `target` THIS request
+    /// named (mirrors `PtyOpenReq.target`) — the reply (an ordinary
+    /// size confirmation, or an `attach_direct` refusal) is always about
+    /// THIS target, never whatever row happens to be selected by the
+    /// time the reply lands.
+    PtyOpen {
+        target: Option<String>,
+    },
     TmuxListSessions,
     TmuxListPanes {
         session: Option<String>,
@@ -2279,6 +2291,12 @@ where
                     }
                     OutgoingReq::PtyOpen { cols, rows, target, user_switch } => {
                         tracing::debug!(cols, rows, ?target, user_switch, id, "→ pty.open");
+                        // L1b fix 1: cloned BEFORE the move into
+                        // `PtyOpenReq` below — the pending entry must
+                        // remember exactly what this request targeted so
+                        // the reply (in particular an `attach_direct`
+                        // refusal) is never applied to a different row.
+                        let pending_target = target.clone();
                         codec::write_frame(
                             &mut tx,
                             &Frame::req(
@@ -2289,7 +2307,7 @@ where
                             None,
                         )
                         .await?;
-                        pending.insert(id, PendingKind::PtyOpen);
+                        pending.insert(id, PendingKind::PtyOpen { target: pending_target });
                     }
                     OutgoingReq::PtyResize { cols, rows } => {
                         // Fire-and-forget — no response, so no pending entry.
@@ -3283,14 +3301,17 @@ fn handle_response_frame(
                     }
                 }
             }
-            PendingKind::PtyOpen => {
+            PendingKind::PtyOpen { target } => {
                 // ADR 0042 slice L1b: checked BEFORE the `PtyOpenRes`
                 // parse below (which requires `cols`/`rows` and would
                 // just fail-and-warn on this envelope) — a capsule row's
                 // `pty.open` is refused with `{error, code:
                 // "attach_direct", state_dir}`, never a size confirmation.
+                // `target` is THIS request's own target (fix 1) — the
+                // chrome corrects/attaches that row, not whatever is
+                // currently selected.
                 if let Some(state_dir) = attach_direct_state_dir(&frame.payload) {
-                    let _ = evt_tx.send(IncomingEvt::PtyAttachDirect { state_dir });
+                    let _ = evt_tx.send(IncomingEvt::PtyAttachDirect { target, state_dir });
                     return;
                 }
                 match serde_json::from_value::<PtyOpenRes>(frame.payload) {
@@ -3989,7 +4010,7 @@ mod tests {
                     url: "figures/b.png".to_string(),
                 },
             );
-            guard.insert(3, PendingKind::PtyOpen);
+            guard.insert(3, PendingKind::PtyOpen { target: None });
             // `guard` drops here — the connection-loss scenario.
         }
         let mut urls: Vec<String> = evt_rx
@@ -4122,14 +4143,22 @@ mod tests {
     /// Real-seam regression, same shape as `figure_get_error_envelope_...`
     /// above: an `attach_direct` refusal to `pty.open`, driven through the
     /// actual `handle_response_frame` dispatcher, must produce exactly one
-    /// `PtyAttachDirect` carrying the daemon's `state_dir` — and must NOT
-    /// fall through to a `pty.open res parse failed` warn-and-drop (the
-    /// pre-L1b behavior for any unparseable `PtyOpenRes`).
+    /// `PtyAttachDirect` carrying the daemon's `state_dir` AND the exact
+    /// `target` this request's own `PendingKind::PtyOpen` entry named —
+    /// L1b fix 1's whole point: the reply is about THAT row, not whatever
+    /// the pending map happened to be keyed against. Must NOT fall through
+    /// to a `pty.open res parse failed` warn-and-drop (the pre-L1b
+    /// behavior for any unparseable `PtyOpenRes`).
     #[test]
-    fn attach_direct_reply_emits_exactly_one_pty_attach_direct() {
+    fn attach_direct_reply_emits_exactly_one_pty_attach_direct_with_its_own_target() {
         let (evt_tx, evt_rx) = std::sync::mpsc::channel();
         let mut pending: HashMap<u64, PendingKind> = HashMap::new();
-        pending.insert(9, PendingKind::PtyOpen);
+        pending.insert(
+            9,
+            PendingKind::PtyOpen {
+                target: Some("sot-be-alpha".to_string()),
+            },
+        );
         let frame = Frame::res(
             9,
             op::PTY_OPEN,
@@ -4148,7 +4177,8 @@ mod tests {
             "exactly one event for one attach_direct reply, got {events:?}"
         );
         match &events[0] {
-            IncomingEvt::PtyAttachDirect { state_dir } => {
+            IncomingEvt::PtyAttachDirect { target, state_dir } => {
+                assert_eq!(target.as_deref(), Some("sot-be-alpha"));
                 assert_eq!(state_dir.as_deref(), Some("/state/workspaces/ws-9"));
             }
             other => panic!("expected PtyAttachDirect, got {other:?}"),
@@ -4162,7 +4192,7 @@ mod tests {
         // pre-L1b behavior for a tmux row.
         let (evt_tx, evt_rx) = std::sync::mpsc::channel();
         let mut pending: HashMap<u64, PendingKind> = HashMap::new();
-        pending.insert(11, PendingKind::PtyOpen);
+        pending.insert(11, PendingKind::PtyOpen { target: Some("sot-be-beta".to_string()) });
         let frame = Frame::res(
             11,
             op::PTY_OPEN,
