@@ -14,6 +14,7 @@
 // directory is the access control. Its one field use was the 2026-07-11
 // twin-daemon split-brain. See ADR 0010's 0.4.0 update block.
 
+mod capsule_workspace;
 mod clients;
 mod concept;
 mod file_io;

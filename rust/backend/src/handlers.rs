@@ -3877,6 +3877,16 @@ pub async fn handle_workspace_create(
     if ws_seed.slug == "sot" {
         ws_seed.label = ".SoT".to_string();
     }
+    // ADR 0042 slice L1a: every NEW workspace is a capsule workspace on
+    // every host from L1 on — "runtime: tmux is never chosen for a new
+    // session (no knob)". Windows-only in THIS unit (the Unix supervisor/
+    // lane port is a later slice): on any other host `runtime` stays the
+    // `Workspace::from_label` default of "tmux" and nothing below in this
+    // function changes.
+    #[cfg(windows)]
+    {
+        ws_seed.runtime = "capsule".to_string();
+    }
     let ws_handle = workspaces.insert(ws_seed);
     if let Err(e) = crate::workspaces::save(&ws_handle) {
         tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
@@ -3890,54 +3900,113 @@ pub async fn handle_workspace_create(
     // spawn, or the FE's own attach on switch), so claude is the pane's process —
     // never typed into a shell, which raced the prompt. This retires the FE
     // autostart-on-attach typing: one race-free boot path for both cases.
-    let tmux_session = ws_handle.tmux_session.clone();
-    let cwd = project_root.clone();
-    let ws_slug = ws_handle.slug.clone();
-    let boot_cmd: Option<String> = if autostart || boot {
-        Some(crate::pty::boot_wrapper_command(
-            &tmux_session,
-            &req.agent_name,
-            &agent_kind,
-        ))
-    } else {
-        None
-    };
-    let tmux_result = tokio::task::spawn_blocking(move || {
-        crate::tmux::TmuxClient::new().create_session(
-            &tmux_session,
-            boot_cmd.as_deref(),
-            Some(&cwd),
-            Some(&ws_slug),
-        )
-    })
-    .await
-    .context("spawn_blocking workspace tmux create")?;
-    let tmux_ok = tmux_result.is_ok();
-    if let Err(e) = tmux_result {
-        tracing::warn!(error = %e, "workspace tmux session create failed; workspace registered without one");
+    //
+    // ADR 0042 slice L1a: this whole tmux + boot-pty path is the "tmux" runtime
+    // only — `ws_handle.runtime` is unconditionally "capsule" on Windows (set
+    // above), so this `#[cfg(not(windows))]` and the `#[cfg(windows)]` capsule
+    // spawn below are exhaustive over the two runtimes this daemon can ever
+    // create today (see `Workspace::runtime`'s own doc).
+    #[cfg(not(windows))]
+    {
+        let tmux_session = ws_handle.tmux_session.clone();
+        let cwd = project_root.clone();
+        let ws_slug = ws_handle.slug.clone();
+        let boot_cmd: Option<String> = if autostart || boot {
+            Some(crate::pty::boot_wrapper_command(
+                &tmux_session,
+                &req.agent_name,
+                &agent_kind,
+            ))
+        } else {
+            None
+        };
+        let tmux_result = tokio::task::spawn_blocking(move || {
+            crate::tmux::TmuxClient::new().create_session(
+                &tmux_session,
+                boot_cmd.as_deref(),
+                Some(&cwd),
+                Some(&ws_slug),
+            )
+        })
+        .await
+        .context("spawn_blocking workspace tmux create")?;
+        let tmux_ok = tmux_result.is_ok();
+        if let Err(e) = tmux_result {
+            tracing::warn!(error = %e, "workspace tmux session create failed; workspace registered without one");
+        }
+
+        // ADR 0023 §3 (UNIFIED): daemon-side claude boot via a throwaway boot-pty —
+        // open a real pty client to the new session so the wrapper's wait-for-attach
+        // is satisfied, poll until claude is foreground, then detach (claude survives;
+        // the FE client takes over). Runs for EVERY `autostart_claude` create, not
+        // just comm-spawn `boot=true`. WHY nav-pane needs it too: the ADR-0014 single
+        // foreground pty re-target is NOT a stable init client, so without the boot-pty
+        // a nav-pane claude dies during init and the daemon falls back to home (the
+        // "sitting in home" bug). The boot-pty is the SAME stable client that makes
+        // comm-spawn boot reliably — confirmed the missing-client delta is the cause.
+        // Detached `tokio::spawn` (polls up to ~45s, must not block the response);
+        // skipped when the tmux session failed to create.
+        if (autostart || boot) && tmux_ok {
+            let boot_session = ws_handle.tmux_session.clone();
+            let boot_agent = req.agent_name.clone();
+            let boot_cwd = project_root.clone();
+            let boot_slug = ws_handle.slug.clone();
+            tracing::info!(session = %boot_session, agent = %boot_agent, boot,
+                "workspace.create autostart — spawning daemon boot-pty for claude (stable init client)");
+            tokio::spawn(async move {
+                crate::pty::boot_workspace_claude(boot_session, boot_agent, boot_cwd, boot_slug).await;
+            });
+        }
     }
 
-    // ADR 0023 §3 (UNIFIED): daemon-side claude boot via a throwaway boot-pty —
-    // open a real pty client to the new session so the wrapper's wait-for-attach
-    // is satisfied, poll until claude is foreground, then detach (claude survives;
-    // the FE client takes over). Runs for EVERY `autostart_claude` create, not
-    // just comm-spawn `boot=true`. WHY nav-pane needs it too: the ADR-0014 single
-    // foreground pty re-target is NOT a stable init client, so without the boot-pty
-    // a nav-pane claude dies during init and the daemon falls back to home (the
-    // "sitting in home" bug). The boot-pty is the SAME stable client that makes
-    // comm-spawn boot reliably — confirmed the missing-client delta is the cause.
-    // Detached `tokio::spawn` (polls up to ~45s, must not block the response);
-    // skipped when the tmux session failed to create.
-    if (autostart || boot) && tmux_ok {
-        let boot_session = ws_handle.tmux_session.clone();
-        let boot_agent = req.agent_name.clone();
-        let boot_cwd = project_root.clone();
-        let boot_slug = ws_handle.slug.clone();
-        tracing::info!(session = %boot_session, agent = %boot_agent, boot,
-            "workspace.create autostart — spawning daemon boot-pty for claude (stable init client)");
-        tokio::spawn(async move {
-            crate::pty::boot_workspace_claude(boot_session, boot_agent, boot_cwd, boot_slug).await;
-        });
+    // ADR 0042 slice L1a: the capsule spawn. State dir first (created here,
+    // per the ADR's own "use the sot-log state-dir helper for the root;
+    // create the dir" instruction — `sot-capsule supervise` also creates it
+    // idempotently on its own first act, so this is defensive, not required),
+    // then the DETACHED spawn so the supervisor survives this daemon's own
+    // exit. Non-fatal on every failure, same posture as the tmux path above
+    // ("we don't fail the op if tmux misbehaves"): the workspace row is
+    // already registered and persisted: an operator can retry the attach (or
+    // restart the daemon, which resume-scans on startup) rather than losing
+    // the workspace's identity over a spawn hiccup.
+    #[cfg(windows)]
+    {
+        match sot_log::state_dir::sot_state_dir() {
+            None => tracing::warn!(
+                "workspace.create: could not resolve this machine's state root (%LOCALAPPDATA% unset) -- capsule has no home"
+            ),
+            Some(state_root) => {
+                let state_dir = crate::capsule_workspace::state_dir_for(&state_root, &ws_handle.workspace_id);
+                if let Err(e) = std::fs::create_dir_all(&state_dir) {
+                    tracing::warn!(error = %e, state_dir = ?state_dir, "workspace.create: could not create capsule state dir");
+                } else {
+                    match crate::capsule_workspace::sot_capsule_exe() {
+                        Err(e) => tracing::warn!(error = %e, "workspace.create: could not locate sot-capsule.exe next to this daemon"),
+                        Ok(exe) => {
+                            let argv = crate::capsule_workspace::agent_argv(&agent_kind);
+                            match crate::capsule_workspace::spawn_detached_supervisor(
+                                &exe,
+                                &state_dir,
+                                crate::capsule_workspace::StartMode::Start,
+                                &argv,
+                                &project_root,
+                            ) {
+                                Ok(spawned) => {
+                                    // Detached on purpose: the daemon must
+                                    // never be this process's kill domain.
+                                    std::mem::drop(spawned.child);
+                                    tracing::info!(
+                                        workspace_id = %ws_handle.workspace_id, degraded = spawned.degraded,
+                                        "workspace.create: capsule supervisor spawned"
+                                    );
+                                }
+                                Err(e) => tracing::warn!(error = %e, "workspace.create: capsule supervisor spawn failed"),
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let res = WorkspaceCreateRes {
@@ -3965,6 +4034,51 @@ pub async fn handle_workspace_create(
         Frame::res(req_id, op::WORKSPACE_CREATE, serde_json::to_value(res)?).with_rev(rev),
         None,
     )])
+}
+
+/// ADR 0042 slice L1a: `workspace.destroy` on a capsule workspace ends its
+/// run over the supervisor lane (`end_run {reason, voyage}`, the ADR's own
+/// daemon-side 30s bound — inside the FE-quit 90s ceiling) rather than
+/// killing a tmux session that never existed for it. The outcome is
+/// reported honestly via `tracing`, never silently assumed; the state
+/// directory is NEVER deleted here — the record persists by design.
+/// Windows-only body: a no-op elsewhere, since no workspace has
+/// `runtime == "capsule"` on any other host in this unit.
+async fn destroy_capsule_workspace(workspace_id: &str, slug: &str) {
+    #[cfg(windows)]
+    {
+        let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
+            tracing::warn!(
+                workspace_id = %workspace_id,
+                "workspace.destroy: could not resolve this machine's state root; capsule left running"
+            );
+            return;
+        };
+        let state_dir = crate::capsule_workspace::state_dir_for(&state_root, workspace_id);
+        let reason = format!("workspace '{slug}' deleted");
+        let outcome = tokio::task::spawn_blocking(move || {
+            crate::capsule_workspace::end_run(&state_dir, &reason, std::time::Duration::from_secs(30))
+        })
+        .await;
+        match outcome {
+            Ok(Ok(Some(outcome))) => {
+                tracing::info!(workspace_id = %workspace_id, outcome = ?outcome, "workspace.destroy: capsule end_run outcome");
+            }
+            Ok(Ok(None)) => {
+                tracing::info!(workspace_id = %workspace_id, "workspace.destroy: capsule had no leg to end");
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(workspace_id = %workspace_id, error = %e, "workspace.destroy: capsule end_run failed");
+            }
+            Err(join_err) => {
+                tracing::warn!(workspace_id = %workspace_id, error = %join_err, "workspace.destroy: capsule end_run task panicked");
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (workspace_id, slug);
+    }
 }
 
 pub async fn handle_workspace_destroy(
@@ -4015,17 +4129,26 @@ pub async fn handle_workspace_destroy(
     let tmux_session = ws.tmux_session.clone();
     let agent_name = ws.agent_name.clone();
 
-    // Kill the tmux session. Failure is non-fatal — usually means the
-    // session wasn't running anyway. We surface the bool so the
-    // frontend can decide whether to surface the discrepancy.
-    let tmux_target = tmux_session.clone();
-    let tmux_killed = tokio::task::spawn_blocking(move || {
-        crate::tmux::TmuxClient::new()
-            .kill_session(&tmux_target)
-            .is_ok()
-    })
-    .await
-    .unwrap_or(false);
+    // ADR 0042 slice L1a: a capsule workspace has no tmux session to
+    // kill at all — end its run over the supervisor lane instead.
+    // `tmux_killed` stays `false` for it, accurately: no tmux session
+    // ever existed to kill.
+    let tmux_killed = if ws.runtime == "capsule" {
+        destroy_capsule_workspace(&workspace_id, &slug).await;
+        false
+    } else {
+        // Kill the tmux session. Failure is non-fatal — usually means the
+        // session wasn't running anyway. We surface the bool so the
+        // frontend can decide whether to surface the discrepancy.
+        let tmux_target = tmux_session.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::tmux::TmuxClient::new()
+                .kill_session(&tmux_target)
+                .is_ok()
+        })
+        .await
+        .unwrap_or(false)
+    };
 
     // Prune the sot-comm registry. Killing the tmux session takes the agent
     // down before it can run its own comm-leave, so the killer must deregister
@@ -4412,8 +4535,48 @@ pub async fn handle_workspace_list(
         }
         stored.to_string()
     };
-    let mut entries: Vec<WorkspaceListEntry> = workspaces
-        .list()
+    let ws_list = workspaces.list();
+    // ADR 0042 slice L1a: query every capsule workspace's supervisor lane
+    // CONCURRENTLY, each on its own blocking task (the sot-log client is
+    // synchronous pipe I/O), bounded so `workspace.list` never blocks the
+    // daemon's other work beyond a few seconds regardless of how many
+    // capsule workspaces exist or how unresponsive their lanes are. Kept
+    // unconditional (not itself `#[cfg(windows)]`) so both platforms share
+    // one code shape; only `capsule_workspace::phase_of` is windows-only,
+    // and no workspace has `runtime == "capsule"` on any other host in
+    // this unit, so the query set is always empty there.
+    #[cfg(windows)]
+    let phases: std::collections::HashMap<String, String> = {
+        let mut handles = Vec::new();
+        for ws in &ws_list {
+            if ws.runtime != "capsule" {
+                continue;
+            }
+            let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
+                continue;
+            };
+            let dir = crate::capsule_workspace::state_dir_for(&state_root, &ws.workspace_id);
+            let id = ws.workspace_id.clone();
+            handles.push(tokio::task::spawn_blocking(move || {
+                (id, crate::capsule_workspace::phase_of(&dir).to_string())
+            }));
+        }
+        let mut out = std::collections::HashMap::new();
+        for h in handles {
+            // `query_status`'s own worst case is ~9s (connect 2s + hello
+            // 2s + status 5s); this outer bound is belt-and-braces
+            // against a wedged blocking task, not the primary budget.
+            if let Ok(Ok((id, phase))) =
+                tokio::time::timeout(std::time::Duration::from_secs(12), h).await
+            {
+                out.insert(id, phase);
+            }
+        }
+        out
+    };
+    #[cfg(not(windows))]
+    let phases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut entries: Vec<WorkspaceListEntry> = ws_list
         .into_iter()
         .map(|ws| {
             // Prefer the live tmux occupant; fall back to the stored agent_name.
@@ -4449,6 +4612,26 @@ pub async fn handle_workspace_list(
             } else {
                 reg
             };
+            // ADR 0042 slice L1a: `state_dir` is a pure function of the
+            // state root + workspace_id (no I/O, no query) so it's
+            // available even when the phase query below failed or timed
+            // out; `phase` falls back to "unreachable" in exactly that
+            // case ("failure -> unreachable" — see `capsule_workspace`'s
+            // own doc). Both stay `None` for a `"tmux"` row.
+            let (state_dir, phase) = if ws.runtime == "capsule" {
+                let state_dir = sot_log::state_dir::sot_state_dir().map(|root| {
+                    crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id)
+                        .to_string_lossy()
+                        .into_owned()
+                });
+                let phase = phases
+                    .get(&ws.workspace_id)
+                    .cloned()
+                    .unwrap_or_else(|| crate::capsule_workspace::UNREACHABLE_PHASE.to_string());
+                (state_dir, Some(phase))
+            } else {
+                (None, None)
+            };
             WorkspaceListEntry {
                 workspace_id: ws.workspace_id.clone(),
                 slug: ws.slug.clone(),
@@ -4469,6 +4652,9 @@ pub async fn handle_workspace_list(
                 agent_summary: agent_str(&handle, "summary"),
                 agent_status_at: agent_str(&handle, "status_at"),
                 repl_state: ws.repl_state().to_string(),
+                runtime: ws.runtime.clone(),
+                state_dir,
+                phase,
             }
         })
         .collect();

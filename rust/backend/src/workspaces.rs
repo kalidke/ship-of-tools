@@ -94,6 +94,17 @@ pub struct Workspace {
     /// auto-starting claude. Plain metadata; persisted in the toml and
     /// defaulted to "" when absent.
     pub task: String,
+    /// ADR 0042 slice L1a: `"tmux"` | `"capsule"` — which runtime hosts
+    /// this workspace's agent pane. Plain metadata; persisted in the toml
+    /// and defaulted to `"tmux"` for every existing/older toml that lacks
+    /// the key — byte-for-byte today's behaviour for them. `"capsule"`
+    /// workspaces are Windows-only in this unit (`handle_workspace_create`
+    /// is the only writer of `"capsule"`); `tmux_session` is still
+    /// populated for them (the same `sot-be-<slug>` convention) even
+    /// though no real tmux session is ever created — it stays the one
+    /// stable identifier `pty.open`'s `target` field addresses a
+    /// workspace by, for both runtimes uniformly.
+    pub runtime: String,
     files_mode: OnceLock<Arc<FilesMode>>,
     concept: OnceLock<Arc<ConceptStore>>,
     kernel: OnceLock<Kernel>,
@@ -124,6 +135,7 @@ impl std::fmt::Debug for Workspace {
             .field("agent", &self.agent)
             .field("agent_name", &self.agent_name)
             .field("task", &self.task)
+            .field("runtime", &self.runtime)
             .field("files_mode_built", &self.files_mode.get().is_some())
             .field("concept_built", &self.concept.get().is_some())
             .field("kernel_built", &self.kernel.get().is_some())
@@ -157,6 +169,12 @@ impl Workspace {
             agent,
             agent_name,
             task,
+            // Every existing constructor call site predates ADR 0042 L1a
+            // and means "an ordinary tmux workspace" — see this field's
+            // own doc. Callers that need `"capsule"` set it explicitly on
+            // the returned value (workspace.create's Windows branch;
+            // `load_toml`'s canonical-toml `runtime` key).
+            runtime: "tmux".to_string(),
             files_mode: OnceLock::new(),
             concept: OnceLock::new(),
             kernel: OnceLock::new(),
@@ -369,7 +387,7 @@ impl Workspaces {
         let final_ws = match preserved_id {
             Some(id) => {
                 // Same slug → keep id, new metadata wins.
-                Workspace::meta_only(
+                let mut w = Workspace::meta_only(
                     id,
                     ws.slug.clone(),
                     ws.label.clone(),
@@ -380,7 +398,12 @@ impl Workspaces {
                     ws.agent.clone(),
                     ws.agent_name.clone(),
                     ws.task.clone(),
-                )
+                );
+                // `meta_only` defaults `runtime` to "tmux" — the incoming
+                // `ws`'s own value (not that default) is the new metadata
+                // that should win here, same as every other field above.
+                w.runtime = ws.runtime.clone();
+                w
             }
             None => ws,
         };
@@ -561,6 +584,18 @@ impl Workspaces {
             .map(|ws| ws.slug.clone())
     }
 
+    /// The whole workspace owning `target` (the same identifier
+    /// `project_root_for_tmux`/`slug_for_tmux` match against — see
+    /// `Workspace::runtime`'s own doc for why a capsule workspace still
+    /// has one). ADR 0042 slice L1a: `pty.open` uses this to check
+    /// `runtime` BEFORE falling into any tmux logic, so a capsule
+    /// workspace's target is refused early rather than handed to
+    /// `Pty::spawn`.
+    pub fn workspace_for_tmux(&self, target: &str) -> Option<Arc<Workspace>> {
+        let g = self.inner.read().expect("workspaces lock");
+        g.by_id.values().find(|ws| ws.tmux_session == target).cloned()
+    }
+
     pub fn remove_by_id(&self, id: &str) -> Option<Arc<Workspace>> {
         let mut g = self.inner.write().expect("workspaces lock");
         let removed = g.by_id.remove(id)?;
@@ -665,7 +700,12 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         });
         let agent_name = kv.get("agent_name").cloned().unwrap_or_default();
         let task = kv.get("task").cloned().unwrap_or_default();
-        return Ok(Some(Workspace::meta_only(
+        // ADR 0042 slice L1a. Older tomls predate this key -> default
+        // "tmux", matching `meta_only`'s own default and preserving
+        // byte-for-byte behaviour for every workspace that predates
+        // capsules.
+        let runtime = kv.get("runtime").cloned().unwrap_or_else(|| "tmux".to_string());
+        let mut ws = Workspace::meta_only(
             workspace_id,
             slug,
             label,
@@ -676,7 +716,9 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
             agent,
             agent_name,
             task,
-        )));
+        );
+        ws.runtime = runtime;
+        return Ok(Some(ws));
     }
 
     if !legacy_ok {
@@ -767,6 +809,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
     // existing `label` limitation rather than introducing a new one.
     body.push_str(&format!("agent_name    = {}\n", toml_quote(&ws.agent_name)));
     body.push_str(&format!("task          = {}\n", toml_quote(&ws.task)));
+    body.push_str(&format!("runtime       = {}\n", toml_quote(&ws.runtime)));
 
     let final_text = if preserved.trim().is_empty() {
         body
@@ -950,6 +993,7 @@ fn strip_canonical_top_and_kernel(text: &str) -> String {
         "agent",
         "agent_name",
         "task",
+        "runtime",
     ];
     let mut out = String::new();
     let mut in_top = true;

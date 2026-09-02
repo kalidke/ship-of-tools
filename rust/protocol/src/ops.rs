@@ -1202,6 +1202,27 @@ pub struct WorkspaceListEntry {
     /// user-code REPL — the process whose first boot looks dead without it.
     #[serde(default)]
     pub repl_state: String,
+    /// ADR 0042 slice L1a: `"tmux"` | `"capsule"` — which runtime hosts
+    /// this workspace's agent pane. `#[serde(default)]` so a daemon that
+    /// predates the field still deserializes; the empty string never
+    /// occurs on the wire from an L1a-or-later daemon (every entry has a
+    /// real value), so an old FE reading a blank default here is exactly
+    /// as informative as reading nothing.
+    #[serde(default)]
+    pub runtime: String,
+    /// The capsule's own state directory (host-local absolute path),
+    /// present only for `runtime == "capsule"` rows — the frontend
+    /// attaches to it directly (ADR 0041 U3's client; L1b). Absent for
+    /// `"tmux"` rows: `skip_serializing_if` keeps their wire shape
+    /// byte-for-byte unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_dir: Option<String>,
+    /// The capsule's supervisor-lane phase (ADR 0041 Lifecycle: STARTING |
+    /// READY | ENDING | ENDED-NO-RESPAWN | TERMINAL, snake_case) or
+    /// `"unreachable"` when the lane could not be queried at all — present
+    /// only for `runtime == "capsule"` rows, same reasoning as `state_dir`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

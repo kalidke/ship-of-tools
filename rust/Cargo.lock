@@ -3855,6 +3855,7 @@ dependencies = [
  "portable-pty",
  "serde",
  "serde_json",
+ "sot-log",
  "sot-protocol",
  "sot-updater",
  "tokio",

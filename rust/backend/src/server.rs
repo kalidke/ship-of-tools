@@ -291,6 +291,26 @@ pub async fn run(opts: Opts) -> Result<()> {
         .await;
     }
 
+    // ADR 0042 slice L1a: adopt every capsule workspace's supervisor on
+    // this daemon's own startup — the counterpart of the tmux-session
+    // ensure block just above, for the OTHER runtime. `sot-capsule
+    // supervise --resume` decides adopt-vs-spawn itself (ADR 0041's
+    // start-mode table); this only has to find and (re)spawn the
+    // authority. Fast (process spawns only, no waiting on readiness) so
+    // it runs inline rather than detached, unlike the tmux env-heal sweep
+    // below. Windows-only: `workspace.create` never marks a workspace
+    // `"capsule"` on any other host in this unit (see `handlers.rs`), so
+    // there is nothing to resume there.
+    #[cfg(windows)]
+    if let Some(state_root) = sot_log::state_dir::sot_state_dir() {
+        crate::capsule_workspace::resume_all(&state_root, &workspaces);
+    } else {
+        tracing::warn!(
+            "capsule workspace resume-scan skipped: could not resolve this machine's state root \
+             (neither %LOCALAPPDATA% is set)"
+        );
+    }
+
     // Heal the SOT_* awareness env on every registered workspace's live tmux
     // session. Sessions created before env stamping existed carry nothing, and
     // tmux ignores `-e` on attach — so without this sweep a long-lived session
@@ -1268,6 +1288,27 @@ where
                 // can gate FE nav commands on its workspace. `None` for the
                 // home-base default (no matching workspace).
                 let requested_slug = workspaces.slug_for_tmux(requested_target);
+                // ADR 0042 slice L1a: a capsule workspace has no tmux
+                // session to attach `Pty::spawn` to at all — refused
+                // before any of the tmux logic below runs (existing-pty
+                // resize, re-target, or a fresh spawn alike), never
+                // proxied. The frontend attaches directly (L1b, the U3
+                // client) using the `state_dir` this carries.
+                if let Some(ws) = workspaces.workspace_for_tmux(requested_target) {
+                    if ws.runtime == "capsule" {
+                        let state_dir = sot_log::state_dir::sot_state_dir()
+                            .map(|root| crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id))
+                            .map(|p| p.to_string_lossy().into_owned());
+                        let payload = serde_json::json!({
+                            "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
+                            "code": "attach_direct",
+                            "state_dir": state_dir,
+                        });
+                        write_frame_to(&mut tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
+                            .await?;
+                        continue;
+                    }
+                }
                 if let Some(existing) = pty.as_ref() {
                     // Same target → just resize, keep the existing pty.
                     // Different target (Sessions-mode re-attach, ADR 0013)
