@@ -483,7 +483,7 @@ fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
             exited = true;
             break;
         }
-        let msg = client.quit_message();
+        let msg: Option<String> = client.quit_message().map(|m| m.to_string());
         if msg != last_msg {
             eprintln!("[quit test] quit message: {msg:?}");
             last_msg = msg.clone();
@@ -499,7 +499,7 @@ fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
         // Name the stuck state: the dispatcher's own message (Refused/Failed
         // carry their reason) and what the authority says over a separate
         // connection.
-        let diag = try_status(&conn).ok();
+        let diag = status(&conn);
         panic!(
             "quit dispatcher never reached should_exit (client-visible record_verified) within 60s; \
              quit message: {:?}; authority status (voyage, leg, phase): {:?}",
