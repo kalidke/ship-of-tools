@@ -259,12 +259,17 @@ try {
         # only HOME/USERPROFILE/LOCALAPPDATA/XDG_* are redirected above, not
         # USERNAME) -- safe on an ephemeral CI runner, but skipped on a dev
         # box where it could collide with a genuinely running local daemon.
+        # (Also the only section that can exercise the -Stop/complete-pair
+        # split below: that needs the daemon actually listening on the
+        # SAME pipe -Stop will derive, which -PipeName-isolated sections
+        # deliberately avoid.)
         if (-not $env:CI) {
             Note-Skip '6. derive pipe name from sotd session-socket-path' 'only run on CI -- exercises the REAL per-user pipe name'
         } else {
             $expectedPipe = (& $realSotd session-socket-path local | Select-Object -First 1)
             if ($expectedPipe) { $expectedPipe = $expectedPipe.ToString().Trim() }
             Check 'sotd itself derives a Windows named-pipe path' ($expectedPipe -like '\\.\pipe\sot-*-local') "got: $expectedPipe"
+            $pipeName6 = $expectedPipe.Substring(9)   # strip '\\.\pipe\'
             $p6 = Join-Path $root 'p6'
             New-Fixture -Prefix $p6 -WithCapsule -SotdSource $realSotd
             try {
@@ -272,15 +277,30 @@ try {
                 $exit6 = $LASTEXITCODE
                 Check 'exit code 0 (started via the derived pipe)' ($exit6 -eq 0) "got $exit6; log: $out6"
                 Check 'log names the derived pipe path' ((($out6 -join ' ')) -match [regex]::Escape($expectedPipe)) "log was: $out6"
-                $pipeName6 = $expectedPipe.Substring(9)   # strip '\\.\pipe\'
                 Check 'derived pipe answers' (Wait-Pipe $pipeName6) 'pipe never opened'
                 $procs6 = @(Get-DaemonProcs $expectedPipe)
                 Check 'exactly one sotd.exe on the derived pipe' ($procs6.Count -eq 1) "found $($procs6.Count)"
+
+                # ADR 0042 L2b codex follow-up: sot-capsule.exe is a START
+                # requirement, not a -Stop one. Remove it AFTER the daemon
+                # is already running -- the "already running, capsule
+                # binary since moved" case -- and confirm -Stop (still no
+                # -PipeName override, so it re-derives $daemonExe and
+                # queries it exactly as above) still succeeds despite the
+                # now-incomplete pair.
+                Remove-Item -LiteralPath (Join-Path $p6 'bin\sot-capsule.exe') -Force -ErrorAction SilentlyContinue
+                Check 'sot-capsule.exe removed (pair now incomplete)' `
+                    (-not (Test-Path (Join-Path $p6 'bin\sot-capsule.exe'))) 'removal did not take'
             } finally {
                 # -Stop's OWN derive path, under test here too -- and the
                 # guaranteed cleanup for this section regardless of which
-                # Check above failed.
-                $null = & $script -Stop -Prefix $p6 -DevBinDir 'C:\sot-test-does-not-exist' -ProjectRoot $spacedProjectRoot 6>&1 2>&1
+                # Check above failed. Exit code asserted BEFORE the
+                # belt-and-suspenders Stop-Process cleanup below, so a
+                # nonzero -Stop can't hide behind that cleanup finishing
+                # the job anyway.
+                $stopOut6 = & $script -Stop -Prefix $p6 -DevBinDir 'C:\sot-test-does-not-exist' -ProjectRoot $spacedProjectRoot 6>&1 2>&1
+                $stopExit6 = $LASTEXITCODE
+                Check '-Stop exit code 0 (derived path, despite the incomplete pair)' ($stopExit6 -eq 0) "got $stopExit6; log: $stopOut6"
                 Start-Sleep -Milliseconds 200
                 Get-DaemonProcs $expectedPipe | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
             }
