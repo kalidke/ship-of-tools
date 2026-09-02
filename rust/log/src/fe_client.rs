@@ -1078,9 +1078,9 @@ mod tests {
 
     #[test]
     fn marker_shape_matches_the_pinned_json() {
-        let v = build_fe_down_marker("kitt-dev", "t0", "t1");
+        let v = build_fe_down_marker("backend-dev", "t0", "t1");
         assert_eq!(v["from"], "sot-fe");
-        assert_eq!(v["to"], "kitt-dev");
+        assert_eq!(v["to"], "backend-dev");
         assert_eq!(v["kind"], "fe_down");
         assert_eq!(v["ts"], "t1");
         assert_eq!(v["window"]["last_evidence"], "t0");
