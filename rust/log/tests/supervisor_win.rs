@@ -547,8 +547,9 @@ fn a_second_hello_closes_the_connection_but_the_authority_survives() {
 /// ORIGINAL client's operation id must still answer through `query`
 /// against the new process, never silently vanish because the process
 /// that accepted it is gone. Proves the operation was genuinely
-/// NONTERMINAL before the kill (polling `query` for `accepted`, never
-/// assuming the 500ms pre-kill pause alone proves it).
+/// NONTERMINAL before the kill (polling `query` for `Accepted |
+/// RecordClosed`, never assuming the 500ms pre-kill pause alone proves
+/// it).
 #[test]
 fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     let _serial = serial();
@@ -567,15 +568,35 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     // tick and end_run's own reconciliation (mark_closed -> verify_voyage
     // -> finish, all on ONE background worker thread with no built-in
     // pause anywhere in between) is free to race straight through
-    // `accepted` to a terminal record with nothing gating it to the main
+    // `Accepted` to a terminal record with nothing gating it to the main
     // loop's pace. A watcher connection opened only AFTER submission has
     // to win its own connect+hello+challenge round trip -- each hop
     // gated by the main loop's own tick -- against that race, which a
-    // loaded runner does not guarantee (this is what actually flaked:
-    // three of five `windows-2022` runs, always this same poll). Opening
-    // it first removes the race instead of just widening it: the watcher
-    // is already live before there is anything to observe.
+    // loaded runner does not guarantee: this flaked repeatedly on the
+    // windows-2022 leg, always at this poll. Opening the watcher first
+    // removes the watcher-setup latency from the race -- it is already
+    // live before there is anything to observe -- but a residual window
+    // remains, unchanged by this fix and predating it: the kill below
+    // lands microseconds after whatever sample satisfies the poll, so a
+    // worker that finishes in that exact gap would make the SECOND
+    // supervisor's recovery a no-op for that run (it would simply find
+    // an already-terminal record, proving nothing about recovering an
+    // IN-FLIGHT operation). A cross-process barrier inside the
+    // supervisor could close that residual window, but that is
+    // production machinery justified only by a test's own timing, so it
+    // is deliberately not added here.
     let query_conn = wait_for_lane(&h, Duration::from_secs(10));
+
+    // Keep the ORIGINAL command lane alive while `wait_for_lane` above
+    // was establishing the watcher: the supervisor evicts an idle lane
+    // after LANE_IDLE_DEADLINE (5s, `supervisor.rs`), and that call can
+    // itself take up to its own 10s bound -- longer than the eviction
+    // deadline, and with no traffic of its own on `conn` in between. A
+    // `query` here (answered `UnknownOperation`, since "op-recover" has
+    // not been submitted yet) is real received traffic, which resets
+    // `conn`'s idle clock, so the command below is never written to a
+    // connection the supervisor already closed out from under it.
+    let _ = query(&conn, "op-recover");
 
     // Submit end_run on a SEPARATE thread: its own reply is deferred to
     // record_closed (B3), which may not arrive before this test kills
@@ -587,14 +608,14 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     });
 
     // Prove the operation is genuinely NONTERMINAL before killing -- poll
-    // the watcher connection's `query` for `accepted` OR `record_closed`
+    // the watcher connection's `query` for `Accepted` OR `RecordClosed`
     // (durably journaled, per ADR 0041's own "before the first
-    // irreversible act"). Both, not just `accepted`, count as proof here:
+    // irreversible act"). Both, not just `Accepted`, count as proof here:
     // `poll_to_terminal` above already draws this exact line (`Accepted |
     // RecordClosed` are its own two non-terminal arms), and end_run's
     // worker can legitimately reach `record_closed` (the writer already
     // confirmed exited, B3) before this poll's very first sample --
-    // requiring the single, momentary `accepted` instant specifically is
+    // requiring the single, momentary `Accepted` instant specifically is
     // an unforced, narrower bar than "genuinely nonterminal" needs.
     poll_until(
         || {
@@ -617,9 +638,18 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     first.kill().unwrap();
     first.wait().unwrap();
     // The background `command` thread's own connection just died with
-    // the process -- let it finish (its own `Err` is fine and ignored;
-    // this test only cares about the SECOND supervisor's recovery).
-    let _ = submit.join();
+    // the process -- an `Err` here (its own `.expect("command")` turning
+    // that into a panic) is the EXPECTED shape once the kill lands
+    // before the deferred reply does, so it must not fail this test; but
+    // silently discarding the join result would ALSO hide a genuinely
+    // unexpected panic (a real protocol bug, say), so print whatever it
+    // was rather than dropping it on the floor -- this test still only
+    // cares about the SECOND supervisor's recovery, checked below.
+    if let Err(panic) = submit.join() {
+        eprintln!(
+            "[crash-recovery test] submit thread ended in a panic (expected once the kill lands before its deferred reply): {panic:?}"
+        );
+    }
 
     // A SECOND supervisor, `--resume`: recovery reconciles the in-flight
     // end_run via the leg's own durable marker, and this operation id
