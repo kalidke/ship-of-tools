@@ -1,21 +1,21 @@
-# launch-sot.ps1 — default launcher: connect to the remote backend
-# by forwarding a local TCP port to the remote user's per-user Unix socket. Per the
-# project's deployment topology (Windows local · Linux remote-in-tmux)
-# this is the canonical workflow; pass `-Local` to connect instead to the
-# persistent, launcher-managed local sotd on its fixed per-user pipe (ADR
-# 0042 L1c).
+# launch-sot.ps1 — default launcher: connect to every configured host at
+# once (ADR 0042 L2b) -- the local machine's own daemon, always, plus one SSH
+# tunnel per `[host.<name>]` remote in `.sot/hosts.toml`. Pass `-Local` for a
+# debug path that skips freshness and opens no tunnels at all, connecting
+# only to the local daemon.
 #
-# Idempotent on the backend side: the backend is started once via
-# `nohup` and survives across launches, so the second click is fast.
-# The SSH local-forward is started fresh each launch and torn down
-# when the frontend exits.
+# Idempotent on the backend side: each remote's backend is started once via
+# `nohup` and survives across launches, so the second click is fast. Every
+# SSH local-forward is started fresh each launch and torn down when the
+# frontend exits.
 #
-# ADR 0042 L1c: -Local ensures a LOCAL sotd is running on a fixed per-user
-# named pipe -- "the frontend machine runs its own sotd", idempotently and
-# detached, so it outlives this launch. See scripts/sot-local-daemon.ps1.
-# This default (remote-tunnel) mode doesn't touch it -- nothing consumes the
-# local daemon here until L2 connects the frontend to every host's daemon at
-# once, which is also when this ensure moves to every launch mode.
+# ADR 0042 L2b: the local sotd (a fixed per-user named pipe -- "the frontend
+# machine runs its own sotd") is ensured on EVERY launch, not just -Local,
+# right after the staged-update apply and before either mode's frontend
+# launch; see scripts/sot-local-daemon.ps1 and design D in the ADR. Design
+# E is the multi-tunnel loop below `New-RemoteEnsureCommand` — one tunnel
+# per remote, `$backendHost`'s own kept exactly as before it (env vars can
+# still override which host that is).
 #
 # Overrides (env vars):
 #   SOT_HOST         SSH alias for the backend host       (default: none — see .sot/hosts.toml)
@@ -23,6 +23,11 @@
 #   SOT_TCP_PORT     Local loopback port for the tunnel   (default: 18743)
 #   SOT_REMOTE_SOCKET Remote socket path                  (default: query sotd)
 #   SOT_TOKEN        App-level auth token for TCP fallback only
+#
+# Every OTHER configured remote (anything in hosts.toml besides
+# $backendHost) is NOT env-var-overridable the way $backendHost is above —
+# its ssh_alias/remote_repo/tcp_port/remote_socket come straight from its
+# own [host.<name>] section.
 #
 # Logs land at %LOCALAPPDATA%\sot\logs\ so disconnect / reconnect
 # events can be diagnosed without keeping a console window around.
@@ -55,6 +60,12 @@ $ErrorActionPreference = 'Stop'
 # (use '-' not an em-dash in status text); prose em-dashes live in comments only.
 
 $repo = Resolve-Path -Path (Join-Path $PSScriptRoot '..')
+
+# Read-SotHosts (the .sot/hosts.toml parser) and Get-TunnelPlan (ADR 0042
+# L2b design E: which remote hosts get their own tunnel, and on which
+# port) live in one dot-sourceable file shared with shutdown-sot.ps1 and
+# scripts/tests/test-tunnel-plan.ps1 -- see that file's own header.
+. (Join-Path $PSScriptRoot 'sot-hosts.ps1')
 
 # Logs FIRST — so the progress splash and status writes can come up before any
 # slow pull/build/ssh work. Append-only supervisor log: unlike the frontend
@@ -185,6 +196,27 @@ $backendExe = Join-Path $repo 'rust\target\release\sotd.exe'
 $prefixDir = Join-Path $env:LOCALAPPDATA 'sot'
 $applyMarker = Join-Path $prefixDir 'updates\just-applied-windows-x86_64'
 $sotApply = Join-Path $PSScriptRoot 'sot-apply.ps1'
+$sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
+
+# ADR 0042 L2b design D: a running local daemon pins its sotd.exe/
+# sot-capsule.exe as mapped images (Windows) -- stop it BEFORE anything that
+# might replace those files out from under it. Checked, never unconditional:
+# only when an update is actually about to land -- sot-apply.ps1's own
+# staged-update pointer (about to be consumed by the apply call right
+# below), or SOT_LAUNCH_REBUILD (set by the self-update prelude above on a
+# successful git pull, consumed later by the frontend rebuild block) --
+# never on every launch, which would pay a stop/restart on every idle
+# click. -NoUpdate skips both, same as the steps it guards.
+if (-not $NoUpdate -and (Test-Path $sotLocalDaemon)) {
+    $updatePending = (Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')) `
+        -or ($env:SOT_LAUNCH_REBUILD -eq '1')
+    if ($updatePending) {
+        Write-SupLog 'local daemon: stopping before apply/rebuild so it does not pin a stale binary'
+        $stopOut = & $sotLocalDaemon -Stop 6>&1 2>&1
+        foreach ($l in @($stopOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+    }
+}
+
 if (-not $NoUpdate -and (Test-Path $sotApply)) {
     Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
     Set-LaunchStatus 'Applying update...'
@@ -208,51 +240,55 @@ if (-not (Test-Path $frontendExe) -and -not (Test-Path $alreadyStaged)) {
 }
 
 # ---------------------------------------------------------------------------
-# Local-only mode (-Local): the persistent, launcher-managed local sotd on
-# its fixed per-user pipe. Idempotently ensured HERE, not on every launch
-# mode -- nothing else consumes the local daemon until L2 (frontend holds
-# one connection per host, local included) flips this to every launch, and
-# starting it unconditionally today would let it pin
-# <prefix>\bin\sotd.exe (a mapped image while it runs, on Windows) before
-# the DEFAULT launch's own apply/rebuild step gets a chance to update it --
-# pure exposure, no benefit yet. Logic lives in sot-local-daemon.ps1 so it
-# is independently testable (scripts/tests/test-local-daemon.ps1) and
-# shared with shutdown-sot.ps1's stop path -- see that script's header for
-# the binary resolution order, the pipe-naming rationale, and why -Stop
-# reduces to Stop-Process. A failed ensure below is just this block's
-# existing "not answering" error dialog -- there is no fail-open here
-# because, unlike the default mode, -Local has nothing else to fall back to.
-# Replaces the old fresh-per-session GUID-pipe backend spawn+kill: the local
-# daemon is now shared/persistent (started once, outlives this launch)
-# exactly like the remote one.
+# Local daemon ensure (ADR 0042 L2b design D): EVERY launch mode ensures the
+# persistent, per-user local sotd is running now, not just -Local -- the
+# frontend always holds a "local" connection (hosts::resolve_connections
+# adds it implicitly, ADR 0042 L2b design B), whether -Local's own
+# connection or one row of the default mode's multi-host tree. Positioned
+# right after the staged-update apply above (a freshly applied
+# sotd.exe/sot-capsule.exe, if one landed, is what the ensure below sees --
+# the frontend's OWN freshness rebuild further below never touches the
+# daemon binaries, so there's nothing else to wait on here) and before
+# either mode launches its frontend. See scripts/sot-local-daemon.ps1 for
+# the binary resolution order, the pipe-naming derivation (now queried from
+# the daemon itself, ADR 0042 L2b design C) and why -Stop reduces to
+# Stop-Process.
+#
+# Fail-open in the DEFAULT mode: a local daemon that won't come up just
+# means the "local" row in Hosts mode shows unreachable -- the remote
+# tunnel(s) this mode exists for are unaffected. -Local has nothing else to
+# fall back to, so it keeps today's hard error dialog.
 # ---------------------------------------------------------------------------
+if ($Local) { Stop-Splash }   # -Local is a debug path with no other progress UI
+$localDaemonReady = $false
+if (Test-Path $sotLocalDaemon) {
+    $localOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) 6>&1 2>&1
+    foreach ($l in @($localOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+    $localDaemonReady = ($LASTEXITCODE -eq 0)
+} else {
+    Write-SupLog "local daemon: sot-local-daemon.ps1 missing at $sotLocalDaemon"
+}
+
 if ($Local) {
-    Stop-Splash   # -Local is a debug path with no freshness phases; skip the splash
-    $sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
-    $localPipeName = "sot-$env:USERNAME-local"
-    $localPipePath = '\\.\pipe\' + $localPipeName
-    $localDaemonReady = $false
-    if (Test-Path $sotLocalDaemon) {
-        $localOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) 6>&1 2>&1
-        foreach ($l in @($localOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
-        $localDaemonReady = ($LASTEXITCODE -eq 0)
-    } else {
-        Write-SupLog "local daemon: sot-local-daemon.ps1 missing at $sotLocalDaemon"
-    }
     if (-not $localDaemonReady) {
         [System.Windows.Forms.MessageBox]::Show(
-            "Local sotd is not answering on $localPipePath.`n`nSee %LOCALAPPDATA%\sot\logs\sotd-local.log for why (no complete sotd.exe+sot-capsule.exe pair, or it did not come up in time).",
+            "Local sotd is not answering.`n`nSee %LOCALAPPDATA%\sot\logs\sotd-local.log for why (no complete sotd.exe+sot-capsule.exe pair, or it did not come up in time).",
             'Ship of Tools launcher',
             'OK', 'Error') | Out-Null
         exit 1
     }
+    # No --socket: the frontend derives the local connection itself
+    # (hosts::resolve_connections, ADR 0042 L2b design B) from the exact
+    # same function sot-local-daemon.ps1 just used to start it on.
     Start-Process -FilePath $frontendExe `
-        -ArgumentList @('--socket', $localPipePath) `
         -RedirectStandardOutput $frontendStdout `
         -RedirectStandardError $frontendStderr `
         -WindowStyle Hidden `
         -Wait
     exit 0
+}
+if (-not $localDaemonReady) {
+    Write-SupLog "local daemon: not ready - continuing without it (fail-open; the 'local' host will show unreachable)"
 }
 
 # ---------------------------------------------------------------------------
@@ -273,40 +309,9 @@ if ($Local) {
 # see state_persistence.rs's field doc) would make the launcher tunnel to
 # host B while a connection the frontend labels A actually reaches B's
 # daemon. Per-host tunnels (routing each configured host's own SSH
-# forward, not just the launcher's single one) are a later slice.
-function Read-SotHosts {
-    param([string]$Path)
-    $cfg = @{ default_host = $null; hosts = @{} }
-    if (-not (Test-Path $Path)) { return $cfg }
-    $currentHost = $null
-    foreach ($line in Get-Content $Path) {
-        $trim = $line.Trim()
-        if (-not $trim -or $trim.StartsWith('#')) { continue }
-        if ($trim -match '^\[host\.(.+)\]$') {
-            $currentHost = $matches[1].Trim()
-            if (-not $cfg.hosts.ContainsKey($currentHost)) {
-                $cfg.hosts[$currentHost] = @{}
-            }
-            continue
-        }
-        if ($trim -match '^\[(.+)\]$') {
-            # Some other section; reset host context.
-            $currentHost = $null
-            continue
-        }
-        if ($trim -match '^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$') {
-            $key = $matches[1]
-            $val = $matches[2].Trim().Trim('"')
-            if ($currentHost) {
-                $cfg.hosts[$currentHost][$key] = $val
-            } elseif ($key -eq 'default_host') {
-                $cfg.default_host = $val
-            }
-        }
-    }
-    return $cfg
-}
-
+# forward, not just the launcher's single one) are ADR 0042 L2b design E,
+# below — Read-SotHosts itself moved to scripts/sot-hosts.ps1 (dot-sourced
+# above) so Get-TunnelPlan can share its output.
 $hostsTomlPath = Join-Path $repo '.sot\hosts.toml'
 $hostsCfg = Read-SotHosts -Path $hostsTomlPath
 $activeHostName = if ($env:SOT_HOST_NAME) {
@@ -363,25 +368,40 @@ if (-not $token) { $token = [Environment]::GetEnvironmentVariable('SOT_TOKEN', '
 # Check/start the remote backend on every launch without restarting a live
 # daemon by default. The backend listens on its per-user socket; `$tcpPort`
 # below is only the local side of the SSH forward for the native frontend.
-# Interpolated into the remote script at build time (PS-side switch, bash-side test).
-$restartBackendFlag = if ($RestartBackend) { '1' } else { '0' }
-$remoteCmd = @"
-# ADR 0030 dev-freshness rev 2 - MULTI-FE SAFE. The shared daemon is NEVER
-# restarted by a launcher while running: other FEs' kernels and REPL state
-# die with it. The BE updates on its own cadence - on the backend host the BE
-# session's on-merge deploy keeps it current. This block only: starts a daemon that is
-# DOWN, reports staleness when running, and does the full pull+build+restart
-# ONLY on the explicit -RestartBackend force path. Tradeoff accepted: the old
-# always-restart also cleared a WEDGED-but-accepting daemon; that rare case
-# is now the force path's job. Protocol skew stays loud via the ADR 0030
-# handshake gate. Echoes stay paren-free AND semicolon-free - PS 5.1 hands this
-# to ssh unquoted, so bash sees echo text bare: a ';' inside it splits the
-# command and the tail runs as a bogus command whose stderr killed the whole
-# launcher under EAP=Stop (the 2026-07-16 'force: command not found' hang).
+#
+# ADR 0042 L2b design E: this ensure+resolve step is shared with every OTHER
+# configured remote's own tunnel below (New-RemoteEnsureCommand), not
+# special-cased to $backendHost -- "resolved as today" means the exact same
+# three-tier socket resolution and start-if-down/staleness/force-restart
+# logic every remote gets, not a lighter version. Kept as a function that
+# BUILDS the remote command text (not one that also runs ssh) so the
+# default host's own error handling below -- fatal, with the existing
+# dialog -- stays completely unchanged; every other host's ssh call and
+# handling is nonfatal (see the loop after the tunnel-supervisor functions).
+function New-RemoteEnsureCommand {
+    param(
+        [string]$RemoteRepo,
+        [string]$RemoteSocketOverride,
+        [bool]$Restart
+    )
+    # ADR 0030 dev-freshness rev 2 - MULTI-FE SAFE. The shared daemon is NEVER
+    # restarted by a launcher while running: other FEs' kernels and REPL state
+    # die with it. The BE updates on its own cadence - on the backend host the BE
+    # session's on-merge deploy keeps it current. This block only: starts a daemon that is
+    # DOWN, reports staleness when running, and does the full pull+build+restart
+    # ONLY on the explicit -RestartBackend force path. Tradeoff accepted: the old
+    # always-restart also cleared a WEDGED-but-accepting daemon; that rare case
+    # is now the force path's job. Protocol skew stays loud via the ADR 0030
+    # handshake gate. Echoes stay paren-free AND semicolon-free - PS 5.1 hands this
+    # to ssh unquoted, so bash sees echo text bare: a ';' inside it splits the
+    # command and the tail runs as a bogus command whose stderr killed the whole
+    # launcher under EAP=Stop (the 2026-07-16 'force: command not found' hang).
+    $restartFlag = if ($Restart) { '1' } else { '0' }
+    $cmd = @"
 export PATH="`$HOME/.cargo/bin:`$HOME/.local/bin:`$PATH"
-remote_socket='$remoteSocket'
+remote_socket='$RemoteSocketOverride'
 if [ -z "`$remote_socket" ]; then
-    cd '$remoteRepo'
+    cd '$RemoteRepo'
     # Dev checkout first, then a release install's staged sotd — a release BE
     # (install.sh --be-only) has no rust/target build, and without this branch
     # the omitted-remote_socket path dies on exactly the topology
@@ -393,11 +413,11 @@ if [ -z "`$remote_socket" ]; then
     fi
 fi
 echo "backend-socket: `$remote_socket"
-if [ "$restartBackendFlag" = 1 ]; then
-    cd '$remoteRepo'
+if [ "$restartFlag" = 1 ]; then
+    cd '$RemoteRepo'
     scripts/restart-backend.sh && echo "backend: force-restarted at current build" || echo "backend: force-restart FAILED"
 elif [ -S "`$remote_socket" ] && { pgrep -x sotd >/dev/null 2>&1 || systemctl --user is-active sotd.service >/dev/null 2>&1; }; then
-    cd '$remoteRepo'
+    cd '$RemoteRepo'
     if scripts/restart-backend.sh --check >/dev/null 2>&1; then
         echo "backend: running and current"
     else
@@ -409,13 +429,13 @@ else
         systemctl --user start sotd.service
         echo "backend: was down - started via systemd"
     else
-        cd '$remoteRepo'
+        cd '$RemoteRepo'
         # Same two-arm resolution as the socket query above: a release BE with
         # the systemd opt-out has no dev build - fall back to the installed
         # sotd with its matching project root (release-BE + --no-service +
         # daemon-down previously died here on a dev-only path).
         if [ -x ./rust/target/release/sotd ]; then
-            nohup ./rust/target/release/sotd --project-root '$remoteRepo' --label sot >/tmp/sotd.log 2>&1 </dev/null &
+            nohup ./rust/target/release/sotd --project-root '$RemoteRepo' --label sot >/tmp/sotd.log 2>&1 </dev/null &
             disown
             echo "backend: was down - started nohup dev build, pid=`$!"
         elif [ -x "`$HOME/.local/share/sot/bin/sotd" ]; then
@@ -433,9 +453,12 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
 done
 [ -S "`$remote_socket" ] || echo "backend: socket MISSING at `$remote_socket"
 "@
-# Normalize to LF — Windows checkouts (autocrlf=true) leave CRLF in the
-# here-string, which becomes literal $'\r' tokens in bash on the remote.
-$remoteCmd = $remoteCmd -replace "`r`n", "`n"
+    # Normalize to LF — Windows checkouts (autocrlf=true) leave CRLF in the
+    # here-string, which becomes literal $'\r' tokens in bash on the remote.
+    return ($cmd -replace "`r`n", "`n")
+}
+
+$remoteCmd = New-RemoteEnsureCommand -RemoteRepo $remoteRepo -RemoteSocketOverride $remoteSocket -Restart $RestartBackend
 # rev 2: default launches only check staleness / start-if-down (never restart a
 # running shared daemon); -RestartBackend forces the full restart-backend.sh path.
 Set-LaunchStatus $(if ($RestartBackend) { "Restarting backend on $backendHost..." } else { "Checking backend on $backendHost..." })
@@ -605,6 +628,78 @@ function Start-SotAuxTunnel {
         -ArgumentList $sshAuxArgs `
         -WindowStyle Hidden `
         -PassThru
+}
+
+# ---------------------------------------------------------------------------
+# Every OTHER configured remote gets its own tunnel too (ADR 0042 L2b design
+# E) -- $backendHost's tunnel is $sshArgs/Start-SotTunnel above/below; this
+# loop covers every remaining `[host.<name>]` entry with an `ssh_alias`.
+# Ensure+resolve reuses New-RemoteEnsureCommand (identical to $backendHost's
+# own treatment), but every failure here is NONFATAL: one log line and the
+# launch continues without that host's tunnel. The frontend's own
+# hosts.toml read (independent of the launcher) then shows that host
+# unreachable and keeps retrying — never a reason to fail the whole launch.
+# tcp_port is required per remote (Get-TunnelPlan names the host + field in
+# `error` when it's missing); $backendHost alone may fall back to
+# $tcpPort/SOT_TCP_PORT for compatibility, matched here by ssh_alias so an
+# env-var-only $backendHost (bypassing hosts.toml) still isn't double-
+# tunneled if it also happens to have its own [host.*] section.
+# ---------------------------------------------------------------------------
+$extraTunnels = @()
+$tunnelPlan = Get-TunnelPlan -Cfg $hostsCfg -DefaultAlias $backendHost -DefaultPort $tcpPort
+foreach ($item in $tunnelPlan) {
+    if ($item.ssh_alias -eq $backendHost) { continue }
+    if ($item.error) {
+        Write-SupLog "tunnel: skipping host '$($item.host)' - $($item.error)"
+        continue
+    }
+    if (-not $item.remote_repo) {
+        Write-SupLog "tunnel: skipping host '$($item.host)' - no remote_repo configured"
+        continue
+    }
+    Set-LaunchStatus "Checking backend on $($item.host)..."
+    $extraCmd = New-RemoteEnsureCommand -RemoteRepo $item.remote_repo -RemoteSocketOverride $item.remote -Restart $RestartBackend
+    $savedEAP2 = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $extraStatus = ssh -o ConnectTimeout=10 $item.ssh_alias $extraCmd 2>&1
+    $extraExit = $LASTEXITCODE
+    $ErrorActionPreference = $savedEAP2
+    $extraStatusText = ($extraStatus | Out-String)
+    if ($extraExit -ne 0) {
+        Write-SupLog "tunnel: host '$($item.host)' unreachable (ssh exit $extraExit) - skipping"
+        continue
+    }
+    if ($extraStatusText -match 'socket MISSING') {
+        Write-SupLog "tunnel: host '$($item.host)' backend socket missing - skipping"
+        continue
+    }
+    $extraRemoteSocket = $item.remote
+    if (-not $extraRemoteSocket -and $extraStatusText -match 'backend-socket:\s*(\S+)') {
+        $extraRemoteSocket = $matches[1]
+    }
+    if (-not $extraRemoteSocket) {
+        Write-SupLog "tunnel: host '$($item.host)' did not report a socket path - skipping"
+        continue
+    }
+    $extraArgs = @()
+    $extraArgs += $sshCommonArgs
+    $extraArgs += @('-L', "$($item.local_port):$extraRemoteSocket", $item.ssh_alias)
+    try {
+        $proc = Start-Process -FilePath ssh -ArgumentList $extraArgs -WindowStyle Hidden -PassThru
+        $extraTunnels += [PSCustomObject]@{
+            HostName     = $item.host
+            SshAlias     = $item.ssh_alias
+            LocalPort    = $item.local_port
+            RemoteSocket = $extraRemoteSocket
+            Args         = $extraArgs
+            Proc         = $proc
+            StartedAt    = (Get-Date)
+            BackoffSec   = 0
+        }
+        Write-SupLog "tunnel: host '$($item.host)' forwarding 127.0.0.1:$($item.local_port) -> $extraRemoteSocket (pid=$($proc.Id))"
+    } catch {
+        Write-SupLog "tunnel: host '$($item.host)' failed to start ssh - $($_.Exception.Message)"
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -790,6 +885,28 @@ try {
                 $sshStartedAt = Get-Date
                 Write-SupLog "tunnel respawned pid=$($sshTunnel.Id) (backoff=${tunnelBackoffSec}s)"
             }
+            # Every OTHER configured remote's tunnel (ADR 0042 L2b design E),
+            # same respawn-with-backoff shape as $sshTunnel above, one
+            # instance of state per host so one host's flap doesn't reset
+            # another's backoff.
+            foreach ($et in $extraTunnels) {
+                if ($et.Proc -and $et.Proc.HasExited) {
+                    $etUptime = ((Get-Date) - $et.StartedAt).TotalSeconds
+                    if ($etUptime -lt 2) {
+                        $et.BackoffSec = [Math]::Min(($et.BackoffSec * 2 + 1), 30)
+                        Start-Sleep -Seconds $et.BackoffSec
+                    } else {
+                        $et.BackoffSec = 0
+                    }
+                    try {
+                        $et.Proc = Start-Process -FilePath ssh -ArgumentList $et.Args -WindowStyle Hidden -PassThru
+                        $et.StartedAt = Get-Date
+                        Write-SupLog "tunnel respawned host=$($et.HostName) pid=$($et.Proc.Id) (backoff=$($et.BackoffSec)s)"
+                    } catch {
+                        Write-SupLog "tunnel respawn FAILED host=$($et.HostName) - $($_.Exception.Message)"
+                    }
+                }
+            }
         }
 
         # Determine whether this was a relaunch request (75) or a real quit.
@@ -836,12 +953,19 @@ try {
     # close" bug. So: frontend down (or already exited on a real quit) -> brief
     # wait for the FIN to drain -> THEN the tunnel. The deliberate
     # "clean up and shutdown" path is scripts/shutdown-sot.ps1 (/sot-fe-shutdown).
-    Write-SupLog "supervisor exiting (relaunchNext=$relaunchNext) - frontend, drain FIN, then tunnel"
+    Write-SupLog "supervisor exiting (relaunchNext=$relaunchNext) - frontend, drain FIN, then tunnel(s)"
     if ($frontend -and -not $frontend.HasExited) {
         try { Stop-Process -Id $frontend.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
     Start-Sleep -Seconds 2
     if ($sshTunnel -and -not $sshTunnel.HasExited) {
         try { Stop-Process -Id $sshTunnel.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    # Every OTHER configured remote's tunnel (ADR 0042 L2b design E) — same
+    # teardown as $sshTunnel above, one per host.
+    foreach ($et in $extraTunnels) {
+        if ($et.Proc -and -not $et.Proc.HasExited) {
+            try { Stop-Process -Id $et.Proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+        }
     }
 }

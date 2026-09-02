@@ -3,18 +3,22 @@
 # Ordering is load-bearing (confirmed against the daemon code):
 #
 #   1. Kill the SUPERVISOR first        - so it can't respawn the FE or race us
-#      (launch-sot.ps1)                   by tearing the tunnel on FE exit.
+#      (launch-sot.ps1)                   by tearing a tunnel on FE exit.
 #   2. Kill the FRONTEND (sot.exe)      - a Stop-Process on a LIVE FE makes the
-#                                          OS send FIN over the STILL-OPEN tunnel;
-#                                          the daemon reads EOF and drops the
-#                                          client (connections=N-1) immediately.
-#   3. WAIT ~2s                         - let that FIN propagate + the daemon
-#                                          deregister BEFORE the tunnel dies.
-#   4. Kill the TUNNEL (ssh -L :port)   - only now. If the tunnel dies before the
-#                                          FIN lands, the client is stranded as a
+#                                          OS send FIN over every STILL-OPEN
+#                                          tunnel; each remote daemon reads
+#                                          EOF and drops the client
+#                                          (connections=N-1) immediately.
+#   3. WAIT ~2s                         - let that FIN propagate + every
+#                                          daemon deregister BEFORE the
+#                                          tunnels die.
+#   4. Kill every TUNNEL (ssh -L :port) - only now, one per configured remote
+#                                          (ADR 0042 L2b design E). If a
+#                                          tunnel dies before its FIN lands,
+#                                          that client is stranded as a
 #                                          GHOST until the ADR-0027 keepalive
-#                                          reaper fires (~50s). That ghost is the
-#                                          "FE not detaching on close" bug.
+#                                          reaper fires (~50s). That ghost is
+#                                          the "FE not detaching on close" bug.
 #   5. Stop the LOCAL sotd (ADR 0042    - LAST, only after the FE (its only
 #      L1c) via sot-local-daemon.ps1      possible local client) is already
 #      -Stop                              gone. Delegated to that script so
@@ -74,13 +78,30 @@ function W([string]$m) { "$(Get-Date -Format o)  $m" | Tee-Object -FilePath $log
 #   aux-only: spawned when the control port was already open; carries the
 #            browser forwards and always includes pluto "-L 1234:127.0.0.1:1234"
 #            - anchor on that. These are sot-owned and must die with the FE.
+#
+# ADR 0042 L2b design E: launch-sot.ps1 opens one tunnel per configured
+# remote, not just $TcpPort's -- this script has to know every port it
+# might need to kill a tunnel on, or a second remote's tunnel outlives every
+# "clean" shutdown exactly the way the 2026-07-14 incident above describes.
+# Read-SotHosts/Get-TunnelPlan (shared with launch-sot.ps1) supply that list;
+# $TcpPort (env/-TcpPort override) is ALWAYS included even with no
+# hosts.toml at all, matching the pre-L2b single-tunnel contract.
+. (Join-Path $PSScriptRoot 'sot-hosts.ps1')
+$repo = Resolve-Path -Path (Join-Path $PSScriptRoot '..')
+$hostsCfg = Read-SotHosts -Path (Join-Path $repo '.sot\hosts.toml')
+$tunnelPlan = Get-TunnelPlan -Cfg $hostsCfg -DefaultAlias $SshAlias -DefaultPort $TcpPort
+$tunnelPorts = @($TcpPort) + (
+    $tunnelPlan | Where-Object { $_.local_port } | ForEach-Object { $_.local_port }
+) | Sort-Object -Unique
+$portAlt = ($tunnelPorts | ForEach-Object { "-L ${_}:" }) -join '|'
+
 $supRe = '-File.*launch-(sot|devenv)\.ps1'
-$tunRe = "-L ${TcpPort}:|-L 1234:127\.0\.0\.1:1234"
+$tunRe = "$portAlt|-L 1234:127\.0\.0\.1:1234"
 function Get-Sup  { Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match $supRe } }
 function Get-FE   { Get-CimInstance Win32_Process -Filter "Name='sot.exe'" }
 function Get-Tun  { Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" | Where-Object { $_.CommandLine -match $tunRe } }
 
-W "=== shutdown-sot start (port=$TcpPort, host=$SshAlias) ==="
+W "=== shutdown-sot start (ports=$($tunnelPorts -join ','), host=$SshAlias) ==="
 W ("pre: FE=[{0}] supervisor=[{1}] tunnel=[{2}]" -f `
     ((Get-FE | ForEach-Object ProcessId) -join ','),
     ((Get-Sup | ForEach-Object ProcessId) -join ','),
