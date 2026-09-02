@@ -1,7 +1,10 @@
 # ADR 0042: First-class local sessions and the multi-host selector
 
-**Status:** Proposed (2026-09-02) — for the maintainer's ratification before
-any build. Implements the owner's 2026-09-01 destination for the Ship's Log
+**Status:** Accepted (2026-09-02, maintainer: "yes. confirm"). Ratified with
+one rule sharpened at the maintainer's direction: the capsule is the DEFAULT
+runtime for every NEW session on EVERY host from L1 on; tmux exists only to
+keep already-running sessions alive until they end, and is then deleted
+(ADR 0037 P5). "Nothing will run on tmux on the new system." Implements the owner's 2026-09-01 destination for the Ship's Log
 ladder (ADR 0037, ADR 0041 build-order amendment): sessions from several
 hosts in one selector, separated by the wheel icon, with the local machine
 being just another host and local sessions being ordinary sessions.
@@ -32,8 +35,8 @@ is fed one of two ways, chosen by the workspace's `runtime`:
 
 | `runtime` | who runs the agent | how the pane is fed | survives what |
 |---|---|---|---|
-| `tmux` (today, Linux) | a tmux pane the daemon owns | `pty.open` byte stream over the daemon connection | daemon restarts (ADR 0038 keeper) |
-| `capsule` (new; the only runtime on Windows) | a voyage-recorded capsule under its own supervisor | the U3 attach client, on the host's attach lane | frontend AND daemon restarts (the supervisor is a separate process; the record is on disk) |
+| `capsule` (the default for every NEW session, every host) | a voyage-recorded capsule under its own supervisor | the U3 attach client, on the host's attach lane | frontend AND daemon restarts (the supervisor is a separate process; the record is on disk) |
+| `tmux` (legacy; ALREADY-RUNNING sessions only, until they end) | a tmux pane the daemon owns | `pty.open` byte stream over the daemon connection | daemon restarts (ADR 0038 keeper) |
 
 Local sessions are `capsule` workspaces of the local daemon. They are never
 drawer tenants. Messaging between sessions on any hosts is sot-comm exactly
@@ -44,9 +47,12 @@ the backend daemon, which is what the drawer's agent already does.
 
 ### L1 — the capsule workspace runtime (daemon + frontend, one host)
 
-- `workspace.create` gains `runtime: "tmux" | "capsule"` (default: `tmux`
-  on Unix, `capsule` on Windows — the platform decides; no user knob unless
-  a host offers both). A capsule workspace's state directory lives under the
+- `workspace.create` creates a CAPSULE workspace on every host; `runtime:
+  "tmux"` is never chosen for a new session (no knob). Existing tmux
+  workspaces keep running as `runtime: "tmux"` rows until they end; the
+  daemon creates no new ones. When the last one is gone, the tmux path is
+  deleted (ADR 0037 P5) — there is no soak switch, because Windows starts
+  capsule-only and the backend host converges by attrition. A capsule workspace's state directory lives under the
   daemon's state root, `<state-root>/workspaces/<workspace-id>/`, and holds
   exactly what step 6 defines: `supervisor.lock`, `drawer.voyage` (the name
   stays; it means "this state directory's voyage pointer"), the journal, the
@@ -124,8 +130,9 @@ the backend daemon, which is what the drawer's agent already does.
 
 ## Consequences
 
-- The Windows host gets capsules as its ONLY session runtime, so P5's "the
-  tmux path is deleted" question never arises there — it starts capsule-only.
+- Every host gets capsules as the runtime for every new session; the
+  backend host converges by attrition as its running tmux sessions end,
+  after which the tmux path is deleted (P5) with no switch to flip.
 - The frontend stops being single-daemon; every host is a peer. The drawer
   keeps its special tenant but not a special transport.
 - Records for local sessions live on the local disk under the daemon's
