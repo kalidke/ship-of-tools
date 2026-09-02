@@ -30,7 +30,7 @@
 //! (d) [`ReconnectState`], (e) [`legs_match`], (f) [`FeDownBaseline`] /
 //! [`build_fe_down_marker`].
 
-use crate::wire::{self, ResizeRefusedReason, SupervisorPhase};
+use crate::wire::{self, ResizeRefusedReason, SupervisorOperationState, SupervisorPhase, SupervisorRefusedReason};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------
@@ -38,14 +38,17 @@ use std::time::{Duration, Instant};
 // ---------------------------------------------------------------------
 
 /// Bound on the transient hold queue a watcher fills while a `take` is in
-/// flight. Pinned to [`wire::MAX_INPUT_PAYLOAD_LEN`] — not an
-/// independently-chosen number — because the queue becomes, verbatim, the
-/// single `input` frame sent the instant the pen is granted (ADR 0041
-/// "Step 6 as specified": "hold the input in a bounded 8 KiB queue
-/// (encoded bytes, one wire input's cap; a larger paste splits there and
-/// the remainder is discarded visibly, never delivered minutes late into
-/// a context that no longer exists)"). Two callers needing two different
-/// numbers here would be the bug this constant exists to prevent.
+/// flight, and REUSED (Codex review round, finding 5) as the one bounded
+/// pending-byte queue for DRIVING mode too — an input already outstanding
+/// holds the NEXT input here rather than dropping it. Pinned to
+/// [`wire::MAX_INPUT_PAYLOAD_LEN`] — not an independently-chosen number —
+/// because the queue becomes, verbatim, a single `input` frame the
+/// instant it is safe to send (ADR 0041 "Step 6 as specified": "hold the
+/// input in a bounded 8 KiB queue (encoded bytes, one wire input's cap; a
+/// larger paste splits there and the remainder is discarded visibly,
+/// never delivered minutes late into a context that no longer exists)").
+/// Two callers needing two different numbers here would be the bug this
+/// constant exists to prevent.
 pub const TAKE_QUEUE_CAP: usize = wire::MAX_INPUT_PAYLOAD_LEN;
 
 /// `take_refused{checkpoint_in_flight}` retry cadence (ADR 0041: "retries
@@ -59,29 +62,38 @@ pub const CHECKPOINT_IN_FLIGHT_BUDGET: Duration = Duration::from_secs(30);
 
 /// What this client currently is, over the take-epoch lattice ADR 0037
 /// defines: a fresh attach (or reconnect) always arrives a WATCHER; the
-/// first keystroke starts a `take` transaction; success promotes to
-/// DRIVER.
+/// first keystroke starts a `take` transaction; `take_ok` moves to
+/// RESIZING (the wire's own lockstep — attach_proto's `LockstepViolation`
+/// — allows exactly one outstanding request per connection, so `resize`
+/// must be sent ALONE and awaited before anything else goes out);
+/// `resize_ok`/`resize_refused` promotes to DRIVING.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Watching,
     Taking,
+    Resizing,
     Driving,
 }
 
 /// What [`TakeTransaction`] wants the caller (the Windows-only runtime)
 /// to DO. Mirrors `attach_proto::Action`'s own shape: the transaction
 /// itself never touches a socket — it only decides what the runtime
-/// should send or show next.
+/// should send or show next. There is deliberately no `SendInput`
+/// variant: flushing the queue is the runtime's own job, via
+/// [`TakeTransaction::take_queued`], called only once it is safe to (see
+/// that method's own doc) — folding it into an action returned eagerly
+/// from `on_take_ok` is exactly the lockstep violation this redesign
+/// fixes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TakeAction {
     /// Send `take{controller_id}`.
     SendTake,
-    /// On `take_ok`, resize FIRST — "a watcher renders the driver's
-    /// geometry and cannot correct it until it holds the pen."
+    /// On `take_ok`, resize FIRST and ALONE — "a watcher renders the
+    /// driver's geometry and cannot correct it until it holds the pen,"
+    /// and the wire's own lockstep rule permits exactly one outstanding
+    /// request. The queue is released only after `resize_ok` (or its
+    /// refusal) — see [`TakeTransaction::on_resize_ok`].
     SendResize { cols: u16, rows: u16 },
-    /// The queue, drained as ONE `input` frame. The caller mints the
-    /// idem key via [`OutstandingSlot::record`] and sends it.
-    SendInput { bytes: Vec<u8> },
     /// The queue hit [`TAKE_QUEUE_CAP`] and further bytes are being
     /// dropped, or the `checkpoint_in_flight` retry window expired —
     /// either way, "discarded visibly, never delivered ... into a
@@ -89,20 +101,24 @@ pub enum TakeAction {
     /// UI; it must never be a silent drop.
     QueueDiscarded,
     /// `resize_refused{out_of_budget}`: "keeps the pen and reports the
-    /// geometry unrepresentable." Stays [`Role::Driving`].
+    /// geometry unrepresentable." Promotes to [`Role::Driving`] anyway
+    /// (the pen is still held; only the geometry failed) so the queue
+    /// can still flush.
     GeometryUnrepresentable,
     /// `resize_refused{not_driver}`: "the pen is gone." Returns to
     /// [`Role::Watching`].
     PenLost,
     /// `take_refused{not_attached}`: "re-attaches first" — the caller
-    /// drives a fresh attach (through the reconnect machinery) and,
-    /// once attached again, calls [`TakeTransaction::retry_take`] to
-    /// re-issue `take` for the SAME still-queued bytes.
+    /// ends the current episode PRESERVING this transaction's role and
+    /// queue (never calls [`TakeTransaction::reset_to_watching`] for
+    /// this one teardown), reconnects, and once a fresh checkpoint
+    /// lands calls [`TakeTransaction::retry_take`] to re-issue `take`
+    /// for the SAME still-queued bytes.
     Reattach,
 }
 
 /// ADR 0041 ruling (b): "Take-on-first-input is a transaction." Owns
-/// exactly the queue and the role; the epoch itself lives in
+/// exactly the role and the queue; the epoch itself lives in
 /// [`OutstandingSlot`] (ruling (c)) since it survives past this
 /// transaction's own lifetime (every later keystroke while DRIVING).
 #[derive(Debug)]
@@ -110,6 +126,11 @@ pub struct TakeTransaction {
     role: Role,
     queue: Vec<u8>,
     checkpoint_retry_started_at: Option<Instant>,
+    /// Gates [`Self::tick_checkpoint_retry`]'s own `SendTake` to the
+    /// pinned 250 ms cadence (Codex review round, finding 4: the
+    /// original `tick` fired on EVERY call, including immediately after
+    /// each fast refusal).
+    next_retry_at: Option<Instant>,
 }
 
 impl Default for TakeTransaction {
@@ -120,7 +141,7 @@ impl Default for TakeTransaction {
 
 impl TakeTransaction {
     pub fn new() -> Self {
-        Self { role: Role::Watching, queue: Vec::new(), checkpoint_retry_started_at: None }
+        Self { role: Role::Watching, queue: Vec::new(), checkpoint_retry_started_at: None, next_retry_at: None }
     }
 
     pub fn role(&self) -> Role {
@@ -144,6 +165,7 @@ impl TakeTransaction {
         debug_assert_eq!(self.role, Role::Watching);
         self.role = Role::Taking;
         self.checkpoint_retry_started_at = None;
+        self.next_retry_at = None;
         let mut actions = vec![TakeAction::SendTake];
         if self.push_queue(bytes) {
             actions.push(TakeAction::QueueDiscarded);
@@ -151,10 +173,12 @@ impl TakeTransaction {
         actions
     }
 
-    /// Further keystrokes arriving while still TAKING — appended to the
-    /// same queue, discard reported the same way.
-    pub fn on_input_while_taking(&mut self, bytes: &[u8]) -> Vec<TakeAction> {
-        debug_assert_eq!(self.role, Role::Taking);
+    /// Further keystrokes arriving before the pen is fully secured
+    /// (TAKING or RESIZING) — appended to the same queue, discard
+    /// reported the same way. No wire action: a `take`/`resize` is
+    /// already outstanding.
+    pub fn on_input_while_pending(&mut self, bytes: &[u8]) -> Vec<TakeAction> {
+        debug_assert!(matches!(self.role, Role::Taking | Role::Resizing));
         if self.push_queue(bytes) {
             vec![TakeAction::QueueDiscarded]
         } else {
@@ -162,48 +186,105 @@ impl TakeTransaction {
         }
     }
 
-    /// `take_ok{take_epoch}`: resize the current viewport FIRST, then
-    /// flush the queue as one `input` (if nonempty), then DRIVING.
-    pub fn on_take_ok(&mut self, cols: u16, rows: u16) -> Vec<TakeAction> {
-        self.role = Role::Driving;
-        self.checkpoint_retry_started_at = None;
-        let mut actions = vec![TakeAction::SendResize { cols, rows }];
-        if !self.queue.is_empty() {
-            actions.push(TakeAction::SendInput { bytes: std::mem::take(&mut self.queue) });
-        }
-        actions
-    }
-
-    /// `take_refused{not_attached}`.
-    pub fn on_take_refused_not_attached(&mut self) -> Vec<TakeAction> {
-        vec![TakeAction::Reattach]
-    }
-
-    /// Re-issue `take` for the still-queued bytes after a
-    /// `not_attached`-triggered reattach completed.
-    pub fn retry_take(&mut self) -> Vec<TakeAction> {
-        debug_assert_eq!(self.role, Role::Taking);
-        vec![TakeAction::SendTake]
-    }
-
-    /// `take_refused{checkpoint_in_flight}`: starts (or continues) the
-    /// 250ms-until-30s retry window. `now` is the time the refusal was
-    /// observed.
-    pub fn on_take_refused_checkpoint_in_flight(&mut self, now: Instant) -> Vec<TakeAction> {
-        let started = *self.checkpoint_retry_started_at.get_or_insert(now);
-        if now.duration_since(started) >= CHECKPOINT_IN_FLIGHT_BUDGET {
-            self.queue.clear();
-            self.checkpoint_retry_started_at = None;
-            self.role = Role::Watching;
+    /// Keystrokes arriving while DRIVING with an input ALREADY
+    /// outstanding (ruling (c): one outstanding request at a time) —
+    /// REUSES the same bounded queue (Codex review round, finding 5)
+    /// rather than dropping them. No wire action; the caller flushes
+    /// via [`Self::take_queued`] once the outstanding reply resolves.
+    pub fn queue_while_driving(&mut self, bytes: &[u8]) -> Vec<TakeAction> {
+        debug_assert_eq!(self.role, Role::Driving);
+        if self.push_queue(bytes) {
             vec![TakeAction::QueueDiscarded]
         } else {
             vec![]
         }
     }
 
-    /// Drives the 250ms retry cadence — the caller schedules this on a
-    /// timer while [`Self::on_take_refused_checkpoint_in_flight`]'s
-    /// window is open (`checkpoint_retry_started_at.is_some()`).
+    /// `take_ok{take_epoch}`: RESIZING, and send `resize` ALONE — the
+    /// queue is released only once [`Self::on_resize_ok`] runs.
+    pub fn on_take_ok(&mut self, cols: u16, rows: u16) -> Vec<TakeAction> {
+        self.role = Role::Resizing;
+        self.checkpoint_retry_started_at = None;
+        self.next_retry_at = None;
+        vec![TakeAction::SendResize { cols, rows }]
+    }
+
+    /// `resize_ok`: DRIVING. The queue (if any) is released by a
+    /// SEPARATE call to [`Self::take_queued`] — kept as two steps rather
+    /// than one action-returning call so the runtime can record the
+    /// idem key and mint the wire frame using ITS OWN clock/randomness,
+    /// exactly the shape [`Self::take_queued`] already had for the
+    /// steady-state DRIVING flush.
+    pub fn on_resize_ok(&mut self) {
+        debug_assert_eq!(self.role, Role::Resizing);
+        self.role = Role::Driving;
+    }
+
+    /// Drains the queue for the caller to send as ONE input frame, once
+    /// it is safe to: after `resize_ok` (or `resize_refused{out_of_
+    /// budget}`, which still keeps the pen), or after a prior
+    /// outstanding input resolved while still DRIVING. `None` if
+    /// nothing is queued. Callable only while DRIVING — nothing may
+    /// flush before the pen is fully secured.
+    pub fn take_queued(&mut self) -> Option<Vec<u8>> {
+        debug_assert_eq!(self.role, Role::Driving);
+        if self.queue.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.queue))
+        }
+    }
+
+    /// `take_refused{not_attached}`: role and queue are DELIBERATELY
+    /// left untouched here — see [`TakeAction::Reattach`]'s own doc.
+    pub fn on_take_refused_not_attached(&mut self) -> Vec<TakeAction> {
+        vec![TakeAction::Reattach]
+    }
+
+    /// Re-issue `take` for the still-queued bytes after a
+    /// `not_attached`-triggered reattach completed (role stays TAKING,
+    /// preserved across the episode boundary).
+    pub fn retry_take(&mut self) -> Vec<TakeAction> {
+        debug_assert_eq!(self.role, Role::Taking);
+        vec![TakeAction::SendTake]
+    }
+
+    /// `input_refused_stale` while DRIVING: "re-take first, then mint a
+    /// new key under the new epoch" (ruling (c)) — the epoch is stale
+    /// precisely because it is no longer current, so a fresh `take` is
+    /// what learns the CURRENT one. TAKING, queue untouched (whatever
+    /// was already queued behind the stale input stays queued).
+    pub fn retake_while_driving(&mut self) -> Vec<TakeAction> {
+        debug_assert_eq!(self.role, Role::Driving);
+        self.role = Role::Taking;
+        self.checkpoint_retry_started_at = None;
+        self.next_retry_at = None;
+        vec![TakeAction::SendTake]
+    }
+
+    /// `take_refused{checkpoint_in_flight}`: starts the 250ms-until-30s
+    /// retry window. `now` is the time the refusal was observed; the
+    /// first retry is scheduled 250 ms out, driven by
+    /// [`Self::tick_checkpoint_retry`], never fired inline here (a
+    /// refusal is not itself a retry).
+    pub fn on_take_refused_checkpoint_in_flight(&mut self, now: Instant) -> Vec<TakeAction> {
+        let started = *self.checkpoint_retry_started_at.get_or_insert(now);
+        if now.duration_since(started) >= CHECKPOINT_IN_FLIGHT_BUDGET {
+            self.queue.clear();
+            self.checkpoint_retry_started_at = None;
+            self.next_retry_at = None;
+            self.role = Role::Watching;
+            return vec![TakeAction::QueueDiscarded];
+        }
+        self.next_retry_at.get_or_insert(now + CHECKPOINT_IN_FLIGHT_RETRY);
+        vec![]
+    }
+
+    /// Drives the 250ms retry cadence — call on every tick while
+    /// [`Self::checkpoint_retry_pending`] is true. Gated by
+    /// `next_retry_at`: a call before that instant is a no-op, so
+    /// polling this every 100ms (the worker's own tick) does not resend
+    /// `take` ten times a second.
     pub fn tick_checkpoint_retry(&mut self, now: Instant) -> Vec<TakeAction> {
         let Some(started) = self.checkpoint_retry_started_at else {
             return vec![];
@@ -211,9 +292,17 @@ impl TakeTransaction {
         if now.duration_since(started) >= CHECKPOINT_IN_FLIGHT_BUDGET {
             self.queue.clear();
             self.checkpoint_retry_started_at = None;
+            self.next_retry_at = None;
             self.role = Role::Watching;
             return vec![TakeAction::QueueDiscarded];
         }
+        let Some(next) = self.next_retry_at else {
+            return vec![];
+        };
+        if now < next {
+            return vec![];
+        }
+        self.next_retry_at = Some(now + CHECKPOINT_IN_FLIGHT_RETRY);
         vec![TakeAction::SendTake]
     }
 
@@ -221,10 +310,20 @@ impl TakeTransaction {
         self.checkpoint_retry_started_at.is_some()
     }
 
-    /// `resize_refused{..}` while DRIVING.
+    /// `resize_refused{..}` while RESIZING (the take-transaction's own
+    /// resize) or DRIVING (an ad hoc later resize).
     pub fn on_resize_refused(&mut self, reason: ResizeRefusedReason) -> Vec<TakeAction> {
         match reason {
-            ResizeRefusedReason::OutOfBudget => vec![TakeAction::GeometryUnrepresentable],
+            ResizeRefusedReason::OutOfBudget => {
+                // Keeps the pen: if this was the take-transaction's own
+                // resize (RESIZING), the pen is still granted even
+                // though the geometry failed, so promote to DRIVING —
+                // the queue must still be able to flush.
+                if self.role == Role::Resizing {
+                    self.role = Role::Driving;
+                }
+                vec![TakeAction::GeometryUnrepresentable]
+            }
             ResizeRefusedReason::NotDriver => {
                 self.role = Role::Watching;
                 self.queue.clear();
@@ -233,12 +332,14 @@ impl TakeTransaction {
         }
     }
 
-    /// A fresh attach (or reconnect) always arrives WATCHING — ADR 0037's
-    /// who-may-type, restated by ruling (d).
+    /// A fresh attach (or an ORDINARY reconnect, one not preserving a
+    /// `not_attached` in-flight take) always arrives WATCHING — ADR
+    /// 0037's who-may-type, restated by ruling (d).
     pub fn reset_to_watching(&mut self) {
         self.role = Role::Watching;
         self.queue.clear();
         self.checkpoint_retry_started_at = None;
+        self.next_retry_at = None;
     }
 }
 
@@ -290,8 +391,9 @@ pub enum ReconnectResendDecision {
     /// "Resends THE SAME KEY" under the freshly re-taken epoch.
     Resend { idem_key: [u8; 16] },
     /// The voyage UUID changed: "CANCELED and marked unknown, never
-    /// replayed and never re-keyed."
-    Cancel,
+    /// replayed and never re-keyed." Carries the canceled tuple so the
+    /// caller can surface it visibly rather than dropping it silently.
+    Cancel { canceled: OutstandingInput },
     /// Nothing was outstanding.
     None,
 }
@@ -366,8 +468,8 @@ impl OutstandingSlot {
             return ReconnectResendDecision::None;
         };
         if o.voyage_uuid != new_voyage_uuid {
-            self.0 = None;
-            return ReconnectResendDecision::Cancel;
+            let canceled = self.0.take().expect("checked Some above");
+            return ReconnectResendDecision::Cancel { canceled };
         }
         o.take_epoch = new_take_epoch;
         ReconnectResendDecision::Resend { idem_key: o.idem_key }
@@ -384,17 +486,6 @@ impl OutstandingSlot {
 // ---------------------------------------------------------------------
 // (d) Reconnect is bounded, classified, and re-reads the pointer
 // ---------------------------------------------------------------------
-
-/// `disconnected → connecting → hello → attaching → watching/driving`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Episode {
-    Disconnected,
-    Connecting,
-    Hello,
-    Attaching,
-    Watching,
-    Driving,
-}
 
 /// Why a reconnect episode is TERMINAL — an actionable error offering
 /// retry and reset, never silently retried again.
@@ -438,12 +529,15 @@ pub fn next_backoff(current: Duration) -> Duration {
     (current * 2).min(RECONNECT_BACKOFF_CAP)
 }
 
-/// The reconnect episode's own classifier state: which episode phase,
-/// the current backoff, and how long the "pipe absent, lane
-/// absent-or-unresponsive" condition has been continuously observed.
+/// The reconnect episode's own classifier state: the current backoff,
+/// and how long the "pipe absent, lane absent-or-unresponsive" condition
+/// has been continuously observed. No longer tracks a separate `Episode`
+/// phase enum (Codex review round, deletion candidate): nothing in this
+/// crate or its caller ever READ that field to decide behavior — only
+/// [`Self::attached`]'s own resets (backoff, the unresponsive clock) are
+/// behavioral, and they are kept here directly.
 #[derive(Debug)]
 pub struct ReconnectState {
-    episode: Episode,
     backoff: Duration,
     unresponsive_since: Option<Instant>,
 }
@@ -456,37 +550,12 @@ impl Default for ReconnectState {
 
 impl ReconnectState {
     pub fn new() -> Self {
-        Self { episode: Episode::Disconnected, backoff: RECONNECT_BACKOFF_INITIAL, unresponsive_since: None }
+        Self { backoff: RECONNECT_BACKOFF_INITIAL, unresponsive_since: None }
     }
 
-    pub fn episode(&self) -> Episode {
-        self.episode
-    }
-
-    /// Every episode starts here — `drawer.voyage` is re-read and
-    /// re-validated at this exact point, never against a cached UUID.
-    pub fn begin_episode(&mut self) {
-        self.episode = Episode::Connecting;
-    }
-
-    pub fn enter_hello(&mut self) {
-        self.episode = Episode::Hello;
-    }
-    pub fn enter_attaching(&mut self) {
-        self.episode = Episode::Attaching;
-    }
-    pub fn enter_watching(&mut self) {
-        self.episode = Episode::Watching;
-        self.unresponsive_since = None;
-        self.reset_backoff();
-    }
-    pub fn enter_driving(&mut self) {
-        self.episode = Episode::Driving;
-    }
-    pub fn drop_connection(&mut self) {
-        self.episode = Episode::Disconnected;
-    }
-
+    /// Every episode starts by re-reading `drawer.voyage` fresh — this
+    /// type carries no phase to update for that; the caller (the
+    /// runtime) simply re-reads the pointer at the top of its own loop.
     pub fn classify_hello_refused_version_skew(&mut self) -> ReconnectDecision {
         ReconnectDecision::Terminal(TerminalReason::HelloRefusedVersionSkew)
     }
@@ -517,8 +586,13 @@ impl ReconnectState {
 
     /// The voyage pipe is absent AND the supervisor lane is absent or
     /// unresponsive — the ONE case that needs the timeout, since neither
-    /// side can prove a terminal fact. `now` is checked against the
-    /// FIRST time this condition was observed continuously.
+    /// side can prove a terminal fact. The CALLER is responsible for
+    /// only invoking this when BOTH halves of the conjunction are
+    /// currently true (Codex review round, finding 8: a live attach
+    /// pipe with an unresponsive supervisor must never reach this at
+    /// all — see `fe_client_win.rs`'s own doc on where this is and is
+    /// not called). `now` is checked against the FIRST time this
+    /// condition was observed continuously.
     pub fn classify_unresponsive(&mut self, now: Instant) -> ReconnectDecision {
         let since = *self.unresponsive_since.get_or_insert(now);
         if now.duration_since(since) >= HEALTH_WINDOW {
@@ -528,18 +602,25 @@ impl ReconnectState {
         }
     }
 
-    /// The unresponsive condition resolved (a `status` answered again,
-    /// or the voyage pipe reappeared) — clears the clock so a LATER
+    /// The unresponsive condition resolved (either half of the
+    /// conjunction became true again) — clears the clock so a LATER
     /// unresponsive spell starts its own fresh window rather than
     /// inheriting an old one.
     pub fn clear_unresponsive(&mut self) {
         self.unresponsive_since = None;
     }
 
+    /// Called once an attach succeeds: clears the unresponsive clock and
+    /// resets backoff — the only behavior a "reached Watching" phase
+    /// transition ever carried.
+    pub fn attached(&mut self) {
+        self.unresponsive_since = None;
+        self.reset_backoff();
+    }
+
     /// Everything else retries. Returns the backoff to wait before the
     /// next attempt and advances it (250ms doubling to 4s).
     pub fn retry_with_backoff(&mut self) -> Duration {
-        self.drop_connection();
         let wait = self.backoff;
         self.backoff = next_backoff(self.backoff);
         wait
@@ -554,12 +635,16 @@ impl ReconnectState {
 // (e) The attach notice is bound to the leg it describes
 // ---------------------------------------------------------------------
 
-/// `true` iff the mgmt-lane-observed leg identity and the attach-
-/// connection-observed leg identity name the SAME process leg —
-/// `(pid, creation-time bits)` compared on both. On a mismatch the
-/// caller re-reads `status` rather than rendering the notice at all
-/// ("a leg dying between them would let the FE render leg A's start
-/// time over leg B's restored screen").
+/// `true` iff the CAPSULE'S OWN identity as proven on the mgmt sub-lane
+/// (a `status_ok` reply's pid + creation-time bits, bound to a REPLY via
+/// the full same-connection challenge — the merged U2 supervisor lane's
+/// own `status_ok.pid`/`.created` report the SUPERVISOR process, never
+/// the leg, so that reply can never be the `mgmt` argument here) matches
+/// the attach connection's own SID-proven identity — `(pid,
+/// creation-time bits)` compared on both. On a mismatch the caller
+/// re-reads the mgmt-lane status rather than rendering the notice at all
+/// ("a leg dying between them would let the FE render leg A's start time
+/// over leg B's restored screen").
 pub fn legs_match(mgmt: (u32, u64), attach: (u32, u64)) -> bool {
     mgmt.0 == attach.0 && mgmt.1 == attach.1
 }
@@ -623,8 +708,11 @@ pub struct FeDownBaseline {
 
 impl FeDownBaseline {
     /// `last_evidence`: the result of [`last_evidence_ts`] over
-    /// `fe-inbox.jsonl`'s content as read at process start, before this
-    /// run's own first append.
+    /// `fe-inbox.jsonl`'s content as read at FE PROCESS START (before
+    /// this run's own first append of ANY kind — the frontend calls
+    /// this from `State::new`, never from drawer-open time; see
+    /// `fe_client_win`'s own module doc for the Codex review finding
+    /// this fixes).
     pub fn capture(last_evidence: Option<String>) -> Self {
         Self { last_evidence, first_attach_done: false }
     }
@@ -644,31 +732,39 @@ impl FeDownBaseline {
 }
 
 // ---------------------------------------------------------------------
-// (a) One quit dispatcher, waiting for `record_closed`
+// (a) One quit dispatcher, waiting for `record_closed` then `record_verified`
 // ---------------------------------------------------------------------
 
-/// Bounds how long the "ending session" window waits for `record_closed`
-/// before switching to "outcome unknown" (ADR 0041: "on the FE QUIT
-/// cutoff") — the ADR names no exact value for this specific wait. NOT
+/// Bounds how long the "ending session" window waits before switching to
+/// "outcome unknown" — ADR 0041's own pinned bound-graph row: "FE quit |
+/// DERIVED `fence acquisition` (90 s today) → 'outcome unknown'." NOT
 /// the ordinary lane-operation reply budget (Lifecycle "reply read 5 s"):
-/// that budget covers `status`/`query`, whose replies are immediate,
-/// while `end_run`'s OWN reply is deliberately DEFERRED until real,
-/// slow OS work completes underneath it — killing the process, closing
-/// the ConPTY (with the pre-24H2 blocking-close case step 4 pins), and
-/// sealing the voyage. `tests/supervisor_win.rs`'s own `command()` helper
-/// budgets 30 s for exactly this reply for exactly this reason; this
-/// cutoff matches it rather than inventing an independent, tighter
-/// number that would report "outcome unknown" for a request still
-/// legitimately in flight.
-pub const QUIT_CUTOFF: Duration = Duration::from_secs(30);
+/// `end_run`'s own reply is deliberately DEFERRED until real, slow OS
+/// work completes underneath it — killing the process, closing the
+/// ConPTY, sealing the voyage, then verifying it — and the ADR's own
+/// bound-graph table derives this EXACT figure (`readiness + kill wait +
+/// 20 s`, 90 s today) for precisely that wait, not a number this crate
+/// invents independently.
+pub const QUIT_CUTOFF: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuitState {
     Idle,
-    /// Holding the window open, waiting for `record_closed`.
+    /// `end_run` sent, holding the window open, waiting for its own
+    /// reply (`record_closed`, per Lifecycle "the COMMAND reply arrives
+    /// at record_closed").
     Ending { operation_id: String },
-    /// `record_closed` arrived — the caller may now actually exit.
+    /// `record_closed` arrived; now polling `query` for `record_verified`
+    /// — Lifecycle: "`record_verified` follows through `query`."
+    Verifying { operation_id: String },
+    /// `record_verified` observed — the caller may now actually exit.
     Ended,
+    /// The operation reached an explicit `Failed{detail}` reply — a
+    /// concrete, immediate terminal outcome, never held for the cutoff.
+    Failed { detail: String },
+    /// The operation reached an explicit `Refused{reason}` reply
+    /// (`stale_voyage` in practice) — likewise immediate.
+    Refused { reason: SupervisorRefusedReason },
     /// The cutoff expired first: "the window STAYS UP and says 'ending
     /// the session did not complete — outcome unknown'."
     OutcomeUnknown,
@@ -700,7 +796,7 @@ impl QuitDispatcher {
 
     /// Starts the ending transaction. Returns `true` iff THIS call is
     /// the one that should send `end_run` (idempotent against repeated
-    /// quit presses while already ending/ended/unknown).
+    /// quit presses while already ending/verifying/ended/unknown).
     pub fn request_quit(&mut self, operation_id: String, now: Instant) -> bool {
         if matches!(self.state, QuitState::Idle) {
             self.state = QuitState::Ending { operation_id };
@@ -711,17 +807,60 @@ impl QuitDispatcher {
         }
     }
 
-    /// `record_closed` arrived on the supervisor lane for the operation
-    /// this dispatcher is waiting on.
-    pub fn on_record_closed(&mut self) {
-        if matches!(self.state, QuitState::Ending { .. }) {
-            self.state = QuitState::Ended;
+    /// The operation id this dispatcher is currently waiting on a reply
+    /// for (either the initial command or a subsequent `query`) —
+    /// `Some` while `Ending` or `Verifying`, `None` otherwise. The
+    /// runtime uses this to know whether it should keep polling `query`.
+    pub fn operation_id(&self) -> Option<&str> {
+        match &self.state {
+            QuitState::Ending { operation_id } | QuitState::Verifying { operation_id } => Some(operation_id),
+            _ => None,
         }
     }
 
-    /// Advances the cutoff clock; call once per tick while `Ending`.
+    /// Applies a `SupervisorOperationState` reply — from the `end_run`
+    /// command's own reply OR a later `query` — to the dispatcher.
+    /// `RecordClosed` moves `Ending -> Verifying` (never exits yet);
+    /// `RecordVerified` is the ONLY thing that reaches `Ended`, from
+    /// either `Ending` (a fast authority that verified before this
+    /// dispatcher ever queried) or `Verifying`. `Failed`/`Refused`
+    /// surface immediately as their own terminal states — "never waits
+    /// for the cutoff." Anything else (`Accepted`, `Stopping`,
+    /// `ResetDone`, `UnknownOperation`) is not a state `end_run`'s own
+    /// command/query ever legitimately answers with here, so it is
+    /// ignored rather than mis-transitioned.
+    pub fn on_operation_state(&mut self, state: SupervisorOperationState) {
+        let waiting = matches!(self.state, QuitState::Ending { .. } | QuitState::Verifying { .. });
+        if !waiting {
+            return;
+        }
+        match state {
+            SupervisorOperationState::RecordClosed => {
+                if let QuitState::Ending { operation_id } = &self.state {
+                    self.state = QuitState::Verifying { operation_id: operation_id.clone() };
+                }
+            }
+            SupervisorOperationState::RecordVerified => {
+                self.state = QuitState::Ended;
+            }
+            SupervisorOperationState::Failed { detail } => {
+                self.state = QuitState::Failed { detail };
+            }
+            SupervisorOperationState::Refused { reason } => {
+                self.state = QuitState::Refused { reason };
+            }
+            SupervisorOperationState::Accepted
+            | SupervisorOperationState::Stopping
+            | SupervisorOperationState::ResetDone { .. }
+            | SupervisorOperationState::UnknownOperation => {}
+        }
+    }
+
+    /// Advances the cutoff clock; call once per tick while `Ending` or
+    /// `Verifying`.
     pub fn tick(&mut self, now: Instant) {
-        if let (QuitState::Ending { .. }, Some(started)) = (&self.state, self.started_at) {
+        let waiting = matches!(self.state, QuitState::Ending { .. } | QuitState::Verifying { .. });
+        if let (true, Some(started)) = (waiting, self.started_at) {
             if now.duration_since(started) >= QUIT_CUTOFF {
                 self.state = QuitState::OutcomeUnknown;
             }
@@ -732,14 +871,17 @@ impl QuitDispatcher {
         matches!(self.state, QuitState::Ended)
     }
 
-    /// The visible window message while ending or after a timed-out
-    /// outcome; `None` once idle/ended (nothing to show).
-    pub fn message(&self) -> Option<&'static str> {
-        match self.state {
-            QuitState::Ending { .. } => Some("ending session\u{2026}"),
+    /// The visible window message while ending, verifying, or after a
+    /// terminal outcome; `None` once idle/ended (nothing to show).
+    pub fn message(&self) -> Option<String> {
+        match &self.state {
+            QuitState::Ending { .. } => Some("ending session\u{2026}".to_string()),
+            QuitState::Verifying { .. } => Some("verifying the session ended\u{2026}".to_string()),
             QuitState::OutcomeUnknown => {
-                Some("ending the session did not complete \u{2014} outcome unknown")
+                Some("ending the session did not complete \u{2014} outcome unknown".to_string())
             }
+            QuitState::Failed { detail } => Some(format!("ending the session failed: {detail}")),
+            QuitState::Refused { reason } => Some(format!("ending the session was refused: {reason:?}")),
             QuitState::Idle | QuitState::Ended => None,
         }
     }
@@ -767,29 +909,45 @@ mod tests {
         assert_eq!(t.role(), Role::Taking);
     }
 
+    /// Codex review round, finding 3: `take_ok` must send ONLY resize —
+    /// the queue is released ONLY after `resize_ok`, never bundled into
+    /// the same action batch (the wire allows exactly one outstanding
+    /// request; a bundled `SendInput` would violate lockstep the moment
+    /// a real transport interleaves it before `resize`'s own reply).
     #[test]
-    fn take_ok_resizes_before_flushing_queued_input() {
+    fn take_ok_sends_only_resize_never_input() {
         let mut t = TakeTransaction::new();
         t.on_input_while_watching(b"ab");
-        t.on_input_while_taking(b"cd");
+        t.on_input_while_pending(b"cd");
         let actions = t.on_take_ok(80, 24);
-        assert_eq!(
-            actions,
-            vec![
-                TakeAction::SendResize { cols: 80, rows: 24 },
-                TakeAction::SendInput { bytes: b"abcd".to_vec() },
-            ]
-        );
-        assert_eq!(t.role(), Role::Driving);
+        assert_eq!(actions, vec![TakeAction::SendResize { cols: 80, rows: 24 }]);
+        assert_eq!(t.role(), Role::Resizing);
+        // The queue is untouched -- take_queued is not callable yet
+        // (still RESIZING), proving the bytes were not silently flushed.
     }
 
     #[test]
-    fn take_ok_with_empty_queue_only_resizes() {
-        // Reattaching a driver that never typed anything before take_ok.
+    fn resize_ok_promotes_to_driving_and_releases_the_queue() {
+        let mut t = TakeTransaction::new();
+        t.on_input_while_watching(b"ab");
+        t.on_input_while_pending(b"cd");
+        t.on_take_ok(80, 24);
+        t.on_resize_ok();
+        assert_eq!(t.role(), Role::Driving);
+        assert_eq!(t.take_queued(), Some(b"abcd".to_vec()));
+        // Draining twice returns None -- the queue is truly consumed.
+        assert_eq!(t.take_queued(), None);
+    }
+
+    #[test]
+    fn take_ok_with_empty_queue_then_resize_ok_yields_no_queued_input() {
+        // A driver that never typed anything before take_ok.
         let mut t = TakeTransaction::new();
         t.role = Role::Taking; // synthesize: take sent with no queued bytes yet
         let actions = t.on_take_ok(10, 5);
         assert_eq!(actions, vec![TakeAction::SendResize { cols: 10, rows: 5 }]);
+        t.on_resize_ok();
+        assert_eq!(t.take_queued(), None);
     }
 
     #[test]
@@ -798,10 +956,9 @@ mod tests {
         let paste = vec![b'x'; TAKE_QUEUE_CAP + 100];
         let actions = t.on_input_while_watching(&paste);
         assert!(actions.contains(&TakeAction::QueueDiscarded));
-        let take_ok = t.on_take_ok(80, 24);
-        let TakeAction::SendInput { bytes } = &take_ok[1] else {
-            panic!("expected SendInput as the second action");
-        };
+        t.on_take_ok(80, 24);
+        t.on_resize_ok();
+        let bytes = t.take_queued().expect("queue had bytes");
         assert_eq!(bytes.len(), TAKE_QUEUE_CAP);
     }
 
@@ -809,40 +966,74 @@ mod tests {
     fn queue_accumulates_across_multiple_calls_up_to_the_cap() {
         let mut t = TakeTransaction::new();
         t.on_input_while_watching(&vec![b'a'; TAKE_QUEUE_CAP - 10]);
-        let overflow_actions = t.on_input_while_taking(&[b'b'; 50]);
+        let overflow_actions = t.on_input_while_pending(&[b'b'; 50]);
         assert!(overflow_actions.contains(&TakeAction::QueueDiscarded));
-        let take_ok = t.on_take_ok(80, 24);
-        let TakeAction::SendInput { bytes } = &take_ok[1] else {
-            panic!("expected SendInput");
-        };
+        t.on_take_ok(80, 24);
+        t.on_resize_ok();
+        let bytes = t.take_queued().expect("queue had bytes");
         assert_eq!(bytes.len(), TAKE_QUEUE_CAP);
     }
 
+    /// Codex review round, finding 5: driving input while a request is
+    /// already outstanding must be queued, not dropped.
     #[test]
-    fn take_refused_not_attached_asks_to_reattach() {
+    fn driving_input_while_outstanding_is_queued_not_dropped() {
+        let mut t = TakeTransaction::new();
+        t.on_input_while_watching(b"x");
+        t.on_take_ok(1, 1);
+        t.on_resize_ok();
+        t.take_queued(); // flush the first byte "x" -- now nothing queued
+        let actions = t.queue_while_driving(b"second keystroke");
+        assert_eq!(actions, vec![]);
+        assert_eq!(t.take_queued(), Some(b"second keystroke".to_vec()));
+    }
+
+    #[test]
+    fn take_refused_not_attached_preserves_role_and_queue() {
         let mut t = TakeTransaction::new();
         t.on_input_while_watching(b"x");
         let actions = t.on_take_refused_not_attached();
         assert_eq!(actions, vec![TakeAction::Reattach]);
-        // Queue survives -- retry_take re-sends `take` for the same bytes.
+        // Role and queue survive -- retry_take re-sends `take` for the
+        // SAME still-queued bytes after the caller's own reattach.
+        assert_eq!(t.role(), Role::Taking);
         assert_eq!(t.retry_take(), vec![TakeAction::SendTake]);
-        let take_ok = t.on_take_ok(1, 1);
-        let TakeAction::SendInput { bytes } = &take_ok[1] else {
-            panic!("expected SendInput");
-        };
-        assert_eq!(bytes, b"x");
+        t.on_take_ok(1, 1);
+        t.on_resize_ok();
+        assert_eq!(t.take_queued(), Some(b"x".to_vec()));
+    }
+
+    /// Codex review round, finding 6: a stale-epoch refusal while
+    /// DRIVING must re-take BEFORE minting a new key (the epoch is only
+    /// known once the fresh `take_ok` arrives).
+    #[test]
+    fn retake_while_driving_transitions_to_taking() {
+        let mut t = TakeTransaction::new();
+        t.on_input_while_watching(b"x");
+        t.on_take_ok(1, 1);
+        t.on_resize_ok();
+        assert_eq!(t.role(), Role::Driving);
+        let actions = t.retake_while_driving();
+        assert_eq!(actions, vec![TakeAction::SendTake]);
+        assert_eq!(t.role(), Role::Taking);
     }
 
     #[test]
-    fn checkpoint_in_flight_retries_then_expires_and_discards() {
+    fn checkpoint_in_flight_gated_at_250ms_then_expires_and_discards() {
         let mut t = TakeTransaction::new();
         t.on_input_while_watching(b"typed-while-checkpoint-in-flight");
         let t0 = Instant::now();
-        // First refusal opens the window; well within 30s -> keep retrying.
+        // First refusal opens the window; no immediate retry action.
         assert_eq!(t.on_take_refused_checkpoint_in_flight(t0), vec![]);
         assert!(t.checkpoint_retry_pending());
-        let mid = t0 + Duration::from_secs(10);
-        assert_eq!(t.tick_checkpoint_retry(mid), vec![TakeAction::SendTake]);
+        // A tick well before the 250ms gate is a no-op -- Codex review
+        // finding 4: the original fired on every call.
+        assert_eq!(t.tick_checkpoint_retry(t0 + Duration::from_millis(50)), vec![]);
+        assert_eq!(t.tick_checkpoint_retry(t0 + Duration::from_millis(250)), vec![TakeAction::SendTake]);
+        // Immediately after that retry, another tick before the NEXT
+        // 250ms boundary is again a no-op.
+        assert_eq!(t.tick_checkpoint_retry(t0 + Duration::from_millis(300)), vec![]);
+        assert_eq!(t.tick_checkpoint_retry(t0 + Duration::from_millis(500)), vec![TakeAction::SendTake]);
         assert_eq!(t.role(), Role::Taking);
         // At/after 30s the queue is discarded and role returns to Watching.
         let expiry = t0 + CHECKPOINT_IN_FLIGHT_BUDGET;
@@ -852,14 +1043,15 @@ mod tests {
     }
 
     #[test]
-    fn resize_refused_out_of_budget_keeps_the_pen() {
+    fn resize_refused_out_of_budget_keeps_the_pen_and_releases_the_queue() {
         let mut t = TakeTransaction::new();
         t.on_input_while_watching(b"x");
         t.on_take_ok(80, 24);
-        assert_eq!(t.role(), Role::Driving);
+        assert_eq!(t.role(), Role::Resizing);
         let actions = t.on_resize_refused(ResizeRefusedReason::OutOfBudget);
         assert_eq!(actions, vec![TakeAction::GeometryUnrepresentable]);
         assert_eq!(t.role(), Role::Driving);
+        assert_eq!(t.take_queued(), Some(b"x".to_vec()));
     }
 
     #[test]
@@ -916,11 +1108,17 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_across_a_voyage_change_cancels_never_replays() {
+    fn reconnect_across_a_voyage_change_cancels_and_reports_the_canceled_tuple() {
         let mut slot = OutstandingSlot::new();
         slot.record("v1".into(), 1, b"hi".to_vec(), || key(1));
         let decision = slot.resend_after_reconnect("v2", 1);
-        assert_eq!(decision, ReconnectResendDecision::Cancel);
+        match decision {
+            ReconnectResendDecision::Cancel { canceled } => {
+                assert_eq!(canceled.voyage_uuid, "v1");
+                assert_eq!(canceled.bytes, b"hi");
+            }
+            other => panic!("expected Cancel, got {other:?}"),
+        }
         assert!(slot.outstanding().is_none());
     }
 
@@ -943,20 +1141,6 @@ mod tests {
     // ---- (d) ReconnectState ---------------------------------------------
 
     #[test]
-    fn episode_moves_through_the_pinned_sequence() {
-        let mut r = ReconnectState::new();
-        assert_eq!(r.episode(), Episode::Disconnected);
-        r.begin_episode();
-        assert_eq!(r.episode(), Episode::Connecting);
-        r.enter_hello();
-        r.enter_attaching();
-        r.enter_watching();
-        assert_eq!(r.episode(), Episode::Watching);
-        r.enter_driving();
-        assert_eq!(r.episode(), Episode::Driving);
-    }
-
-    #[test]
     fn backoff_doubles_and_caps_at_4s() {
         let mut r = ReconnectState::new();
         let mut waits = vec![];
@@ -977,12 +1161,18 @@ mod tests {
     }
 
     #[test]
-    fn watching_resets_backoff() {
+    fn attached_resets_backoff_and_clears_unresponsive() {
         let mut r = ReconnectState::new();
         r.retry_with_backoff();
         r.retry_with_backoff();
-        r.enter_watching();
+        let t0 = Instant::now();
+        r.classify_unresponsive(t0);
+        r.attached();
         assert_eq!(r.retry_with_backoff(), Duration::from_millis(250));
+        // A fresh unresponsive spell after `attached()` must not inherit
+        // the old clock.
+        let t1 = t0 + HEALTH_WINDOW + Duration::from_secs(1);
+        assert_eq!(r.classify_unresponsive(t1), ReconnectDecision::Retry);
     }
 
     #[test]
@@ -1108,14 +1298,48 @@ mod tests {
     // ---- (a) QuitDispatcher --------------------------------------------
 
     #[test]
-    fn quit_then_record_closed_is_ended() {
+    fn quit_then_record_closed_then_record_verified_is_ended() {
         let mut q = QuitDispatcher::new();
         let t0 = Instant::now();
         assert!(q.request_quit("op-1".into(), t0));
         assert!(matches!(q.state(), QuitState::Ending { .. }));
-        assert_eq!(q.message(), Some("ending session\u{2026}"));
-        q.on_record_closed();
+        assert_eq!(q.message(), Some("ending session\u{2026}".to_string()));
+        q.on_operation_state(SupervisorOperationState::RecordClosed);
+        assert!(matches!(q.state(), QuitState::Verifying { .. }));
+        assert!(!q.should_exit());
+        assert_eq!(q.operation_id(), Some("op-1"));
+        q.on_operation_state(SupervisorOperationState::RecordVerified);
         assert!(q.should_exit());
+    }
+
+    #[test]
+    fn record_verified_directly_from_ending_also_exits() {
+        // A fast authority may verify before this dispatcher ever
+        // observes record_closed as a separate step.
+        let mut q = QuitDispatcher::new();
+        q.request_quit("op-1".into(), Instant::now());
+        q.on_operation_state(SupervisorOperationState::RecordVerified);
+        assert!(q.should_exit());
+    }
+
+    #[test]
+    fn failed_and_refused_surface_immediately_never_waiting_for_the_cutoff() {
+        let mut q = QuitDispatcher::new();
+        let t0 = Instant::now();
+        q.request_quit("op-1".into(), t0);
+        q.on_operation_state(SupervisorOperationState::Failed { detail: "disk full".into() });
+        assert!(!q.should_exit());
+        assert_eq!(q.message(), Some("ending the session failed: disk full".to_string()));
+        // Ticking well before the 90s cutoff must not overwrite this
+        // already-terminal outcome with "outcome unknown".
+        q.tick(t0 + Duration::from_secs(1));
+        assert_eq!(q.message(), Some("ending the session failed: disk full".to_string()));
+
+        let mut q2 = QuitDispatcher::new();
+        q2.request_quit("op-2".into(), t0);
+        q2.on_operation_state(SupervisorOperationState::Refused { reason: SupervisorRefusedReason::StaleVoyage });
+        assert!(!q2.should_exit());
+        assert!(q2.message().unwrap().contains("refused"));
     }
 
     #[test]
@@ -1128,18 +1352,26 @@ mod tests {
     }
 
     #[test]
-    fn cutoff_expiry_shows_outcome_unknown_and_never_exits() {
+    fn cutoff_is_90s_and_expiry_shows_outcome_unknown_and_never_exits() {
         let mut q = QuitDispatcher::new();
         let t0 = Instant::now();
         q.request_quit("op-1".into(), t0);
+        // Well within the cutoff, even after record_closed (now
+        // Verifying), ticking must not expire early.
+        q.on_operation_state(SupervisorOperationState::RecordClosed);
+        q.tick(t0 + Duration::from_secs(60));
+        assert!(matches!(q.state(), QuitState::Verifying { .. }));
         q.tick(t0 + QUIT_CUTOFF);
         assert!(matches!(q.state(), QuitState::OutcomeUnknown));
         assert!(!q.should_exit());
-        assert_eq!(q.message(), Some("ending the session did not complete \u{2014} outcome unknown"));
-        // A record_closed arriving late (after the window already gave
-        // up) must not resurrect it into Ended -- the ADR's window
+        assert_eq!(
+            q.message(),
+            Some("ending the session did not complete \u{2014} outcome unknown".to_string())
+        );
+        // A record_verified arriving late (after the window already
+        // gave up) must not resurrect it into Ended -- the ADR's window
         // stays in "outcome unknown", it does not flip back.
-        q.on_record_closed();
+        q.on_operation_state(SupervisorOperationState::RecordVerified);
         assert!(!q.should_exit());
     }
 
@@ -1149,7 +1381,7 @@ mod tests {
         assert_eq!(q.message(), None);
         let mut q2 = QuitDispatcher::new();
         q2.request_quit("op".into(), Instant::now());
-        q2.on_record_closed();
+        q2.on_operation_state(SupervisorOperationState::RecordVerified);
         assert_eq!(q2.message(), None);
     }
 }
