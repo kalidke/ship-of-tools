@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 # launch-sot.sh — Linux/macOS frontend client → remote backend over SSH.
 #
-# Opens an SSH tunnel to the backend host (forwarding a local TCP port to the
+# Opens an SSH tunnel to $SOT_HOST (forwarding a local TCP port to the
 # remote user's per-user `sotd` socket — browser pages ride this control
 # forward via the daemon proxy, ADR 0035; the legacy fixed helper forwards
-# are opt-in via SOT_LEGACY_FORWARDS=1), ensures the remote `sotd` is
+# are opt-in via SOT_LEGACY_FORWARDS=1), ensures that remote `sotd` is
 # running, then runs the local frontend pointed at the forwarded local port.
 # The remote BE must already be BUILT on the host.
+#
+# ADR 0042 L2b design E: every OTHER `[host.<name>]` entry in
+# `.sot/hosts.toml` that has an `ssh_alias` gets its OWN tunnel too (see the
+# section after step 2, `sot_ensure_remote_host` / scripts/sot-hosts.sh's
+# `sot_tunnel_plan`) — nonfatal per host, unlike $SOT_HOST's own tunnel
+# below which still exits the whole launch on failure. $SOT_HOST/$PORT keep
+# their exact pre-L2b meaning and are NOT read from hosts.toml here (env-var
+# driven, same as always); other hosts' ssh_alias/remote_repo/tcp_port come
+# straight from their own [host.<name>] section, with tcp_port required.
 #
 # Idempotent: an `ssh -fN` tunnel is backgrounded and OUTLIVES the FE window, so
 # a naive re-run would collide on the forwarded ports (Address already in use)
@@ -176,6 +185,70 @@ else
     fi
     echo "remote backend already running — leaving it (SOT_RESTART_BE=1 to force restart)"
 fi
+
+# 2b. Every OTHER configured remote gets its own tunnel too (ADR 0042 L2b
+# design E) — $HOST's own tunnel above is untouched. sot_tunnel_plan (pure,
+# no ssh) enumerates hosts.toml; sot_ensure_remote_host does the same
+# ensure+resolve+open sequence as steps 1-2 above but NONFATAL: any failure
+# logs one line and moves on to the next host instead of exiting the whole
+# launch. The frontend reads hosts.toml itself and shows an unreachable host
+# as unreachable — that is the intended failure mode here, not a launch
+# abort.
+# shellcheck source=sot-hosts.sh
+. "$(dirname "$0")/sot-hosts.sh"
+
+sot_ensure_remote_host() {  # <name> <ssh_alias> <remote_repo> <port> <remote_socket-override-or-empty>
+    local name="$1" alias="$2" repo="$3" port="$4" remote_socket="$5"
+    if [ -z "$repo" ]; then
+        echo "tunnel: skipping host '$name' -- no remote_repo configured" >&2
+        return 1
+    fi
+    if [ -z "$remote_socket" ]; then
+        remote_socket="$(ssh -o ConnectTimeout=10 "$alias" "cd '$repo' && ./rust/target/release/sotd session-socket-path sot" 2>/dev/null)" \
+            || { echo "tunnel: host '$name' unreachable (could not query sotd socket path)" >&2; return 1; }
+    fi
+    if [ -z "$remote_socket" ]; then
+        echo "tunnel: host '$name' did not report a socket path" >&2
+        return 1
+    fi
+    if pgrep -f "ssh .*${port}:${remote_socket}.*${alias}" >/dev/null 2>&1; then
+        echo "tunnel: host '$name' port $port already forwards to $remote_socket -- reusing"
+    elif port_open "$port"; then
+        echo "tunnel: skipping host '$name' -- local port $port is already open but not by its tunnel" >&2
+        return 1
+    else
+        if ! ssh "$alias" "[ -S '$remote_socket' ]" 2>/dev/null; then
+            ssh "$alias" "cd '$repo' && scripts/restart-backend.sh" >/dev/null 2>&1 || true
+            local i=0
+            while [ "$i" -lt 40 ]; do
+                ssh "$alias" "[ -S '$remote_socket' ]" 2>/dev/null && break
+                sleep 0.25
+                i=$((i+1))
+            done
+            if ! ssh "$alias" "[ -S '$remote_socket' ]" 2>/dev/null; then
+                echo "tunnel: host '$name' backend did not create socket $remote_socket" >&2
+                return 1
+            fi
+        fi
+        ssh -fN -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
+            -L "$port:$remote_socket" "$alias" \
+            || { echo "tunnel: host '$name' could not open SSH tunnel" >&2; return 1; }
+        echo "tunnel: host '$name' forwarding 127.0.0.1:$port -> $remote_socket"
+    fi
+}
+
+HOSTS_TOML="$REPO/.sot/hosts.toml"
+while IFS='|' read -r t_name t_alias t_port t_repo t_socket t_err; do
+    [ -n "$t_name" ] || continue
+    [ "$t_alias" = "$HOST" ] && continue   # $HOST's tunnel is steps 1-2 above
+    if [ -n "$t_err" ]; then
+        echo "tunnel: skipping host '$t_name' -- $t_err" >&2
+        continue
+    fi
+    sot_ensure_remote_host "$t_name" "$t_alias" "$t_repo" "$t_port" "$t_socket"
+done <<EOF
+$(sot_tunnel_plan "$HOSTS_TOML" "$HOST" "$PORT")
+EOF
 
 # 3. Frontend rebuild (ADR 0030 dev-freshness rev 2). The git pull moved to the
 # self-update prelude at the top; here we only REBUILD, and only when that pull
