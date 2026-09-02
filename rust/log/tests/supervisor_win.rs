@@ -21,6 +21,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Real-process tests are SERIALIZED: each spawns a supervisor, a capsule
+/// and a shell, and the CI runner (two cores) is the shared resource. Run
+/// in parallel they starve each other's admission and readiness polls —
+/// the crash-recovery and adopt-after-kill tests timed out on a loaded
+/// windows-latest release runner and again on windows-2022 (2026-09-01),
+/// while passing every quiet run. Same mechanism as the rig's `RIG_LOCK`.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn capsule_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sot-capsule"))
 }
@@ -234,6 +245,7 @@ fn wait_for_exit_with_diagnostics(child: &mut Child, h: &str, timeout: Duration)
 /// observes the supervisor's own clean exit.
 #[test]
 fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -282,6 +294,7 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
 /// explicitly told to `stop`.
 #[test]
 fn resume_after_a_requested_end_serves_ended_no_respawn_then_exits_on_stop() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -333,6 +346,7 @@ fn resume_after_a_requested_end_serves_ended_no_respawn_then_exits_on_stop() {
 /// wedged past its own grace bound on real Windows CI twice).
 #[test]
 fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -388,6 +402,7 @@ fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
 /// losing it.
 #[test]
 fn a_second_supervisor_adopts_a_leg_left_behind_by_a_killed_first_one() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -426,6 +441,7 @@ fn a_second_supervisor_adopts_a_leg_left_behind_by_a_killed_first_one() {
 /// `refused {version_skew}` and the connection is closed.
 #[test]
 fn a_mismatched_build_id_is_refused_and_the_connection_closes() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -460,6 +476,7 @@ fn a_mismatched_build_id_is_refused_and_the_connection_closes() {
 /// so the loud refusal (69), not a silent EXIT_CLEAN, is correct here.
 #[test]
 fn endrun_and_reset_without_a_running_supervisor() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -494,6 +511,7 @@ fn endrun_and_reset_without_a_running_supervisor() {
 /// PROCESS survives and keeps answering everyone else.
 #[test]
 fn a_second_hello_closes_the_connection_but_the_authority_survives() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -533,6 +551,7 @@ fn a_second_hello_closes_the_connection_but_the_authority_survives() {
 /// assuming the 500ms pre-kill pause alone proves it).
 #[test]
 fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -613,6 +632,7 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
 /// admissible afterward.
 #[test]
 fn a_command_naming_the_wrong_voyage_is_refused_stale_voyage() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -642,6 +662,7 @@ fn a_command_naming_the_wrong_voyage_is_refused_stale_voyage() {
 /// `stale_voyage`. Neither mutates the pointer.
 #[test]
 fn reset_is_refused_while_a_leg_is_live() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -680,6 +701,7 @@ fn reset_is_refused_while_a_leg_is_live() {
 /// spawns a fresh leg for.
 #[test]
 fn reset_from_ended_no_respawn_mints_a_new_voyage_and_spawns_for_it() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
