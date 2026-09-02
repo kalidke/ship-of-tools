@@ -2292,6 +2292,39 @@ fn pane_backend_for(runtime: &str) -> PaneBackend {
     }
 }
 
+/// ADR 0042 slice L1b fix 2: which backend the session pane's input,
+/// resize and scroll route to RIGHT NOW — tracked independently of
+/// `Option<FeAttachClient>` because "no client yet" is genuinely
+/// ambiguous: it means `Tmux` when the cache already says so, but means
+/// `Pending` (backend unknown) for a freshly-selected row with no
+/// `workspace.list` entry yet, where a `pty.open` is in flight and could
+/// resolve to EITHER an ordinary `PtyOpened` (confirms tmux) or an
+/// `attach_direct` refusal (confirms capsule). Treating "no client" as
+/// "must be tmux" during that window sent live keystrokes to whatever
+/// tmux pty the daemon still had attached from the PREVIOUS row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneFeed {
+    Tmux,
+    // Constructed only from `#[cfg(windows)]` sites (`try_attach_capsule_pane`,
+    // the `PtyAttachDirect` handler) — capsule has nothing to attach to
+    // off Windows, so a non-Windows build never assigns this variant even
+    // though every `match self.pane_feed` still names it.
+    #[allow(dead_code)]
+    Capsule,
+    Pending,
+}
+
+/// ADR 0042 slice L1b fix 2: how many bytes of an incoming chunk fit in
+/// `queue_pane_pending_input`'s buffer, given it already holds
+/// `buffered_len` bytes and the whole buffer is capped at `cap` — pulled
+/// out so the truncation arithmetic is unit-testable without
+/// constructing a `State`. Saturating: a buffer already at or past `cap`
+/// (shouldn't happen, but not asserted on) has zero room, not a panic.
+fn pending_input_room(buffered_len: usize, incoming_len: usize, cap: usize) -> usize {
+    let room = cap.saturating_sub(buffered_len);
+    incoming_len.min(room)
+}
+
 /// ADR 0042 slice L1b: the Sessions-row badge token for a capsule
 /// workspace's supervisor phase (ADR 0041 Lifecycle, snake_case, plus
 /// `"unreachable"`) — same `<flag>` / `<flag>_<detail>` convention as
@@ -3380,6 +3413,23 @@ struct State {
     /// the selected row is a tmux workspace.
     #[cfg(windows)]
     pane_attach_term: Option<sot_log::fe_client_win::FeAttachClient>,
+    /// ADR 0042 slice L1b fix 2: which backend the session pane's
+    /// input/resize/scroll route to right now — see `PaneFeed`'s own
+    /// doc for why this can't just be derived from
+    /// `pane_attach_term.is_some()`. Starts `Tmux` (matches the
+    /// pre-L1b, pre-any-switch default: the BL pane opens against
+    /// whatever the daemon's own default target is).
+    pane_feed: PaneFeed,
+    /// ADR 0042 slice L1b fix 2: input typed/pasted while `pane_feed ==
+    /// PaneFeed::Pending` — flushed through `send_input` once a capsule
+    /// attach resolves (`spawn_pane_attach_term` succeeds), or through
+    /// `pty.write` once an ordinary `PtyOpened` confirms tmux after all.
+    /// Cleared (not flushed) on every switch to a DIFFERENT target — input
+    /// buffered for the DEPARTING row must never reach whatever the new
+    /// one turns out to be. Capped at `sot_log::fe_client::TAKE_QUEUE_CAP`
+    /// (8 KiB, the same bound the take-transaction queue uses) — a
+    /// runaway paste while waiting must not grow unbounded.
+    pane_pending_input: Vec<u8>,
     /// ADR 0041 step 6 U3 ruling (f): `fe-inbox.jsonl`'s "last inbox
     /// evidence" read at FE PROCESS START (`State::new`), BEFORE the
     /// fe-command watcher thread or anything else appends to that file
@@ -3911,31 +3961,24 @@ fn bracketed_paste_bytes(text: &str) -> Vec<u8> {
     bytes
 }
 
-/// Read the OS clipboard and forward it to the LLM pane's pty as one
-/// bracketed-paste blob. Returns `false` (and logs at warn) on clipboard or
-/// transport failure so the caller can fall through without panicking;
-/// otherwise `true`.
-///
-/// ADR 0042 slice L1b: when the session pane is a capsule attach
-/// (`pane_attach_term` live), the paste goes straight to the client's own
-/// `send_input` — a local call on its already-open connection, not a wire
-/// `pty.write` (that op targets the tmux pty, which doesn't exist for a
-/// capsule row).
+/// Read the OS clipboard and forward it to the session pane as one
+/// bracketed-paste blob, via `send_pane_input` (capsule client / pending
+/// buffer / daemon `pty.write`, keyed on `pane_feed` — ADR 0042 slice
+/// L1b). Returns `false` only when the OS clipboard itself couldn't be
+/// read; once bytes exist, `send_pane_input` never signals failure back
+/// (a closed channel is logged internally, same as every other
+/// `pty.write` call site in this file).
 fn forward_clipboard_paste_to_llm(state: &mut State) -> bool {
     let Some(text) = read_clipboard_text() else {
         return false;
     };
     let bytes = bracketed_paste_bytes(&text);
     state.pty_scroll = 0;
-    #[cfg(windows)]
-    if let Some(t) = state.pane_attach_term.as_mut() {
-        t.send_input(&bytes);
-        return true;
-    }
-    if let Err(e) = state.req_tx.send(OutgoingReq::PtyWrite { bytes }) {
-        tracing::warn!(error = %e, "drop pty.write (paste) — channel closed");
-        return false;
-    }
+    // ADR 0042 slice L1b fix 2/3: routed through the ONE session-pane
+    // input dispatcher (capsule client / pending buffer / daemon
+    // `pty.write`, keyed on `pane_feed`) — see `send_pane_input`'s own
+    // doc.
+    state.send_pane_input(&bytes);
     true
 }
 
@@ -4706,6 +4749,8 @@ impl State {
             attach_term: None,
             #[cfg(windows)]
             pane_attach_term: None,
+            pane_feed: PaneFeed::Tmux,
+            pane_pending_input: Vec::new(),
             #[cfg(windows)]
             fe_down_baseline_evidence,
             term_size: None,
@@ -7172,9 +7217,16 @@ impl State {
             self.window.request_redraw();
             return;
         }
+        // ADR 0042 slice L1b fix 2: a switch always invalidates whatever
+        // was buffered for the DEPARTING target — it must never leak
+        // into the row we're about to select.
+        self.pane_pending_input.clear();
         if self.try_attach_capsule_pane(&session_name) {
             return;
         }
+        // `try_attach_capsule_pane` has already set `pane_feed` for this
+        // target (`Tmux` when the cache confirms it, `Pending` when the
+        // row is unknown or a degenerate capsule entry) before declining.
         let (cols, rows) = self.pty_size.unwrap_or((80, 24));
         if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::PtyOpen {
             cols,
@@ -7223,19 +7275,33 @@ impl State {
     /// missing `state_dir` (defensive — L1a always sets it alongside
     /// `runtime`, but a partially-degraded daemon reply shouldn't attach to
     /// a path that doesn't exist).
+    ///
+    /// ADR 0042 slice L1b fix 2: sets `pane_feed` on EVERY exit path (see
+    /// `PaneFeed`'s own doc for why "no client" alone can't answer "is
+    /// this tmux or unresolved") — `Tmux` when the cache says so or this
+    /// build can't attach a capsule at all, `Pending` for an unknown row,
+    /// a degenerate capsule entry, or a capsule whose attach-client spawn
+    /// itself failed (stays pending rather than claiming "attached" —
+    /// `spawn_pane_attach_term`'s own failure status is preserved, and the
+    /// caller's `pty.open` fallback gives the daemon a chance to refuse
+    /// `attach_direct` again, which re-drives a retry through that
+    /// handler), `Capsule` only once the client is actually live.
     fn try_attach_capsule_pane(&mut self, session_name: &str) -> bool {
         #[cfg(windows)]
         {
             self.pane_attach_term = None;
         }
         let Some(info) = self.workspace_runtime.get(session_name).cloned() else {
+            self.pane_feed = PaneFeed::Pending;
             return false;
         };
         if pane_backend_for(&info.runtime) != PaneBackend::Capsule {
+            self.pane_feed = PaneFeed::Tmux;
             return false;
         }
         #[cfg(not(windows))]
         {
+            self.pane_feed = PaneFeed::Tmux;
             false
         }
         #[cfg(windows)]
@@ -7245,10 +7311,15 @@ impl State {
                     %session_name,
                     "capsule row with no state_dir in the cached entry — falling back to pty.open"
                 );
+                self.pane_feed = PaneFeed::Pending;
                 return false;
             };
             let (cols, rows) = self.pty_size.unwrap_or((80, 24));
-            self.spawn_pane_attach_term(std::path::PathBuf::from(dir), cols, rows);
+            if !self.spawn_pane_attach_term(std::path::PathBuf::from(dir), cols, rows) {
+                self.pane_feed = PaneFeed::Pending;
+                return false;
+            }
+            self.pane_feed = PaneFeed::Capsule;
             self.bl_pane_target = Some(session_name.to_string());
             self.status = format!("attached BL → {session_name} (capsule)");
             self.window.request_redraw();
@@ -7278,8 +7349,18 @@ impl State {
     /// let `try_attach_capsule_pane`'s own pre-drop and the
     /// `PtyAttachDirect` handler (which had no pre-drop of its own)
     /// disagree before this fix.
+    ///
+    /// ADR 0042 slice L1b fix 2: returns whether the client actually
+    /// started — every caller must check this rather than assume success,
+    /// so a spawn failure's `self.status` (set here) is never immediately
+    /// overwritten by an "attached" message.
     #[cfg(windows)]
-    fn spawn_pane_attach_term(&mut self, state_dir: std::path::PathBuf, cols: u16, rows: u16) {
+    fn spawn_pane_attach_term(
+        &mut self,
+        state_dir: std::path::PathBuf,
+        cols: u16,
+        rows: u16,
+    ) -> bool {
         self.pane_attach_term = None;
         let controller_id = self_comm_handle();
         let fe_down_to = self_comm_handle();
@@ -7296,11 +7377,87 @@ impl State {
             Ok(c) => {
                 tracing::info!("session pane: capsule attach client attaching");
                 self.pane_attach_term = Some(c);
+                true
             }
             Err(e) => {
                 tracing::warn!(error = %e, "session pane: capsule attach client failed to start");
                 self.status = format!("session attach failed: {e}");
+                false
             }
+        }
+    }
+
+    /// ADR 0042 slice L1b fix 2: appends to the session pane's
+    /// pending-input buffer while `pane_feed == PaneFeed::Pending`,
+    /// capped at `sot_log::fe_client::TAKE_QUEUE_CAP` — the SAME bound
+    /// the take-transaction queue uses (reused, not reinvented: both are
+    /// the same shape of problem, input arriving before it's known where
+    /// it's allowed to go). Excess bytes are silently dropped, matching
+    /// the take queue's own cap behavior.
+    fn queue_pane_pending_input(&mut self, bytes: &[u8]) {
+        let cap = sot_log::fe_client::TAKE_QUEUE_CAP;
+        let take = pending_input_room(self.pane_pending_input.len(), bytes.len(), cap);
+        self.pane_pending_input.extend_from_slice(&bytes[..take]);
+    }
+
+    /// Flushes `pane_pending_input` through the capsule client's own
+    /// `send_input` — call once `pane_feed` resolves to `Capsule`.
+    #[cfg(windows)]
+    fn flush_pane_pending_input_to_capsule(&mut self) {
+        if self.pane_pending_input.is_empty() {
+            return;
+        }
+        let bytes = std::mem::take(&mut self.pane_pending_input);
+        if let Some(t) = self.pane_attach_term.as_mut() {
+            t.send_input(&bytes);
+        }
+    }
+
+    /// Flushes `pane_pending_input` through the daemon's `pty.write` —
+    /// call once `pane_feed` resolves to `Tmux` (an ordinary `PtyOpened`
+    /// confirming the row was tmux after all).
+    fn flush_pane_pending_input_to_tmux(&mut self) {
+        if self.pane_pending_input.is_empty() {
+            return;
+        }
+        let bytes = std::mem::take(&mut self.pane_pending_input);
+        if let Err(e) = self
+            .req_tx
+            .send(crate::transport::OutgoingReq::PtyWrite { bytes })
+        {
+            tracing::warn!(error = %e, "drop buffered pty.write on tmux confirm — channel closed");
+        }
+    }
+
+    /// ADR 0042 slice L1b fix 2/3: routes session-pane input bytes to
+    /// whichever backend `pane_feed` says is live — the capsule client's
+    /// own `send_input`, the pending buffer while resolution is still
+    /// unknown, or the daemon's `pty.write` for a confirmed tmux row.
+    /// The ONE routing point every input source (typed keystrokes, LLM-
+    /// pane paste, ROI paste) shares, so a future fourth source only has
+    /// to call this rather than re-derive the three-way branch.
+    fn send_pane_input(&mut self, bytes: &[u8]) {
+        match self.pane_feed {
+            PaneFeed::Capsule => {
+                #[cfg(windows)]
+                if let Some(t) = self.pane_attach_term.as_mut() {
+                    t.send_input(bytes);
+                    return;
+                }
+                // Falls through to `pty.write` below only if `pane_feed`
+                // says Capsule but (a non-Windows build, or a logic bug)
+                // there's no live client — never silently drop input.
+            }
+            PaneFeed::Pending => {
+                self.queue_pane_pending_input(bytes);
+                return;
+            }
+            PaneFeed::Tmux => {}
+        }
+        if let Err(e) = self.req_tx.send(crate::transport::OutgoingReq::PtyWrite {
+            bytes: bytes.to_vec(),
+        }) {
+            tracing::warn!(error = %e, "drop pty.write — channel closed");
         }
     }
 
@@ -11442,6 +11599,15 @@ impl State {
                     // PtyResize on the next mismatch.
                     self.pty_terminal.screen_mut().set_size(rows, cols);
                     self.pty_size = Some((cols, rows));
+                    // ADR 0042 slice L1b fix 2: an ordinary size
+                    // confirmation is the daemon proving this target is
+                    // (or remains) tmux — resolves `PaneFeed::Pending`
+                    // definitively and releases anything buffered while
+                    // it was unknown. A no-op when `pane_feed` was
+                    // already `Tmux` (a routine resize-confirm): the
+                    // buffer is empty by construction in that case.
+                    self.pane_feed = PaneFeed::Tmux;
+                    self.flush_pane_pending_input_to_tmux();
                     // Contract (b): the pty re-target is now live. If this
                     // open was for a flagged agent workspace, launch claude
                     // + deliver its bootstrap now that the BL pane points at
@@ -11553,16 +11719,25 @@ impl State {
                                         Some(dir) => {
                                             let (cols, rows) =
                                                 self.pty_size.unwrap_or((80, 24));
-                                            self.spawn_pane_attach_term(
+                                            if self.spawn_pane_attach_term(
                                                 std::path::PathBuf::from(dir),
                                                 cols,
                                                 rows,
-                                            );
-                                            self.status = format!(
-                                                "attached BL → {target} (capsule, corrected)"
-                                            );
+                                            ) {
+                                                self.pane_feed = PaneFeed::Capsule;
+                                                self.flush_pane_pending_input_to_capsule();
+                                                self.status = format!(
+                                                    "attached BL → {target} (capsule, corrected)"
+                                                );
+                                            } else {
+                                                // spawn_pane_attach_term already set
+                                                // the failure status — stay pending
+                                                // (fix 2) rather than overwrite it.
+                                                self.pane_feed = PaneFeed::Pending;
+                                            }
                                         }
                                         None => {
+                                            self.pane_feed = PaneFeed::Pending;
                                             tracing::warn!(%target,
                                                 "pty.open refused attach_direct with no state_dir");
                                             self.status = format!(
@@ -11573,7 +11748,9 @@ impl State {
                                 }
                                 // `!still_selected`: the user moved on —
                                 // the cache correction above is all this
-                                // reply does.
+                                // reply does. `already_attached`:
+                                // `pane_feed` is already `Capsule` for
+                                // this target — nothing to change.
                             }
                         }
                         self.window.request_redraw();
@@ -14301,55 +14478,74 @@ impl State {
                 .pty_size
                 .map(|prev| prev != (cols, rows))
                 .unwrap_or(false);
-            if pane_is_capsule {
-                // ADR 0042 slice L1b: the capsule client's connection is
-                // owned entirely by `try_attach_capsule_pane`/
-                // `spawn_pane_attach_term` (fired from
-                // `attach_session_to_bl` on selection change) — there is
-                // no `pty.open`/`pty.resize` wire request for a capsule
-                // row (the daemon refuses both with `attach_direct`).
-                // This block only keeps an ALREADY-LIVE client's viewport
-                // in sync with the pane rect, mirroring the drawer's own
-                // attach-client resize below (`term_size_observed`).
-                if need_open || need_resize {
-                    #[cfg(windows)]
-                    if let Some(t) = self.pane_attach_term.as_mut() {
-                        t.resize(cols, rows);
-                    }
-                    self.pty_size = Some((cols, rows));
-                    if need_resize {
-                        self.pty_scroll = 0;
+            // ADR 0042 slice L1b fix 2: `pane_feed`, not the 2-way
+            // `pane_is_capsule` this used to branch on — `Pending` must
+            // send NOTHING to either backend (a resize routed by
+            // guesswork would be indistinguishable from the exact bug
+            // finding 2 fixed for input) while still tracking the
+            // latest size locally, since whichever backend eventually
+            // resolves reads its start/resize from `self.pty_size`.
+            match self.pane_feed {
+                PaneFeed::Capsule => {
+                    // The capsule client's connection is owned entirely
+                    // by `try_attach_capsule_pane`/`spawn_pane_attach_term`
+                    // (fired from `attach_session_to_bl` on selection
+                    // change) — there is no `pty.open`/`pty.resize` wire
+                    // request for a capsule row (the daemon refuses both
+                    // with `attach_direct`). This arm only keeps an
+                    // ALREADY-LIVE client's viewport in sync with the pane
+                    // rect, mirroring the drawer's own attach-client
+                    // resize below (`term_size_observed`).
+                    if need_open || need_resize {
+                        #[cfg(windows)]
+                        if let Some(t) = self.pane_attach_term.as_mut() {
+                            t.resize(cols, rows);
+                        }
+                        self.pty_size = Some((cols, rows));
+                        if need_resize {
+                            self.pty_scroll = 0;
+                        }
                     }
                 }
-            } else if need_open {
-                if let Err(e) = self.req_tx.send(OutgoingReq::PtyOpen {
-                    cols,
-                    rows,
-                    target: self.bl_pane_target.clone(),
-                    // #5 guard: the first-redraw initial BL open is startup
-                    // restore, not a user switch — false so it can't claim the
-                    // foreground from where the user (on any FE) put it.
-                    user_switch: false,
-                }) {
-                    tracing::warn!(error = %e, "drop pty.open request — channel closed");
-                } else {
-                    // Locally seed the size so a resize doesn't fire
-                    // before the response confirms. The emulator is
-                    // resized to match so we don't render at the
-                    // wrong dims before the first bytes arrive.
-                    self.pty_terminal.screen_mut().set_size(rows, cols);
-                    self.pty_size = Some((cols, rows));
+                PaneFeed::Pending => {
+                    if need_open || need_resize {
+                        self.pty_size = Some((cols, rows));
+                    }
                 }
-            } else if need_resize {
-                if let Err(e) = self.req_tx.send(OutgoingReq::PtyResize { cols, rows }) {
-                    tracing::warn!(error = %e, "drop pty.resize — channel closed");
-                } else {
-                    self.pty_terminal.screen_mut().set_size(rows, cols);
-                    self.pty_size = Some((cols, rows));
-                    // Row layout shifted; the previous scrollback offset
-                    // no longer points where the user expected. Snap to
-                    // live rather than show a confused slice.
-                    self.pty_scroll = 0;
+                PaneFeed::Tmux => {
+                    if need_open {
+                        if let Err(e) = self.req_tx.send(OutgoingReq::PtyOpen {
+                            cols,
+                            rows,
+                            target: self.bl_pane_target.clone(),
+                            // #5 guard: the first-redraw initial BL open is
+                            // startup restore, not a user switch — false so
+                            // it can't claim the foreground from where the
+                            // user (on any FE) put it.
+                            user_switch: false,
+                        }) {
+                            tracing::warn!(error = %e, "drop pty.open request — channel closed");
+                        } else {
+                            // Locally seed the size so a resize doesn't fire
+                            // before the response confirms. The emulator is
+                            // resized to match so we don't render at the
+                            // wrong dims before the first bytes arrive.
+                            self.pty_terminal.screen_mut().set_size(rows, cols);
+                            self.pty_size = Some((cols, rows));
+                        }
+                    } else if need_resize {
+                        if let Err(e) = self.req_tx.send(OutgoingReq::PtyResize { cols, rows }) {
+                            tracing::warn!(error = %e, "drop pty.resize — channel closed");
+                        } else {
+                            self.pty_terminal.screen_mut().set_size(rows, cols);
+                            self.pty_size = Some((cols, rows));
+                            // Row layout shifted; the previous scrollback
+                            // offset no longer points where the user
+                            // expected. Snap to live rather than show a
+                            // confused slice.
+                            self.pty_scroll = 0;
+                        }
+                    }
                 }
             }
         }
@@ -16937,6 +17133,15 @@ impl ApplicationHandler for App {
                         state.window.request_redraw();
                     }
                     PaneFocus::Llm => {
+                        // ADR 0042 slice L1b fix 2: drop scroll entirely
+                        // while backend resolution is unknown — routing
+                        // it to either backend would be a guess (see
+                        // `PaneFeed`'s own doc), and the daemon fallback
+                        // below would otherwise reach whatever tmux pty
+                        // it still has open from the PREVIOUS row.
+                        if state.pane_feed == PaneFeed::Pending {
+                            return;
+                        }
                         // ADR 0042 slice L1b: a capsule pane keeps REAL
                         // local scrollback (its own `vt100-ctt` parser,
                         // same as the drawer's attach client) — unlike
@@ -19312,21 +19517,29 @@ impl ApplicationHandler for App {
                                 // (`pty_scroll`, applied in `redraw`), not
                                 // a wire `pty.scroll` (that op pages TMUX
                                 // copy-mode, which doesn't exist for a
-                                // capsule row).
-                                #[cfg(windows)]
-                                let is_capsule = state.pane_attach_term.is_some();
-                                #[cfg(not(windows))]
-                                let is_capsule = false;
-                                if is_capsule {
-                                    let page_step =
-                                        (state.pane_rects.llm.height as i32 / 3).max(1);
-                                    let delta = if up { page_step } else { -page_step };
-                                    let new = (state.pty_scroll as i32 + delta).max(0);
-                                    state.pty_scroll = new as u16;
-                                } else if let Err(e) =
-                                    state.req_tx.send(OutgoingReq::PtyScroll { up })
-                                {
-                                    tracing::warn!(error = %e, "drop pty.scroll — channel closed");
+                                // capsule row). ADR 0042 slice L1b fix 2:
+                                // dropped entirely while `pane_feed ==
+                                // Pending` — routing it to either backend
+                                // would be a guess, and the daemon
+                                // fallback would otherwise reach whatever
+                                // tmux pty it still has open from the
+                                // PREVIOUS row.
+                                match state.pane_feed {
+                                    PaneFeed::Capsule => {
+                                        let page_step =
+                                            (state.pane_rects.llm.height as i32 / 3).max(1);
+                                        let delta = if up { page_step } else { -page_step };
+                                        let new = (state.pty_scroll as i32 + delta).max(0);
+                                        state.pty_scroll = new as u16;
+                                    }
+                                    PaneFeed::Pending => {}
+                                    PaneFeed::Tmux => {
+                                        if let Err(e) =
+                                            state.req_tx.send(OutgoingReq::PtyScroll { up })
+                                        {
+                                            tracing::warn!(error = %e, "drop pty.scroll — channel closed");
+                                        }
+                                    }
                                 }
                                 state.last_key = Some(label);
                                 state.window.request_redraw();
@@ -19340,23 +19553,10 @@ impl ApplicationHandler for App {
                             // typing is always at the bottom of the
                             // LLM pane next to the prompt.
                             state.pty_scroll = 0;
-                            // ADR 0042 slice L1b: a capsule pane's input
-                            // goes to the attach client's own `send_input`
-                            // (a local call on its already-open
-                            // connection — take-on-first-input is handled
-                            // inside it), not a wire `pty.write`.
-                            #[cfg(windows)]
-                            if let Some(t) = state.pane_attach_term.as_mut() {
-                                t.send_input(&bytes);
-                            } else if let Err(e) =
-                                state.req_tx.send(OutgoingReq::PtyWrite { bytes })
-                            {
-                                tracing::warn!(error = %e, "drop pty.write — channel closed");
-                            }
-                            #[cfg(not(windows))]
-                            if let Err(e) = state.req_tx.send(OutgoingReq::PtyWrite { bytes }) {
-                                tracing::warn!(error = %e, "drop pty.write — channel closed");
-                            }
+                            // ADR 0042 slice L1b fix 2/3: routed through
+                            // the ONE session-pane input dispatcher — see
+                            // `send_pane_input`'s own doc.
+                            state.send_pane_input(&bytes);
                         }
                     }
                 }
@@ -23608,6 +23808,22 @@ mod capsule_pane_tests {
         // Case matters — the wire contract is the exact lowercase literal,
         // not a case-insensitive match.
         assert_eq!(pane_backend_for("Capsule"), PaneBackend::Tmux);
+    }
+
+    #[test]
+    fn pending_input_room_caps_at_the_take_queue_bound() {
+        // ADR 0042 slice L1b fix 2: `queue_pane_pending_input` buffers
+        // input while `pane_feed == Pending`, capped at
+        // `sot_log::fe_client::TAKE_QUEUE_CAP` (the SAME bound the
+        // take-transaction queue uses) — this is the truncation math it
+        // runs, pulled out for a live-`State`-free test.
+        let cap = sot_log::fe_client::TAKE_QUEUE_CAP;
+        assert_eq!(pending_input_room(0, 100, cap), 100);
+        assert_eq!(pending_input_room(cap - 2, 100, cap), 2);
+        assert_eq!(pending_input_room(cap, 100, cap), 0);
+        // Saturating: a buffer somehow already PAST cap has zero room,
+        // not an underflow panic.
+        assert_eq!(pending_input_room(cap + 500, 100, cap), 0);
     }
 
     #[test]
