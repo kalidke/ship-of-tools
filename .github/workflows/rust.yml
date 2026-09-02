@@ -122,6 +122,7 @@ jobs:
       - name: Test tunnel plan
         if: matrix.os == 'windows-latest'
         shell: powershell
+        timeout-minutes: 5
         run: .\scripts\tests\test-tunnel-plan.ps1
         working-directory: .
 
@@ -136,6 +137,7 @@ jobs:
       # fixture hosts.toml, pure text processing, hermetic and fast.
       - name: Test tunnel plan (bash)
         if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 5
         run: bash scripts/tests/test-tunnel-plan.sh
         working-directory: .
 
