@@ -3983,38 +3983,40 @@ pub async fn handle_workspace_create(
     // ADR 0042 slice L1a, Codex review finding 1: the capsule spawn — and,
     // unlike the tmux path above, a SYNCHRONOUS failure here FAILS the
     // whole op: "a capsule workspace with no supervisor is not a
-    // workspace." State dir created first (defensive — `sot-capsule
-    // supervise` also creates it idempotently on its own first act), then
-    // the DETACHED spawn-and-watch so the supervisor survives this
-    // daemon's own exit and its exit is handled going forward (finding 6).
-    // On ANY failure to reach a running supervisor, roll back the
-    // registry row and its persisted toml (the state directory itself is
-    // allowed to remain — a leftover, harmless, and the ADR's own record
-    // persists by design) and refuse the op with the real error text.
+    // workspace." Rule C (shrink round): this daemon no longer creates
+    // the state directory itself — `sot-capsule supervise` creates its
+    // OWN, as its first act after it actually runs — so a synchronous
+    // failure below leaves nothing on disk at all, not even an empty
+    // directory. The DETACHED spawn-and-watch is what survives this
+    // daemon's own exit, with its own exit handled going forward
+    // (finding 6). On ANY failure to reach a running supervisor, roll
+    // back the registry row and its persisted toml and refuse the op
+    // with the real error text.
     #[cfg(windows)]
     {
         let spawn_result: std::result::Result<bool, String> = match sot_log::state_dir::sot_state_dir() {
             None => Err("could not resolve this machine's state root (%LOCALAPPDATA% unset)".to_string()),
-            Some(state_root) => {
-                let state_dir = crate::capsule_workspace::state_dir_for(&state_root, &ws_handle.workspace_id);
-                match std::fs::create_dir_all(&state_dir) {
-                    Err(e) => Err(format!("could not create capsule state dir {state_dir:?}: {e}")),
-                    Ok(()) => match crate::capsule_workspace::sot_capsule_exe() {
-                        Err(e) => Err(format!("could not locate sot-capsule.exe next to this daemon: {e}")),
-                        Ok(exe) => crate::capsule_workspace::spawn_and_watch(
-                            &exe,
-                            &state_dir,
-                            crate::capsule_workspace::StartMode::Start,
-                            &capsule_argv,
-                            &project_root,
-                            &req.agent_name,
-                            ws_handle.workspace_id.clone(),
-                            workspaces.clone(),
-                        )
-                        .map_err(|e| format!("capsule supervisor spawn failed: {e}")),
-                    },
-                }
-            }
+            // Shared with `pty.open`'s start-on-attach path (server.rs) —
+            // see `capsule_workspace::start_supervisor`'s own doc.
+            // Rule D: `Ok(None)` means another launch already held this
+            // workspace's `starting` claim — realistically impossible for
+            // a workspace_id this op just minted, so it collapses to the
+            // same failure/rollback path as a genuine spawn error rather
+            // than growing a third outcome here.
+            Some(state_root) => crate::capsule_workspace::start_supervisor(
+                &state_root,
+                &ws_handle.workspace_id,
+                crate::capsule_workspace::StartMode::Start,
+                &capsule_argv,
+                &project_root,
+                &req.agent_name,
+                workspaces.clone(),
+            )
+            .and_then(|spawned| {
+                spawned.ok_or_else(|| {
+                    "a supervisor launch for this workspace was unexpectedly already in flight".to_string()
+                })
+            }),
         };
         match spawn_result {
             Ok(degraded) => {

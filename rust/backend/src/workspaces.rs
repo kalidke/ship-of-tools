@@ -365,13 +365,34 @@ struct Inner {
     /// ADR 0042 slice L1a (Codex review finding 6): workspace ids whose
     /// capsule supervisor watchdog gave up — the ADR 0041 launcher
     /// restart sequence (1/3/7/15/30s, at most 5 in 60s) exhausted
-    /// without a live authority. `workspace.list` reads this BEFORE ever
-    /// querying that workspace's (confirmed-gone) lane again, reporting
-    /// `phase: "terminal"` loudly rather than a misleading fresh
-    /// `"unreachable"` that implies the next probe might succeed. Never
-    /// cleared automatically — only a fresh `workspace.create`/resume
-    /// (a new watchdog) or daemon restart starts over.
+    /// without a live authority, OR (rule F, shrink round) a leg exited
+    /// terminal (69) outright with no restart attempted at all.
+    /// `workspace.list` reads this BEFORE ever querying that workspace's
+    /// (confirmed-gone) lane again, reporting `phase: "terminal"` loudly
+    /// rather than a misleading fresh `"unreachable"` that implies the
+    /// next probe might succeed. Never cleared automatically — only a
+    /// fresh `workspace.create`/resume (a new watchdog) or daemon restart
+    /// starts over. Rule E (shrink round): a `pty.open` start-on-attach
+    /// spawn failure does NOT mark this — that would conflate "the
+    /// supervisor itself reached a terminal outcome" with "one launch
+    /// attempt failed"; the row stays retryable and the caller answers
+    /// `capsule_spawn_failed` instead.
     capsule_terminal: std::collections::HashSet<String>,
+    /// Rule D (shrink round): workspace ids with a capsule supervisor
+    /// launch CURRENTLY in flight — inserted atomically by
+    /// `Workspaces::try_begin_capsule_start` (`capsule_workspace::
+    /// start_supervisor`'s own first act) and removed by
+    /// `end_capsule_start` once the lane first answers or the leg exits
+    /// (see `capsule_workspace::spawn_and_watch`'s own doc for the two
+    /// independent, idempotently-converging release paths). The
+    /// invariant this serves: AT MOST ONE launch per workspace at a
+    /// time — `ensure_started`, `workspace.create`, and `resume_all` all
+    /// check `is_capsule_starting` before attempting a spawn, so a
+    /// second concurrent request (the exact race a fast `pty.open`
+    /// against the daemon's own startup resume-scan can produce) spawns
+    /// nothing and the caller answers normally, letting the requester's
+    /// own retry find the lane once it comes up.
+    starting: std::collections::HashSet<String>,
 }
 
 impl Workspaces {
@@ -534,8 +555,11 @@ impl Workspaces {
     }
 
     /// ADR 0042 slice L1a: mark `workspace_id`'s capsule supervisor
-    /// watchdog as having given up (the restart budget exhausted with no
-    /// live authority). See `Inner::capsule_terminal`'s own doc.
+    /// watchdog as having given up — the restart budget exhausted with no
+    /// live authority, or (rule F, shrink round) a leg exited terminal
+    /// (69) with no restart attempted at all. See `Inner::
+    /// capsule_terminal`'s own doc (rule E: a one-shot `pty.open`
+    /// start-on-attach spawn failure does NOT call this).
     /// `#[cfg_attr(not(windows), allow(dead_code))]`: pure, portable
     /// bookkeeping, but its only real caller is the Windows-only
     /// watchdog (`capsule_workspace.rs`) — matching that module's own
@@ -560,6 +584,54 @@ impl Workspaces {
     pub fn clear_capsule_terminal(&self, workspace_id: &str) {
         let mut g = self.inner.write().expect("workspaces lock");
         g.capsule_terminal.remove(workspace_id);
+    }
+
+    /// Rule D (shrink round): atomically claim `workspace_id`'s capsule
+    /// launch slot — `true` iff THIS call is the one that gets to spawn
+    /// (the id was absent from `Inner::starting` and is now present);
+    /// `false` means another launch is already in flight and the caller
+    /// must spawn nothing. `HashSet::insert`'s own return value IS the
+    /// atomic check-and-set: no separate read-then-write under the same
+    /// lock acquisition could race a concurrent caller between them, and
+    /// this uses none — one `write()` guard, one `insert` call. The
+    /// invariant this serves: at most one capsule supervisor launch per
+    /// workspace at a time. `capsule_workspace::start_supervisor`'s own
+    /// first act. `#[cfg_attr(not(windows), allow(dead_code))]`: same
+    /// windows-only-caller reasoning as `mark_capsule_terminal` above —
+    /// every real caller lives in `capsule_workspace.rs`'s
+    /// `windows_runtime` module or `handlers.rs`'s `#[cfg(windows)]`
+    /// capsule-create block.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn try_begin_capsule_start(&self, workspace_id: &str) -> bool {
+        let mut g = self.inner.write().expect("workspaces lock");
+        g.starting.insert(workspace_id.to_string())
+    }
+
+    /// Release `workspace_id`'s capsule launch slot claimed by
+    /// [`try_begin_capsule_start`]. Idempotent: removing an absent id is
+    /// a harmless no-op, which is exactly what lets TWO independent
+    /// release paths (`capsule_workspace::spawn_and_watch`'s own doc:
+    /// "the lane first answers or the child exits") call this without
+    /// coordinating — whichever fires first actually clears the entry.
+    /// Same windows-only-caller reasoning as `try_begin_capsule_start`.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn end_capsule_start(&self, workspace_id: &str) {
+        let mut g = self.inner.write().expect("workspaces lock");
+        g.starting.remove(workspace_id);
+    }
+
+    /// `true` iff a capsule launch is currently claimed for this id —
+    /// the early-exit half of rule D's invariant (`ensure_started`,
+    /// `workspace.create`, and `resume_all` all check this BEFORE
+    /// attempting a spawn, to skip the work rather than race it out;
+    /// `try_begin_capsule_start`'s own atomic insert is what actually
+    /// enforces the invariant against a racer that read this a moment
+    /// too early). Same windows-only-caller reasoning as
+    /// `try_begin_capsule_start`.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn is_capsule_starting(&self, workspace_id: &str) -> bool {
+        let g = self.inner.read().expect("workspaces lock");
+        g.starting.contains(workspace_id)
     }
 
     /// Current default workspace id, if one has been set. Consumed by

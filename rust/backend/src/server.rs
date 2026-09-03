@@ -253,14 +253,43 @@ pub async fn run(opts: Opts) -> Result<()> {
     // (`insert`'s own "new metadata wins" semantics, working exactly as
     // designed, applied to the wrong source of truth). `None` means a
     // genuinely first-ever launch on this machine.
+    //
+    // Rule G (shrink round): the SAME clobber risk applies to the launch
+    // fields — `insert`'s own doc ("the rest of the metadata is taken
+    // from the new ws") means whatever `from_label` builds here REPLACES
+    // the persisted row's `agent`/`agent_name`/`autostart_claude`/`task`
+    // on EVERY restart, not just at create time. An existing default
+    // row's persisted launch fields must survive re-registration the
+    // same way its runtime does (below), computed here BEFORE
+    // construction rather than patched after, since `from_label` takes
+    // them as constructor args.
     let existing_default = workspaces.resolve(Some(&paths::slug(&default_label)));
+    let (seed_autostart, seed_agent, seed_agent_name, seed_task) = match &existing_default {
+        Some(existing) => (
+            existing.autostart_claude,
+            existing.agent.clone(),
+            existing.agent_name.clone(),
+            existing.task.clone(),
+        ),
+        // First-ever launch, Windows: every NEW workspace is a capsule
+        // with no bare-shell knob (ADR 0042 L1a) — the daemon's own
+        // home/default row is no exception, and a capsule with no agent
+        // starts a producer with nothing to attach the frontend's own
+        // "special SoT LLM" surface to. Seed it with the same "claude"
+        // launcher `workspace.create` defaults an autostarting workspace
+        // to, so start-on-attach launches the agent, not a bare shell.
+        None if cfg!(windows) => (true, "claude".to_string(), String::new(), String::new()),
+        // First-ever launch, every other host: untouched —
+        // `from_label`'s own tmux-row defaults (no autostart, no agent).
+        None => (false, "none".to_string(), String::new(), String::new()),
+    };
     let mut default_ws_seed = Workspace::from_label(
         &default_label,
         files_mode.root_path().to_path_buf(),
-        false,
-        "none".to_string(),
-        String::new(),
-        String::new(),
+        seed_autostart,
+        seed_agent,
+        seed_agent_name,
+        seed_task,
     );
     default_ws_seed.runtime = match &existing_default {
         Some(existing) => existing.runtime.clone(),
@@ -1329,7 +1358,79 @@ where
                 // client) using the `state_dir` this carries.
                 if let Some(ws) = workspaces.workspace_for_tmux(requested_target) {
                     if ws.runtime == "capsule" {
-                        let state_dir = sot_log::state_dir::sot_state_dir()
+                        let state_root = sot_log::state_dir::sot_state_dir();
+                        // Field finding (v0.6.0-rc.2 shakedown): `workspace.create`
+                        // was the ONLY path that ever spawned a capsule's
+                        // supervisor. A workspace registered but never created
+                        // through it (the Windows default/home row, ADR 0042
+                        // L1a Codex finding 5) answered `attach_direct` against
+                        // a supervisor that had never been started, parking the
+                        // frontend on an empty pane with no way to start the
+                        // session. Start it here — sharing `workspace.create`'s
+                        // own spawn path (`capsule_workspace::start_supervisor`
+                        // via `ensure_started`) — before ever answering
+                        // `attach_direct` below. `ensure_started` is a no-op
+                        // when a supervisor already answers.
+                        #[cfg(windows)]
+                        {
+                            let ensure_result = match state_root.clone() {
+                                None => Err(
+                                    "could not resolve this machine's state root (%LOCALAPPDATA% unset)"
+                                        .to_string(),
+                                ),
+                                Some(root) => {
+                                    let workspace_id = ws.workspace_id.clone();
+                                    let agent_kind = ws.agent.clone();
+                                    let agent_name = ws.agent_name.clone();
+                                    let project_root = ws.project_root.clone();
+                                    let workspaces_for_start = workspaces.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        crate::capsule_workspace::ensure_started(
+                                            &root,
+                                            &workspace_id,
+                                            &agent_kind,
+                                            &agent_name,
+                                            &project_root,
+                                            workspaces_for_start,
+                                        )
+                                    })
+                                    .await
+                                    .unwrap_or_else(|e| {
+                                        Err(format!("capsule start-on-attach task panicked: {e}"))
+                                    })
+                                }
+                            };
+                            match ensure_result {
+                                Ok(Some(degraded)) => {
+                                    tracing::info!(
+                                        workspace_id = %ws.workspace_id, degraded,
+                                        "pty.open: capsule supervisor started on attach"
+                                    );
+                                }
+                                Ok(None) => {}
+                                Err(detail) => {
+                                    tracing::warn!(
+                                        workspace_id = %ws.workspace_id, error = %detail,
+                                        "pty.open: capsule supervisor start-on-attach failed"
+                                    );
+                                    // Rule E (shrink round): no terminal mark
+                                    // for a one-shot failure — that flag is
+                                    // reserved for the supervisor's OWN
+                                    // terminal outcome (the watchdog giving
+                                    // up, or a leg exiting terminal/69). The
+                                    // row stays retryable: the next attach
+                                    // attempt tries again from scratch.
+                                    let payload = serde_json::json!({
+                                        "error": format!("capsule workspace could not be started: {detail}"),
+                                        "code": "capsule_spawn_failed",
+                                    });
+                                    write_frame_to(&mut tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
+                                        .await?;
+                                    continue;
+                                }
+                            }
+                        }
+                        let state_dir = state_root
                             .map(|root| crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id))
                             .map(|p| p.to_string_lossy().into_owned());
                         let payload = serde_json::json!({

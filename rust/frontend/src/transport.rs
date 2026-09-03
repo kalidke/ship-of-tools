@@ -598,8 +598,11 @@ pub struct WorkspaceInfo {
     pub repl_state: String,
     /// ADR 0042 slice L1a/L1b: `"tmux"` | `"capsule"` — which runtime
     /// hosts this workspace's agent pane. `""` from a daemon that
-    /// predates L1a; the chrome treats that exactly like `"tmux"`
-    /// (`pane_backend_for`), so an old daemon changes nothing.
+    /// predates L1a. ADR 0042 shrink round (rule A): no longer consulted
+    /// by the attach path at all — `attach_session_to_bl` always sends
+    /// `pty.open` and lets the daemon's own reply (an ordinary
+    /// `PtyOpened`, or `attach_direct`) decide, so an old daemon (or one
+    /// reporting `""`) changes nothing there either.
     ///
     /// Deserialized on every platform (the wire contract doesn't fork by
     /// FE OS) but read by gpu.rs only from `#[cfg(windows)]` call sites —

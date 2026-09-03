@@ -446,3 +446,150 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
         kill_and_wait_bounded(child).await;
     }
 }
+
+/// Field finding (v0.6.0-rc.2 shakedown): the daemon's own default/home
+/// workspace is registered with `runtime: "capsule"` at startup (ADR 0042
+/// L1a, server.rs's default-workspace seed), but `workspace.create` was
+/// the ONLY path that ever spawned a capsule's supervisor — this row was
+/// never created through it, so it never got one. Selecting it in the
+/// frontend sent `pty.open`, which answered `attach_direct` against a
+/// supervisor that had never been started, parking the frontend on an
+/// empty pane with no way to start the session. This proves the fix:
+/// `pty.open` on this row now starts the supervisor itself (start-on-
+/// attach, sharing `workspace.create`'s own spawn path) before ever
+/// answering `attach_direct`.
+#[tokio::test]
+async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "sot-capsule.exe not found next to sotd.exe at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd.exe was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("dsa");
+    let mut daemon = env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    // Find the default row — never touched `workspace.create`, so its
+    // supervisor has never been spawned.
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let default_row = list_payload["workspaces"]
+        .as_array()
+        .expect("workspaces array")
+        .iter()
+        .find(|w| w["is_default"].as_bool() == Some(true))
+        .cloned()
+        .expect("a default workspace row");
+    assert_eq!(default_row["runtime"], "capsule", "default row: {default_row:?}");
+    let default_workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
+    let default_target = default_row["tmux_session"].as_str().expect("tmux_session").to_string();
+
+    // Same path arithmetic `capsule_workspace::state_dir_for` uses:
+    // `<LOCALAPPDATA>\sot\workspaces\<workspace_id>` — `env.state_root` IS
+    // the LOCALAPPDATA value this daemon was launched with (see
+    // `Env::spawn_sotd`).
+    let state_dir_path = env.state_root.join("sot").join("workspaces").join(&default_workspace_id);
+
+    // Rule H: prove the "never started" precondition BEFORE `pty.open` —
+    // no state dir on disk at all, and `workspace.list`'s own row already
+    // reads "stopped" from THIS first list call. Rule B guarantees this:
+    // the startup resume-scan (`resume_all`) SKIPS every row with no
+    // published voyage pointer, so it never touched this row — without
+    // rule B this assertion would race the resume-scan and could flake.
+    assert!(
+        !state_dir_path.exists(),
+        "the default capsule's state dir must not exist before its first attach: {state_dir_path:?}"
+    );
+    assert_eq!(
+        default_row["phase"].as_str(),
+        Some("stopped"),
+        "the default row's phase must read \"stopped\" before its first attach: {default_row:?}"
+    );
+
+    // `target` MUST be the row's own `tmux_session` — a targetless
+    // `pty.open` addresses the drawer's own special SoT LLM terminal
+    // (`pty::DEFAULT_TMUX_TARGET` == "sot-llm"), never a workspace row;
+    // `server.rs`'s `workspace_for_tmux(requested_target)` only resolves
+    // to this row when `target` matches its `tmux_session`. This is
+    // exactly what the frontend sends attaching a capsule row.
+    let pty_req = serde_json::json!({
+        "cols": 80, "rows": 24, "user_switch": true, "target": default_target,
+    });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+    let expected_state_dir = state_dir_path.to_string_lossy().into_owned();
+    assert_eq!(
+        pty_res.payload["state_dir"].as_str(),
+        Some(expected_state_dir.as_str()),
+        "pty.open's attach_direct state_dir should be the default workspace's own capsule state dir"
+    );
+
+    // The state dir appears on disk — start-on-attach actually spawned
+    // something, not just answered a stale path.
+    let dir_deadline = Instant::now() + BOUND;
+    while !state_dir_path.is_dir() {
+        assert!(
+            Instant::now() < dir_deadline,
+            "timed out waiting for the default capsule's state dir to appear: {state_dir_path:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // The lane answers — a real supervisor authority is listening, not
+    // just an empty directory left behind by a partial spawn.
+    poll_until(
+        || {
+            let dir = state_dir_path.clone();
+            async move { try_query_status(dir).await }
+        },
+        BOUND,
+        "the default capsule's supervisor lane to answer a status query",
+    )
+    .await;
+
+    // workspace.list's own row leaves "stopped" for this workspace,
+    // confirming the daemon's own reported phase agrees with the lane.
+    let phase_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
+    loop {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        if let Some(row) = find_row(&payload, &default_workspace_id) {
+            assert_eq!(row["runtime"], "capsule", "row: {row:?}");
+            if row["phase"].as_str() != Some("stopped") {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < phase_deadline,
+            "timed out waiting for workspace.list to report a phase other than \"stopped\" for the default capsule workspace"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // Rule H: "KillGuard" the spawned supervisor — it is DETACHED
+    // (spawned by the daemon, survives the daemon's own exit by design,
+    // ADR 0042 L1a), so killing `daemon` below does NOT reap it and it
+    // would otherwise leak past this test. There is no `std::process::
+    // Child` for it here (the daemon owns the actual spawn), so this
+    // stops it over its own lane instead — the same
+    // `sot_log::supervisor_client::stop` the create-test's own adoption
+    // proof uses. Best-effort: the lane may already be gone (a `claude`
+    // producer missing from this runner's PATH would eventually make the
+    // supervisor's own internal flap budget give up and exit on its
+    // own, per rule F) — either way nothing is left running afterward.
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::stop(&dir)
+    })
+    .await;
+
+    if let Some(child) = daemon.take() {
+        kill_and_wait_bounded(child).await;
+    }
+}
