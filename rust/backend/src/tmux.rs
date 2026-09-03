@@ -304,6 +304,18 @@ impl TmuxClient {
         // silently fell through to placing the socket wherever
         // `secure_private_dir` refused. Now the check must pass, or the
         // spawn is aborted with the reason instead of running open.
+        //
+        // Windows only: skipped entirely — tmux never runs there (no
+        // `tmux.exe`), so there's nothing real to secure a socket dir FOR;
+        // `paths::tmux_socket_path()`'s own POSIX-shaped fallback used to
+        // get reached here anyway (field evidence, v0.6.0-rc.3: a junk
+        // `C:\tmp\sot-0\` got created before the `Command::new("tmux")`
+        // spawn below failed naturally). Codex review, PR #175 — the
+        // actual fix is the workspace never defaulting to `"tmux"` there
+        // in the first place (`workspaces::load_toml`); this is
+        // defense-in-depth for any row that explicitly says `"tmux"`
+        // anyway (e.g. one shared onto a Windows box from elsewhere).
+        #[cfg(not(windows))]
         if let Some(dir) = socket.parent() {
             crate::paths::secure_private_dir(dir)
                 .with_context(|| format!("securing tmux socket dir {}", dir.display()))?;

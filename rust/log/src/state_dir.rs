@@ -21,18 +21,36 @@
 //! resolution logic (no behavior change), which now DELEGATES to this
 //! function instead of carrying its own copy.
 
-/// Resolve the per-machine state directory: `%LOCALAPPDATA%\sot` on
-/// Windows, `$XDG_STATE_HOME/sot` (or `$HOME/.local/state/sot`)
-/// elsewhere. Home for the staged binary + logs (ADR 0017), the relaunch
-/// sentinel, the FE control channel (ADR 0019), session reconnect memory,
-/// and — from ADR 0041 on — `drawer.voyage`/`supervisor.lock` and the
-/// capsule's own durable state.
+/// Resolve the per-machine state directory: `%LOCALAPPDATA%\sot` (falling
+/// back to `%USERPROFILE%\AppData\Local\sot` — the same location
+/// `%LOCALAPPDATA%` names, derived directly for the rare login where the
+/// env var itself is unset or empty) on Windows, `$XDG_STATE_HOME/sot` (or
+/// `$HOME/.local/state/sot`) elsewhere. Home for the staged binary + logs
+/// (ADR 0017), the relaunch sentinel, the FE control channel (ADR 0019),
+/// session reconnect memory, and — from ADR 0041 on — `drawer.voyage`/
+/// `supervisor.lock` and the capsule's own durable state.
 ///
-/// `None` when neither the primary nor the fallback environment variable
-/// is set; callers decide what "no per-machine state dir" means for them.
+/// No POSIX (`XDG_*`/`HOME`/`/tmp`) fallback exists on Windows — deriving
+/// a `$HOME`-shaped path there depends on which shell launched the
+/// process (a git-bash shell exports `HOME`, PowerShell doesn't), which
+/// is exactly the class of bug this whole resolver exists to close (see
+/// this module's own doc for the FE/capsule drift it already caused
+/// once). `None` on Windows only when NEITHER `%LOCALAPPDATA%` nor
+/// `%USERPROFILE%` is set — not a normal Windows login; callers there
+/// should treat it as a hard failure (see e.g.
+/// `sot-backend`'s `paths::windows_state_root`), not a silent fallback.
+/// `None` elsewhere only when neither `$XDG_STATE_HOME` nor `$HOME` is
+/// set.
 pub fn sot_state_dir() -> Option<std::path::PathBuf> {
     let dir = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)
+        std::env::var_os("LOCALAPPDATA")
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .filter(|v| !v.is_empty())
+                    .map(|home| std::path::PathBuf::from(home).join("AppData").join("Local"))
+            })
     } else {
         std::env::var_os("XDG_STATE_HOME")
             .map(std::path::PathBuf::from)
@@ -60,6 +78,7 @@ mod tests {
         xdg_state_home: Option<std::ffi::OsString>,
         home: Option<std::ffi::OsString>,
         localappdata: Option<std::ffi::OsString>,
+        userprofile: Option<std::ffi::OsString>,
     }
 
     impl Drop for EnvGuard {
@@ -68,6 +87,7 @@ mod tests {
                 ("XDG_STATE_HOME", &self.xdg_state_home),
                 ("HOME", &self.home),
                 ("LOCALAPPDATA", &self.localappdata),
+                ("USERPROFILE", &self.userprofile),
             ] {
                 match val {
                     Some(v) => std::env::set_var(key, v),
@@ -83,6 +103,7 @@ mod tests {
             xdg_state_home: std::env::var_os("XDG_STATE_HOME"),
             home: std::env::var_os("HOME"),
             localappdata: std::env::var_os("LOCALAPPDATA"),
+            userprofile: std::env::var_os("USERPROFILE"),
             _serial: serial,
         }
     }
@@ -148,9 +169,34 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn none_on_windows_without_localappdata() {
+    fn windows_falls_back_to_userprofile_when_localappdata_unset() {
         let _guard = guarded();
         std::env::remove_var("LOCALAPPDATA");
+        std::env::set_var("USERPROFILE", r"C:\Users\someone");
+        assert_eq!(
+            sot_state_dir(),
+            Some(std::path::PathBuf::from(r"C:\Users\someone\AppData\Local\sot"))
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_falls_back_to_userprofile_when_localappdata_is_empty() {
+        let _guard = guarded();
+        std::env::set_var("LOCALAPPDATA", "");
+        std::env::set_var("USERPROFILE", r"C:\Users\someone");
+        assert_eq!(
+            sot_state_dir(),
+            Some(std::path::PathBuf::from(r"C:\Users\someone\AppData\Local\sot"))
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn none_on_windows_without_localappdata_or_userprofile() {
+        let _guard = guarded();
+        std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("USERPROFILE");
         assert_eq!(sot_state_dir(), None);
     }
 }

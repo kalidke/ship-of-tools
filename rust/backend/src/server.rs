@@ -227,12 +227,16 @@ pub async fn run(opts: Opts) -> Result<()> {
     // fresh first-launch we generate one and persist it so subsequent
     // runs see the same id.
     let workspaces = Workspaces::new();
-    match workspaces::scan_disk(&workspaces) {
-        Ok(n) => tracing::info!(count = n, "workspaces scanned from disk"),
-        Err(e) => {
-            tracing::warn!(error = %e, "workspace scan failed; continuing with empty registry")
-        }
-    }
+    // A plain "no toml found" is already fail-soft inside `scan_disk`
+    // (`Ok(0)`, never `Err`) — the only realistic source of an `Err` here
+    // is the Windows legacy-config-dir migration's refuse-and-record path
+    // (`workspaces::migrate_legacy_windows_config_dir`'s doc): a rename
+    // that fails partway leaves the registry split across the old and new
+    // roots, and continuing with whatever landed at the new root (empty or
+    // partial) would silently seed a fresh registry beside a stranded one.
+    // So this is a boot error, not a warning.
+    let n = workspaces::scan_disk(&workspaces).context("scanning the workspace registry")?;
+    tracing::info!(count = n, "workspaces scanned from disk");
     let default_label = opts
         .label
         .clone()
