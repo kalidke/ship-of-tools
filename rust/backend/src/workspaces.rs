@@ -362,10 +362,12 @@ struct Inner {
     /// watcher spawns (2026-07-10 multiwatch). Installed once at startup via
     /// `set_watch_bus`, before workspace registration; `None` in tests.
     watch_bus: Option<(Session, broadcast::Sender<PreviewChanged>)>,
-    /// ADR 0042 slice L1a (Codex review finding 6): workspace ids whose
-    /// capsule supervisor watchdog gave up — the ADR 0041 launcher
-    /// restart sequence (1/3/7/15/30s, at most 5 in 60s) exhausted
-    /// without a live authority. `workspace.list` reads this BEFORE ever
+    /// ADR 0042 slice L1a (Codex review finding 6): workspace ids with no
+    /// live (or startable) capsule supervisor — either the watchdog gave
+    /// up (the ADR 0041 launcher restart sequence, 1/3/7/15/30s at most 5
+    /// in 60s, exhausted without a live authority), or `pty.open`'s
+    /// start-on-attach synchronous spawn attempt itself failed with no
+    /// watchdog ever created. `workspace.list` reads this BEFORE ever
     /// querying that workspace's (confirmed-gone) lane again, reporting
     /// `phase: "terminal"` loudly rather than a misleading fresh
     /// `"unreachable"` that implies the next probe might succeed. Never
@@ -533,13 +535,18 @@ impl Workspaces {
         g.pane_activity.get(session).cloned().unwrap_or_default()
     }
 
-    /// ADR 0042 slice L1a: mark `workspace_id`'s capsule supervisor
-    /// watchdog as having given up (the restart budget exhausted with no
-    /// live authority). See `Inner::capsule_terminal`'s own doc.
-    /// `#[cfg_attr(not(windows), allow(dead_code))]`: pure, portable
-    /// bookkeeping, but its only real caller is the Windows-only
-    /// watchdog (`capsule_workspace.rs`) — matching that module's own
-    /// precedent for a function whose ONLY callers are windows-gated.
+    /// ADR 0042 slice L1a: mark `workspace_id`'s capsule as having no
+    /// live (or startable) supervisor authority — either the watchdog's
+    /// restart budget exhausted with no live authority, or a `pty.open`
+    /// start-on-attach's own synchronous spawn attempt failed with no
+    /// watchdog ever created to retry it (`server.rs`'s capsule branch —
+    /// unlike `workspace.create`, that workspace already existed, so
+    /// there is no fresh row to roll back). See `Inner::capsule_terminal`'s
+    /// own doc. `#[cfg_attr(not(windows), allow(dead_code))]`: pure,
+    /// portable bookkeeping, but its only real callers are Windows-only
+    /// (the watchdog in `capsule_workspace.rs`, and `server.rs`'s
+    /// `pty.open` handling) — matching that module's own precedent for a
+    /// function whose ONLY callers are windows-gated.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub fn mark_capsule_terminal(&self, workspace_id: &str) {
         let mut g = self.inner.write().expect("workspaces lock");

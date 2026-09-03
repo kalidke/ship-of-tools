@@ -3995,26 +3995,17 @@ pub async fn handle_workspace_create(
     {
         let spawn_result: std::result::Result<bool, String> = match sot_log::state_dir::sot_state_dir() {
             None => Err("could not resolve this machine's state root (%LOCALAPPDATA% unset)".to_string()),
-            Some(state_root) => {
-                let state_dir = crate::capsule_workspace::state_dir_for(&state_root, &ws_handle.workspace_id);
-                match std::fs::create_dir_all(&state_dir) {
-                    Err(e) => Err(format!("could not create capsule state dir {state_dir:?}: {e}")),
-                    Ok(()) => match crate::capsule_workspace::sot_capsule_exe() {
-                        Err(e) => Err(format!("could not locate sot-capsule.exe next to this daemon: {e}")),
-                        Ok(exe) => crate::capsule_workspace::spawn_and_watch(
-                            &exe,
-                            &state_dir,
-                            crate::capsule_workspace::StartMode::Start,
-                            &capsule_argv,
-                            &project_root,
-                            &req.agent_name,
-                            ws_handle.workspace_id.clone(),
-                            workspaces.clone(),
-                        )
-                        .map_err(|e| format!("capsule supervisor spawn failed: {e}")),
-                    },
-                }
-            }
+            // Shared with `pty.open`'s start-on-attach path (server.rs) —
+            // see `capsule_workspace::start_supervisor`'s own doc.
+            Some(state_root) => crate::capsule_workspace::start_supervisor(
+                &state_root,
+                &ws_handle.workspace_id,
+                crate::capsule_workspace::StartMode::Start,
+                &capsule_argv,
+                &project_root,
+                &req.agent_name,
+                workspaces.clone(),
+            ),
         };
         match spawn_result {
             Ok(degraded) => {

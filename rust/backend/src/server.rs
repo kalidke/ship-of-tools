@@ -1329,7 +1329,79 @@ where
                 // client) using the `state_dir` this carries.
                 if let Some(ws) = workspaces.workspace_for_tmux(requested_target) {
                     if ws.runtime == "capsule" {
-                        let state_dir = sot_log::state_dir::sot_state_dir()
+                        let state_root = sot_log::state_dir::sot_state_dir();
+                        // Field finding (v0.6.0-rc.2 shakedown): `workspace.create`
+                        // was the ONLY path that ever spawned a capsule's
+                        // supervisor. A workspace registered but never created
+                        // through it (the Windows default/home row, ADR 0042
+                        // L1a Codex finding 5) answered `attach_direct` against
+                        // a supervisor that had never been started, parking the
+                        // frontend on an empty pane with no way to start the
+                        // session. Start it here — sharing `workspace.create`'s
+                        // own spawn path (`capsule_workspace::start_supervisor`
+                        // via `ensure_started`) — before ever answering
+                        // `attach_direct` below. `ensure_started` is a no-op
+                        // when a supervisor already answers.
+                        #[cfg(windows)]
+                        {
+                            let ensure_result = match state_root.clone() {
+                                None => Err(
+                                    "could not resolve this machine's state root (%LOCALAPPDATA% unset)"
+                                        .to_string(),
+                                ),
+                                Some(root) => {
+                                    let workspace_id = ws.workspace_id.clone();
+                                    let agent_kind = ws.agent.clone();
+                                    let agent_name = ws.agent_name.clone();
+                                    let project_root = ws.project_root.clone();
+                                    let workspaces_for_start = workspaces.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        crate::capsule_workspace::ensure_started(
+                                            &root,
+                                            &workspace_id,
+                                            &agent_kind,
+                                            &agent_name,
+                                            &project_root,
+                                            workspaces_for_start,
+                                        )
+                                    })
+                                    .await
+                                    .unwrap_or_else(|e| {
+                                        Err(format!("capsule start-on-attach task panicked: {e}"))
+                                    })
+                                }
+                            };
+                            match ensure_result {
+                                Ok(Some(degraded)) => {
+                                    tracing::info!(
+                                        workspace_id = %ws.workspace_id, degraded,
+                                        "pty.open: capsule supervisor started on attach"
+                                    );
+                                }
+                                Ok(None) => {}
+                                Err(detail) => {
+                                    tracing::warn!(
+                                        workspace_id = %ws.workspace_id, error = %detail,
+                                        "pty.open: capsule supervisor start-on-attach failed"
+                                    );
+                                    // No prior workspace to roll back (unlike
+                                    // `workspace.create`, this workspace already
+                                    // existed) — mark it terminal instead, the
+                                    // same signal the watchdog uses when it gives
+                                    // up, so `workspace.list` stops reporting it
+                                    // as merely "stopped".
+                                    workspaces.mark_capsule_terminal(&ws.workspace_id);
+                                    let payload = serde_json::json!({
+                                        "error": format!("capsule workspace could not be started: {detail}"),
+                                        "code": "capsule_spawn_failed",
+                                    });
+                                    write_frame_to(&mut tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
+                                        .await?;
+                                    continue;
+                                }
+                            }
+                        }
+                        let state_dir = state_root
                             .map(|root| crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id))
                             .map(|p| p.to_string_lossy().into_owned());
                         let payload = serde_json::json!({

@@ -205,7 +205,7 @@ pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
 mod windows_runtime {
     use super::{
         agent_argv, mode_flag, StartMode, LANE_CONCURRENCY, MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB,
-        RESTART_BACKOFFS, RESTART_WINDOW,
+        NEVER_STARTED_PHASE, RESTART_BACKOFFS, RESTART_WINDOW, UNREACHABLE_PHASE,
     };
     use crate::workspaces::Workspaces;
     use std::io::ErrorKind;
@@ -412,6 +412,94 @@ mod windows_runtime {
             workspaces,
         );
         Ok(degraded)
+    }
+
+    /// The spawn path shared by `workspace.create` (mode `Start` always — a
+    /// brand new workspace has no state dir yet) and `pty.open`'s
+    /// start-on-attach ([`ensure_started`], mode picked by
+    /// [`start_mode_needed`]): create the state directory if it does not
+    /// exist yet (idempotent — `sot-capsule supervise` also creates it on
+    /// its own first act), locate `sot-capsule.exe`, and spawn-and-watch
+    /// it. ADR 0042 L1a Codex review finding 1's synchronous-failure
+    /// contract applies to both callers: an `Err` here means no
+    /// supervisor is running, and the caller must refuse its own op with
+    /// this text rather than silently proceeding. Error text is per-stage
+    /// (matches `workspace.create`'s own pre-extraction messages
+    /// byte-for-byte) so a caller's failure payload names what actually
+    /// failed, not just an opaque OS error.
+    pub fn start_supervisor(
+        state_root: &Path,
+        workspace_id: &str,
+        mode: StartMode,
+        agent_argv: &[String],
+        project_root: &Path,
+        agent_name: &str,
+        workspaces: Workspaces,
+    ) -> Result<bool, String> {
+        let state_dir = super::state_dir_for(state_root, workspace_id);
+        std::fs::create_dir_all(&state_dir)
+            .map_err(|e| format!("could not create capsule state dir {state_dir:?}: {e}"))?;
+        let exe = sot_capsule_exe()
+            .map_err(|e| format!("could not locate sot-capsule.exe next to this daemon: {e}"))?;
+        spawn_and_watch(
+            &exe,
+            &state_dir,
+            mode,
+            agent_argv,
+            project_root,
+            agent_name,
+            workspace_id.to_string(),
+            workspaces,
+        )
+        .map_err(|e| format!("capsule supervisor spawn failed: {e}"))
+    }
+
+    /// Whether a capsule workspace's supervisor needs starting before
+    /// `pty.open` can honestly answer `attach_direct` — and if so, with
+    /// which start mode. Reuses [`phase_of`]'s own two failure phases
+    /// rather than a new probe: [`NEVER_STARTED_PHASE`] (no state dir —
+    /// nothing has ever run) means `Start`; [`UNREACHABLE_PHASE`] (a
+    /// state dir exists but its lane does not answer — the same "dead
+    /// supervisor" case the watchdog/`resume_all` already resume with
+    /// `--resume`) means `Resume`. Any answered lifecycle phase means a
+    /// supervisor is already up — `None`, nothing to do. BLOCKING
+    /// (`phase_of` itself is).
+    fn start_mode_needed(state_dir: &Path) -> Option<StartMode> {
+        match phase_of(state_dir) {
+            NEVER_STARTED_PHASE => Some(StartMode::Start),
+            UNREACHABLE_PHASE => Some(StartMode::Resume),
+            _ => None,
+        }
+    }
+
+    /// `pty.open` on a capsule workspace: start its supervisor if it
+    /// isn't already running, sharing [`start_supervisor`] — the exact
+    /// spawn path `workspace.create` uses — rather than a second spawn
+    /// implementation (field finding, v0.6.0-rc.2 shakedown:
+    /// `workspace.create` was the ONLY path that ever started one, so a
+    /// workspace registered but never created through it — the Windows
+    /// default/home row, ADR 0042 L1a Codex finding 5 — answered
+    /// `attach_direct` against a supervisor that was never spawned,
+    /// parking the frontend on an empty pane forever). `Ok(None)` = a
+    /// supervisor already answered; nothing started. `Ok(Some(degraded))`
+    /// = a fresh spawn succeeded (mode from [`start_mode_needed`]). `Err`
+    /// mirrors `start_supervisor`'s own failure, so a caller's error
+    /// payload can match `workspace.create`'s. BLOCKING — callers run it
+    /// via `spawn_blocking`.
+    pub fn ensure_started(
+        state_root: &Path,
+        workspace_id: &str,
+        agent_kind: &str,
+        agent_name: &str,
+        project_root: &Path,
+        workspaces: Workspaces,
+    ) -> Result<Option<bool>, String> {
+        let state_dir = super::state_dir_for(state_root, workspace_id);
+        let Some(mode) = start_mode_needed(&state_dir) else {
+            return Ok(None);
+        };
+        let argv = agent_argv(agent_kind)?;
+        start_supervisor(state_root, workspace_id, mode, &argv, project_root, agent_name, workspaces).map(Some)
     }
 
     /// What one leg's exit means for the watchdog's own decision —
