@@ -21,11 +21,12 @@ use std::path::{Path, PathBuf};
 /// `<state-root>/workspaces/<workspace_id>/` — the capsule's own state
 /// directory (ADR 0041/0042: `supervisor.lock`, `drawer.voyage`, the
 /// journal, the voyages — all owned and created by `sot-capsule
-/// supervise` itself; this daemon only creates the directory itself
-/// before spawning, per ADR 0042 L1a's own "create the dir" instruction).
-/// `state_root` is `sot_log::state_dir::sot_state_dir()`, injected rather
-/// than resolved here so this stays a pure function of its inputs (real
-/// callers resolve it once; a test supplies a tempdir root).
+/// supervise` itself, as its own first act after it actually runs; rule
+/// C, shrink round: this daemon never creates it — a synchronous spawn
+/// failure then leaves nothing on disk at all). `state_root` is
+/// `sot_log::state_dir::sot_state_dir()`, injected rather than resolved
+/// here so this stays a pure function of its inputs (real callers
+/// resolve it once; a test supplies a tempdir root).
 pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
     state_root.join("workspaces").join(workspace_id)
 }
@@ -90,37 +91,45 @@ pub enum StartMode {
 /// lane that DID answer.
 pub const UNREACHABLE_PHASE: &str = "unreachable";
 
-/// The wire phase string for a capsule workspace whose state directory has
-/// never been created — `state_dir_for`'s own contract (this module's top
-/// doc: "this daemon only creates the directory itself before spawning")
-/// means the directory is created ONCE, right before the FIRST spawn, and
-/// `end_run`'s own doc records that it is never deleted afterward — so its
-/// absence is a hard, durable signal that no supervisor has EVER run for
-/// this workspace. Distinct from [`UNREACHABLE_PHASE`]: a directory that
-/// DOES exist means a supervisor was spawned at least once, so a lane that
-/// fails to answer against it stays "unreachable" — `query_status`'s own
-/// doc deliberately folds every such failure (connect refused, a foreign/
-/// undetermined challenge, a timeout) into one `Err` without saying which,
-/// so a query against an EXISTING directory can never be reclassified as
-/// "never started" either. One narrow race this accepts (Codex round, PR
-/// #172): a `workspace.list` landing in the brief window where a resumed
-/// supervisor's directory is still being (re-)created reads "stopped" too
-/// — bounded by the spawn call itself and self-correcting on the very
-/// next list once the directory (and the supervisor behind it) exists.
+/// The wire phase string for a capsule workspace with no published
+/// voyage pointer (`<state_dir>/drawer.voyage`, `sot_log::pointer` —
+/// ADR 0041 Lifecycle's write-once durable fact that a voyage exists).
+/// Rule B (shrink round): the POINTER, not directory presence, is the
+/// discriminator — a state directory can exist with no pointer ever
+/// published to it (the exact pre-pointer crash window ADR 0041 names,
+/// or simply a row `resume_all` correctly never touched because it had
+/// none), and that reads identically to a workspace whose directory was
+/// never created at all: neither has ever had a real run. Distinct from
+/// [`UNREACHABLE_PHASE`]: a workspace WITH a published pointer means a
+/// supervisor did reach a real run at least once, so a lane that fails to
+/// answer against it stays "unreachable" — `query_status`'s own doc
+/// deliberately folds every such failure (connect refused, a foreign/
+/// undetermined challenge, a timeout) into one `Err` without saying
+/// which, so a query against a workspace WITH a pointer can never be
+/// reclassified as "never started" either. One narrow race this accepts
+/// (Codex round, PR #172): a `workspace.list` landing in the brief window
+/// where a resumed supervisor's pointer is still being (re-)published
+/// reads "stopped" too — bounded by the spawn call itself and
+/// self-correcting on the very next list once the pointer (and the
+/// supervisor behind it) exists.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const NEVER_STARTED_PHASE: &str = "stopped";
 
 /// Whether a capsule workspace's supervisor lane is even worth querying,
-/// given its state directory's existence — pure, no I/O itself (the
-/// caller supplies `dir_exists`, e.g. `phase_of`'s `state_dir.is_dir()`).
-/// `None` means "query it, we can't tell from this alone"; `Some(..)`
-/// short-circuits a connect attempt that cannot possibly succeed — no
-/// pipe was ever created for a state directory that was never created
-/// either, so `phase_of` skips straight to [`NEVER_STARTED_PHASE`] rather
-/// than waiting out a connect budget destined to fail.
+/// given whether its voyage pointer exists — pure, no I/O itself (the
+/// caller supplies `pointer_exists`, e.g. `phase_of`'s own
+/// `sot_log::pointer::pointer_path(state_dir).is_file()`). `None` means
+/// "query it, we can't tell from this alone"; `Some(..)` short-circuits a
+/// connect attempt that cannot possibly succeed — no pipe was ever bound
+/// for a workspace whose pointer was never published, so `phase_of` skips
+/// straight to [`NEVER_STARTED_PHASE`] rather than waiting out a connect
+/// budget destined to fail. The pointer lives INSIDE the state dir, so
+/// its absence subsumes "no state dir at all" (the check this replaces)
+/// as well as "a state dir exists but nothing was ever durably published
+/// to it" — both read as never started.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn phase_for_missing_state_dir(dir_exists: bool) -> Option<&'static str> {
-    (!dir_exists).then_some(NEVER_STARTED_PHASE)
+pub fn phase_for_missing_pointer(pointer_exists: bool) -> Option<&'static str> {
+    (!pointer_exists).then_some(NEVER_STARTED_PHASE)
 }
 
 /// Map the supervisor lane's own phase to the wire string
@@ -204,14 +213,14 @@ pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
 #[cfg(windows)]
 mod windows_runtime {
     use super::{
-        agent_argv, mode_flag, StartMode, LANE_CONCURRENCY, MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB,
-        NEVER_STARTED_PHASE, RESTART_BACKOFFS, RESTART_WINDOW, UNREACHABLE_PHASE,
+        agent_argv, mode_flag, StartMode, LANE_CONCURRENCY, LIST_LANE_DEADLINE, MAX_RESTARTS_PER_WINDOW,
+        NESTING_ENV_VARS_TO_SCRUB, NEVER_STARTED_PHASE, RESTART_BACKOFFS, RESTART_WINDOW, UNREACHABLE_PHASE,
     };
     use crate::workspaces::Workspaces;
     use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
     use std::process::Stdio;
     use tokio::process::{Child, Command};
 
@@ -238,7 +247,8 @@ mod windows_runtime {
     /// `sot-capsule supervise`'s own clean-exit code (`EXIT_CLEAN`).
     const EXIT_CLEAN: i32 = 0;
     /// `sot-capsule supervise`'s own terminal-failure exit code
-    /// (`EXIT_TERMINAL`) — ambiguous on its own (see [`wait_and_classify`]).
+    /// (`EXIT_TERMINAL`) — unconditionally terminal to
+    /// [`wait_and_classify`], never restarted (rule F, shrink round).
     const EXIT_TERMINAL: i32 = 69;
 
     /// `sot-capsule[.exe]`, resolved next to the daemon's own executable —
@@ -337,14 +347,17 @@ mod windows_runtime {
     /// `handlers.rs` has nothing Windows-specific to import. BLOCKING —
     /// callers run it via `spawn_blocking`.
     ///
-    /// First live shakedown fix: a workspace whose state directory was
-    /// never created (no supervisor has EVER run — `phase_for_missing_
-    /// state_dir`'s own doc) short-circuits to `NEVER_STARTED_PHASE`
-    /// ("stopped") BEFORE attempting a connect that cannot possibly
-    /// succeed; only a directory that DOES exist falls through to the
-    /// real query, where a failure stays `UNREACHABLE_PHASE`.
+    /// Rule B (shrink round): a workspace with no published voyage
+    /// pointer (`sot_log::pointer::pointer_path`) — no state dir at all,
+    /// or one that exists but nothing was ever durably published to —
+    /// short-circuits to `NEVER_STARTED_PHASE` ("stopped") BEFORE
+    /// attempting a connect that cannot possibly succeed; only a
+    /// workspace WITH a published pointer falls through to the real
+    /// query, where a failure stays `UNREACHABLE_PHASE`.
     pub fn phase_of(state_dir: &Path) -> &'static str {
-        if let Some(phase) = super::phase_for_missing_state_dir(state_dir.is_dir()) {
+        if let Some(phase) =
+            super::phase_for_missing_pointer(sot_log::pointer::pointer_path(state_dir).is_file())
+        {
             return phase;
         }
         match sot_log::supervisor_client::query_status(state_dir) {
@@ -388,6 +401,17 @@ mod windows_runtime {
     /// itself then runs entirely in the background. Clears any prior
     /// `capsule_terminal` mark for this workspace — a fresh spawn is a
     /// fresh chance.
+    ///
+    /// Rule D: releases `start_supervisor`'s `starting` claim
+    /// (`Workspaces::end_capsule_start`) via TWO independent,
+    /// idempotently-converging mechanisms — "removes when the lane first
+    /// answers or the child exits": [`spawn_starting_release_poll`]
+    /// releases it the moment the lane first answers (bounded, so a leg
+    /// that never binds its lane at all doesn't wedge it open forever),
+    /// and [`spawn_watchdog`]'s own loop releases it on every leg-exit
+    /// (first leg AND every restart) as a second, unconditional path.
+    /// `HashSet::remove` is idempotent, so whichever fires first actually
+    /// clears the entry; the other is a harmless no-op.
     pub fn spawn_and_watch(
         sot_capsule_exe: &Path,
         state_dir: &Path,
@@ -401,6 +425,7 @@ mod windows_runtime {
         let spawned = spawn_detached_supervisor(sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name)?;
         let degraded = spawned.degraded;
         workspaces.clear_capsule_terminal(&workspace_id);
+        spawn_starting_release_poll(workspace_id.clone(), state_dir.to_path_buf(), workspaces.clone());
         spawn_watchdog(
             workspace_id,
             sot_capsule_exe.to_path_buf(),
@@ -414,19 +439,57 @@ mod windows_runtime {
         Ok(degraded)
     }
 
+    /// Rule D half 1: release this workspace's `starting` claim the
+    /// moment its lane first answers a status query, bounded by
+    /// [`LIST_LANE_DEADLINE`] so a leg that never binds a lane at all
+    /// (crashes before `PipeServer::bind_supervisor`) doesn't wedge the
+    /// flag open forever — [`spawn_watchdog`]'s own child-exit release
+    /// (half 2) still applies in that case.
+    fn spawn_starting_release_poll(workspace_id: String, state_dir: PathBuf, workspaces: Workspaces) {
+        tokio::spawn(async move {
+            let deadline = Instant::now() + LIST_LANE_DEADLINE;
+            loop {
+                let dir = state_dir.clone();
+                let answered = tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&dir).is_ok())
+                    .await
+                    .unwrap_or(false);
+                if answered {
+                    workspaces.end_capsule_start(&workspace_id);
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
+
     /// The spawn path shared by `workspace.create` (mode `Start` always — a
-    /// brand new workspace has no state dir yet) and `pty.open`'s
+    /// brand new workspace has no state dir yet), `pty.open`'s
     /// start-on-attach ([`ensure_started`], mode picked by
-    /// [`start_mode_needed`]): create the state directory if it does not
-    /// exist yet (idempotent — `sot-capsule supervise` also creates it on
-    /// its own first act), locate `sot-capsule.exe`, and spawn-and-watch
-    /// it. ADR 0042 L1a Codex review finding 1's synchronous-failure
-    /// contract applies to both callers: an `Err` here means no
-    /// supervisor is running, and the caller must refuse its own op with
-    /// this text rather than silently proceeding. Error text is per-stage
-    /// (matches `workspace.create`'s own pre-extraction messages
-    /// byte-for-byte) so a caller's failure payload names what actually
-    /// failed, not just an opaque OS error.
+    /// [`start_mode_needed`]), and `resume_all`: locate `sot-capsule.exe`
+    /// and spawn-and-watch it. ADR 0042 L1a Codex review finding 1's
+    /// synchronous-failure contract applies to every caller: an `Err`
+    /// here means no supervisor is running, and the caller must refuse
+    /// its own op with this text rather than silently proceeding.
+    ///
+    /// Rule C (shrink round): does NOT create the state directory —
+    /// `sot-capsule supervise` creates its own (`supervise_inner`'s first
+    /// act, `rust/log/src/supervisor.rs`) once it actually runs, so a
+    /// synchronous spawn failure here leaves nothing behind at all, not
+    /// even an empty directory a later `phase_of` could misread.
+    ///
+    /// Rule D (shrink round): AT MOST ONE launch per workspace at a
+    /// time — `Workspaces::try_begin_capsule_start` claims the slot
+    /// ATOMICALLY (insert-if-absent under the SAME `Workspaces` mutex, no
+    /// new lock type) as this function's very first act; a caller that
+    /// loses the race gets `Ok(None)` — spawns nothing, not an error —
+    /// so `pty.open`'s caller can still answer `attach_direct` and let
+    /// the frontend's own attach-retry find the lane once it comes up.
+    /// The slot is released by [`spawn_and_watch`]'s own two independent,
+    /// idempotently-converging mechanisms (see that function's doc) —
+    /// released HERE only on a failure that never got that far.
     pub fn start_supervisor(
         state_root: &Path,
         workspace_id: &str,
@@ -435,31 +498,33 @@ mod windows_runtime {
         project_root: &Path,
         agent_name: &str,
         workspaces: Workspaces,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<bool>, String> {
+        if !workspaces.try_begin_capsule_start(workspace_id) {
+            return Ok(None);
+        }
         let state_dir = super::state_dir_for(state_root, workspace_id);
-        std::fs::create_dir_all(&state_dir)
-            .map_err(|e| format!("could not create capsule state dir {state_dir:?}: {e}"))?;
-        let exe = sot_capsule_exe()
-            .map_err(|e| format!("could not locate sot-capsule.exe next to this daemon: {e}"))?;
-        spawn_and_watch(
-            &exe,
-            &state_dir,
-            mode,
-            agent_argv,
-            project_root,
-            agent_name,
-            workspace_id.to_string(),
-            workspaces,
-        )
-        .map_err(|e| format!("capsule supervisor spawn failed: {e}"))
+        let exe = match sot_capsule_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                workspaces.end_capsule_start(workspace_id);
+                return Err(format!("could not locate sot-capsule.exe next to this daemon: {e}"));
+            }
+        };
+        match spawn_and_watch(&exe, &state_dir, mode, agent_argv, project_root, agent_name, workspace_id.to_string(), workspaces.clone()) {
+            Ok(degraded) => Ok(Some(degraded)),
+            Err(e) => {
+                workspaces.end_capsule_start(workspace_id);
+                Err(format!("capsule supervisor spawn failed: {e}"))
+            }
+        }
     }
 
     /// Whether a capsule workspace's supervisor needs starting before
     /// `pty.open` can honestly answer `attach_direct` — and if so, with
     /// which start mode. Reuses [`phase_of`]'s own two failure phases
-    /// rather than a new probe: [`NEVER_STARTED_PHASE`] (no state dir —
-    /// nothing has ever run) means `Start`; [`UNREACHABLE_PHASE`] (a
-    /// state dir exists but its lane does not answer — the same "dead
+    /// rather than a new probe: [`NEVER_STARTED_PHASE`] (no published
+    /// pointer — nothing has ever run) means `Start`; [`UNREACHABLE_PHASE`]
+    /// (a pointer exists but its lane does not answer — the same "dead
     /// supervisor" case the watchdog/`resume_all` already resume with
     /// `--resume`) means `Resume`. Any answered lifecycle phase means a
     /// supervisor is already up — `None`, nothing to do. BLOCKING
@@ -481,11 +546,25 @@ mod windows_runtime {
     /// default/home row, ADR 0042 L1a Codex finding 5 — answered
     /// `attach_direct` against a supervisor that was never spawned,
     /// parking the frontend on an empty pane forever). `Ok(None)` = a
-    /// supervisor already answered; nothing started. `Ok(Some(degraded))`
+    /// supervisor already answered, OR another launch is already in
+    /// flight (rule D); nothing started either way. `Ok(Some(degraded))`
     /// = a fresh spawn succeeded (mode from [`start_mode_needed`]). `Err`
     /// mirrors `start_supervisor`'s own failure, so a caller's error
-    /// payload can match `workspace.create`'s. BLOCKING — callers run it
-    /// via `spawn_blocking`.
+    /// payload can match `workspace.create`'s.
+    ///
+    /// Rule I: this DOES block on a real lane probe (`start_mode_needed`
+    /// -> `phase_of` -> `query_status`) when a pointer exists and no
+    /// start is in flight — the same bounded worst case `query_status`'s
+    /// own doc names (connect 2s + hello 2s + status 5s ~= 9s) for a row
+    /// whose supervisor died without a trace. That cost is accepted here
+    /// rather than avoided: it is the only way to tell "already running"
+    /// (skip) from "pointer exists but the lane is dead" (needs
+    /// `--resume`) apart from just guessing one or the other. The
+    /// `is_capsule_starting` check below is what SKIPS that probe when a
+    /// launch is already in flight — an early exit, not the correctness
+    /// guarantee (that's `start_supervisor`'s own atomic claim, closing
+    /// the tiny window between this check and the call below). BLOCKING
+    /// — callers run it via `spawn_blocking`.
     pub fn ensure_started(
         state_root: &Path,
         workspace_id: &str,
@@ -494,38 +573,48 @@ mod windows_runtime {
         project_root: &Path,
         workspaces: Workspaces,
     ) -> Result<Option<bool>, String> {
+        if workspaces.is_capsule_starting(workspace_id) {
+            return Ok(None);
+        }
         let state_dir = super::state_dir_for(state_root, workspace_id);
         let Some(mode) = start_mode_needed(&state_dir) else {
             return Ok(None);
         };
         let argv = agent_argv(agent_kind)?;
-        start_supervisor(state_root, workspace_id, mode, &argv, project_root, agent_name, workspaces).map(Some)
+        start_supervisor(state_root, workspace_id, mode, &argv, project_root, agent_name, workspaces)
     }
 
     /// What one leg's exit means for the watchdog's own decision —
-    /// ADR 0042 L1a, Codex review finding 6.
+    /// ADR 0042 L1a, Codex review finding 6; rule F (shrink round)
+    /// simplified this from three outcomes to two.
     enum LegOutcome {
         /// Exit 0 (`EXIT_CLEAN`): the run ended normally. Never
         /// restarted — the lane (or its absence) already says
         /// everything a client needs.
         Clean,
-        /// Exit 69 (`EXIT_TERMINAL`) but the lane still answers: this
-        /// leg lost the race for `supervisor.lock` against another
-        /// already-running authority — expected, not a crash.
-        ForeignFence,
+        /// Exit 69 (`EXIT_TERMINAL`): terminal, UNCONDITIONALLY — never
+        /// restarted, regardless of whether the lane still answers. Rule
+        /// F: the OLD "does the lane still answer" discriminator (a
+        /// dropped `ForeignFence` outcome) tried to tell apart "lost the
+        /// race for `supervisor.lock`" from "a genuinely exhausted
+        /// producer", but `sot-capsule supervise` already runs its OWN
+        /// internal flap/retry budget (`FLAP_THRESHOLD`,
+        /// `respawn_or_terminal` in `rust/log/src/supervisor.rs`) before
+        /// it ever chooses to exit 69 — so a second restart layer on top,
+        /// here, is always redundant at best. At worst it actively hid a
+        /// real failure: a producer that will NEVER recover (e.g.
+        /// `claude` missing from the daemon's PATH) burned the WHOLE
+        /// daemon-side restart budget (`MAX_RESTARTS_PER_WINDOW` attempts
+        /// against `RESTART_WINDOW`) before finally reaching this same
+        /// terminal mark anyway — "the supervisor's own three legs, not a
+        /// rolling restart loop."
+        Terminal,
         /// Anything else: a genuine crash needing the restart sequence.
         Crash,
     }
 
-    /// Waits for `child` to exit and classifies the result. Exit 69 is
-    /// ambiguous on its own (a losing race for the fence against another
-    /// live authority ALSO exits 69, indistinguishably from a genuine
-    /// terminal failure), so this queries the lane ONCE before deciding —
-    /// an answering lane means another authority holds the fence
-    /// (expected, logged at debug); a silent one is treated as the crash
-    /// it looks like. The query is BLOCKING sot_log I/O, run via
-    /// `spawn_blocking` so it never stalls the async runtime.
-    async fn wait_and_classify(child: &mut Child, state_dir: &Path, workspace_id: &str) -> LegOutcome {
+    /// Waits for `child` to exit and classifies the result.
+    async fn wait_and_classify(child: &mut Child, workspace_id: &str) -> LegOutcome {
         let status = match child.wait().await {
             Ok(s) => s,
             Err(e) => {
@@ -535,18 +624,7 @@ mod windows_runtime {
         };
         match status.code() {
             Some(EXIT_CLEAN) => LegOutcome::Clean,
-            Some(EXIT_TERMINAL) => {
-                let dir = state_dir.to_path_buf();
-                let answered = tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&dir).is_ok())
-                    .await
-                    .unwrap_or(false);
-                if answered {
-                    tracing::debug!(workspace_id = %workspace_id, "capsule supervisor exited 69 but the lane still answers -- another authority holds the fence");
-                    LegOutcome::ForeignFence
-                } else {
-                    LegOutcome::Crash
-                }
-            }
+            Some(EXIT_TERMINAL) => LegOutcome::Terminal,
             _ => LegOutcome::Crash,
         }
     }
@@ -557,7 +635,17 @@ mod windows_runtime {
     /// WINDOW` within `RESTART_WINDOW`), then stops and marks the
     /// workspace `capsule_terminal` — LOUDLY, via `Workspaces::
     /// mark_capsule_terminal`, which `workspace.list` reads before ever
-    /// touching the (confirmed-gone) lane again.
+    /// touching the (confirmed-gone) lane again. A `Terminal` leg (rule
+    /// F) marks terminal immediately, on its very first occurrence, with
+    /// no restart attempt at all.
+    ///
+    /// Rule D half 2: releases the `starting` claim
+    /// (`Workspaces::end_capsule_start`) on EVERY leg's outcome —
+    /// idempotent (harmless once [`spawn_starting_release_poll`], half 1,
+    /// already cleared it for the success case) and correct regardless:
+    /// once a leg's fate is known, "a launch is in flight" is no longer
+    /// true for THIS leg (a restart, if one follows, is this SAME
+    /// launch's own retry, not a new external request).
     fn spawn_watchdog(
         workspace_id: String,
         sot_capsule_exe: PathBuf,
@@ -573,15 +661,24 @@ mod windows_runtime {
             let mut restart_times: Vec<Instant> = Vec::new();
             loop {
                 let outcome = match child_opt.as_mut() {
-                    Some(c) => wait_and_classify(c, &state_dir, &workspace_id).await,
+                    Some(c) => wait_and_classify(c, &workspace_id).await,
                     // A previous restart attempt itself failed to spawn
                     // (no live child to wait on) -- counts as another
                     // crash against the same budget.
                     None => LegOutcome::Crash,
                 };
                 child_opt = None;
+                workspaces.end_capsule_start(&workspace_id);
                 match outcome {
-                    LegOutcome::Clean | LegOutcome::ForeignFence => return,
+                    LegOutcome::Clean => return,
+                    LegOutcome::Terminal => {
+                        tracing::warn!(
+                            workspace_id = %workspace_id,
+                            "capsule supervisor watchdog: leg exited terminal (69) -- marking terminal, no restart"
+                        );
+                        workspaces.mark_capsule_terminal(&workspace_id);
+                        return;
+                    }
                     LegOutcome::Crash => {
                         let now = Instant::now();
                         restart_times.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
@@ -613,19 +710,34 @@ mod windows_runtime {
     }
 
     /// On daemon startup: resume every REGISTERED capsule workspace's
-    /// supervisor (ADR 0042 L1a) — `--resume` unconditionally, letting
-    /// the supervisor's own start-mode table decide adopt-vs-spawn.
-    /// Codex review finding 8: a workspace whose FIRST leg crashed
-    /// BEFORE ever publishing `drawer.voyage` (the exact pre-pointer
-    /// crash window) still gets `--resume` here — gating on the pointer
-    /// first, as an earlier version did, silently abandoned exactly that
-    /// workspace forever, when `--resume` with no leg is defined to
-    /// spawn (ADR 0041's own table). A state directory with NO matching
-    /// registry entry is left COMPLETELY untouched, logged once (ADR
-    /// 0042: "the daemon's workspace list is the list" — an orphan is
-    /// not addressable through any op, so resuming it would create a
-    /// live, unaddressable process; deleted, the bare-shell fallback an
-    /// earlier version used here).
+    /// supervisor whose voyage pointer has ALREADY been published (rule
+    /// B, shrink round) — `--resume`, letting the supervisor's own
+    /// start-mode table decide adopt-vs-spawn. A row with NO published
+    /// pointer — never started at all, OR a leg that crashed before ever
+    /// publishing one (the exact pre-pointer crash window ADR 0041
+    /// names) — is SKIPPED entirely: `pty.open`'s start-on-attach
+    /// (`ensure_started`) is what starts those now, not this scan.
+    /// Before rule B this scan launched `--resume` unconditionally for
+    /// EVERY registered row, including ones with no pointer at all —
+    /// `sot-capsule supervise --resume` against a workspace with no leg
+    /// to adopt and no pointer to found one against simply fails (exit
+    /// 69), leaving a bare state directory behind and reading back as a
+    /// misleading row on the owner's own box (the field finding behind
+    /// this shrink round).
+    ///
+    /// A state directory with NO matching registry entry is left
+    /// COMPLETELY untouched, logged once (ADR 0042: "the daemon's
+    /// workspace list is the list" — an orphan is not addressable
+    /// through any op, so resuming it would create a live, unaddressable
+    /// process; deleted, the bare-shell fallback an earlier version used
+    /// here).
+    ///
+    /// Rule D: each candidate goes through [`start_supervisor`] — the
+    /// SAME atomically-claimed spawn path `pty.open`'s start-on-attach
+    /// uses — so a candidate this scan races against a concurrent
+    /// `pty.open` (the exact race the field finding's own timeline could
+    /// produce) spawns nothing twice; the loser gets `Ok(None)`, logged
+    /// at debug (expected, not an error).
     ///
     /// Runs off the startup critical path (finding 10): `server.rs`
     /// calls this via `tokio::spawn`, never awaited, and every spawn
@@ -633,22 +745,20 @@ mod windows_runtime {
     /// a semaphore — thousands of preserved workspaces cannot turn this
     /// into an unbounded synchronous fan-out before the listener binds.
     pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
-        let Ok(sot_capsule) = sot_capsule_exe() else {
+        if sot_capsule_exe().is_err() {
             tracing::warn!("capsule workspace resume-scan: could not locate sot-capsule.exe next to this daemon");
             return;
-        };
-        let candidates: Vec<(String, PathBuf, Vec<String>, PathBuf, String)> = workspaces
+        }
+        let candidates: Vec<(String, Vec<String>, PathBuf, String)> = workspaces
             .list()
             .into_iter()
             .filter(|ws| ws.runtime == "capsule")
+            .filter(|ws| {
+                let state_dir = super::state_dir_for(&state_root, &ws.workspace_id);
+                sot_log::pointer::pointer_path(&state_dir).is_file()
+            })
             .filter_map(|ws| match agent_argv(&ws.agent) {
-                Ok(argv) => Some((
-                    ws.workspace_id.clone(),
-                    super::state_dir_for(&state_root, &ws.workspace_id),
-                    argv,
-                    ws.project_root.clone(),
-                    ws.agent_name.clone(),
-                )),
+                Ok(argv) => Some((ws.workspace_id.clone(), argv, ws.project_root.clone(), ws.agent_name.clone())),
                 Err(e) => {
                     tracing::warn!(
                         workspace_id = %ws.workspace_id, error = %e,
@@ -661,15 +771,18 @@ mod windows_runtime {
 
         let semaphore = Arc::new(tokio::sync::Semaphore::new(LANE_CONCURRENCY));
         let mut joins = Vec::with_capacity(candidates.len());
-        for (workspace_id, state_dir, argv, cwd, agent_name) in candidates {
+        for (workspace_id, argv, cwd, agent_name) in candidates {
             let permit = semaphore.clone();
-            let sot_capsule = sot_capsule.clone();
+            let state_root = state_root.clone();
             let workspaces = workspaces.clone();
             joins.push(tokio::spawn(async move {
                 let _permit = permit.acquire_owned().await;
-                match spawn_and_watch(&sot_capsule, &state_dir, StartMode::Resume, &argv, &cwd, &agent_name, workspace_id.clone(), workspaces) {
-                    Ok(degraded) => {
+                match start_supervisor(&state_root, &workspace_id, StartMode::Resume, &argv, &cwd, &agent_name, workspaces) {
+                    Ok(Some(degraded)) => {
                         tracing::info!(workspace_id = %workspace_id, degraded, "capsule workspace supervisor resumed");
+                    }
+                    Ok(None) => {
+                        tracing::debug!(workspace_id = %workspace_id, "capsule workspace resume-scan: launch already in flight; skipping");
                     }
                     Err(e) => {
                         tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule workspace supervisor resume spawn failed");
@@ -786,16 +899,16 @@ mod tests {
     }
 
     #[test]
-    fn phase_for_missing_state_dir_only_fires_when_the_directory_is_absent() {
-        // A directory that exists means a supervisor was spawned at least
-        // once (`state_dir_for`'s own contract) — that case defers to the
-        // real query (`None`) rather than guessing; only a genuinely
-        // absent directory short-circuits to `NEVER_STARTED_PHASE`.
+    fn phase_for_missing_pointer_only_fires_when_the_pointer_is_absent() {
+        // Rule B: a published pointer means a supervisor reached a real
+        // run at least once — that case defers to the real query (`None`)
+        // rather than guessing; only a genuinely absent pointer
+        // short-circuits to `NEVER_STARTED_PHASE`.
         assert_eq!(
-            phase_for_missing_state_dir(false),
+            phase_for_missing_pointer(false),
             Some(NEVER_STARTED_PHASE)
         );
-        assert_eq!(phase_for_missing_state_dir(true), None);
+        assert_eq!(phase_for_missing_pointer(true), None);
     }
 
     #[test]
