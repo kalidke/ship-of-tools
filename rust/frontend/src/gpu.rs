@@ -10826,7 +10826,7 @@ impl State {
     R on a .jl   run in the current repl        Ctrl+L   clear scrollback
 
   LLM pane (mouse)
-    drag           select text (multi-line)   Ctrl+Shift+C  copy selection
+    drag           select text (multi-line)   Ctrl/Cmd+Shift+C  copy selection
     click outside  clear selection            wheel         scroll history
 
   Quit:  q  (or Ctrl+Q)
@@ -20573,15 +20573,18 @@ impl ApplicationHandler for App {
                         // as one bracketed-paste blob, so the remote LLM
                         // CLI sees paste-vs-typing correctly and multi-line
                         // text doesn't submit on every embedded newline.
-                        // Ctrl+Shift+C: copy the current mouse selection
-                        // to the OS clipboard, then consume the key. We
-                        // pick this chord (not Ctrl+C) deliberately —
-                        // Ctrl+C must still reach the pty as 0x03 so the
-                        // LLM CLI's "cancel current request" path works.
+                        // Ctrl+Shift+C / Cmd+Shift+C: copy the current
+                        // mouse selection to the OS clipboard, then consume
+                        // the key. We pick this chord (not Ctrl+C)
+                        // deliberately — Ctrl+C must still reach the pty as
+                        // 0x03 so the LLM CLI's "cancel current request"
+                        // path works. Cmd is accepted alongside Ctrl for the
+                        // same reason paste does: a mac user's copy chord is
+                        // Cmd-shaped, and Cmd never carries a control code.
                         // No selection? Fall through so a stray
                         // Ctrl+Shift+C still hits the pty.
                         if !event.repeat
-                            && ctrl
+                            && (ctrl || super_)
                             && shift
                             && matches!(&event.logical_key, Key::Character(s) if s.eq_ignore_ascii_case("c"))
                             && state.llm_selection.is_some()
