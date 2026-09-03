@@ -252,11 +252,53 @@ pub fn tmux_session_name(label: &str) -> String {
 ///      stays correct even though, unlike tier 1, it isn't cleared on
 ///      logout. The parent dir is created `0700` by the caller
 ///      (`ensure_private_dir`) since `/tmp` itself is world-writable+sticky.
+///
+/// Windows: none of the three tiers above apply (`runtime_sot_dir()` —
+/// `sot_protocol::session_socket` — is POSIX-shaped and its own doc calls
+/// it "Unix-only in effect", since its main consumer `session_socket_path`
+/// has its own named-pipe branch that skips it entirely). This function
+/// still called it unconditionally, though, and field evidence (v0.6.0-rc.3)
+/// showed that reached on Windows: a workspace toml migrated from the
+/// pre-fix HOME-derived registry predates the `runtime` key and defaults
+/// to `"tmux"` (`workspaces::load_toml`) even there, so `tmux.rs::run()`
+/// tried to secure a tmux socket dir at this path before tmux itself
+/// failed to spawn (no `tmux.exe` on Windows) — creating a junk
+/// `C:\tmp\sot-0\` (`/tmp/sot-<uid>` with Windows path separators, on
+/// whatever the current drive was). Tmux never actually runs on Windows
+/// either way, so this can't be made to work — only tidied: routed
+/// through `windows_runtime_dir()` (`%LOCALAPPDATA%\sot\runtime`) so any
+/// stray directory it does create at least lands beside `app_config_dir`'s
+/// `config` and `state_dir`'s `state` instead of POSIX-mapped drive-root
+/// junk.
+/// Windows counterpart of `runtime_sot_dir()` (`sot_protocol::session_socket`,
+/// re-exported above): `%LOCALAPPDATA%\sot\runtime`, alongside
+/// `workspaces::app_config_dir`'s `config` and `state_dir`'s `state` under
+/// the same root. `runtime_sot_dir()` itself has no Windows branch — its
+/// own doc calls it "Unix-only in effect" since its main consumer,
+/// `session_socket_path`, has its own named-pipe branch that skips it
+/// entirely — but `tmux_socket_path`/`secure_socket_dir` below call it
+/// unconditionally, and field evidence (v0.6.0-rc.3) showed that's
+/// actually reached on Windows: see `tmux_socket_path`'s doc for how.
+/// Falls back to `runtime_sot_dir()`'s own (Windows-inapplicable) path
+/// only if `%LOCALAPPDATA%` is unset, same last-resort posture as
+/// `workspaces::app_config_dir` and `state_dir` above.
+#[cfg(windows)]
+fn windows_runtime_dir() -> PathBuf {
+    match sot_log::state_dir::sot_state_dir() {
+        Some(root) => root.join("runtime"),
+        None => runtime_sot_dir(),
+    }
+}
+
 pub fn tmux_socket_path() -> PathBuf {
     if let Some(sock) = std::env::var_os("SOT_TMUX_SOCK") {
         return PathBuf::from(sock);
     }
-    runtime_sot_dir().join("tmux.sock")
+    #[cfg(windows)]
+    let dir = windows_runtime_dir();
+    #[cfg(not(windows))]
+    let dir = runtime_sot_dir();
+    dir.join("tmux.sock")
 }
 
 /// `${XDG_STATE_HOME:-~/.local/state}/sot` — private, persistent runtime
@@ -266,7 +308,28 @@ pub fn tmux_socket_path() -> PathBuf {
 /// private copy of its own log regardless of how it's launched. Falls back
 /// to `/tmp/.local/state/sot` if `$HOME` is unset (very rare; parallels
 /// `workspaces::config_dir`'s fallback).
+///
+/// Windows: delegates to `sot_log::state_dir::sot_state_dir()`
+/// (`%LOCALAPPDATA%\sot`) instead of the `$HOME`-based logic below, which
+/// has no Windows branch at all — see `workspaces::app_config_dir`'s doc
+/// for the bug that leaving a POSIX-only resolver unguarded on Windows
+/// causes. Joined with `state` so it sits beside that same function's
+/// `config` (the workspace/session registry) without colliding with the
+/// capsule runtime's own `workspaces\<id>` subtree
+/// (`capsule_workspace::state_dir_for`), all three under one
+/// `%LOCALAPPDATA%\sot` root. Unlike the config registry, this log
+/// directory holds no durable data worth migrating — a fresh one on first
+/// post-fix boot is fine, so there is no Windows migration step here
+/// (contrast `workspaces::migrate_legacy_windows_config_dir`). Falls back
+/// to the `$HOME`-based logic only if `%LOCALAPPDATA%` is unset (very
+/// rare) rather than leaving Windows with no log dir at all.
 pub fn state_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(root) = sot_log::state_dir::sot_state_dir() {
+            return root.join("state");
+        }
+    }
     if let Some(v) = std::env::var_os("XDG_STATE_HOME") {
         return PathBuf::from(v).join("sot");
     }
@@ -390,7 +453,15 @@ pub fn secure_private_dir(dir: &Path) -> Result<()> {
 /// same symlink/owner/mode checks as `secure_private_dir`. Custom socket paths
 /// still get their immediate parent verified; callers using deeper custom
 /// paths should create the higher private parent explicitly.
+///
+/// `runtime` is `windows_runtime_dir()` on Windows, `runtime_sot_dir()`
+/// elsewhere — see `tmux_socket_path`'s doc for why the former exists (the
+/// callers here previously got a POSIX-shaped `runtime_sot_dir()` value on
+/// every platform, unconditionally).
 pub fn secure_socket_dir(dir: &Path) -> Result<()> {
+    #[cfg(windows)]
+    let runtime = windows_runtime_dir();
+    #[cfg(not(windows))]
     let runtime = runtime_sot_dir();
     if dir == runtime {
         return secure_private_dir(dir);
@@ -512,5 +583,107 @@ mod secure_private_dir_tests {
         std::fs::write(&d, b"not a dir").unwrap();
         assert!(secure_private_dir(&d).is_err());
         let _ = std::fs::remove_file(&d);
+    }
+}
+
+/// `state_dir()`'s platform dispatch. The Unix branch is unchanged
+/// behaviour (still `$XDG_STATE_HOME` / `$HOME/.local/state/sot` /
+/// `/tmp/.local/state/sot`); the precedence of `%LOCALAPPDATA%` over
+/// `$XDG_STATE_HOME` on Windows is `sot_log::state_dir::sot_state_dir`'s
+/// own contract (tested there) — this only proves `state_dir()` appends
+/// `state` beneath it and still falls back when `%LOCALAPPDATA%` is
+/// unset. Env-guard shape matches `sot_log::state_dir`'s own tests
+/// (`state_dir.rs`) so the two stay easy to compare.
+#[cfg(test)]
+mod state_dir_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        xdg_state_home: Option<std::ffi::OsString>,
+        home: Option<std::ffi::OsString>,
+        localappdata: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, val) in [
+                ("XDG_STATE_HOME", &self.xdg_state_home),
+                ("HOME", &self.home),
+                ("LOCALAPPDATA", &self.localappdata),
+            ] {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn guarded() -> EnvGuard {
+        let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        EnvGuard {
+            xdg_state_home: std::env::var_os("XDG_STATE_HOME"),
+            home: std::env::var_os("HOME"),
+            localappdata: std::env::var_os("LOCALAPPDATA"),
+            _serial: serial,
+        }
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn unix_still_prefers_xdg_state_home() {
+        let _guard = guarded();
+        std::env::set_var("XDG_STATE_HOME", "/xdg-state");
+        std::env::set_var("HOME", "/home/someone");
+        assert_eq!(state_dir(), PathBuf::from("/xdg-state/sot"));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn unix_falls_back_to_home_when_xdg_state_home_unset() {
+        let _guard = guarded();
+        std::env::remove_var("XDG_STATE_HOME");
+        std::env::set_var("HOME", "/home/someone");
+        assert_eq!(state_dir(), PathBuf::from("/home/someone/.local/state/sot"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_uses_localappdata_state_subdir() {
+        let _guard = guarded();
+        std::env::set_var("LOCALAPPDATA", r"C:\Users\someone\AppData\Local");
+        assert_eq!(
+            state_dir(),
+            PathBuf::from(r"C:\Users\someone\AppData\Local\sot\state")
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_ignores_xdg_state_home() {
+        let _guard = guarded();
+        std::env::set_var("XDG_STATE_HOME", r"C:\should\be\ignored");
+        std::env::set_var("LOCALAPPDATA", r"C:\Users\someone\AppData\Local");
+        assert_eq!(
+            state_dir(),
+            PathBuf::from(r"C:\Users\someone\AppData\Local\sot\state")
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_falls_back_to_home_when_localappdata_unset() {
+        let _guard = guarded();
+        std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("XDG_STATE_HOME");
+        std::env::set_var("HOME", r"C:\Users\someone");
+        assert_eq!(
+            state_dir(),
+            PathBuf::from(r"C:\Users\someone\.local\state\sot")
+        );
     }
 }

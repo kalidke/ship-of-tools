@@ -723,6 +723,11 @@ impl Workspaces {
 /// registry. Best-effort: a malformed toml is logged and skipped.
 /// Returns the count inserted.
 pub fn scan_disk(reg: &Workspaces) -> Result<usize> {
+    // Windows only: adopt the legacy HOME-derived config dir first, so the
+    // per-host migration right below operates on the NEW root's contents
+    // rather than a since-abandoned old one. See that function's doc.
+    #[cfg(windows)]
+    migrate_legacy_windows_config_dir();
     // Per-host state dirs (see `state_host`): adopt the legacy unsuffixed
     // dirs on the first post-deploy boot, before scanning.
     migrate_legacy_state_dirs();
@@ -1018,7 +1023,36 @@ fn sessions_dir() -> PathBuf {
 
 /// App config dir: `~/.config/sot`. Shared so every backend config resolver
 /// (workspaces, sessions, backend-identity) agrees on one dir.
+///
+/// Windows: delegates to `sot_log::state_dir::sot_state_dir()`
+/// (`%LOCALAPPDATA%\sot`), joined with `config`, instead of the
+/// `config_dir()` logic below — which resolves via `$HOME`, a POSIX-only
+/// env var with no Windows branch. That was the actual defect (v0.6.0-rc.3
+/// field report): a git-bash shell exports `HOME` (`config_dir()` used to
+/// land on `C:\Users\<u>\.config\sot`) while the PowerShell launcher does
+/// not (it fell through to the `/tmp/.config` literal, which Windows path
+/// handling turns into `\tmp\.config` on whatever the current drive is) —
+/// so a hand-started daemon and a launcher-started one built and wrote to
+/// TWO DIFFERENT registries, and the default workspace was created twice
+/// with different ids, dropping rows between them. `config` keeps this a
+/// sibling of `paths::state_dir()`'s `state` under the same
+/// `%LOCALAPPDATA%\sot` root, chosen so neither collides with the capsule
+/// runtime's own `workspaces\<id>` subtree
+/// (`capsule_workspace::state_dir_for`). Mirrors
+/// `sot_log::state_dir::sot_state_dir`'s own precedent of ignoring
+/// `XDG_*` on Windows in favour of `%LOCALAPPDATA%` (its module doc:
+/// letting a second env var win on Windows is exactly how the FE/capsule
+/// state dirs drifted apart once already) — `$XDG_CONFIG_HOME` keeps
+/// working here on Unix, unchanged, same as before this fix. Falls back to
+/// the `config_dir()` logic only if `%LOCALAPPDATA%` is unset (very rare)
+/// rather than leaving Windows with no config dir at all.
 pub(crate) fn app_config_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(root) = sot_log::state_dir::sot_state_dir() {
+            return root.join("config");
+        }
+    }
     config_dir().join("sot")
 }
 
@@ -1032,6 +1066,98 @@ fn config_dir() -> PathBuf {
         return p;
     }
     PathBuf::from("/tmp/.config")
+}
+
+/// Windows-only, one-time migration (same exists-and-target-empty shape as
+/// `migrate_legacy_state_dirs` below): before this fix, `app_config_dir()`
+/// fell straight through to `config_dir()` above with no Windows branch,
+/// so the registry root depended on which shell launched the daemon (see
+/// `app_config_dir`'s doc for the field report this fixes).
+///
+/// Field evidence (v0.6.0-rc.3) showed TWO distinct legacy roots can exist
+/// simultaneously, because a daemon can be launched by either shell on any
+/// given boot and `config_dir()` resolves differently for each:
+///   1. `<USERPROFILE>\.config\sot\<name>-<host>` — a git-bash shell
+///      exports `HOME` (its value there IS `%USERPROFILE%`), so
+///      `config_dir()` landed here. Field-confirmed to hold the REAL
+///      registry: the shell-started (hand-started) daemon was the one the
+///      developer actually used, so this had the workspace rows that
+///      mattered.
+///   2. `<SystemDrive>\tmp\.config\sot\<name>-<host>` — the PowerShell
+///      launcher doesn't export `HOME` at all, so `config_dir()` fell
+///      through to its `/tmp/.config` literal, which Windows path
+///      handling silently roots onto the current drive (field-observed:
+///      `wrote backend identity toml
+///      toml="/tmp/.config\sot\sessions-<host>\local.toml"`, i.e.
+///      `C:\tmp\.config\sot\...`).
+///
+/// Probed here directly via `%USERPROFILE%` / `%SystemDrive%` — NEVER
+/// `%HOME%` — because those two are the ones a real Windows login always
+/// sets (unlike `HOME`, which depends on which shell happened to export
+/// it), and probing them lets migration find the right legacy root
+/// regardless of which shell THIS boot happens to be launched from — using
+/// `config_dir()` itself here would only ever see whichever one matches
+/// the CURRENT launch's env, missing the other shell's root entirely (the
+/// bug in an earlier draft of this fix).
+///
+/// Probed in that order (`USERPROFILE`-rooted first, matching the field
+/// case where it held the real data); the first one found — root exists
+/// AND the new `%LOCALAPPDATA%`-based root doesn't yet — is renamed and
+/// becomes canonical. This does NOT attempt to MERGE two legacy
+/// registries: if the OTHER candidate also exists once one has been
+/// adopted, it is left in place untouched and only warned about. A
+/// workspace whose supervisor/session state lives elsewhere but whose row
+/// lived in the registry that's left behind is orphaned BY DESIGN — no
+/// adoption logic tries to reconcile it; the operator ends or re-creates
+/// that workspace by hand. Rename failures warn and leave that candidate
+/// in place — nothing is ever destroyed.
+#[cfg(windows)]
+fn migrate_legacy_windows_config_dir() {
+    let new_root = app_config_dir();
+    if new_root.exists() {
+        return;
+    }
+    let mut candidates = Vec::new();
+    if let Some(userprofile) = std::env::var_os("USERPROFILE") {
+        candidates.push(PathBuf::from(userprofile).join(".config").join("sot"));
+    }
+    // Built by string formatting, not `PathBuf::join` — `%SystemDrive%`'s
+    // value is a bare `C:` with no trailing separator, and joining onto a
+    // prefix-only `PathBuf` with no root component produces a
+    // DRIVE-RELATIVE path (`C:tmp\...`, relative to that drive's current
+    // dir) rather than the absolute `C:\tmp\...` intended here.
+    let system_drive = std::env::var_os("SystemDrive")
+        .and_then(|v| v.into_string().ok())
+        .unwrap_or_else(|| "C:".to_string());
+    candidates.push(PathBuf::from(format!("{system_drive}\\tmp\\.config\\sot")));
+
+    let mut adopted = false;
+    for legacy in &candidates {
+        if !legacy.is_dir() {
+            continue;
+        }
+        if adopted {
+            tracing::warn!(dir = %legacy.display(),
+                "a second legacy Windows config dir exists but was not adopted (another legacy root was already adopted this boot) — left in place, not merged");
+            continue;
+        }
+        if let Some(parent) = new_root.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!(error = %e, dir = %parent.display(),
+                    "could not create parent of the Windows LOCALAPPDATA config root — leaving legacy config dir in place");
+                continue;
+            }
+        }
+        match std::fs::rename(legacy, &new_root) {
+            Ok(()) => {
+                tracing::info!(from = %legacy.display(), to = %new_root.display(),
+                    "migrated legacy Windows config dir to the LOCALAPPDATA root");
+                adopted = true;
+            }
+            Err(e) => tracing::warn!(error = %e, from = %legacy.display(), to = %new_root.display(),
+                "legacy Windows config dir migration failed — leaving in place"),
+        }
+    }
 }
 
 fn now_unix() -> i64 {
@@ -1419,5 +1545,257 @@ cursor_path = "src/lib.jl"
         assert!(!stripped.contains("status = \"stopped\""));
         assert!(stripped.contains("[nav_state]"));
         assert!(stripped.contains("cursor_path = \"src/lib.jl\""));
+    }
+
+    // `app_config_dir()`'s platform dispatch, and the one-time Windows
+    // migration off the old HOME-derived root. Env-guard shape matches
+    // `sot_log::state_dir`'s own tests (`log/src/state_dir.rs`) — same
+    // serialized-mutex reasoning (parallel `cargo test` in one process).
+    static ENV_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        xdg_config_home: Option<std::ffi::OsString>,
+        home: Option<std::ffi::OsString>,
+        localappdata: Option<std::ffi::OsString>,
+        userprofile: Option<std::ffi::OsString>,
+        system_drive: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, val) in [
+                ("XDG_CONFIG_HOME", &self.xdg_config_home),
+                ("HOME", &self.home),
+                ("LOCALAPPDATA", &self.localappdata),
+                ("USERPROFILE", &self.userprofile),
+                ("SystemDrive", &self.system_drive),
+            ] {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn env_guarded() -> EnvGuard {
+        let serial = ENV_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        EnvGuard {
+            xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
+            home: std::env::var_os("HOME"),
+            localappdata: std::env::var_os("LOCALAPPDATA"),
+            userprofile: std::env::var_os("USERPROFILE"),
+            system_drive: std::env::var_os("SystemDrive"),
+            _serial: serial,
+        }
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn app_config_dir_unix_still_prefers_xdg_config_home() {
+        let _guard = env_guarded();
+        std::env::set_var("XDG_CONFIG_HOME", "/xdg-config");
+        std::env::set_var("HOME", "/home/someone");
+        assert_eq!(app_config_dir(), PathBuf::from("/xdg-config/sot"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn app_config_dir_windows_uses_localappdata_config_subdir() {
+        let _guard = env_guarded();
+        std::env::set_var("LOCALAPPDATA", r"C:\Users\someone\AppData\Local");
+        assert_eq!(
+            app_config_dir(),
+            PathBuf::from(r"C:\Users\someone\AppData\Local\sot\config")
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn app_config_dir_windows_ignores_xdg_config_home() {
+        let _guard = env_guarded();
+        std::env::set_var("XDG_CONFIG_HOME", r"C:\should\be\ignored");
+        std::env::set_var("LOCALAPPDATA", r"C:\Users\someone\AppData\Local");
+        assert_eq!(
+            app_config_dir(),
+            PathBuf::from(r"C:\Users\someone\AppData\Local\sot\config")
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn app_config_dir_windows_falls_back_to_home_when_localappdata_unset() {
+        let _guard = env_guarded();
+        std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::set_var("HOME", r"C:\Users\someone");
+        assert_eq!(
+            app_config_dir(),
+            PathBuf::from(r"C:\Users\someone\.config\sot")
+        );
+    }
+
+    /// Scratch roots for one migration test: a `USERPROFILE`-style dir, a
+    /// string value for `SystemDrive` (production joins this via `format!`,
+    /// not `PathBuf::join` — see `migrate_legacy_windows_config_dir`'s
+    /// comment — so the SAME concatenation is used here to compute the
+    /// resulting legacy path), and a `LOCALAPPDATA`-style dir. All under
+    /// one per-test base so a single `remove_dir_all` on the base cleans
+    /// everything up.
+    #[cfg(windows)]
+    struct MigrationScratch {
+        base: PathBuf,
+        userprofile: PathBuf,
+        system_drive: String,
+        localappdata: PathBuf,
+    }
+
+    #[cfg(windows)]
+    impl MigrationScratch {
+        fn new(name: &str) -> Self {
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let base = std::env::temp_dir().join(format!(
+                "sot-ws-win-config-migrate-{}-{}-{name}",
+                std::process::id(),
+                n
+            ));
+            Self {
+                userprofile: base.join("userprofile"),
+                // No trailing separator, matching a real `%SystemDrive%`
+                // value (`C:`) — the base dir's string form stands in for
+                // the drive letter here.
+                system_drive: base.join("sysdrive-root").to_string_lossy().into_owned(),
+                localappdata: base.join("localappdata"),
+                base,
+            }
+        }
+
+        fn userprofile_legacy(&self) -> PathBuf {
+            self.userprofile.join(".config").join("sot")
+        }
+
+        fn system_drive_legacy(&self) -> PathBuf {
+            PathBuf::from(format!("{}\\tmp\\.config\\sot", self.system_drive))
+        }
+
+        fn new_root(&self) -> PathBuf {
+            self.localappdata.join("sot").join("config")
+        }
+
+        fn apply_env(&self) {
+            std::env::remove_var("XDG_CONFIG_HOME");
+            std::env::remove_var("HOME");
+            std::env::set_var("USERPROFILE", &self.userprofile);
+            std::env::set_var("SystemDrive", &self.system_drive);
+            std::env::set_var("LOCALAPPDATA", &self.localappdata);
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for MigrationScratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn migrate_legacy_windows_config_dir_renames_userprofile_root_when_new_root_absent() {
+        let _guard = env_guarded();
+        let s = MigrationScratch::new("renames");
+        let legacy = s.userprofile_legacy();
+        let workspace_toml = legacy.join("workspaces-host").join("alpha.toml");
+        std::fs::create_dir_all(workspace_toml.parent().unwrap()).unwrap();
+        std::fs::write(&workspace_toml, "slug = \"alpha\"\n").unwrap();
+        s.apply_env();
+
+        migrate_legacy_windows_config_dir();
+
+        assert!(!legacy.exists(), "legacy dir should have been renamed away");
+        assert!(s.new_root().join("workspaces-host").join("alpha.toml").is_file());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn migrate_legacy_windows_config_dir_falls_back_to_system_drive_root() {
+        let _guard = env_guarded();
+        let s = MigrationScratch::new("sysdrive");
+        // No USERPROFILE-rooted legacy dir this time — only the
+        // SystemDrive-mapped one (the PowerShell-launcher case).
+        let legacy = s.system_drive_legacy();
+        std::fs::create_dir_all(legacy.join("sessions-host")).unwrap();
+        s.apply_env();
+
+        migrate_legacy_windows_config_dir();
+
+        assert!(!legacy.exists(), "legacy dir should have been renamed away");
+        assert!(s.new_root().join("sessions-host").is_dir());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn migrate_legacy_windows_config_dir_adopts_first_and_leaves_second_in_place() {
+        let _guard = env_guarded();
+        let s = MigrationScratch::new("both-candidates");
+        let userprofile_legacy = s.userprofile_legacy();
+        std::fs::create_dir_all(&userprofile_legacy).unwrap();
+        std::fs::write(userprofile_legacy.join("marker.toml"), "userprofile").unwrap();
+        let system_drive_legacy = s.system_drive_legacy();
+        std::fs::create_dir_all(&system_drive_legacy).unwrap();
+        std::fs::write(system_drive_legacy.join("marker.toml"), "system-drive").unwrap();
+        s.apply_env();
+
+        migrate_legacy_windows_config_dir();
+
+        // The USERPROFILE-rooted candidate (probed first — see the
+        // function's doc) is adopted...
+        assert!(!userprofile_legacy.exists());
+        assert_eq!(
+            std::fs::read_to_string(s.new_root().join("marker.toml")).unwrap(),
+            "userprofile"
+        );
+        // ...and the SystemDrive-mapped one is left exactly in place —
+        // not merged, not deleted.
+        assert_eq!(
+            std::fs::read_to_string(system_drive_legacy.join("marker.toml")).unwrap(),
+            "system-drive"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn migrate_legacy_windows_config_dir_leaves_legacy_when_new_root_exists() {
+        let _guard = env_guarded();
+        let s = MigrationScratch::new("no-clobber");
+        let legacy = s.userprofile_legacy();
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("marker.toml"), "legacy").unwrap();
+        std::fs::create_dir_all(s.new_root()).unwrap();
+        std::fs::write(s.new_root().join("marker.toml"), "canonical").unwrap();
+        s.apply_env();
+
+        migrate_legacy_windows_config_dir();
+
+        // Already-populated new root wins; legacy is left untouched rather
+        // than merged or overwritten (see the function's doc).
+        assert_eq!(
+            std::fs::read_to_string(s.new_root().join("marker.toml")).unwrap(),
+            "canonical"
+        );
+        assert!(legacy.join("marker.toml").is_file());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn migrate_legacy_windows_config_dir_no_op_when_legacy_absent() {
+        let _guard = env_guarded();
+        let s = MigrationScratch::new("no-legacy");
+        s.apply_env();
+
+        migrate_legacy_windows_config_dir();
+
+        assert!(!s.new_root().exists());
     }
 }
