@@ -253,14 +253,43 @@ pub async fn run(opts: Opts) -> Result<()> {
     // (`insert`'s own "new metadata wins" semantics, working exactly as
     // designed, applied to the wrong source of truth). `None` means a
     // genuinely first-ever launch on this machine.
+    //
+    // Rule G (shrink round): the SAME clobber risk applies to the launch
+    // fields — `insert`'s own doc ("the rest of the metadata is taken
+    // from the new ws") means whatever `from_label` builds here REPLACES
+    // the persisted row's `agent`/`agent_name`/`autostart_claude`/`task`
+    // on EVERY restart, not just at create time. An existing default
+    // row's persisted launch fields must survive re-registration the
+    // same way its runtime does (below), computed here BEFORE
+    // construction rather than patched after, since `from_label` takes
+    // them as constructor args.
     let existing_default = workspaces.resolve(Some(&paths::slug(&default_label)));
+    let (seed_autostart, seed_agent, seed_agent_name, seed_task) = match &existing_default {
+        Some(existing) => (
+            existing.autostart_claude,
+            existing.agent.clone(),
+            existing.agent_name.clone(),
+            existing.task.clone(),
+        ),
+        // First-ever launch, Windows: every NEW workspace is a capsule
+        // with no bare-shell knob (ADR 0042 L1a) — the daemon's own
+        // home/default row is no exception, and a capsule with no agent
+        // starts a producer with nothing to attach the frontend's own
+        // "special SoT LLM" surface to. Seed it with the same "claude"
+        // launcher `workspace.create` defaults an autostarting workspace
+        // to, so start-on-attach launches the agent, not a bare shell.
+        None if cfg!(windows) => (true, "claude".to_string(), String::new(), String::new()),
+        // First-ever launch, every other host: untouched —
+        // `from_label`'s own tmux-row defaults (no autostart, no agent).
+        None => (false, "none".to_string(), String::new(), String::new()),
+    };
     let mut default_ws_seed = Workspace::from_label(
         &default_label,
         files_mode.root_path().to_path_buf(),
-        false,
-        "none".to_string(),
-        String::new(),
-        String::new(),
+        seed_autostart,
+        seed_agent,
+        seed_agent_name,
+        seed_task,
     );
     default_ws_seed.runtime = match &existing_default {
         Some(existing) => existing.runtime.clone(),
@@ -1384,13 +1413,13 @@ where
                                         workspace_id = %ws.workspace_id, error = %detail,
                                         "pty.open: capsule supervisor start-on-attach failed"
                                     );
-                                    // No prior workspace to roll back (unlike
-                                    // `workspace.create`, this workspace already
-                                    // existed) — mark it terminal instead, the
-                                    // same signal the watchdog uses when it gives
-                                    // up, so `workspace.list` stops reporting it
-                                    // as merely "stopped".
-                                    workspaces.mark_capsule_terminal(&ws.workspace_id);
+                                    // Rule E (shrink round): no terminal mark
+                                    // for a one-shot failure — that flag is
+                                    // reserved for the supervisor's OWN
+                                    // terminal outcome (the watchdog giving
+                                    // up, or a leg exiting terminal/69). The
+                                    // row stays retryable: the next attach
+                                    // attempt tries again from scratch.
                                     let payload = serde_json::json!({
                                         "error": format!("capsule workspace could not be started: {detail}"),
                                         "code": "capsule_spawn_failed",
