@@ -486,6 +486,7 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
         .expect("a default workspace row");
     assert_eq!(default_row["runtime"], "capsule", "default row: {default_row:?}");
     let default_workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
+    let default_target = default_row["tmux_session"].as_str().expect("tmux_session").to_string();
 
     // Same path arithmetic `capsule_workspace::state_dir_for` uses:
     // `<LOCALAPPDATA>\sot\workspaces\<workspace_id>` — `env.state_root` IS
@@ -493,10 +494,15 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     // `Env::spawn_sotd`).
     let state_dir_path = env.state_root.join("sot").join("workspaces").join(&default_workspace_id);
 
-    // pty.open with no `target` addresses the home-base default
-    // (`pty::DEFAULT_TMUX_TARGET`) — the exact request the frontend sends
-    // on first attach to the default row.
-    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true });
+    // `target` MUST be the row's own `tmux_session` — a targetless
+    // `pty.open` addresses the drawer's own special SoT LLM terminal
+    // (`pty::DEFAULT_TMUX_TARGET` == "sot-llm"), never a workspace row;
+    // `server.rs`'s `workspace_for_tmux(requested_target)` only resolves
+    // to this row when `target` matches its `tmux_session`. This is
+    // exactly what the frontend sends attaching a capsule row.
+    let pty_req = serde_json::json!({
+        "cols": 80, "rows": 24, "user_switch": true, "target": default_target,
+    });
     let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
