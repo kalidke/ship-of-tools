@@ -301,46 +301,59 @@ pub fn tmux_socket_path() -> PathBuf {
     dir.join("tmux.sock")
 }
 
+/// Resolves the Windows per-machine state root, or fails startup with a
+/// clear message. On Windows this is the ONLY root `state_dir()` below and
+/// `workspaces::app_config_dir` derive from — no POSIX (`XDG_*`/`HOME`/
+/// `/tmp`) fallback chain is reachable on this platform any more (Codex
+/// review, PR #175: silently falling back to a `$HOME`-shaped path on
+/// Windows — which depends on which shell launched the daemon — is
+/// exactly the bug class this whole fix exists to close).
+/// `sot_log::state_dir::sot_state_dir()` itself derives
+/// `%USERPROFILE%\AppData\Local` when `%LOCALAPPDATA%` is unset or empty,
+/// so this only panics in the genuinely exceptional case where NEITHER is
+/// set — not a normal Windows login.
+#[cfg(windows)]
+pub(crate) fn windows_state_root() -> PathBuf {
+    sot_log::state_dir::sot_state_dir().unwrap_or_else(|| {
+        panic!(
+            "cannot resolve the Windows state root: neither %LOCALAPPDATA% nor \
+             %USERPROFILE% is set — sotd cannot start without one"
+        )
+    })
+}
+
 /// `${XDG_STATE_HOME:-~/.local/state}/sot` — private, persistent runtime
 /// artifacts sotd owns itself (its log file today; a natural home for more
 /// later). Security review: this replaces relying on the LAUNCHER to
 /// redirect stdout to a world-readable `/tmp/sotd.log` — sotd now owns a
 /// private copy of its own log regardless of how it's launched. Falls back
 /// to `/tmp/.local/state/sot` if `$HOME` is unset (very rare; parallels
-/// `workspaces::config_dir`'s fallback).
-///
-/// Windows: delegates to `sot_log::state_dir::sot_state_dir()`
-/// (`%LOCALAPPDATA%\sot`) instead of the `$HOME`-based logic below, which
-/// has no Windows branch at all — see `workspaces::app_config_dir`'s doc
-/// for the bug that leaving a POSIX-only resolver unguarded on Windows
-/// causes. Joined with `state` so it sits beside that same function's
-/// `config` (the workspace/session registry) without colliding with the
-/// capsule runtime's own `workspaces\<id>` subtree
-/// (`capsule_workspace::state_dir_for`), all three under one
-/// `%LOCALAPPDATA%\sot` root. Unlike the config registry, this log
-/// directory holds no durable data worth migrating — a fresh one on first
-/// post-fix boot is fine, so there is no Windows migration step here
-/// (contrast `workspaces::migrate_legacy_windows_config_dir`). Falls back
-/// to the `$HOME`-based logic only if `%LOCALAPPDATA%` is unset (very
-/// rare) rather than leaving Windows with no log dir at all.
+/// `workspaces::config_dir`'s fallback) — Unix only; see `windows_state_root`
+/// for the Windows resolution (`%LOCALAPPDATA%\sot\state`, joined with
+/// `state` so it sits beside `workspaces::app_config_dir`'s `config`
+/// without colliding with the capsule runtime's own `workspaces\<id>`
+/// subtree — `capsule_workspace::state_dir_for`). Unlike the config
+/// registry, this log directory holds no durable data worth migrating — a
+/// fresh one on first post-fix boot is fine, so there is no Windows
+/// migration step here (contrast
+/// `workspaces::migrate_legacy_windows_config_dir`).
 pub fn state_dir() -> PathBuf {
     #[cfg(windows)]
+    return windows_state_root().join("state");
+    #[cfg(not(windows))]
     {
-        if let Some(root) = sot_log::state_dir::sot_state_dir() {
-            return root.join("state");
+        if let Some(v) = std::env::var_os("XDG_STATE_HOME") {
+            return PathBuf::from(v).join("sot");
         }
+        if let Some(home) = std::env::var_os("HOME") {
+            let mut p = PathBuf::from(home);
+            p.push(".local");
+            p.push("state");
+            p.push("sot");
+            return p;
+        }
+        PathBuf::from("/tmp/.local/state/sot")
     }
-    if let Some(v) = std::env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(v).join("sot");
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push(".local");
-        p.push("state");
-        p.push("sot");
-        return p;
-    }
-    PathBuf::from("/tmp/.local/state/sot")
 }
 
 /// Create `dir` (and its parents) if needed, then enforce 0700 permissions
@@ -606,6 +619,7 @@ mod state_dir_tests {
         xdg_state_home: Option<std::ffi::OsString>,
         home: Option<std::ffi::OsString>,
         localappdata: Option<std::ffi::OsString>,
+        userprofile: Option<std::ffi::OsString>,
     }
 
     impl Drop for EnvGuard {
@@ -614,6 +628,7 @@ mod state_dir_tests {
                 ("XDG_STATE_HOME", &self.xdg_state_home),
                 ("HOME", &self.home),
                 ("LOCALAPPDATA", &self.localappdata),
+                ("USERPROFILE", &self.userprofile),
             ] {
                 match val {
                     Some(v) => std::env::set_var(key, v),
@@ -629,6 +644,7 @@ mod state_dir_tests {
             xdg_state_home: std::env::var_os("XDG_STATE_HOME"),
             home: std::env::var_os("HOME"),
             localappdata: std::env::var_os("LOCALAPPDATA"),
+            userprofile: std::env::var_os("USERPROFILE"),
             _serial: serial,
         }
     }
@@ -676,14 +692,24 @@ mod state_dir_tests {
 
     #[test]
     #[cfg(windows)]
-    fn windows_falls_back_to_home_when_localappdata_unset() {
+    fn windows_falls_back_to_userprofile_when_localappdata_unset() {
         let _guard = guarded();
         std::env::remove_var("LOCALAPPDATA");
         std::env::remove_var("XDG_STATE_HOME");
-        std::env::set_var("HOME", r"C:\Users\someone");
+        std::env::set_var("USERPROFILE", r"C:\Users\someone");
         assert_eq!(
             state_dir(),
-            PathBuf::from(r"C:\Users\someone\.local\state\sot")
+            PathBuf::from(r"C:\Users\someone\AppData\Local\sot\state")
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    #[should_panic(expected = "cannot resolve the Windows state root")]
+    fn windows_panics_when_localappdata_and_userprofile_are_both_unset() {
+        let _guard = guarded();
+        std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("USERPROFILE");
+        let _ = state_dir();
     }
 }

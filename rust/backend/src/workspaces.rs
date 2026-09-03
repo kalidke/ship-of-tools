@@ -1025,13 +1025,14 @@ fn sessions_dir() -> PathBuf {
 /// App config dir: `~/.config/sot`. Shared so every backend config resolver
 /// (workspaces, sessions, backend-identity) agrees on one dir.
 ///
-/// Windows: delegates to `sot_log::state_dir::sot_state_dir()`
-/// (`%LOCALAPPDATA%\sot`), joined with `config`, instead of the
-/// `config_dir()` logic below — which resolves via `$HOME`, a POSIX-only
-/// env var with no Windows branch. That was the actual defect (v0.6.0-rc.3
-/// field report): a git-bash shell exports `HOME` (`config_dir()` used to
-/// land on `C:\Users\<u>\.config\sot`) while the PowerShell launcher does
-/// not (it fell through to the `/tmp/.config` literal, which Windows path
+/// Windows: delegates to `paths::windows_state_root()`
+/// (`%LOCALAPPDATA%\sot`, or `%USERPROFILE%\AppData\Local\sot` — see that
+/// function), joined with `config`, instead of the `config_dir()` logic
+/// below — which resolves via `$HOME`, a POSIX-only env var with no
+/// Windows branch. That was the actual defect (v0.6.0-rc.3 field report):
+/// a git-bash shell exports `HOME` (`config_dir()` used to land on
+/// `C:\Users\<u>\.config\sot`) while the PowerShell launcher does not (it
+/// fell through to the `/tmp/.config` literal, which Windows path
 /// handling turns into `\tmp\.config` on whatever the current drive is) —
 /// so a hand-started daemon and a launcher-started one built and wrote to
 /// TWO DIFFERENT registries, and the default workspace was created twice
@@ -1044,19 +1045,18 @@ fn sessions_dir() -> PathBuf {
 /// `XDG_*` on Windows in favour of `%LOCALAPPDATA%` (its module doc:
 /// letting a second env var win on Windows is exactly how the FE/capsule
 /// state dirs drifted apart once already) — `$XDG_CONFIG_HOME` keeps
-/// working here on Unix, unchanged, same as before this fix. Falls back to
-/// the `config_dir()` logic only if `%LOCALAPPDATA%` is unset (very rare)
-/// rather than leaving Windows with no config dir at all.
+/// working here on Unix, unchanged, same as before this fix. NO fallback
+/// to the `config_dir()` logic below on Windows any more (Codex review,
+/// PR #175): `windows_state_root()` panics with a clear message instead
+/// of silently landing on a `$HOME`-shaped path there.
 pub(crate) fn app_config_dir() -> PathBuf {
     #[cfg(windows)]
-    {
-        if let Some(root) = sot_log::state_dir::sot_state_dir() {
-            return root.join("config");
-        }
-    }
+    return crate::paths::windows_state_root().join("config");
+    #[cfg(not(windows))]
     config_dir().join("sot")
 }
 
+#[cfg(not(windows))]
 fn config_dir() -> PathBuf {
     if let Some(v) = std::env::var_os("XDG_CONFIG_HOME") {
         return PathBuf::from(v);
@@ -1735,15 +1735,25 @@ cursor_path = "src/lib.jl"
 
     #[test]
     #[cfg(windows)]
-    fn app_config_dir_windows_falls_back_to_home_when_localappdata_unset() {
+    fn app_config_dir_windows_falls_back_to_userprofile_when_localappdata_unset() {
         let _guard = env_guarded();
         std::env::remove_var("LOCALAPPDATA");
         std::env::remove_var("XDG_CONFIG_HOME");
-        std::env::set_var("HOME", r"C:\Users\someone");
+        std::env::set_var("USERPROFILE", r"C:\Users\someone");
         assert_eq!(
             app_config_dir(),
-            PathBuf::from(r"C:\Users\someone\.config\sot")
+            PathBuf::from(r"C:\Users\someone\AppData\Local\sot\config")
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    #[should_panic(expected = "cannot resolve the Windows state root")]
+    fn app_config_dir_windows_panics_when_localappdata_and_userprofile_are_both_unset() {
+        let _guard = env_guarded();
+        std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("USERPROFILE");
+        let _ = app_config_dir();
     }
 
     /// Scratch roots for one migration test: `USERPROFILE`-, `SystemDrive`-
