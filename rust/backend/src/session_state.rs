@@ -187,7 +187,18 @@ left_col_pct = 50
 
     #[test]
     fn write_backend_identity_round_trip() {
-        // Hermetic: use a per-test XDG_CONFIG_HOME.
+        // Hermetic: isolate every env var `toml_path` -> `sessions_state_dir`
+        // -> `app_config_dir` can resolve through, on EITHER platform —
+        // `XDG_CONFIG_HOME` alone used to be enough, but `app_config_dir`
+        // now resolves via `LOCALAPPDATA` unconditionally on Windows (Codex
+        // review, PR #175: without this, the test wrote under the real
+        // `%LOCALAPPDATA%\sot\config` there). `SOT_STATE_HOST` is pinned
+        // too so the written path doesn't depend on the real hostname.
+        // Held under the crate-wide env-mutation lock (`paths::ENV_TEST_LOCK`)
+        // shared with every other test that mutates these same vars.
+        let _lock = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!(
             "sot-state-test-{}-{}",
             std::process::id(),
@@ -197,17 +208,33 @@ left_col_pct = 50
                 .unwrap_or(0)
         ));
         std::fs::create_dir_all(&tmp).unwrap();
-        struct Guard(Option<std::ffi::OsString>);
+        struct Guard {
+            xdg_config_home: Option<std::ffi::OsString>,
+            localappdata: Option<std::ffi::OsString>,
+            sot_state_host: Option<std::ffi::OsString>,
+        }
         impl Drop for Guard {
             fn drop(&mut self) {
-                match self.0.take() {
-                    Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-                    None => std::env::remove_var("XDG_CONFIG_HOME"),
+                for (key, val) in [
+                    ("XDG_CONFIG_HOME", &self.xdg_config_home),
+                    ("LOCALAPPDATA", &self.localappdata),
+                    ("SOT_STATE_HOST", &self.sot_state_host),
+                ] {
+                    match val {
+                        Some(v) => std::env::set_var(key, v),
+                        None => std::env::remove_var(key),
+                    }
                 }
             }
         }
-        let _g = Guard(std::env::var_os("XDG_CONFIG_HOME"));
+        let _g = Guard {
+            xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
+            localappdata: std::env::var_os("LOCALAPPDATA"),
+            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+        };
         std::env::set_var("XDG_CONFIG_HOME", &tmp);
+        std::env::set_var("LOCALAPPDATA", &tmp);
+        std::env::set_var("SOT_STATE_HOST", "test-host");
 
         let written = write_backend_identity(
             "MyPkg.jl",

@@ -1658,10 +1658,10 @@ cursor_path = "src/lib.jl"
     }
 
     // `app_config_dir()`'s platform dispatch, and the one-time Windows
-    // migration off the old HOME-derived root. Env-guard shape matches
-    // `sot_log::state_dir`'s own tests (`log/src/state_dir.rs`) — same
-    // serialized-mutex reasoning (parallel `cargo test` in one process).
-    static ENV_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // migration off the old HOME-derived root. Serialized under the
+    // crate-wide `paths::ENV_TEST_LOCK` (Codex review, PR #175: a
+    // module-local mutex here couldn't stop a test in THIS module from
+    // racing a `paths.rs`/`session_state.rs` test over the same env vars).
 
     struct EnvGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
@@ -1690,7 +1690,9 @@ cursor_path = "src/lib.jl"
     }
 
     fn env_guarded() -> EnvGuard {
-        let serial = ENV_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let serial = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         EnvGuard {
             xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
             home: std::env::var_os("HOME"),

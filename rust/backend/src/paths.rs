@@ -10,6 +10,19 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+/// Crate-wide serialization lock for every test that mutates process-
+/// global env vars this crate's resolvers read (`XDG_CONFIG_HOME`,
+/// `XDG_STATE_HOME`, `HOME`, `LOCALAPPDATA`, `USERPROFILE`, `SystemDrive`,
+/// `SOT_STATE_HOST`, ...) — `cargo test` runs tests in parallel within one
+/// process by default, and several DIFFERENT modules
+/// (`paths::state_dir_tests`, `workspaces::tests`, `session_state::tests`)
+/// each exercise resolvers that read the SAME vars. One shared lock, not
+/// one per module (Codex review, PR #175: two separate mutexes — this
+/// file's own and `workspaces.rs`'s — meant a test in one module could
+/// still race a test in the other over the same env vars).
+#[cfg(test)]
+pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Canonicalize the longest EXISTING ancestor of `p`, walking up past
 /// components that don't exist yet (e.g. a `file.write`/`concept.write`
 /// target that hasn't been created). Used by the workspace-confinement
@@ -610,9 +623,6 @@ mod secure_private_dir_tests {
 #[cfg(test)]
 mod state_dir_tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static SERIAL: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
@@ -639,7 +649,7 @@ mod state_dir_tests {
     }
 
     fn guarded() -> EnvGuard {
-        let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let serial = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         EnvGuard {
             xdg_state_home: std::env::var_os("XDG_STATE_HOME"),
             home: std::env::var_os("HOME"),
