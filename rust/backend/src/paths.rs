@@ -266,52 +266,19 @@ pub fn tmux_session_name(label: &str) -> String {
 ///      logout. The parent dir is created `0700` by the caller
 ///      (`ensure_private_dir`) since `/tmp` itself is world-writable+sticky.
 ///
-/// Windows: none of the three tiers above apply (`runtime_sot_dir()` —
-/// `sot_protocol::session_socket` — is POSIX-shaped and its own doc calls
-/// it "Unix-only in effect", since its main consumer `session_socket_path`
-/// has its own named-pipe branch that skips it entirely). This function
-/// still called it unconditionally, though, and field evidence (v0.6.0-rc.3)
-/// showed that reached on Windows: a workspace toml migrated from the
-/// pre-fix HOME-derived registry predates the `runtime` key and defaults
-/// to `"tmux"` (`workspaces::load_toml`) even there, so `tmux.rs::run()`
-/// tried to secure a tmux socket dir at this path before tmux itself
-/// failed to spawn (no `tmux.exe` on Windows) — creating a junk
-/// `C:\tmp\sot-0\` (`/tmp/sot-<uid>` with Windows path separators, on
-/// whatever the current drive was). Tmux never actually runs on Windows
-/// either way, so this can't be made to work — only tidied: routed
-/// through `windows_runtime_dir()` (`%LOCALAPPDATA%\sot\runtime`) so any
-/// stray directory it does create at least lands beside `app_config_dir`'s
-/// `config` and `state_dir`'s `state` instead of POSIX-mapped drive-root
-/// junk.
-/// Windows counterpart of `runtime_sot_dir()` (`sot_protocol::session_socket`,
-/// re-exported above): `%LOCALAPPDATA%\sot\runtime`, alongside
-/// `workspaces::app_config_dir`'s `config` and `state_dir`'s `state` under
-/// the same root. `runtime_sot_dir()` itself has no Windows branch — its
-/// own doc calls it "Unix-only in effect" since its main consumer,
-/// `session_socket_path`, has its own named-pipe branch that skips it
-/// entirely — but `tmux_socket_path`/`secure_socket_dir` below call it
-/// unconditionally, and field evidence (v0.6.0-rc.3) showed that's
-/// actually reached on Windows: see `tmux_socket_path`'s doc for how.
-/// Falls back to `runtime_sot_dir()`'s own (Windows-inapplicable) path
-/// only if `%LOCALAPPDATA%` is unset, same last-resort posture as
-/// `workspaces::app_config_dir` and `state_dir` above.
-#[cfg(windows)]
-fn windows_runtime_dir() -> PathBuf {
-    match sot_log::state_dir::sot_state_dir() {
-        Some(root) => root.join("runtime"),
-        None => runtime_sot_dir(),
-    }
-}
-
+/// Windows: tmux never runs there at all (no `tmux.exe`), so this path is
+/// never actually USED — `tmux.rs::run()` is gated off on Windows before it
+/// would call this (Codex review, PR #175, replacing an earlier draft that
+/// routed this function's own POSIX-shaped fallback through
+/// `%LOCALAPPDATA%` instead: a fix for a path that's never reached is dead
+/// weight — the real fix is not reaching it, which also closes the actual
+/// field bug, a legacy toml with no `runtime` key defaulting to `"tmux"`
+/// even on Windows — see `workspaces::load_toml`).
 pub fn tmux_socket_path() -> PathBuf {
     if let Some(sock) = std::env::var_os("SOT_TMUX_SOCK") {
         return PathBuf::from(sock);
     }
-    #[cfg(windows)]
-    let dir = windows_runtime_dir();
-    #[cfg(not(windows))]
-    let dir = runtime_sot_dir();
-    dir.join("tmux.sock")
+    runtime_sot_dir().join("tmux.sock")
 }
 
 /// Resolves the Windows per-machine state root, or fails startup with a
@@ -479,15 +446,7 @@ pub fn secure_private_dir(dir: &Path) -> Result<()> {
 /// same symlink/owner/mode checks as `secure_private_dir`. Custom socket paths
 /// still get their immediate parent verified; callers using deeper custom
 /// paths should create the higher private parent explicitly.
-///
-/// `runtime` is `windows_runtime_dir()` on Windows, `runtime_sot_dir()`
-/// elsewhere — see `tmux_socket_path`'s doc for why the former exists (the
-/// callers here previously got a POSIX-shaped `runtime_sot_dir()` value on
-/// every platform, unconditionally).
 pub fn secure_socket_dir(dir: &Path) -> Result<()> {
-    #[cfg(windows)]
-    let runtime = windows_runtime_dir();
-    #[cfg(not(windows))]
     let runtime = runtime_sot_dir();
     if dir == runtime {
         return secure_private_dir(dir);

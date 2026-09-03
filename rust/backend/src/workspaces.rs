@@ -817,11 +817,21 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         });
         let agent_name = kv.get("agent_name").cloned().unwrap_or_default();
         let task = kv.get("task").cloned().unwrap_or_default();
-        // ADR 0042 slice L1a. Older tomls predate this key -> default
-        // "tmux", matching `meta_only`'s own default and preserving
-        // byte-for-byte behaviour for every workspace that predates
-        // capsules.
-        let runtime = kv.get("runtime").cloned().unwrap_or_else(|| "tmux".to_string());
+        // ADR 0042 slice L1a. Older tomls predate this key -> default to
+        // this platform's ordinary workspace runtime: "tmux", matching
+        // `meta_only`'s own default and preserving byte-for-byte
+        // behaviour for every workspace that predates capsules — except
+        // on Windows (Codex review, PR #175), where it's "capsule"
+        // instead: tmux never runs there at all, so a toml migrated from
+        // a pre-fix legacy registry (predating this key) defaulting to
+        // "tmux" made the daemon try to secure a tmux socket dir before
+        // failing to spawn a nonexistent `tmux.exe` (field evidence,
+        // v0.6.0-rc.3 — see `paths::tmux_socket_path`'s doc).
+        #[cfg(windows)]
+        let default_runtime = "capsule";
+        #[cfg(not(windows))]
+        let default_runtime = "tmux";
+        let runtime = kv.get("runtime").cloned().unwrap_or_else(|| default_runtime.to_string());
         let mut ws = Workspace::meta_only(
             workspace_id,
             slug,
@@ -1556,8 +1566,14 @@ created      = 1700000000
         assert_eq!(ws.project_root, PathBuf::from("/home/u/Alpha.jl"));
         assert_eq!(ws.tmux_session, "sot-be-alpha");
         // ADR 0042 slice L1a: a toml predating the `runtime` key defaults
-        // to "tmux" — byte-for-byte today's behaviour.
+        // to this platform's ordinary workspace runtime — "tmux",
+        // byte-for-byte today's Unix behaviour; "capsule" on Windows
+        // (Codex review, PR #175 — see `load_toml`'s own comment: tmux
+        // never runs on Windows at all).
+        #[cfg(not(windows))]
         assert_eq!(ws.runtime, "tmux");
+        #[cfg(windows)]
+        assert_eq!(ws.runtime, "capsule");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
