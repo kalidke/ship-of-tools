@@ -40,6 +40,15 @@ This:
 **Exit and restart Claude Code** to pick up new or changed skills (frontmatter
 changes need a restart; hot-reload covers body edits).
 
+**On a Windows frontend box** — any session whose identity lives in the
+shared no-pane self-file (one file shared by every no-pane shell on the
+box) — re-join with an explicit name after installing:
+`comm-join.sh --name <your handle>`, never a bare join. The refreshed comm
+scripts' stricter identity check rejects the shared self-file until a named
+join corroborates it with a matching project root recorded in the sot-comm
+registry, and restarting Claude Code does not fix this. Until you re-join,
+sends fail with a clear refusal while receive keeps working.
+
 ## Launchers
 
 Both live in `~/.local/bin` (which must be on PATH) and run
