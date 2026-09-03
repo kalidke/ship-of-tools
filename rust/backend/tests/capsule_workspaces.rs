@@ -494,6 +494,22 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     // `Env::spawn_sotd`).
     let state_dir_path = env.state_root.join("sot").join("workspaces").join(&default_workspace_id);
 
+    // Rule H: prove the "never started" precondition BEFORE `pty.open` —
+    // no state dir on disk at all, and `workspace.list`'s own row already
+    // reads "stopped" from THIS first list call. Rule B guarantees this:
+    // the startup resume-scan (`resume_all`) SKIPS every row with no
+    // published voyage pointer, so it never touched this row — without
+    // rule B this assertion would race the resume-scan and could flake.
+    assert!(
+        !state_dir_path.exists(),
+        "the default capsule's state dir must not exist before its first attach: {state_dir_path:?}"
+    );
+    assert_eq!(
+        default_row["phase"].as_str(),
+        Some("stopped"),
+        "the default row's phase must read \"stopped\" before its first attach: {default_row:?}"
+    );
+
     // `target` MUST be the row's own `tmux_session` — a targetless
     // `pty.open` addresses the drawer's own special SoT LLM terminal
     // (`pty::DEFAULT_TMUX_TARGET` == "sot-llm"), never a workspace row;
@@ -555,6 +571,23 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+
+    // Rule H: "KillGuard" the spawned supervisor — it is DETACHED
+    // (spawned by the daemon, survives the daemon's own exit by design,
+    // ADR 0042 L1a), so killing `daemon` below does NOT reap it and it
+    // would otherwise leak past this test. There is no `std::process::
+    // Child` for it here (the daemon owns the actual spawn), so this
+    // stops it over its own lane instead — the same
+    // `sot_log::supervisor_client::stop` the create-test's own adoption
+    // proof uses. Best-effort: the lane may already be gone (a `claude`
+    // producer missing from this runner's PATH would eventually make the
+    // supervisor's own internal flap budget give up and exit on its
+    // own, per rule F) — either way nothing is left running afterward.
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::stop(&dir)
+    })
+    .await;
 
     if let Some(child) = daemon.take() {
         kill_and_wait_bounded(child).await;
