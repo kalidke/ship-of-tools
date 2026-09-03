@@ -40,6 +40,8 @@ This:
 **Exit and restart Claude Code** to pick up new or changed skills (frontmatter
 changes need a restart; hot-reload covers body edits).
 
+**On a Windows frontend box** whose session identity still lives in a legacy shared no-pane self-file (one without a recorded `root=`), the refreshed comm scripts' identity check refuses to send ("self-file identity ... is in the SHARED nopane slot ... refusing to self-heal without a corroborating registry root") while receive keeps working in the running session. Re-join with an explicit name, `comm-join.sh --name <your handle>`: a named join records the registry root and rewrites the self-file with `root=`, which is exactly what the check wants. A plain restart of Claude Code without the session-start bootstrap does not fix it; the normal `/sot-fe-session-start` bootstrap does, because it performs the named join.
+
 ## Launchers
 
 Both live in `~/.local/bin` (which must be on PATH) and run
