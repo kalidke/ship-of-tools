@@ -295,52 +295,65 @@ impl TmuxClient {
     }
 
     fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
-        let socket = crate::paths::tmux_socket_path();
-        // The socket FILE is tmux's to create; the containing DIRECTORY is
-        // ours, and needs to exist (and be verified private) before the
-        // first invocation. F2 (security review): this used to `let _ =`
-        // the result and spawn tmux regardless — a failed/insecure dir
-        // check (F1: a hijacked/symlinked dir, wrong owner, loose mode)
-        // silently fell through to placing the socket wherever
-        // `secure_private_dir` refused. Now the check must pass, or the
-        // spawn is aborted with the reason instead of running open.
-        //
-        // Windows only: skipped entirely — tmux never runs there (no
-        // `tmux.exe`), so there's nothing real to secure a socket dir FOR;
-        // `paths::tmux_socket_path()`'s own POSIX-shaped fallback used to
-        // get reached here anyway (field evidence, v0.6.0-rc.3: a junk
-        // `C:\tmp\sot-0\` got created before the `Command::new("tmux")`
-        // spawn below failed naturally). Codex review, PR #175 — the
-        // actual fix is the workspace never defaulting to `"tmux"` there
-        // in the first place (`workspaces::load_toml`); this is
-        // defense-in-depth for any row that explicitly says `"tmux"`
-        // anyway (e.g. one shared onto a Windows box from elsewhere).
+        // tmux never runs on Windows (no `tmux.exe`) — gated off here, the
+        // one place every TmuxClient operation funnels through, so the
+        // whole tmux path family (`paths::tmux_socket_path` ->
+        // `sot_protocol::runtime_sot_dir`) and the ADR 0038 keeper-fallback
+        // probe below are never even computed on this platform, let alone
+        // probed. Before this gate, `runtime_sot_dir()`'s POSIX-shaped
+        // fallback joined with a Windows path separator produced a
+        // malformed `/tmp/sot-<uid>\tmux.sock`-shaped path, and
+        // `ensure_server_present` logged the ADR 0038 WARN with it on
+        // every Windows boot that reached this (v0.6.0-rc.4 field report:
+        // the awareness-env sweep in `server.rs` calls `list_sessions`
+        // unconditionally, regardless of any workspace's `runtime`, so
+        // this was reached even with no `"tmux"`-runtime workspace
+        // involved). Superseded field evidence, v0.6.0-rc.3: a junk
+        // `C:\tmp\sot-0\` dir used to get created here too, before the
+        // `Command::new("tmux")` spawn below failed naturally.
+        #[cfg(windows)]
+        anyhow::bail!(
+            "tmux is not available on Windows — Ship of Tools uses capsule \
+             workspaces there instead (ADR 0042): {args:?}"
+        );
+
         #[cfg(not(windows))]
-        if let Some(dir) = socket.parent() {
-            crate::paths::secure_private_dir(dir)
-                .with_context(|| format!("securing tmux socket dir {}", dir.display()))?;
+        {
+            let socket = crate::paths::tmux_socket_path();
+            // The socket FILE is tmux's to create; the containing DIRECTORY is
+            // ours, and needs to exist (and be verified private) before the
+            // first invocation. F2 (security review): this used to `let _ =`
+            // the result and spawn tmux regardless — a failed/insecure dir
+            // check (F1: a hijacked/symlinked dir, wrong owner, loose mode)
+            // silently fell through to placing the socket wherever
+            // `secure_private_dir` refused. Now the check must pass, or the
+            // spawn is aborted with the reason instead of running open.
+            if let Some(dir) = socket.parent() {
+                crate::paths::secure_private_dir(dir)
+                    .with_context(|| format!("securing tmux socket dir {}", dir.display()))?;
+            }
+            let readiness = ensure_server_present(&socket)?;
+            let mut cmd = Command::new("tmux");
+            cmd.arg("-S");
+            cmd.arg(&socket);
+            if matches!(readiness, ServerReadiness::Present) && crate::pty::tmux_supports_dash_n() {
+                cmd.arg("-N");
+            }
+            cmd.args(args);
+            let out = cmd
+                .output()
+                .with_context(|| format!("spawn tmux -S {} {args:?}", socket.display()))?;
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                anyhow::bail!(
+                    "tmux {:?} failed (exit={:?}): {}",
+                    args,
+                    out.status.code(),
+                    stderr.trim()
+                );
+            }
+            Ok(out.stdout)
         }
-        let readiness = ensure_server_present(&socket)?;
-        let mut cmd = Command::new("tmux");
-        cmd.arg("-S");
-        cmd.arg(&socket);
-        if matches!(readiness, ServerReadiness::Present) && crate::pty::tmux_supports_dash_n() {
-            cmd.arg("-N");
-        }
-        cmd.args(args);
-        let out = cmd
-            .output()
-            .with_context(|| format!("spawn tmux -S {} {args:?}", socket.display()))?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            anyhow::bail!(
-                "tmux {:?} failed (exit={:?}): {}",
-                args,
-                out.status.code(),
-                stderr.trim()
-            );
-        }
-        Ok(out.stdout)
     }
 }
 

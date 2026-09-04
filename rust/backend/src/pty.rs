@@ -392,112 +392,128 @@ fn spawn_tmux_pair(
     cwd: Option<&Path>,
     slug: Option<&str>,
 ) -> Result<TmuxPair> {
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: rows.max(1),
-            cols: cols.max(1),
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| anyhow!("openpty: {e}"))?;
+    // tmux never runs on Windows (no `tmux.exe`) — refuse immediately,
+    // before any path work, mirroring `TmuxClient::run`'s gate
+    // (`tmux.rs`). This is a SECOND call site that resolves the tmux
+    // socket path and probes the ADR 0038 keeper independently of
+    // `TmuxClient::run` — reachable on Windows for a workspace row whose
+    // `runtime` is explicitly `"tmux"` (survives TOML loading) or an
+    // unmapped valid target (Codex round, PR #177).
+    #[cfg(windows)]
+    anyhow::bail!(
+        "tmux is not available on Windows — Ship of Tools uses capsule \
+         workspaces there instead (ADR 0042): {target:?}"
+    );
 
-    // Private per-user socket (security review, mirrors `tmux.rs`'s
-    // `TmuxClient::run`). Global `-S` MUST precede the subcommand.
-    // F2: propagate a failed/insecure dir check (F1's `secure_private_dir`)
-    // instead of ignoring it and spawning tmux against an unverified —
-    // possibly hijacked — directory.
-    let socket = crate::paths::tmux_socket_path();
-    if let Some(dir) = socket.parent() {
-        crate::paths::secure_private_dir(dir)
-            .with_context(|| format!("securing tmux socket dir {}", dir.display()))?;
-    }
-    // ADR 0038: never let this spawn implicitly fork the tmux server as a
-    // child of the daemon (cgroup capture → daemon restart kills every
-    // session). Primary guard is the keeper check; `-N` (tmux >= 3.4)
-    // additionally closes the check-to-spawn race.
-    let readiness = crate::tmux::ensure_server_present(&socket)?;
-    // `tmux new-session -A -s <target>`: create the session if
-    // it doesn't exist, attach if it does. -A is the relevant
-    // flag (vs -d which would refuse to attach).
-    let mut cmd = CommandBuilder::new("tmux");
-    cmd.arg("-S");
-    cmd.arg(&socket);
-    if readiness == crate::tmux::ServerReadiness::Present && tmux_supports_dash_n() {
-        cmd.arg("-N");
-    }
-    cmd.arg("new-session");
-    cmd.arg("-A");
-    cmd.arg("-s");
-    cmd.arg(target);
-    // Root a freshly-created session at the workspace project dir. No-op
-    // when `-A` attaches to an existing session (tmux ignores `-c` then).
-    if let Some(dir) = cwd {
-        cmd.arg("-c");
-        cmd.arg(dir.as_os_str());
-    }
-    // Ship of Tools awareness env. tmux's `-e VAR=val` on `new-session` sets the
-    // var on the NEW session — a plain child-process env var (cmd.env, below for
-    // TERM) does NOT propagate: tmux derives a new session's env from the server
-    // plus the connecting client's `update-environment` allowlist, dropping
-    // arbitrary vars. `-e` is honoured on create and ignored by `-A` on attach
-    // (same as `-c`). A session in the pane reads these to detect it is inside
-    // Ship of Tools, which workspace it is in, and to drive the FE.
-    //
-    // BUT `-e` on `new-session` is a tmux >= 3.2 flag. On 3.0a (Ubuntu 20.04
-    // userland — exactly the old lab backends this app targets) the client
-    // rejects it at arg-parse and exits in ~4ms; pre-fix that drove an
-    // unthrottled reader respawn loop (~150/s) and a 339k-zombie fork bomb
-    // (shared-host report, 2026-07-11). So probe the tmux version ONCE, gate `-e`
-    // on it, and fail CLOSED — an unknown/absent/unparseable version omits `-e`
-    // rather than risk the storm.
-    let supports_e = tmux_supports_dash_e();
-    let env = awareness_env(slug, cwd);
-    if supports_e {
-        for (k, v) in &env {
-            cmd.arg("-e");
-            cmd.arg(format!("{k}={v}"));
+    #[cfg(not(windows))]
+    {
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: rows.max(1),
+                cols: cols.max(1),
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| anyhow!("openpty: {e}"))?;
+
+        // Private per-user socket (security review, mirrors `tmux.rs`'s
+        // `TmuxClient::run`). Global `-S` MUST precede the subcommand.
+        // F2: propagate a failed/insecure dir check (F1's `secure_private_dir`)
+        // instead of ignoring it and spawning tmux against an unverified —
+        // possibly hijacked — directory.
+        let socket = crate::paths::tmux_socket_path();
+        if let Some(dir) = socket.parent() {
+            crate::paths::secure_private_dir(dir)
+                .with_context(|| format!("securing tmux socket dir {}", dir.display()))?;
         }
+        // ADR 0038: never let this spawn implicitly fork the tmux server as a
+        // child of the daemon (cgroup capture → daemon restart kills every
+        // session). Primary guard is the keeper check; `-N` (tmux >= 3.4)
+        // additionally closes the check-to-spawn race.
+        let readiness = crate::tmux::ensure_server_present(&socket)?;
+        // `tmux new-session -A -s <target>`: create the session if
+        // it doesn't exist, attach if it does. -A is the relevant
+        // flag (vs -d which would refuse to attach).
+        let mut cmd = CommandBuilder::new("tmux");
+        cmd.arg("-S");
+        cmd.arg(&socket);
+        if readiness == crate::tmux::ServerReadiness::Present && tmux_supports_dash_n() {
+            cmd.arg("-N");
+        }
+        cmd.arg("new-session");
+        cmd.arg("-A");
+        cmd.arg("-s");
+        cmd.arg(target);
+        // Root a freshly-created session at the workspace project dir. No-op
+        // when `-A` attaches to an existing session (tmux ignores `-c` then).
+        if let Some(dir) = cwd {
+            cmd.arg("-c");
+            cmd.arg(dir.as_os_str());
+        }
+        // Ship of Tools awareness env. tmux's `-e VAR=val` on `new-session` sets the
+        // var on the NEW session — a plain child-process env var (cmd.env, below for
+        // TERM) does NOT propagate: tmux derives a new session's env from the server
+        // plus the connecting client's `update-environment` allowlist, dropping
+        // arbitrary vars. `-e` is honoured on create and ignored by `-A` on attach
+        // (same as `-c`). A session in the pane reads these to detect it is inside
+        // Ship of Tools, which workspace it is in, and to drive the FE.
+        //
+        // BUT `-e` on `new-session` is a tmux >= 3.2 flag. On 3.0a (Ubuntu 20.04
+        // userland — exactly the old lab backends this app targets) the client
+        // rejects it at arg-parse and exits in ~4ms; pre-fix that drove an
+        // unthrottled reader respawn loop (~150/s) and a 339k-zombie fork bomb
+        // (shared-host report, 2026-07-11). So probe the tmux version ONCE, gate `-e`
+        // on it, and fail CLOSED — an unknown/absent/unparseable version omits `-e`
+        // rather than risk the storm.
+        let supports_e = tmux_supports_dash_e();
+        let env = awareness_env(slug, cwd);
+        if supports_e {
+            for (k, v) in &env {
+                cmd.arg("-e");
+                cmd.arg(format!("{k}={v}"));
+            }
+        }
+        // tmux treats a literal `;` argv token as its own command separator and
+        // runs `set -g mouse on` against the resulting session. Idempotent; sticks
+        // for the lifetime of the tmux server.
+        cmd.arg(";");
+        cmd.arg("set");
+        cmd.arg("-g");
+        cmd.arg("mouse");
+        cmd.arg("on");
+        cmd.env("TERM", "xterm-256color");
+
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| anyhow!("spawn tmux: {e}"))?;
+        // Slave side is owned by the child process now; drop our handle
+        // so the pty close notifies the child cleanly when we drop master.
+        drop(pair.slave);
+
+        if !supports_e {
+            // tmux < 3.2: `-e` was omitted above to dodge the arg-parse storm.
+            // Recover the awareness vars best-effort via `set-environment` on a short
+            // detached thread (the session needs a beat to come up). NOTE this only
+            // reaches FUTURE processes in the session — tmux's session environment
+            // is copied into a process's env at spawn time, so the pane's ALREADY
+            // running initial shell won't retroactively see them. On old tmux,
+            // home-base awareness is therefore a documented best-effort degrade, not
+            // a guarantee; every SOT_* consumer has a fallback (sot-nav.sh derives
+            // the slug from the `sot-be-<slug>` session name). See docs/INSTALL-AGENT.md.
+            best_effort_session_env(target, env);
+        }
+
+        let master: Box<dyn MasterPty + Send> = pair.master;
+        let reader = master
+            .try_clone_reader()
+            .map_err(|e| anyhow!("clone pty reader: {e}"))?;
+        let writer = master
+            .take_writer()
+            .map_err(|e| anyhow!("take pty writer: {e}"))?;
+        Ok(TmuxPair { master, writer, child, reader })
     }
-    // tmux treats a literal `;` argv token as its own command separator and
-    // runs `set -g mouse on` against the resulting session. Idempotent; sticks
-    // for the lifetime of the tmux server.
-    cmd.arg(";");
-    cmd.arg("set");
-    cmd.arg("-g");
-    cmd.arg("mouse");
-    cmd.arg("on");
-    cmd.env("TERM", "xterm-256color");
-
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| anyhow!("spawn tmux: {e}"))?;
-    // Slave side is owned by the child process now; drop our handle
-    // so the pty close notifies the child cleanly when we drop master.
-    drop(pair.slave);
-
-    if !supports_e {
-        // tmux < 3.2: `-e` was omitted above to dodge the arg-parse storm.
-        // Recover the awareness vars best-effort via `set-environment` on a short
-        // detached thread (the session needs a beat to come up). NOTE this only
-        // reaches FUTURE processes in the session — tmux's session environment
-        // is copied into a process's env at spawn time, so the pane's ALREADY
-        // running initial shell won't retroactively see them. On old tmux,
-        // home-base awareness is therefore a documented best-effort degrade, not
-        // a guarantee; every SOT_* consumer has a fallback (sot-nav.sh derives
-        // the slug from the `sot-be-<slug>` session name). See docs/INSTALL-AGENT.md.
-        best_effort_session_env(target, env);
-    }
-
-    let master: Box<dyn MasterPty + Send> = pair.master;
-    let reader = master
-        .try_clone_reader()
-        .map_err(|e| anyhow!("clone pty reader: {e}"))?;
-    let writer = master
-        .take_writer()
-        .map_err(|e| anyhow!("take pty writer: {e}"))?;
-    Ok(TmuxPair { master, writer, child, reader })
 }
 
 /// The `SOT_*` awareness env for a tmux session the daemon owns: `SOT_SESSION=1`

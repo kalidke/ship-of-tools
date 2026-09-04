@@ -1201,16 +1201,40 @@ fn legacy_windows_config_candidates() -> Vec<PathBuf> {
 /// beside a stranded one. Secondary-candidate copy failures stay
 /// warn-only: that candidate's data is untouched (still at its original
 /// path) either way, so there's nothing to strand.
+///
+/// Logs one INFO line per probed candidate (`legacy registry probe: <path>
+/// — found (migrating)` / `— empty` / `— absent`) plus one summary line
+/// when the new root already had backend children ("migration not
+/// needed") — before this, a field boot log with nothing to migrate was
+/// silent here, so it couldn't be told apart from "this code never ran"
+/// (v0.6.0-rc.4 field report). Returns the per-candidate outcomes so tests
+/// can assert on what was probed without a tracing test-capture harness
+/// (this crate has none); behaviour is otherwise unchanged.
 #[cfg(windows)]
-fn migrate_legacy_windows_config_dir() -> Result<()> {
+fn migrate_legacy_windows_config_dir() -> Result<Vec<(PathBuf, ProbeOutcome)>> {
     let new_root = app_config_dir();
     if !backend_registry_children(&new_root).is_empty() {
-        return Ok(());
+        tracing::info!(root = %new_root.display(),
+            "legacy registry migration not needed: new root already has backend children");
+        return Ok(Vec::new());
     }
     let candidates = legacy_windows_config_candidates();
     let mut primary_done = false;
+    let mut probes = Vec::with_capacity(candidates.len());
     for candidate in &candidates {
-        let children = backend_registry_children(candidate);
+        let (children, outcome) = probe_candidate(candidate);
+        match outcome {
+            ProbeOutcome::Found => {
+                tracing::info!("legacy registry probe: {} — found (migrating)", candidate.display())
+            }
+            ProbeOutcome::Empty => {
+                tracing::info!("legacy registry probe: {} — empty", candidate.display())
+            }
+            ProbeOutcome::Absent => {
+                tracing::info!("legacy registry probe: {} — absent", candidate.display())
+            }
+        }
+        probes.push((candidate.clone(), outcome));
         if children.is_empty() {
             continue;
         }
@@ -1237,7 +1261,32 @@ fn migrate_legacy_windows_config_dir() -> Result<()> {
             merge_secondary_legacy_windows_children(candidate, &children, &new_root);
         }
     }
-    Ok(())
+    Ok(probes)
+}
+
+/// Outcome of probing one `legacy_windows_config_candidates()` entry —
+/// logged and returned by `migrate_legacy_windows_config_dir` so a boot
+/// with nothing to migrate is distinguishable, in the log and in tests,
+/// from this code never having run.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeOutcome {
+    /// The candidate directory exists and has backend registry children.
+    Found,
+    /// The candidate directory exists but has no backend registry children.
+    Empty,
+    /// The candidate directory doesn't exist.
+    Absent,
+}
+
+#[cfg(windows)]
+fn probe_candidate(candidate: &Path) -> (Vec<String>, ProbeOutcome) {
+    if !candidate.is_dir() {
+        return (Vec::new(), ProbeOutcome::Absent);
+    }
+    let children = backend_registry_children(candidate);
+    let outcome = if children.is_empty() { ProbeOutcome::Empty } else { ProbeOutcome::Found };
+    (children, outcome)
 }
 
 /// Best-effort merge for a legacy Windows config root OTHER than the one
@@ -2006,5 +2055,33 @@ cursor_path = "src/lib.jl"
         migrate_legacy_windows_config_dir().unwrap();
 
         assert!(!s.new_root().exists());
+    }
+
+    /// The daemon logs one `tracing::info!` line per probed candidate
+    /// (found/empty/absent) so a field boot log can tell "probed, nothing
+    /// there" apart from "this code never ran" — but this crate has no
+    /// tracing test-capture harness, so this asserts on the return value
+    /// (`Vec<(PathBuf, ProbeOutcome)>`) the same probe loop reports
+    /// through, rather than on captured log output.
+    #[test]
+    #[cfg(windows)]
+    fn migrate_returns_probe_outcome_per_candidate_including_the_empty_case() {
+        let _guard = env_guarded();
+        let s = MigrationScratch::new("probe-outcomes");
+        // USERPROFILE candidate: directory exists but has no backend
+        // registry children — "empty", the case a silent log can't be
+        // told apart from "absent" or "never probed".
+        std::fs::create_dir_all(s.userprofile_legacy()).unwrap();
+        // SystemDrive candidate: has backend children — "found".
+        std::fs::create_dir_all(s.system_drive_legacy().join("workspaces-host")).unwrap();
+        s.apply_env();
+
+        let probes = migrate_legacy_windows_config_dir().unwrap();
+
+        let outcome_for = |path: &Path| {
+            probes.iter().find(|(p, _)| p == path).map(|(_, o)| *o)
+        };
+        assert_eq!(outcome_for(&s.userprofile_legacy()), Some(ProbeOutcome::Empty));
+        assert_eq!(outcome_for(&s.system_drive_legacy()), Some(ProbeOutcome::Found));
     }
 }
