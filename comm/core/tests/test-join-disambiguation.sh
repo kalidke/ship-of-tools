@@ -1558,6 +1558,114 @@ case_host_alias_guard_triggers_on_long_host() {
     return 0
 }
 
+# --- capsule-comm-identity fix (Windows capsule spawn + comm scripts) ----
+
+case_pinned_comm_name_never_adopts_selffile_identity() {
+    # Coordinator hardening (capsule-comm-identity fix, item A): "a pinned
+    # SOT_COMM_NAME never adopts a name from any self-file." The daemon
+    # now stamps SOT_COMM_SELF_FILE on a capsule producer's own dedicated
+    # slot (comm-lib.sh's EXISTING pin-the-self-file seam — no new slot-
+    # naming scheme, and already honoured unchanged by both comm-context.sh
+    # and comm-join.sh), so this is the second, belt-and-braces line of
+    # defense: even when comm-context.sh resolves a VALID (root-matching)
+    # self-file identity, a pinned SOT_COMM_NAME must still win. Before
+    # this fix, comm-join.sh only consulted $SOT_COMM_NAME when NAME was
+    # EMPTY — a resolved-but-wrong self-file identity silently outranked
+    # the pin (the exact field bug: a capsule adopted the frontend's
+    # win-fe-<host> handle from a shared self-file slot).
+    local root self crafted
+    mkdir -p "$WORK/pinned-never-adopts/proj22"
+    root="$(realpath "$WORK/pinned-never-adopts/proj22")"
+    crafted="$WORK/pinned-never-adopts-self.txt"
+    printf 'other-existing-handle\nrepo=%s\nroot=%s\n' "$(basename "$root")" "$root" > "$crafted"
+
+    JOIN_SELF_FILE_OVERRIDE="$crafted"
+    JOIN_ENV_NAME="pinned-capsule-handle"
+    join_in "$root"
+    JOIN_SELF_FILE_OVERRIDE=""
+    JOIN_ENV_NAME=""
+
+    [ "$JOIN_RC" -eq 0 ] || { echo "  exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    contains "$JOIN_OUT" "Joined sot-comm as @pinned-capsule-handle" \
+        || { echo "  stdout: $JOIN_OUT (want the PINNED SOT_COMM_NAME, not the self-file's 'other-existing-handle')"; return 1; }
+    [ "$(registry_root "pinned-capsule-handle")" = "$root" ] \
+        || { echo "  pinned-capsule-handle root=$(registry_root "pinned-capsule-handle"), want $root"; return 1; }
+    return 0
+}
+
+case_jq_rawfile_helper_round_trips_leading_slash_value() {
+    # capsule-comm-identity fix, item B (MSYS2 argv-conversion guard): on
+    # Windows git-bash, a NATIVE jq.exe rewrites any ARGV ELEMENT that
+    # starts with "/" into a Windows path before jq ever sees it — a
+    # message body or a project root passed via `--arg` can legitimately
+    # start with "/" and arrives corrupted. This suite runs on LINUX,
+    # which cannot reproduce that MSYS2-only conversion (it only fires for
+    # a native, non-MSYS jq.exe) — what IS provable here is the fix's own
+    # mechanics: sot_jq_rawfile's temp file round-trips a leading-slash
+    # value through `jq --rawfile` byte-for-byte, which is exactly what
+    # closes the bug wherever it actually runs (the ORIGINAL corruption is
+    # unreproducible on this platform; the FIX is not).
+    local val f out
+    val="/sot-session-start with a leading slash and trailing text"
+    f="$(sot_jq_rawfile "$val")" || { echo "  sot_jq_rawfile failed"; return 1; }
+    [ -f "$f" ] || { echo "  sot_jq_rawfile did not create a file at the path it printed"; return 1; }
+    out="$(jq -nr --rawfile v "$f" '$v')"
+    rm -f "$f"
+    [ "$out" = "$val" ] || { echo "  round-trip mismatch: got '$out', want '$val'"; return 1; }
+    return 0
+}
+
+case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
+    # capsule-comm-identity fix, item B follow-up (Codex round finding 3):
+    # replaces a narrow three-name grep with a real audit. Every
+    # `jq --arg NAME "$value"` across the comm scripts + hooks must bind a
+    # NAME on this allowlist — handles/ids/hosts/timestamps/short enum-ish
+    # tokens/already-relativized paths, none of which can legitimately
+    # start with "/". A message body, an absolute/backend path, free
+    # text, code, or a label is NOT on it and must go through
+    # comm-lib.sh's sot_jq_rawfile (--rawfile) instead — see that helper's
+    # own comment for the MSYS2 argv-conversion mechanism this guards
+    # against. `--argjson` is exempt by construction (its value is JSON
+    # text, which can never start with "/" — every valid top-level JSON
+    # value starts with `{`, `[`, `"`, a digit, `t`, `f`, or `n`).
+    #
+    # NAME-based, not call-site-based — a real, documented limitation: a
+    # NEW `--arg p ...` site that reuses an allowlisted name for a
+    # genuinely risky value would NOT be caught here, only a value bound
+    # under a NOT-yet-allowlisted name is. The `p`/`ws` entries here are
+    # ALREADY relativized before use (sot-fe's preview/reveal PATH_ARG,
+    # sot-nav.sh's REL) — a new risky path/text value should bind a
+    # fresh, not-yet-allowlisted name so this test forces a deliberate
+    # choice about it. `c` is sot-fe's fe_cmd — always one of a small
+    # fixed set of literal verbs from a case dispatch, never raw text.
+    # A line whose first non-blank character is '#' is skipped entirely
+    # (a prose mention of `--arg NAME`, not a real binding).
+    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p "
+    local bad="" dir file name line match comment_lines
+    dir="$(cd "$SCRIPTS_DIR/../../adapters/claude/hooks" && pwd)"
+    for file in "$SCRIPTS_DIR"/*.sh "$SCRIPTS_DIR/sot-fe" "$dir"/*.sh; do
+        [ -f "$file" ] || continue
+        # Line numbers that are FULL comment lines (first non-blank char
+        # '#') — a prose mention of `--arg NAME` in a comment (this
+        # helper's own doc, or a fix note) must not count as a real jq
+        # binding.
+        comment_lines=" $(grep -nE '^[[:space:]]*#' "$file" | cut -d: -f1 | tr '\n' ' ') "
+        while IFS=: read -r line match; do
+            case "$comment_lines" in
+                *" $line "*) continue ;;
+            esac
+            name="$(printf '%s' "$match" | sed -E 's/^--arg[[:space:]]+//')"
+            case "$allow" in
+                *" $name "*) : ;;
+                *) bad="$bad
+  $(basename "$file"):$line binds --arg $name (not on the allowlist)" ;;
+            esac
+        done < <(grep -onE -- '--arg[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$file")
+    done
+    [ -z "$bad" ] || { echo "  non-allowlisted --arg bindings found:$bad"; return 1; }
+    return 0
+}
+
 # --- run, in order (later cases depend on earlier ones' registry state) --
 
 check "fresh claim records root"                            case_fresh_claim
@@ -1603,6 +1711,9 @@ check "rollback never deletes a row that replaced the provisional one (F1 round 
 check "with_lock restores the caller's prior EXIT trap after a direct callee failure (F2 round 2)" case_with_lock_restores_prior_trap_on_failure
 check "a failing hash command fails loudly instead of an empty-hash handle (F5 round 2)" case_hash_command_failure_fails_loudly
 check "a long/dirty host triggers the F7 host-alias digest suffix" case_host_alias_guard_triggers_on_long_host
+check "a pinned SOT_COMM_NAME never adopts a name from any self-file (capsule-comm-identity fix)" case_pinned_comm_name_never_adopts_selffile_identity
+check "sot_jq_rawfile round-trips a leading-slash value through jq --rawfile" case_jq_rawfile_helper_round_trips_leading_slash_value
+check "every jq --arg binding in the comm scripts + hooks is on the slash-safe allowlist" case_jq_arg_names_are_allowlisted_against_slash_prone_values
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

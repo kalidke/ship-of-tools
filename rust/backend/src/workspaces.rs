@@ -302,6 +302,13 @@ impl Workspace {
             "ws-{slug}-{:x}",
             std::process::id() as u64 ^ now_unix() as u64
         );
+        // `agent_name` is stored EXACTLY as given — empty is a real,
+        // supported case (capsule-comm-identity fix, Codex round finding
+        // 2): no synthesized default is written here. A capsule with no
+        // explicit `agent_name` gets no `SOT_COMM_NAME` pin either
+        // (`capsule_workspace::capsule_supervisor_env`); comm-join.sh's
+        // own #148 auto-disambiguating derivation decides its handle, via
+        // the `SOT_COMM_SELF_FILE` that spawn pins.
         Workspace::meta_only(
             workspace_id,
             slug,
@@ -960,7 +967,12 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
 /// daemon boot (the gatecheck/canary incidents, and the reason "a BE on
 /// a remote host" looked broken). First hostname label, lowercased;
 /// `SOT_STATE_HOST` overrides for tests/exotic setups.
-fn state_host() -> String {
+///
+/// `pub(crate)` (capsule-comm-identity fix): also the host `comm-lib.sh`'s
+/// own handles are suffixed with, so `capsule_workspace::capsule_supervisor_env`
+/// reuses this SAME resolution for the capsule's `SOT_COMM_SELF_FILE`
+/// path rather than re-deriving a host string that could drift from it.
+pub(crate) fn state_host() -> String {
     if let Ok(h) = std::env::var("SOT_STATE_HOST") {
         if !h.is_empty() {
             return h;

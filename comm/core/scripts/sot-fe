@@ -203,6 +203,11 @@ send_fe_command() {
         echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
         exit 1
     fi
+    # $FE (--fe <handle>) and fe_cmd are both id/handle-shaped tokens (a
+    # comm handle; a small fixed set of literal verbs from the case
+    # dispatch below) -- neither can legitimately start with "/", so both
+    # stay --arg (allowlisted; see the audit test in
+    # test-join-disambiguation.sh).
     local payload
     if [ -n "$FE" ]; then
         payload="$(jq -nc --arg c "$fe_cmd" --argjson a "$args_json" --arg t "$FE" \
@@ -281,7 +286,14 @@ send_repl_execute() {
     local payload req resp
     payload="$(jq -nc --arg w "$ws" --argjson in "$input_json" --argjson t "$ms" \
         '{workspace_id:$w, input:$in, timeout_ms:$t}')"
-    [ -n "$ORIGIN" ] && payload="$(printf '%s' "$payload" | jq -c --arg o "$ORIGIN" '. + {origin:$o}')"
+    # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): ORIGIN is
+    # free-text from --origin (a user-set drawer label) and must never
+    # reach jq via --arg.
+    if [ -n "$ORIGIN" ]; then
+        _origin_file="$(sot_jq_rawfile "$ORIGIN")" || exit 1
+        payload="$(printf '%s' "$payload" | jq -c --rawfile o "$_origin_file" '. + {origin:$o}')"
+        rm -f "$_origin_file"
+    fi
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.execute", payload:$p}')"
     resp="$(sot_send "$req" repl.execute || true)"
     if [ -z "$resp" ]; then
@@ -331,8 +343,13 @@ send_repl_run_file() {
     # ReplRunFileReq: eval_id(u64)+path required, fresh:true, workspace_id routes
     # to the target REPL. eval_id only correlates streamed frames we don't
     # collect, so a fixed value is fine.
-    payload="$(jq -nc --arg p "$file" --arg w "$ws" \
+    # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): $file is
+    # an absolute backend path (the caller's own doc above: "agents
+    # naturally hold an ABSOLUTE path") and must never reach jq via --arg.
+    local _run_file_path_file; _run_file_path_file="$(sot_jq_rawfile "$file")" || exit 1
+    payload="$(jq -nc --rawfile p "$_run_file_path_file" --arg w "$ws" \
         '{eval_id:1, path:$p, fresh:true, workspace_id:$w}')"
+    rm -f "$_run_file_path_file"
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.run_file", payload:$p}')"
     resp="$(sot_send "$req" repl.run_file || true)"
     if [ -z "$resp" ]; then
@@ -396,6 +413,8 @@ _ws_row() {
         echo "ERROR: the daemon refused workspace.list: $err [$(printf '%s' "$resp" | jq -r '.payload.code // "?"')] — likely a token/auth problem (\$SOT_TOKEN / ~/.config/sot/token), not a REPL problem." >&2
         exit 1
     fi
+    # $want is a workspace_id/label/slug identifier -- id-shaped, same
+    # allowlisted category as $WS/$ws_id elsewhere in this file.
     printf '%s' "$resp" | jq -c --arg w "$want" \
         'first((.payload.workspaces // [])[] | select(.workspace_id == $w or .label == $w or .slug == $w)) // empty'
 }
@@ -550,6 +569,8 @@ send_repl_status() {
         echo "ERROR: the daemon refused workspace.list: $rerr [$(printf '%s' "$resp" | jq -r '.payload.code // "?"')] — likely a token/auth problem (\$SOT_TOKEN / ~/.config/sot/token), not a REPL problem." >&2
         exit 1
     fi
+    # $want is a workspace_id/label/slug identifier -- id-shaped, same
+    # allowlisted category as $WS/$ws_id elsewhere in this file.
     if [ -n "$want" ]; then
         local found
         found="$(printf '%s' "$resp" | jq -r --arg w "$want" \
@@ -656,7 +677,11 @@ case "$CMD" in
                 if [ "${#_cap_trimmed}" -gt 300 ]; then
                     echo "warn: --caption is ${#_cap_trimmed} chars — the frontend will truncate it to 300" >&2
                 fi
-                ARGS="$(printf '%s' "$ARGS" | jq -c --arg c "$_cap_trimmed" '. + {caption:$c}')"
+                # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile):
+                # a caption is free text and must never reach jq via --arg.
+                _cap_file="$(sot_jq_rawfile "$_cap_trimmed")" || exit 1
+                ARGS="$(printf '%s' "$ARGS" | jq -c --rawfile c "$_cap_file" '. + {caption:$c}')"
+                rm -f "$_cap_file"
             fi
         fi
         send_fe_command "$CMD" "$ARGS"
@@ -684,7 +709,12 @@ case "$CMD" in
             /*) : ;;
             *)  echo "ERROR: sot-fe docs needs an ABSOLUTE backend path (docs.open stats it raw, not a repo-relative node_id)." >&2; exit 1 ;;
         esac
-        ARGS="$(jq -nc --arg w "$WS" --arg p "$PATH_ARG" '{workspace:$w, path:$p}')"
+        # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile):
+        # PATH_ARG is REQUIRED absolute here (the case above just enforced
+        # it) and must never reach jq via --arg.
+        _docs_path_file="$(sot_jq_rawfile "$PATH_ARG")" || exit 1
+        ARGS="$(jq -nc --arg w "$WS" --rawfile p "$_docs_path_file" '{workspace:$w, path:$p}')"
+        rm -f "$_docs_path_file"
         send_fe_command docs "$ARGS"
         ;;
     goto)
@@ -700,13 +730,20 @@ case "$CMD" in
     mode)
         MODE="${POS[0]:-}"
         [ -n "$MODE" ] || { echo "usage: sot-fe mode <mode> [--fe <handle>]" >&2; exit 1; }
+        # MODE is a short nav-mode token (files | modules | project | ...)
+        # -- id-shaped, same allowlisted category as $WS/$want.
         ARGS="$(jq -nc --arg m "$MODE" '{mode:$m}')"
         send_fe_command goto_mode "$ARGS"
         ;;
     notify)
         TEXT="${POS[0]:-}"
         [ -n "$TEXT" ] || { echo "usage: sot-fe notify <text> [--level <l>] [--ws <workspace>] [--fe <handle>]" >&2; exit 1; }
-        ARGS="$(jq -nc --arg t "$TEXT" '{text:$t}')"
+        # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): TEXT
+        # is free-text notification content and must never reach jq via
+        # --arg.
+        _notify_text_file="$(sot_jq_rawfile "$TEXT")" || exit 1
+        ARGS="$(jq -nc --rawfile t "$_notify_text_file" '{text:$t}')"
+        rm -f "$_notify_text_file"
         [ -n "$LEVEL" ]     && ARGS="$(printf '%s' "$ARGS" | jq -c --arg l "$LEVEL" '. + {level:$l}')"
         [ -n "$NOTIFY_WS" ] && ARGS="$(printf '%s' "$ARGS" | jq -c --arg w "$NOTIFY_WS" '. + {workspace:$w}')"
         send_fe_command notify "$ARGS"
@@ -730,7 +767,12 @@ case "$CMD" in
                     # Bounce the persistent REPL into <path>'s project, then include.
                     send_repl_run_file "$FILE" "$WS"
                 else
-                    INPUT="$(jq -nc --arg p "$FILE" '{kind:"run_file", path:$p}')"
+                    # MSYS2 argv-conversion guard (comm-lib.sh's
+                    # sot_jq_rawfile): FILE is a filesystem path and must
+                    # never reach jq via --arg.
+                    _run_file_input_file="$(sot_jq_rawfile "$FILE")" || exit 1
+                    INPUT="$(jq -nc --rawfile p "$_run_file_input_file" '{kind:"run_file", path:$p}')"
+                    rm -f "$_run_file_input_file"
                     send_repl_execute "$INPUT" "$WS"
                 fi
                 ;;
@@ -745,7 +787,12 @@ case "$CMD" in
                 else
                     echo "usage: sot-fe repl eval <workspace> (--code <c> | --stdin)  — code from --code or piped stdin" >&2; exit 1
                 fi
-                INPUT="$(jq -nc --arg c "$EVAL_CODE" '{kind:"eval", code:$c}')"
+                # MSYS2 argv-conversion guard (comm-lib.sh's
+                # sot_jq_rawfile): EVAL_CODE is arbitrary Julia source and
+                # must never reach jq via --arg.
+                _eval_code_file="$(sot_jq_rawfile "$EVAL_CODE")" || exit 1
+                INPUT="$(jq -nc --rawfile c "$_eval_code_file" '{kind:"eval", code:$c}')"
+                rm -f "$_eval_code_file"
                 send_repl_execute "$INPUT" "$WS"
                 ;;
             interrupt)

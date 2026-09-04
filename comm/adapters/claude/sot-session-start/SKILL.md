@@ -50,21 +50,50 @@ your own guess about why you're here.
 Get your handle and check for a **live watcher**:
 
 ```bash
-eval "$(~/.sot-comm/bin/comm-context.sh 2>/dev/null)" 2>/dev/null || true   # sets NAME (empty when not joined) — eval, do NOT sed-scrape: values are %q-quoted, so a scrape can capture literal quotes as a bogus non-empty handle
-if [ -n "$NAME" ]; then
-    h="$NAME"
+if [ -n "${SOT_COMM_SELF_FILE:-}" ] && [ ! -f "$SOT_COMM_SELF_FILE" ]; then
+    # A daemon-pinned capsule producer (SOT_COMM_SELF_FILE set in the
+    # producer env — capsule_workspace::capsule_supervisor_env) whose
+    # self-file doesn't exist yet has NEVER joined: there is no watcher of
+    # ITS OWN to have survived, so treat this as a genuine cold start and
+    # skip the pgrep below entirely. Skipping is not just an optimization —
+    # running it here is actively WRONG: with nothing to read,
+    # comm-context.sh returns NAME="", so `h` would fall through to the
+    # derived-handle fallback below, which can legitimately compute the
+    # SAME bare <repo>-<host> a DIFFERENT already-live session already
+    # holds (the tmux frontend, or a prior capsule for this same
+    # workspace) — the pgrep would then match THAT session's watcher and
+    # wrongly conclude "already connected", leaving this genuinely new
+    # session deaf forever.
+    echo "cold: SOT_COMM_SELF_FILE is set but does not exist yet — never joined; this is a genuine cold start, not a survived wipe"
 else
-    # Never hand-construct <repo>-<host> yourself (Codex review round-3
-    # finding 6) — sanitization, truncation, and the long-host digest
-    # suffix (ADR 0028's host-alias guard) can all change it. Compute it
-    # the SAME way comm-join.sh would, via the existing tier-1 derivation
-    # (comm-lib.sh's sot_derive_handle, third output line):
-    source ~/.sot-comm/bin/comm-lib.sh
-    h="$(sot_derive_handle reclaim "$PROJECT_ROOT" "$HOST" 2>/dev/null | sed -n 3p)"
-    h="${h:-$(basename "$PWD")-$(hostname -s)}"   # last-resort only if derivation itself fails
+    eval "$(~/.sot-comm/bin/comm-context.sh 2>/dev/null)" 2>/dev/null || true   # sets NAME (empty when not joined) — eval, do NOT sed-scrape: values are %q-quoted, so a scrape can capture literal quotes as a bogus non-empty handle
+    if [ -n "$NAME" ]; then
+        h="$NAME"
+    else
+        # Never hand-construct <repo>-<host> yourself (Codex review round-3
+        # finding 6) — sanitization, truncation, and the long-host digest
+        # suffix (ADR 0028's host-alias guard) can all change it. Compute it
+        # the SAME way comm-join.sh would, via the existing tier-1 derivation
+        # (comm-lib.sh's sot_derive_handle, third output line):
+        source ~/.sot-comm/bin/comm-lib.sh
+        h="$(sot_derive_handle reclaim "$PROJECT_ROOT" "$HOST" 2>/dev/null | sed -n 3p)"
+        # Last resort only if derivation itself fails -- and only for a
+        # HAND-STARTED shell: a capsule's identity is decided by its
+        # PINNED self-file (SOT_COMM_SELF_FILE, checked above — comm-join.sh's
+        # #148 auto-disambiguating derivation writes the handle it settles
+        # on there, no daemon-synthesized SOT_COMM_NAME involved by
+        # default), and an explicit --name/$SOT_COMM_NAME pin is for a
+        # hand-started shell or an explicit comm-spawn call, not this
+        # fallback. A capsule's cwd can also be $HOME (so basename "$PWD"
+        # is a username, not a repo) -- this fallback does not special-case
+        # that. `hostname -s` is guarded exactly like comm-context.sh's own
+        # HOST derivation: git-bash's `hostname` has no `-s` and errors on
+        # stderr without the fallback.
+        h="${h:-$(basename "$PWD")-$(hostname -s 2>/dev/null || hostname)}"
+    fi
+    h_re="$(printf '%s' "$h" | sed 's/\./\\./g')"   # escape dots — repo names contain them (e.g. MyOrg.github.io-myhost); an unescaped '.' matches ANY char and could false-match a sibling
+    pgrep -u "$(id -un)" -f "comm-watch\.sh ${h_re}\$"   # dot-escaped + END-ANCHORED: neither a '.' nor a `-2` sibling can false-match (a false match would make a genuinely-deaf cold session skip arming → deaf)
 fi
-h_re="$(printf '%s' "$h" | sed 's/\./\\./g')"   # escape dots — repo names contain them (e.g. MyOrg.github.io-myhost); an unescaped '.' matches ANY char and could false-match a sibling
-pgrep -u "$(id -un)" -f "comm-watch\.sh ${h_re}\$"   # dot-escaped + END-ANCHORED: neither a '.' nor a `-2` sibling can false-match (a false match would make a genuinely-deaf cold session skip arming → deaf)
 ```
 
 > `comm-context.sh` validates the identity it returns: the self-file is keyed
@@ -85,8 +114,9 @@ pgrep -u "$(id -un)" -f "comm-watch\.sh ${h_re}\$"   # dot-escaped + END-ANCHORE
   re-polling, or re-joining would only harm. (If you *specifically* suspect the
   listener bridge died, `comm-listen.sh` is idempotent — running it is a safe
   no-op when the bridge is already up.)
-- **Empty → you genuinely (re)started and are DEAF** (no watcher survived) →
-  proceed with (a)–(c); the full bootstrap is correct.
+- **Empty, OR the `cold:` line (SOT_COMM_SELF_FILE unjoined) → you genuinely
+  (re)started and are DEAF** (no watcher survived, or none of your own ever
+  existed) → proceed with (a)–(c); the full bootstrap is correct.
 
 > The `$`-anchor matters: `pgrep -f` is a substring match, so an un-anchored
 > `comm-watch.sh repo-host` would also match a *sibling* session's

@@ -4003,6 +4003,14 @@ pub async fn handle_workspace_create(
             // a workspace_id this op just minted, so it collapses to the
             // same failure/rollback path as a genuine spawn error rather
             // than growing a third outcome here.
+            // `&req.agent_name` verbatim (Codex round finding 2: no
+            // synthesized default — a synthesized `<slug>-<host>` handed
+            // to SOT_COMM_NAME would become an explicit pin that
+            // overwrites any existing registry row of that name,
+            // violating PROTOCOL.md's "never reuse a handle"; an empty
+            // `agent_name` is a real, supported case now — comm-join.sh's
+            // own #148 auto-disambiguating derivation picks the handle,
+            // via the SOT_COMM_SELF_FILE this spawn pins).
             Some(state_root) => crate::capsule_workspace::start_supervisor(
                 &state_root,
                 &ws_handle.workspace_id,
@@ -4010,6 +4018,7 @@ pub async fn handle_workspace_create(
                 &capsule_argv,
                 &project_root,
                 &req.agent_name,
+                &ws_handle.slug,
                 workspaces.clone(),
             )
             .and_then(|spawned| {
@@ -4403,23 +4412,41 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (year, m, d)
 }
 
-/// Resolve the sot-comm registry path: `$SOT_COMM_HOME/registry.json`
-/// when the env var is set, else `$HOME/.sot-comm/registry.json`. Returns
-/// `None` only when neither env var is available (no HOME) — every other
-/// failure is the caller's to treat as "absent" (empty strings).
+/// Resolve the sot-comm registry path: `<sot-comm home>/registry.json`,
+/// via the ONE shared resolver (`paths::sot_comm_home`, Codex round
+/// finding 8 — the same one `capsule_workspace::capsule_supervisor_env`
+/// injects as `SOT_COMM_HOME` into a spawned capsule's env, so the daemon
+/// and the scripts can never disagree about where `~/.sot-comm` is).
+/// Returns `None` only when the resolver itself found nothing (no
+/// `SOT_COMM_HOME`, `HOME`, or `USERPROFILE`) — every other failure is
+/// the caller's to treat as "absent" (empty strings).
 pub(crate) fn comm_registry_path() -> Option<std::path::PathBuf> {
-    if let Some(v) = std::env::var_os("SOT_COMM_HOME") {
-        let mut p = std::path::PathBuf::from(v);
-        p.push("registry.json");
-        return Some(p);
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let mut p = std::path::PathBuf::from(home);
-        p.push(".sot-comm");
-        p.push("registry.json");
-        return Some(p);
-    }
-    None
+    let mut p = crate::paths::sot_comm_home()?;
+    p.push("registry.json");
+    Some(p)
+}
+
+/// A capsule row's comm handle, read back from the SAME self-file
+/// `capsule_workspace::capsule_supervisor_env` pinned into its producer's
+/// env (`SOT_COMM_SELF_FILE`) — Codex round finding 2/companion: since
+/// the daemon no longer synthesizes/pins a name for an un-pinned capsule,
+/// `comm-join.sh`'s own #148 auto-disambiguating derivation is what
+/// actually decides the handle, and it writes that decision as the
+/// self-file's first line. `resolve_handle`'s tmux-session match (below)
+/// can never find a capsule row at all — a capsule has no tmux pane, so
+/// its own comm-join.sh row's `tmux` field is always empty. `""` on any
+/// failure (not yet joined, unreadable, empty file) — callers already
+/// fall back to the stored `agent_name` exactly as the tmux path does.
+fn capsule_comm_handle(workspace_id: &str) -> String {
+    let Some(comm_home) = crate::paths::sot_comm_home() else {
+        return String::new();
+    };
+    let host = crate::workspaces::state_host();
+    let self_file = comm_home.join("self").join(format!("{host}__{workspace_id}.txt"));
+    std::fs::read_to_string(&self_file)
+        .ok()
+        .and_then(|s| s.lines().next().map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// Read + parse the sot-comm registry, returning the `.agents` object as a
@@ -4663,8 +4690,17 @@ pub async fn handle_workspace_list(
     let mut entries: Vec<WorkspaceListEntry> = ws_list
         .into_iter()
         .map(|ws| {
-            // Prefer the live tmux occupant; fall back to the stored agent_name.
-            let handle = resolve_handle(&ws.tmux_session, &ws.agent_name);
+            // Prefer the live occupant; fall back to the stored agent_name.
+            // A capsule row has no tmux pane at all, so `resolve_handle`'s
+            // tmux-session match can never discover it (Codex round
+            // finding 2/companion) — read its OWN pinned self-file back
+            // instead (`capsule_comm_handle`).
+            let handle = if ws.runtime == "capsule" {
+                let h = capsule_comm_handle(&ws.workspace_id);
+                if h.is_empty() { ws.agent_name.clone() } else { h }
+            } else {
+                resolve_handle(&ws.tmux_session, &ws.agent_name)
+            };
             // Work-state merge: the registry `state` is what the agent *declared*
             // (set by the work-state hooks: UserPromptSubmit → "working",
             // Notification → "blocked", Stop → "idle"), while `pane` is the live
@@ -5603,5 +5639,99 @@ mod preview_downsample_tests {
         assert!(out.get("physical_scale").is_none());
         // None in → None out.
         assert!(super::rescale_physical_scale(None, 2.0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod capsule_comm_handle_tests {
+    // Codex round finding 2/companion: `capsule_comm_handle` reads back
+    // the handle `comm-join.sh`'s own derivation wrote into the
+    // self-file the daemon pinned via `SOT_COMM_SELF_FILE` — the daemon
+    // itself no longer synthesizes/persists a name, so this read-back is
+    // the ONLY way a capsule row's handle is ever discovered (a capsule
+    // has no tmux pane, so `resolve_handle`'s tmux-session match never
+    // finds it).
+    use super::capsule_comm_handle;
+
+    struct EnvGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        sot_comm_home: Option<std::ffi::OsString>,
+        home: Option<std::ffi::OsString>,
+        userprofile: Option<std::ffi::OsString>,
+        sot_state_host: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, val) in [
+                ("SOT_COMM_HOME", &self.sot_comm_home),
+                ("HOME", &self.home),
+                ("USERPROFILE", &self.userprofile),
+                ("SOT_STATE_HOST", &self.sot_state_host),
+            ] {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn guarded() -> EnvGuard {
+        let serial = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        EnvGuard {
+            sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
+            home: std::env::var_os("HOME"),
+            userprofile: std::env::var_os("USERPROFILE"),
+            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            _serial: serial,
+        }
+    }
+
+    #[test]
+    fn reads_first_line_of_the_pinned_self_file() {
+        let _guard = guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-capsule-comm-handle-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let self_dir = dir.join("self");
+        std::fs::create_dir_all(&self_dir).unwrap();
+        std::env::set_var("SOT_COMM_HOME", &dir);
+        std::env::set_var("SOT_STATE_HOST", "testhost");
+        std::fs::write(
+            self_dir.join("testhost__ws-myrepo-1a2b.txt"),
+            "myrepo-testhost\nrepo=myrepo\nroot=/home/me/myrepo\n",
+        )
+        .unwrap();
+
+        assert_eq!(capsule_comm_handle("ws-myrepo-1a2b"), "myrepo-testhost");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_when_self_file_does_not_exist() {
+        let _guard = guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-capsule-comm-handle-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("SOT_COMM_HOME", &dir);
+        std::env::set_var("SOT_STATE_HOST", "testhost");
+
+        assert_eq!(capsule_comm_handle("ws-never-joined-9f9f"), "");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

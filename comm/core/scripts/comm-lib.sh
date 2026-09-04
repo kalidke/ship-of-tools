@@ -435,6 +435,51 @@ sot_bridge_running_for() {
     [ -n "$(sot_bridge_pids_for "$name")" ]
 }
 
+# --- MSYS2 argv-conversion guard for jq values that can legitimately
+# start with "/" ---
+#
+# capsule-comm-identity fix, field-measured on a Windows git-bash box: when
+# a NATIVE (non-MSYS) jq.exe is invoked, MSYS2's argv-to-Windows-path
+# conversion rewrites any ARGV ELEMENT that starts with "/" into a Windows
+# path before jq ever sees it — verified through the real relay, a message
+# beginning "/sot-session-start ..." arrived in the peer's inbox mangled
+# into a filesystem path. The rule is exact and easy to miss in ad hoc
+# testing: only the FIRST character of the whole argument matters (a bare
+# "/" corrupts too); "./", "~/", "//server", and every MID-string slash
+# are untouched; on a MULTI-LINE value only the FIRST line is mangled —
+# every later line survives intact, which is why this read as an isolated
+# typo rather than a systematic corruption. `--arg NAME "$value"` passes
+# $value as its own argv element, so any of the THREE values in this
+# codebase that can genuinely start with "/" — a message body
+# (comm-send.sh, comm-relay.sh) and a project root (comm-join.sh) — must
+# never go through `--arg`. Every OTHER `--arg` (handles, hosts, ids,
+# timestamps) is drawn from a restricted charset that can never start
+# with "/" and is untouched by this fix.
+#
+# sot_jq_rawfile VALUE — writes VALUE verbatim (no added newline) to a
+# fresh temp file and prints its path, for use as `jq --rawfile NAME
+# <path> ...` in place of `--arg NAME "$VALUE"`: the risky VALUE now lives
+# in the file's CONTENT, read by jq via fread — never an argv element, so
+# never subject to the conversion. The file PATH argument itself is left
+# as an ordinary argument and SHOULD still convert when it starts with
+# "/" (that's the well-behaved half of the same MSYS2 mechanism — it's
+# what lets a native jq.exe find the file at all), so no
+# MSYS2_ARG_CONV_EXCL or similar exclusion is involved. The caller owns
+# the returned path and MUST `rm -f` it once jq has run.
+sot_jq_rawfile() {
+    local f
+    f="$(mktemp "${TMPDIR:-/tmp}/sot-comm-jq.XXXXXX" 2>/dev/null)" || {
+        echo "sot_jq_rawfile: could not create a temp file for a jq --rawfile value" >&2
+        return 1
+    }
+    if ! printf '%s' "$1" > "$f" 2>/dev/null; then
+        echo "sot_jq_rawfile: write to temp file '$f' failed" >&2
+        rm -f "$f" 2>/dev/null
+        return 1
+    fi
+    printf '%s' "$f"
+}
+
 # --- sender identity: NAME resolved is not enough, it must be ROUTABLE ---
 #
 # Codex review round-2 finding 4/C: comm-send.sh, comm-relay.sh, and

@@ -210,11 +210,72 @@ pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
     "CLAUDE_CODE_SESSION_ID",
 ];
 
+/// The `SOT_COMM_HOME` value (forward-slash string form — a git-bash/MSYS
+/// shell, not this native Windows process, is what reads it; MSYS accepts
+/// either slash spelling for a drive-letter-absolute path) to hand a
+/// capsule's producer env, so its own comm scripts resolve the EXACT SAME
+/// home this builds `SOT_COMM_SELF_FILE` from below — Codex round finding
+/// 8: ONE resolver ([`crate::paths::sot_comm_home`], also what the
+/// daemon's own registry reads use, `handlers::comm_registry_path`),
+/// injected into the child explicitly rather than left to each side's own
+/// HOME/USERPROFILE guess landing on two different answers. `None` when
+/// the resolver itself found nothing (matches comm-lib.sh: nothing to
+/// pin).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn capsule_comm_home_str() -> Option<String> {
+    Some(crate::paths::sot_comm_home()?.to_string_lossy().replace('\\', "/"))
+}
+
+/// The `SOT_*` awareness env a capsule supervisor spawn stamps on its
+/// producer — capsule-comm-identity fix: a capsule has no tmux pane, so
+/// `comm-context.sh`'s pane-keyed self-file slot never applies to it, and
+/// without `SOT_COMM_HOME`/`SOT_COMM_SELF_FILE` it fell back to the
+/// shared per-host `__nopane` slot, colliding with any other no-pane
+/// session on the same host (e.g. the frontend itself — the field bug
+/// this fixes). `SOT_WORKSPACE` (and `SOT_WORKSPACE_ROOT`/`SOT_SESSION`/
+/// `SOT_MANUAL`) reuse [`crate::pty::awareness_env`] verbatim — ONE
+/// builder, not a second copy that could drift — keyed on `slug` (Codex
+/// round finding 1: the frontend keys results and the active workspace by
+/// SLUG, not the internal `ws-<slug>-<hex>` id; `workspace_id` is used
+/// ONLY below, for the state dir and self-file paths, where stability
+/// and uniqueness matter more than the display shape). `SOT_COMM_NAME` is
+/// set ONLY for an explicitly requested `agent_name` (Codex round finding
+/// 2: a synthesized default here would become an explicit pin that
+/// OVERWRITES any existing registry row of that name — exactly what
+/// PROTOCOL.md's "never reuse a handle" forbids, and a hand-started
+/// session in the same repo on the same host derives precisely
+/// `<slug>-<host>` on its own). `SOT_COMM_SELF_FILE`
+/// (`<comm_home>/self/<host>__<workspace_id>.txt`, comm-lib.sh's EXISTING
+/// pin-the-self-file-path seam — already used by its own test suite, and
+/// already honoured unchanged by both `comm-context.sh`, the reader, and
+/// `comm-join.sh`, the writer) is what actually gives the capsule its own
+/// slot: `comm-join.sh`'s #148 auto-disambiguating derivation decides the
+/// handle and writes it there; the daemon later reads that same file's
+/// first line back to learn it (`handlers::capsule_comm_handle`). Pure
+/// (no I/O beyond env reads): exercised by the cross-platform test suite
+/// even though [`windows_runtime::spawn_detached_supervisor`], its only
+/// caller, is Windows-only.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
+    let mut env = crate::pty::awareness_env(Some(slug), Some(cwd));
+    if !agent_name.is_empty() {
+        env.push(("SOT_COMM_NAME".to_string(), agent_name.to_string()));
+    }
+    if let Some(comm_home) = capsule_comm_home_str() {
+        let host = crate::workspaces::state_host();
+        let self_file = format!("{}/self/{}__{}.txt", comm_home.trim_end_matches('/'), host, workspace_id);
+        env.push(("SOT_COMM_HOME".to_string(), comm_home));
+        env.push(("SOT_COMM_SELF_FILE".to_string(), self_file));
+    }
+    env
+}
+
 #[cfg(windows)]
 mod windows_runtime {
     use super::{
-        agent_argv, mode_flag, StartMode, LANE_CONCURRENCY, LIST_LANE_DEADLINE, MAX_RESTARTS_PER_WINDOW,
-        NESTING_ENV_VARS_TO_SCRUB, NEVER_STARTED_PHASE, RESTART_BACKOFFS, RESTART_WINDOW, UNREACHABLE_PHASE,
+        agent_argv, capsule_supervisor_env, mode_flag, StartMode, LANE_CONCURRENCY, LIST_LANE_DEADLINE,
+        MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB, NEVER_STARTED_PHASE, RESTART_BACKOFFS,
+        RESTART_WINDOW, UNREACHABLE_PHASE,
     };
     use crate::workspaces::Workspaces;
     use std::io::ErrorKind;
@@ -300,6 +361,8 @@ mod windows_runtime {
         agent_argv: &[String],
         cwd: &Path,
         agent_name: &str,
+        workspace_id: &str,
+        slug: &str,
     ) -> std::io::Result<SpawnedSupervisor> {
         let base_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
         let build = |flags: u32, survival: &str| -> Command {
@@ -323,8 +386,8 @@ mod windows_runtime {
             for var in NESTING_ENV_VARS_TO_SCRUB {
                 cmd.env_remove(var);
             }
-            if !agent_name.is_empty() {
-                cmd.env("SOT_COMM_NAME", agent_name);
+            for (k, v) in capsule_supervisor_env(workspace_id, slug, cwd, agent_name) {
+                cmd.env(k, v);
             }
             cmd
         };
@@ -420,9 +483,11 @@ mod windows_runtime {
         cwd: &Path,
         agent_name: &str,
         workspace_id: String,
+        slug: String,
         workspaces: Workspaces,
     ) -> std::io::Result<bool> {
-        let spawned = spawn_detached_supervisor(sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name)?;
+        let spawned =
+            spawn_detached_supervisor(sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug)?;
         let degraded = spawned.degraded;
         workspaces.clear_capsule_terminal(&workspace_id);
         spawn_starting_release_poll(workspace_id.clone(), state_dir.to_path_buf(), workspaces.clone());
@@ -433,6 +498,7 @@ mod windows_runtime {
             agent_argv.to_vec(),
             cwd.to_path_buf(),
             agent_name.to_string(),
+            slug,
             spawned.child,
             workspaces,
         );
@@ -497,6 +563,7 @@ mod windows_runtime {
         agent_argv: &[String],
         project_root: &Path,
         agent_name: &str,
+        slug: &str,
         workspaces: Workspaces,
     ) -> Result<Option<bool>, String> {
         if !workspaces.try_begin_capsule_start(workspace_id) {
@@ -510,7 +577,17 @@ mod windows_runtime {
                 return Err(format!("could not locate sot-capsule.exe next to this daemon: {e}"));
             }
         };
-        match spawn_and_watch(&exe, &state_dir, mode, agent_argv, project_root, agent_name, workspace_id.to_string(), workspaces.clone()) {
+        match spawn_and_watch(
+            &exe,
+            &state_dir,
+            mode,
+            agent_argv,
+            project_root,
+            agent_name,
+            workspace_id.to_string(),
+            slug.to_string(),
+            workspaces.clone(),
+        ) {
             Ok(degraded) => Ok(Some(degraded)),
             Err(e) => {
                 workspaces.end_capsule_start(workspace_id);
@@ -570,6 +647,7 @@ mod windows_runtime {
         workspace_id: &str,
         agent_kind: &str,
         agent_name: &str,
+        slug: &str,
         project_root: &Path,
         workspaces: Workspaces,
     ) -> Result<Option<bool>, String> {
@@ -581,7 +659,7 @@ mod windows_runtime {
             return Ok(None);
         };
         let argv = agent_argv(agent_kind)?;
-        start_supervisor(state_root, workspace_id, mode, &argv, project_root, agent_name, workspaces)
+        start_supervisor(state_root, workspace_id, mode, &argv, project_root, agent_name, slug, workspaces)
     }
 
     /// What one leg's exit means for the watchdog's own decision —
@@ -653,6 +731,7 @@ mod windows_runtime {
         argv: Vec<String>,
         cwd: PathBuf,
         agent_name: String,
+        slug: String,
         child: Child,
         workspaces: Workspaces,
     ) {
@@ -697,7 +776,16 @@ mod windows_runtime {
                         );
                         tokio::time::sleep(backoff).await;
                         restart_times.push(Instant::now());
-                        match spawn_detached_supervisor(&sot_capsule_exe, &state_dir, StartMode::Resume, &argv, &cwd, &agent_name) {
+                        match spawn_detached_supervisor(
+                            &sot_capsule_exe,
+                            &state_dir,
+                            StartMode::Resume,
+                            &argv,
+                            &cwd,
+                            &agent_name,
+                            &workspace_id,
+                            &slug,
+                        ) {
                             Ok(spawned) => child_opt = Some(spawned.child),
                             Err(e) => {
                                 tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: restart spawn failed");
@@ -749,7 +837,7 @@ mod windows_runtime {
             tracing::warn!("capsule workspace resume-scan: could not locate sot-capsule.exe next to this daemon");
             return;
         }
-        let candidates: Vec<(String, Vec<String>, PathBuf, String)> = workspaces
+        let candidates: Vec<(String, Vec<String>, PathBuf, String, String)> = workspaces
             .list()
             .into_iter()
             .filter(|ws| ws.runtime == "capsule")
@@ -758,7 +846,13 @@ mod windows_runtime {
                 sot_log::pointer::pointer_path(&state_dir).is_file()
             })
             .filter_map(|ws| match agent_argv(&ws.agent) {
-                Ok(argv) => Some((ws.workspace_id.clone(), argv, ws.project_root.clone(), ws.agent_name.clone())),
+                Ok(argv) => Some((
+                    ws.workspace_id.clone(),
+                    argv,
+                    ws.project_root.clone(),
+                    ws.agent_name.clone(),
+                    ws.slug.clone(),
+                )),
                 Err(e) => {
                     tracing::warn!(
                         workspace_id = %ws.workspace_id, error = %e,
@@ -771,13 +865,13 @@ mod windows_runtime {
 
         let semaphore = Arc::new(tokio::sync::Semaphore::new(LANE_CONCURRENCY));
         let mut joins = Vec::with_capacity(candidates.len());
-        for (workspace_id, argv, cwd, agent_name) in candidates {
+        for (workspace_id, argv, cwd, agent_name, slug) in candidates {
             let permit = semaphore.clone();
             let state_root = state_root.clone();
             let workspaces = workspaces.clone();
             joins.push(tokio::spawn(async move {
                 let _permit = permit.acquire_owned().await;
-                match start_supervisor(&state_root, &workspace_id, StartMode::Resume, &argv, &cwd, &agent_name, workspaces) {
+                match start_supervisor(&state_root, &workspace_id, StartMode::Resume, &argv, &cwd, &agent_name, &slug, workspaces) {
                     Ok(Some(degraded)) => {
                         tracing::info!(workspace_id = %workspace_id, degraded, "capsule workspace supervisor resumed");
                     }
@@ -952,5 +1046,110 @@ mod tests {
                 "CLAUDE_CODE_SESSION_ID",
             ]
         );
+    }
+
+    // Serialized under the crate-wide `paths::ENV_TEST_LOCK` (mirrors
+    // `workspaces.rs`'s own `EnvGuard` exactly — see that module's
+    // comment: `cargo test` runs in parallel within one process, and
+    // several modules' resolvers read the SAME env vars, HOME included).
+    struct SelfFileEnvGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        home: Option<std::ffi::OsString>,
+        userprofile: Option<std::ffi::OsString>,
+        sot_comm_home: Option<std::ffi::OsString>,
+        sot_state_host: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for SelfFileEnvGuard {
+        fn drop(&mut self) {
+            for (key, val) in [
+                ("HOME", &self.home),
+                ("USERPROFILE", &self.userprofile),
+                ("SOT_COMM_HOME", &self.sot_comm_home),
+                ("SOT_STATE_HOST", &self.sot_state_host),
+            ] {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn self_file_env_guarded() -> SelfFileEnvGuard {
+        let serial = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        SelfFileEnvGuard {
+            home: std::env::var_os("HOME"),
+            userprofile: std::env::var_os("USERPROFILE"),
+            sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
+            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            _serial: serial,
+        }
+    }
+
+    #[test]
+    fn capsule_supervisor_env_carries_slug_workspace_and_comm_home() {
+        // Codex round: SOT_WORKSPACE is keyed on SLUG (finding 1 — the
+        // frontend keys results/the active workspace by slug, not the
+        // internal ws-<slug>-<hex> id), while the id is used only for the
+        // self-file path. SOT_COMM_HOME and SOT_COMM_SELF_FILE
+        // (comm-lib.sh's existing pin-the-self-file seam) are stamped
+        // unconditionally so a capsule never falls back to the shared
+        // per-host __nopane slot.
+        let _guard = self_file_env_guarded();
+        std::env::set_var("SOT_STATE_HOST", "testhost");
+        std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
+        let env = capsule_supervisor_env(
+            "ws-myrepo-1a2b",
+            "myrepo",
+            Path::new("/home/me/myrepo"),
+            "myrepo-myhost",
+        );
+        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("SOT_WORKSPACE"), Some("myrepo"));
+        assert_eq!(get("SOT_WORKSPACE_ROOT"), Some("/home/me/myrepo"));
+        assert_eq!(get("SOT_COMM_NAME"), Some("myrepo-myhost"));
+        assert_eq!(get("SOT_SESSION"), Some("1"));
+        assert_eq!(get("SOT_COMM_HOME"), Some("/fake-home/.sot-comm"));
+        assert_eq!(
+            get("SOT_COMM_SELF_FILE"),
+            Some("/fake-home/.sot-comm/self/testhost__ws-myrepo-1a2b.txt")
+        );
+    }
+
+    #[test]
+    fn capsule_supervisor_env_omits_comm_name_when_unnamed() {
+        // Codex round finding 2: NO synthesized default here — an
+        // un-pinned autostart (no explicit agent_name in the request)
+        // gets no SOT_COMM_NAME at all. comm-join.sh's own #148
+        // auto-disambiguating derivation decides the handle instead
+        // (reading SOT_COMM_SELF_FILE to know where to write it), exactly
+        // as a hand-started shell would — a synthesized <slug>-<host>
+        // pin would become an explicit overwrite of any existing row of
+        // that name, which PROTOCOL.md's "never reuse a handle" forbids.
+        // SOT_WORKSPACE/SOT_COMM_HOME/SOT_COMM_SELF_FILE stay
+        // unconditional regardless.
+        let _guard = self_file_env_guarded();
+        std::env::set_var("SOT_STATE_HOST", "testhost");
+        std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
+        let env = capsule_supervisor_env("ws-anon-9f9f", "anon", Path::new("/home/me/anon"), "");
+        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("SOT_WORKSPACE"), Some("anon"));
+        assert_eq!(get("SOT_COMM_NAME"), None);
+        assert_eq!(
+            get("SOT_COMM_SELF_FILE"),
+            Some("/fake-home/.sot-comm/self/testhost__ws-anon-9f9f.txt")
+        );
+    }
+
+    #[test]
+    fn capsule_comm_home_str_none_when_no_home_var_is_set() {
+        let _guard = self_file_env_guarded();
+        std::env::remove_var("SOT_COMM_HOME");
+        std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
+        assert_eq!(capsule_comm_home_str(), None);
     }
 }
