@@ -4003,13 +4003,20 @@ pub async fn handle_workspace_create(
             // a workspace_id this op just minted, so it collapses to the
             // same failure/rollback path as a genuine spawn error rather
             // than growing a third outcome here.
+            // `ws_handle.agent_name`, NOT `req.agent_name` (capsule-comm-
+            // identity fix): `Workspace::from_label` may have filled in the
+            // `<slug>-<host>` default when the request supplied none — that
+            // persisted value is what must be pinned into the producer's
+            // env (and reused verbatim on every future restart/resume,
+            // which already read `ws.agent_name` off disk), not the
+            // possibly-empty raw request field.
             Some(state_root) => crate::capsule_workspace::start_supervisor(
                 &state_root,
                 &ws_handle.workspace_id,
                 crate::capsule_workspace::StartMode::Start,
                 &capsule_argv,
                 &project_root,
-                &req.agent_name,
+                &ws_handle.agent_name,
                 workspaces.clone(),
             )
             .and_then(|spawned| {
