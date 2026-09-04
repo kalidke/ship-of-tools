@@ -270,6 +270,35 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
     env
 }
 
+/// Outcome of [`windows_runtime::end_run`] — the daemon's own portable
+/// vocabulary over `sot_log::supervisor_client::EndRunOutcome` (never
+/// that raw, Windows-only type crossing into `handlers.rs`). Defined
+/// here, outside `windows_runtime`, so `handlers.rs`'s outcome→response
+/// mapping stays plain and unit-testable on every platform; `end_run`'s
+/// own real lane call is the only Windows-only step.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone)]
+pub enum EndRunOutcome {
+    /// The run ended and its record verified green.
+    RecordVerified,
+    /// The marker committed but the O(retained history) verify walk
+    /// hadn't finished within the ADR's 90s cutoff — still safe to treat
+    /// as "ended" (the marker itself is the irrevocable acceptance).
+    RecordClosed,
+    /// The lane was ALREADY resting in `EndedNoRespawn` — recovered via
+    /// the leg's own end-marker alone, NEVER via `verify_voyage`, so
+    /// this must not be reported as `RecordVerified`/`RecordClosed`.
+    AlreadyEnded,
+    /// The lane answered `phase: Starting` (voyage may still be `None`
+    /// — only set once Recovering completes) — NEVER "not running"; a
+    /// run may be about to (or already did) start. Retry.
+    Starting,
+    /// `end_run` reported the operation failed, was refused, or its
+    /// outcome is unknown, OR the authority answered `Terminal` — no
+    /// confirmed end in any case.
+    NotEnded(String),
+}
+
 #[cfg(windows)]
 mod windows_runtime {
     use super::{
@@ -444,26 +473,82 @@ mod windows_runtime {
         }
     }
 
-    /// `workspace.delete` on a capsule workspace: send `end_run {reason,
-    /// voyage}` on the lane (bounded by `sot_log::supervisor_client::
-    /// end_run`'s own ADR-pinned 90s cutoff — see that function's own
-    /// doc), reporting the outcome honestly. `Ok(None)` means the
-    /// workspace never had a leg to end (no voyage observed yet —
-    /// nothing to do). The state directory is NEVER deleted here: the
-    /// record persists by design. BLOCKING — callers run it via
-    /// `spawn_blocking`.
-    pub fn end_run(
-        state_dir: &Path,
-        reason: &str,
-    ) -> std::io::Result<Option<sot_log::supervisor_client::EndRunOutcome>> {
+    /// `workspace.delete` on a capsule workspace (and the default row's
+    /// end-run path): send `end_run {reason, voyage}` on the lane,
+    /// reporting the outcome via [`super::EndRunOutcome`] (see its own
+    /// variant docs for the Starting/AlreadyEnded honesty rules), THEN
+    /// `stop` the authority once confirmed there is no more leg to run.
+    /// `stop` now WAITS for confirmed process exit; a failure there is
+    /// only a logged warning, never a destroy failure — the outcome
+    /// stays the confirmed one (`stop` only ends the AUTHORITY, never
+    /// the capsule LEG, ADR 0041 adoption). The state directory is NEVER
+    /// deleted here. BLOCKING — callers run it via `spawn_blocking`.
+    pub fn end_run(state_dir: &Path, reason: &str) -> std::io::Result<super::EndRunOutcome> {
+        use super::EndRunOutcome as R;
+        use sot_log::supervisor_client::EndRunOutcome as O;
+        use sot_log::wire::SupervisorPhase;
+
         let (status, _process) = sot_log::supervisor_client::query_status(state_dir)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
-        let Some(voyage) = status.voyage else {
-            return Ok(None);
-        };
+
+        match status.phase {
+            SupervisorPhase::Starting => return Ok(R::Starting),
+            SupervisorPhase::EndedNoRespawn => {
+                // A PRIOR end already landed here and was never stopped
+                // (exactly the leak this whole function closes) — a
+                // fresh `EndRun` command would only be refused
+                // (`Failed{"no leg is currently running"}`, since
+                // `EndRun` requires `Lifecycle::Ready`; see
+                // `supervisor.rs`'s `handle_command`). Skip the doomed
+                // round trip; retry the stop instead of fabricating a
+                // verified outcome this call never actually observed.
+                stop_and_warn(state_dir, "already ended (EndedNoRespawn) before this call");
+                return Ok(R::AlreadyEnded);
+            }
+            SupervisorPhase::Terminal => {
+                return Ok(R::NotEnded(
+                    "the authority is in a terminal state".to_string(),
+                ));
+            }
+            SupervisorPhase::Ready | SupervisorPhase::Ending => {}
+        }
+
+        // Ready/Ending are only reachable once Recovering's own Done arm
+        // has set `authority.voyage_id` (`supervisor.rs`), so this is
+        // always populated here.
+        let voyage = status
+            .voyage
+            .expect("Ready/Ending implies a voyage_id (supervisor.rs's own recovery transition)");
         let outcome = sot_log::supervisor_client::end_run(state_dir, &voyage, reason)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
-        Ok(Some(outcome))
+        Ok(match outcome {
+            O::RecordVerified => {
+                stop_and_warn(state_dir, "end_run confirmed verified");
+                R::RecordVerified
+            }
+            O::RecordClosed => {
+                stop_and_warn(state_dir, "end_run confirmed closed");
+                R::RecordClosed
+            }
+            O::Failed(detail) => R::NotEnded(format!("end_run failed: {detail}")),
+            O::Refused(detail) => R::NotEnded(format!("end_run refused: {detail}")),
+            O::OutcomeUnknown => R::NotEnded(
+                "end_run outcome unknown (the ADR's own 90s cutoff elapsed with no terminal reply)"
+                    .to_string(),
+            ),
+        })
+    }
+
+    /// Best-effort `stop` after [`end_run`] confirms there is no more
+    /// leg to run — see that function's own doc for why this exists and
+    /// why a failure here is only ever logged, never propagated.
+    fn stop_and_warn(state_dir: &Path, why: &'static str) {
+        if let Err(e) = sot_log::supervisor_client::stop(state_dir) {
+            tracing::warn!(
+                state_dir = ?state_dir, error = %e, why,
+                "capsule workspace: stop after end_run failed (resident supervisor leaked)"
+            );
+        }
     }
 
     /// Spawn a capsule's supervisor authority AND hand it to a watchdog
@@ -674,11 +759,58 @@ mod windows_runtime {
             return Ok(None);
         }
         let state_dir = super::state_dir_for(state_root, workspace_id);
-        let Some(mode) = start_mode_needed(&state_dir) else {
-            return Ok(None);
+        let spawned = match start_mode_needed(&state_dir) {
+            Some(mode) => {
+                let argv = agent_argv(agent_kind)?;
+                let result = start_supervisor(
+                    state_root,
+                    workspace_id,
+                    mode,
+                    &argv,
+                    project_root,
+                    agent_name,
+                    slug,
+                    workspaces,
+                )?;
+                if mode == StartMode::Resume {
+                    // A resumed authority whose leg already carries the
+                    // end marker settles into `EndedNoRespawn` almost
+                    // instantly (a marker read, no spawn) — give it
+                    // that window before the reset check below. A
+                    // crash-resume (spawning a fresh leg) just stays
+                    // `Starting` past it and falls through unaffected.
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    loop {
+                        if let Ok((report, _process)) =
+                            sot_log::supervisor_client::query_status(&state_dir)
+                        {
+                            if !matches!(report.phase, sot_log::wire::SupervisorPhase::Starting) {
+                                break;
+                            }
+                        }
+                        if Instant::now() >= deadline {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+                result
+            }
+            None => None,
         };
-        let argv = agent_argv(agent_kind)?;
-        start_supervisor(state_root, workspace_id, mode, &argv, project_root, agent_name, slug, workspaces)
+        // One answered phase still has no live leg to attach to:
+        // `EndedNoRespawn` (`--resume`/`--start` deliberately never
+        // resurrect it — ADR 0041's own no-resurrection rule). `reset`
+        // is the ONE operation that phase admits; proceed as for a
+        // fresh start (the reset transaction mints the new voyage and
+        // spawns).
+        if phase_of(&state_dir) == super::phase_str(sot_log::wire::SupervisorPhase::EndedNoRespawn)
+        {
+            return sot_log::supervisor_client::reset(&state_dir)
+                .map(|_new_voyage| Some(false))
+                .map_err(|e| format!("capsule workspace reset (after an ended run) failed: {e}"));
+        }
+        Ok(spawned)
     }
 
     /// What one leg's exit means for the watchdog's own decision —

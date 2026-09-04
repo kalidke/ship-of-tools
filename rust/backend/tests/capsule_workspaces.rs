@@ -535,6 +535,26 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     .await;
     assert!(ended.voyage.is_some(), "an ended run still names its voyage");
 
+    // Leak proof: `capsule_workspace::end_run` (the daemon's own wrapper
+    // `workspace.destroy` calls) now sends `stop` once the end is
+    // confirmed (`RecordVerified`/`RecordClosed`) — mirror the SAME
+    // "lane goes silent after stop" idiom the adoption proof above uses
+    // (`sot-capsule supervise` otherwise idles in `EndedNoRespawn`
+    // forever: it exits only once a resting phase AND a `stop` request
+    // are both true — see `supervisor.rs`'s own exit-condition doc).
+    // Without this, the field defect this closes reproduces exactly:
+    // one resident `sot-capsule.exe` per destroy, holding
+    // `supervisor.lock` and the exe, that nothing would ever reap.
+    poll_until(
+        || {
+            let dir = state_dir_path.clone();
+            async move { if try_query_status(dir).await.is_none() { Some(()) } else { None } }
+        },
+        BOUND,
+        "the ended supervisor's own lane to go silent (workspace.destroy's end_run must also stop it)",
+    )
+    .await;
+
     let destroy_deadline = Instant::now() + BOUND;
     loop {
         let id = next_id2;
@@ -683,6 +703,97 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+
+    // --- #182 items A.1/C: end the default row, then prove attach
+    // recovers it via `reset` with a NEW voyage (not the old flat
+    // refusal, and not a resurrected ended one) ---
+    let (original_status, _process) = sot_log::supervisor_client::query_status(&state_dir_path)
+        .expect("query_status before workspace.destroy");
+    let original_voyage = original_status.voyage.expect("a ready capsule has a voyage");
+
+    // workspace.destroy on the DEFAULT row: ends the run instead of the
+    // old flat refusal (the original defect this PR fixes) — success,
+    // `kept`, never an error.
+    let destroy_req = serde_json::json!({ "workspace_id": default_workspace_id });
+    let destroy_res = call(&mut conn, next_id, op::WORKSPACE_DESTROY, destroy_req).await;
+    next_id += 1;
+    assert!(
+        destroy_res.payload.get("error").is_none(),
+        "workspace.destroy on the default row failed: {:?}",
+        destroy_res.payload
+    );
+    assert!(
+        destroy_res.payload.get("kept").and_then(|v| v.as_str()).is_some(),
+        "default row destroy must report kept: {:?}",
+        destroy_res.payload
+    );
+
+    // Item A.1: `end_run`'s own `stop` now WAITS for confirmed process
+    // death, so the authority must already be gone by the time the
+    // response above landed — same leak-proof idiom the create/destroy
+    // test uses.
+    poll_until(
+        || {
+            let dir = state_dir_path.clone();
+            async move { if try_query_status(dir).await.is_none() { Some(()) } else { None } }
+        },
+        BOUND,
+        "the ended default row's supervisor lane to go silent",
+    )
+    .await;
+
+    // Re-attach: the daemon spawns a fresh `--resume` authority (the
+    // old one is confirmed gone). Its own recovery finds the leg's end
+    // marker and settles into `EndedNoRespawn` — never resurrected by
+    // `--resume` (ADR 0041's own no-resurrection rule).
+    let reattach_req = serde_json::json!({
+        "cols": 80, "rows": 24, "user_switch": true, "target": default_target,
+    });
+    let reattach_res = call(&mut conn, next_id, op::PTY_OPEN, reattach_req).await;
+    next_id += 1;
+    assert_eq!(reattach_res.payload["code"], "attach_direct", "re-attach after end: {:?}", reattach_res.payload);
+    poll_until(
+        || {
+            let dir = state_dir_path.clone();
+            async move {
+                let report = try_query_status(dir).await?;
+                (report.phase == sot_log::wire::SupervisorPhase::EndedNoRespawn).then_some(())
+            }
+        },
+        BOUND,
+        "the re-attached default row's resumed authority to settle into EndedNoRespawn",
+    )
+    .await;
+
+    // Third attach: `ensure_started` finds the lane already answering
+    // `EndedNoRespawn` and sends `reset` instead of treating "already
+    // up" as "nothing to do" — item C, the claim this test proves.
+    let reset_attach_req = serde_json::json!({
+        "cols": 80, "rows": 24, "user_switch": true, "target": default_target,
+    });
+    let reset_attach_res = call(&mut conn, next_id, op::PTY_OPEN, reset_attach_req).await;
+    assert_eq!(
+        reset_attach_res.payload["code"], "attach_direct",
+        "re-attach after reset: {:?}", reset_attach_res.payload
+    );
+
+    // Pane genuinely live (phase reaches Ready, not stuck in
+    // EndedNoRespawn/unreachable) with a NEW voyage id, not the
+    // original (ended) one.
+    let ready_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
+    let new_voyage = loop {
+        if let Some(report) = try_query_status(state_dir_path.clone()).await {
+            if report.phase == sot_log::wire::SupervisorPhase::Ready {
+                break report.voyage.expect("a ready capsule has a voyage");
+            }
+        }
+        assert!(
+            Instant::now() < ready_deadline,
+            "timed out waiting for the reset default row's supervisor to reach Ready"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_ne!(new_voyage, original_voyage, "reset must mint a NEW voyage, not resurrect the ended one");
 
     // Rule H: "KillGuard" the spawned supervisor — it is DETACHED
     // (spawned by the daemon, survives the daemon's own exit by design,

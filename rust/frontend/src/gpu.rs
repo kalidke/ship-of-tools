@@ -13472,6 +13472,53 @@ impl State {
                 }
                 crate::transport::IncomingEvt::WorkspaceDestroyed { result } => {
                     match result {
+                        Ok(info) if info.kept.is_some() => {
+                            // Default row: the backend ended its capsule
+                            // run instead of removing the row — nav/REPL/
+                            // tree caches stay untouched. But the BL
+                            // pane's own ATTACHMENT is now stale
+                            // (`FeAttachClient` marks itself dead but
+                            // keeps the rendered screen), and
+                            // `attach_session_to_bl`'s unchanged-target
+                            // early return would otherwise no-op a future
+                            // re-attach forever. Invalidate exactly the
+                            // attachment: the live client, buffered
+                            // input, `bl_pane_target` (live field AND
+                            // this row's own snapshot slot — swap-in
+                            // restores FROM the snapshot), and
+                            // `pane_feed`.
+                            let detail = info.kept.as_deref().unwrap_or("");
+                            self.status = format!("{detail} (default row kept)");
+                            if self.active_host == event_host
+                                && self
+                                    .active_workspace_id
+                                    .as_deref()
+                                    .map(|s| s == info.slug || s == info.workspace_id)
+                                    .unwrap_or(false)
+                            {
+                                #[cfg(windows)]
+                                {
+                                    self.pane_attach_term = None;
+                                }
+                                self.pane_pending_input.clear();
+                                self.bl_pane_target = None;
+                                self.pane_feed = PaneFeed::Pending;
+                            }
+                            let ws_key: WsKey = (
+                                event_host.clone(),
+                                self.reply_ws_key(Some(info.slug.as_str())),
+                            );
+                            if let Some(snap) = self.workspace_ui_snapshots.get_mut(&ws_key) {
+                                snap.bl_pane_target = None;
+                            }
+                            // No manual `workspace.list` request here —
+                            // the backend's own `run_ended`
+                            // `WorkspaceChanged` push (the generic
+                            // `WORKSPACE_CHANGED` evt handler above)
+                            // already re-lists; a second request here
+                            // would just be a duplicate.
+                            self.window.request_redraw();
+                        }
                         Ok(info) => {
                             // If the active workspace was the one we
                             // just destroyed, bounce to default. The
@@ -19480,9 +19527,11 @@ impl ApplicationHandler for App {
                             // Cursor move, mode switch, or any other
                             // key clears the arm (handled by the
                             // snapshot-and-clear at the top of this
-                            // handler). Default workspace is rejected
-                            // backend-side; that surface as a status
-                            // error.
+                            // handler). A default TMUX row is rejected
+                            // backend-side (surfaces as a status error);
+                            // a default CAPSULE row instead ends its
+                            // run and keeps the row (backend-side too —
+                            // see `WorkspaceDestroyed`'s `kept` branch).
                             Key::Character(s)
                                 if !event.repeat
                                 // caps-lock-immune: Shift+d under Caps Lock arrives as "d"

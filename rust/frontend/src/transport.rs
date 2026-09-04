@@ -652,6 +652,11 @@ pub struct WorkspaceDestroyedInfo {
     pub label: String,
     pub tmux_killed: bool,
     pub toml_removed: bool,
+    /// `Some(detail)` when the backend kept the row instead of removing
+    /// it (the default workspace's capsule run was ended in place — see
+    /// `sot_protocol::ops::WorkspaceDestroyRes::kept`); `None` for an
+    /// ordinary destroy where the row is actually gone.
+    pub kept: Option<String>,
 }
 
 /// One row of the `directory.list` response, mirrored here so the
@@ -3447,6 +3452,7 @@ fn handle_response_frame(
                             label: r.label,
                             tmux_killed: r.tmux_killed,
                             toml_removed: r.toml_removed,
+                            kept: r.kept,
                         }),
                         Err(e) => Err(format!("workspace.destroy res parse: {e}")),
                     }

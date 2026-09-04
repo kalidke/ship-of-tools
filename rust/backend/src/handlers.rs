@@ -4087,61 +4087,114 @@ pub async fn handle_workspace_create(
 /// workspace's row (and its persisted toml) may be safely removed by
 /// `workspace.destroy`.
 enum CapsuleDestroyOutcome {
-    /// `record_closed` or `record_verified` was reached (or there was no
-    /// leg to end at all — `None`) — the row may be removed. The state
-    /// directory is NEVER deleted here regardless — the record persists
-    /// by design. Carries a debug-formatted description of the outcome
-    /// (never the concrete `sot_log::supervisor_client::EndRunOutcome`
-    /// type itself, which is Windows-only — this enum's own definition
-    /// must stay portable so it compiles on every platform, matching
-    /// this whole function's own `#[cfg(windows)]`/`#[cfg(not(windows))]`
-    /// split internally rather than at the type level). Never
-    /// constructed off Windows in this unit (see the `Kept`-only
-    /// `#[cfg(not(windows))]` arm below).
+    /// The run was CONFIRMED ended (`RecordVerified`/`RecordClosed`/
+    /// `AlreadyEnded` — see `capsule_workspace::EndRunOutcome`) — the row
+    /// may be removed; the state directory never is. Human-readable
+    /// (never the raw, Windows-only `EndRunOutcome` type) so this enum
+    /// stays portable and unit-testable.
     #[cfg_attr(not(windows), allow(dead_code))]
-    Removable(Option<String>),
-    /// The lane could not be reached at all, or answered but did not end
-    /// the run (refused / failed / outcome-unknown) — the row and its
-    /// toml MUST be kept: a live or unreachable run must never be
-    /// orphaned by a delete.
+    Removable(String),
+    /// Not confirmed (unreachable/starting/failed/refused/unknown) — the
+    /// row and toml MUST be kept: never orphan a live run, never claim
+    /// "ended" for one that wasn't.
     Kept { detail: String },
 }
 
-async fn destroy_capsule_workspace(workspace_id: &str, slug: &str) -> CapsuleDestroyOutcome {
+/// Maps a `capsule_workspace::EndRunOutcome` to whether `workspace.destroy`
+/// may remove the row. Pure/portable so it's unit-testable without a real
+/// Windows lane; `#[cfg(test)]` below is its only caller off Windows.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> CapsuleDestroyOutcome {
+    use crate::capsule_workspace::EndRunOutcome as O;
+    match o {
+        O::RecordVerified => CapsuleDestroyOutcome::Removable("run ended and verified".to_string()),
+        O::RecordClosed => CapsuleDestroyOutcome::Removable(
+            "run ended (record closed, not yet verified)".to_string(),
+        ),
+        O::AlreadyEnded => CapsuleDestroyOutcome::Removable("run had already ended".to_string()),
+        // A `Starting` lane is NOT "not running" -- retryable.
+        O::Starting => CapsuleDestroyOutcome::Kept {
+            detail: "supervisor is starting; retry".to_string(),
+        },
+        O::NotEnded(detail) => CapsuleDestroyOutcome::Kept { detail },
+    }
+}
+
+/// `reason` is the immutable end-run reason recorded on the wire —
+/// parameterized so each caller (a real delete vs. the default row's
+/// own kept-not-deleted branch) supplies its own honest text.
+async fn destroy_capsule_workspace(workspace_id: &str, reason: &str) -> CapsuleDestroyOutcome {
     #[cfg(windows)]
     {
         let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
             return CapsuleDestroyOutcome::Kept {
-                detail: "could not resolve this machine's state root (%LOCALAPPDATA% unset)".to_string(),
+                detail: "could not resolve this machine's state root (%LOCALAPPDATA% unset)"
+                    .to_string(),
             };
         };
         let state_dir = crate::capsule_workspace::state_dir_for(&state_root, workspace_id);
-        let reason = format!("workspace '{slug}' deleted");
-        let outcome =
-            tokio::task::spawn_blocking(move || crate::capsule_workspace::end_run(&state_dir, &reason)).await;
+        let reason = reason.to_string();
+        let outcome = tokio::task::spawn_blocking(move || {
+            crate::capsule_workspace::end_run(&state_dir, &reason)
+        })
+        .await;
         match outcome {
-            Ok(Ok(None)) => CapsuleDestroyOutcome::Removable(None),
-            Ok(Ok(Some(o))) => {
-                use sot_log::supervisor_client::EndRunOutcome as O;
-                match &o {
-                    O::RecordVerified | O::RecordClosed => CapsuleDestroyOutcome::Removable(Some(format!("{o:?}"))),
-                    O::Failed(detail) => CapsuleDestroyOutcome::Kept { detail: format!("end_run failed: {detail}") },
-                    O::Refused(detail) => CapsuleDestroyOutcome::Kept { detail: format!("end_run refused: {detail}") },
-                    O::OutcomeUnknown => CapsuleDestroyOutcome::Kept {
-                        detail: "end_run outcome unknown (the ADR's own 90s cutoff elapsed with no terminal reply)".to_string(),
-                    },
-                }
-            }
-            Ok(Err(e)) => CapsuleDestroyOutcome::Kept { detail: format!("supervisor lane unreachable: {e}") },
-            Err(join_err) => CapsuleDestroyOutcome::Kept { detail: format!("end_run task panicked: {join_err}") },
+            Ok(Ok(o)) => capsule_destroy_outcome_of(o),
+            Ok(Err(e)) => CapsuleDestroyOutcome::Kept {
+                detail: format!("supervisor lane unreachable: {e}"),
+            },
+            Err(join_err) => CapsuleDestroyOutcome::Kept {
+                detail: format!("end_run task panicked: {join_err}"),
+            },
         }
     }
     #[cfg(not(windows))]
     {
-        let _ = (workspace_id, slug);
+        let _ = (workspace_id, reason);
         // Unreachable in practice: no workspace has `runtime == "capsule"`
-        // off Windows in this unit (see `Workspace::runtime`'s own doc).
-        CapsuleDestroyOutcome::Kept { detail: "capsule runtime is Windows-only".to_string() }
+        // off Windows (see `Workspace::runtime`'s own doc); the default
+        // row's own branch above already gates on `cfg!(windows)` too.
+        CapsuleDestroyOutcome::Kept {
+            detail: "capsule runtime is Windows-only".to_string(),
+        }
+    }
+}
+
+/// The typed error `workspace.destroy` returns for a `Kept` outcome —
+/// shared by the non-default path and the default row's own branch.
+fn capsule_end_not_reached_payload(detail: &str) -> serde_json::Value {
+    json!({
+        "error": format!("capsule workspace could not be safely deleted: {detail}"),
+        "code": "capsule_end_not_reached",
+    })
+}
+
+/// The default row's own `workspace.destroy` response, built from an
+/// already-computed outcome (pure/portable, unit-testable without a real
+/// lane). Returns the payload and whether to broadcast `run_ended` —
+/// `true` only for a CONFIRMED end; `Kept` gets the typed error instead.
+fn default_row_end_response(
+    workspace_id: &str,
+    slug: &str,
+    label: &str,
+    outcome: CapsuleDestroyOutcome,
+) -> (serde_json::Value, bool) {
+    match outcome {
+        CapsuleDestroyOutcome::Removable(detail) => {
+            let res = sot_protocol::WorkspaceDestroyRes {
+                workspace_id: workspace_id.to_string(),
+                slug: slug.to_string(),
+                label: label.to_string(),
+                tmux_killed: false,
+                toml_removed: false,
+                kept: Some(format!("ended run of '{label}' ({detail})")),
+            };
+            (
+                serde_json::to_value(res).expect("WorkspaceDestroyRes always serializes"),
+                true,
+            )
+        }
+        CapsuleDestroyOutcome::Kept { detail } => (capsule_end_not_reached_payload(&detail), false),
     }
 }
 
@@ -4168,29 +4221,63 @@ pub async fn handle_workspace_destroy(
         )]);
     };
 
-    // Refuse to destroy the default workspace — it's the daemon's
-    // anchor, and there's no fallback target to swap ops to. The user
-    // can change which workspace is the default via daemon restart
-    // with a different `--project-root`; destroying the running one
-    // would leave the registry incoherent.
+    // The default workspace's ROW is never destroyed here — it's the
+    // daemon's anchor, with no fallback target to swap ops to. A default
+    // TMUX row has no run to end, so it keeps the flat refusal. A
+    // default CAPSULE row (ADR 0042: the default `local` row on a
+    // Windows FE box) instead ends its run and keeps the row, reusing
+    // the non-default delete's own path below — a `Kept` (unconfirmed)
+    // outcome still returns the SAME typed error, never a fabricated
+    // success.
     if workspaces.default_id().as_deref() == Some(ws.workspace_id.as_str()) {
-        // Otherwise invisible in the daemon log — a refused destroy on
-        // a dead-end default row (e.g. one stuck with a runtime the
-        // daemon also refuses to start) previously left no trace at
-        // all to diagnose from.
-        tracing::info!(
-            workspace_id = %ws.workspace_id,
-            slug = %ws.slug,
-            code = "default_workspace_not_destroyable",
-            "workspace.destroy refused: default workspace cannot be destroyed"
-        );
-        let payload = json!({
-            "error": format!(
-                "cannot destroy default workspace '{}'",
-                ws.label
-            ),
-            "code": "default_workspace_not_destroyable",
-        });
+        // Gate on the BUILD target, not just the toml's own `runtime`
+        // string — a Linux toml can carry `runtime = "capsule"`
+        // (`workspaces.rs`'s `load_toml` reads it verbatim), and capsule
+        // support is Windows-only regardless. Linux keeps the same flat
+        // refusal a tmux default row gets.
+        if ws.runtime != "capsule" || !cfg!(windows) {
+            // Otherwise invisible in the daemon log — a refused destroy on
+            // a dead-end default row (e.g. one stuck with a runtime the
+            // daemon also refuses to start) previously left no trace at
+            // all to diagnose from.
+            tracing::info!(
+                workspace_id = %ws.workspace_id,
+                slug = %ws.slug,
+                code = "default_workspace_not_destroyable",
+                "workspace.destroy refused: default workspace cannot be destroyed"
+            );
+            let payload = json!({
+                "error": format!(
+                    "cannot destroy default workspace '{}'",
+                    ws.label
+                ),
+                "code": "default_workspace_not_destroyable",
+            });
+            return Ok(vec![(
+                Frame::res(req_id, op::WORKSPACE_DESTROY, payload),
+                None,
+            )]);
+        }
+
+        // Same end-run path the non-default delete uses below. The
+        // reason is honest for THIS row (not "deleted" — it's kept).
+        let outcome = destroy_capsule_workspace(&ws.workspace_id, "run ended by the user").await;
+        let (payload, confirmed_ended) =
+            default_row_end_response(&ws.workspace_id, &ws.slug, &ws.label, outcome);
+        tracing::info!(workspace_id = %ws.workspace_id, confirmed_ended, "workspace.destroy: default row's capsule run outcome; row kept");
+
+        if confirmed_ended {
+            // Live-push so the Sessions strip re-lists — the row's phase
+            // is derived fresh from the supervisor lane on every
+            // `workspace.list` call. `action` is informational only:
+            // every `workspace.changed` push just triggers an FE re-list.
+            let _ = ws_events.send(WorkspaceChanged {
+                action: "run_ended".into(),
+                slug: ws.slug.clone(),
+                workspace_id: ws.workspace_id.clone(),
+            });
+        }
+
         return Ok(vec![(
             Frame::res(req_id, op::WORKSPACE_DESTROY, payload),
             None,
@@ -4212,19 +4299,20 @@ pub async fn handle_workspace_destroy(
     // unreachable run is never orphaned by a delete that silently
     // "succeeded" out from under it.
     let tmux_killed = if ws.runtime == "capsule" {
-        match destroy_capsule_workspace(&workspace_id, &slug).await {
+        let reason = format!("workspace '{slug}' deleted");
+        match destroy_capsule_workspace(&workspace_id, &reason).await {
             CapsuleDestroyOutcome::Removable(outcome) => {
-                tracing::info!(workspace_id = %workspace_id, outcome = ?outcome, "workspace.destroy: capsule run ended; removing the row");
+                tracing::info!(workspace_id = %workspace_id, %outcome, "workspace.destroy: capsule run ended; removing the row");
                 false // no tmux session ever existed to kill -- accurate, not a failure
             }
             CapsuleDestroyOutcome::Kept { detail } => {
                 tracing::warn!(workspace_id = %workspace_id, detail = %detail, "workspace.destroy: capsule run not confirmed ended; keeping the row");
-                let payload = json!({
-                    "error": format!("capsule workspace could not be safely deleted: {detail}"),
-                    "code": "capsule_end_not_reached",
-                });
                 return Ok(vec![(
-                    Frame::res(req_id, op::WORKSPACE_DESTROY, payload),
+                    Frame::res(
+                        req_id,
+                        op::WORKSPACE_DESTROY,
+                        capsule_end_not_reached_payload(&detail),
+                    ),
                     None,
                 )]);
             }
@@ -4316,6 +4404,7 @@ pub async fn handle_workspace_destroy(
         label,
         tmux_killed,
         toml_removed,
+        kept: None,
     };
     Ok(vec![(
         Frame::res(req_id, op::WORKSPACE_DESTROY, serde_json::to_value(res)?).with_rev(rev),
@@ -5743,5 +5832,187 @@ mod capsule_comm_handle_tests {
         assert_eq!(capsule_comm_handle("ws-never-joined-9f9f"), "");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod workspace_destroy_default_row_tests {
+    // Default-row end-run: a default TMUX row keeps the flat refusal
+    // (no run to end). A default CAPSULE row on Windows ends its run and
+    // keeps the row, reporting the outcome in `WorkspaceDestroyRes::kept`
+    // — but only when CONFIRMED (`Removable`); `Kept` still returns the
+    // typed `capsule_end_not_reached` error. A default CAPSULE row off
+    // Windows keeps the flat refusal too (a synced/hand-edited toml can
+    // claim `runtime = "capsule"`, but capsule support is Windows-only).
+    use super::*;
+
+    fn seed_default(runtime: &str) -> (Workspaces, String) {
+        let reg = Workspaces::new();
+        let mut ws = Workspace::from_label(
+            "local",
+            std::path::PathBuf::from("/p/local"),
+            false,
+            "none".into(),
+            String::new(),
+            String::new(),
+        );
+        ws.runtime = runtime.to_string();
+        let id = ws.workspace_id.clone();
+        reg.insert(ws);
+        reg.set_default(&id);
+        (reg, id)
+    }
+
+    async fn destroy(workspaces: &Workspaces, workspace_id: &str) -> serde_json::Value {
+        let session = Session::new();
+        let (tx, _rx) = broadcast::channel(16);
+        let payload = json!({ "workspace_id": workspace_id });
+        let out = handle_workspace_destroy(1, payload, &session, workspaces, &tx)
+            .await
+            .expect("handler must not error");
+        assert_eq!(
+            out.len(),
+            1,
+            "workspace.destroy always answers with exactly one frame"
+        );
+        out[0].0.payload.clone()
+    }
+
+    fn assert_refused(payload: &serde_json::Value) {
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("default_workspace_not_destroyable")
+        );
+        assert!(payload.get("error").is_some());
+        assert!(payload.get("kept").is_none());
+    }
+
+    #[tokio::test]
+    async fn default_tmux_workspace_is_still_refused() {
+        let (reg, id) = seed_default("tmux");
+        let payload = destroy(&reg, &id).await;
+        assert_refused(&payload);
+        // Untouched either way — the refusal never removes anything.
+        assert!(reg.resolve(Some(&id)).is_some());
+    }
+
+    // A non-Windows default row claiming `runtime = "capsule"` (a Linux
+    // toml can carry this verbatim) gets the same flat refusal as tmux.
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn default_capsule_workspace_is_refused_off_windows() {
+        let (reg, id) = seed_default("capsule");
+        let payload = destroy(&reg, &id).await;
+        assert_refused(&payload);
+        assert!(reg.resolve(Some(&id)).is_some());
+    }
+
+    // A lane still `Starting` is never "not running" -- retryable
+    // `Kept`, never a fabricated "was not running" success.
+    #[test]
+    fn starting_outcome_maps_to_a_retryable_kept_not_not_running() {
+        let outcome = capsule_destroy_outcome_of(crate::capsule_workspace::EndRunOutcome::Starting);
+        match outcome {
+            CapsuleDestroyOutcome::Kept { detail } => {
+                assert_eq!(detail, "supervisor is starting; retry");
+            }
+            CapsuleDestroyOutcome::Removable(detail) => {
+                panic!("Starting must never be reported Removable (\"ended\"): {detail}");
+            }
+        }
+    }
+
+    // An authority found ALREADY resting in `EndedNoRespawn` is
+    // `AlreadyEnded`, not a fabricated `RecordVerified` -- still
+    // `Removable` (safe to report "ended").
+    #[test]
+    fn already_ended_outcome_is_removable_and_distinct_from_record_verified() {
+        let outcome =
+            capsule_destroy_outcome_of(crate::capsule_workspace::EndRunOutcome::AlreadyEnded);
+        match outcome {
+            CapsuleDestroyOutcome::Removable(detail) => {
+                assert!(
+                    !detail.contains("verified"),
+                    "must not claim verification it never observed: {detail}"
+                );
+            }
+            CapsuleDestroyOutcome::Kept { detail } => {
+                panic!("AlreadyEnded is a confirmed end — must not be Kept: {detail}");
+            }
+        }
+    }
+
+    // Rounds out coverage of `capsule_destroy_outcome_of`'s remaining
+    // variants: a real end_run's own two confirmed outcomes both map to
+    // `Removable`, and `NotEnded` (failed/refused/outcome-unknown/
+    // authority-terminal) maps to `Kept`.
+    #[test]
+    fn record_verified_and_closed_are_removable_not_ended_is_kept() {
+        use crate::capsule_workspace::EndRunOutcome as O;
+        for outcome in [O::RecordVerified, O::RecordClosed] {
+            assert!(
+                matches!(
+                    capsule_destroy_outcome_of(outcome.clone()),
+                    CapsuleDestroyOutcome::Removable(_)
+                ),
+                "{outcome:?} must map to Removable"
+            );
+        }
+        match capsule_destroy_outcome_of(O::NotEnded("end_run failed: boom".to_string())) {
+            CapsuleDestroyOutcome::Kept { detail } => assert_eq!(detail, "end_run failed: boom"),
+            CapsuleDestroyOutcome::Removable(detail) => {
+                panic!("NotEnded must never map to Removable: {detail}");
+            }
+        }
+    }
+
+    // A `Kept` outcome must build the SAME typed error the non-default
+    // path returns, and must NEVER signal a `run_ended` broadcast.
+    #[test]
+    fn kept_outcome_builds_the_typed_error_and_never_broadcasts_run_ended() {
+        let (payload, confirmed_ended) = default_row_end_response(
+            "ws-local-1",
+            "local",
+            "local",
+            CapsuleDestroyOutcome::Kept {
+                detail: "supervisor is starting; retry".to_string(),
+            },
+        );
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("capsule_end_not_reached")
+        );
+        assert!(payload.get("error").is_some());
+        assert!(
+            payload.get("workspace_id").is_none(),
+            "must not carry the success shape's own fields: {payload:?}"
+        );
+        assert!(payload.get("kept").is_none());
+        assert!(
+            !confirmed_ended,
+            "a Kept outcome must never signal a run_ended broadcast"
+        );
+    }
+
+    // The mirror case: a `Removable` (confirmed) outcome DOES build the
+    // success shape and DOES signal the broadcast.
+    #[test]
+    fn removable_outcome_builds_success_and_signals_run_ended() {
+        let (payload, confirmed_ended) = default_row_end_response(
+            "ws-local-1",
+            "local",
+            "local",
+            CapsuleDestroyOutcome::Removable("run ended and verified".to_string()),
+        );
+        assert!(
+            payload.get("error").is_none(),
+            "must not error: {payload:?}"
+        );
+        assert_eq!(
+            payload.get("workspace_id").and_then(|v| v.as_str()),
+            Some("ws-local-1")
+        );
+        assert!(payload.get("kept").and_then(|v| v.as_str()).is_some());
+        assert!(confirmed_ended);
     }
 }

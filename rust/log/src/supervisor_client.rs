@@ -230,3 +230,84 @@ pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<En
         _ => EndRunOutcome::OutcomeUnknown,
     })
 }
+
+/// Bound for [`reset`]'s own poll-to-completion after the command is
+/// accepted — matches the authority's private `RESETTING_WATCHDOG`
+/// (`supervisor.rs`, 30s), the reset transaction's own worst-case
+/// budget.
+const RESET_BUDGET: Duration = Duration::from_secs(30);
+const RESET_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Connect, challenge, and send `reset` — mirrors [`stop`]'s shape.
+/// `reset` is the ONE operation an authority resting in `EndedNoRespawn`
+/// admits; it mints a FRESH voyage and spawns a new leg over the SAME
+/// resident authority — the deliberate alternative to `--resume`, which
+/// never resurrects a voyage whose last leg carries the
+/// `run_end_requested` marker. Fenced against the voyage observed via
+/// this call's own `status` request (voyage-fenced like every lifecycle
+/// command).
+///
+/// The command's own reply is an immediate `Accepted` — the transaction
+/// (mint + bootstrap + publish) runs asynchronously, so this polls
+/// `Query{operation_id}` on the SAME connection for the terminal
+/// `ResetDone { new_voyage }`, bounded by [`RESET_BUDGET`]. Returns the
+/// new voyage id.
+pub fn reset(state_dir: &Path) -> crate::Result<String> {
+    let deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
+    let (conn, _process) = connect(state_dir, deadline)?;
+    let voyage = match send_and_read(
+        &conn,
+        &SupervisorRequest::Status,
+        Instant::now() + STATUS_BUDGET,
+    )? {
+        SupervisorReply::StatusOk {
+            voyage: Some(v), ..
+        } => v,
+        other => {
+            return Err(err_state(format!(
+                "reset: expected status_ok with a voyage, got {other:?}"
+            )))
+        }
+    };
+    let operation_id = format!("sot-backend-reset-{}", uuid::Uuid::now_v7());
+    let request = SupervisorRequest::Command {
+        operation_id: operation_id.clone(),
+        op: SupervisorOp::Reset {
+            voyage: Some(voyage),
+        },
+    };
+    match send_and_read(&conn, &request, Instant::now() + STATUS_BUDGET)? {
+        SupervisorReply::Operation(SupervisorOperationState::Accepted) => {}
+        other => {
+            return Err(err_state(format!(
+                "reset: expected Operation(Accepted), got {other:?}"
+            )))
+        }
+    }
+    let poll_deadline = Instant::now() + RESET_BUDGET;
+    loop {
+        let query = SupervisorRequest::Query {
+            operation_id: operation_id.clone(),
+        };
+        match send_and_read(&conn, &query, Instant::now() + STATUS_BUDGET)? {
+            SupervisorReply::Operation(SupervisorOperationState::ResetDone { new_voyage }) => {
+                return Ok(new_voyage)
+            }
+            SupervisorReply::Operation(SupervisorOperationState::Accepted) => {} // still in flight
+            SupervisorReply::Operation(other) => {
+                return Err(err_state(format!("reset did not complete: {other:?}")))
+            }
+            other => {
+                return Err(err_state(format!(
+                    "reset: expected an Operation reply, got {other:?}"
+                )))
+            }
+        }
+        if Instant::now() >= poll_deadline {
+            return Err(err_state(format!(
+                "reset accepted but did not complete within {RESET_BUDGET:?}"
+            )));
+        }
+        std::thread::sleep(RESET_POLL_INTERVAL);
+    }
+}
