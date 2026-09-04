@@ -47,6 +47,12 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// ~= 9s worst case) but still a real bound, never "forever."
 const BOUND: Duration = Duration::from_secs(30);
 
+/// Pinned `SOT_STATE_HOST` for every `spawn_sotd` in this file — a fixed,
+/// known per-host registry dir name instead of whatever `%COMPUTERNAME%`
+/// happens to be on the runner (`workspaces::state_host`'s fallback).
+/// `Env::seed_default_capsule_toml` computes the same path from it.
+const TEST_STATE_HOST: &str = "testhost";
+
 fn sotd_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
 }
@@ -161,7 +167,11 @@ impl Env {
     /// own registry root reads `%XDG_CONFIG_HOME%` — both overridden here
     /// so this process's capsule state and workspace registry both live
     /// under the SAME temp root a second `sotd` launch (the adoption leg
-    /// of this test) can point at again.
+    /// of this test) can point at again. `SOT_STATE_HOST` is pinned so
+    /// the per-host registry dir (`workspaces::state_host`, which
+    /// otherwise falls back to `%COMPUTERNAME%`) is a fixed, known name —
+    /// `seed_default_capsule_toml` below has to compute the SAME path
+    /// from the test side to pre-write a toml this daemon will read.
     fn spawn_sotd(&self) -> KillGuard {
         let child = Command::new(sotd_exe())
             .arg("--socket")
@@ -170,12 +180,56 @@ impl Env {
             .arg(&self.daemon_project_root)
             .env("LOCALAPPDATA", &self.state_root)
             .env("XDG_CONFIG_HOME", &self.config_root)
+            .env("SOT_STATE_HOST", TEST_STATE_HOST)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn sotd");
         KillGuard(Some(child))
+    }
+
+    /// Pre-write the default row's own toml BEFORE `spawn_sotd` boots the
+    /// daemon, with `runtime = "capsule"` and the given `agent` — the
+    /// same registry path `workspaces::save`/`load_toml` use
+    /// (`<LOCALAPPDATA>\config\workspaces-<SOT_STATE_HOST>\<slug>.toml`),
+    /// computed the same way the daemon computes it: `--project-root`'s
+    /// own basename run through `sot_protocol::slug` (no `--label` is
+    /// ever passed in this file). Only `workspace_id`/`slug`/
+    /// `project_root` are required for `load_toml` to treat this as
+    /// canonical (`workspaces.rs`'s own doc); every other field the
+    /// daemon needs defaults sensibly. This is what makes a capsule
+    /// default row runnable on a CI runner: the daemon's own fresh-boot
+    /// seed always picks `agent = "claude"` on Windows (`server.rs`), and
+    /// `agent = "none"` is preserved instead ONLY when a pre-existing
+    /// on-disk row already carries `runtime = "capsule"`.
+    fn seed_default_capsule_toml(&self, agent: &str) {
+        let slug = sot_protocol::slug(
+            self.daemon_project_root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("daemon_project_root has a file name"),
+        );
+        // `sot_log::state_dir::sot_state_dir()` joins "sot" onto
+        // `%LOCALAPPDATA%` itself; `workspaces::app_config_dir` joins
+        // "config" onto THAT — same two segments `state_dir_path` below
+        // (this file's other daemon-computed path) already accounts for.
+        let dir = self
+            .state_root
+            .join("sot")
+            .join("config")
+            .join(format!("workspaces-{TEST_STATE_HOST}"));
+        std::fs::create_dir_all(&dir).expect("mkdir pre-seeded workspaces dir");
+        let project_root = self.daemon_project_root.to_string_lossy();
+        let body = format!(
+            "workspace_id  = \"ws-preseeded-default\"\n\
+             slug          = \"{slug}\"\n\
+             project_root  = \"{project_root}\"\n\
+             runtime       = \"capsule\"\n\
+             agent         = \"{agent}\"\n"
+        );
+        std::fs::write(dir.join(format!("{slug}.toml")), body)
+            .expect("write pre-seeded default row toml");
     }
 }
 
@@ -521,19 +575,29 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     next_id2 += 1;
     assert!(destroy_res.payload.get("error").is_none(), "workspace.destroy failed: {:?}", destroy_res.payload);
 
-    let ended = poll_until(
+    // The old "poll for phase EndedNoRespawn" expectation is obsolete:
+    // `end_run`'s own wrapper now sends the (post-#184) WAITING `stop`
+    // once the end is confirmed, so `workspace.destroy`'s own response
+    // doesn't land until the authority has already exited (or is in
+    // the process of it) — the lane goes SILENT instead of resting in
+    // EndedNoRespawn, and polling for that resting phase here raced a
+    // window too narrow to reliably observe (CI's own field finding).
+    // Leak proof: mirror the SAME "lane goes silent after stop" idiom
+    // the adoption proof above uses (`sot-capsule supervise` otherwise
+    // idles in `EndedNoRespawn` forever without a `stop` request — see
+    // `supervisor.rs`'s own exit-condition doc). Without this, the
+    // field defect this closes reproduces exactly: one resident
+    // `sot-capsule.exe` per destroy, holding `supervisor.lock` and the
+    // exe, that nothing would ever reap.
+    poll_until(
         || {
             let dir = state_dir_path.clone();
-            async move {
-                let report = try_query_status(dir).await?;
-                (report.phase == sot_log::wire::SupervisorPhase::EndedNoRespawn).then_some(report)
-            }
+            async move { if try_query_status(dir).await.is_none() { Some(()) } else { None } }
         },
         BOUND,
-        "the supervisor's own lane to report phase EndedNoRespawn after workspace.destroy",
+        "the ended supervisor's own lane to go silent (workspace.destroy's end_run must also stop it)",
     )
     .await;
-    assert!(ended.voyage.is_some(), "an ended run still names its voyage");
 
     let destroy_deadline = Instant::now() + BOUND;
     loop {
@@ -582,6 +646,16 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     );
 
     let env = Env::new("dsa");
+    // Pre-write the default row's own toml as a capsule with the
+    // placeholder "none" agent (the same leg every other test in this
+    // file uses) BEFORE boot: on Windows a fresh-boot default row is
+    // unconditionally seeded `agent = "claude"` (`server.rs`), and no
+    // `claude` binary exists on a CI runner — the leg fails to spawn,
+    // flaps past the anti-flap bound, and the row never reaches `Ready`.
+    // `server.rs`'s own re-seed rule only overwrites agent/autostart when
+    // the ON-DISK runtime is NOT already "capsule", so this pre-existing
+    // row survives untouched.
+    env.seed_default_capsule_toml("none");
     let mut daemon = env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
@@ -664,25 +738,114 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     )
     .await;
 
-    // workspace.list's own row leaves "stopped" for this workspace,
-    // confirming the daemon's own reported phase agrees with the lane.
-    let phase_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
-    loop {
-        let id = next_id;
+    // The row reaches Ready (leg spawned, ConPTY up, challenge proven)
+    // before this test ends it -- the same thing a user destroying a
+    // session effectively waits for: pressing D while still Starting is
+    // honestly retryable (EndRunOutcome::Starting), not a bug this test
+    // exists to reproduce.
+    poll_until(
+        || {
+            let dir = state_dir_path.clone();
+            async move {
+                let report = try_query_status(dir).await?;
+                (report.phase == sot_log::wire::SupervisorPhase::Ready).then_some(())
+            }
+        },
+        BOUND,
+        "the default capsule's supervisor to reach phase Ready",
+    )
+    .await;
+
+    // --- #182 items A.1/C: end the default row, then prove attach
+    // recovers it via `reset` with a NEW voyage (not the old flat
+    // refusal, and not a resurrected ended one) ---
+    let (original_status, _process) = sot_log::supervisor_client::query_status(&state_dir_path)
+        .expect("query_status before workspace.destroy");
+    let original_voyage = original_status
+        .voyage
+        .expect("a ready capsule has a voyage");
+
+    // workspace.destroy on the DEFAULT row: ends the run instead of the
+    // old flat refusal (the original defect this PR fixes) — success,
+    // `kept`, never an error.
+    let destroy_req = serde_json::json!({ "workspace_id": default_workspace_id });
+    let destroy_res = call(&mut conn, next_id, op::WORKSPACE_DESTROY, destroy_req).await;
+    next_id += 1;
+    assert!(
+        destroy_res.payload.get("error").is_none(),
+        "workspace.destroy on the default row failed: {:?}",
+        destroy_res.payload
+    );
+    assert!(
+        destroy_res
+            .payload
+            .get("kept")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "default row destroy must report kept: {:?}",
+        destroy_res.payload
+    );
+
+    // Item A.1: `end_run`'s own `stop` now WAITS for confirmed process
+    // death, so the authority must already be gone by the time the
+    // response above landed — same leak-proof idiom the create/destroy
+    // test uses.
+    poll_until(
+        || {
+            let dir = state_dir_path.clone();
+            async move {
+                if try_query_status(dir).await.is_none() {
+                    Some(())
+                } else {
+                    None
+                }
+            }
+        },
+        BOUND,
+        "the ended default row's supervisor lane to go silent",
+    )
+    .await;
+
+    // Re-attach, repeatedly and bounded, until the row is genuinely
+    // live again with a NEW voyage — item C, the claim this test
+    // proves. Never assert a specific attach count or an intermediate
+    // phase: `ensure_started`'s own inline settle loop after a resume
+    // spawn usually catches a marker-only recovery's near-instant
+    // `EndedNoRespawn` transition and resets it within the FIRST
+    // re-attach, entirely inside that one `pty.open` round trip
+    // (`reset` itself polls to completion before `ensure_started`
+    // returns) — so `EndedNoRespawn` is often never independently
+    // observable from here at all. A slower settle just needs one more
+    // attach once it lands; repeated attaches are harmless either way
+    // (a `Resetting`/already-live authority answers "already up",
+    // nothing to do).
+    let ready_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
+    let new_voyage = loop {
+        let reattach_req = serde_json::json!({
+            "cols": 80, "rows": 24, "user_switch": true, "target": default_target,
+        });
+        let reattach_res = call(&mut conn, next_id, op::PTY_OPEN, reattach_req).await;
         next_id += 1;
-        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
-        if let Some(row) = find_row(&payload, &default_workspace_id) {
-            assert_eq!(row["runtime"], "capsule", "row: {row:?}");
-            if row["phase"].as_str() != Some("stopped") {
-                break;
+        assert_eq!(
+            reattach_res.payload["code"], "attach_direct",
+            "re-attach after end: {:?}",
+            reattach_res.payload
+        );
+        if let Some(report) = try_query_status(state_dir_path.clone()).await {
+            if report.phase == sot_log::wire::SupervisorPhase::Ready {
+                break report.voyage.expect("a ready capsule has a voyage");
             }
         }
         assert!(
-            Instant::now() < phase_deadline,
-            "timed out waiting for workspace.list to report a phase other than \"stopped\" for the default capsule workspace"
+            Instant::now() < ready_deadline,
+            "timed out waiting for the default row to recover via reset after being ended"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    };
+    assert_ne!(
+        new_voyage, original_voyage,
+        "reset must mint a NEW voyage, not resurrect the ended one"
+    );
 
     // Rule H: "KillGuard" the spawned supervisor — it is DETACHED
     // (spawned by the daemon, survives the daemon's own exit by design,

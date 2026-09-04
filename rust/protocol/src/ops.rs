@@ -1233,9 +1233,15 @@ pub struct WorkspaceListRes {
 }
 
 /// `workspace.destroy` request — identify the target workspace by id or
-/// slug (the backend's `resolve` accepts either). The default workspace
-/// is not destroyable; trying returns an error response with
-/// `code = "default_workspace_not_destroyable"`.
+/// slug (the backend's `resolve` accepts either). The default workspace's
+/// ROW is never destroyable — it's the daemon's anchor, seeded on boot,
+/// with no fallback target to swap ops to. A default TMUX row's request
+/// is flatly refused (`code = "default_workspace_not_destroyable"`). A
+/// default CAPSULE row instead ends its capsule run and keeps the row —
+/// its `workspace.list` phase settles to `unreachable` once the ended
+/// supervisor authority actually exits, which is what makes the next
+/// attach spawn a fresh `--resume` rather than reusing the dead lane —
+/// see `WorkspaceDestroyRes::kept`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceDestroyReq {
     pub workspace_id: String,
@@ -1252,6 +1258,16 @@ pub struct WorkspaceDestroyRes {
     pub label: String,
     pub tmux_killed: bool,
     pub toml_removed: bool,
+    /// `None` for an ordinary destroy — the row above was actually
+    /// removed (the pre-existing wire shape). `Some(detail)` names the
+    /// invariant a default capsule row's request instead serves: the row
+    /// is NEVER removed, so `tmux_killed`/`toml_removed` above are
+    /// meaningless placeholders (`false`, nothing attempted) and this is
+    /// the only field carrying what actually happened — a human-readable
+    /// outcome of ending its capsule run (e.g. "ended run of 'local'",
+    /// "run of 'local' was not running").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<String>,
 }
 
 /// `agent.send` request — relay one agent-to-agent message through the
