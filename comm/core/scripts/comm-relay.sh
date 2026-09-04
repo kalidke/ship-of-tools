@@ -140,7 +140,8 @@ send_frame() {  # $1 to, $2 text
     # MSG_FILE cleanup) is what actually guarantees this temp file never
     # leaks: a `jq` failure under `set -e` exits immediately, skipping a
     # bare `rm -f` placed after it.
-    local msg_file; msg_file="$(sot_jq_rawfile "$2")" || return 1
+    # Not `local`: the EXIT trap below fires after this function has returned.
+    msg_file="$(sot_jq_rawfile "$2")" || return 1
     trap 'rm -f "$msg_file"' EXIT
     local frame; frame="$(jq -nc --arg f "$NAME" --arg t "$1" --rawfile m "$msg_file" \
         '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:$t,text:$m}}')"
