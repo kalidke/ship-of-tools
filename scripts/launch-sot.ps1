@@ -884,19 +884,40 @@ function Invoke-FreshnessPass {
         # daemon. A converge respawn (exit 76) re-ensures it too, right
         # after calling this function -- see the do/while loop.
         #
-        # Mixed-version pair guard (2026-09-02 Codex round): a locally-spawned
-        # capsule supervisor (sot-capsule.exe) is a SEPARATE, detached process
-        # from sotd (ADR 0042 L1a) -- the -Stop above only unpins sotd.exe, not
-        # a still-running capsule's own mapped image. Rebuilding anyway would
-        # publish a fresh sotd.exe next to the OLD sot-capsule.exe, and the
-        # ensure right after this whole block would then start that MISMATCHED
-        # pair. No versioned target dir to build into instead, so the smallest
-        # fix is to skip the rebuild entirely -- both the stop (nothing to
-        # unpin if nothing is about to overwrite it) and the cargo build --
-        # whenever a sot-capsule.exe is running from this dev bin dir. The
-        # durable answer is U4's upgrade transaction. Surfaced in the launch
-        # notice too (converge follow-up) -- never stopped here: a capsule
-        # supervisor owns live workspace state and survives the daemon by
+        # Mixed-version pair guard, REVISED (2026-09-04 field report): the
+        # ORIGINAL fix here skipped the WHOLE rebuild -- the daemon stop
+        # too -- whenever a capsule supervisor was alive, reasoning that
+        # publishing a fresh sotd.exe next to an OLD sot-capsule.exe would
+        # be a mismatched pair. In practice that pins sotd.exe to whatever
+        # build was running when the supervisor was spawned: a capsule
+        # supervisor is long-lived BY DESIGN (ADR 0042; #184 makes a
+        # rebooted daemon adopt it), so one live workspace on a box quietly
+        # freezes its daemon forever, skipping every daemon-side migration
+        # (e.g. #191's boot migration) for as long as that workspace lives
+        # -- observed live: an rc.3-era sotd.exe under an up-to-date FE,
+        # kept up by exactly the orphan capsule #191's migration exists to
+        # fix.
+        #
+        # The rule now: THE DAEMON IS ALWAYS REBUILT; only the capsule
+        # BINARY waits for its supervisors. `sot-capsule.exe` is pinned by
+        # a live supervisor (a SEPARATE, detached process from sotd, ADR
+        # 0042 L1a); `sotd.exe` is pinned only by the running daemon, which
+        # is stopped unconditionally right below regardless of capsule
+        # state (same stop the no-capsule path always did). With the
+        # daemon stopped, `cargo build --release -p sot-backend` (no `-p
+        # sot-log`) rebuilds exactly `sotd.exe`: sot-backend depends on
+        # sot-log as a LIBRARY only (its own `[[bin]]` is `sotd`), and
+        # cargo builds a non-selected package's library artifacts to link
+        # against but never its OTHER bin targets -- so `sot-capsule`
+        # (an auto-discovered `src/bin` of the sot-log PACKAGE) is not
+        # touched, verified via `rust/backend/Cargo.toml` (`sot-log = {
+        # path = "../log" }`, a dependency, not a workspace member being
+        # built) and `rust/log/src/bin/sot-capsule.rs` (a target of the
+        # sot-log package, never sot-backend's). The full pair rebuild
+        # (`-p sot-backend -p sot-log`) still runs, unchanged, whenever no
+        # capsule supervisor is alive. Surfaced in the launch notice too
+        # (converge follow-up) -- the supervisor itself is never stopped
+        # here: it owns live workspace state and survives the daemon by
         # design.
         $devBinDir = Split-Path $backendExe -Parent
         $capsuleSessionsAlive = @(Get-CimInstance Win32_Process -Filter "Name='sot-capsule.exe'" -ErrorAction SilentlyContinue |
@@ -904,15 +925,23 @@ function Invoke-FreshnessPass {
                 ($_.ExecutablePath -and $_.ExecutablePath -like "$devBinDir*") -or
                 ($_.CommandLine -and $_.CommandLine -like "*$devBinDir*")
             })
+        if (Test-Path $sotLocalDaemon) {
+            Write-SupLog 'freshness: stopping local daemon before backend rebuild (a running sotd.exe pins its own image)'
+            $stopOut2 = & $sotLocalDaemon -Stop 6>&1 2>&1
+            foreach ($l in @($stopOut2)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+        }
         if ($capsuleSessionsAlive.Count -gt 0) {
-            Write-SupLog "freshness: local capsule sessions alive - pair not rebuilt; the durable answer is U4's upgrade transaction"
+            Write-SupLog "freshness: local capsule sessions alive - rebuilding sotd.exe only; sot-capsule.exe waits for its supervisors (U4's upgrade transaction is the durable answer)"
             $script:launchNotices.Add("sot-capsule.exe in use by $($capsuleSessionsAlive.Count) supervisors; end those workspaces to update it") | Out-Null
-        } else {
-            if (Test-Path $sotLocalDaemon) {
-                Write-SupLog 'freshness: stopping local daemon before backend rebuild (a running sotd.exe pins its own image)'
-                $stopOut2 = & $sotLocalDaemon -Stop 6>&1 2>&1
-                foreach ($l in @($stopOut2)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+            Write-SupLog "freshness: cargo build -p sot-backend"
+            $capOut = cargo build --release -p sot-backend --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-SupLog "freshness: backend (sotd.exe) rebuild FAILED (non-fatal, continuing with whatever binary exists). tail: $($capOut | Select-Object -Last 3)"
+                $script:launchNotices.Add('backend rebuild failed - running the existing sotd.exe') | Out-Null
+            } else {
+                Write-SupLog "freshness: backend (sotd.exe) rebuilt; sot-capsule.exe left as-is (pinned by live supervisors)"
             }
+        } else {
             Write-SupLog "freshness: cargo build -p sot-backend -p sot-log"
             $capOut = cargo build --release -p sot-backend -p sot-log --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
             if ($LASTEXITCODE -ne 0) {
