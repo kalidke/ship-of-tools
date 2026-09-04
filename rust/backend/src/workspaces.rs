@@ -904,6 +904,28 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
     )))
 }
 
+/// The single decision of what runtime the daemon's own default/home row
+/// gets at boot, for this OS — the counterpart of `load_toml`'s per-OS
+/// `default_runtime` (which fills in a MISSING key) extended to a
+/// pre-existing WRONG one: on Windows the answer is unconditionally
+/// `"capsule"`, `existing` or not — tmux is refused there outright
+/// (#177, `TmuxClient::run`), so an on-disk `"tmux"` value is never a
+/// legitimate steady state, only a leftover (a stale toml, an
+/// older/pre-L1a writer, a manual edit). Preserving it verbatim (the old
+/// behaviour) meant it never self-healed: the daemon then refused to
+/// start the row (`pty spawn failed error=tmux is not available on
+/// Windows`) and it can't be destroyed either
+/// (`default_workspace_not_destroyable`) — a dead end. Every other host
+/// preserves `existing` verbatim; a genuinely first-ever launch (no
+/// `existing`) gets `first_launch_default` (`from_label`'s own "tmux").
+pub(crate) fn default_row_runtime(existing: Option<&str>, first_launch_default: &str) -> String {
+    if cfg!(windows) {
+        "capsule".to_string()
+    } else {
+        existing.unwrap_or(first_launch_default).to_string()
+    }
+}
+
 /// Write `~/.config/sot/workspaces/<slug>.toml`. Frontend-managed
 /// sections (`[nav_state]`, `[layout]`, …) that the file already
 /// contains are preserved — same approach as `session_state.rs`.
@@ -1833,6 +1855,62 @@ cursor_path = "src/lib.jl"
         std::env::remove_var("LOCALAPPDATA");
         std::env::remove_var("USERPROFILE");
         let _ = app_config_dir();
+    }
+
+    /// Field incident (2026-09-03): a Windows default row's on-disk toml
+    /// read `runtime = "tmux"` — some earlier writer's leftover, from
+    /// before this row had ever been through the current boot-seed logic
+    /// — and the OLD preserve-verbatim behaviour carried that forward on
+    /// every boot with no self-healing: the daemon then refused to start
+    /// the row at all (tmux is refused outright on Windows, #177) and it
+    /// couldn't be destroyed either (`default_workspace_not_destroyable`)
+    /// — a dead end. Exercises the REAL on-disk shape through
+    /// `scan_disk`/`load_toml` (not a hand-built `Workspace`) — proving
+    /// the toml really does read back "tmux" — then proves
+    /// `default_row_runtime` (the function `server::run`'s boot seed now
+    /// routes through) corrects it to "capsule".
+    #[test]
+    #[cfg(windows)]
+    fn default_row_runtime_corrects_a_stale_on_disk_tmux_value() {
+        let _guard = env_guarded();
+        let base = std::env::temp_dir().join(format!(
+            "sot-ws-test-default-row-capsule-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        std::env::set_var("LOCALAPPDATA", &base);
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        let dir = workspaces_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("sot.toml"),
+            r#"
+workspace_id  = "ws-sot-1"
+slug          = "sot"
+label         = ".SoT"
+project_root  = "/home/u/ship-of-tools"
+tmux_session  = "sot-be-sot"
+created       = 1700000000
+autostart_claude = false
+agent         = "none"
+runtime       = "tmux"
+"#,
+        )
+        .unwrap();
+
+        let reg = Workspaces::new();
+        scan_disk(&reg).unwrap();
+        let existing = reg.resolve(Some("sot")).unwrap();
+        // Prove this really exercises the on-disk "tmux" value, not a
+        // tautology — `load_toml` read it back unmodified.
+        assert_eq!(existing.runtime, "tmux");
+
+        let corrected = default_row_runtime(Some(&existing.runtime), "tmux");
+        assert_eq!(corrected, "capsule");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Scratch roots for one migration test: `USERPROFILE`-, `SystemDrive`-

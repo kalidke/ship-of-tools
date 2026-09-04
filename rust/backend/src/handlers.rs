@@ -4174,6 +4174,16 @@ pub async fn handle_workspace_destroy(
     // with a different `--project-root`; destroying the running one
     // would leave the registry incoherent.
     if workspaces.default_id().as_deref() == Some(ws.workspace_id.as_str()) {
+        // Otherwise invisible in the daemon log — a refused destroy on
+        // a dead-end default row (e.g. one stuck with a runtime the
+        // daemon also refuses to start) previously left no trace at
+        // all to diagnose from.
+        tracing::info!(
+            workspace_id = %ws.workspace_id,
+            slug = %ws.slug,
+            code = "default_workspace_not_destroyable",
+            "workspace.destroy refused: default workspace cannot be destroyed"
+        );
         let payload = json!({
             "error": format!(
                 "cannot destroy default workspace '{}'",
