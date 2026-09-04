@@ -4112,6 +4112,14 @@ fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> Cap
             "run ended (record closed, not yet verified)".to_string(),
         ),
         O::AlreadyEnded => CapsuleDestroyOutcome::Removable("run had already ended".to_string()),
+        // A `Terminal` authority has no leg left to orphan -- `end_run`
+        // already sent it `stop` and waited for confirmed exit (see
+        // `EndRunOutcome::Terminal`'s own doc). Without this arm a
+        // capsule row whose agent argv can never launch was UNENDABLE:
+        // `end_run` used to report this as `NotEnded` (kept) forever.
+        O::Terminal => CapsuleDestroyOutcome::Removable(
+            "the run was terminal; the supervisor was stopped".to_string(),
+        ),
         // A `Starting` lane is NOT "not running" -- retryable.
         O::Starting => CapsuleDestroyOutcome::Kept {
             detail: "supervisor is starting; retry".to_string(),
@@ -4123,7 +4131,30 @@ fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> Cap
 /// `reason` is the immutable end-run reason recorded on the wire —
 /// parameterized so each caller (a real delete vs. the default row's
 /// own kept-not-deleted branch) supplies its own honest text.
-async fn destroy_capsule_workspace(workspace_id: &str, reason: &str) -> CapsuleDestroyOutcome {
+///
+/// Checks `workspaces.is_capsule_terminal` FIRST, before ever attempting
+/// a live round trip: the watchdog only sets that mark after its own
+/// bounded `child.wait()` already confirmed the authority process
+/// exited (`capsule_workspace::install_watchdog`'s `LegOutcome::Terminal`
+/// arm) — by the time a row reads "terminal" this way, the supervisor's
+/// named pipe is almost always ALREADY gone (a `Terminal` authority
+/// self-exits `TERMINAL_EXIT_GRACE` == 2s after entering that state,
+/// with no external `stop` required), so a live `end_run` here would
+/// only ever observe "lane unreachable" and report `Kept` forever — the
+/// exact "unendable row" this closes. `end_run`'s own
+/// `SupervisorPhase::Terminal` arm (see its doc) still covers the
+/// narrower complementary window where the lane is asked WHILE still
+/// briefly alive in `Lifecycle::Terminal`, before this mark is set.
+async fn destroy_capsule_workspace(
+    workspace_id: &str,
+    reason: &str,
+    workspaces: &Workspaces,
+) -> CapsuleDestroyOutcome {
+    if workspaces.is_capsule_terminal(workspace_id) {
+        return CapsuleDestroyOutcome::Removable(
+            "the run was terminal; the supervisor authority had already exited".to_string(),
+        );
+    }
     #[cfg(windows)]
     {
         let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
@@ -4261,7 +4292,8 @@ pub async fn handle_workspace_destroy(
 
         // Same end-run path the non-default delete uses below. The
         // reason is honest for THIS row (not "deleted" — it's kept).
-        let outcome = destroy_capsule_workspace(&ws.workspace_id, "run ended by the user").await;
+        let outcome =
+            destroy_capsule_workspace(&ws.workspace_id, "run ended by the user", workspaces).await;
         let (payload, confirmed_ended) =
             default_row_end_response(&ws.workspace_id, &ws.slug, &ws.label, outcome);
         tracing::info!(workspace_id = %ws.workspace_id, confirmed_ended, "workspace.destroy: default row's capsule run outcome; row kept");
@@ -4300,7 +4332,7 @@ pub async fn handle_workspace_destroy(
     // "succeeded" out from under it.
     let tmux_killed = if ws.runtime == "capsule" {
         let reason = format!("workspace '{slug}' deleted");
-        match destroy_capsule_workspace(&workspace_id, &reason).await {
+        match destroy_capsule_workspace(&workspace_id, &reason, workspaces).await {
             CapsuleDestroyOutcome::Removable(outcome) => {
                 tracing::info!(workspace_id = %workspace_id, %outcome, "workspace.destroy: capsule run ended; removing the row");
                 false // no tmux session ever existed to kill -- accurate, not a failure
@@ -5907,6 +5939,33 @@ mod workspace_destroy_default_row_tests {
         assert!(reg.resolve(Some(&id)).is_some());
     }
 
+    // `destroy_capsule_workspace` checks `is_capsule_terminal` BEFORE any
+    // live lane round trip -- portable, so this runs (and must pass) on
+    // every platform, even though the real Windows lane path it bypasses
+    // here is Windows-only. This is the gap fix itself: a capsule row
+    // whose agent argv can never launch self-exits its authority process
+    // well before a human (or this daemon) ever gets around to asking it
+    // to end -- by the time `mark_capsule_terminal` is set, a live probe
+    // would only ever see "lane unreachable" and `end_run`'s wrapper used
+    // to report that as `Kept` forever (the unendable row this whole PR
+    // closes). Called directly (not through `handle_workspace_destroy`)
+    // to stay hermetic -- the full wire path also removes on-disk tomls
+    // under the real config dir, which is not safe to exercise from an
+    // in-process unit test.
+    #[tokio::test]
+    async fn a_capsule_workspace_already_marked_terminal_is_removable_without_a_live_probe() {
+        let (reg, id) = seed_default("capsule");
+        reg.mark_capsule_terminal(&id);
+        match destroy_capsule_workspace(&id, "test reason", &reg).await {
+            CapsuleDestroyOutcome::Removable(detail) => {
+                assert!(detail.contains("terminal"), "detail should explain why: {detail}");
+            }
+            CapsuleDestroyOutcome::Kept { detail } => {
+                panic!("an already-terminal capsule row must be Removable, never Kept: {detail}");
+            }
+        }
+    }
+
     // A lane still `Starting` is never "not running" -- retryable
     // `Kept`, never a fabricated "was not running" success.
     #[test]
@@ -5944,8 +6003,8 @@ mod workspace_destroy_default_row_tests {
 
     // Rounds out coverage of `capsule_destroy_outcome_of`'s remaining
     // variants: a real end_run's own two confirmed outcomes both map to
-    // `Removable`, and `NotEnded` (failed/refused/outcome-unknown/
-    // authority-terminal) maps to `Kept`.
+    // `Removable`, and `NotEnded` (failed/refused/outcome-unknown) maps
+    // to `Kept`.
     #[test]
     fn record_verified_and_closed_are_removable_not_ended_is_kept() {
         use crate::capsule_workspace::EndRunOutcome as O;
@@ -5962,6 +6021,27 @@ mod workspace_destroy_default_row_tests {
             CapsuleDestroyOutcome::Kept { detail } => assert_eq!(detail, "end_run failed: boom"),
             CapsuleDestroyOutcome::Removable(detail) => {
                 panic!("NotEnded must never map to Removable: {detail}");
+            }
+        }
+    }
+
+    // A leg that went `Terminal` (e.g. an unlaunchable agent argv) has no
+    // live run to orphan — `end_run` already sent it `stop` and waited
+    // for confirmed exit before ever reporting this outcome, so the row
+    // must be `Removable`, never stuck `Kept` forever (the gap this
+    // whole variant closes: an unendable capsule row).
+    #[test]
+    fn terminal_outcome_is_removable_not_kept() {
+        use crate::capsule_workspace::EndRunOutcome as O;
+        match capsule_destroy_outcome_of(O::Terminal) {
+            CapsuleDestroyOutcome::Removable(detail) => {
+                assert!(
+                    detail.contains("terminal"),
+                    "detail should explain the row was terminal: {detail}"
+                );
+            }
+            CapsuleDestroyOutcome::Kept { detail } => {
+                panic!("Terminal is a confirmed end (stop was sent and awaited) — must not be Kept: {detail}");
             }
         }
     }

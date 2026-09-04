@@ -1118,3 +1118,127 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
         kill_and_wait_bounded(child).await;
     }
 }
+
+/// The gap this test proves closed: a capsule row whose agent argv can
+/// never launch was UNENDABLE from the UI. `sot-capsule supervise`'s own
+/// anti-flap bound (`FLAP_THRESHOLD` == 3, `respawn_or_terminal` in
+/// `rust/log/src/supervisor.rs`) trips within milliseconds of a real
+/// `CreateProcess` failure and enters sticky `Lifecycle::Terminal`,
+/// self-exiting `TERMINAL_EXIT_GRACE` (2s) later with no external `stop`
+/// ever required -- so by the time a `workspace.list` poll (or a user)
+/// ever observes phase "terminal", the authority process has almost
+/// always ALREADY exited. Before this PR, `capsule_workspace::end_run`'s
+/// wrapper only ever handled a LIVE lane answering `phase: Terminal`
+/// (sending it `stop` and reporting a confirmed end); a lane that had
+/// already gone fully silent by the time `workspace.destroy` reached it
+/// surfaced as "supervisor lane unreachable" and was reported `Kept`
+/// forever -- the row could never actually be destroyed. This test uses
+/// the SAME "no `claude` on a CI runner's PATH" precondition
+/// `capsule_default_workspace_starts_its_supervisor_on_first_attach`
+/// already relies on (no new fixture machinery): seed the default row's
+/// own toml with `agent = "claude"` before boot, attach it once to
+/// trigger start-on-attach, and prove (1) the row reaches phase
+/// "terminal" within a bound rather than cycling Starting -> Terminal
+/// forever, and (2) `workspace.destroy` on it then succeeds and the
+/// supervisor's own lane goes silent.
+#[tokio::test]
+async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroyable() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "sot-capsule.exe not found next to sotd.exe at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd.exe was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("ult");
+    // Pre-write the default row's own toml with `agent = "claude"` BEFORE
+    // boot -- `server.rs`'s fresh-boot seed already picks this agent on
+    // Windows, but pre-writing it here makes the precondition explicit
+    // and independent of that default ever changing. No `claude` binary
+    // exists on a CI runner, so the leg fails to spawn every time.
+    env.seed_default_capsule_toml("claude");
+    let mut daemon = env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let default_row = list_payload["workspaces"]
+        .as_array()
+        .expect("workspaces array")
+        .iter()
+        .find(|w| w["is_default"].as_bool() == Some(true))
+        .cloned()
+        .expect("a default workspace row");
+    assert_eq!(default_row["runtime"], "capsule", "default row: {default_row:?}");
+    let default_workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
+    let default_target = default_row["tmux_session"].as_str().expect("tmux_session").to_string();
+    let state_dir_path = env.state_root.join("sot").join("workspaces").join(&default_workspace_id);
+
+    // Trigger start-on-attach: the capsule's producer (`claude`) will
+    // fail to spawn every time this daemon retries it.
+    let pty_req = serde_json::json!({
+        "cols": 80, "rows": 24, "user_switch": true, "target": default_target,
+    });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+
+    // (1) The row reaches phase "terminal" within a bound -- never
+    // cycling Starting -> Terminal -> Starting forever. Generous over
+    // the anti-flap bound's own worst case (three near-instant spawn
+    // failures) plus the authority's own 2s self-exit grace plus the
+    // daemon watchdog's own child-wait — comfortably inside `BOUND`.
+    let terminal_deadline = Instant::now() + BOUND;
+    loop {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        if let Some(row) = find_row(&payload, &default_workspace_id) {
+            if row["phase"].as_str() == Some("terminal") {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < terminal_deadline,
+            "timed out waiting for the unlaunchable-agent capsule row to reach phase \"terminal\""
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // (2) `workspace.destroy` on a terminal row now succeeds (never the
+    // typed `capsule_end_not_reached` error this gap used to produce
+    // forever) -- the default row's own branch: kept (never deleted),
+    // but its run is confirmed ended.
+    let destroy_req = serde_json::json!({ "workspace_id": default_workspace_id });
+    // `next_id` has no further use on this connection (mirrors the
+    // create/list/destroy test above) -- no further increment.
+    let destroy_res = call(&mut conn, next_id, op::WORKSPACE_DESTROY, destroy_req).await;
+    assert!(
+        destroy_res.payload.get("error").is_none(),
+        "workspace.destroy on a terminal capsule row must succeed: {:?}",
+        destroy_res.payload
+    );
+    assert!(
+        destroy_res.payload.get("kept").and_then(|v| v.as_str()).is_some(),
+        "default row destroy must report kept: {:?}",
+        destroy_res.payload
+    );
+
+    // The supervisor's own lane is silent -- no resident `sot-capsule.exe`
+    // leaked behind a row the UI now reports gone.
+    poll_until(
+        || {
+            let dir = state_dir_path.clone();
+            async move { if try_query_status(dir).await.is_none() { Some(()) } else { None } }
+        },
+        BOUND,
+        "the terminal row's supervisor lane to be silent after workspace.destroy",
+    )
+    .await;
+
+    if let Some(child) = daemon.take() {
+        kill_and_wait_bounded(child).await;
+    }
+}
