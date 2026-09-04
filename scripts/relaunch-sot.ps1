@@ -11,17 +11,35 @@
 # default `claude --permission-mode auto --continue /sot-fe-session-start`).
 #
 # Build failures leave the app running untouched — nothing is signalled.
+#
+# Sentinel content picks the exit code (ADR 0017's 76 amendment): a bare
+# timestamp -> 75 (plain relaunch, this file's default). `-Converge` writes
+# `converge` instead -> the frontend's watcher (rust/frontend/src/gpu.rs)
+# reads that back and exits 76, and the supervisor (launch-sot.ps1's
+# do/while loop) re-runs its self-update prelude (git pull + classify) and
+# freshness pass (cargo rebuild + `ShipTools.update_comm()`) BEFORE
+# respawning -- the only way today to converge a resident supervisor to
+# main without a fresh shortcut launch. `-Converge` skips the local build
+# below: it would build the CURRENT, not-yet-pulled tree, which the
+# supervisor's own freshness-pass rebuild immediately supersedes after the
+# pull -- wasted work against the wrong source. `-NoBuild` and `-Converge`
+# both skip the build, for different reasons; passing both is fine (same
+# effect as `-Converge` alone).
 
 [CmdletBinding()]
 param(
     # Skip the build and just request a relaunch of whatever is already built.
-    [switch]$NoBuild
+    [switch]$NoBuild,
+    # Converge: ask the resident supervisor to pull origin/main, rebuild,
+    # reinstall the comm layer, and respawn -- not just respawn on today's
+    # tree. See the sentinel-content note above and ADR 0017's 76 amendment.
+    [switch]$Converge
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path -Path (Join-Path $PSScriptRoot '..')
 
-if (-not $NoBuild) {
+if (-not $NoBuild -and -not $Converge) {
     Write-Host 'Building sot-frontend (release)...' -ForegroundColor Cyan
     Push-Location (Join-Path $repo 'rust')
     try {
@@ -40,6 +58,21 @@ if (-not $NoBuild) {
 $sentinelDir = Join-Path $env:LOCALAPPDATA 'sot'
 New-Item -ItemType Directory -Force -Path $sentinelDir | Out-Null
 $sentinel = Join-Path $sentinelDir 'relaunch.request'
-Set-Content -Path $sentinel -Value (Get-Date -Format o) -Encoding utf8
+$sentinelValue = if ($Converge) { "converge`n$(Get-Date -Format o)" } else { Get-Date -Format o }
+# Write to a same-directory temp file, then Move-Item -Force (an atomic
+# rename on the same volume) into the final path -- the watcher thread
+# (gpu.rs) does exists -> read -> delete with no lock, so writing the
+# final path directly risks it reading a partial/truncated write (which
+# decodes as a plain relaunch) or losing the delete race (an extra
+# respawn). -Encoding ascii, not utf8: PowerShell 5.1's -Encoding utf8
+# prepends a BOM the reader must otherwise strip -- the sentinel protocol
+# is plain ASCII, so there's no reason to emit one.
+$sentinelTemp = Join-Path $sentinelDir "relaunch.request.$PID.tmp"
+Set-Content -Path $sentinelTemp -Value $sentinelValue -Encoding ascii
+Move-Item -Path $sentinelTemp -Destination $sentinel -Force
 
-Write-Host 'Relaunch requested - the supervisor will restage and respawn the frontend.' -ForegroundColor Green
+if ($Converge) {
+    Write-Host 'Converge requested - the supervisor will pull, rebuild, reinstall comm, then respawn the frontend.' -ForegroundColor Green
+} else {
+    Write-Host 'Relaunch requested - the supervisor will restage and respawn the frontend.' -ForegroundColor Green
+}

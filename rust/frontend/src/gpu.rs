@@ -3995,10 +3995,13 @@ struct State {
     /// Ctrl+T reopen doesn't re-run it. ADR 0017.
     pending_resume_command: Option<String>,
     /// Set by the relaunch-watcher thread when the sentinel file
-    /// (`%LOCALAPPDATA%\sot\relaunch.request`) appears. The window-event
-    /// handler observes it and exits with code 75 so the supervisor restages
-    /// the freshly-built binary and respawns us with `--relaunched`. ADR 0017.
-    relaunch_flag: Arc<std::sync::atomic::AtomicBool>,
+    /// (`%LOCALAPPDATA%\sot\relaunch.request`) appears: `0` = no request,
+    /// `75` = plain relaunch, `76` = converge (self-update prelude + freshness
+    /// pass re-run before respawn). The sentinel's content picks the code —
+    /// see `relaunch_sentinel_path`. The window-event handler observes a
+    /// nonzero value and exits with that code so the supervisor restages the
+    /// freshly-built binary and respawns us with `--relaunched`. ADR 0017.
+    relaunch_flag: Arc<std::sync::atomic::AtomicU8>,
     /// FE control commands (ADR 0019) enqueued by the command-file watcher
     /// thread (the producer) and drained on the main thread in `window_event`
     /// (the consumer), so dispatch runs the same code paths as the keybinds.
@@ -5375,7 +5378,7 @@ impl State {
             term_scroll: 0,
             repo_dir,
             pending_resume_command,
-            relaunch_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             fe_commands: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             fe_state_sig: None,
             focus_on_first_frame: true,
@@ -17507,7 +17510,13 @@ fn finish_capture(
 /// Path of the self-relaunch sentinel file (ADR 0017). The build-and-relaunch
 /// helper (`scripts/relaunch-sot.ps1`) creates this after a successful
 /// `cargo build`; the watcher thread notices it and triggers an exit-75
-/// respawn.
+/// respawn. `relaunch-sot.ps1 -Converge` writes `converge` as the file's
+/// content instead of a bare timestamp (ASCII-encoded, no BOM) -- the
+/// watcher thread reads it back (BOM-stripped, case-insensitive,
+/// leading-whitespace-tolerant `starts_with("converge")`, so a stray BOM
+/// from a different writer/encoding doesn't misdecode a converge as a
+/// plain relaunch) to pick exit code 76 over 75; any other content
+/// (including the plain timestamp) is a normal relaunch.
 fn relaunch_sentinel_path() -> Option<std::path::PathBuf> {
     crate::paths::sot_state_dir().map(|d| d.join("relaunch.request"))
 }
@@ -17991,8 +18000,31 @@ impl ApplicationHandler for App {
                         .spawn(move || loop {
                             std::thread::sleep(std::time::Duration::from_millis(400));
                             if sentinel.exists() {
+                                // Read BEFORE removing: content picks 75 (plain
+                                // relaunch) vs 76 (converge — relaunch-sot.ps1
+                                // -Converge). Unreadable/empty content fails
+                                // open to a plain relaunch.
+                                // PowerShell 5.1's `-Encoding utf8` (the
+                                // writer's ASCII path is preferred now, but a
+                                // stale/foreign writer can still emit one)
+                                // prepends a UTF-8 BOM (U+FEFF), which
+                                // `trim_start()` does NOT strip (it's not
+                                // Unicode whitespace) -- strip it explicitly
+                                // first so a BOM-prefixed "converge" doesn't
+                                // decode as a plain relaunch.
+                                let is_converge = std::fs::read_to_string(&sentinel)
+                                    .map(|s| {
+                                        s.trim_start_matches('\u{feff}')
+                                            .trim_start()
+                                            .to_ascii_lowercase()
+                                            .starts_with("converge")
+                                    })
+                                    .unwrap_or(false);
                                 let _ = std::fs::remove_file(&sentinel);
-                                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                                flag.store(
+                                    if is_converge { 76 } else { 75 },
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
                                 waker.request_redraw();
                                 break;
                             }
@@ -18081,15 +18113,19 @@ impl ApplicationHandler for App {
             return;
         };
         // Self-relaunch (ADR 0017): the watcher thread set this when the
-        // sentinel appeared. Persist geometry, then exit 75 — the supervisor
-        // restages the freshly-built binary and respawns us with
-        // `--relaunched`. Abrupt exit is fine: state is saved on events, and
-        // the OS reclaims the window/GPU surface.
-        if state
+        // sentinel appeared — 75 for a plain relaunch, 76 for a converge
+        // (relaunch-sot.ps1 -Converge; the supervisor re-runs its
+        // self-update prelude and freshness pass before respawning). Persist
+        // geometry, then exit with that code. Abrupt exit is fine: state is
+        // saved on events, and the OS reclaims the window/GPU surface.
+        let relaunch_code = state
             .relaunch_flag
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            tracing::info!("relaunch requested; exiting 75 for supervisor respawn");
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if relaunch_code != 0 {
+            tracing::info!(
+                exit_code = relaunch_code,
+                "relaunch requested; exiting for supervisor respawn"
+            );
             state.persist_resume_state();
             // We currently own the OS foreground, so we're allowed to hand the
             // foreground right to the about-to-spawn replacement. ASFW_ANY lifts
@@ -18099,7 +18135,7 @@ impl ApplicationHandler for App {
             // and only flashes the taskbar. ADR 0017.
             #[cfg(windows)]
             allow_next_foreground();
-            std::process::exit(75);
+            std::process::exit(relaunch_code as i32);
         }
         // FE control commands (ADR 0019): drain whatever the watcher enqueued
         // and dispatch on the main thread — same code paths as the keybinds.

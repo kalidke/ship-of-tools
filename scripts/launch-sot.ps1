@@ -56,6 +56,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Captured NOW, at top-level script scope, so Invoke-SelfUpdatePrelude's
+# rare self-re-exec branch (the launcher script itself changed under us) can
+# pass the ORIGINAL -Local/-Relaunched/-NoUpdate/-RestartBackend switches
+# through to the fresh copy. $PSBoundParameters is an automatic variable
+# scoped to whatever's currently executing -- read from inside a function it
+# means that FUNCTION's own bound params (just -AllowReexec), not the
+# script's. Capture the script's copy before any function can shadow it.
+$script:LaunchBoundParameters = $PSBoundParameters
+
 # AUTHORING GOTCHA (Windows PowerShell 5.1): this file has no BOM, so the 5.1
 # parser decodes it as ANSI/cp1252. A UTF-8 non-ASCII char (em-dash, curly
 # quote, etc.) is harmless inside a "#" comment (runs to end-of-line) but inside
@@ -146,72 +155,107 @@ function Stop-Splash {
 # OTHER fail-open step here still reports success. A stale-lock refusal was
 # observed logging "Offline or dirty tree" and launching the old binary with
 # nothing on screen saying the box never updated - fine for one laptop, a
-# false "converged" reading fleet-wide otherwise. $selfUpdateRefusedReason
-# below carries a REFUSED pull's first error line into $env:SOT_LAUNCH_NOTICE
-# (set once, just before the frontend's first spawn) so the frontend renders
+# false "converged" reading fleet-wide otherwise. A REFUSED pull's first
+# error line lands in $script:launchNotices below, joined into
+# $env:SOT_LAUNCH_NOTICE (see Set-LaunchNoticeEnv) so the frontend renders
 # it at its own startup - offline still only logs, same as before.
 # ---------------------------------------------------------------------------
-$selfUpdateRefusedReason = $null
-if (-not $NoUpdate -and -not $Local -and -not $env:SOT_LAUNCH_REEXEC -and (Test-Path (Join-Path $repo '.git'))) {
-    # Relax 'Stop' -> 'Continue' around native git: its stderr under 'Stop' + 2>&1
-    # throws in PS 5.1. Gate on $LASTEXITCODE, not thrown errors (as below).
-    $savedEAP = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $selfRel = 'scripts/launch-sot.ps1'
-        $before = git -C $repo rev-parse "HEAD:$selfRel" 2>$null
-        Set-LaunchStatus 'Checking for updates...'
-        Write-SupLog 'self-update: git pull --rebase --autostash'
-        $pullOut = git -C $repo pull --rebase --autostash 2>&1
-        Write-SupLog "self-update: git -> $($pullOut | Select-Object -Last 1)"
-        if ($LASTEXITCODE -eq 0) {
-            $env:SOT_LAUNCH_REBUILD = '1'   # pull ok -> final invocation builds once
-            $after = git -C $repo rev-parse "HEAD:$selfRel" 2>$null
-            if ($after -and $before -and ($after -ne $before)) {
-                # This launcher changed under us. Syntax-check the pulled copy by
-                # blob-OID diff before handing over - a broken-but-successful pull
-                # must not brick the launch (fail-open beats re-parsing garbage).
-                $tokens = $null
-                $parseErrors = $null
-                [System.Management.Automation.Language.Parser]::ParseFile(
-                    $PSCommandPath, [ref]$tokens, [ref]$parseErrors) | Out-Null
-                if ($parseErrors -and $parseErrors.Count -gt 0) {
-                    Write-SupLog "self-update: pulled launcher has parse errors - staying on current copy: $($parseErrors[0].Message)"
+# Invoke-SelfUpdatePrelude is the WHOLE prelude above as one function, so an
+# exit-76 CONVERGE respawn (docs/adr/0017-frontend-self-relaunch.md's 76
+# amendment; see the do/while loop and relaunch-sot.ps1 -Converge) can re-run
+# the identical pull + classification -- one code path, no copy. -AllowReexec
+# is passed ONLY by the very first, top-level call below: hot-swapping this
+# process's already-parsed AST via `& $PSCommandPath` is safe only before any
+# supervisor state (tunnels, a live FE) exists. A converge mid-loop that
+# finds the launcher itself changed on disk logs it and defers the swap to
+# the next full process start rather than tearing down live tunnels to
+# re-exec in place.
+#
+# $script:launchNotices collects every line worth surfacing in the frontend's
+# one-line startup notice (a refused pull, a failed comm install, a pinned
+# capsule -- see Invoke-FreshnessPass and Set-LaunchNoticeEnv below): the
+# frontend renders $env:SOT_LAUNCH_NOTICE as a single status string
+# (gpu.rs's FeCommand::Notify arm), so multiple problems join with "; "
+# rather than teaching it a list. Reset at the start of every prelude call
+# (each launch, and each converge) so a resolved problem stops repeating.
+$script:launchNotices = [System.Collections.Generic.List[string]]::new()
+
+function Invoke-SelfUpdatePrelude {
+    param(
+        [switch]$AllowReexec
+    )
+    $script:launchNotices.Clear()
+    if (-not $NoUpdate -and -not $Local -and -not $env:SOT_LAUNCH_REEXEC -and (Test-Path (Join-Path $repo '.git'))) {
+        # Relax 'Stop' -> 'Continue' around native git: its stderr under 'Stop' + 2>&1
+        # throws in PS 5.1. Gate on $LASTEXITCODE, not thrown errors (as below).
+        $savedEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $selfRel = 'scripts/launch-sot.ps1'
+            $before = git -C $repo rev-parse "HEAD:$selfRel" 2>$null
+            Set-LaunchStatus 'Checking for updates...'
+            Write-SupLog 'self-update: git pull --rebase --autostash'
+            $pullOut = git -C $repo pull --rebase --autostash 2>&1
+            Write-SupLog "self-update: git -> $($pullOut | Select-Object -Last 1)"
+            if ($LASTEXITCODE -eq 0) {
+                $env:SOT_LAUNCH_REBUILD = '1'   # pull ok -> final invocation builds once
+                $after = git -C $repo rev-parse "HEAD:$selfRel" 2>$null
+                if ($after -and $before -and ($after -ne $before)) {
+                    # This launcher changed under us. Syntax-check the pulled copy by
+                    # blob-OID diff before handing over - a broken-but-successful pull
+                    # must not brick the launch (fail-open beats re-parsing garbage).
+                    $tokens = $null
+                    $parseErrors = $null
+                    [System.Management.Automation.Language.Parser]::ParseFile(
+                        $PSCommandPath, [ref]$tokens, [ref]$parseErrors) | Out-Null
+                    if ($parseErrors -and $parseErrors.Count -gt 0) {
+                        Write-SupLog "self-update: pulled launcher has parse errors - staying on current copy: $($parseErrors[0].Message)"
+                    } elseif ($AllowReexec) {
+                        Write-SupLog 'self-update: launcher changed - re-invoking fresh copy'
+                        Stop-Splash   # the fresh invocation spawns its own splash
+                        $env:SOT_LAUNCH_REEXEC = '1'
+                        # Splat via a plain local copy, not @script:LaunchBoundParameters
+                        # directly -- the splat operator's scope-qualifier support is not
+                        # worth relying on; a local variable is unambiguous.
+                        $reexecParams = $script:LaunchBoundParameters
+                        & $PSCommandPath @reexecParams
+                        exit $LASTEXITCODE
+                    } else {
+                        Write-SupLog 'self-update: launcher changed on disk - takes effect on the next full process start (a converge mid-loop does not hot-swap the running supervisor)'
+                        $script:launchNotices.Add('launcher updated; quit and relaunch from the shortcut') | Out-Null
+                    }
+                }
+            } else {
+                # Classify by scanning git's own output text rather than trying to
+                # pre-probe the network separately (no second git/ssh round trip,
+                # no new failure mode of its own) - fetch failures print a
+                # recognizable network-layer message regardless of transport
+                # (https or ssh remote); anything else ran against the local repo
+                # and is a refusal.
+                $pullText = (($pullOut | ForEach-Object { "$_" }) -join "`n")
+                $offlinePattern = 'Could not resolve host|Could not read from remote|Connection timed out|Network is unreachable|Could not connect|Operation timed out|Temporary failure in name resolution|No route to host|Connection refused|Host is down|ssh: connect to host'
+                if ($pullText -match $offlinePattern) {
+                    Set-LaunchStatus 'Offline - launching current build...'
+                    Write-SupLog 'self-update: pull failed (offline) - launching existing binary'
                 } else {
-                    Write-SupLog 'self-update: launcher changed - re-invoking fresh copy'
-                    Stop-Splash   # the fresh invocation spawns its own splash
-                    $env:SOT_LAUNCH_REEXEC = '1'
-                    & $PSCommandPath @PSBoundParameters
-                    exit $LASTEXITCODE
+                    $errLine = ($pullOut | ForEach-Object { "$_" } | Where-Object { $_ -match '^\s*(fatal|error):' } | Select-Object -Last 1)
+                    if (-not $errLine) { $errLine = ($pullOut | ForEach-Object { "$_" } | Select-Object -Last 1) }
+                    $refusedReason = "$errLine".Trim()
+                    Set-LaunchStatus 'Update refused - launching current build...'
+                    Write-SupLog "self-update: pull REFUSED - launching existing binary: $refusedReason"
+                    $script:launchNotices.Add("self-update: pull refused - running the existing build ($refusedReason)") | Out-Null
                 }
             }
-        } else {
-            # Classify by scanning git's own output text rather than trying to
-            # pre-probe the network separately (no second git/ssh round trip,
-            # no new failure mode of its own) - fetch failures print a
-            # recognizable network-layer message regardless of transport
-            # (https or ssh remote); anything else ran against the local repo
-            # and is a refusal.
-            $pullText = (($pullOut | ForEach-Object { "$_" }) -join "`n")
-            $offlinePattern = 'Could not resolve host|Could not read from remote|Connection timed out|Network is unreachable|Could not connect|Operation timed out|Temporary failure in name resolution|No route to host|Connection refused|Host is down|ssh: connect to host'
-            if ($pullText -match $offlinePattern) {
-                Set-LaunchStatus 'Offline - launching current build...'
-                Write-SupLog 'self-update: pull failed (offline) - launching existing binary'
-            } else {
-                $errLine = ($pullOut | ForEach-Object { "$_" } | Where-Object { $_ -match '^\s*(fatal|error):' } | Select-Object -Last 1)
-                if (-not $errLine) { $errLine = ($pullOut | ForEach-Object { "$_" } | Select-Object -Last 1) }
-                $selfUpdateRefusedReason = "$errLine".Trim()
-                Set-LaunchStatus 'Update refused - launching current build...'
-                Write-SupLog "self-update: pull REFUSED - launching existing binary: $selfUpdateRefusedReason"
-            }
+        } finally {
+            $ErrorActionPreference = $savedEAP
         }
-    } finally {
-        $ErrorActionPreference = $savedEAP
     }
+    # The re-invoke guard has served its purpose; clear it so the FE and an
+    # exit-75/76 relaunch don't inherit it (a relaunch must self-update afresh).
+    if ($env:SOT_LAUNCH_REEXEC) { Remove-Item Env:\SOT_LAUNCH_REEXEC -ErrorAction SilentlyContinue }
 }
-# The re-invoke guard has served its purpose; clear it so the FE and an exit-75
-# relaunch don't inherit it (a relaunch must self-update afresh).
-if ($env:SOT_LAUNCH_REEXEC) { Remove-Item Env:\SOT_LAUNCH_REEXEC -ErrorAction SilentlyContinue }
+
+Invoke-SelfUpdatePrelude -AllowReexec
 
 Add-Type -AssemblyName System.Windows.Forms   # MessageBox for the fatal dialogs below
 
@@ -736,8 +780,15 @@ foreach ($item in $tunnelPlan) {
 # an inherited '1' from an earlier invocation in the same shell must not
 # make a later -Local run rebuild (and stop the daemon for it); -Local
 # is documented as a freshness-free debug path with no exception.
+#
+# Invoke-FreshnessPass wraps the WHOLE pass below as one function, its own
+# SOT_LAUNCH_REBUILD/-NoUpdate/-Local gate included, so an exit-76 CONVERGE
+# respawn can re-run it right after Invoke-SelfUpdatePrelude -- the same two
+# calls the very first launch makes below, just repeated mid-loop. One code
+# path, no copy. See the do/while loop and relaunch-sot.ps1 -Converge.
 # ---------------------------------------------------------------------------
-if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate -and -not $Local) {
+function Invoke-FreshnessPass {
+    if ($env:SOT_LAUNCH_REBUILD -ne '1' -or $NoUpdate -or $Local) { return }
     # The git pull moved to the self-update prelude at the top; here we only
     # REBUILD, and only when that pull succeeded (the SOT_LAUNCH_REBUILD marker)
     # so exactly one cargo build runs in the final invocation. Consume the marker.
@@ -749,6 +800,38 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate -and -not $Local) {
     $savedEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
+        # Comm layer install/refresh (converge follow-up, 2026-09-03): a
+        # converged box carries fresh Rust binaries but a STALE
+        # ~/.sot-comm/bin + Claude/Codex skill set if this step is skipped --
+        # ShipTools.update_comm() is the one place that deploys comm/
+        # scripts and skills (scripts/install.sh's own julia_run call does
+        # the same thing at install time; see docs/src/start/install.md).
+        # Gated the same as the rest of this pass -- "the pull succeeded"
+        # (SOT_LAUNCH_REBUILD, checked above) stands in for "the pull
+        # changed anything"; update_comm() is idempotent, so running it on
+        # a no-op pull is harmless and there is no cheaper signal available
+        # here. Non-fatal: no julia on PATH is the NORMAL state for a pure
+        # FE-client box (sot-setup SKILL.md's no-Julia fallback) and only
+        # logs; julia present but the command itself failing is unusual
+        # enough to also join the launch notice.
+        $juliaCmd = Get-Command julia -ErrorAction SilentlyContinue
+        if (-not $juliaCmd) {
+            Write-SupLog "freshness: no julia on PATH - skipping comm install (FE-client box, this is normal)"
+        } else {
+            Write-SupLog "freshness: julia -e ShipTools.update_comm()"
+            # One fully-quoted argument, not an adjacent bare+quoted
+            # concatenation -- unambiguous if $repo.Path ever contains a space.
+            $juliaProjectArg = "--project=$($repo.Path)"
+            $commOut = julia $juliaProjectArg -e 'using ShipTools; ShipTools.update_comm()' 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                $commErrLine = ($commOut | ForEach-Object { "$_" } | Select-Object -Last 1)
+                Write-SupLog "freshness: ShipTools.update_comm() FAILED (non-fatal). tail: $($commOut | Select-Object -Last 3)"
+                $script:launchNotices.Add("comm install failed - $commErrLine") | Out-Null
+            } else {
+                Write-SupLog "freshness: ShipTools.update_comm() ok"
+            }
+        }
+
         # Probe for cargo FIRST. Without this the missing-toolchain case is
         # reported as a SUCCESS: PowerShell raises CommandNotFoundException
         # (which 2>&1 captures into $buildOut) but leaves $LASTEXITCODE at 0
@@ -769,6 +852,7 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate -and -not $Local) {
         if ($LASTEXITCODE -ne 0) {
             Set-LaunchStatus 'ERROR: frontend rebuild failed - launching existing build (see supervisor.log)'
             Write-SupLog "freshness: BUILD FAILED - launching existing binary. tail: $($buildOut | Select-Object -Last 3)"
+            $script:launchNotices.Add('frontend rebuild failed - running the existing build (see supervisor.log)') | Out-Null
         } else {
             Write-SupLog "freshness: frontend rebuilt"
         }
@@ -797,7 +881,8 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate -and -not $Local) {
         # freshness block (the single per-launch ensure, see its own comment) restarts
         # it on whatever pair is current once this rebuild is done -- so on
         # a dev box, every launch that rebuilds also restarts the local
-        # daemon.
+        # daemon. A converge respawn (exit 76) re-ensures it too, right
+        # after calling this function -- see the do/while loop.
         #
         # Mixed-version pair guard (2026-09-02 Codex round): a locally-spawned
         # capsule supervisor (sot-capsule.exe) is a SEPARATE, detached process
@@ -809,7 +894,10 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate -and -not $Local) {
         # fix is to skip the rebuild entirely -- both the stop (nothing to
         # unpin if nothing is about to overwrite it) and the cargo build --
         # whenever a sot-capsule.exe is running from this dev bin dir. The
-        # durable answer is U4's upgrade transaction.
+        # durable answer is U4's upgrade transaction. Surfaced in the launch
+        # notice too (converge follow-up) -- never stopped here: a capsule
+        # supervisor owns live workspace state and survives the daemon by
+        # design.
         $devBinDir = Split-Path $backendExe -Parent
         $capsuleSessionsAlive = @(Get-CimInstance Win32_Process -Filter "Name='sot-capsule.exe'" -ErrorAction SilentlyContinue |
             Where-Object {
@@ -818,6 +906,7 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate -and -not $Local) {
             })
         if ($capsuleSessionsAlive.Count -gt 0) {
             Write-SupLog "freshness: local capsule sessions alive - pair not rebuilt; the durable answer is U4's upgrade transaction"
+            $script:launchNotices.Add("sot-capsule.exe in use by $($capsuleSessionsAlive.Count) supervisors; end those workspaces to update it") | Out-Null
         } else {
             if (Test-Path $sotLocalDaemon) {
                 Write-SupLog 'freshness: stopping local daemon before backend rebuild (a running sotd.exe pins its own image)'
@@ -828,6 +917,7 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate -and -not $Local) {
             $capOut = cargo build --release -p sot-backend -p sot-log --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
             if ($LASTEXITCODE -ne 0) {
                 Write-SupLog "freshness: backend pair rebuild FAILED (non-fatal, continuing with whatever pair exists). tail: $($capOut | Select-Object -Last 3)"
+                $script:launchNotices.Add('backend rebuild failed - running the existing sotd.exe/sot-capsule.exe pair') | Out-Null
             } else {
                 Write-SupLog "freshness: backend pair (sotd.exe, sot-capsule.exe) rebuilt"
             }
@@ -837,6 +927,7 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate -and -not $Local) {
         $ErrorActionPreference = $savedEAP
     }
 }
+Invoke-FreshnessPass
 # ---------------------------------------------------------------------------
 # Local daemon ensure (ADR 0042 L2b design D; ONE-ensure simplification
 # 2026-09-02): EVERY launch mode ensures the persistent, per-user local
@@ -866,15 +957,22 @@ if ($env:SOT_LAUNCH_REBUILD -eq '1' -and -not $NoUpdate -and -not $Local) {
 # tunnel(s) this mode exists for are unaffected. -Local has nothing else to
 # fall back to, so it keeps today's hard error dialog.
 # ---------------------------------------------------------------------------
-if ($Local) { Stop-Splash }   # -Local is a debug path with no other progress UI
-$localDaemonReady = $false
-if (Test-Path $sotLocalDaemon) {
+# Invoke-LocalDaemonEnsure is this single call as a function so an exit-76
+# CONVERGE respawn (see the do/while loop) can re-ensure the daemon after its
+# freshness pass -- a backend-pair rebuild there stops the daemon first (it
+# pins its own image on Windows) and only THIS launcher restarts it.
+function Invoke-LocalDaemonEnsure {
+    if (-not (Test-Path $sotLocalDaemon)) {
+        Write-SupLog "local daemon: sot-local-daemon.ps1 missing at $sotLocalDaemon"
+        return $false
+    }
     $localOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) 6>&1 2>&1
     foreach ($l in @($localOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
-    $localDaemonReady = ($LASTEXITCODE -eq 0)
-} else {
-    Write-SupLog "local daemon: sot-local-daemon.ps1 missing at $sotLocalDaemon"
+    return ($LASTEXITCODE -eq 0)
 }
+
+if ($Local) { Stop-Splash }   # -Local is a debug path with no other progress UI
+$localDaemonReady = Invoke-LocalDaemonEnsure
 
 if ($Local) {
     if (-not $localDaemonReady) {
@@ -903,11 +1001,18 @@ if (-not $localDaemonReady) {
 # live — Windows locks a running .exe, so building in place would fail the
 # link step. On exit code 75 ("rebuild done, relaunch me") we re-stage the
 # fresh binary and respawn it with --relaunched (which reopens the Terminal
-# drawer and runs the resume command). Any other exit code = real quit.
+# drawer and runs the resume command). Exit code 76 ("converge") does the
+# same respawn but FIRST re-runs Invoke-SelfUpdatePrelude + Invoke-
+# FreshnessPass + Invoke-LocalDaemonEnsure -- relaunch-sot.ps1 -Converge
+# writes `converge` as the sentinel file's content instead of a bare
+# timestamp, and the frontend's watcher (rust/frontend/src/gpu.rs) reads
+# that back to pick 76 over 75. Any other exit code = real quit. See
+# docs/adr/0017-frontend-self-relaunch.md's 76 amendment.
 #
 # SOT_REPO_DIR lets the frontend find the local repo (Terminal cwd for
 # `claude --continue`, and the build dir for the relaunch helper).
 $RelaunchExitCode = 75
+$ConvergeExitCode = 76
 $stagedDir = Join-Path $env:LOCALAPPDATA 'sot\bin'
 New-Item -ItemType Directory -Force -Path $stagedDir | Out-Null
 $stagedExe = Join-Path $stagedDir 'sot.exe'
@@ -952,18 +1057,24 @@ Start-Sleep -Milliseconds 400
 if ($token) {
     $env:SOT_TOKEN = $token
 }
-# Self-update notice for the frontend - a REFUSED pull's reason (empty/unset
-# for offline or an ok pull; see the self-update prelude above). Set once
-# here, before the FIRST Start-Process spawn below: env vars set on this
-# process are inherited by every child it spawns, exit-75 respawns included
-# within this SAME invocation - correct, since this invocation never pulled
-# again, so the notice stays true until a fresh launch. The frontend reads
-# it once at its own startup (rust/frontend/src/gpu.rs) and renders it
-# through the same status/notify_sticky_until fields FeCommand::Notify uses.
-Remove-Item Env:\SOT_LAUNCH_NOTICE -ErrorAction SilentlyContinue
-if ($selfUpdateRefusedReason) {
-    $env:SOT_LAUNCH_NOTICE = "self-update: pull refused - running the existing build ($selfUpdateRefusedReason)"
+# Self-update / freshness notice for the frontend - whatever
+# $script:launchNotices collected (empty for offline or a fully clean pull;
+# see the self-update prelude and Invoke-FreshnessPass above). Set once here,
+# before the FIRST Start-Process spawn below: env vars set on this process
+# are inherited by every child it spawns, exit-75 respawns included within
+# this SAME invocation. A later exit-76 CONVERGE re-runs the prelude and
+# freshness pass and calls Set-LaunchNoticeEnv again before its own respawn
+# (see the do/while loop), so the notice stays current across converges too.
+# The frontend reads it once at its own startup (rust/frontend/src/gpu.rs)
+# and renders it through the same status/notify_sticky_until fields
+# FeCommand::Notify uses.
+function Set-LaunchNoticeEnv {
+    Remove-Item Env:\SOT_LAUNCH_NOTICE -ErrorAction SilentlyContinue
+    if ($script:launchNotices.Count -gt 0) {
+        $env:SOT_LAUNCH_NOTICE = ($script:launchNotices -join '; ')
+    }
 }
+Set-LaunchNoticeEnv
 $relaunchNext = [bool]$Relaunched
 # The splash covers the INITIAL launch only. Exit-75 relaunches keep the tunnel
 # and skip freshness, and happen while the user is already in the app, so they
@@ -1085,12 +1196,29 @@ try {
             Start-Sleep -Milliseconds ([int]($pollSleepSec * 1000))
         }
 
-        # Determine whether this was a relaunch request (75) or a real quit.
-        # WaitForExit() guarantees ExitCode is populated after the poll loop.
+        # Determine whether this was a relaunch request (75), a converge
+        # request (76), or a real quit. WaitForExit() guarantees ExitCode is
+        # populated after the poll loop.
         $frontend.WaitForExit()
         $feUptime = (Get-Date) - $feStartedAt
-        $relaunchNext = ($frontend.ExitCode -eq $RelaunchExitCode)
-        Write-SupLog "frontend pid=$($frontend.Id) exited code=$($frontend.ExitCode) uptime=$([int]$feUptime.TotalSeconds)s -> relaunchNext=$relaunchNext"
+        $convergeRequested = ($frontend.ExitCode -eq $ConvergeExitCode)
+        $relaunchNext = ($frontend.ExitCode -eq $RelaunchExitCode) -or $convergeRequested
+        Write-SupLog "frontend pid=$($frontend.Id) exited code=$($frontend.ExitCode) uptime=$([int]$feUptime.TotalSeconds)s -> relaunchNext=$relaunchNext converge=$convergeRequested"
+
+        # Converge (exit 76, relaunch-sot.ps1 -Converge): re-run the SAME
+        # self-update prelude + freshness pass the very first launch ran,
+        # then re-ensure the local daemon (the freshness pass may have
+        # stopped it for a backend-pair rebuild) and refresh the launch
+        # notice -- all three are plain function calls now, so this is the
+        # only place that repeats them. Each is a no-op under -NoUpdate,
+        # matching what a first launch with that switch would do.
+        if ($convergeRequested) {
+            Write-SupLog 'converge (exit 76): re-running self-update prelude + freshness pass'
+            Invoke-SelfUpdatePrelude
+            Invoke-FreshnessPass
+            $localDaemonReady = Invoke-LocalDaemonEnsure
+            Set-LaunchNoticeEnv
+        }
 
         # Crash-loop rollback (ADR 0030 §4): a just-applied update that dies
         # abnormally within 10s is rolled back and the FE respawns on the
