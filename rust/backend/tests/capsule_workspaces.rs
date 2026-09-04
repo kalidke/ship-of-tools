@@ -674,25 +674,23 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     )
     .await;
 
-    // workspace.list's own row leaves "stopped" for this workspace,
-    // confirming the daemon's own reported phase agrees with the lane.
-    let phase_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
-    loop {
-        let id = next_id;
-        next_id += 1;
-        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
-        if let Some(row) = find_row(&payload, &default_workspace_id) {
-            assert_eq!(row["runtime"], "capsule", "row: {row:?}");
-            if row["phase"].as_str() != Some("stopped") {
-                break;
+    // The row reaches Ready (leg spawned, ConPTY up, challenge proven)
+    // before this test ends it -- the same thing a user destroying a
+    // session effectively waits for: pressing D while still Starting is
+    // honestly retryable (EndRunOutcome::Starting), not a bug this test
+    // exists to reproduce.
+    poll_until(
+        || {
+            let dir = state_dir_path.clone();
+            async move {
+                let report = try_query_status(dir).await?;
+                (report.phase == sot_log::wire::SupervisorPhase::Ready).then_some(())
             }
-        }
-        assert!(
-            Instant::now() < phase_deadline,
-            "timed out waiting for workspace.list to report a phase other than \"stopped\" for the default capsule workspace"
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+        },
+        BOUND,
+        "the default capsule's supervisor to reach phase Ready",
+    )
+    .await;
 
     // --- #182 items A.1/C: end the default row, then prove attach
     // recovers it via `reset` with a NEW voyage (not the old flat
@@ -747,11 +745,11 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     // Re-attach, repeatedly and bounded, until the row is genuinely
     // live again with a NEW voyage — item C, the claim this test
     // proves. Never assert a specific attach count or an intermediate
-    // phase: `ensure_started`'s own settle wait after a resume spawn
-    // (`wait_past_starting`) usually catches a marker-only recovery's
-    // near-instant `EndedNoRespawn` transition and resets it within
-    // the FIRST re-attach, entirely inside that one `pty.open` round
-    // trip (`reset` itself polls to completion before `ensure_started`
+    // phase: `ensure_started`'s own inline settle loop after a resume
+    // spawn usually catches a marker-only recovery's near-instant
+    // `EndedNoRespawn` transition and resets it within the FIRST
+    // re-attach, entirely inside that one `pty.open` round trip
+    // (`reset` itself polls to completion before `ensure_started`
     // returns) — so `EndedNoRespawn` is often never independently
     // observable from here at all. A slower settle just needs one more
     // attach once it lands; repeated attaches are harmless either way
