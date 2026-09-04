@@ -181,6 +181,28 @@ mod verbatim_tests {
     }
 }
 
+/// `simplify_verbatim` is a Windows-only rewrite — everywhere else (this
+/// crate's Linux/macOS CI leg included) it must be a true no-op, verbatim
+/// prefix or not, so a Windows-formatted string passed through on a
+/// non-Windows host round-trips unchanged rather than being mangled.
+#[cfg(all(test, not(windows)))]
+mod non_windows_noop_tests {
+    use super::simplify_verbatim;
+    use std::path::PathBuf;
+
+    #[test]
+    fn leaves_plain_path_unchanged() {
+        let p = PathBuf::from("/home/u/proj");
+        assert_eq!(simplify_verbatim(p.clone()), p);
+    }
+
+    #[test]
+    fn leaves_windows_style_verbatim_string_unchanged() {
+        let p = PathBuf::from(r"\\?\C:\Users\k\proj");
+        assert_eq!(simplify_verbatim(p.clone()), p);
+    }
+}
+
 #[cfg(test)]
 mod path_tests {
     use super::path_within_root;
