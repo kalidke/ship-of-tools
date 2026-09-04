@@ -289,13 +289,27 @@ pub enum EndRunOutcome {
     /// the leg's own end-marker alone, NEVER via `verify_voyage`, so
     /// this must not be reported as `RecordVerified`/`RecordClosed`.
     AlreadyEnded,
+    /// The authority had already reached `Terminal` before this call
+    /// ever reached it — its own internal flap/retry budget exhausted
+    /// (`FLAP_THRESHOLD`, `rust/log/src/supervisor.rs`), most often an
+    /// agent argv that can never launch (e.g. `claude` missing from
+    /// PATH). There is no leg left to end, and a `Terminal` authority
+    /// admits no fresh `EndRun` anyway (`supervisor.rs`'s
+    /// `handle_command` gates `EndRun` on `Lifecycle::Ready`) — so this
+    /// sends `stop` instead (admitted unconditionally, regardless of
+    /// lifecycle: `SupervisorOp::Stop`'s own admission has no lifecycle
+    /// gate) and waits for its confirmed exit. Without this arm the row
+    /// was UNENDABLE: `workspace.destroy` kept reporting `NotEnded`
+    /// forever, because nothing ever told the stuck authority to stop.
+    /// Safe to treat as `Removable` — a `Terminal` authority has no live
+    /// leg left to orphan.
+    Terminal,
     /// The lane answered `phase: Starting` (voyage may still be `None`
     /// — only set once Recovering completes) — NEVER "not running"; a
     /// run may be about to (or already did) start. Retry.
     Starting,
     /// `end_run` reported the operation failed, was refused, or its
-    /// outcome is unknown, OR the authority answered `Terminal` — no
-    /// confirmed end in any case.
+    /// outcome is unknown — no confirmed end in any case.
     NotEnded(String),
 }
 
@@ -476,8 +490,13 @@ mod windows_runtime {
     /// `workspace.delete` on a capsule workspace (and the default row's
     /// end-run path): send `end_run {reason, voyage}` on the lane,
     /// reporting the outcome via [`super::EndRunOutcome`] (see its own
-    /// variant docs for the Starting/AlreadyEnded honesty rules), THEN
-    /// `stop` the authority once confirmed there is no more leg to run.
+    /// variant docs for the Starting/AlreadyEnded/Terminal honesty
+    /// rules), THEN `stop` the authority once confirmed there is no more
+    /// leg to run — including a `Terminal` authority, which has no leg
+    /// to end but still needs `stop` to actually go away (see
+    /// [`super::EndRunOutcome::Terminal`]'s own doc: without this arm a
+    /// capsule row whose agent argv can never launch cycled
+    /// Starting -> Terminal forever and was never endable from the UI).
     /// `stop` now WAITS for confirmed process exit; a failure there is
     /// only a logged warning, never a destroy failure — the outcome
     /// stays the confirmed one (`stop` only ends the AUTHORITY, never
@@ -507,9 +526,13 @@ mod windows_runtime {
                 return Ok(R::AlreadyEnded);
             }
             SupervisorPhase::Terminal => {
-                return Ok(R::NotEnded(
-                    "the authority is in a terminal state".to_string(),
-                ));
+                // No leg is running and no fresh `EndRun` would ever be
+                // admitted here (`Lifecycle::Terminal` isn't `Ready`) —
+                // the honest confirmed end is stopping the stuck
+                // authority itself. See `EndRunOutcome::Terminal`'s own
+                // doc for why this arm exists.
+                stop_and_warn(state_dir, "the authority was terminal before this call reached it");
+                return Ok(R::Terminal);
             }
             SupervisorPhase::Ready | SupervisorPhase::Ending => {}
         }
