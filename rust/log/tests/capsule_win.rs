@@ -907,7 +907,18 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     // engineer a precise cut point; is_ground's own unit tests already
     // cover that. Real elapsed time only, no fixed assumption about where
     // the loop's ground boundary lands.
-    std::thread::sleep(Duration::from_millis(150));
+    //
+    // Long enough that the scrollback-ring assertion below (added with the
+    // ring itself) has real content to find: `SCRIPT_BLOCK` writes one
+    // line roughly every 59 ms (one byte per 1 ms sleep, ~59 bytes/line),
+    // so at this 25-row screen a nominal run scrolls a couple hundred
+    // lines off in 15 s -- comfortably more than a screenful even if a
+    // loaded runner's per-byte sleep runs several times its nominal length
+    // (the windows-latest-vs-windows-2022 conhost timing gap measured
+    // elsewhere in this file was ~2x, not 10x). Still not an engineered
+    // cut point: nothing here pins how MANY lines land in the checkpoint,
+    // only that it is comfortably more than a screenful.
+    std::thread::sleep(Duration::from_millis(15_000));
 
     const CONN: ConnId = 1;
     transport.open(CONN);
@@ -1050,25 +1061,54 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
 
     // Finding 13, part 2 (the U0 oracle): the wire checkpoint must be
     // byte-identical to one computed independently by feeding a fresh
-    // reference parser exactly the prefix.
-    let mut reference_at_watermark = vt100_ctt::Parser::new(rows, cols, 0);
+    // reference parser exactly the prefix. The reference's own scrollback
+    // capacity must match the capsule's own live parser
+    // (`CAPSULE_SCROLLBACK_ROWS`) -- the checkpoint now carries a
+    // scrollback ring, so a reference built at a different capacity would
+    // disagree about how much of it survives, independent of any real
+    // divergence in what was actually recorded.
+    let mut reference_at_watermark =
+        vt100_ctt::Parser::new(rows, cols, capsule_win::CAPSULE_SCROLLBACK_ROWS);
     reference_at_watermark.process(prefix);
-    let reference_checkpoint =
-        reference_at_watermark.screen().checkpoint().expect("prefix screen must be representable");
+    let reference_checkpoint = reference_at_watermark
+        .screen()
+        .checkpoint()
+        .expect("prefix screen must be representable");
     assert_eq!(
         checkpoint_bytes, reference_checkpoint,
         "the wire checkpoint must be byte-identical to an independently computed checkpoint of the same prefix"
     );
 
+    // The scrollback ring itself must actually have arrived -- the defect
+    // this fixed was an attach handing the client an empty ring every
+    // time (`ring_len = 0` on every attach, regardless of how much had
+    // scrolled off). Not a fixed expected count: real elapsed time drives
+    // how many lines the producer got through before this checkpoint's cut
+    // (see the sleep above), so this asserts only that SOME history rode
+    // along, which is what the defect actually broke.
+    let mut ring_check = vt100_ctt::Parser::new(rows, cols, capsule_win::CAPSULE_SCROLLBACK_ROWS);
+    ring_check
+        .restore_screen(&checkpoint_bytes)
+        .expect("checkpoint must decode");
+    ring_check.screen_mut().set_scrollback(usize::MAX);
+    assert!(
+        ring_check.screen().scrollback() > 0,
+        "attach must hand over a nonempty scrollback ring; got an empty one"
+    );
+
     // And the full round trip, at the same checkpoint-byte granularity: a
     // fresh parser restored from the wire checkpoint and replayed with the
     // exact suffix must reach a state whose OWN checkpoint is
-    // byte-identical to a from-scratch parser's, fed the entire voyage.
-    let mut restored = vt100_ctt::Parser::new(rows, cols, 0);
-    restored.restore_screen(&checkpoint_bytes).expect("checkpoint must decode");
+    // byte-identical to a from-scratch parser's, fed the entire voyage --
+    // both at the SAME scrollback capacity as the capsule's own parser,
+    // for the same reason as above.
+    let mut restored = vt100_ctt::Parser::new(rows, cols, capsule_win::CAPSULE_SCROLLBACK_ROWS);
+    restored
+        .restore_screen(&checkpoint_bytes)
+        .expect("checkpoint must decode");
     restored.process(&suffix);
 
-    let mut reference = vt100_ctt::Parser::new(rows, cols, 0);
+    let mut reference = vt100_ctt::Parser::new(rows, cols, capsule_win::CAPSULE_SCROLLBACK_ROWS);
     reference.process(&total);
 
     assert_eq!(

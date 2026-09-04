@@ -202,29 +202,148 @@ fn resize_before_checkpoint_roundtrips() {
     assert_roundtrips(&mut parser);
 }
 
+/// A live ring only ever keeps its newest `scrollback_len` rows (see
+/// `Grid::scroll_up`'s pop-front-on-overflow); a checkpoint's ring, on
+/// restore, is trimmed the identical way against the *restorer's own*
+/// capacity — proven at the end of this test by matching a narrow-capacity
+/// restore against an independent parser fed the identical byte stream from
+/// scratch at that same capacity, which is the oracle a checkpoint round
+/// trip has to agree with.
 #[test]
-fn scrollback_is_not_carried_and_capacity_comes_from_the_restorer() {
-    let mut parser = Parser::new(4, 20, 100);
-    for i in 0..20 {
-        parser.process(format!("line {i}\r\n").as_bytes());
+fn checkpoint_carries_the_scrollback_ring_and_restore_keeps_the_restorers_newest() {
+    let stream: Vec<u8> = (0..20)
+        .map(|i| format!("line {i}\r\n"))
+        .collect::<String>()
+        .into_bytes();
+
+    let mut original = Parser::new(4, 20, 100);
+    original.process(&stream);
+    original.screen_mut().set_scrollback(usize::MAX);
+    let full_ring_len = original.screen().scrollback();
+    assert!(
+        full_ring_len > 3,
+        "the test needs a fuller ring than the narrow capacity used below"
+    );
+
+    let bytes = checkpoint(&original);
+
+    // The visible screen and the restored offset are independent of the
+    // restorer's own scrollback capacity — the ring is history, never the
+    // screen itself, and the offset always starts at zero right after a
+    // restore, however much (or little) history rides along with it.
+    for cap in [0_usize, 3, full_ring_len, full_ring_len + 50] {
+        let mut restored = Parser::new(4, 20, cap);
+        restored.restore_screen(&bytes).expect("restore");
+        assert_eq!(
+            restored.screen().scrollback(),
+            0,
+            "cap={cap}: offset must start at zero after any restore"
+        );
+        original.screen_mut().set_scrollback(0);
+        assert_eq!(
+            restored.screen().contents(),
+            original.screen().contents(),
+            "cap={cap}: visible screen must match regardless of ring capacity"
+        );
+
+        restored.screen_mut().set_scrollback(usize::MAX);
+        assert_eq!(
+            restored.screen().scrollback(),
+            cap.min(full_ring_len),
+            "cap={cap}: kept ring length must be min(checkpoint's ring, restorer's capacity)"
+        );
     }
-    parser.screen_mut().set_scrollback(5);
-    assert_eq!(parser.screen().scrollback(), 5);
 
-    // A restored screen has no scrollback to be offset into, so the offset
-    // is necessarily zero however far back the source was scrolled.
-    let restored = roundtrip(&parser);
-    assert_eq!(restored.screen().scrollback(), 0);
+    // Newest, not just fewest: a narrow-capacity restore must keep the rows
+    // nearest the current screen, not the oldest ones.
+    let narrow_cap = 3;
+    let mut narrow = Parser::new(4, 20, narrow_cap);
+    narrow.restore_screen(&bytes).expect("restore");
 
-    // Capacity belongs to the restoring parser, not to the checkpoint: two
-    // parsers configured differently restore the same bytes to the same
-    // screen.
-    let bytes = checkpoint(&parser);
-    let mut roomy = Parser::new(2, 2, 10_000);
-    let mut none = Parser::new(2, 2, 0);
-    roomy.restore_screen(&bytes).unwrap();
-    none.restore_screen(&bytes).unwrap();
-    assert_eq!(checkpoint(&roomy), checkpoint(&none));
+    let mut reference = Parser::new(4, 20, narrow_cap);
+    reference.process(&stream);
+
+    assert_eq!(
+        checkpoint(&narrow),
+        checkpoint(&reference),
+        "a restore's kept rows must equal a live ring that always had this capacity"
+    );
+}
+
+/// `Parser::restore_screen` replaces the screen wholesale
+/// (`self.screen.screen = screen`), never merges into it — so restoring the
+/// SAME checkpoint twice must not double the ring, which an append bug
+/// would do silently.
+#[test]
+fn restoring_twice_replaces_the_ring_rather_than_appending() {
+    let mut source = Parser::new(4, 20, 100);
+    for i in 0..20 {
+        source.process(format!("line {i}\r\n").as_bytes());
+    }
+    let bytes = checkpoint(&source);
+
+    let mut client = Parser::new(4, 20, 100);
+    client.restore_screen(&bytes).expect("first restore");
+    client.screen_mut().set_scrollback(usize::MAX);
+    let first_len = client.screen().scrollback();
+    assert!(first_len > 0, "the test needs a nonempty ring");
+
+    client.restore_screen(&bytes).expect("second restore");
+    client.screen_mut().set_scrollback(usize::MAX);
+    assert_eq!(
+        client.screen().scrollback(),
+        first_len,
+        "a second restore of the SAME checkpoint must yield the same ring \
+         length, not double it"
+    );
+}
+
+/// `Grid::set_size` resizes the scrollback ring's rows with the same
+/// clip/pad policy as the visible ones (the same `Row::resize` call), so a
+/// post-restore reflow (ADR 0042 L1b) or a later pane resize leaves every
+/// ring row at the pane's current width instead of a stale one.
+///
+/// This deliberately does not go through the shared `assert_roundtrips`
+/// helper: its restore target is a fixed `Parser::new(2, 2, 0)` (a capacity
+/// of zero was always fine before the ring existed, since nothing carried
+/// one), which would silently drop this test's ring on every round trip and
+/// prove nothing about it. Restoring here at a matching capacity is what
+/// actually exercises the ring.
+#[test]
+fn set_size_resizes_scrollback_ring_rows_too() {
+    let mut parser = Parser::new(4, 10, 100);
+    for i in 0..8 {
+        parser.process(format!("row number {i}\r\n").as_bytes());
+    }
+    parser.screen_mut().set_scrollback(usize::MAX);
+    let ring_len_before = parser.screen().scrollback();
+    assert!(ring_len_before > 0, "the test needs a nonempty ring");
+    parser.screen_mut().set_scrollback(0);
+
+    // Widen, then narrow past the original width — every ring row must
+    // come along, matching whatever width the visible rows themselves
+    // would show at each size.
+    for (rows, cols) in [(4_u16, 20_u16), (4, 3)] {
+        parser.screen_mut().set_size(rows, cols);
+        assert_eq!(parser.screen().size(), (rows, cols));
+
+        parser.screen_mut().set_scrollback(usize::MAX);
+        assert_eq!(
+            parser.screen().scrollback(),
+            ring_len_before,
+            "resizing must not itself drop or duplicate ring rows"
+        );
+        parser.screen_mut().set_scrollback(0);
+
+        // Every ring row (and the visible ones) must now be exactly `cols`
+        // wide: a row `set_size` missed would make this checkpoint disagree
+        // with a freshly restored copy of itself the moment either side is
+        // resized again.
+        let bytes = checkpoint(&parser);
+        let mut restored = Parser::new(rows, cols, 100);
+        restored.restore_screen(&bytes).expect("restore");
+        assert_eq!(checkpoint(&restored), bytes);
+    }
 }
 
 /// The alternate grid allocates its rows lazily, but that is an allocation
@@ -805,14 +924,14 @@ fn rejects_an_oversized_payload_without_decoding_it() {
 /// together — a renumbered mouse tag, a reordered header. These bytes are
 /// what version 1 means; changing them means changing the version.
 #[test]
-fn version_1_bytes_are_pinned() {
+fn version_2_bytes_are_pinned() {
     let mut parser = Parser::new(2, 2, 0);
     parser.process(b"\x1b[?1006h\x1b[38;5;9;4mZ");
 
     #[rustfmt::skip]
     let expected: &[u8] = &[
         b'S', b'O', b'T', b'V', b'T', b'1', b'0', b'0', // magic
-        1, 0,          // version 1
+        2, 0,          // version 2
         2, 0,          // rows — grid::MIN_ROWS, the smallest a screen may be
         2, 0,          // cols
         0,             // modes: none set
@@ -837,7 +956,9 @@ fn version_1_bytes_are_pinned() {
         0,             // row 1: not wrapped
         0,             // cell (1, 0)
         0,             // cell (1, 1)
-        // alternate grid: never entered, so blank rows at the same size
+        0, 0,          // scrollback ring count: 0 — this parser has none
+        // alternate grid: never entered, so blank rows at the same size,
+        // and NO scrollback field at all (it never has one, any version)
         0, 0, 0, 0,
         0, 0, 0, 0,
         0, 0, 1, 0,
@@ -851,6 +972,71 @@ fn version_1_bytes_are_pinned() {
         0,             // cell (1, 1)
     ];
     assert_eq!(checkpoint(&parser), expected);
+}
+
+/// Version 1 predates the scrollback ring and has no field for it, for
+/// either grid — the byte layout below is exactly the version-1 golden this
+/// test replaced (`version_2_bytes_are_pinned`'s predecessor), unchanged,
+/// because a real peer built before the ring existed can still send this
+/// shape and restoring it must not refuse it. It simply describes a screen
+/// with no history, the same legal state a version 2 payload describes when
+/// its count field reads zero.
+#[test]
+fn version_1_payload_restores_with_an_empty_ring() {
+    let mut parser = Parser::new(2, 2, 0);
+    parser.process(b"\x1b[?1006h\x1b[38;5;9;4mZ");
+
+    #[rustfmt::skip]
+    let legacy: &[u8] = &[
+        b'S', b'O', b'T', b'V', b'T', b'1', b'0', b'0', // magic
+        1, 0,          // version 1 — no scrollback field anywhere
+        2, 0,          // rows
+        2, 0,          // cols
+        0,             // modes: none set
+        0,             // mouse protocol mode: None
+        2,             // mouse protocol encoding: Sgr
+        1, 9,          // attrs fg: Idx(9)
+        0,             // attrs bg: Default
+        0b0000_1000,   // attrs mode: underline
+        0, 0, 0,       // saved attrs: default, default, no text mode
+        // normal grid
+        0, 0, 1, 0,    // pos: row 0, col 1
+        0, 0, 0, 0,    // saved pos
+        0, 0, 1, 0,    // scroll region rows 0..=1
+        0,             // origin mode
+        0,             // saved origin mode
+        0,             // row 0: not wrapped
+        0b0000_0011, 1, b'Z', 1, 9, 0, 0b0000_1000, // cell (0, 0)
+        0,             // cell (0, 1)
+        0,             // row 1: not wrapped
+        0,             // cell (1, 0)
+        0,             // cell (1, 1)
+        // alternate grid: never entered, blank rows at the same size
+        0, 0, 0, 0,
+        0, 0, 0, 0,
+        0, 0, 1, 0,
+        0,
+        0,
+        0, 0, 0,
+        0, 0, 0,
+    ];
+
+    // Restored at a NONZERO capacity, so an empty result proves the payload
+    // itself carried no ring — not merely that the restorer's own capacity
+    // truncated one away.
+    let mut restored = Parser::new(2, 2, 50);
+    restored
+        .restore_screen(legacy)
+        .expect("a version 1 payload must still restore");
+    assert_visible_state_equal(parser.screen(), restored.screen());
+
+    restored.screen_mut().set_scrollback(usize::MAX);
+    assert_eq!(
+        restored.screen().scrollback(),
+        0,
+        "a version 1 payload has no ring to restore, regardless of the \
+         restorer's own capacity"
+    );
 }
 
 /// The shape of a real attach: the capsule checkpoints at a parser

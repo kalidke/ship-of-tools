@@ -356,6 +356,18 @@ const MIN_ROWS: u16 = 2;
 const MAX_COLS: u16 = 512;
 const MAX_ROWS: u16 = 256;
 
+/// Scrollback rows the capsule's own live parser keeps, so its checkpoint
+/// carries history, not only the visible screen (the fix for "a local
+/// capsule pane cannot be scrolled after attach" — the capsule kept none at
+/// all, so every restore started the client's ring empty). Bounded well
+/// under the vt100 fork's own `checkpoint::MAX_SCROLLBACK_ROWS` (confirmed
+/// identical by reading the fork's source, same as `MIN_COLS`/`MAX_ROWS`
+/// above — `pub(crate)` there, unreachable from here): the fork's own doc
+/// works the arithmetic for why 1000 rows does not fit the ADR 0041 12 MiB
+/// checkpoint bound and 200 does, so this is the SAME 200, duplicated the
+/// same way.
+pub const CAPSULE_SCROLLBACK_ROWS: usize = 200;
+
 /// The output channel's byte budget (ADR 0041 budget table: "producer
 /// channel 8 MiB bounded"). Bounds OUTSTANDING bytes only — chunks the
 /// reader thread has reserved (in `READ_CHUNK`-sized units, before it ever
@@ -1271,8 +1283,13 @@ pub fn run(
 
     // Live vt100 parser (ADR 0041 "Terminal state") — kept current for a
     // later attach (step 5) to checkpoint from; this unit never serializes
-    // it. NO scrollback (the capsule keeps none by design).
-    let mut parser = vt100_ctt::Parser::new(config.rows, config.cols, 0);
+    // it. Bounded scrollback (`CAPSULE_SCROLLBACK_ROWS`): a local capsule
+    // pane could not be scrolled after attach, because every checkpoint
+    // carried the visible screen only and the client's own ring started
+    // empty on every attach. The ring rides in the checkpoint now (vt100
+    // fork format version 2) and a restore REPLACES the client's ring
+    // rather than appending, so re-attaching does not double it.
+    let mut parser = vt100_ctt::Parser::new(config.rows, config.cols, CAPSULE_SCROLLBACK_ROWS);
     let mut handshake = HostHandshake::new();
     // ADR 0041's model is ONE host handshake, at startup — answer and
     // record only the first match ever observed; count the rest (the

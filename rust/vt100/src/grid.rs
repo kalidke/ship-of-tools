@@ -68,6 +68,16 @@ impl Grid {
             for row in &mut self.rows {
                 row.wrap(false);
             }
+            // The scrollback ring gets the SAME treatment as the visible
+            // rows on a column-count change: a wrap flag computed for one
+            // width is not meaningful at another, and a rendered ring row
+            // at the old width would misalign with the resized screen
+            // above it. There is no smarter reflow here for the visible
+            // rows either — see `resize` below, which is the same
+            // clip/pad `Row::resize` both loops call.
+            for row in &mut self.scrollback {
+                row.wrap(false);
+            }
         }
 
         if self.scroll_bottom == self.size.rows - 1 {
@@ -76,6 +86,9 @@ impl Grid {
 
         self.size = size;
         for row in &mut self.rows {
+            row.resize(size.cols, crate::Cell::new());
+        }
+        for row in &mut self.scrollback {
             row.resize(size.cols, crate::Cell::new());
         }
         self.rows.resize(usize::from(size.rows), self.new_row());
@@ -559,9 +572,17 @@ pub struct Pos {
 // ---------------------------------------------------------------------------
 
 impl Grid {
+    /// `carries_scrollback` is `true` for exactly one of a screen's two
+    /// grids — the normal one — and decides whether a scrollback section
+    /// follows the visible rows at all. See [`crate::checkpoint`]'s module
+    /// doc for why the alternate grid gets no count field rather than a
+    /// zero one: it can never have accumulated a ring (nothing scrolls a
+    /// row off the alternate screen into one), so there is no state there
+    /// to carry, not merely an empty instance of it.
     pub(crate) fn write_checkpoint(
         &self,
         out: &mut Vec<u8>,
+        carries_scrollback: bool,
     ) -> Result<(), crate::checkpoint::CheckpointError> {
         crate::checkpoint::write_u16(out, self.pos.row);
         crate::checkpoint::write_u16(out, self.pos.col);
@@ -571,12 +592,6 @@ impl Grid {
         crate::checkpoint::write_u16(out, self.scroll_bottom);
         out.push(u8::from(self.origin_mode));
         out.push(u8::from(self.saved_origin_mode));
-        // Scrollback is deliberately absent: the capsule keeps none, and
-        // that deletion is what makes the ADR 0041 size budget provable.
-        // `scrollback_len` is the restorer's configuration and arrives as an
-        // argument; `scrollback_offset` cannot be anything but zero with no
-        // scrollback to offset into.
-        //
         // Row storage is allocated lazily — an alternate grid nothing ever
         // switched to has none — but that is an allocation optimization, not
         // terminal state: no rendering path can tell it apart from a grid of
@@ -590,33 +605,62 @@ impl Grid {
             for _ in 0..self.size.rows {
                 blank.write_checkpoint(out);
             }
-            return Ok(());
-        }
-        // An allocated grid whose shape disagrees with its own size means an
-        // invariant broke upstream of here. Say so rather than emitting a
-        // payload whose rows and header contradict each other.
-        if self.rows.len() != usize::from(self.size.rows) {
+        } else if self.rows.len() != usize::from(self.size.rows) {
+            // An allocated grid whose shape disagrees with its own size
+            // means an invariant broke upstream of here. Say so rather than
+            // emitting a payload whose rows and header contradict each
+            // other.
             return Err(crate::checkpoint::CheckpointError::Unrepresentable(
                 "grid row count does not match its size",
             ));
-        }
-        for row in &self.rows {
-            if row.len() != self.size.cols {
-                return Err(
-                    crate::checkpoint::CheckpointError::Unrepresentable(
+        } else {
+            for row in &self.rows {
+                if row.len() != self.size.cols {
+                    return Err(crate::checkpoint::CheckpointError::Unrepresentable(
                         "grid row width does not match its size",
-                    ),
-                );
+                    ));
+                }
+                row.write_checkpoint(out);
             }
-            row.write_checkpoint(out);
+        }
+
+        if carries_scrollback {
+            if self.scrollback.len() > usize::from(crate::checkpoint::MAX_SCROLLBACK_ROWS) {
+                return Err(crate::checkpoint::CheckpointError::Unrepresentable(
+                    "scrollback ring exceeds the checkpoint format's row bound",
+                ));
+            }
+            // `self.scrollback.len()` fits in a `u16` — just bounded above
+            // by `MAX_SCROLLBACK_ROWS`, itself a `u16`.
+            #[allow(clippy::as_conversions)]
+            crate::checkpoint::write_u16(out, self.scrollback.len() as u16);
+            // `VecDeque` iterates front-to-back, which is oldest-to-newest
+            // — the same order `scroll_up` pushes in (`push_back`), and the
+            // same order `read_checkpoint` below reconstructs it in.
+            for row in &self.scrollback {
+                if row.len() != self.size.cols {
+                    return Err(crate::checkpoint::CheckpointError::Unrepresentable(
+                        "scrollback row width does not match the grid's size",
+                    ));
+                }
+                row.write_checkpoint(out);
+            }
         }
         Ok(())
     }
 
+    /// `has_scrollback_field` mirrors the write side's `carries_scrollback`:
+    /// `false` for the alternate grid always, and for the normal grid on a
+    /// version-1 payload (which has no scrollback field for either grid).
+    /// `scrollback_len` is the *restorer's* configured capacity — if the
+    /// checkpoint's ring holds more rows than that, the OLDEST are dropped
+    /// to fit, keeping the newest, the same rows a live ring would have kept
+    /// had it always had this capacity.
     pub(crate) fn read_checkpoint(
         r: &mut crate::checkpoint::Reader<'_>,
         size: Size,
         scrollback_len: usize,
+        has_scrollback_field: bool,
         which: &'static str,
         which_saved: &'static str,
     ) -> Result<Self, crate::checkpoint::CheckpointError> {
@@ -676,6 +720,31 @@ impl Grid {
             rows.push(crate::row::Row::read_checkpoint(r, size.cols)?);
         }
 
+        let mut scrollback = std::collections::VecDeque::new();
+        if has_scrollback_field {
+            let count = usize::from(r.u16()?);
+            if count > usize::from(crate::checkpoint::MAX_SCROLLBACK_ROWS) {
+                return Err(crate::checkpoint::CheckpointError::Malformed(
+                    "the scrollback ring count exceeds the format's row bound",
+                ));
+            }
+            scrollback.reserve(count);
+            // Same order as `write_checkpoint`: oldest first, so pushing
+            // each one to the back reconstructs the original front-to-back
+            // (oldest-to-newest) ordering exactly.
+            for _ in 0..count {
+                scrollback.push_back(crate::row::Row::read_checkpoint(r, size.cols)?);
+            }
+        }
+        // `scrollback_len` is the RESTORER's capacity, which may be smaller
+        // than the checkpoint's own ring (a restorer configured with less
+        // history than the capsule kept). Keep the newest rows — the ones
+        // at the back — by dropping from the front, exactly what a live
+        // ring at this capacity would have kept all along.
+        while scrollback.len() > scrollback_len {
+            scrollback.pop_front();
+        }
+
         Ok(Self {
             size,
             pos,
@@ -685,7 +754,7 @@ impl Grid {
             scroll_bottom,
             origin_mode,
             saved_origin_mode,
-            scrollback: std::collections::VecDeque::new(),
+            scrollback,
             scrollback_len,
             scrollback_offset: 0,
         })

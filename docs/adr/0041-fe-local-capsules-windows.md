@@ -117,15 +117,22 @@ are recorded as non-authority spawn-detail diagnostics.
 
 - Attach delivers an EXACT STRUCTURED CHECKPOINT of the parser state.
   The vt100 fork this project owns gains checkpoint/restore covering
-  both grids, alternate-screen identity, current and saved cursor, and
-  origin/wrap/input modes — NO scrollback. Checkpoint completeness is a
-  TESTED property (alternate-screen and saved-cursor roundtrip tests).
-  `contents_formatted`-style reconstruction is explicitly not used — it
-  does not encode the inactive grid or alternate-screen identity.
-- The capsule keeps NO scrollback: scrollback is FE-side derived state
-  accumulated from the live stream after attach; pre-attach history
-  waits for frame replay (P4) — the voyage already records every byte.
-  This deletion is what makes the resource budget provable.
+  both grids, alternate-screen identity, current and saved cursor,
+  origin/wrap/input modes, and — since the scrollback ring revision below
+  — the normal grid's own bounded scrollback ring. Checkpoint completeness
+  is a TESTED property (alternate-screen and saved-cursor roundtrip
+  tests). `contents_formatted`-style reconstruction is explicitly not
+  used — it does not encode the inactive grid or alternate-screen
+  identity.
+- **Superseded (see the scrollback ring revision below):** step 3
+  originally shipped the capsule keeping NO scrollback at all, on the
+  theory that the FE could derive it from the live stream after attach
+  and replay pre-attach history from the voyage at P4. That FE-side
+  replay was designed, reviewed, and rejected (PR #192): a log-file
+  replay is not tied to the checkpoint's watermark, can cut inside an
+  escape sequence, duplicates on reconnect, and does unbounded work on
+  the UI thread. The capsule now keeps a small bounded ring instead, and
+  the checkpoint carries it.
 - The ConPTY DSR responder runs from producer spawn with zero clients
   attached, with parser CARRY state across chunk boundaries (the
   frontend's current "queries don't straddle chunks" shortcut is not a
@@ -142,7 +149,7 @@ are recorded as non-authority spawn-detail diagnostics.
   |---------------------|----------------------------------------------|
   | max cols × rows     | 512 × 256                                    |
   | cell size (fork)    | 32 B → one grid's CELLS ≤ 4 MiB (see note)   |
-  | checkpoint bound    | ≤ 2 grids + fixed header < 12 MiB, proven    |
+  | checkpoint bound    | ≤ 2 grids + a 200-row ring + header < 12 MiB |
   | snapshot transport  | chunked in ≤ 1 MiB frames (per-op cap holds) |
   | per-op message cap  | 1 MiB                                        |
   | producer channel    | 8 MiB bounded — when full the writer loop    |
@@ -184,9 +191,11 @@ follows them):
   step 5's, alongside that lane. Falling back to `contents_formatted`, a
   blank screen, or a silent replacement is excluded at every version.
 
-The proven encoded bound is **8,651,327 bytes**, computed from the format and
-asserted at compile time. A typical 200×50 screen encodes to about 22 KB,
-because an empty cell with default attributes costs one byte.
+The proven encoded bound was **8,651,327 bytes** through this step, computed
+from the format and asserted at compile time; the scrollback ring revision
+below raises it to **12,030,729 bytes**. A typical 200×50 screen encodes to
+about 22 KB either way, because an empty cell with default attributes costs
+one byte and an ordinary screen's ring is nowhere near its worst case.
 
 **The budget table gains a floor: 2 × 2 (decided 2026-08-26).** The table
 above caps geometry because a checkpoint has to fit a message. The opposite
@@ -222,6 +231,43 @@ MAX_GLYPH_WIDTH` is asserted at compile time so the two rules cannot drift
 apart. The lesson for steps 4-5: the inherited parser's stated invariants were
 written against older dependencies, and the corpus is what finds where they
 stopped being true.
+
+### Scrollback ring revision (2026-09-04)
+
+**Measured defect:** a local capsule session pane could not be scrolled after
+attach. `ring_len = 0` on every attach — the capsule kept no scrollback (the
+deliberate step-3 deletion above), so the attach parser's scrollback ring
+started empty every time, and the agent's later traffic is mostly in-place
+repaints that never rebuild history.
+
+**Why not the log file.** A client-side replay of the voyage's own recorded
+bytes was designed and reviewed (PR #192) and rejected: it is not tied to the
+checkpoint's own watermark (so it can double-count or gap against whatever the
+live stream resumes from), it can cut inside an escape sequence (the log has
+no ground-state-boundary contract the way the checkpoint cut does), it
+duplicates on reconnect, and it does unbounded work on the FE's UI thread.
+
+**The fix: one source of truth, not two.** The capsule's own screen model
+gains a bounded scrollback ring (`CAPSULE_SCROLLBACK_ROWS`,
+`rust/log/src/capsule_win.rs`), and the vt100 fork's checkpoint format
+(version 2) carries the normal grid's ring after its visible rows — one `u16`
+count field, then that many more row records, the SAME row encoding the
+visible screen already uses. The alternate grid never gets a ring at all (it
+can never have accumulated one — nothing scrolls a row off the alternate
+screen). Restore REPLACES the client's ring wholesale, the same way it
+already replaces the whole screen, so re-attaching does not double history.
+Version 1 (no ring field, either grid) still restores, with an empty ring —
+the format's evolution is additive.
+
+**The bound.** 1000 rows — the first number reached for — does not fit: at
+the ADR's own worst-case row width (512 cols, every cell its most expensive
+shape, 16,897 B/row) that alone is `2 + 1000 × 16,897 = 16,897,002` bytes
+(~16.1 MiB), which blows the checkpoint budget before the two grids' own
+~8.25 MiB are even added. 200 rows does: `2 + 200 × 16,897 = 3,379,402`
+bytes (~3.22 MiB), bringing `MAX_CHECKPOINT_LEN` to **12,030,729 bytes**
+(~11.47 MiB) — inside the 12 MiB bound with about 539 KiB to spare. The
+checkpoint still travels over the attach lane once per attach, on localhost
+only.
 
 ### Step 4 as specified (2026-08-27, pre-implementation review)
 
@@ -392,8 +438,12 @@ them:
   would couple the permanent lane to the versioned one. Input, output,
   and checkpoint bytes ride raw (no base64), so the chunk arithmetic is
   exact. Every frame layout — requests, replies, refusals — is specified
-  with byte-level goldens; attach proto v1 binds checkpoint format v1,
-  decided before the goldens exist.
+  with byte-level goldens; attach proto v1 originally paired 1:1 with
+  checkpoint format v1, decided before the goldens exist — the scrollback
+  ring revision below is the first time the two versioned independently
+  (checkpoint format bumped to v2; attach proto stayed at v1, because a
+  checkpoint reader tolerates every version down to
+  `MIN_READABLE_VERSION`, so the outer framing never needed to move).
 - **Attach is GROUND-GATED.** Checkpoint v1's contract (stated in the
   fork's `checkpoint.rs`) requires the post-checkpoint stream to start
   at a VTE ground-state boundary; ConPTY reads can end mid-CSI/OSC/DCS/
@@ -410,12 +460,12 @@ them:
   provenance move the fork itself is. Attach-fidelity tests must cut the
   stream inside CSI, OSC, DCS, and multibyte UTF-8.
 - **The checkpoint never rides the live queue.** The maximum checkpoint
-  (8,651,327 B) exceeds the 4 MiB per-watcher queue; enqueuing it there
-  would evict every maximum-size attach. One global snapshot-transfer
-  slot (a second attach waits — preserving the budget's single ~8.26 MiB
-  transient term); the checkpoint is a writer work item outside the
-  queue; live post-watermark output queues behind it; overflow before
-  completion evicts.
+  (12,030,729 B — see the scrollback ring revision below) exceeds the
+  4 MiB per-watcher queue; enqueuing it there would evict every
+  maximum-size attach. One global snapshot-transfer slot (a second attach
+  waits — preserving the budget's single ~11.47 MiB transient term); the
+  checkpoint is a writer work item outside the queue; live post-watermark
+  output queues behind it; overflow before completion evicts.
 - **The pen: capability-only EOF, demote-on-take, no local grant.** The
   capsule preamble stops at the null-holder state — the step-4 `"local"`
   grant is deleted; the first driver ever is a pipe `take`. `take`
