@@ -137,7 +137,21 @@ function Stop-Splash {
 # SOT_LAUNCH_REEXEC guards the re-invoke and is cleared just below so neither
 # the tunnels nor an exit-75 relaunch inherit it. -Local (a freshness-free debug
 # path) and -NoUpdate skip the whole prelude.
+#
+# Refused vs offline (2026-09-03 field report): a pull can fail two different
+# ways and they are NOT the same event. OFFLINE means fetch never reached the
+# remote - expected on a laptop off wifi, stays quiet (log only). REFUSED means
+# git ran against the LOCAL repo and failed - a stale index.lock, a dirty tree,
+# a stopped rebase - so this box is silently stuck on an old build while every
+# OTHER fail-open step here still reports success. A stale-lock refusal was
+# observed logging "Offline or dirty tree" and launching the old binary with
+# nothing on screen saying the box never updated - fine for one laptop, a
+# false "converged" reading fleet-wide otherwise. $selfUpdateRefusedReason
+# below carries a REFUSED pull's first error line into $env:SOT_LAUNCH_NOTICE
+# (set once, just before the frontend's first spawn) so the frontend renders
+# it at its own startup - offline still only logs, same as before.
 # ---------------------------------------------------------------------------
+$selfUpdateRefusedReason = $null
 if (-not $NoUpdate -and -not $Local -and -not $env:SOT_LAUNCH_REEXEC -and (Test-Path (Join-Path $repo '.git'))) {
     # Relax 'Stop' -> 'Continue' around native git: its stderr under 'Stop' + 2>&1
     # throws in PS 5.1. Gate on $LASTEXITCODE, not thrown errors (as below).
@@ -172,8 +186,24 @@ if (-not $NoUpdate -and -not $Local -and -not $env:SOT_LAUNCH_REEXEC -and (Test-
                 }
             }
         } else {
-            Set-LaunchStatus 'Offline or dirty tree - launching current build...'
-            Write-SupLog 'self-update: pull failed - launching existing binary'
+            # Classify by scanning git's own output text rather than trying to
+            # pre-probe the network separately (no second git/ssh round trip,
+            # no new failure mode of its own) - fetch failures print a
+            # recognizable network-layer message regardless of transport
+            # (https or ssh remote); anything else ran against the local repo
+            # and is a refusal.
+            $pullText = (($pullOut | ForEach-Object { "$_" }) -join "`n")
+            $offlinePattern = 'Could not resolve host|Could not read from remote|Connection timed out|Network is unreachable|Could not connect|Operation timed out|Temporary failure in name resolution|No route to host|Connection refused|Host is down|ssh: connect to host'
+            if ($pullText -match $offlinePattern) {
+                Set-LaunchStatus 'Offline - launching current build...'
+                Write-SupLog 'self-update: pull failed (offline) - launching existing binary'
+            } else {
+                $errLine = ($pullOut | ForEach-Object { "$_" } | Where-Object { $_ -match '^\s*(fatal|error):' } | Select-Object -Last 1)
+                if (-not $errLine) { $errLine = ($pullOut | ForEach-Object { "$_" } | Select-Object -Last 1) }
+                $selfUpdateRefusedReason = "$errLine".Trim()
+                Set-LaunchStatus 'Update refused - launching current build...'
+                Write-SupLog "self-update: pull REFUSED - launching existing binary: $selfUpdateRefusedReason"
+            }
         }
     } finally {
         $ErrorActionPreference = $savedEAP
@@ -921,6 +951,18 @@ Start-Sleep -Milliseconds 400
 
 if ($token) {
     $env:SOT_TOKEN = $token
+}
+# Self-update notice for the frontend - a REFUSED pull's reason (empty/unset
+# for offline or an ok pull; see the self-update prelude above). Set once
+# here, before the FIRST Start-Process spawn below: env vars set on this
+# process are inherited by every child it spawns, exit-75 respawns included
+# within this SAME invocation - correct, since this invocation never pulled
+# again, so the notice stays true until a fresh launch. The frontend reads
+# it once at its own startup (rust/frontend/src/gpu.rs) and renders it
+# through the same status/notify_sticky_until fields FeCommand::Notify uses.
+Remove-Item Env:\SOT_LAUNCH_NOTICE -ErrorAction SilentlyContinue
+if ($selfUpdateRefusedReason) {
+    $env:SOT_LAUNCH_NOTICE = "self-update: pull refused - running the existing build ($selfUpdateRefusedReason)"
 }
 $relaunchNext = [bool]$Relaunched
 # The splash covers the INITIAL launch only. Exit-75 relaunches keep the tunnel
