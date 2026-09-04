@@ -18468,12 +18468,23 @@ impl ApplicationHandler for App {
                         shift,
                     )
                 {
-                    let new_fs = if state.window.fullscreen().is_some() {
-                        None
-                    } else {
+                    let entering_fullscreen = state.window.fullscreen().is_none();
+                    let new_fs = if entering_fullscreen {
                         Some(Fullscreen::Borderless(None))
+                    } else {
+                        None
                     };
                     state.window.set_fullscreen(new_fs);
+                    // Surface the steady-redraw guard (see about_to_wait)
+                    // only when it's actually about to kick in — entering
+                    // fullscreen with the pin on. Nothing on the way out,
+                    // and nothing when the setting has opted it off.
+                    if entering_fullscreen && state.settings.fullscreen_vsync_pin {
+                        state.status =
+                            "fullscreen: steady redraw for VRR panels ([display] fullscreen_vsync_pin = false to disable)"
+                                .to_string();
+                        state.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
+                    }
                     state.last_key = Some(label);
                     state.window.request_redraw();
                     return;
@@ -20841,7 +20852,15 @@ impl ApplicationHandler for App {
             // continuous GPU while fullscreen — acceptable for a static TUI and
             // scoped to fullscreen only; windowed keeps the efficient on-demand
             // tick below (DWM already composites it at a steady rate).
-            if state.window.fullscreen().is_some() {
+            //
+            // Opt-out: `[display] fullscreen_vsync_pin` (default true, so
+            // existing users see no change). There is no VRR/adaptive-sync
+            // detection API worth trusting, so a fixed-refresh panel (most
+            // laptops) pays this continuously with nothing to show for it —
+            // measured ~28% of a core + ~10% iGPU on a 1440x900 laptop
+            // panel. Off, fullscreen falls through to the same on-demand
+            // idle path windowed uses below.
+            if state.settings.fullscreen_vsync_pin && state.window.fullscreen().is_some() {
                 state.window.request_redraw();
                 event_loop.set_control_flow(ControlFlow::Wait);
                 return;
