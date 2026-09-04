@@ -202,6 +202,7 @@ use crate::wire::{
     SupervisorRequest,
 };
 use std::collections::HashMap;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -670,6 +671,13 @@ fn leg_was_stable(state_dir: &Path, voyage_id: &str) -> bool {
     }
 }
 
+// `DETACHED_PROCESS`: `run` gets no console of its own. `supervise` has none
+// either (the daemon spawns it detached — see `capsule_workspace.rs`), and a
+// child of a console-less parent otherwise gets a brand-new console, which
+// the user's default terminal adopts as a stray window. `run`'s ConPTY is a
+// separate OS object for the agent child; its own stdio stays inherited.
+const DETACHED_PROCESS: u32 = 0x0000_0008;
+
 // ADR 0042 slice L1a added `survival` as an 8th parameter (Codex review
 // finding 7) — matching this file's own existing precedent
 // (`run_quit`-equivalent lane loops) for a constructor whose every
@@ -705,7 +713,8 @@ fn build_run_command(
         .arg(survival_flag)
         .arg("--assume-no-rollback-target")
         .arg("--")
-        .args(producer_argv);
+        .args(producer_argv)
+        .creation_flags(DETACHED_PROCESS);
     command
 }
 
