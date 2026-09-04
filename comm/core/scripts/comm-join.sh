@@ -108,14 +108,18 @@ exp_json="$(printf '%s' "$EXPERTISE" \
 # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): PROJECT_ROOT
 # is a filesystem path and can legitimately start with "/" (the POSIX
 # form MSYS/git-bash's own `pwd` fallback produces) — must never reach jq
-# via --arg. See that helper's comment for the mechanism.
+# via --arg. See that helper's comment for the mechanism. The EXIT trap
+# (Codex round finding 9, mirrors comm-send.sh's own MSG_FILE cleanup) is
+# what actually guarantees this temp file never leaks: a `jq` failure
+# under `set -e` exits the script immediately, skipping a bare `rm -f`
+# placed after it.
 root_file="$(sot_jq_rawfile "$PROJECT_ROOT")" || exit 1
+trap 'rm -f "$root_file"' EXIT
 obj="$(jq -n \
     --arg host "$HOST" --arg tmux "$TMUX_TARGET" --arg pane "$PANE_ID" \
     --arg repo "$REPO" --rawfile root "$root_file" --argjson exp "$exp_json" --arg ts "$ts" \
     '{host:$host, tmux:$tmux, pane_id:$pane, repo:$repo, root:$root, expertise:$exp,
       status:"idle", joined:$ts, last_seen:$ts}')"
-rm -f "$root_file"
 
 if [ "$NEED_DERIVE" = true ]; then
     # reclaim mode (Codex review F3): a plain join treats an existing

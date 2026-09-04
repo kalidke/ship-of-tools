@@ -170,15 +170,19 @@ registry_status() {
         clear) sticky=' | if .agents[$n] then .agents[$n] |= del(.sticky, .sticky_at) else . end' ;;
         *)     sticky='' ;;
     esac
+    # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): sum is a
+    # free-text work-state summary and must never reach jq via --arg.
+    local sum_file; sum_file="$(sot_jq_rawfile "$sum")" || return 1
     if [ "$sticky_op" = clear ]; then
-        jq --arg n "$n" --arg st "$st" --arg sum "$sum" --arg t "$ts" \
+        jq --arg n "$n" --arg st "$st" --rawfile sum "$sum_file" --arg t "$ts" \
            "(if .agents[\$n] then .agents[\$n] += $base else . end) $sticky" \
            "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
     else
-        jq --arg n "$n" --arg st "$st" --arg sum "$sum" --arg t "$ts" \
+        jq --arg n "$n" --arg st "$st" --rawfile sum "$sum_file" --arg t "$ts" \
            "if .agents[\$n] then .agents[\$n] += ($base$sticky) else . end" \
            "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
     fi
+    rm -f "$sum_file"
 }
 
 # ${2+set}: distinguish an omitted summary (keep prior) from an explicit "" (clear).

@@ -136,7 +136,12 @@ send_frame() {  # $1 to, $2 text
     # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): the
     # message text ($2) can legitimately start with "/" and must never
     # reach jq via --arg — see that helper's comment for the mechanism.
+    # The EXIT trap (Codex round finding 9, mirrors comm-send.sh's own
+    # MSG_FILE cleanup) is what actually guarantees this temp file never
+    # leaks: a `jq` failure under `set -e` exits immediately, skipping a
+    # bare `rm -f` placed after it.
     local msg_file; msg_file="$(sot_jq_rawfile "$2")" || return 1
+    trap 'rm -f "$msg_file"' EXIT
     local frame; frame="$(jq -nc --arg f "$NAME" --arg t "$1" --rawfile m "$msg_file" \
         '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:$t,text:$m}}')"
     rm -f "$msg_file"

@@ -191,9 +191,17 @@ fi
 # was proven to delete a genuinely live row the child had already written.
 PROV_TS="$(now_iso)"
 PROV_NONCE="$$-${RANDOM}-${RANDOM}"
-PROV_OBJ="$(jq -n --arg host "$HOST" --arg repo "$REPO_BASE" --arg root "$CANON_ROOT" --arg ts "$PROV_TS" --arg nonce "$PROV_NONCE" \
+# MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): CANON_ROOT is
+# a filesystem path and can legitimately start with "/" — must never reach
+# jq via --arg. Concrete consequence if it did: the rollback check below
+# (registry_del_if_provisional, ~line 219) compares the LIVE $CANON_ROOT
+# against what got stored here — a mangled stored root would never match,
+# so a successful rollback would misreport "something else claimed it".
+PROV_ROOT_FILE="$(sot_jq_rawfile "$CANON_ROOT")" || exit 1
+PROV_OBJ="$(jq -n --arg host "$HOST" --arg repo "$REPO_BASE" --rawfile root "$PROV_ROOT_FILE" --arg ts "$PROV_TS" --arg nonce "$PROV_NONCE" \
     '{host:$host, tmux:"", pane_id:"", repo:$repo, root:$root, expertise:[],
       status:"spawning", joined:$ts, last_seen:$ts, nonce:$nonce}')"
+rm -f "$PROV_ROOT_FILE"
 
 # Rollback (Codex review PR #148 round 2, finding 2): armed HERE, BEFORE
 # either write path below (a derived claim writes immediately at the next
@@ -429,8 +437,15 @@ else
     # (no FE attach / no session switch needed), so a background spawn comes up
     # running claude even if no frontend ever navigates to it. autostart_claude
     # stays true as the FE-attach fallback (the foreground guard de-dupes).
-    REQ="$(jq -nc --arg l "$LABEL" --arg p "$REPO_PATH" --arg an "$NAME" \
+    # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): REPO_PATH
+    # is a filesystem path, and LABEL (a free-text --label override, not
+    # just the REPO_PATH-derived default) can also legitimately start with
+    # "/" — neither may reach jq via --arg.
+    SPAWN_LABEL_FILE="$(sot_jq_rawfile "$LABEL")" || exit 1
+    SPAWN_PATH_FILE="$(sot_jq_rawfile "$REPO_PATH")" || exit 1
+    REQ="$(jq -nc --rawfile l "$SPAWN_LABEL_FILE" --rawfile p "$SPAWN_PATH_FILE" --arg an "$NAME" \
         '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:$p,autostart_claude:true,agent_name:$an,task:"",boot:true}}')"
+    rm -f "$SPAWN_LABEL_FILE" "$SPAWN_PATH_FILE"
     RESP="$(sot_send "$REQ" workspace.create || true)"
     SLUG="$(printf '%s' "$RESP" | jq -r '.payload.slug // empty' 2>/dev/null || true)"
     TARGET="$(printf '%s' "$RESP" | jq -r '.payload.tmux_session // empty' 2>/dev/null || true)"

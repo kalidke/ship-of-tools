@@ -1615,29 +1615,54 @@ case_jq_rawfile_helper_round_trips_leading_slash_value() {
     return 0
 }
 
-case_no_remaining_arg_for_slash_prone_jq_values() {
-    # Script-shape guard for the three audited call sites (capsule-comm-
-    # identity fix, item B): msg (comm-send.sh), m (comm-relay.sh), and
-    # root (comm-join.sh) are the only values that can legitimately start
-    # with "/" and must never regress back to `--arg`. A grep, not a
-    # behavior test — the MSYS2 conversion itself is unreproducible on
-    # Linux (see the round-trip case above), so this is what actually
-    # proves the fix's SHAPE stays in place if someone edits these scripts
-    # later without re-deriving the reasoning.
-    local bad=""
-    grep -qE -- '--arg[[:space:]]+msg[[:space:]]' "$SCRIPTS_DIR/comm-send.sh" \
-        && bad="$bad comm-send.sh:--arg-msg"
-    grep -qE -- '--arg[[:space:]]+m[[:space:]]' "$SCRIPTS_DIR/comm-relay.sh" \
-        && bad="$bad comm-relay.sh:--arg-m"
-    grep -qE -- '--arg[[:space:]]+root[[:space:]]' "$SCRIPTS_DIR/comm-join.sh" \
-        && bad="$bad comm-join.sh:--arg-root"
-    [ -z "$bad" ] || { echo "  found regressed --arg use(s) for a slash-prone value:$bad"; return 1; }
-    grep -q -- '--rawfile msg ' "$SCRIPTS_DIR/comm-send.sh" \
-        || { echo "  comm-send.sh missing --rawfile msg"; return 1; }
-    grep -q -- '--rawfile m ' "$SCRIPTS_DIR/comm-relay.sh" \
-        || { echo "  comm-relay.sh missing --rawfile m"; return 1; }
-    grep -q -- '--rawfile root ' "$SCRIPTS_DIR/comm-join.sh" \
-        || { echo "  comm-join.sh missing --rawfile root"; return 1; }
+case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
+    # capsule-comm-identity fix, item B follow-up (Codex round finding 3):
+    # replaces a narrow three-name grep with a real audit. Every
+    # `jq --arg NAME "$value"` across the comm scripts + hooks must bind a
+    # NAME on this allowlist — handles/ids/hosts/timestamps/short enum-ish
+    # tokens/already-relativized paths, none of which can legitimately
+    # start with "/". A message body, an absolute/backend path, free
+    # text, code, or a label is NOT on it and must go through
+    # comm-lib.sh's sot_jq_rawfile (--rawfile) instead — see that helper's
+    # own comment for the MSYS2 argv-conversion mechanism this guards
+    # against. `--argjson` is exempt by construction (its value is JSON
+    # text, which can never start with "/" — every valid top-level JSON
+    # value starts with `{`, `[`, `"`, a digit, `t`, `f`, or `n`).
+    #
+    # NAME-based, not call-site-based — a real, documented limitation: a
+    # NEW `--arg p ...` site that reuses an allowlisted name for a
+    # genuinely risky value would NOT be caught here, only a value bound
+    # under a NOT-yet-allowlisted name is. The `p`/`ws` entries here are
+    # ALREADY relativized before use (sot-fe's preview/reveal PATH_ARG,
+    # sot-nav.sh's REL) — a new risky path/text value should bind a
+    # fresh, not-yet-allowlisted name so this test forces a deliberate
+    # choice about it. `c` is sot-fe's fe_cmd — always one of a small
+    # fixed set of literal verbs from a case dispatch, never raw text.
+    # A line whose first non-blank character is '#' is skipped entirely
+    # (a prose mention of `--arg NAME`, not a real binding).
+    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p "
+    local bad="" dir file name line match comment_lines
+    dir="$(cd "$SCRIPTS_DIR/../../adapters/claude/hooks" && pwd)"
+    for file in "$SCRIPTS_DIR"/*.sh "$SCRIPTS_DIR/sot-fe" "$dir"/*.sh; do
+        [ -f "$file" ] || continue
+        # Line numbers that are FULL comment lines (first non-blank char
+        # '#') — a prose mention of `--arg NAME` in a comment (this
+        # helper's own doc, or a fix note) must not count as a real jq
+        # binding.
+        comment_lines=" $(grep -nE '^[[:space:]]*#' "$file" | cut -d: -f1 | tr '\n' ' ') "
+        while IFS=: read -r line match; do
+            case "$comment_lines" in
+                *" $line "*) continue ;;
+            esac
+            name="$(printf '%s' "$match" | sed -E 's/^--arg[[:space:]]+//')"
+            case "$allow" in
+                *" $name "*) : ;;
+                *) bad="$bad
+  $(basename "$file"):$line binds --arg $name (not on the allowlist)" ;;
+            esac
+        done < <(grep -onE -- '--arg[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$file")
+    done
+    [ -z "$bad" ] || { echo "  non-allowlisted --arg bindings found:$bad"; return 1; }
     return 0
 }
 
@@ -1688,7 +1713,7 @@ check "a failing hash command fails loudly instead of an empty-hash handle (F5 r
 check "a long/dirty host triggers the F7 host-alias digest suffix" case_host_alias_guard_triggers_on_long_host
 check "a pinned SOT_COMM_NAME never adopts a name from any self-file (capsule-comm-identity fix)" case_pinned_comm_name_never_adopts_selffile_identity
 check "sot_jq_rawfile round-trips a leading-slash value through jq --rawfile" case_jq_rawfile_helper_round_trips_leading_slash_value
-check "no regressed --arg use for the three slash-prone jq values (msg/m/root)" case_no_remaining_arg_for_slash_prone_jq_values
+check "every jq --arg binding in the comm scripts + hooks is on the slash-safe allowlist" case_jq_arg_names_are_allowlisted_against_slash_prone_values
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

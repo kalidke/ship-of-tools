@@ -69,10 +69,27 @@ if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
     findings="$("$AUDITOR" "$NAME" "$tp" 2>/dev/null)"; arc=$?
     if [ "$arc" -eq 0 ]; then
         if [ -n "$findings" ]; then
-            jq -nc --arg f "$findings" '{
-              decision: "block",
-              reason: ("Turn-end audit: " + $f + " -- IF a finding is real, act on it now AND clearly RESTATE it for the user: blocked -> restate the exact question you are awaiting (one standalone sentence, as BOTH the comm-status summary and the final line of your reply); waiting -> state plainly what is being monitored and what completion looks like (same two places); artifact -> badge it via the show-result skill. IF a finding is wrong (rhetorical question, artifact already shown, job already done), just end the turn normally. This audit will not re-fire for the same situation.")
-            }'
+            # MSYS2 argv-conversion guard: on Windows git-bash, a NATIVE
+            # jq.exe rewrites any argv element starting with "/" into a
+            # Windows path before jq sees it -- findings is free text from
+            # an LLM judge and could legitimately start with "/", so it
+            # must not reach jq via --arg. This hook stays standalone (no
+            # comm-lib.sh source, matching every other hook here), so the
+            # fix is inlined rather than calling comm-lib.sh's
+            # sot_jq_rawfile.
+            _findings_file="$(mktemp "${TMPDIR:-/tmp}/sot-comm-idle-findings.XXXXXX" 2>/dev/null)"
+            if [ -n "$_findings_file" ] && printf '%s' "$findings" > "$_findings_file" 2>/dev/null; then
+                jq -nc --rawfile f "$_findings_file" '{
+                  decision: "block",
+                  reason: ("Turn-end audit: " + $f + " -- IF a finding is real, act on it now AND clearly RESTATE it for the user: blocked -> restate the exact question you are awaiting (one standalone sentence, as BOTH the comm-status summary and the final line of your reply); waiting -> state plainly what is being monitored and what completion looks like (same two places); artifact -> badge it via the show-result skill. IF a finding is wrong (rhetorical question, artifact already shown, job already done), just end the turn normally. This audit will not re-fire for the same situation.")
+                }'
+                rm -f "$_findings_file"
+            else
+                # Temp file failed -- degrade rather than risk a corrupted
+                # --arg on Windows; the legacy grep fallback below still runs.
+                rm -f "$_findings_file" 2>/dev/null
+                idle_floor
+            fi
             exit 0
         fi
         idle_floor; exit 0
