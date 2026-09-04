@@ -302,24 +302,13 @@ impl Workspace {
             "ws-{slug}-{:x}",
             std::process::id() as u64 ^ now_unix() as u64
         );
-        // Windows only (capsule-comm-identity fix): a capsule producer has
-        // no tmux pane to fall back on for identity the way the tmux path's
-        // sessions always do (pane-keying alone already prevents a
-        // self-file collision there), so an un-pinned autostart — no
-        // explicit `agent_name` in the request, e.g. the FE's "local
-        // session is just another host" autostart, as opposed to a
-        // comm-spawn call which always supplies one — gets THIS default
-        // instead of joining with no pin at all. `<slug>-<host>` is this
-        // project's own ordinary bare-handle shape (PROTOCOL.md's
-        // "Durable BE peer handle": `<repo-lowercase>-<host>`), just
-        // pinned by the daemon up front rather than re-derived inside the
-        // capsule's own shell via `hostname -s` (also fixed separately —
-        // see the sot-session-start skill's guard). Persisted into
-        // `agent_name` here (not computed fresh on every restart) so a
-        // crash-restart or daemon-reboot resume reads back the SAME
-        // pinned name every time.
-        #[cfg(windows)]
-        let agent_name = default_capsule_agent_name(&slug, &agent_name, &state_host());
+        // `agent_name` is stored EXACTLY as given — empty is a real,
+        // supported case (capsule-comm-identity fix, Codex round finding
+        // 2): no synthesized default is written here. A capsule with no
+        // explicit `agent_name` gets no `SOT_COMM_NAME` pin either
+        // (`capsule_workspace::capsule_supervisor_env`); comm-join.sh's
+        // own #148 auto-disambiguating derivation decides its handle, via
+        // the `SOT_COMM_SELF_FILE` that spawn pins.
         Workspace::meta_only(
             workspace_id,
             slug,
@@ -332,20 +321,6 @@ impl Workspace {
             agent_name,
             task,
         )
-    }
-}
-
-/// Pure half of the `Workspace::from_label` Windows-only default above —
-/// split out so the cross-platform test suite exercises the actual
-/// naming rule even though its only caller is `#[cfg(windows)]`. Applied
-/// ONLY when the caller supplied no `agent_name` — an explicit one
-/// (comm-spawn's pinned handle) is always used verbatim, never overridden.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn default_capsule_agent_name(slug: &str, agent_name: &str, host: &str) -> String {
-    if agent_name.is_empty() {
-        format!("{slug}-{host}")
-    } else {
-        agent_name.to_string()
     }
 }
 
@@ -995,9 +970,8 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
 ///
 /// `pub(crate)` (capsule-comm-identity fix): also the host `comm-lib.sh`'s
 /// own handles are suffixed with, so `capsule_workspace::capsule_supervisor_env`
-/// reuses this SAME resolution for the capsule's `SOT_COMM_NAME`/
-/// `SOT_COMM_SELF_FILE` rather than re-deriving a host string that could
-/// drift from it.
+/// reuses this SAME resolution for the capsule's `SOT_COMM_SELF_FILE`
+/// path rather than re-deriving a host string that could drift from it.
 pub(crate) fn state_host() -> String {
     if let Ok(h) = std::env::var("SOT_STATE_HOST") {
         if !h.is_empty() {
@@ -1487,26 +1461,6 @@ mod tests {
         let reg = Workspaces::new();
         assert!(reg.resolve(Some("nope")).is_none());
         assert!(reg.resolve(None).is_none());
-    }
-
-    #[test]
-    fn default_capsule_agent_name_fills_in_only_when_empty() {
-        // capsule-comm-identity fix: an un-pinned autostart (no explicit
-        // agent_name in the request) gets the project's own ordinary
-        // bare-handle shape (<slug>-<host>, PROTOCOL.md's
-        // <repo-lowercase>-<host>) rather than joining with nothing to
-        // pin at all.
-        assert_eq!(default_capsule_agent_name("myrepo", "", "myhost"), "myrepo-myhost");
-    }
-
-    #[test]
-    fn default_capsule_agent_name_never_overrides_an_explicit_name() {
-        // A comm-spawn-pinned handle (or any other caller-supplied name)
-        // is always used verbatim, never replaced by the default.
-        assert_eq!(
-            default_capsule_agent_name("myrepo", "explicit-pinned-name", "myhost"),
-            "explicit-pinned-name"
-        );
     }
 
     #[test]

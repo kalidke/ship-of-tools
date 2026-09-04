@@ -1386,6 +1386,7 @@ where
                                     let workspace_id = ws.workspace_id.clone();
                                     let agent_kind = ws.agent.clone();
                                     let agent_name = ws.agent_name.clone();
+                                    let slug = ws.slug.clone();
                                     let project_root = ws.project_root.clone();
                                     let workspaces_for_start = workspaces.clone();
                                     tokio::task::spawn_blocking(move || {
@@ -1394,6 +1395,7 @@ where
                                             &workspace_id,
                                             &agent_kind,
                                             &agent_name,
+                                            &slug,
                                             &project_root,
                                             workspaces_for_start,
                                         )
