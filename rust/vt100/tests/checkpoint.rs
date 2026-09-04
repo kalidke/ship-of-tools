@@ -543,6 +543,99 @@ fn restore_adopts_the_checkpoints_dimensions() {
     assert_visible_state_equal(source.screen(), target.screen());
 }
 
+/// The FE-side fix for the attach-time misalignment this fact causes: a
+/// capsule's checkpoint carries the CAPSULE's own PTY size (its
+/// `build_run_command` creation default of 80x24 until actually resized),
+/// which need not match the pane the attaching frontend renders into.
+/// `restore_screen` alone leaves the client's screen at the checkpoint's
+/// size (proven above by `restore_adopts_the_checkpoints_dimensions`), so
+/// `sot_log::fe_client_win`'s `pump()` calls `Screen::set_size` to the
+/// pane's own known rect immediately after every restore. This proves
+/// that step, at the exact crate boundary the fix calls: every cell the
+/// checkpoint described keeps its content and position, and every cell in
+/// the pane's rect resolves to `Some` rather than the `None` that made
+/// `rust/frontend/src/gpu.rs`'s `paint_terminal` skip a cell and leave a
+/// previous frame's content sitting in the ratatui buffer — the observed
+/// "garbled" first paint.
+#[test]
+fn restore_then_resize_reflows_to_the_pane_without_misalignment() {
+    // Mirrors the observed defect exactly: a freshly created capsule's run
+    // child starts at `--cols 80 --rows 24`, while the attaching FE's pane
+    // is already at its own, larger rect.
+    let (checkpoint_rows, checkpoint_cols): (u16, u16) = (24, 80);
+    let (pane_rows, pane_cols): (u16, u16) = (76, 203);
+
+    let mut source = Parser::new(checkpoint_rows, checkpoint_cols, 0);
+    source.process(b"\x1b[31mtop-left content\x1b[m");
+    source.process(b"\x1b[23;70Hbottom-right corner");
+
+    // `FeAttachClient::attach` creates the parser at the pane's rect.
+    let mut target = Parser::new(pane_rows, pane_cols, 0);
+    target.restore_screen(&checkpoint(&source)).unwrap();
+    // The root cause, inline: restore alone left the screen mismatched
+    // against the pane it will be painted into.
+    assert_eq!(target.screen().size(), (checkpoint_rows, checkpoint_cols));
+
+    // The fix: reflow to the pane's rect right after restore.
+    target.screen_mut().set_size(pane_rows, pane_cols);
+    assert_eq!(target.screen().size(), (pane_rows, pane_cols));
+
+    // Every cell the checkpoint described survives, unmoved and
+    // unmodified — `Grid::set_size`'s pad/clip only appends rows/columns,
+    // it never reflows the ones that were already there.
+    for row in 0..checkpoint_rows {
+        for col in 0..checkpoint_cols {
+            assert_eq!(
+                target.screen().cell(row, col),
+                source.screen().cell(row, col),
+                "cell ({row}, {col}) moved or changed on reflow"
+            );
+        }
+    }
+
+    // Every cell in the pane's own rect now resolves — this is what stops
+    // the render loop from hitting the `None` arm for most of the pane.
+    for row in 0..pane_rows {
+        for col in 0..pane_cols {
+            assert!(
+                target.screen().cell(row, col).is_some(),
+                "cell ({row}, {col}) missing after reflow to the pane size"
+            );
+        }
+    }
+
+    // The padding beyond the checkpoint's own bounds is blank, not
+    // garbage — `Grid::set_size`'s new cells are `Cell::new()`.
+    assert_eq!(
+        target
+            .screen()
+            .cell(pane_rows - 1, pane_cols - 1)
+            .unwrap()
+            .contents(),
+        ""
+    );
+}
+
+/// The reverse direction: a reattach whose pane rect SHRANK while
+/// disconnected must clip, not leave any cell in the new (smaller) rect
+/// undefined — the same unconditional `Screen::set_size` call the fix
+/// makes after every restore, regardless of which way the size moved.
+#[test]
+fn restore_then_resize_clips_when_the_pane_shrank() {
+    let mut source = Parser::new(50, 120, 0);
+    source.process(b"\x1b[10;10Hstill here after the shrink");
+
+    let mut target = Parser::new(50, 120, 0);
+    target.restore_screen(&checkpoint(&source)).unwrap();
+    target.screen_mut().set_size(20, 60);
+    assert_eq!(target.screen().size(), (20, 60));
+    for row in 0..20 {
+        for col in 0..60 {
+            assert!(target.screen().cell(row, col).is_some());
+        }
+    }
+}
+
 /// The one-byte empty cell is what keeps an ordinary screen cheap enough to
 /// send on every attach. Without it a 200x50 screen would cost at least
 /// 10,000 bytes in flag bytes alone and far more in practice; the bound test
