@@ -202,6 +202,7 @@ use crate::wire::{
     SupervisorRequest,
 };
 use std::collections::HashMap;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -670,6 +671,20 @@ fn leg_was_stable(state_dir: &Path, voyage_id: &str) -> bool {
     }
 }
 
+// `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`: the same base flags the
+// daemon already applies when IT spawns `sot-capsule supervise` detached
+// (`rust/backend/src/capsule_workspace.rs`'s `spawn_detached_supervisor`,
+// see its doc comment there — "the child gets no console of its own").
+// `supervise` itself has no console (it was spawned with these same
+// flags), so without them here `run` was left to Windows's own default:
+// a process with no console whose parent also has none gets allocated a
+// brand-new one — the stray window this fixes. `run` never does its own
+// console I/O (its ConPTY is a separate OS object for the agent child,
+// not the parent's own stdio) and its stdio here are inherited from
+// `supervise`'s own null handles, so DETACHED_PROCESS breaks nothing.
+const DETACHED_PROCESS: u32 = 0x0000_0008;
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
 // ADR 0042 slice L1a added `survival` as an 8th parameter (Codex review
 // finding 7) — matching this file's own existing precedent
 // (`run_quit`-equivalent lane loops) for a constructor whose every
@@ -705,7 +720,8 @@ fn build_run_command(
         .arg(survival_flag)
         .arg("--assume-no-rollback-target")
         .arg("--")
-        .args(producer_argv);
+        .args(producer_argv)
+        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     command
 }
 
