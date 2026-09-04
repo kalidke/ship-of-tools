@@ -774,7 +774,9 @@ foreach ($item in $tunnelPlan) {
 # FRONTEND before staging. FAIL-OPEN at every step: pull failure (offline,
 # conflict) or build failure (broken main) logs to the supervisor log and
 # launches the existing staged/dev binary — a broken update path must never
-# brick the launcher. -NoUpdate skips. -Local skips too (2026-09-02 Codex
+# brick the launcher. Every non-fatal tool failure below logs and notices
+# Get-FailureExcerpt's head-anchored excerpt (the tool's actual message),
+# never a raw stderr tail. -NoUpdate skips. -Local skips too (2026-09-02 Codex
 # round): the self-update prelude only ever SETS SOT_LAUNCH_REBUILD when
 # -not $Local, but the var is process environment, not a fresh local --
 # an inherited '1' from an earlier invocation in the same shell must not
@@ -787,6 +789,57 @@ foreach ($item in $tunnelPlan) {
 # calls the very first launch makes below, just repeated mid-loop. One code
 # path, no copy. See the do/while loop and relaunch-sot.ps1 -Converge.
 # ---------------------------------------------------------------------------
+#
+# Get-FailureExcerpt -- a failing tool's MESSAGE, not its trace tail, reaches
+# the log and the notice. `Select-Object -Last 3` used to feed both, and for
+# Julia the last 3 lines of stderr are the BOTTOM of a stack trace (bare
+# frame numbers, "@ Base .\client.jl:550") -- never the exception message or
+# the failing file name, which Julia writes FIRST. A real update_comm()
+# failure (2026-09-04, a script deleted mid-install) was diagnosable only
+# from file mtimes because of this. One rule per tool family:
+#   julia   -- from the first '^ERROR:' line (or line 1 if none matches)
+#              forward, bounded to $Lines lines.
+#   cargo   -- every line starting with 'error' (cargo's own marker: plain
+#              'error:' or 'error[E....]'), bounded to $Lines lines.
+#   generic -- first 5 non-empty lines plus the last 2 (head carries the
+#              message, tail carries where it stopped); also the fallback
+#              when a julia/cargo output has no line the rule above matches.
+# Returns the excerpt as a string array for the log; callers take element
+# [0] (through Limit-NoticeText) for the launch notice.
+function Get-FailureExcerpt {
+    param(
+        [Parameter(Mandatory)] $Output,
+        [ValidateSet('julia', 'cargo', 'generic')][string]$Kind = 'generic',
+        [int]$Lines = 6
+    )
+    $text = @($Output | ForEach-Object { "$_" })
+    $excerpt = @()
+    if ($Kind -eq 'julia' -and $text.Count -gt 0) {
+        $start = 0
+        for ($i = 0; $i -lt $text.Count; $i++) {
+            if ($text[$i] -match '^ERROR:') { $start = $i; break }
+        }
+        $excerpt = @($text[$start..([Math]::Min($text.Count, $start + $Lines) - 1)])
+    } elseif ($Kind -eq 'cargo') {
+        $excerpt = @($text | Where-Object { $_ -match '^error' } | Select-Object -First $Lines)
+    }
+    if (-not $excerpt -or $excerpt.Count -eq 0) {
+        $nonEmpty = @($text | Where-Object { "$_".Trim() })
+        $excerpt = @($nonEmpty | Select-Object -First 5) + @($nonEmpty | Select-Object -Last 2)
+    }
+    if (-not $excerpt -or $excerpt.Count -eq 0) { $excerpt = @('(no output captured)') }
+    return $excerpt
+}
+
+# Bounds a notice message to ~160 chars -- $script:launchNotices is joined
+# into one SOT_LAUNCH_NOTICE env var for the frontend; one runaway line must
+# not crowd out every other notice.
+function Limit-NoticeText {
+    param([string]$Text, [int]$MaxLength = 160)
+    $t = "$Text".Trim()
+    if ($t.Length -le $MaxLength) { return $t }
+    return $t.Substring(0, $MaxLength) + '...'
+}
 function Invoke-FreshnessPass {
     if ($env:SOT_LAUNCH_REBUILD -ne '1' -or $NoUpdate -or $Local) { return }
     # The git pull moved to the self-update prelude at the top; here we only
@@ -824,9 +877,9 @@ function Invoke-FreshnessPass {
             $juliaProjectArg = "--project=$($repo.Path)"
             $commOut = julia $juliaProjectArg -e 'using ShipTools; ShipTools.update_comm()' 2>&1
             if ($LASTEXITCODE -ne 0) {
-                $commErrLine = ($commOut | ForEach-Object { "$_" } | Select-Object -Last 1)
-                Write-SupLog "freshness: ShipTools.update_comm() FAILED (non-fatal). tail: $($commOut | Select-Object -Last 3)"
-                $script:launchNotices.Add("comm install failed - $commErrLine") | Out-Null
+                $commExcerpt = @(Get-FailureExcerpt -Output $commOut -Kind 'julia')
+                Write-SupLog "freshness: ShipTools.update_comm() FAILED (non-fatal). message: $($commExcerpt -join ' / ')"
+                $script:launchNotices.Add("comm install failed: $(Limit-NoticeText $commExcerpt[0])") | Out-Null
             } else {
                 Write-SupLog "freshness: ShipTools.update_comm() ok"
             }
@@ -850,9 +903,10 @@ function Invoke-FreshnessPass {
         Write-SupLog "freshness: cargo build -p sot-frontend"
         $buildOut = cargo build --release -p sot-frontend --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
         if ($LASTEXITCODE -ne 0) {
+            $buildExcerpt = @(Get-FailureExcerpt -Output $buildOut -Kind 'cargo')
             Set-LaunchStatus 'ERROR: frontend rebuild failed - launching existing build (see supervisor.log)'
-            Write-SupLog "freshness: BUILD FAILED - launching existing binary. tail: $($buildOut | Select-Object -Last 3)"
-            $script:launchNotices.Add('frontend rebuild failed - running the existing build (see supervisor.log)') | Out-Null
+            Write-SupLog "freshness: BUILD FAILED - launching existing binary. message: $($buildExcerpt -join ' / ')"
+            $script:launchNotices.Add("frontend rebuild failed - running the existing build (see supervisor.log): $(Limit-NoticeText $buildExcerpt[0])") | Out-Null
         } else {
             Write-SupLog "freshness: frontend rebuilt"
         }
@@ -936,8 +990,9 @@ function Invoke-FreshnessPass {
             Write-SupLog "freshness: cargo build -p sot-backend"
             $capOut = cargo build --release -p sot-backend --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
             if ($LASTEXITCODE -ne 0) {
-                Write-SupLog "freshness: backend (sotd.exe) rebuild FAILED (non-fatal, continuing with whatever binary exists). tail: $($capOut | Select-Object -Last 3)"
-                $script:launchNotices.Add('backend rebuild failed - running the existing sotd.exe') | Out-Null
+                $capExcerpt = @(Get-FailureExcerpt -Output $capOut -Kind 'cargo')
+                Write-SupLog "freshness: backend (sotd.exe) rebuild FAILED (non-fatal, continuing with whatever binary exists). message: $($capExcerpt -join ' / ')"
+                $script:launchNotices.Add("backend rebuild failed - running the existing sotd.exe: $(Limit-NoticeText $capExcerpt[0])") | Out-Null
             } else {
                 Write-SupLog "freshness: backend (sotd.exe) rebuilt; sot-capsule.exe left as-is (pinned by live supervisors)"
             }
@@ -945,8 +1000,9 @@ function Invoke-FreshnessPass {
             Write-SupLog "freshness: cargo build -p sot-backend -p sot-log"
             $capOut = cargo build --release -p sot-backend -p sot-log --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
             if ($LASTEXITCODE -ne 0) {
-                Write-SupLog "freshness: backend pair rebuild FAILED (non-fatal, continuing with whatever pair exists). tail: $($capOut | Select-Object -Last 3)"
-                $script:launchNotices.Add('backend rebuild failed - running the existing sotd.exe/sot-capsule.exe pair') | Out-Null
+                $capExcerpt = @(Get-FailureExcerpt -Output $capOut -Kind 'cargo')
+                Write-SupLog "freshness: backend pair rebuild FAILED (non-fatal, continuing with whatever pair exists). message: $($capExcerpt -join ' / ')"
+                $script:launchNotices.Add("backend rebuild failed - running the existing sotd.exe/sot-capsule.exe pair: $(Limit-NoticeText $capExcerpt[0])") | Out-Null
             } else {
                 Write-SupLog "freshness: backend pair (sotd.exe, sot-capsule.exe) rebuilt"
             }
