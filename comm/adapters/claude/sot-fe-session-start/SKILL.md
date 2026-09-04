@@ -251,6 +251,13 @@ irreconcilable claims from one handle look alarming (a forged relay, a spoofed
 sender, bad faith) and are almost always a session boundary between the two
 messages. Check the timestamps against the peer's known restart before escalating.
 
+## Acceptance checklist
+
+- After a fresh capsule start (Windows): a message beginning with a slash
+  arrives verbatim, not mangled into a filesystem path (MSYS2's argv-to-
+  Windows-path conversion, capsule-comm-identity fix — comm-lib.sh's
+  `sot_jq_rawfile`).
+
 ## Troubleshooting
 
 - `connection refused` on `127.0.0.1:18743`: the local SSH tunnel is not running

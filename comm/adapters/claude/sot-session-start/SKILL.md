@@ -61,7 +61,15 @@ else
     # (comm-lib.sh's sot_derive_handle, third output line):
     source ~/.sot-comm/bin/comm-lib.sh
     h="$(sot_derive_handle reclaim "$PROJECT_ROOT" "$HOST" 2>/dev/null | sed -n 3p)"
-    h="${h:-$(basename "$PWD")-$(hostname -s)}"   # last-resort only if derivation itself fails
+    # Last resort only if derivation itself fails -- and only for a
+    # HAND-STARTED shell: a pinned $SOT_COMM_NAME (comm-spawn, or the
+    # daemon's own capsule producer env) always takes precedence over this
+    # in comm-join.sh regardless of what this line computes, and a
+    # capsule's cwd can be $HOME (so basename "$PWD" is a username, not a
+    # repo) -- this fallback does not special-case that. `hostname -s` is
+    # guarded exactly like comm-context.sh's own HOST derivation: git-bash's
+    # `hostname` has no `-s` and errors on stderr without the fallback.
+    h="${h:-$(basename "$PWD")-$(hostname -s 2>/dev/null || hostname)}"
 fi
 h_re="$(printf '%s' "$h" | sed 's/\./\\./g')"   # escape dots — repo names contain them (e.g. MyOrg.github.io-myhost); an unescaped '.' matches ANY char and could false-match a sibling
 pgrep -u "$(id -un)" -f "comm-watch\.sh ${h_re}\$"   # dot-escaped + END-ANCHORED: neither a '.' nor a `-2` sibling can false-match (a false match would make a genuinely-deaf cold session skip arming → deaf)

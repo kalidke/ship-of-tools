@@ -1558,6 +1558,89 @@ case_host_alias_guard_triggers_on_long_host() {
     return 0
 }
 
+# --- capsule-comm-identity fix (Windows capsule spawn + comm scripts) ----
+
+case_pinned_comm_name_never_adopts_selffile_identity() {
+    # Coordinator hardening (capsule-comm-identity fix, item A): "a pinned
+    # SOT_COMM_NAME never adopts a name from any self-file." The daemon
+    # now stamps SOT_COMM_SELF_FILE on a capsule producer's own dedicated
+    # slot (comm-lib.sh's EXISTING pin-the-self-file seam — no new slot-
+    # naming scheme, and already honoured unchanged by both comm-context.sh
+    # and comm-join.sh), so this is the second, belt-and-braces line of
+    # defense: even when comm-context.sh resolves a VALID (root-matching)
+    # self-file identity, a pinned SOT_COMM_NAME must still win. Before
+    # this fix, comm-join.sh only consulted $SOT_COMM_NAME when NAME was
+    # EMPTY — a resolved-but-wrong self-file identity silently outranked
+    # the pin (the exact field bug: a capsule adopted the frontend's
+    # win-fe-<host> handle from a shared self-file slot).
+    local root self crafted
+    mkdir -p "$WORK/pinned-never-adopts/proj22"
+    root="$(realpath "$WORK/pinned-never-adopts/proj22")"
+    crafted="$WORK/pinned-never-adopts-self.txt"
+    printf 'other-existing-handle\nrepo=%s\nroot=%s\n' "$(basename "$root")" "$root" > "$crafted"
+
+    JOIN_SELF_FILE_OVERRIDE="$crafted"
+    JOIN_ENV_NAME="pinned-capsule-handle"
+    join_in "$root"
+    JOIN_SELF_FILE_OVERRIDE=""
+    JOIN_ENV_NAME=""
+
+    [ "$JOIN_RC" -eq 0 ] || { echo "  exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    contains "$JOIN_OUT" "Joined sot-comm as @pinned-capsule-handle" \
+        || { echo "  stdout: $JOIN_OUT (want the PINNED SOT_COMM_NAME, not the self-file's 'other-existing-handle')"; return 1; }
+    [ "$(registry_root "pinned-capsule-handle")" = "$root" ] \
+        || { echo "  pinned-capsule-handle root=$(registry_root "pinned-capsule-handle"), want $root"; return 1; }
+    return 0
+}
+
+case_jq_rawfile_helper_round_trips_leading_slash_value() {
+    # capsule-comm-identity fix, item B (MSYS2 argv-conversion guard): on
+    # Windows git-bash, a NATIVE jq.exe rewrites any ARGV ELEMENT that
+    # starts with "/" into a Windows path before jq ever sees it — a
+    # message body or a project root passed via `--arg` can legitimately
+    # start with "/" and arrives corrupted. This suite runs on LINUX,
+    # which cannot reproduce that MSYS2-only conversion (it only fires for
+    # a native, non-MSYS jq.exe) — what IS provable here is the fix's own
+    # mechanics: sot_jq_rawfile's temp file round-trips a leading-slash
+    # value through `jq --rawfile` byte-for-byte, which is exactly what
+    # closes the bug wherever it actually runs (the ORIGINAL corruption is
+    # unreproducible on this platform; the FIX is not).
+    local val f out
+    val="/sot-session-start with a leading slash and trailing text"
+    f="$(sot_jq_rawfile "$val")" || { echo "  sot_jq_rawfile failed"; return 1; }
+    [ -f "$f" ] || { echo "  sot_jq_rawfile did not create a file at the path it printed"; return 1; }
+    out="$(jq -nr --rawfile v "$f" '$v')"
+    rm -f "$f"
+    [ "$out" = "$val" ] || { echo "  round-trip mismatch: got '$out', want '$val'"; return 1; }
+    return 0
+}
+
+case_no_remaining_arg_for_slash_prone_jq_values() {
+    # Script-shape guard for the three audited call sites (capsule-comm-
+    # identity fix, item B): msg (comm-send.sh), m (comm-relay.sh), and
+    # root (comm-join.sh) are the only values that can legitimately start
+    # with "/" and must never regress back to `--arg`. A grep, not a
+    # behavior test — the MSYS2 conversion itself is unreproducible on
+    # Linux (see the round-trip case above), so this is what actually
+    # proves the fix's SHAPE stays in place if someone edits these scripts
+    # later without re-deriving the reasoning.
+    local bad=""
+    grep -qE -- '--arg[[:space:]]+msg[[:space:]]' "$SCRIPTS_DIR/comm-send.sh" \
+        && bad="$bad comm-send.sh:--arg-msg"
+    grep -qE -- '--arg[[:space:]]+m[[:space:]]' "$SCRIPTS_DIR/comm-relay.sh" \
+        && bad="$bad comm-relay.sh:--arg-m"
+    grep -qE -- '--arg[[:space:]]+root[[:space:]]' "$SCRIPTS_DIR/comm-join.sh" \
+        && bad="$bad comm-join.sh:--arg-root"
+    [ -z "$bad" ] || { echo "  found regressed --arg use(s) for a slash-prone value:$bad"; return 1; }
+    grep -q -- '--rawfile msg ' "$SCRIPTS_DIR/comm-send.sh" \
+        || { echo "  comm-send.sh missing --rawfile msg"; return 1; }
+    grep -q -- '--rawfile m ' "$SCRIPTS_DIR/comm-relay.sh" \
+        || { echo "  comm-relay.sh missing --rawfile m"; return 1; }
+    grep -q -- '--rawfile root ' "$SCRIPTS_DIR/comm-join.sh" \
+        || { echo "  comm-join.sh missing --rawfile root"; return 1; }
+    return 0
+}
+
 # --- run, in order (later cases depend on earlier ones' registry state) --
 
 check "fresh claim records root"                            case_fresh_claim
@@ -1603,6 +1686,9 @@ check "rollback never deletes a row that replaced the provisional one (F1 round 
 check "with_lock restores the caller's prior EXIT trap after a direct callee failure (F2 round 2)" case_with_lock_restores_prior_trap_on_failure
 check "a failing hash command fails loudly instead of an empty-hash handle (F5 round 2)" case_hash_command_failure_fails_loudly
 check "a long/dirty host triggers the F7 host-alias digest suffix" case_host_alias_guard_triggers_on_long_host
+check "a pinned SOT_COMM_NAME never adopts a name from any self-file (capsule-comm-identity fix)" case_pinned_comm_name_never_adopts_selffile_identity
+check "sot_jq_rawfile round-trips a leading-slash value through jq --rawfile" case_jq_rawfile_helper_round_trips_leading_slash_value
+check "no regressed --arg use for the three slash-prone jq values (msg/m/root)" case_no_remaining_arg_for_slash_prone_jq_values
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

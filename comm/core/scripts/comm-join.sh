@@ -28,9 +28,12 @@ Derived vs explicit: the default <repo>-<host> handle is auto-disambiguated
 against the registry's recorded project root when two different projects
 share a basename+host (e.g. two same-named repos in different directories) —
 you get <repo>-<parentdir>-<host>, or a hash-qualified handle as a last
-resort. An explicit --name (or $SOT_COMM_NAME, or an already-joined
-identity) is always used VERBATIM and never disambiguated. See the "derived
-vs explicit" section of docs/adr/0028-remote-comm-autoconnect.md.
+resort. An explicit --name, $SOT_COMM_NAME, or an already-joined identity is
+always used VERBATIM and never disambiguated — in that PRECEDENCE order:
+--name beats a pinned $SOT_COMM_NAME beats an already-joined self-file
+identity, and a pinned name (either of the first two) NEVER yields to
+whatever a self-file resolves, even a validated one. See the "derived vs
+explicit" section of docs/adr/0028-remote-comm-autoconnect.md.
 
 On success prints "Joined sot-comm as @<handle>" — that line IS your
 identity confirmation.
@@ -56,19 +59,32 @@ done
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 ensure_home
 
-[ -n "$WANT_NAME" ] && NAME="$WANT_NAME"
-# Spawn handoff: comm-spawn pins the agent's handle by prefixing the ccb launch
-# with SOT_COMM_NAME=<name> (and optionally SOT_COMM_EXPERTISE), so the
-# /sot-session-start join inside the spawned session lands on the handle the
-# spawner is awaiting. Explicit --name wins; an already-joined NAME (from
-# context) wins over the env (a rejoin keeps its identity).
+# Spawn handoff: comm-spawn (and the daemon's capsule producer env, see
+# capsule_workspace::capsule_supervisor_env) pin the agent's handle by
+# setting SOT_COMM_NAME=<name> (and optionally SOT_COMM_EXPERTISE) before
+# the /sot-session-start join runs, so it lands on the handle the
+# spawner/daemon is awaiting.
 #
-# Precedence: NAME here can only be an ALREADY-VALIDATED self-file
-# identity (comm-context.sh's own read-side matrix — see ADR 0028's
-# "Self-file read-side transition" for the full rule); anything it
-# discarded as stale/unhealable comes back as NAME="" and never reaches
-# here to out-rank a spawn-pinned $SOT_COMM_NAME.
-[ -z "$NAME" ] && NAME="${SOT_COMM_NAME:-}"
+# Precedence, HIGH to LOW: --name (explicit, this call) > $SOT_COMM_NAME
+# (pinned by whoever launched this process) > an already-joined self-file
+# identity (a plain rejoin with neither of the above keeps its identity)
+# > fresh derivation. A PINNED name (either of the first two) is used
+# VERBATIM and must NEVER be overridden by whatever a self-file happens
+# to resolve — capsule-comm-identity fix: a self-file can pass
+# comm-context.sh's own root=/repo= validation while still holding the
+# WRONG identity for this exact process (the shared per-host `__nopane`
+# slot's whole failure mode, before SOT_COMM_SELF_FILE gave each
+# workspace its own slot — this precedence fix is the second, belt-and-
+# braces line of defense: even a same-slot self-file must never outrank
+# a pin). Only when NEITHER --name nor $SOT_COMM_NAME was given does an
+# already-joined self-file identity (from comm-context.sh's own
+# read-side matrix) survive to here — anything it discarded as
+# stale/unhealable comes back as NAME="" regardless.
+if [ -n "$WANT_NAME" ]; then
+    NAME="$WANT_NAME"
+elif [ -n "${SOT_COMM_NAME:-}" ]; then
+    NAME="$SOT_COMM_NAME"
+fi
 [ -z "$EXPERTISE" ] && EXPERTISE="${SOT_COMM_EXPERTISE:-}"
 # Reached only when NAME came from none of the verbatim sources above
 # (--name, $SOT_COMM_NAME, an already-joined self-file identity) — this is
@@ -88,11 +104,18 @@ exp_json="$(printf '%s' "$EXPERTISE" \
 
 # Independent of NAME (the row's contents don't name themselves) — safe to
 # build before NAME is finalized either way.
+#
+# MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): PROJECT_ROOT
+# is a filesystem path and can legitimately start with "/" (the POSIX
+# form MSYS/git-bash's own `pwd` fallback produces) — must never reach jq
+# via --arg. See that helper's comment for the mechanism.
+root_file="$(sot_jq_rawfile "$PROJECT_ROOT")" || exit 1
 obj="$(jq -n \
     --arg host "$HOST" --arg tmux "$TMUX_TARGET" --arg pane "$PANE_ID" \
-    --arg repo "$REPO" --arg root "$PROJECT_ROOT" --argjson exp "$exp_json" --arg ts "$ts" \
+    --arg repo "$REPO" --rawfile root "$root_file" --argjson exp "$exp_json" --arg ts "$ts" \
     '{host:$host, tmux:$tmux, pane_id:$pane, repo:$repo, root:$root, expertise:$exp,
       status:"idle", joined:$ts, last_seen:$ts}')"
+rm -f "$root_file"
 
 if [ "$NEED_DERIVE" = true ]; then
     # reclaim mode (Codex review F3): a plain join treats an existing

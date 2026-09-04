@@ -32,6 +32,14 @@ done
 
 [ -z "$MSG" ] && { echo "usage: comm-send.sh @name \"msg\" | --broadcast \"msg\" | --force-target T \"msg\"" >&2; exit 1; }
 
+# MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): MSG can
+# legitimately start with "/" (an agent naturally opens with a slash
+# command) and must never reach jq via --arg. Computed ONCE here (not per
+# recipient inside deliver()) since a --broadcast fans this same MSG out
+# to every target; cleaned up on exit however this script leaves.
+MSG_FILE="$(sot_jq_rawfile "$MSG")" || exit 1
+trap 'rm -f "$MSG_FILE"' EXIT
+
 # Identity refusal, via the ONE shared helper (comm-lib.sh) also used by
 # comm-relay.sh and comm-bootstrap.sh (Codex review round-2 finding 4/C:
 # collapses three separately-drifting diagnostic essays into one, and
@@ -85,7 +93,7 @@ deliver() {  # $1 = target name
     local to_stamp="$t"
     [ "$BROADCAST" = true ] && to_stamp=""
     ts="$(now_iso)"
-    jq -nc --arg from "$NAME" --arg to "$to_stamp" --arg repo "$REPO" --arg msg "$MSG" --arg ts "$ts" \
+    jq -nc --arg from "$NAME" --arg to "$to_stamp" --arg repo "$REPO" --rawfile msg "$MSG_FILE" --arg ts "$ts" \
         '{from:$from, to:$to, repo:$repo, msg:$msg, ts:$ts}' >> "$INBOX_DIR/$t.jsonl"
 
     # 2) live paste, only if same host, pane alive, and NOT a broadcast.
