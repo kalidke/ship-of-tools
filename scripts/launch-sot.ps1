@@ -147,9 +147,9 @@ function Stop-Splash {
 # observed logging "Offline or dirty tree" and launching the old binary with
 # nothing on screen saying the box never updated - fine for one laptop, a
 # false "converged" reading fleet-wide otherwise. $selfUpdateRefusedReason
-# below carries a REFUSED pull's first error line forward to the supervisor
-# loop, which announces it as one FE notify line once the frontend is up (see
-# Send-SotFeSelfUpdateNotify) - offline still only logs, same as before.
+# below carries a REFUSED pull's first error line into $env:SOT_LAUNCH_NOTICE
+# (set once, just before the frontend's first spawn) so the frontend renders
+# it at its own startup - offline still only logs, same as before.
 # ---------------------------------------------------------------------------
 $selfUpdateRefusedReason = $null
 if (-not $NoUpdate -and -not $Local -and -not $env:SOT_LAUNCH_REEXEC -and (Test-Path (Join-Path $repo '.git'))) {
@@ -722,84 +722,6 @@ foreach ($item in $tunnelPlan) {
 }   # end: default-mode only (see the -not $Local gate above)
 
 # ---------------------------------------------------------------------------
-# Announce a refused self-update pull once the FE is up (see the "Refused vs
-# offline" comment on the self-update prelude above). Reuses the daemon
-# FE-command channel (ADR 0025, op fe.command.send -> FeCommandEvt, which the
-# FE parses into FeCommand::Notify) - the SAME wire protocol
-# scripts/comm-relay.ps1 already speaks for op agent.send, just a different
-# op and payload. Not `sot-fe notify` (comm/core/scripts/sot-fe): that's a
-# bash+jq script, and neither is guaranteed on PATH in the launcher's own
-# process environment the way it is inside a Claude-session terminal (which
-# runs in git-bash) - so this inlines the same op as a native .NET TCP client
-# instead of shelling out to an interpreter this process may not have.
-#
-# Rides the control tunnel to the DEFAULT REMOTE ($tcpPort, resolved above,
-# already listening by the time the frontend spawns below) - the frontend
-# connects to that same daemon (hosts::resolve_connections), so a broadcast
-# notify (no `target`) reaches it. No default remote configured/reachable
-# ($defaultRemoteOk false) means no channel to ride; the supervisor log line
-# already written above is then the only record. Extending this to the LOCAL
-# daemon's own Windows named pipe would need sot-local-daemon.ps1 to expose
-# the pipe path it derives (it's local to that script today) - left as a
-# follow-up, not folded in here to keep this fix to the one failure mode
-# actually observed (a default-remote fleet box silently not updating).
-# Fail-open throughout: this never throws past its own try/catch, matching
-# every other step in this file.
-# ---------------------------------------------------------------------------
-function Send-SotFeSelfUpdateNotify {
-    param([string]$Text)
-    if (-not $defaultRemoteOk -or -not $tcpPort) {
-        Write-SupLog 'self-update notify: no default remote tunnel - FE announce skipped (log only)'
-        return
-    }
-    $client = $null
-    try {
-        $client = [Net.Sockets.TcpClient]::new()
-        $client.Connect('127.0.0.1', $tcpPort)
-        $stream = $client.GetStream()
-        $stream.ReadTimeout = 1000
-        $writer = [IO.StreamWriter]::new($stream, [Text.UTF8Encoding]::new($false))
-        $writer.NewLine = "`n"
-        $writer.AutoFlush = $true
-        $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false))
-        $hello = [pscustomobject]@{
-            v = 1; id = 1; kind = 'req'; op = 'hello'
-            payload = [pscustomobject]@{
-                client_id = 'sot-launcher'; last_seen_revision = 0
-                protocol = 1; app_version = 'launcher'
-                token = if ($token) { $token } else { '' }
-            }
-        }
-        $writer.WriteLine(($hello | ConvertTo-Json -Compress -Depth 8))
-        $notify = [pscustomobject]@{
-            v = 1; id = 2; kind = 'req'; op = 'fe.command.send'
-            payload = [pscustomobject]@{
-                cmd  = 'notify'
-                args = [pscustomobject]@{ text = $Text; level = 'warning' }
-            }
-        }
-        $writer.WriteLine(($notify | ConvertTo-Json -Compress -Depth 8))
-        # One bounded read (the stream's 1s ReadTimeout above) for the ack -
-        # a timeout throws IOException, which is swallowed the same way sot-fe
-        # itself treats a missing response: NOT proof of refusal, since the
-        # daemon broadcasts before acking (comm/core/scripts/sot-fe's own
-        # send_fe_command comment) - just nothing left to confirm here, so
-        # log and move on rather than retrying (this is a log line, not a
-        # delivery guarantee).
-        $acked = $false
-        try {
-            $line = $reader.ReadLine()
-            if ($line -match '"op"\s*:\s*"fe\.command\.send"') { $acked = $true }
-        } catch [IO.IOException] { }
-        Write-SupLog "self-update notify: $(if ($acked) { 'acked' } else { 'sent (no ack seen within 1s)' }) via 127.0.0.1:$tcpPort"
-    } catch {
-        Write-SupLog "self-update notify: send failed - $($_.Exception.Message)"
-    } finally {
-        if ($client) { $client.Close() }
-    }
-}
-
-# ---------------------------------------------------------------------------
 # Self-relaunch supervisor (ADR 0017).
 #
 # ---------------------------------------------------------------------------
@@ -1030,15 +952,23 @@ Start-Sleep -Milliseconds 400
 if ($token) {
     $env:SOT_TOKEN = $token
 }
+# Self-update notice for the frontend - a REFUSED pull's reason (empty/unset
+# for offline or an ok pull; see the self-update prelude above). Set once
+# here, before the FIRST Start-Process spawn below: env vars set on this
+# process are inherited by every child it spawns, exit-75 respawns included
+# within this SAME invocation - correct, since this invocation never pulled
+# again, so the notice stays true until a fresh launch. The frontend reads
+# it once at its own startup (rust/frontend/src/gpu.rs) and renders it
+# through the same status/notify_sticky_until fields FeCommand::Notify uses.
+Remove-Item Env:\SOT_LAUNCH_NOTICE -ErrorAction SilentlyContinue
+if ($selfUpdateRefusedReason) {
+    $env:SOT_LAUNCH_NOTICE = "self-update: pull refused - running the existing build ($selfUpdateRefusedReason)"
+}
 $relaunchNext = [bool]$Relaunched
 # The splash covers the INITIAL launch only. Exit-75 relaunches keep the tunnel
 # and skip freshness, and happen while the user is already in the app, so they
 # get no splash — dismiss it exactly once, when the first FE window is up.
 $splashDismissed = $false
-# One-shot gate for Send-SotFeSelfUpdateNotify below - only the FIRST loop
-# iteration (the initial boot) has a self-update outcome worth announcing;
-# an exit-75 relaunch iterates this same loop again with nothing new to say.
-$notifySent = $false
 $tunnelPidLabel = if ($sshTunnel) { $sshTunnel.Id } else { 'none (external control tunnel, aux retired)' }
 Write-SupLog "supervisor start (relaunched=$Relaunched, tcpPort=$tcpPort, tunnelPid=$tunnelPidLabel)"
 try {
@@ -1092,18 +1022,6 @@ try {
             }
             Set-LaunchStatus 'DONE'
             $splashDismissed = $true
-        }
-
-        # Announce a refused self-update pull now that the FE is up - reuses
-        # the "window is actually up" wait just above as its readiness signal
-        # (no separate poll loop); a windowless/no-splash launch has no such
-        # signal to reuse, so it gets the fixed short settle the else branch
-        # falls back to instead. See the self-update prelude's "Refused vs
-        # offline" comment and Send-SotFeSelfUpdateNotify above for why.
-        if (-not $notifySent -and $selfUpdateRefusedReason) {
-            if (-not $splash) { Start-Sleep -Seconds 2 }
-            Send-SotFeSelfUpdateNotify -Text "self-update: pull refused - running the existing build ($selfUpdateRefusedReason)"
-            $notifySent = $true
         }
 
         # Tunnel supervisor: poll every ssh process every 500ms while the

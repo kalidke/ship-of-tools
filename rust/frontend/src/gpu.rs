@@ -5318,6 +5318,16 @@ impl State {
             preview_src: None,
             preview_src_node_id: None,
         };
+        // Self-update notice from the launcher's own process spawn (a
+        // REFUSED pull; empty/unset for offline or ok - see
+        // scripts/launch-sot.ps1). Same two fields the FeCommand::Notify
+        // arm below writes - no separate renderer.
+        if let Ok(notice) = std::env::var("SOT_LAUNCH_NOTICE") {
+            if !notice.is_empty() {
+                state.status = notice;
+                state.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
+            }
+        }
         // `--demo-sessions a,b:working,c` (capture harness): seed the
         // workspace strip offline so the bottom session strip renders without
         // a live backend. Middle entry is made active so both left + right
