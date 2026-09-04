@@ -1154,10 +1154,16 @@ store never opened — never a second counter.
 **Supervisor exit codes are the launcher's contract.** `0` = clean end
 (the run ended by request, or a stop was requested) — DO NOT restart.
 `69` = terminal (three consecutive unstable legs, a foreign server, a
-wedge, a failed `record_verified`) — DO NOT restart; surface it.
-Anything else is a crash — restart with `--resume` on the launcher's shipped
-1/3/7/15/30 s sequence, at most 5 restarts in 60 s, then stop and
-report.
+wedge, a failed `record_verified`) — DO NOT restart; surface it. `70`
+(added by the daemon-boot-adopts-supervisor fix, ADR 0042's own launcher
+role) = the authority fence was already held by a LIVE supervisor —
+DO NOT restart and DO NOT treat as terminal; the launcher re-probes the
+lane for a short bound and ADOPTS it once it answers, since this means
+some OTHER process (almost always the previous authority for this SAME
+state dir, still finishing its own teardown) currently holds the fence,
+never a genuinely exhausted producer. Anything else is a crash — restart
+with `--resume` on the launcher's shipped 1/3/7/15/30 s sequence, at most
+5 restarts in 60 s, then stop and report.
 
 **The machine-teardown ORDER is pinned** (the nightly close): supervisor
 stop → EndRun under the fence → `record_closed` → FE close → tunnel

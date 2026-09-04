@@ -324,12 +324,34 @@ const RESETTING_WATCHDOG: Duration = Duration::from_secs(30);
 const RECOVERY_END_RUN_REASON: &str = "recovered";
 
 /// Exit codes are the launcher's own contract (ADR 0041 Lifecycle
-/// "Supervisor exit codes"): `0` = clean end, do not restart; `69` =
-/// terminal, do not restart, surface it; anything else (this module
-/// never returns anything else on purpose) is read by the launcher as a
-/// crash to restart with `--resume`.
+/// "Supervisor exit codes", amended for [`EXIT_CONTENDED`] -- see that
+/// const's own doc): `0` = clean end, do not restart; `69` = terminal, do
+/// not restart, surface it; `70` = the authority fence was already held
+/// by a LIVE supervisor -- a launcher should re-probe for adoption, never
+/// treat it as a failure or a crash; anything else (this module never
+/// returns anything else on purpose) is read by the launcher as a crash
+/// to restart with `--resume`.
 pub const EXIT_CLEAN: i32 = 0;
 pub const EXIT_TERMINAL: i32 = 69;
+/// Fence contention, distinct from [`EXIT_TERMINAL`] (round-2 Codex
+/// finding, daemon-boot-adopts-supervisor fix): `supervise_inner` reaches
+/// this ONLY when `crate::fence::lock_supervisor` fails with
+/// `Error::State` -- the one error that specific call can produce, and
+/// only when a bounded retry against an ALREADY-HELD lock finally times
+/// out (`fsutil::lock_writer`'s own "lock held by another process").
+/// That means some OTHER process currently holds `supervisor.lock` --
+/// almost always the previous authority for this SAME state dir, still
+/// finishing its own teardown (it drops its lane BEFORE releasing the
+/// fence, and that teardown is bounded by
+/// `pipe_win::TEARDOWN_AGGREGATE_DEADLINE`, up to 20s) -- never a
+/// genuinely exhausted producer. A launcher that folded this into
+/// [`EXIT_TERMINAL`] would mark a perfectly healthy workspace terminal
+/// out from under a run the OTHER process is still actively serving. The
+/// correct reaction is to re-probe the lane for a short bound and ADOPT
+/// it once it answers, exactly as a daemon boot that finds the SAME lane
+/// already alive would -- never spawn a THIRD contender, never give up
+/// loudly.
+pub const EXIT_CONTENDED: i32 = 70;
 
 // ---------------------------------------------------------------------
 // Public entry points
@@ -2181,6 +2203,16 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     // ONE AUTHORITY.
     let _fence = match crate::fence::lock_supervisor(&config.state_dir) {
         Ok(f) => f,
+        // `Error::State` is the ONE error `lock_supervisor` can return for
+        // "already held" (see `EXIT_CONTENDED`'s own doc for why this is
+        // the only path that produces it here) -- distinct from a genuine
+        // bootstrap/IO failure (`Error::Io`), which stays EXIT_TERMINAL.
+        Err(e @ crate::Error::State(_)) => {
+            eprintln!(
+                "sot-capsule supervise: authority fence already held by a live supervisor: {e}"
+            );
+            return Ok(EXIT_CONTENDED);
+        }
         Err(e) => {
             eprintln!("sot-capsule supervise: could not become the authority: {e}");
             return Ok(EXIT_TERMINAL);

@@ -23,10 +23,19 @@
 
 use crate::fe_client::{QuitDispatcher, QuitState};
 use crate::fe_client_win::{run_end_run_and_wait, FrameReader};
+use crate::pipe_win::TEARDOWN_AGGREGATE_DEADLINE;
 use crate::supervisor::{connect_and_challenge, err_state, send_and_read};
 use crate::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 use std::path::Path;
 use std::time::{Duration, Instant};
+
+/// Re-exported so a caller outside this crate (`sot-backend`'s
+/// `capsule_workspace.rs`) can name the retained-process type this
+/// module's own [`connect`]/[`query_status`] return without also
+/// depending on `sot_log::challenge` directly — the SAME type, not a
+/// second one: `ChallengedProcess` IS the retained handle the challenge
+/// proves, reused here rather than wrapped.
+pub use crate::challenge::ChallengedProcess;
 
 /// ADR 0041 Lifecycle "Every op has one budget: connect 2 s, request
 /// write 2 s..." — the same figure `fe_client_win.rs`'s own
@@ -89,10 +98,12 @@ pub enum EndRunOutcome {
 /// production analog of `supervisor::connect_and_challenge_for_test`,
 /// reusing the exact same [`connect_and_challenge`] the test helper now
 /// delegates to.
-fn connect(state_dir: &Path, deadline: Instant) -> crate::Result<crate::pipe_win::PipeClient> {
+fn connect(
+    state_dir: &Path,
+    deadline: Instant,
+) -> crate::Result<(crate::pipe_win::PipeClient, ChallengedProcess)> {
     let h = crate::supervisor::state_dir_hash(state_dir);
-    let (conn, _process) = connect_and_challenge(&h, crate::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)?;
-    Ok(conn)
+    connect_and_challenge(&h, crate::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)
 }
 
 /// Connect, challenge, and run one `status` request — everything a
@@ -103,11 +114,21 @@ fn connect(state_dir: &Path, deadline: Instant) -> crate::Result<crate::pipe_win
 /// `Err`: the caller has no use here for distinguishing WHY the lane is
 /// unreachable, only THAT it is (`workspace.list`'s own "failure ->
 /// unreachable" rule).
-pub fn query_status(state_dir: &Path) -> crate::Result<StatusReport> {
+///
+/// Returns the [`ChallengedProcess`] ALONGSIDE the status (round-2 Codex
+/// finding, daemon-boot-adopts-supervisor fix): the challenge already
+/// proves and retains a live handle to the process on the other end of
+/// this connection, and a caller that just ADOPTED a lane (found it
+/// alive rather than spawning into it) needs exactly that handle as its
+/// own death signal — the same role a spawned child's own `Child` plays
+/// for a leg this process spawned itself. A caller with no use for it
+/// (most callers) simply drops the second element; dropping closes the
+/// handle.
+pub fn query_status(state_dir: &Path) -> crate::Result<(StatusReport, ChallengedProcess)> {
     let deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
-    let conn = connect(state_dir, deadline)?;
+    let (conn, process) = connect(state_dir, deadline)?;
     match send_and_read(&conn, &SupervisorRequest::Status, Instant::now() + STATUS_BUDGET)? {
-        SupervisorReply::StatusOk { voyage, leg, phase, .. } => Ok(StatusReport { voyage, leg, phase }),
+        SupervisorReply::StatusOk { voyage, leg, phase, .. } => Ok((StatusReport { voyage, leg, phase }, process)),
         other => Err(err_state(format!("expected status_ok, got {other:?}"))),
     }
 }
@@ -122,14 +143,40 @@ pub fn query_status(state_dir: &Path) -> crate::Result<StatusReport> {
 /// L1a, Codex review finding 13) to prove ADOPTION (a fresh `--resume`
 /// finding the SAME leg still alive) rather than mere detachment (an
 /// untouched, already-running supervisor surviving a daemon restart).
+///
+/// WAITS for confirmed process death after the ACK (round-2 Codex
+/// finding, daemon-boot-adopts-supervisor fix): an earlier version
+/// returned the instant `Stopping` was acknowledged, before the process
+/// had actually exited or released `supervisor.lock` — a caller that
+/// immediately acted on "stopped" (e.g. starting a fresh authority)
+/// could still race the old one's own teardown. The RPC connection is
+/// dropped first (never held open across a wait the peer has no reason
+/// to answer on), then this blocks on the SAME retained
+/// [`ChallengedProcess`] handle [`query_status`]'s own caller would use
+/// as a death signal, bounded by [`TEARDOWN_AGGREGATE_DEADLINE`] — the
+/// authority's own documented worst-case teardown budget (it drops its
+/// lane before releasing the fence), so a caller that waits this long
+/// and still sees no exit has a genuine, reportable problem, not mere
+/// impatience.
 pub fn stop(state_dir: &Path) -> crate::Result<()> {
     let deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
-    let conn = connect(state_dir, deadline)?;
+    let (conn, process) = connect(state_dir, deadline)?;
     let operation_id = format!("sot-backend-stop-{}", uuid::Uuid::now_v7());
     let request = SupervisorRequest::Command { operation_id, op: SupervisorOp::Stop };
     match send_and_read(&conn, &request, Instant::now() + STATUS_BUDGET)? {
-        SupervisorReply::Operation(SupervisorOperationState::Stopping) => Ok(()),
-        other => Err(err_state(format!("expected Operation(Stopping), got {other:?}"))),
+        SupervisorReply::Operation(SupervisorOperationState::Stopping) => {}
+        other => return Err(err_state(format!("expected Operation(Stopping), got {other:?}"))),
+    }
+    // Close the RPC connection first -- the peer owes it no further
+    // reply once it has accepted `stopping`, so holding it open across
+    // the wait below only delays ITS OWN teardown for no benefit here.
+    drop(conn);
+    match process.wait(TEARDOWN_AGGREGATE_DEADLINE) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(err_state(format!(
+            "supervisor acknowledged stop but did not exit within {TEARDOWN_AGGREGATE_DEADLINE:?}"
+        ))),
+        Err(e) => Err(err_state(format!("waiting for the stopped supervisor to exit: {e}"))),
     }
 }
 
@@ -143,7 +190,7 @@ pub fn stop(state_dir: &Path) -> crate::Result<()> {
 /// against.
 pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<EndRunOutcome> {
     let hello_deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
-    let mut conn = connect(state_dir, hello_deadline)?;
+    let (mut conn, _process) = connect(state_dir, hello_deadline)?;
     let mut reader = FrameReader::new();
     let h = crate::supervisor::state_dir_hash(state_dir);
     let mut quit = QuitDispatcher::new();
