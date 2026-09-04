@@ -269,8 +269,17 @@ impl Transport for TestTransport {
 mod frame {
     use super::wire;
 
+    /// The MODERN client's own default (Codex round on #194): hellos at
+    /// the current attach proto, which is what every test in this file
+    /// that does not care about version negotiation itself should get,
+    /// so a checkpoint it collects carries a scrollback ring like a real
+    /// current client's would. [`hello_at`] is the explicit-version
+    /// escape hatch for tests that DO care (e.g. an old client's v1).
     pub fn hello() -> Vec<u8> {
-        wire::encode_attach_client(&wire::AttachClient::Hello { proto: wire::ATTACH_PROTO_V1 }).unwrap()
+        hello_at(wire::ATTACH_PROTO_V2)
+    }
+    pub fn hello_at(proto: u32) -> Vec<u8> {
+        wire::encode_attach_client(&wire::AttachClient::Hello { proto }).unwrap()
     }
     pub fn attach(controller_id: &str) -> Vec<u8> {
         wire::encode_attach_client(&wire::AttachClient::Attach { controller_id: controller_id.into() }).unwrap()
@@ -1117,6 +1126,83 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
         "checkpoint + subsequent stream must reproduce the reference session byte-for-byte"
     );
     assert_eq!(summary.exit_kind, ExitKind::Requested);
+}
+
+/// ADR 0041 "attach proto v2 bound to checkpoint v2" (Codex round on
+/// #194, finding 1): a connection that negotiates attach proto v1 -- an
+/// OLD client's own default, predating the scrollback ring -- must get a
+/// checkpoint format v1 payload: no scrollback ring, even though the
+/// capsule's own live parser keeps one (`CAPSULE_SCROLLBACK_ROWS`).
+/// Proves the version-gated encode path in `capsule_win::run`'s
+/// `BeginCheckpoint` handling, independent of the ring-arrival test above
+/// (which hellos at v2, the modern client's own default).
+#[test]
+fn hello_v1_gets_a_checkpoint_with_no_scrollback_ring() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
+    let argv = vec![
+        helper,
+        "--script".to_string(),
+        "50".to_string(),
+        "--linger".to_string(),
+    ];
+    let (rows, cols) = (4u16, 20u16);
+    let cfg = config(dir.path(), "hellov1", argv, cols, rows);
+    let root = cfg.voyage_root.clone();
+    let transport = TestTransport::new();
+    let (tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule_win::run(cfg, rx, &mut t)
+    });
+
+    // Enough real elapsed time that a v2 hello would find a nonempty
+    // ring here too -- proving this test's negative result is the
+    // version gate, not merely an empty ring to begin with (same pacing
+    // rationale as the ring-arrival test above: `SCRIPT_BLOCK` writes
+    // one line roughly every 59 ms).
+    std::thread::sleep(Duration::from_millis(4000));
+
+    const CONN: ConnId = 1;
+    transport.open(CONN);
+    transport.feed(CONN, frame::hello_at(wire::ATTACH_PROTO_V1));
+    let mut watcher = FrameWatcher::new(&transport);
+    let negotiated = watcher.wait_for("v1 hello_ok", CONN, Duration::from_secs(10), |f| {
+        if let wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { proto }) = f {
+            Some(*proto)
+        } else {
+            None
+        }
+    });
+    assert_eq!(
+        negotiated,
+        wire::ATTACH_PROTO_V1,
+        "the capsule must echo back exactly the negotiated version"
+    );
+
+    transport.feed(CONN, frame::attach("watcher"));
+    let checkpoint_bytes =
+        watcher.collect_checkpoint("v1 checkpoint", CONN, Duration::from_secs(10));
+
+    tx.send(Command::Kill).unwrap();
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return within the teardown bound")
+        .unwrap();
+    verify_voyage(&root, "hellov1").unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+
+    let mut restored = vt100_ctt::Parser::new(rows, cols, 100);
+    restored
+        .restore_screen(&checkpoint_bytes)
+        .expect("a v1 checkpoint must decode");
+    restored.screen_mut().set_scrollback(usize::MAX);
+    assert_eq!(
+        restored.screen().scrollback(),
+        0,
+        "a v1-negotiated connection must receive a checkpoint with no ring"
+    );
 }
 
 /// Test 8: the wire input WAL folds every legal `idem_key` chain exactly,

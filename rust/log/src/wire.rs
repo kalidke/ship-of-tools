@@ -248,18 +248,38 @@ fn validate_operation_id(field: &'static str, s: String) -> Result<String, WireE
 /// 0041: "the lane rejects the pair it did not [recognize]").
 pub const SUPERVISOR_PROTO_V1: u32 = 1;
 
-/// The only attach-lane protocol version this build speaks. `hello`
-/// refuses an incompatible client before any checkpoint byte is ever
-/// generated, rather than failing partway through a multi-MiB transfer.
+/// The original attach-lane protocol version, still spoken by this
+/// build for backward compatibility. `hello` refuses an incompatible
+/// client before any checkpoint byte is ever generated, rather than
+/// failing partway through a multi-MiB transfer.
 ///
-/// This is the OUTER attach-lane framing only — it has not needed to
-/// change. The checkpoint format underneath negotiates its own version
-/// independently (`rust/vt100/src/checkpoint::VERSION`) and evolved
-/// without an attach-proto bump when the scrollback ring landed: a
-/// checkpoint reader tolerates every version from
-/// `checkpoint::MIN_READABLE_VERSION` up, so `ATTACH_PROTO_V1` pairs with
-/// either checkpoint format version, never just the one it shipped with.
+/// Bound 1:1 to checkpoint format v1 (no scrollback ring) — see
+/// [`ATTACH_PROTO_V2`]'s own doc for why that binding, once implicit, is
+/// now enforced explicitly rather than merely documented.
 pub const ATTACH_PROTO_V1: u32 = 1;
+
+/// The current attach-lane protocol version (Codex round on #194,
+/// finding 1 — "attach proto v2 bound to checkpoint v2").
+///
+/// A checkpoint reader tolerates every format version from
+/// `rust/vt100/src/checkpoint::MIN_READABLE_VERSION` up
+/// (`checkpoint::VERSION`, now 2, carries the scrollback ring) — but a
+/// WRITER built before that ring existed does not: its own `VERSION`
+/// constant is hardcoded to 1, so `Screen::restore` on that build
+/// refuses a v2 payload outright, and that build's own pinned
+/// `wire::MAX_CHECKPOINT_LEN` (8,651,327 B) predates the ring's larger
+/// bound too, so even collecting an oversized transfer can fail before
+/// restore is ever reached. Negotiating the OUTER attach-lane framing
+/// version is what lets a capsule know, before it ever encodes a byte,
+/// whether the peer on the other end can read a ring at all:
+/// `ATTACH_PROTO_V2` promises checkpoint format v2 may follow;
+/// `ATTACH_PROTO_V1` promises the capsule will encode v1 (no ring)
+/// instead, regardless of how much scrollback the capsule itself keeps
+/// live. `negotiate` accepts either from a client; which one a
+/// connection settled on is what a capsule's `BeginCheckpoint` handling
+/// reads back (`attach_proto::AttachProto::negotiated_proto`) to decide
+/// which format version to encode.
+pub const ATTACH_PROTO_V2: u32 = 2;
 
 /// The proven worst-case encoded size of a vt100-fork checkpoint (ADR
 /// 0041 "Terminal state", step 3 as built, plus the scrollback ring
@@ -589,18 +609,23 @@ pub enum Negotiated {
     Refused { supported: u32 },
 }
 
-/// Pure hello negotiation: v1 is the only version this build speaks.
-/// Called BEFORE any checkpoint byte is generated — an incompatible pair
-/// is refused here, not partway through a multi-MiB transfer. See
-/// [`ATTACH_PROTO_V1`]'s own doc for why this framing version and the
-/// checkpoint format version underneath it are independent.
+/// Pure hello negotiation: this build speaks [`ATTACH_PROTO_V1`] and
+/// [`ATTACH_PROTO_V2`], echoing back exactly whichever one the client
+/// asked for (never silently upgrading it) — called BEFORE any
+/// checkpoint byte is generated, so an incompatible pair is refused
+/// here, not partway through a multi-MiB transfer. A refusal reports the
+/// NEWEST version this build speaks, matching the existing
+/// oldest-first-fallback shape a client already retries through: a
+/// future, still-newer client refused here learns to try
+/// `ATTACH_PROTO_V2` next, the same way today's client falls back to
+/// `ATTACH_PROTO_V1` against an older capsule.
 #[must_use]
 pub fn negotiate(client_proto: u32) -> Negotiated {
-    if client_proto == ATTACH_PROTO_V1 {
-        Negotiated::Accepted(ATTACH_PROTO_V1)
+    if client_proto == ATTACH_PROTO_V1 || client_proto == ATTACH_PROTO_V2 {
+        Negotiated::Accepted(client_proto)
     } else {
         Negotiated::Refused {
-            supported: ATTACH_PROTO_V1,
+            supported: ATTACH_PROTO_V2,
         }
     }
 }
@@ -2446,13 +2471,33 @@ mod tests {
 
     #[test]
     fn negotiate_accepts_v1() {
-        assert_eq!(negotiate(1), Negotiated::Accepted(1));
+        assert_eq!(negotiate(ATTACH_PROTO_V1), Negotiated::Accepted(ATTACH_PROTO_V1));
+    }
+
+    /// Codex round on #194: v2 landed alongside the scrollback ring, and
+    /// `negotiate` echoes back exactly what a client asked for -- never
+    /// silently upgrading v1 to v2, and accepting v2 as its own version,
+    /// not the older one.
+    #[test]
+    fn negotiate_accepts_v2() {
+        assert_eq!(
+            negotiate(ATTACH_PROTO_V2),
+            Negotiated::Accepted(ATTACH_PROTO_V2)
+        );
     }
 
     #[test]
     fn negotiate_refuses_anything_else() {
-        assert_eq!(negotiate(2), Negotiated::Refused { supported: 1 });
-        assert_eq!(negotiate(0), Negotiated::Refused { supported: 1 });
+        assert_eq!(
+            negotiate(3),
+            Negotiated::Refused { supported: ATTACH_PROTO_V2 }
+        );
+        assert_eq!(
+            negotiate(0),
+            Negotiated::Refused {
+                supported: ATTACH_PROTO_V2
+            }
+        );
     }
 
     // ---- chunk arithmetic ------------------------------------------------

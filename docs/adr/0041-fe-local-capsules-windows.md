@@ -259,6 +259,29 @@ already replaces the whole screen, so re-attaching does not double history.
 Version 1 (no ring field, either grid) still restores, with an empty ring —
 the format's evolution is additive.
 
+**Correction (Codex round on #194): reader-side backward compatibility alone
+is not sufficient — the WRITER side needed a gate too.** The first cut of
+this revision reasoned only about restore: a v1 payload always decodes, so
+"nothing needed to change" on the attach-lane's own wire protocol version.
+That missed the other direction. `Screen::checkpoint()` always emits this
+build's CURRENT format version; before this correction, a capsule with the
+ring built and an attaching client WITHOUT it (a converge whose FE build
+failed, so the notice shows but the OLD `sot.exe` is still staged) would
+negotiate hello exactly as before — the attach-lane's own framing version had
+not moved — and then receive a v2 payload it cannot read: below the old
+8,651,327-byte cap, restore fails outright (`UnsupportedVersion`); above it,
+collection itself fails against the old, smaller `wire::MAX_CHECKPOINT_LEN`
+and the episode reconnects forever. The fix adds `ATTACH_PROTO_V2`, bound to
+checkpoint format v2 the same way `ATTACH_PROTO_V1` was always bound to
+format v1: a new client hellos at v2; a capsule that receives a v1 hello
+encodes checkpoint format v1 for that connection specifically — no ring, no
+matter how much scrollback the capsule's own live parser keeps — so an old
+client keeps working; a new client refused by an old capsule (which only
+ever speaks v1) retries the same episode at v1 and restores with an empty
+ring, the reader-compatibility half that was already correct. `hello_ok`
+must echo back exactly the version it negotiated; a capsule claiming a
+different one is a protocol violation, not a value to trust silently.
+
 **The bound.** 1000 rows — the first number reached for — does not fit: at
 the ADR's own worst-case row width (512 cols, every cell its most expensive
 shape, 16,897 B/row) that alone is `2 + 1000 × 16,897 = 16,897,002` bytes

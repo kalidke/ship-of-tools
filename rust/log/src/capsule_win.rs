@@ -368,6 +368,16 @@ const MAX_ROWS: u16 = 256;
 /// same way.
 pub const CAPSULE_SCROLLBACK_ROWS: usize = 200;
 
+/// The oldest checkpoint format version this build still writes on
+/// request (ADR 0041 "attach proto v2 bound to checkpoint v2") -- matches
+/// the vt100 fork's own `checkpoint::MIN_READABLE_VERSION` (`pub(crate)`
+/// there, unreachable from here, duplicated the same way `MIN_ROWS`/
+/// `MAX_COLS` above already are). `BeginCheckpoint`'s handling below
+/// requests this explicitly for a connection that negotiated
+/// `wire::ATTACH_PROTO_V1` -- an old client's own vt100 fork build
+/// refuses anything newer outright.
+const LEGACY_CHECKPOINT_VERSION: u16 = 1;
+
 /// The output channel's byte budget (ADR 0041 budget table: "producer
 /// channel 8 MiB bounded"). Bounds OUTSTANDING bytes only — chunks the
 /// reader thread has reserved (in `READ_CHUNK`-sized units, before it ever
@@ -1449,7 +1459,24 @@ pub fn run(
                         eprintln!("sot-capsule: attach protocol refusal conn={conn:?} reason={reason:?}");
                     }
                     AttachAction::BeginCheckpoint { conn } => {
-                        let bytes = parser.screen().checkpoint().expect(
+                        // A connection that negotiated attach proto v1
+                        // gets a checkpoint format v1 payload -- no
+                        // scrollback ring -- regardless of the capsule's
+                        // own live ring capacity: an old client's own
+                        // vt100 fork build refuses anything newer
+                        // outright, and its own pinned
+                        // `wire::MAX_CHECKPOINT_LEN` predates the ring
+                        // too (Codex round on #194, finding 1). Never
+                        // silently downgrade a v2 connection; only ever
+                        // an explicitly negotiated v1 one gets the
+                        // legacy shape.
+                        let legacy = attach_proto.negotiated_proto(conn) == wire::ATTACH_PROTO_V1;
+                        let bytes = if legacy {
+                            parser.screen().checkpoint_at_version(LEGACY_CHECKPOINT_VERSION)
+                        } else {
+                            parser.screen().checkpoint()
+                        }
+                        .expect(
                             "geometry is bounded to 2x2..512x256, always representable at that range (ADR 0041)",
                         );
                         queue.extend(attach_proto.checkpoint_ready(conn, bytes, Instant::now()));

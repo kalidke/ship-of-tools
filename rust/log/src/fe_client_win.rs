@@ -113,6 +113,21 @@ const HELLO_BUDGET: Duration = Duration::from_secs(2);
 /// `status` with a 5 s budget; a lane that accepts but does not answer
 /// within it is treated exactly as an absent lane."
 const STATUS_BUDGET: Duration = Duration::from_secs(5);
+/// Absolute deadline for an ENTIRE checkpoint transfer, not merely each
+/// frame within it (Codex round on #194, finding 3): `STATUS_BUDGET`
+/// alone re-arms every loop iteration in
+/// [`attach_and_collect_checkpoint`], and the wire format allows any
+/// number of `checkpoint_chunk` frames -- including empty non-final ones
+/// (see `wire::CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD`'s own doc) -- so a
+/// faulty or hostile capsule dripping one technically-legal frame every
+/// ~5 s could hold this worker open forever. Sized at the greedy
+/// encoder's own worst-case chunk count times the per-frame budget:
+/// generous for the ordinary case (a real checkpoint that large is
+/// itself the ADR 0041 worst case), and still a REAL bound on the
+/// adversarial one. See [`checkpoint_frame_deadline`] for how it clamps
+/// each per-frame deadline.
+const CHECKPOINT_TRANSFER_BUDGET: Duration =
+    Duration::from_secs(wire::CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD as u64 * STATUS_BUDGET.as_secs());
 /// Ordinary lane-operation write budget (connect/write halves of the
 /// Lifecycle "one budget" triple; the read half is `STATUS_BUDGET` or,
 /// for `command`/`query`, the same 5 s figure). `pub(crate)`: shared with
@@ -129,6 +144,11 @@ const LIVENESS_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// (input/resize/quit) is serviced and how often the pure tick-driven
 /// timers (quit cutoff, checkpoint-in-flight retry, backoff) advance.
 const WORKER_TICK: Duration = Duration::from_millis(100);
+/// Prefix of the status `pump()` sets when `ClientEvent::Checkpoint`'s
+/// own `restore_screen` fails — shared with the `ClientEvent::Status`
+/// handler right below it, which must not let a stale, already-queued
+/// "attached" silently overwrite this (Codex round on #194, finding 1).
+const CHECKPOINT_RESTORE_FAILED_PREFIX: &str = "checkpoint restore failed";
 /// Ruling (d): "The reader's unbounded channel becomes BYTE-ACCOUNTED
 /// and bounded at 4 MiB — bytes, not items... When it is full the FE
 /// STOPS READING THE PIPE." (Codex review round, finding 7: the first
@@ -349,23 +369,73 @@ fn capsule_identity_via_mgmt(voyage: &str) -> Result<ChallengedProcess, LaneErro
 // The attach lane: hello (proto only) + attach + checkpoint reassembly.
 // -----------------------------------------------------------------------
 
-fn attach_lane_hello(conn: &PipeClient, reader: &mut FrameReader) -> Result<(), LaneError> {
-    let bytes = wire::encode_attach_client(&AttachClient::Hello { proto: wire::ATTACH_PROTO_V1 })
-        .expect("fixed hello shape");
+/// The outcome of one `hello` round trip, distinguishing "negotiated,
+/// proceed" from "refused, but retry the whole episode at a version this
+/// client also speaks" from a hard failure (see
+/// [`attach_lane_hello`]'s own doc).
+enum HelloOutcome {
+    Accepted,
+    /// Refused with a `supported` version this client can also speak --
+    /// today, only ever [`wire::ATTACH_PROTO_V1`] (an older capsule
+    /// build, predating the scrollback ring). The caller should retry
+    /// the WHOLE episode at this version: the capsule closes this
+    /// connection right after refusing it (`ReplyThenClose`), so there
+    /// is no connection left to retry the hello ON.
+    RetryAt(u32),
+}
+
+/// Sends `hello{proto}` and interprets the reply. `proto` is the version
+/// THIS attempt asks for; a caller wanting the retry-on-refusal behavior
+/// loops the whole episode (a fresh connection) rather than recursing
+/// here.
+///
+/// ADR 0041 "attach proto v2 bound to checkpoint v2" (Codex round on
+/// #194): a `hello_ok` must echo back EXACTLY the version it negotiated,
+/// never a different one -- silently trusting a mismatch would mean
+/// assuming a checkpoint shape the capsule never actually promised.
+fn attach_lane_hello(
+    conn: &PipeClient,
+    reader: &mut FrameReader,
+    proto: u32,
+) -> Result<HelloOutcome, LaneError> {
+    let bytes =
+        wire::encode_attach_client(&AttachClient::Hello { proto }).expect("fixed hello shape");
     write_bounded(conn, &bytes, Instant::now() + WRITE_BUDGET)?;
     match reader.next_frame(conn, Instant::now() + HELLO_BUDGET)? {
-        DecodedFrame::AttachServer(AttachServer::HelloOk { .. }) => Ok(()),
-        DecodedFrame::AttachServer(AttachServer::HelloRefused { .. }) => {
-            Err(LaneError::Protocol("attach hello: version_skew"))
+        DecodedFrame::AttachServer(AttachServer::HelloOk { proto: negotiated }) => {
+            if negotiated != proto {
+                return Err(LaneError::Protocol(
+                    "attach hello_ok: accepted an unrequested proto version",
+                ));
+            }
+            Ok(HelloOutcome::Accepted)
+        }
+        DecodedFrame::AttachServer(AttachServer::HelloRefused { supported }) => {
+            if proto != wire::ATTACH_PROTO_V1 && supported == wire::ATTACH_PROTO_V1 {
+                Ok(HelloOutcome::RetryAt(wire::ATTACH_PROTO_V1))
+            } else {
+                Err(LaneError::Protocol("attach hello: version_skew"))
+            }
         }
         _ => Err(LaneError::Protocol("expected attach hello_ok")),
     }
 }
 
+/// Clamps a per-frame checkpoint-collection deadline to the aggregate
+/// transfer deadline, so a run of per-frame budgets can never together
+/// exceed it — pure and unit-tested on its own (the transfer's actual
+/// I/O cannot be driven from a plain unit test) because it is the one
+/// piece of [`attach_and_collect_checkpoint`]'s loop that fixes Codex
+/// round on #194 finding 3.
+fn checkpoint_frame_deadline(now: Instant, transfer_deadline: Instant) -> Instant {
+    (now + STATUS_BUDGET).min(transfer_deadline)
+}
+
 /// Sends `attach{controller_id}` (always arrives as a WATCHER — ADR
 /// 0037's who-may-type) and reassembles the checkpoint transfer, bounded
 /// at [`wire::MAX_CHECKPOINT_LEN`] the same way `tests/e2e_pipe.rs`'s own
-/// `RealFrames::collect_checkpoint` proves the property.
+/// `RealFrames::collect_checkpoint` proves the property, and at
+/// [`CHECKPOINT_TRANSFER_BUDGET`] in aggregate (see its own doc).
 fn attach_and_collect_checkpoint(
     conn: &PipeClient,
     reader: &mut FrameReader,
@@ -375,8 +445,10 @@ fn attach_and_collect_checkpoint(
         .map_err(LaneError::Wire)?;
     write_bounded(conn, &bytes, Instant::now() + WRITE_BUDGET)?;
     let mut out = Vec::new();
+    let transfer_deadline = Instant::now() + CHECKPOINT_TRANSFER_BUDGET;
     loop {
-        match reader.next_frame(conn, Instant::now() + STATUS_BUDGET)? {
+        let frame_deadline = checkpoint_frame_deadline(Instant::now(), transfer_deadline);
+        match reader.next_frame(conn, frame_deadline)? {
             DecodedFrame::AttachServer(AttachServer::CheckpointChunk { last, bytes }) => {
                 out.extend_from_slice(&bytes);
                 if out.len() > wire::MAX_CHECKPOINT_LEN {
@@ -594,7 +666,7 @@ impl FeAttachClient {
             match self.events_rx.try_recv() {
                 Ok(ClientEvent::Checkpoint(bytes)) => {
                     if let Err(e) = self.parser.restore_screen(&bytes) {
-                        self.status = format!("checkpoint restore failed: {e:?}");
+                        self.status = format!("{CHECKPOINT_RESTORE_FAILED_PREFIX}: {e:?}");
                     } else {
                         // `restore_screen` REPLACES the parser's screen
                         // wholesale with one sized to the checkpoint's own
@@ -628,7 +700,19 @@ impl FeAttachClient {
                     changed = true;
                 }
                 Ok(ClientEvent::Status(text)) => {
-                    self.status = text;
+                    // The worker queues `Status("attached")` unconditionally
+                    // right behind the checkpoint bytes -- it does not
+                    // itself know whether the LOCAL restore will succeed,
+                    // that only happens above, foreground-side, in the
+                    // SAME drain (Codex round on #194, finding 1). A
+                    // client that could not render what it received is
+                    // not honestly "attached"; do not let this stale
+                    // success overwrite the failure that was just set.
+                    let stale_attached_after_failed_restore = text == "attached"
+                        && self.status.starts_with(CHECKPOINT_RESTORE_FAILED_PREFIX);
+                    if !stale_attached_after_failed_restore {
+                        self.status = text;
+                    }
                     changed = true;
                 }
                 Ok(ClientEvent::Terminal(text)) => {
@@ -813,6 +897,14 @@ fn run_worker(
     // arrival at a fresh checkpoint knows to `retry_take()` (preserving
     // role+queue) instead of `reset_to_watching()`.
     let mut preserve_take_on_reconnect = false;
+    // ADR 0041 "attach proto v2 bound to checkpoint v2" (Codex round on
+    // #194): the version THIS episode's `hello` asks for. Starts at the
+    // newest this build speaks; a `hello_refused` naming a version this
+    // client ALSO speaks (only ever `ATTACH_PROTO_V1`, an older capsule)
+    // downgrades this and retries the whole episode immediately, rather
+    // than failing outright -- survives across `continue 'episodes` on
+    // purpose, unlike the per-episode locals above it.
+    let mut preferred_attach_proto = wire::ATTACH_PROTO_V2;
     // Ruling (a), Codex review round finding 2: a `Quit` requested
     // while no supervisor connection is currently open (mid-backoff, or
     // before the first one ever connects) is LATCHED here rather than
@@ -960,19 +1052,38 @@ fn run_worker(
         };
 
         let mut attach_reader = FrameReader::new();
-        if let Err(e) = attach_lane_hello(&voyage_conn, &mut attach_reader) {
-            match e {
+        match attach_lane_hello(&voyage_conn, &mut attach_reader, preferred_attach_proto) {
+            Ok(HelloOutcome::Accepted) => {}
+            Ok(HelloOutcome::RetryAt(fallback)) => {
+                // The capsule does not speak `preferred_attach_proto` (an
+                // older build, predating attach proto v2 / the
+                // scrollback ring) but DOES speak a version this client
+                // also understands. Retry the whole episode immediately
+                // -- a fresh connection, since the refused one is already
+                // closed server-side -- at that version rather than
+                // failing outright: v1 still works, just without
+                // history.
+                preferred_attach_proto = fallback;
+                continue 'episodes;
+            }
+            Err(e) => match e {
                 LaneError::Protocol(p) if p.contains("version_skew") => {
-                    emit(ClientEvent::Terminal("attach hello: version_skew".to_string()));
+                    emit(ClientEvent::Terminal(
+                        "attach hello: version_skew".to_string(),
+                    ));
                     return;
                 }
                 _ => {
-                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                    match wait_for_retry_or_shutdown(
+                        &cmd_rx,
+                        reconnect.retry_with_backoff(),
+                        &mut latched_quit_reason,
+                    ) {
                         WaitOutcome::Shutdown => break 'episodes,
                         WaitOutcome::Continue => continue 'episodes,
                     }
                 }
-            }
+            },
         }
         let checkpoint =
             match attach_and_collect_checkpoint(&voyage_conn, &mut attach_reader, &controller_id) {
@@ -1868,5 +1979,42 @@ fn handle_attach_frame(
         | DecodedFrame::AttachClient(_)
         | DecodedFrame::SupervisorRequest(_)
         | DecodedFrame::SupervisorReply(_) => FrameOutcome::Ignored,
+    }
+}
+
+// -----------------------------------------------------------------------
+// Pure-logic unit tests. The rest of this module's behavior needs a real
+// Windows named pipe (`tests/fe_client_win.rs`'s own real-process
+// harness); these two pieces are pure enough to test directly.
+// -----------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Codex round on #194, finding 3: a per-frame deadline that keeps
+    /// re-arming itself, forever, is not a bound at all. This proves the
+    /// clamp both ways -- an aggregate deadline far in the future never
+    /// shortens an ordinary per-frame budget, and one that has already
+    /// arrived is what a faulty capsule dripping a technically-legal
+    /// frame every `STATUS_BUDGET` eventually runs into.
+    #[test]
+    fn checkpoint_frame_deadline_never_exceeds_the_aggregate_one() {
+        let now = Instant::now();
+        let far_off = now + Duration::from_secs(3600);
+        assert_eq!(checkpoint_frame_deadline(now, far_off), now + STATUS_BUDGET);
+
+        let already_here = now + Duration::from_millis(1);
+        assert_eq!(checkpoint_frame_deadline(now, already_here), already_here);
+    }
+
+    /// Sanity on the constant itself: finite, and generous enough to
+    /// cover at least one ordinary frame -- a zero or absurdly small
+    /// budget would defeat its own purpose (refusing a checkpoint that
+    /// could otherwise complete in time).
+    #[test]
+    fn checkpoint_transfer_budget_is_a_real_bound() {
+        assert!(CHECKPOINT_TRANSFER_BUDGET >= STATUS_BUDGET);
+        assert!(CHECKPOINT_TRANSFER_BUDGET <= Duration::from_secs(300));
     }
 }

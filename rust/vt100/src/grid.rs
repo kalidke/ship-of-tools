@@ -64,19 +64,27 @@ impl Grid {
 
     pub fn set_size(&mut self, size: Size) {
         let size = size.clamped();
+        // `Row::resize` clears the row's own `wrapped` flag internally --
+        // it has to, since a wrap flag computed for one width is not
+        // meaningful at another -- so the per-row WIDTH resize below must
+        // run ONLY when the column count actually changed (Codex round on
+        // #194, finding 2). An unconditional resize here silently
+        // discarded real wrap state on every SAME-width `set_size` call,
+        // including the one `fe_client_win.rs`'s `pump()` makes right
+        // after every restore -- decoding a checkpoint's wrap flags only
+        // to throw them away before the first paint. No separate
+        // `row.wrap(false)` call is needed alongside it: `Row::resize`
+        // already does that internally.
         if size.cols != self.size.cols {
             for row in &mut self.rows {
-                row.wrap(false);
+                row.resize(size.cols, crate::Cell::new());
             }
             // The scrollback ring gets the SAME treatment as the visible
-            // rows on a column-count change: a wrap flag computed for one
-            // width is not meaningful at another, and a rendered ring row
-            // at the old width would misalign with the resized screen
-            // above it. There is no smarter reflow here for the visible
-            // rows either — see `resize` below, which is the same
-            // clip/pad `Row::resize` both loops call.
+            // rows: a ring row at the old width would misalign with the
+            // resized screen above it, and there is no smarter reflow
+            // here for the visible rows either.
             for row in &mut self.scrollback {
-                row.wrap(false);
+                row.resize(size.cols, crate::Cell::new());
             }
         }
 
@@ -85,12 +93,9 @@ impl Grid {
         }
 
         self.size = size;
-        for row in &mut self.rows {
-            row.resize(size.cols, crate::Cell::new());
-        }
-        for row in &mut self.scrollback {
-            row.resize(size.cols, crate::Cell::new());
-        }
+        // The ROW COUNT, independent of width: always applied, since a
+        // row-count-only change (rows differ, cols the same) must still
+        // pad or truncate the visible grid.
         self.rows.resize(usize::from(size.rows), self.new_row());
 
         if self.scroll_bottom >= size.rows {

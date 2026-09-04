@@ -346,6 +346,55 @@ fn set_size_resizes_scrollback_ring_rows_too() {
     }
 }
 
+/// `Row::resize` clears a row's own `wrapped` flag internally (it has
+/// to: a wrap flag computed for one width is not meaningful at another),
+/// so `Grid::set_size` must call it ONLY when the column count actually
+/// changes (Codex round on #194, finding 2) — a SAME-size `set_size`
+/// call, exactly what `fe_client_win.rs`'s `pump` makes unconditionally
+/// right after every restore, must be a pure no-op on wrap flags, for
+/// both the visible screen and scrolled-off history.
+///
+/// This proves it via checkpoint byte-identity rather than hand-picking
+/// which row ended up wrapped: if `set_size` cleared any wrap flag, the
+/// re-encoded checkpoint would disagree with the one taken before it.
+#[test]
+fn restore_then_same_size_set_size_keeps_wrap_flags() {
+    let mut original = Parser::new(3, 10, 20);
+    // A wrapped logical line long enough that scrolling it through a
+    // 3-row screen leaves one wrapped row in the ring and, by writing a
+    // second overlong line right after, at least one wrapped row still
+    // visible.
+    original.process(b"abcdefghijklmnop\r\n");
+    original.process(b"qrstuvwxyz0123456\r\n");
+
+    original.screen_mut().set_scrollback(usize::MAX);
+    assert!(
+        original.screen().scrollback() > 0,
+        "the test needs a nonempty ring"
+    );
+    original.screen_mut().set_scrollback(0);
+
+    let (rows, cols) = original.screen().size();
+    assert!(
+        (0..rows).any(|r| original.screen().row_wrapped(r)),
+        "the test needs a wrapped visible row"
+    );
+
+    let bytes = checkpoint(&original);
+    let mut restored = Parser::new(rows, cols, 20);
+    restored.restore_screen(&bytes).expect("restore");
+
+    // Same-size `set_size` — exactly what `fe_client_win.rs`'s `pump`
+    // does unconditionally right after every restore.
+    restored.screen_mut().set_size(rows, cols);
+
+    assert_eq!(
+        checkpoint(&restored),
+        bytes,
+        "a same-size set_size must not change the checkpoint -- in particular, it must not clear wrap flags"
+    );
+}
+
 /// The alternate grid allocates its rows lazily, but that is an allocation
 /// optimization rather than terminal state — nothing can observe the
 /// difference, because reaching the alternate grid allocates it. The format
@@ -387,6 +436,11 @@ fn unallocated_alternate_grid_materializes_as_blank_rows() {
 fn checkpoint_at_max_dimensions_is_within_budget() {
     const ROWS: u16 = 256;
     const COLS: u16 = 512;
+    // Must match the vt100 fork's own `checkpoint::MAX_SCROLLBACK_ROWS`
+    // (`pub(crate)` there, unreachable from this external test crate --
+    // duplicated the same way `ROWS`/`COLS` above already duplicate
+    // `checkpoint::MAX_ROWS`/`MAX_COLS`).
+    const SCROLLBACK_CAP: usize = 200;
 
     // A one-byte base plus four-byte combining marks is what drives the
     // cell's content field closest to full: `Cell::append` stops accepting
@@ -400,19 +454,40 @@ fn checkpoint_at_max_dimensions_is_within_budget() {
         row.push_str(&glyph);
     }
 
-    let mut parser = Parser::new(ROWS, COLS, 0);
-    let fill = |parser: &mut Parser| {
-        // 24-bit foreground and background plus bold, italic, underline and
-        // inverse: the largest attribute block the format can emit.
-        parser.process(b"\x1b[1;3;4;7;38;2;1;2;3;48;2;4;5;6m");
-        for r in 1..=ROWS {
-            parser.process(format!("\x1b[{r};1H").as_bytes());
-            parser.process(row.as_bytes());
-        }
-    };
-    fill(&mut parser);
+    let mut parser = Parser::new(ROWS, COLS, SCROLLBACK_CAP);
+    // 24-bit foreground and background plus bold, italic, underline and
+    // inverse: the largest attribute block the format can emit. Set once,
+    // up front -- every row written after it, visible or scrolled off,
+    // inherits it.
+    parser.process(b"\x1b[1;3;4;7;38;2;1;2;3;48;2;4;5;6m");
+
+    // Scroll ROWS + SCROLLBACK_CAP maximum-cost lines through the normal
+    // grid -- not absolute positioning, which would never touch the ring
+    // at all. The oldest SCROLLBACK_CAP end up in scrollback at full
+    // capacity and full per-row cost; the newest ROWS stay visible. Before
+    // this, the proof below used a 0-capacity parser, so "at maximum
+    // dimensions" never actually included a full ring.
+    for _ in 0..(u32::from(ROWS) + SCROLLBACK_CAP as u32) {
+        parser.process(row.as_bytes());
+        parser.process(b"\r\n");
+    }
+    parser.screen_mut().set_scrollback(usize::MAX);
+    assert_eq!(
+        parser.screen().scrollback(),
+        SCROLLBACK_CAP,
+        "the ring must be at its full capacity for this to be a genuine worst case"
+    );
+    parser.screen_mut().set_scrollback(0);
+
+    // The alternate grid, filled the same maximum-cost way as before --
+    // it never carries a ring, so absolute positioning (no scrolling side
+    // effects to account for) is simplest here.
     parser.process(ALT_ENTER);
-    fill(&mut parser);
+    parser.process(b"\x1b[1;3;4;7;38;2;1;2;3;48;2;4;5;6m");
+    for r in 1..=ROWS {
+        parser.process(format!("\x1b[{r};1H").as_bytes());
+        parser.process(row.as_bytes());
+    }
 
     let sample = parser.screen().cell(0, 0).unwrap();
     assert_eq!(sample.contents().len(), 21, "cell content field not filled");
@@ -431,8 +506,45 @@ fn checkpoint_at_max_dimensions_is_within_budget() {
         bytes.len()
     );
 
-    let restored = restore(&bytes).expect("max-dimension restore");
+    // NOT the shared `restore()` helper: it restores into a fixed
+    // `Parser::new(2, 2, 0)` -- zero scrollback capacity -- which would
+    // silently drop this checkpoint's whole 200-row ring and make the
+    // round trip below fail for a reason that has nothing to do with the
+    // size bound. Match the source parser's own capacity instead.
+    let mut restored = Parser::new(ROWS, COLS, SCROLLBACK_CAP);
+    restored
+        .restore_screen(&bytes)
+        .expect("max-dimension restore");
     assert_eq!(checkpoint(&restored), bytes);
+}
+
+/// Codex round on #194, finding 4's companion: the ring's own count field
+/// is bounded BEFORE any row is read, so a payload claiming more rows
+/// than the format allows is refused on sight, not after failing to find
+/// them or truncating silently.
+#[test]
+fn rejects_a_scrollback_ring_count_exceeding_the_format_bound() {
+    let parser = Parser::new(2, 2, 0);
+    let mut bytes = checkpoint(&parser);
+    // The normal grid's ring count field: right after its 2x2 rows, each
+    // one byte of wrap flag plus two one-byte empty-default cells (this
+    // screen has no content at all) -- computed the same way
+    // `GRID_START`/`GRID_HEADER_LEN` above already compute the fixed
+    // header, extended past the rows this specific empty 2x2 screen
+    // encodes.
+    const RING_COUNT: usize = GRID_START + GRID_HEADER_LEN + 2 * (1 + 2);
+    assert_eq!(
+        &bytes[RING_COUNT..RING_COUNT + 2],
+        &[0, 0],
+        "offset math is wrong: this is not an empty ring's count field"
+    );
+    bytes[RING_COUNT..RING_COUNT + 2].copy_from_slice(&201u16.to_le_bytes());
+    assert!(matches!(
+        restore(&bytes),
+        Err(CheckpointError::Malformed(
+            "the scrollback ring count exceeds the format's row bound"
+        ))
+    ));
 }
 
 // -- rejection: restore is fail-closed ------------------------------------
