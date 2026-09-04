@@ -488,8 +488,23 @@ mod windows_runtime {
         use sot_log::supervisor_client::EndRunOutcome as O;
         use sot_log::wire::SupervisorPhase;
 
-        let (status, _process) = sot_log::supervisor_client::query_status(state_dir)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let mut status = sot_log::supervisor_client::query_status(state_dir)
+            .map_err(|e| std::io::Error::other(e.to_string()))?
+            .0;
+        if matches!(status.phase, SupervisorPhase::Starting) {
+            // A default row's own end_run can legitimately run moments
+            // after its first attach spawned a fresh supervisor — give
+            // recovery the SAME settle window ensure_started gives a
+            // resumed authority (recovery normally settles in
+            // milliseconds); only report the retryable `Starting`
+            // outcome below if it is STILL starting once the bound
+            // elapses. A user pressing D twice right after a start hits
+            // this same window.
+            wait_past_starting(state_dir, STARTING_SETTLE_BOUND);
+            status = sot_log::supervisor_client::query_status(state_dir)
+                .map_err(|e| std::io::Error::other(e.to_string()))?
+                .0;
+        }
 
         match status.phase {
             SupervisorPhase::Starting => return Ok(R::Starting),
@@ -548,6 +563,36 @@ mod windows_runtime {
                 state_dir = ?state_dir, error = %e, why,
                 "capsule workspace: stop after end_run failed (resident supervisor leaked)"
             );
+        }
+    }
+
+    /// Bound for [`wait_past_starting`] — a supervisor's own recovery
+    /// normally settles in milliseconds (a marker read, no process
+    /// spawn, the common case this exists to smooth over); 2s leaves
+    /// real margin without meaningfully delaying the rarer genuinely-
+    /// stuck case.
+    const STARTING_SETTLE_BOUND: Duration = Duration::from_secs(2);
+
+    /// Bounded wait for a lane's phase to leave `Starting`
+    /// (Recovering/InitialProbe/Spawning/Resetting) — shared by
+    /// [`ensure_started`] (after a resume spawn) and [`end_run`]
+    /// (before deciding an outcome), so a caller landing on a
+    /// still-settling authority gets a stable read instead of a
+    /// spurious "still starting" answer. Best-effort: a lane that never
+    /// answers, or answers `Starting` for the whole bound, just leaves
+    /// the caller to make its own decision from a fresh probe.
+    fn wait_past_starting(state_dir: &Path, bound: Duration) {
+        let deadline = Instant::now() + bound;
+        loop {
+            if let Ok((report, _process)) = sot_log::supervisor_client::query_status(state_dir) {
+                if !matches!(report.phase, sot_log::wire::SupervisorPhase::Starting) {
+                    return;
+                }
+            }
+            if Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(200));
         }
     }
 
@@ -779,20 +824,7 @@ mod windows_runtime {
                     // that window before the reset check below. A
                     // crash-resume (spawning a fresh leg) just stays
                     // `Starting` past it and falls through unaffected.
-                    let deadline = Instant::now() + Duration::from_secs(2);
-                    loop {
-                        if let Ok((report, _process)) =
-                            sot_log::supervisor_client::query_status(&state_dir)
-                        {
-                            if !matches!(report.phase, sot_log::wire::SupervisorPhase::Starting) {
-                                break;
-                            }
-                        }
-                        if Instant::now() >= deadline {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(200));
-                    }
+                    wait_past_starting(&state_dir, STARTING_SETTLE_BOUND);
                 }
                 result
             }
