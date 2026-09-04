@@ -5,6 +5,9 @@ the session-start re-arm) is RETIRED by ADR 0041 (P3 FE-local capsules);
 §1–§3's relaunch mechanism remains current.
 **Date:** 2026-05-26
 
+> **Update — 2026-09-03: sentinel exit code 76 = "converge" (launcher family fix).**
+> `relaunch-sot.ps1 -Converge` writes `converge` as the sentinel file's content instead of a bare timestamp; the frontend exits 76 instead of 75, and `launch-sot.ps1`'s supervisor re-runs its self-update prelude (pull) and freshness pass (rebuild + `ShipTools.update_comm()`) before respawning — the rest of §2–§3 is unchanged.
+
 ## Context
 
 The frontend now hosts a local terminal (ADR 0016), and the user wants to dogfood DevEnv *from inside DevEnv* — drive development (including a `claude` session) in the Terminal drawer, rebuild the frontend, and have it relaunch into the new binary without dropping to an external terminal. That requires the app to restart itself.
