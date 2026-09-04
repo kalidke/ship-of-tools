@@ -2212,6 +2212,68 @@ fn expand_hosts_root(tree: &mut TreeView, mode: Mode, children: Vec<TreeNode>) -
     true
 }
 
+/// A `session_host` row's children — `[+ create new]` then that host's
+/// workspace rows — built from one host's slice of `workspace_lists`. Pure
+/// / no `State` dependency beyond `State::build_session_row` itself
+/// (already pure). Shared by `try_expand_session_host_local` (first
+/// expand) and `resplice_expanded_session_hosts` (re-expand after a
+/// refresh) so both splice identical rows from identical data.
+fn session_host_children(
+    host: &HostKey,
+    list: &[crate::transport::WorkspaceInfo],
+) -> Vec<TreeNode> {
+    let mut payload = serde_json::Map::new();
+    payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
+    let create_row = TreeNode {
+        id: format!("sessions:{host}:+create"),
+        label: "[+ create new]".to_string(),
+        kind: "session_create".to_string(),
+        has_children: false,
+        badges: Vec::new(),
+        payload,
+    };
+    let mut kids = vec![create_row];
+    kids.extend(list.iter().map(|w| State::build_session_row(host, w)));
+    kids
+}
+
+/// Re-splice the children of every currently-expanded `session_host` row in
+/// `view` from `workspace_lists` (`session_host_children`, above) — the
+/// SAME local, no-round-trip construction `try_expand_session_host_local`
+/// runs on first expand, just re-run for whichever hosts are already open.
+///
+/// Needed because `TreeView::set_root`'s same-root merge (its own doc)
+/// preserves an already-expanded child's OLD descendants verbatim:
+/// `build_sessions_tree` only returns level-1 host nodes, so the session
+/// rows underneath an open host are never carried by a `workspace.list`
+/// reply — they're spliced in locally, once, at expand time. Left
+/// unpatched, a destroy/create/status-flip landing while the host is
+/// expanded (the common case: selecting a row to destroy REQUIRES its
+/// host open) never reaches the rows actually on screen — a destroyed
+/// workspace's row stayed visible until the host node was manually
+/// collapsed and re-expanded (fe-destroyed-row-refresh, 2026-09-03). A
+/// host missing from `workspace_lists` is left alone — nothing fresh to
+/// splice.
+fn resplice_expanded_session_hosts(
+    view: &mut TreeView,
+    workspace_lists: &HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>>,
+) {
+    let open: Vec<(String, HostKey)> = view
+        .rows
+        .iter()
+        .filter(|r| r.node.kind == "session_host" && r.expanded)
+        .filter_map(|r| {
+            let host = r.node.payload.get("host")?.as_str()?.to_string();
+            Some((r.node.id.clone(), host))
+        })
+        .collect();
+    for (parent_id, host) in open {
+        if let Some(list) = workspace_lists.get(&host) {
+            view.apply_children(&parent_id, session_host_children(&host, list));
+        }
+    }
+}
+
 /// Build the `(parent_id, pane rows)` a `tmux.list_panes` reply for
 /// `session` on `host` splices into the Sessions tree (ADR 0042 L2a). Pure
 /// — no `State` dependency — so "the row built from host B's reply carries
@@ -7423,24 +7485,11 @@ impl State {
         // A host with no list yet has no children (matches the tree's own
         // `has_children: false` for that state, ADR 0042 L2's acceptance:
         // still a visible node, just nothing to expand into).
-        if !self.workspace_lists.contains_key(&host) {
+        let Some(list) = self.workspace_lists.get(&host) else {
             return false;
-        }
-        let parent_id = row.node.id.clone();
-        let mut payload = serde_json::Map::new();
-        payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
-        let create_row = TreeNode {
-            id: format!("sessions:{host}:+create"),
-            label: "[+ create new]".to_string(),
-            kind: "session_create".to_string(),
-            has_children: false,
-            badges: Vec::new(),
-            payload,
         };
-        let mut kids = vec![create_row];
-        if let Some(list) = self.workspace_lists.get(&host).cloned() {
-            kids.extend(list.iter().map(|w| Self::build_session_row(&host, w)));
-        }
+        let parent_id = row.node.id.clone();
+        let kids = session_host_children(&host, list);
         // `apply_children` requires the parent already marked expanded
         // (it drops a splice for a collapsed parent — the collapse-race
         // fix); mark it BEFORE splicing, same order every wire-based
@@ -13908,8 +13957,12 @@ impl State {
     /// ANY host, so a node doesn't stay `unreachable` after connecting or
     /// `connected` after dropping until the next unrelated reply happens
     /// to land). `set_root` with the SAME root id ("sessions:") preserves
-    /// expansion/cursor for rows that still exist — no separate
-    /// preservation logic needed here.
+    /// expansion/cursor for rows that still exist — but it also preserves
+    /// an already-expanded `session_host` row's OLD descendants verbatim
+    /// (`build_sessions_tree` only returns level-1 host nodes), so
+    /// `resplice_expanded_session_hosts` re-derives any open host's rows
+    /// from the fresh `workspace_lists` right after — see its own doc
+    /// (fe-destroyed-row-refresh, 2026-09-03).
     fn rebuild_and_install_sessions_tree(&mut self) {
         let (root, children) = self.build_sessions_tree();
         let reply_key: TreeKey = (Mode::Sessions, TreeScope::Global);
@@ -13919,6 +13972,7 @@ impl State {
             let slot = self.tree_store.slot_mut(reply_key);
             if slot.view.rows.is_empty() || slot.from_reply {
                 slot.view.set_root(root, children);
+                resplice_expanded_session_hosts(&mut slot.view, &self.workspace_lists);
                 slot.from_reply = true;
             } else {
                 tracing::debug!(
@@ -13928,6 +13982,7 @@ impl State {
             return;
         }
         self.tree.set_root(root, children);
+        resplice_expanded_session_hosts(&mut self.tree, &self.workspace_lists);
         if let Some(n) = self.pending_initial_selection.take() {
             self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
         }
@@ -25032,6 +25087,75 @@ mod tests {
             state_dir: None,
             phase: None,
         }
+    }
+
+    #[test]
+    fn resplice_expanded_session_hosts_drops_a_row_no_longer_in_workspace_lists() {
+        // fe-destroyed-row-refresh: `TreeView::set_root`'s same-root merge
+        // preserves an already-expanded `session_host` row's OLD
+        // descendants verbatim (`build_sessions_tree` only returns
+        // level-1 host nodes), so a `workspace.list` refresh that drops a
+        // destroyed workspace never reached the row on screen until the
+        // host was manually collapsed and re-expanded. Proves the fix: an
+        // EXPANDED host whose fresh list no longer carries a session loses
+        // that row, while a surviving one stays.
+        let host: HostKey = "local".to_string();
+        let mut host_payload = serde_json::Map::new();
+        host_payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
+        let mut view = TreeView::new();
+        view.rows = vec![
+            TreeRow {
+                node: TreeNode {
+                    id: "sessions:".to_string(),
+                    label: "workspaces".to_string(),
+                    kind: "sessions".to_string(),
+                    has_children: true,
+                    badges: Vec::new(),
+                    payload: Default::default(),
+                },
+                depth: 0,
+                expanded: true,
+            },
+            TreeRow {
+                node: TreeNode {
+                    id: "sessions:host:local".to_string(),
+                    label: "local".to_string(),
+                    kind: "session_host".to_string(),
+                    has_children: true,
+                    badges: Vec::new(),
+                    payload: host_payload,
+                },
+                depth: 1,
+                expanded: true, // already open — the destroy-a-row case requires it
+            },
+            TreeRow {
+                node: State::build_session_row(&host, &ws_info("doomed", "sot-be-doomed")),
+                depth: 2,
+                expanded: false,
+            },
+        ];
+
+        // The destroy already landed server-side: `local`'s fresh list no
+        // longer has "doomed", but still has an unrelated survivor.
+        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        lists.insert(host.clone(), vec![ws_info("survivor", "sot-be-survivor")]);
+
+        resplice_expanded_session_hosts(&mut view, &lists);
+
+        let session_ids: Vec<&str> = view
+            .rows
+            .iter()
+            .filter(|r| r.node.kind == "session")
+            .map(|r| r.node.id.as_str())
+            .collect();
+        assert!(
+            !session_ids.iter().any(|id| id.contains("doomed")),
+            "destroyed workspace's row must not survive a refresh of an expanded host: {session_ids:?}"
+        );
+        assert!(
+            session_ids.iter().any(|id| id.contains("survivor")),
+            "the surviving workspace's row must still be present: {session_ids:?}"
+        );
     }
 
     #[test]
