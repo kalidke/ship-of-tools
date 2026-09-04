@@ -14,13 +14,14 @@
 # is missing or the file won't parse it is left alone and the exact JSON to add by
 # hand is printed.
 #
-# Install copies (cp force=true) and then prunes a small deprecation list — it
-# does NOT discover-and-prune by diffing the dir, so a RENAMED or DELETED managed
-# file would otherwise linger as an orphan on every machine (separate-HOME
-# Windows FE boxes update only via pull + update_comm; there is no shared NFS
-# HOME to clean centrally). RULE: the commit that renames/deletes a managed bin
-# file MUST append its OLD name to `COMM_DEPRECATED_BIN` below — install_comm
-# removes those, so a pull + update_comm cleans the orphan.
+# Install copies each file via copy-then-rename (`install_file`, an atomic
+# swap onto the destination — see below) and then prunes a small deprecation
+# list — it does NOT discover-and-prune by diffing the dir, so a RENAMED or
+# DELETED managed file would otherwise linger as an orphan on every machine
+# (separate-HOME Windows FE boxes update only via pull + update_comm; there is
+# no shared NFS HOME to clean centrally). RULE: the commit that renames/deletes
+# a managed bin file MUST append its OLD name to `COMM_DEPRECATED_BIN` below —
+# install_comm removes those, so a pull + update_comm cleans the orphan.
 
 const COMM_PROTOCOL_VERSION = 1
 const COMM_SRC = normpath(joinpath(@__DIR__, "..", "comm"))
@@ -124,6 +125,117 @@ const CODEX_MARKETPLACE_PAYLOADS = [
 ]
 
 """
+    install_file(src, dst)
+
+Copy `src` to `dst` via copy-then-rename: copy to a sibling temp path, then
+`Base.Filesystem.rename` it onto `dst` — a single, non-destructive rename
+syscall (the same shape `_add_comm_hook!`/`_remove_stale_comm_hooks!` already
+use for settings.json).
+
+Every plain-file install in this module goes through this instead of
+`cp(src, dst; force = true)`, because that form REMOVES `dst` before copying:
+a copy that then fails — source unreadable, a file in use, a transient I/O
+error — leaves NOTHING at `dst`, not merely an un-updated file. This is
+exactly how `comm-relay.sh` disappeared from a live `~/.sot-comm/bin` while
+every other script updated normally (observed on a Windows FE box,
+2026-09-04, full trace: `IOError: open(...comm-relay.sh...): permission
+denied (EACCES)` from `sendfile` inside `cp(force=true)`) — a live process
+still had the file open, the forced delete went pending, and the recreate
+was refused until the handle closed, by which point the file was gone.
+
+The publish step deliberately calls `Base.Filesystem.rename` directly and
+NOT `mv(tmp, dst; force = true)`: `mv`'s `force=true` path retries a failed
+plain rename by first REMOVING `dst` — the identical hole, one layer down
+(confirmed by reading Base `file.jl`'s `_mv_replace`, and reproduced locally:
+a `mv(tmp, dst; force=true)` onto a `dst` that a plain rename can't replace
+silently deletes `dst`'s old content when the retry succeeds after the
+delete, or destroys it with nothing to show when the retry also fails). A
+bare `rename` either atomically replaces `dst` or leaves it completely
+untouched — on Windows it fails outright (by design; see its docstring) if
+either path is currently an open file, exactly the observed condition.
+
+On any failure — the copy or the rename — the temp file is removed, `dst` is
+left exactly as it was, and the error's first line names `dst` and the
+underlying cause: a launcher that only surfaces the tail of a crash's stderr
+still needs the useful part to survive truncation.
+"""
+function install_file(src::AbstractString, dst::AbstractString)
+    tmp = dst * ".tmp"
+    try
+        cp(src, tmp; force = true)
+        Base.Filesystem.rename(tmp, dst)
+    catch err
+        isfile(tmp) && rm(tmp; force = true)
+        error("install_file: $dst: $(sprint(showerror, err))")
+    end
+    return nothing
+end
+
+"""
+    _check_installed(dstdir, files; executable = Returns(false)) -> Vector{String}
+
+Check that every name in `files` exists in `dstdir`, and — for names where
+`executable(name)` is true — that the destination copy is actually
+executable. Returns one description per problem found (empty on success);
+never throws, so callers ([`_install_files`](@ref)) can fold it into a single
+combined report alongside their own failures.
+
+`install_file` already guarantees a single failed copy can't silently destroy
+a working file, but nothing so far confirms every source file actually
+landed — a copy that returns without error yet produces nothing is a
+different failure mode (unproven on this platform, not ruled out on others).
+This is that confirmation.
+"""
+function _check_installed(dstdir::AbstractString, files; executable = Returns(false))
+    problems = String[]
+    for f in files
+        dst = joinpath(dstdir, f)
+        if !isfile(dst)
+            push!(problems, "$f is missing from $dstdir")
+        elseif executable(f) && !Sys.isexecutable(dst)
+            push!(problems, "$f in $dstdir is not executable")
+        end
+    end
+    return problems
+end
+
+"""
+    _install_files(srcdir, dstdir, files; executable = Returns(false))
+
+Install `files` (names found under `srcdir`, may include subdirectory
+components) into `dstdir` one at a time via [`install_file`](@ref) —
+continuing past a single failure, so ONE destination a live process still
+has open (`comm-relay.sh`, observed live) cannot block updating the rest of
+a directory. `executable(name)` files get `chmod(0o755)` after a successful
+install.
+
+Raises ONE error at the end combining every file that could not be updated
+(old copy kept, if one existed — stale is an acceptable outcome; MISSING is
+not) with anything [`_check_installed`](@ref) still finds wrong. Every
+reason lands in one joined, single-line string, because a launcher that
+truncates a crash's stderr to its tail still needs the useful part to
+survive.
+"""
+function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
+                         executable = Returns(false))
+    problems = String[]
+    for f in files
+        dst = joinpath(dstdir, f)
+        mkpath(dirname(dst))
+        try
+            install_file(joinpath(srcdir, f), dst)
+            executable(f) && chmod(dst, 0o755)
+        catch err
+            push!(problems, "$f could not be updated, kept the previous copy ($(sprint(showerror, err)))")
+        end
+    end
+    append!(problems, _check_installed(dstdir, files; executable = executable))
+    isempty(problems) ||
+        error("sot-comm install incomplete in $dstdir: $(join(problems, "; "))")
+    return nothing
+end
+
+"""
     install_comm(; clis = [:claude])
 
 Install sot-comm. Copies the core scripts to `\$SOT_COMM_HOME/bin`
@@ -136,11 +248,8 @@ function install_comm(; clis = [:claude, :codex])
     mkpath(bin)
     srcscripts = joinpath(COMM_SRC, "core", "scripts")
     isdir(srcscripts) || error("comm scripts not found at $srcscripts")
-    for f in readdir(srcscripts)
-        dst = joinpath(bin, f)
-        cp(joinpath(srcscripts, f), dst; force = true)
-        endswith(f, ".sh") && chmod(dst, 0o755)
-    end
+    srcfiles = readdir(srcscripts)
+    _install_files(srcscripts, bin, srcfiles; executable = endswith(".sh"))
     # Remove orphans left by past renames/deletions (see COMM_DEPRECATED_BIN),
     # so a pull + update_comm doesn't leave a stale binary on the machine.
     for f in COMM_DEPRECATED_BIN
@@ -183,6 +292,18 @@ function _install_adapter(cli::Symbol)
             # resources/ (e.g. project-log's vendored templates) travel with
             # it. Remove any stale destination first so a renamed/removed
             # resource file doesn't linger as an orphan.
+            #
+            # This rm-then-cp has the same shape as the bug install_file fixes
+            # (destination gone before the copy that might fail) — deliberately
+            # left as is rather than folded into install_file's swap. The
+            # observed loss was a single script vanishing from bin/; a skill
+            # directory is many small text files copied from the local repo
+            # checkout onto local disk, not a lone executable that can be
+            # mid-use on Windows, so a partial recursive copy here is a risk
+            # class this PR has no field evidence for. Giving it an atomic
+            # swap too means a second code path (copy-aside, rm, rename a
+            # directory) for a failure mode that hasn't been seen — deferred
+            # until it is.
             isdir(dst) && rm(dst; recursive = true, force = true)
             cp(src, dst; force = true)
             push!(installed, "/$name")
@@ -200,26 +321,18 @@ function _install_adapter(cli::Symbol)
         skills_src = joinpath(srcdir, "skills")
         if isdir(skills_src)
             skillsroot = joinpath(codex_home(), "skills")
-            installed = String[]
-            for name in readdir(skills_src)
-                src = joinpath(skills_src, name, "SKILL.md")
-                isfile(src) || continue
-                dst = joinpath(skillsroot, name)
-                mkpath(dst)
-                cp(src, joinpath(dst, "SKILL.md"); force = true)
-                push!(installed, name)
-            end
+            installed = [name for name in readdir(skills_src)
+                         if isfile(joinpath(skills_src, name, "SKILL.md"))]
+            relfiles = [joinpath(name, "SKILL.md") for name in installed]
+            _install_files(skills_src, skillsroot, relfiles)
             @info "Installed Codex skills" skills = installed dir = skillsroot
         end
         _install_launchers(joinpath(srcdir, "bin"))
         hookssrc = joinpath(srcdir, "hooks")
         if isdir(hookssrc)
             bin = joinpath(comm_home(), "bin")
-            for f in readdir(hookssrc)
-                dst = joinpath(bin, f)
-                cp(joinpath(hookssrc, f), dst; force = true)
-                chmod(dst, 0o755)
-            end
+            hookfiles = readdir(hookssrc)
+            _install_files(hookssrc, bin, hookfiles; executable = Returns(true))
         end
         # Global codex memory: our AGENTS.md also installs as
         # $CODEX_HOME/AGENTS.md so conventions reach codex sessions in ANY
@@ -234,7 +347,7 @@ function _install_adapter(cli::Symbol)
             dst = joinpath(dstdir, "AGENTS.md")
             marker = "Codex sessions in Ship of Tools"
             if !isfile(dst) || occursin(marker, read(dst, String))
-                cp(src_agents, dst; force = true)
+                install_file(src_agents, dst)
                 @info "Installed global codex AGENTS.md" file = dst
             else
                 @warn "codex AGENTS.md exists and is not ours — merge manually" file = dst
@@ -270,8 +383,8 @@ function _install_adapter(cli::Symbol)
             pdir = joinpath(homedir(), ".agents", "plugins", "sot-comm")
             mkpath(joinpath(pdir, ".codex-plugin"))
             mkpath(joinpath(pdir, "hooks"))
-            cp(joinpath(srcdir, "plugin", ".codex-plugin", "plugin.json"),
-               joinpath(pdir, ".codex-plugin", "plugin.json"); force = true)
+            install_file(joinpath(srcdir, "plugin", ".codex-plugin", "plugin.json"),
+                         joinpath(pdir, ".codex-plugin", "plugin.json"))
             txt = replace(read(src, String), "\$HOME" => homedir())
             # codex REJECTS the whole hooks file — every event, silently — if it
             # carries ANY unrecognized top-level key (the config struct is
@@ -358,17 +471,9 @@ JSON to add by hand is printed. No-op if `srchooks` is absent.
 function _install_claude_hooks(srchooks::AbstractString)
     isdir(srchooks) || return nothing
     bin = joinpath(comm_home(), "bin")
-    mkpath(bin)
-    installed = String[]
-    for f in readdir(srchooks)
-        sp = joinpath(srchooks, f)
-        isfile(sp) || continue
-        dst = joinpath(bin, f)
-        cp(sp, dst; force = true)
-        chmod(dst, 0o755)
-        push!(installed, f)
-    end
+    installed = [f for f in readdir(srchooks) if isfile(joinpath(srchooks, f))]
     isempty(installed) && return nothing
+    _install_files(srchooks, bin, installed; executable = Returns(true))
     @info "Installed comm hook scripts" hooks = installed dir = bin
     # Register the work-state hooks. Together they make work-state event-driven —
     # a turn starting → working, an AskUserQuestion → blocked, a turn ending →
@@ -489,7 +594,18 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString;
 
     # Detect whether jq actually changed anything (already-present → no-op).
     changed = read(tmp, String) != read(settings, String)
-    mv(tmp, settings; force = true)
+    # A bare rename, not `mv(...; force = true)`: that form falls back to
+    # REMOVING settings.json first when a plain rename fails (e.g. the file
+    # is open/locked), which can leave it missing rather than merely
+    # un-updated — install_file's docstring has the full mechanism. A bare
+    # rename either replaces it atomically or fails leaving it untouched.
+    try
+        Base.Filesystem.rename(tmp, settings)
+    catch err
+        isfile(tmp) && rm(tmp; force = true)
+        @warn "could not update ~/.claude/settings.json (in use?) — leaving the previous copy in place; add the comm $event hook by hand" file = settings entry = manual error = err
+        return nothing
+    end
     if changed
         @info "Added comm $event hook to settings.json" file = settings command = cmd
     else
@@ -525,7 +641,9 @@ function _remove_stale_comm_hooks!()
     try
         run(pipeline(`jq $prog $settings`; stdout = tmp))
         changed = read(tmp, String) != read(settings, String)
-        mv(tmp, settings; force = true)
+        # Bare rename, not `mv(...; force = true)` — see _add_comm_hook!'s
+        # comment on the same line for why.
+        Base.Filesystem.rename(tmp, settings)
         changed && @info "Retired stale comm hooks from settings.json" file = settings
     catch err
         @warn "could not prune comm hooks from settings.json — leaving it untouched" file = settings error = err
@@ -545,17 +663,9 @@ on `PATH` so bare commands won't resolve.
 function _install_launchers(srcbin::AbstractString)
     isdir(srcbin) || return nothing
     bindir = joinpath(homedir(), ".local", "bin")
-    mkpath(bindir)
-    installed = String[]
-    for f in readdir(srcbin)
-        sp = joinpath(srcbin, f)
-        isfile(sp) || continue
-        dst = joinpath(bindir, f)
-        cp(sp, dst; force = true)
-        chmod(dst, 0o755)
-        push!(installed, f)
-    end
+    installed = [f for f in readdir(srcbin) if isfile(joinpath(srcbin, f))]
     isempty(installed) && return nothing
+    _install_files(srcbin, bindir, installed; executable = Returns(true))
     @info "Installed launchers" launchers = installed dir = bindir
     occursin(bindir, get(ENV, "PATH", "")) ||
         @warn "Launcher dir is not on PATH — add it to use bare commands" dir = bindir
