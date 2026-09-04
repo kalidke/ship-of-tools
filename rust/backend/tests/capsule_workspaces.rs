@@ -593,3 +593,171 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
         kill_and_wait_bounded(child).await;
     }
 }
+
+/// Field finding (a Windows FE box, 2026-09): the daemon boot resume-scan
+/// (`resume_all`) used to skip straight to spawning `--resume` for every
+/// capsule row with a published pointer, with NO probe of whether that
+/// row's supervisor was already alive. A capsule supervisor is spawned
+/// DETACHED (ADR 0042) and survives its daemon by design, so an FE
+/// relaunch that reboots the LOCAL daemon left every existing supervisor
+/// running — and the rebooted daemon's `resume_all` then raced a brand
+/// new `--resume` leg straight into the still-live `supervisor.lock`
+/// fence. `sot-capsule supervise` fails that fence acquisition FAST
+/// (`crate::fence::lock_supervisor`, `rust/log/src/supervisor.rs`) and
+/// exits `EXIT_TERMINAL` (69) within a couple hundred ms; the daemon's
+/// watchdog treats 69 as unconditionally terminal (rule F — never
+/// re-diagnosed) and marked the row `capsule_terminal`, so `workspace.list`
+/// reported the row PERMANENTLY terminal even though the OLD supervisor —
+/// the one actually running the FE's attached session — never stopped.
+///
+/// Unlike this file's own `..._adopt_and_destroy` test above (which
+/// deliberately STOPS the supervisor authority before restarting the
+/// daemon, proving `sot-capsule`'s own leg-adoption on a genuinely dead
+/// lane), this test leaves the supervisor authority ALIVE across the
+/// daemon restart — the field bug's exact precondition. It proves the
+/// fix: the reboot must ADOPT the still-answering lane (no second leg
+/// spawned, same leg epoch, and the row's reported phase stays whatever
+/// the live supervisor actually reports) rather than ever reading
+/// "terminal" for a workspace nothing has failed.
+#[tokio::test]
+async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning_a_second_one() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "sot-capsule.exe not found next to sotd.exe at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd.exe was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("bas");
+    let mut daemon1 = env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "bas-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(
+        create_res.payload.get("error").is_none(),
+        "workspace.create failed: {:?}",
+        create_res.payload
+    );
+    let workspace_id = create_res.payload["workspace_id"]
+        .as_str()
+        .expect("workspace_id")
+        .to_string();
+
+    let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
+    let state_dir = loop {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({}))
+            .await
+            .payload;
+        if let Some(row) = find_row(&payload, &workspace_id) {
+            assert_eq!(row["runtime"], "capsule", "row: {row:?}");
+            if let (Some(sd), Some("ready")) = (row["state_dir"].as_str(), row["phase"].as_str()) {
+                break sd.to_string();
+            }
+        }
+        assert!(
+            Instant::now() < list_deadline,
+            "timed out waiting for workspace.list to report phase \"ready\" for the new capsule workspace"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let state_dir_path = PathBuf::from(&state_dir);
+
+    let leg_before = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || {
+            sot_log::supervisor_client::query_status(&dir)
+                .expect("query_status before daemon restart")
+                .leg
+        }
+    })
+    .await
+    .unwrap()
+    .expect("a ready capsule has a leg");
+
+    // The key difference from the create/list/attach/adopt/destroy test's
+    // own adoption proof: the supervisor AUTHORITY is deliberately left
+    // ALIVE here (never stopped) — only the DAEMON process is killed and
+    // relaunched, reproducing the field bug's exact precondition.
+    if let Some(child) = daemon1.take() {
+        kill_and_wait_bounded(child).await;
+    }
+    drop(conn);
+
+    let mut daemon2 = env.spawn_sotd();
+    let (mut conn2, mut next_id2) = connect_and_hello(&env.socket_path).await;
+
+    // Before the fix this loop would observe the row flip to "terminal"
+    // within a few hundred ms (the field bug's own 263ms) and stay there
+    // — `workspace.list` never re-queries a row once marked
+    // `capsule_terminal`. Dwell comfortably longer than that.
+    let observe_deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_ready = false;
+    while Instant::now() < observe_deadline {
+        let id = next_id2;
+        next_id2 += 1;
+        let payload = call(&mut conn2, id, op::WORKSPACE_LIST, serde_json::json!({}))
+            .await
+            .payload;
+        if let Some(row) = find_row(&payload, &workspace_id) {
+            assert_eq!(row["runtime"], "capsule", "row: {row:?}");
+            assert_eq!(
+                row["state_dir"].as_str(),
+                Some(state_dir.as_str()),
+                "adopted row's state_dir must be the SAME capsule"
+            );
+            let phase = row["phase"].as_str();
+            assert_ne!(
+                phase,
+                Some("terminal"),
+                "boot adopted a live supervisor but the row still went terminal — a competing \
+                 --resume leg was spawned into the live fence and lost (the bug this test guards)"
+            );
+            if phase == Some("ready") {
+                saw_ready = true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        saw_ready,
+        "never observed the adopted row at phase \"ready\" during the dwell window"
+    );
+
+    let leg_after = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || {
+            sot_log::supervisor_client::query_status(&dir)
+                .expect("query_status after boot adoption")
+                .leg
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        leg_after,
+        Some(leg_before),
+        "the leg epoch changed across the daemon restart — a competing supervisor was spawned"
+    );
+
+    // Best-effort stop of the still-detached supervisor (see the
+    // default-workspace test's own comment above) — this test never
+    // spawned a second leg to worry about, only the one adopted one.
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::stop(&dir)
+    })
+    .await;
+
+    if let Some(child) = daemon2.take() {
+        kill_and_wait_bounded(child).await;
+    }
+}

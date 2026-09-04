@@ -150,6 +150,48 @@ pub fn phase_str(phase: sot_log::wire::SupervisorPhase) -> &'static str {
     }
 }
 
+/// What a capsule workspace's supervisor lane means for a caller that
+/// just probed it (`phase_of`'s return value) — the ONE decision matrix
+/// shared by `ensure_started` (`pty.open`'s start-on-attach,
+/// [`windows_runtime::start_mode_needed`]) and `resume_all` (daemon
+/// boot), so there is exactly one place that answers "is a supervisor
+/// already alive for this state dir?". Pure function of the phase
+/// string, so it's testable on every platform even though the probe that
+/// produces the string ([`windows_runtime::phase_of`]) is Windows-only.
+///
+/// This is the daemon-boot fix: before it, `resume_all` skipped straight
+/// to spawning `--resume` for every row with a published pointer,
+/// including one whose OLD supervisor (from before this daemon restart)
+/// was still alive and holding `supervisor.lock` — the new leg lost the
+/// fence, exited 69, and the watchdog marked the row terminal out from
+/// under a run the old supervisor was still actually running. Routing
+/// both callers through this matrix means a lane that still answers is
+/// always `Alive` — adopted, never raced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub enum LaneDecision {
+    /// [`NEVER_STARTED_PHASE`]: no published pointer, nothing has ever
+    /// run. Needs [`StartMode::Start`].
+    NeverStarted,
+    /// [`UNREACHABLE_PHASE`]: a pointer exists but the lane does not
+    /// answer — its supervisor is gone. Needs [`StartMode::Resume`].
+    Dead,
+    /// Any answered lifecycle phase: a supervisor is alive RIGHT NOW.
+    /// Spawn nothing — adopt it.
+    Alive,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn lane_decision(phase: &str) -> LaneDecision {
+    if phase == NEVER_STARTED_PHASE {
+        LaneDecision::NeverStarted
+    } else if phase == UNREACHABLE_PHASE {
+        LaneDecision::Dead
+    } else {
+        LaneDecision::Alive
+    }
+}
+
 /// ADR 0042 L1a (Codex review finding 6): the daemon's own watchdog
 /// restart budget for a capsule supervisor — ADR 0041's own launcher
 /// restart sequence ("restart with `--resume` on the launcher's shipped
@@ -273,9 +315,9 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
 #[cfg(windows)]
 mod windows_runtime {
     use super::{
-        agent_argv, capsule_supervisor_env, mode_flag, StartMode, LANE_CONCURRENCY, LIST_LANE_DEADLINE,
-        MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB, NEVER_STARTED_PHASE, RESTART_BACKOFFS,
-        RESTART_WINDOW, UNREACHABLE_PHASE,
+        agent_argv, capsule_supervisor_env, lane_decision, mode_flag, LaneDecision, StartMode,
+        LANE_CONCURRENCY, LIST_LANE_DEADLINE, MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB,
+        RESTART_BACKOFFS, RESTART_WINDOW,
     };
     use crate::workspaces::Workspaces;
     use std::io::ErrorKind;
@@ -599,18 +641,21 @@ mod windows_runtime {
     /// Whether a capsule workspace's supervisor needs starting before
     /// `pty.open` can honestly answer `attach_direct` — and if so, with
     /// which start mode. Reuses [`phase_of`]'s own two failure phases
-    /// rather than a new probe: [`NEVER_STARTED_PHASE`] (no published
-    /// pointer — nothing has ever run) means `Start`; [`UNREACHABLE_PHASE`]
-    /// (a pointer exists but its lane does not answer — the same "dead
+    /// rather than a new probe: [`super::NEVER_STARTED_PHASE`] (no
+    /// published pointer — nothing has ever run) means `Start`;
+    /// [`super::UNREACHABLE_PHASE`] (a pointer exists but its lane does
+    /// not answer — the same "dead
     /// supervisor" case the watchdog/`resume_all` already resume with
     /// `--resume`) means `Resume`. Any answered lifecycle phase means a
     /// supervisor is already up — `None`, nothing to do. BLOCKING
-    /// (`phase_of` itself is).
+    /// (`phase_of` itself is). Routes through [`lane_decision`] — the
+    /// same matrix `resume_all` now uses — so this stays the one place
+    /// that decides "is a supervisor already alive for this state dir?".
     fn start_mode_needed(state_dir: &Path) -> Option<StartMode> {
-        match phase_of(state_dir) {
-            NEVER_STARTED_PHASE => Some(StartMode::Start),
-            UNREACHABLE_PHASE => Some(StartMode::Resume),
-            _ => None,
+        match lane_decision(phase_of(state_dir)) {
+            LaneDecision::NeverStarted => Some(StartMode::Start),
+            LaneDecision::Dead => Some(StartMode::Resume),
+            LaneDecision::Alive => None,
         }
     }
 
@@ -799,19 +844,38 @@ mod windows_runtime {
 
     /// On daemon startup: resume every REGISTERED capsule workspace's
     /// supervisor whose voyage pointer has ALREADY been published (rule
-    /// B, shrink round) — `--resume`, letting the supervisor's own
-    /// start-mode table decide adopt-vs-spawn. A row with NO published
-    /// pointer — never started at all, OR a leg that crashed before ever
-    /// publishing one (the exact pre-pointer crash window ADR 0041
-    /// names) — is SKIPPED entirely: `pty.open`'s start-on-attach
-    /// (`ensure_started`) is what starts those now, not this scan.
-    /// Before rule B this scan launched `--resume` unconditionally for
-    /// EVERY registered row, including ones with no pointer at all —
-    /// `sot-capsule supervise --resume` against a workspace with no leg
-    /// to adopt and no pointer to found one against simply fails (exit
-    /// 69), leaving a bare state directory behind and reading back as a
-    /// misleading row on the owner's own box (the field finding behind
-    /// this shrink round).
+    /// B, shrink round). A row with NO published pointer — never started
+    /// at all, OR a leg that crashed before ever publishing one (the
+    /// exact pre-pointer crash window ADR 0041 names) — is SKIPPED
+    /// entirely: `pty.open`'s start-on-attach (`ensure_started`) is what
+    /// starts those now, not this scan. Before rule B this scan launched
+    /// `--resume` unconditionally for EVERY registered row, including
+    /// ones with no pointer at all — `sot-capsule supervise --resume`
+    /// against a workspace with no leg to adopt and no pointer to found
+    /// one against simply fails (exit 69), leaving a bare state directory
+    /// behind and reading back as a misleading row on the owner's own box
+    /// (the field finding behind this shrink round).
+    ///
+    /// PROBE before spawning (the daemon-boot-adopts-supervisor fix):
+    /// each candidate is decided by [`lane_decision`] — the SAME matrix
+    /// [`start_mode_needed`] uses for `pty.open`'s start-on-attach — over
+    /// a real [`phase_of`] query of its lane, not the pointer's mere
+    /// existence. `LaneDecision::Alive` means a supervisor from a
+    /// PREVIOUS daemon lifetime is still up and answering (the daemon
+    /// restarted — e.g. an FE relaunch rebooting the local daemon — while
+    /// its capsule supervisors, spawned detached by ADR 0042 design,
+    /// outlived it): this scan ADOPTS it — logs one line and spawns
+    /// nothing — rather than racing a second `--resume` leg against the
+    /// live one's `supervisor.lock`. That race is exactly what this fix
+    /// closes: the new leg always loses the fence, exits 69
+    /// (`EXIT_TERMINAL`), and the watchdog then marks the row
+    /// `capsule_terminal` — wrongly, since the old supervisor is still
+    /// actually running the voyage the whole time. Only
+    /// `LaneDecision::Dead` (pointer published, lane doesn't answer —
+    /// its supervisor really is gone) still spawns `--resume` here.
+    /// `LaneDecision::NeverStarted` shouldn't occur (the candidate filter
+    /// below already requires a published pointer) but is handled
+    /// defensively as a skip, same as before this fix.
     ///
     /// A state directory with NO matching registry entry is left
     /// COMPLETELY untouched, logged once (ADR 0042: "the daemon's
@@ -820,15 +884,15 @@ mod windows_runtime {
     /// process; deleted, the bare-shell fallback an earlier version used
     /// here).
     ///
-    /// Rule D: each candidate goes through [`start_supervisor`] — the
-    /// SAME atomically-claimed spawn path `pty.open`'s start-on-attach
-    /// uses — so a candidate this scan races against a concurrent
-    /// `pty.open` (the exact race the field finding's own timeline could
-    /// produce) spawns nothing twice; the loser gets `Ok(None)`, logged
-    /// at debug (expected, not an error).
+    /// Rule D: a candidate that still needs a spawn goes through
+    /// [`start_supervisor`] — the SAME atomically-claimed spawn path
+    /// `pty.open`'s start-on-attach uses — so a candidate this scan races
+    /// against a concurrent `pty.open` (the exact race the field
+    /// finding's own timeline could produce) spawns nothing twice; the
+    /// loser gets `Ok(None)`, logged at debug (expected, not an error).
     ///
     /// Runs off the startup critical path (finding 10): `server.rs`
-    /// calls this via `tokio::spawn`, never awaited, and every spawn
+    /// calls this via `tokio::spawn`, never awaited, and every probe/spawn
     /// inside it is bounded to `LANE_CONCURRENCY` concurrent attempts via
     /// a semaphore — thousands of preserved workspaces cannot turn this
     /// into an unbounded synchronous fan-out before the listener binds.
@@ -871,15 +935,37 @@ mod windows_runtime {
             let workspaces = workspaces.clone();
             joins.push(tokio::spawn(async move {
                 let _permit = permit.acquire_owned().await;
-                match start_supervisor(&state_root, &workspace_id, StartMode::Resume, &argv, &cwd, &agent_name, &slug, workspaces) {
-                    Ok(Some(degraded)) => {
-                        tracing::info!(workspace_id = %workspace_id, degraded, "capsule workspace supervisor resumed");
+                let state_dir = super::state_dir_for(&state_root, &workspace_id);
+                let phase = phase_of(&state_dir);
+                match lane_decision(phase) {
+                    LaneDecision::Alive => {
+                        tracing::info!(
+                            workspace_id = %workspace_id, phase,
+                            "capsule supervisor adopted (alive from a previous daemon)"
+                        );
                     }
-                    Ok(None) => {
-                        tracing::debug!(workspace_id = %workspace_id, "capsule workspace resume-scan: launch already in flight; skipping");
+                    LaneDecision::Dead => {
+                        match start_supervisor(&state_root, &workspace_id, StartMode::Resume, &argv, &cwd, &agent_name, &slug, workspaces) {
+                            Ok(Some(degraded)) => {
+                                tracing::info!(workspace_id = %workspace_id, degraded, "capsule workspace supervisor resumed");
+                            }
+                            Ok(None) => {
+                                tracing::debug!(workspace_id = %workspace_id, "capsule workspace resume-scan: launch already in flight; skipping");
+                            }
+                            Err(e) => {
+                                tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule workspace supervisor resume spawn failed");
+                            }
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule workspace supervisor resume spawn failed");
+                    LaneDecision::NeverStarted => {
+                        // Shouldn't happen -- the candidate filter above
+                        // already required a published pointer -- but
+                        // stays a no-op rather than a Start: fresh starts
+                        // are ensure_started's job, not this scan's.
+                        tracing::debug!(
+                            workspace_id = %workspace_id,
+                            "capsule workspace resume-scan: no published pointer at probe time; skipping (ensure_started starts it fresh)"
+                        );
                     }
                 }
             }));
@@ -1016,6 +1102,36 @@ mod tests {
             SupervisorPhase::Terminal,
         ] {
             assert_ne!(phase_str(p), UNREACHABLE_PHASE);
+        }
+    }
+
+    #[test]
+    fn lane_decision_is_the_one_matrix_ensure_started_and_resume_all_both_use() {
+        // Daemon-boot-adopts-supervisor fix: `resume_all` used to spawn
+        // `--resume` unconditionally for every row with a published
+        // pointer, racing a second leg into a lane that might still be
+        // alive from a previous daemon lifetime. This matrix is what both
+        // `ensure_started`'s `start_mode_needed` (pty.open start-on-attach)
+        // and `resume_all` (daemon boot) now share to decide it — pure and
+        // portable (the real probe that PRODUCES the phase string,
+        // `windows_runtime::phase_of`, is Windows-only, but the decision
+        // over an already-known phase isn't and is exercised here on every
+        // platform).
+        use sot_log::wire::SupervisorPhase;
+        assert_eq!(lane_decision(NEVER_STARTED_PHASE), LaneDecision::NeverStarted);
+        assert_eq!(lane_decision(UNREACHABLE_PHASE), LaneDecision::Dead);
+        for p in [
+            SupervisorPhase::Starting,
+            SupervisorPhase::Ready,
+            SupervisorPhase::Ending,
+            SupervisorPhase::EndedNoRespawn,
+            SupervisorPhase::Terminal,
+        ] {
+            assert_eq!(
+                lane_decision(phase_str(p)),
+                LaneDecision::Alive,
+                "every answered lifecycle phase ({p:?}) must read as an alive, adoptable lane"
+            );
         }
     }
 
