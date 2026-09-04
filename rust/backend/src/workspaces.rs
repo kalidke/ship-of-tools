@@ -804,7 +804,18 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         let workspace_id = kv.get("workspace_id").cloned().unwrap_or_default();
         let slug = kv.get("slug").cloned().unwrap_or_default();
         let label = kv.get("label").cloned().unwrap_or_else(|| slug.clone());
-        let project_root = PathBuf::from(kv.get("project_root").cloned().unwrap_or_default());
+        // simplify_verbatim: a toml written by a pre-fix build can carry a
+        // Windows `\\?\` verbatim root (`std::fs::canonicalize`'s own
+        // return form there) — CreateProcess rejects that as a working
+        // directory (`capsule supervisor spawn failed: The directory name
+        // is invalid. (os error 267)`, field defect 2026-09-04). Normalize
+        // on load so every consumer (capsule spawn's `current_dir`, the
+        // awareness env, the tmux path, display, comm-identity root
+        // compares) sees the plain form the daemon has always assumed. A
+        // no-op on non-Windows and on already-plain paths.
+        let project_root = paths::simplify_verbatim(PathBuf::from(
+            kv.get("project_root").cloned().unwrap_or_default(),
+        ));
         let tmux_session = kv
             .get("tmux_session")
             .cloned()
@@ -870,12 +881,14 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
             .unwrap_or("unknown")
             .to_string()
     });
-    let project_root = PathBuf::from(
+    // simplify_verbatim: same normalization as the canonical branch above
+    // — a legacy toml is just as capable of carrying a stale verbatim root.
+    let project_root = paths::simplify_verbatim(PathBuf::from(
         backend
             .get("project_dir")
             .cloned()
             .unwrap_or_else(|| ".".into()),
-    );
+    ));
     let slug = paths::slug(&label);
     let tmux_session = backend
         .get("tmux_session")
@@ -1769,6 +1782,43 @@ runtime      = "capsule"
         .unwrap();
         let ws = load_toml(&p, false).unwrap().unwrap();
         assert_eq!(ws.runtime, "capsule");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Field defect (2026-09-04): a toml written by a pre-fix build can
+    /// carry the Windows extended-length (verbatim) form `std::fs::
+    /// canonicalize` returns there (`\\?\C:\...`); `CreateProcess` rejects
+    /// that as a working directory. `load_toml` must hand back the plain
+    /// form regardless of what's on disk. Windows-only: `simplify_verbatim`
+    /// is a no-op on every other platform, so this toml would (correctly)
+    /// load unchanged there.
+    #[test]
+    #[cfg(windows)]
+    fn load_toml_canonical_strips_windows_verbatim_prefix() {
+        let dir = std::env::temp_dir().join(format!(
+            "sot-ws-test-verbatim-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("gamma.toml");
+        std::fs::write(
+            &p,
+            r#"
+workspace_id = "ws-gamma-1"
+slug         = "gamma"
+label        = "Gamma.jl"
+project_root = "\\?\C:\Users\u\.julia\dev\Gamma.jl"
+tmux_session = "sot-be-gamma"
+created      = 1700000000
+"#,
+        )
+        .unwrap();
+        let ws = load_toml(&p, false).unwrap().unwrap();
+        assert_eq!(
+            ws.project_root,
+            PathBuf::from(r"C:\Users\u\.julia\dev\Gamma.jl")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
