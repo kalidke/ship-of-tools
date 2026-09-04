@@ -73,6 +73,17 @@
 //                                   # Binds at surface creation — needs a
 //                                   # frontend restart to take effect.
 //
+//   [display]
+//   fullscreen_vsync_pin = true     # default true. While fullscreen, keep
+//                                   # a steady vsync-paced redraw so a
+//                                   # VRR/adaptive-sync panel doesn't drop
+//                                   # into the low-framerate band where
+//                                   # brightness pumps (see gpu.rs). Costs
+//                                   # continuous GPU while fullscreen; set
+//                                   # false on a fixed-refresh panel (e.g.
+//                                   # most laptops) to fall back to the
+//                                   # efficient on-demand idle path.
+//
 // `columns` lists named slots in left-to-right order; `widths` is the
 // matching fractional split (must sum to ~1.0; values renormalised on
 // parse). Valid slot names: nav, preview, llm. The drawer is a
@@ -338,6 +349,19 @@ pub struct Settings {
     /// frontend restart because a live drawer's backend is not swapped
     /// under it).
     pub attach_only: bool,
+    /// `[display] fullscreen_vsync_pin` — the fullscreen steady-redraw guard
+    /// from commit a2907aea (#15): on a VRR/adaptive-sync OLED panel,
+    /// borderless fullscreen disengages DWM composition, so the on-demand
+    /// idle path's ~1 fps present drives the panel into the 1–10 Hz
+    /// low-framerate-compensation band, where brightness visibly pumps.
+    /// When `true` (default — unchanged behaviour for existing users),
+    /// `about_to_wait` keeps requesting redraws every vsync while
+    /// fullscreen so the panel stays pinned at its native refresh; this
+    /// costs continuous GPU while fullscreen. Set `false` on a
+    /// fixed-refresh panel (most laptops) to fall back to the same
+    /// efficient on-demand idle path fullscreen uses windowed. No VRR
+    /// detection API is trusted here, so this is a setting, not a probe.
+    pub fullscreen_vsync_pin: bool,
 }
 
 impl Default for Settings {
@@ -356,6 +380,7 @@ impl Default for Settings {
             nav_spill_ms: 2000,
             gpu_power_preference: GpuPowerPreference::Low,
             attach_only: false,
+            fullscreen_vsync_pin: true,
         }
     }
 }
@@ -492,6 +517,11 @@ impl Settings {
                     Some(b) => self.attach_only = b,
                     None => tracing::warn!(line = lineno + 1, value = %value,
                         "drawer.attach_only: expected true|false"),
+                },
+                ("display", "fullscreen_vsync_pin") => match parse_bool(&value) {
+                    Some(b) => self.fullscreen_vsync_pin = b,
+                    None => tracing::warn!(line = lineno + 1, value = %value,
+                        "display.fullscreen_vsync_pin: expected true|false"),
                 },
                 _ => {
                     tracing::warn!(line = lineno + 1, section = %section, key,
@@ -769,6 +799,18 @@ mod tests {
         // Garbage leaves the prior value untouched.
         s.merge_text("[gpu]\npower_preference = banana\n");
         assert_eq!(s.gpu_power_preference, GpuPowerPreference::Low);
+    }
+
+    #[test]
+    fn fullscreen_vsync_pin_defaults_true_and_parses() {
+        // Default true = unchanged behaviour for existing users (#15's
+        // steady-redraw guard stays on until someone opts out).
+        assert!(Settings::default().fullscreen_vsync_pin);
+        let mut s = Settings::default();
+        s.merge_text("[display]\nfullscreen_vsync_pin = false\n");
+        assert!(!s.fullscreen_vsync_pin);
+        s.merge_text("[display]\nfullscreen_vsync_pin = true\n");
+        assert!(s.fullscreen_vsync_pin);
     }
 
     #[test]

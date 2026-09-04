@@ -62,3 +62,14 @@ new_session_root = "/home/me/dev"
 # if the integrated adapter renders incorrectly. No-op on single-adapter
 # machines. BINDS AT STARTUP — restart the frontend for a change to apply.
 # power_preference = "high"
+
+[display]
+# While fullscreen, keep a steady vsync-paced redraw cadence (DEFAULT true,
+# unchanged behaviour) instead of the efficient on-demand idle tick. Fixes
+# brightness pumping on a VRR/adaptive-sync OLED panel, where borderless
+# fullscreen disengages DWM composition and the ~1 fps idle present drives
+# the panel into the 1-10 Hz low-framerate-compensation band. Costs
+# continuous GPU while fullscreen. There is no trustworthy VRR-detection
+# API, so set this to false yourself on a fixed-refresh panel (most
+# laptops) to get the efficient idle path fullscreen too.
+# fullscreen_vsync_pin = false
