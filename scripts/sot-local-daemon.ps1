@@ -332,12 +332,25 @@ $daemonStderr = Join-Path $logDir 'sotd-local.stderr.log'
 
 # Keep ONE previous generation before Start-Process truncates these below
 # (see the header note) -- rename whatever is already there to `.1`,
-# overwriting an older `.1`. Best-effort: a failed rename (e.g. an AV
-# scanner holding the file) just means this boot starts fresh with no `.1`,
-# same as before this existed -- never blocks the daemon starting.
+# overwriting an older `.1`. Two-step, not a direct Move-Item straight to
+# `.1`: with -Force, Move-Item can clear the existing `.1` destination and
+# THEN fail the actual move (e.g. the current file still has a lingering
+# handle even though the ensure path above only proved the PIPE is gone,
+# not the file) -- that would destroy the one kept generation and keep
+# nothing. Move current -> a unique temp name FIRST, with -ErrorAction
+# Stop so a failure there is a terminating error the try/catch actually
+# sees (this script runs under $ErrorActionPreference = 'Continue', so a
+# non-terminating provider error would otherwise sail past an empty
+# catch); `.1` is only touched once that succeeds, so a failed rotation
+# leaves the untouched original in place (a fresh boot then just starts
+# with no `.1`, same as before this existed) instead of losing both.
 foreach ($f in @($daemonStdout, $daemonStderr)) {
     if (Test-Path $f) {
-        try { Move-Item -Path $f -Destination "$f.1" -Force } catch { }
+        try {
+            $rotTemp = "$f.rotating.$PID.tmp"
+            Move-Item -Path $f -Destination $rotTemp -Force -ErrorAction Stop
+            Move-Item -Path $rotTemp -Destination "$f.1" -Force -ErrorAction Stop
+        } catch { }
     }
 }
 

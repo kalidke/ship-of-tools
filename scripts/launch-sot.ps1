@@ -185,7 +185,6 @@ function Invoke-SelfUpdatePrelude {
         [switch]$AllowReexec
     )
     $script:launchNotices.Clear()
-    $refusedReason = $null
     if (-not $NoUpdate -and -not $Local -and -not $env:SOT_LAUNCH_REEXEC -and (Test-Path (Join-Path $repo '.git'))) {
         # Relax 'Stop' -> 'Continue' around native git: its stderr under 'Stop' + 2>&1
         # throws in PS 5.1. Gate on $LASTEXITCODE, not thrown errors (as below).
@@ -223,6 +222,7 @@ function Invoke-SelfUpdatePrelude {
                         exit $LASTEXITCODE
                     } else {
                         Write-SupLog 'self-update: launcher changed on disk - takes effect on the next full process start (a converge mid-loop does not hot-swap the running supervisor)'
+                        $script:launchNotices.Add('launcher updated; quit and relaunch from the shortcut') | Out-Null
                     }
                 }
             } else {
@@ -253,10 +253,9 @@ function Invoke-SelfUpdatePrelude {
     # The re-invoke guard has served its purpose; clear it so the FE and an
     # exit-75/76 relaunch don't inherit it (a relaunch must self-update afresh).
     if ($env:SOT_LAUNCH_REEXEC) { Remove-Item Env:\SOT_LAUNCH_REEXEC -ErrorAction SilentlyContinue }
-    return $refusedReason
 }
 
-Invoke-SelfUpdatePrelude -AllowReexec | Out-Null
+Invoke-SelfUpdatePrelude -AllowReexec
 
 Add-Type -AssemblyName System.Windows.Forms   # MessageBox for the fatal dialogs below
 
@@ -853,6 +852,7 @@ function Invoke-FreshnessPass {
         if ($LASTEXITCODE -ne 0) {
             Set-LaunchStatus 'ERROR: frontend rebuild failed - launching existing build (see supervisor.log)'
             Write-SupLog "freshness: BUILD FAILED - launching existing binary. tail: $($buildOut | Select-Object -Last 3)"
+            $script:launchNotices.Add('frontend rebuild failed - running the existing build (see supervisor.log)') | Out-Null
         } else {
             Write-SupLog "freshness: frontend rebuilt"
         }
@@ -917,6 +917,7 @@ function Invoke-FreshnessPass {
             $capOut = cargo build --release -p sot-backend -p sot-log --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
             if ($LASTEXITCODE -ne 0) {
                 Write-SupLog "freshness: backend pair rebuild FAILED (non-fatal, continuing with whatever pair exists). tail: $($capOut | Select-Object -Last 3)"
+                $script:launchNotices.Add('backend rebuild failed - running the existing sotd.exe/sot-capsule.exe pair') | Out-Null
             } else {
                 Write-SupLog "freshness: backend pair (sotd.exe, sot-capsule.exe) rebuilt"
             }
@@ -1213,7 +1214,7 @@ try {
         # matching what a first launch with that switch would do.
         if ($convergeRequested) {
             Write-SupLog 'converge (exit 76): re-running self-update prelude + freshness pass'
-            Invoke-SelfUpdatePrelude | Out-Null
+            Invoke-SelfUpdatePrelude
             Invoke-FreshnessPass
             $localDaemonReady = Invoke-LocalDaemonEnsure
             Set-LaunchNoticeEnv

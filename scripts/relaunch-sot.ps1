@@ -59,7 +59,17 @@ $sentinelDir = Join-Path $env:LOCALAPPDATA 'sot'
 New-Item -ItemType Directory -Force -Path $sentinelDir | Out-Null
 $sentinel = Join-Path $sentinelDir 'relaunch.request'
 $sentinelValue = if ($Converge) { "converge`n$(Get-Date -Format o)" } else { Get-Date -Format o }
-Set-Content -Path $sentinel -Value $sentinelValue -Encoding utf8
+# Write to a same-directory temp file, then Move-Item -Force (an atomic
+# rename on the same volume) into the final path -- the watcher thread
+# (gpu.rs) does exists -> read -> delete with no lock, so writing the
+# final path directly risks it reading a partial/truncated write (which
+# decodes as a plain relaunch) or losing the delete race (an extra
+# respawn). -Encoding ascii, not utf8: PowerShell 5.1's -Encoding utf8
+# prepends a BOM the reader must otherwise strip -- the sentinel protocol
+# is plain ASCII, so there's no reason to emit one.
+$sentinelTemp = Join-Path $sentinelDir "relaunch.request.$PID.tmp"
+Set-Content -Path $sentinelTemp -Value $sentinelValue -Encoding ascii
+Move-Item -Path $sentinelTemp -Destination $sentinel -Force
 
 if ($Converge) {
     Write-Host 'Converge requested - the supervisor will pull, rebuild, reinstall comm, then respawn the frontend.' -ForegroundColor Green

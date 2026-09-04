@@ -17423,10 +17423,12 @@ fn finish_capture(
 /// helper (`scripts/relaunch-sot.ps1`) creates this after a successful
 /// `cargo build`; the watcher thread notices it and triggers an exit-75
 /// respawn. `relaunch-sot.ps1 -Converge` writes `converge` as the file's
-/// content instead of a bare timestamp — the watcher thread reads it back
-/// (case-insensitive, leading-whitespace-tolerant `starts_with("converge")`)
-/// to pick exit code 76 over 75; any other content (including the plain
-/// timestamp) is a normal relaunch.
+/// content instead of a bare timestamp (ASCII-encoded, no BOM) -- the
+/// watcher thread reads it back (BOM-stripped, case-insensitive,
+/// leading-whitespace-tolerant `starts_with("converge")`, so a stray BOM
+/// from a different writer/encoding doesn't misdecode a converge as a
+/// plain relaunch) to pick exit code 76 over 75; any other content
+/// (including the plain timestamp) is a normal relaunch.
 fn relaunch_sentinel_path() -> Option<std::path::PathBuf> {
     crate::paths::sot_state_dir().map(|d| d.join("relaunch.request"))
 }
@@ -17914,9 +17916,18 @@ impl ApplicationHandler for App {
                                 // relaunch) vs 76 (converge — relaunch-sot.ps1
                                 // -Converge). Unreadable/empty content fails
                                 // open to a plain relaunch.
+                                // PowerShell 5.1's `-Encoding utf8` (the
+                                // writer's ASCII path is preferred now, but a
+                                // stale/foreign writer can still emit one)
+                                // prepends a UTF-8 BOM (U+FEFF), which
+                                // `trim_start()` does NOT strip (it's not
+                                // Unicode whitespace) -- strip it explicitly
+                                // first so a BOM-prefixed "converge" doesn't
+                                // decode as a plain relaunch.
                                 let is_converge = std::fs::read_to_string(&sentinel)
                                     .map(|s| {
-                                        s.trim_start()
+                                        s.trim_start_matches('\u{feff}')
+                                            .trim_start()
                                             .to_ascii_lowercase()
                                             .starts_with("converge")
                                     })
