@@ -269,6 +269,17 @@ pub async fn run(opts: Opts) -> Result<()> {
     // them as constructor args.
     let existing_default = workspaces.resolve(Some(&paths::slug(&default_label)));
     let (seed_autostart, seed_agent, seed_agent_name, seed_task) = match &existing_default {
+        // Windows only: a default row whose on-disk runtime is not
+        // "capsule" is a CORRUPTED row (the same field incident
+        // `default_row_runtime`'s own doc describes) — whatever wrote
+        // "tmux" there flipped `agent`/`autostart_claude` to "none"/
+        // false alongside it, so preserving them via the plain
+        // `Some(existing)` arm below would boot a capsule with no
+        // agent. Re-seed with the same "claude" launcher the
+        // first-ever-launch Windows arm uses, below.
+        Some(existing) if cfg!(windows) && existing.runtime != "capsule" => {
+            (true, "claude".to_string(), String::new(), String::new())
+        }
         Some(existing) => (
             existing.autostart_claude,
             existing.agent.clone(),
@@ -295,15 +306,30 @@ pub async fn run(opts: Opts) -> Result<()> {
         seed_agent_name,
         seed_task,
     );
-    default_ws_seed.runtime = match &existing_default {
-        Some(existing) => existing.runtime.clone(),
-        // First-ever launch: every NEW workspace is a capsule on
-        // Windows, no knob (ADR 0042 L1a) — the daemon's own home/
-        // default row is no exception. Every other host keeps
-        // `from_label`'s own "tmux" default, untouched.
-        None if cfg!(windows) => "capsule".to_string(),
-        None => default_ws_seed.runtime.clone(),
-    };
+    // ADR 0042 slice L1a: route through the ONE function that decides
+    // this row's runtime for this OS (`workspaces::default_row_runtime`
+    // — see its own doc) rather than re-deciding it here. On Windows
+    // this is unconditionally "capsule", correcting rather than
+    // preserving a stale on-disk "tmux" leftover — the field incident
+    // this fixes: the old preserve-verbatim behaviour never self-healed
+    // such a value, and the daemon then refused to start the row at all
+    // (`pty spawn failed error=tmux is not available on Windows`), a
+    // dead end (`default_workspace_not_destroyable`, below).
+    if let Some(existing) = &existing_default {
+        if cfg!(windows) && existing.runtime != "capsule" {
+            tracing::info!(
+                workspace_id = %existing.workspace_id,
+                on_disk_runtime = %existing.runtime,
+                "default workspace runtime on Windows must be capsule (ADR 0042 L1a); \
+                 correcting a stale on-disk value and re-seeding its agent/autostart \
+                 (a corrupted row's launch fields, not just its runtime)"
+            );
+        }
+    }
+    default_ws_seed.runtime = workspaces::default_row_runtime(
+        existing_default.as_deref().map(|w| w.runtime.as_str()),
+        &default_ws_seed.runtime,
+    );
     // Display the Ship of Tools home/default workspace as ".SoT" — the leading
     // dot is cosmetic (the FE strip renders the label) and marks it as "home".
     // Only the LABEL changes; the slug (hence the tmux session `sot-be-sot` and
