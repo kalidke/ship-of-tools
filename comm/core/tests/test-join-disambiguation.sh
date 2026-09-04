@@ -44,6 +44,7 @@ JOIN="$SCRIPTS_DIR/comm-join.sh"
 SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 CONTEXT="$SCRIPTS_DIR/comm-context.sh"
 SEND="$SCRIPTS_DIR/comm-send.sh"
+LISTEN="$SCRIPTS_DIR/comm-listen.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-test-XXXXXX")"
 # Codex review (PR #148, test notes): an unchecked mktemp failure leaves
@@ -1666,6 +1667,103 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     return 0
 }
 
+case_comm_listen_windows_no_bridge_started() {
+    # No-bridge-on-Windows fix: a Windows FE box's capsule session used to
+    # run comm-listen.sh's `while true; do comm-relay.sh bridge …; done`
+    # reconnect loop forever — useless there (the frontend already files
+    # every inbound frame into its own fe-inbox.jsonl) and actively
+    # harmful (the endless loop keeps comm-relay.sh open, which on real
+    # Windows blocks update_comm's remove-then-copy replace of it and
+    # wedges the box send-deaf). Fakes `uname` as the detection's
+    # THIRD-tier signal (comm-session-skill.sh's own `_is_windows` checks
+    # $OS, then $OSTYPE, then `uname -s` — this exercises the fallback a
+    # real git-bash box with neither helpful env var would hit) via the
+    # same PATH-prefix seam case_hash_command_failure_fails_loudly uses
+    # for a fake sha256sum.
+    local fakebin sock out err rc
+    fakebin="$WORK/winuname"
+    mkdir -p "$fakebin"
+    cat > "$fakebin/uname" <<'FAKEUNAME'
+#!/bin/sh
+echo "MINGW64_NT-10.0-19045"
+FAKEUNAME
+    chmod +x "$fakebin/uname"
+    sock="$WORK/winnoop-tmux.sock"
+
+    out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" SOT_COMM_HOME="$WORK/winnoop-home" \
+        SOT_TMUX_SOCK="$sock" bash "$LISTEN" --name winnoop-handle 2>"$WORK/winnoop.err")"
+    rc=$?
+    err="$(cat "$WORK/winnoop.err" 2>/dev/null)"
+    [ "$rc" -eq 0 ] || { echo "  exited $rc (want 0): stdout=$out stderr=$err"; return 1; }
+    contains "$out" "comm-listen: this host receives through the FE inbox" \
+        || { echo "  missing the FE-inbox receive-path line: $out"; return 1; }
+    contains "$out" "no relay bridge is started" \
+        || { echo "  missing 'no relay bridge is started': $out"; return 1; }
+    if tmux -S "$sock" has-session -t "=commbridge-winnoop-handle" 2>/dev/null; then
+        echo "  a commbridge-winnoop-handle tmux session was started on a Windows host (must never start one)"
+        tmux -S "$sock" kill-server >/dev/null 2>&1 || true
+        return 1
+    fi
+    [ -z "$(sot_bridge_pids_for "winnoop-handle")" ] \
+        || { echo "  a bridge process for winnoop-handle is running (must never start one on a Windows host)"; return 1; }
+
+    # --status reports the same fact, no bridge probing.
+    out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" SOT_COMM_HOME="$WORK/winnoop-home" \
+        SOT_TMUX_SOCK="$sock" bash "$LISTEN" --name winnoop-handle --status 2>&1)"
+    rc=$?
+    [ "$rc" -eq 0 ] || { echo "  --status exited $rc (want 0): $out"; return 1; }
+    contains "$out" "no relay bridge is started" \
+        || { echo "  --status didn't report the no-bridge fact: $out"; return 1; }
+
+    # --selftest must not claim a bridge selftest ran on Windows.
+    out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" SOT_COMM_HOME="$WORK/winnoop-home" \
+        SOT_TMUX_SOCK="$sock" bash "$LISTEN" --name winnoop-handle --selftest 2>&1)"
+    rc=$?
+    [ "$rc" -eq 0 ] || { echo "  --selftest exited $rc (want 0): $out"; return 1; }
+    contains "$out" "no bridge selftest on Windows" \
+        || { echo "  --selftest didn't say it skips the bridge selftest: $out"; return 1; }
+
+    rm -rf "$sock" "$WORK/winnoop-home" "$WORK/winnoop.err"
+    return 0
+}
+
+case_comm_listen_windows_receive_path_never_bare_slash() {
+    # The line comm-listen.sh prints on a Windows host names the FE's
+    # receive path, built through the SAME LOCALAPPDATA/XDG_STATE_HOME/HOME
+    # resolver comm-session-skill.sh's fe_inbox uses (gpu.rs::
+    # sot_state_dir) — never a bare "/"-rooted collapse if an upstream env
+    # var the daemon would normally inject (capsule-comm-identity, #178)
+    # resolved empty.
+    local fakebin out
+    fakebin="$WORK/winuname2"
+    mkdir -p "$fakebin"
+    cat > "$fakebin/uname" <<'FAKEUNAME'
+#!/bin/sh
+echo "MINGW64_NT-10.0-19045"
+FAKEUNAME
+    chmod +x "$fakebin/uname"
+
+    # LOCALAPPDATA present -> the path is rooted under it.
+    out="$(env -u OS -u OSTYPE -u XDG_STATE_HOME PATH="$fakebin:$PATH" \
+        LOCALAPPDATA="$WORK/AppDataLocal" SOT_COMM_HOME="$WORK/winnoop-home2" \
+        bash "$LISTEN" 2>&1)"
+    contains "$out" "$WORK/AppDataLocal/sot/fe-inbox.jsonl" \
+        || { echo "  LOCALAPPDATA-rooted path missing: $out"; return 1; }
+
+    # LOCALAPPDATA and XDG_STATE_HOME both unset (the "resolved empty"
+    # scenario) -> falls back to \$HOME, never a bare /sot/fe-inbox.jsonl.
+    out="$(env -u OS -u OSTYPE -u LOCALAPPDATA -u XDG_STATE_HOME PATH="$fakebin:$PATH" \
+        HOME="$WORK/fakehome" SOT_COMM_HOME="$WORK/winnoop-home2" \
+        bash "$LISTEN" 2>&1)"
+    contains "$out" "$WORK/fakehome/.local/state/sot/fe-inbox.jsonl" \
+        || { echo "  HOME-fallback path missing or wrong: $out"; return 1; }
+    contains "$out" "(/sot/fe-inbox.jsonl)" \
+        && { echo "  receive path collapsed to a bare /-rooted guess: $out"; return 1; }
+
+    rm -rf "$WORK/winnoop-home2"
+    return 0
+}
+
 # --- run, in order (later cases depend on earlier ones' registry state) --
 
 check "fresh claim records root"                            case_fresh_claim
@@ -1714,6 +1812,8 @@ check "a long/dirty host triggers the F7 host-alias digest suffix" case_host_ali
 check "a pinned SOT_COMM_NAME never adopts a name from any self-file (capsule-comm-identity fix)" case_pinned_comm_name_never_adopts_selffile_identity
 check "sot_jq_rawfile round-trips a leading-slash value through jq --rawfile" case_jq_rawfile_helper_round_trips_leading_slash_value
 check "every jq --arg binding in the comm scripts + hooks is on the slash-safe allowlist" case_jq_arg_names_are_allowlisted_against_slash_prone_values
+check "comm-listen.sh starts no bridge on a Windows host (start/status/selftest all report the FE-inbox receive path)" case_comm_listen_windows_no_bridge_started
+check "comm-listen.sh's Windows receive-path line resolves under LOCALAPPDATA/HOME, never a bare /" case_comm_listen_windows_receive_path_never_bare_slash
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

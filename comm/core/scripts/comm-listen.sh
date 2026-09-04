@@ -7,6 +7,12 @@
 # starts a reconnect-loop bridge (in a detached tmux session) that stays
 # connected and files inbound messages into ~/.sot-comm/inbox/<name>.jsonl.
 #
+# WINDOWS: this is a no-op there (prints the receive path and exits 0) — the
+# frontend already files every inbound frame into its own fe-inbox.jsonl, and
+# a bridge process has no role and is actively harmful (see the in-body
+# comment next to the Windows check for why). --status/--selftest report the
+# same; there is nothing to --stop.
+#
 # IMPORTANT — this is only HALF of receiving. A Claude session does NOT act on a
 # silent file write. After starting this, the agent must ALSO arm a Monitor on
 # its inbox so new messages WAKE it (a harness action a script can't do). The
@@ -27,14 +33,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 ensure_home
-# Private tmux socket (security review) — every tmux session this user's
-# Ship of Tools tooling creates (daemon workspaces AND this script's own
-# relay-bridge session) lives on one private, non-default server so another
-# local account sharing this host can't attach to it. Resolved once, used
-# on every `tmux` call below via `-S`.
-SOT_TMUX_SOCK="$(sot_tmux_socket)" \
-    || { echo "ERROR: could not resolve/secure the private tmux socket dir — see reason above" >&2; exit 1; }
 
+# Mode/name parsed FIRST — before any tmux involvement — so the Windows
+# short-circuit right below can act on it without needing a private tmux
+# socket (git-bash typically ships no tmux at all) or a resolved handle.
 MODE="start"; WANT_NAME=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -45,6 +47,46 @@ while [ $# -gt 0 ]; do
         *)          shift ;;
     esac
 done
+
+# On a Windows host the frontend already files every inbound relay frame
+# into its own fe-inbox.jsonl (gpu.rs::append_agent_message) and the
+# session's Monitor tails that — see /sot-fe-session-start. A durable tmux
+# reconnect-loop bridge has no receive role there, and starting one is
+# actively harmful: its `while true; do comm-relay.sh bridge …; done` loop
+# never exits, so bash keeps this script's own file open for the life of
+# the daemon-spawned session, which on Windows blocks `update_comm`'s
+# remove-then-copy replace of it (delete-pending) — the box goes send-deaf
+# to every subsequent converge. So: no bridge, ever, here.
+#
+# Detected the same way comm-session-skill.sh's `_is_windows` is (no
+# shared helper exists in comm-lib.sh for this yet — two call sites don't
+# earn one).
+_sot_comm_listen_is_windows() {
+    case "${OS:-}" in Windows_NT) return 0 ;; esac
+    case "${OSTYPE:-}" in msys*|cygwin*|win32) return 0 ;; esac
+    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
+    return 1
+}
+if _sot_comm_listen_is_windows; then
+    # Mirrors comm-session-skill.sh's fe_inbox construction exactly
+    # (gpu.rs::sot_state_dir): %LOCALAPPDATA%\sot on Windows. Built from
+    # that one resolver, never a bare "/"-rooted guess.
+    fe_inbox="${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}/sot/fe-inbox.jsonl"
+    echo "comm-listen: this host receives through the FE inbox ($fe_inbox); no relay bridge is started"
+    if [ "$MODE" = "selftest" ]; then
+        echo "comm-listen: no bridge selftest on Windows — the receive-path proof is the FE-inbox round trip; see /sot-fe-session-start"
+    fi
+    exit 0
+fi
+
+# Private tmux socket (security review) — every tmux session this user's
+# Ship of Tools tooling creates (daemon workspaces AND this script's own
+# relay-bridge session) lives on one private, non-default server so another
+# local account sharing this host can't attach to it. Resolved once, used
+# on every `tmux` call below via `-S`.
+SOT_TMUX_SOCK="$(sot_tmux_socket)" \
+    || { echo "ERROR: could not resolve/secure the private tmux socket dir — see reason above" >&2; exit 1; }
+
 [ -n "$WANT_NAME" ] && NAME="$WANT_NAME"
 [ -z "$NAME" ] && { echo "ERROR: no handle — run comm-join.sh first or pass --name" >&2; exit 1; }
 

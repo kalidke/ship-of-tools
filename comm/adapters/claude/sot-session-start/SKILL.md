@@ -195,6 +195,15 @@ tool calls), then read the results.
    so it runs *after* the Monitor is armed and proves the wake, not just the file
    write — one selftest instead of two.)
 
+   **On a Windows host, this is a no-op** (prints the receive path and exits 0):
+   the frontend already files every inbound frame into its own `fe-inbox.jsonl`,
+   so a durable tmux reconnect-loop bridge has no receive role there — and
+   running one anyway is actively harmful (its endless reconnect loop keeps
+   `comm-relay.sh` open, which on real Windows blocks `update_comm` from ever
+   replacing it). Arm the Monitor and run the receive-path selftest exactly as
+   `/sot-fe-session-start` steps 3–4 describe, in place of steps (b)-2/3 and (c)
+   below.
+
 2. **Arm the fast-comm wake** — a persistent harness **Monitor** whose command is
    `comm-watch.sh <handle>` (substitute the handle from step (a)):
 
@@ -245,6 +254,10 @@ Arming the Monitor proves nothing until a real message actually *wakes* it. Run
 wake in a single shot (this replaces the old two-selftest dance). (You only reach
 this on a genuine cold start / restart — a session that survived a wipe stopped at
 Step 0 and never armed, so there is nothing to selftest.)
+
+**On a Windows host, skip this** — there is no bridge to selftest (`comm-listen.sh
+--selftest` says so and exits 0 without probing anything). The receive-path proof
+there is the FE-inbox round trip in `/sot-fe-session-start` step 4.
 
 ```bash
 ~/.sot-comm/bin/comm-listen.sh --selftest   # injects a from:__selftest__ to:<you> frame:
