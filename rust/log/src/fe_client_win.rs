@@ -456,6 +456,22 @@ impl std::fmt::Display for FeAttachError {
 /// `LocalTerminal` has no analog for.
 pub struct FeAttachClient {
     parser: vt100_ctt::Parser,
+    /// The pane's current `(rows, cols)` — the CALLER's rect, tracked
+    /// independently of whatever size a just-restored checkpoint carries.
+    /// A capsule's checkpoint reflects the capsule's own PTY dimensions
+    /// (its `build_run_command` default of 80x24 until the capsule is
+    /// actually resized), which is not necessarily the pane's current
+    /// rect: a WATCHER cannot correct the capsule's geometry until it
+    /// holds the pen (`resize`'s own doc), so the first checkpoint after
+    /// attach — and any checkpoint from a reattach whose pane rect moved
+    /// while disconnected — can arrive at a size that disagrees with the
+    /// rect the renderer actually paints into. `pump`'s `Checkpoint` arm
+    /// reflows the restored screen to this size right after every
+    /// restore, so the render never depends on the wire-level resize
+    /// (gated on holding the pen) completing first — see that arm's own
+    /// comment for why `Screen::set_size`'s deterministic pad/clip is
+    /// enough on its own, no protocol change needed.
+    pane_size: (u16, u16),
     msg_tx: Sender<WorkerMsg>,
     events_rx: Receiver<ClientEvent>,
     /// Codex review round, deletion candidate: the join handle used to be
@@ -546,6 +562,7 @@ impl FeAttachClient {
 
         Ok(Self {
             parser,
+            pane_size: (rows, cols),
             msg_tx,
             events_rx,
             status: "connecting\u{2026}".to_string(),
@@ -578,6 +595,23 @@ impl FeAttachClient {
                 Ok(ClientEvent::Checkpoint(bytes)) => {
                     if let Err(e) = self.parser.restore_screen(&bytes) {
                         self.status = format!("checkpoint restore failed: {e:?}");
+                    } else {
+                        // `restore_screen` REPLACES the parser's screen
+                        // wholesale with one sized to the checkpoint's own
+                        // encoded dimensions (`Screen::restore`, vt100 crate)
+                        // — not this parser's construction size, and not
+                        // `pane_size`. Reflow it to the pane's current rect
+                        // immediately, rather than waiting on the wire-level
+                        // resize: that only reaches the capsule once this
+                        // client holds the pen (`resize`'s own doc), which a
+                        // fresh WATCHER never does before its first paint.
+                        // `Screen::set_size` pads/clips deterministically
+                        // (`vt100::grid::Grid::set_size`), so this is a pure
+                        // local reflow with no protocol involvement — the
+                        // actual capsule-side resize still happens exactly
+                        // as before, via the take-on-first-input handshake.
+                        let (rows, cols) = self.pane_size;
+                        self.parser.screen_mut().set_size(rows, cols);
                     }
                     changed = true;
                 }
@@ -659,9 +693,22 @@ impl FeAttachClient {
     /// awaited alone — see `fe_client::TakeTransaction::on_take_ok`), or
     /// immediately (as an ordinary `resize` request) while already
     /// DRIVING.
+    ///
+    /// The LOCAL screen is reflowed right here, unconditionally — mirrors
+    /// `term::LocalTerminal::resize`'s own "resize both the PTY and the
+    /// vt100 parser so their grids stay in sync," except the capsule side
+    /// of that pair is the wire resize above (protocol-gated on holding
+    /// the pen, unlike a local PTY spawn). Updating `pane_size` here is
+    /// also what makes a later reattach renegotiate: the next checkpoint
+    /// this episode restores — whatever size the capsule's own PTY
+    /// happens to carry — is reflowed to THIS size in `pump`'s
+    /// `Checkpoint` arm, not to the size the pane happened to be at the
+    /// original `attach` call.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         let rows = rows.max(2);
         let cols = cols.max(2);
+        self.pane_size = (rows, cols);
+        self.parser.screen_mut().set_size(rows, cols);
         let _ = self.msg_tx.send(WorkerMsg::Resize(cols, rows));
     }
 
