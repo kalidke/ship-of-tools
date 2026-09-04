@@ -227,6 +227,52 @@ fn scrollback_is_not_carried_and_capacity_comes_from_the_restorer() {
     assert_eq!(checkpoint(&roomy), checkpoint(&none));
 }
 
+/// The companion fix to the test above: the checkpoint WIRE FORMAT still
+/// carries no scrollback (`roundtrip`'s fresh, never-scrolled restorer
+/// above proves that unchanged), but a restorer that already had its OWN
+/// ring before calling `restore_screen` keeps it — moved across instead of
+/// dropped with the screen it replaces. This is the FE attach fix: replay
+/// bytes processed into the parser right before `restore_screen` (seeding
+/// exactly this kind of pre-restore ring) now survive the checkpoint that
+/// follows them instead of being wiped by it.
+#[test]
+fn restore_screen_keeps_the_restorers_own_scrollback_ring() {
+    let mut parser = Parser::new(4, 20, 100);
+    for i in 0..20 {
+        parser.process(format!("line {i}\r\n").as_bytes());
+    }
+    // Probe the ring's length through the public API alone:
+    // `set_scrollback` clamps to the ring's own length, so asking for far
+    // more than could possibly exist reads back exactly how many rows it
+    // holds.
+    parser.screen_mut().set_scrollback(usize::MAX);
+    let ring_len_before = parser.screen().scrollback();
+    assert!(
+        ring_len_before > 0,
+        "the lines above must have scrolled some rows into the ring"
+    );
+    parser.screen_mut().set_scrollback(0); // back to the live tail, as an attach leaves it
+
+    // A DIFFERENT source screen's checkpoint — what a real attach
+    // restores. Its own checkpoint carries no scrollback regardless
+    // (`Screen::checkpoint`'s own doc); the point is that `parser`'s ring
+    // survives being the RESTORER here, not the SOURCE.
+    let mut source = Parser::new(4, 20, 0);
+    source.process(b"checkpoint content");
+    let bytes = checkpoint(&source);
+
+    parser.restore_screen(&bytes).unwrap();
+
+    // The ring survived the restore...
+    parser.screen_mut().set_scrollback(usize::MAX);
+    assert_eq!(parser.screen().scrollback(), ring_len_before);
+
+    // ...and the VISIBLE screen is exactly the checkpoint's, unaffected by
+    // whatever the ring now holds.
+    parser.screen_mut().set_scrollback(0);
+    assert_visible_state_equal(parser.screen(), source.screen());
+}
+
 /// The alternate grid allocates its rows lazily, but that is an allocation
 /// optimization rather than terminal state — nothing can observe the
 /// difference, because reaching the alternate grid allocates it. The format

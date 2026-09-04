@@ -118,13 +118,21 @@ impl<CB: crate::callbacks::Callbacks> Parser<CB> {
     /// ground-state boundary, which [`is_ground`](Self::is_ground) reports.
     /// Resetting here is what makes that contract hold on this side.
     ///
-    /// The restored screen keeps this parser's own scrollback capacity; see
-    /// [`Screen::restore`](crate::Screen::restore).
+    /// The restored screen keeps this parser's own scrollback capacity
+    /// AND its own pre-restore scrollback ring — a checkpoint carries
+    /// neither (see [`Screen::restore`](crate::Screen::restore)), so both
+    /// come from whatever this parser already had. This is what lets an
+    /// attach that seeded the ring via replay (processing some history
+    /// into this parser before calling this method) keep that scrollback
+    /// after the restore makes the visible screen exact, instead of
+    /// losing it to the wholesale replacement below.
     ///
     /// # Errors
     ///
     /// Returns [`CheckpointError`](crate::CheckpointError) if the payload
-    /// cannot be decoded. The parser is left untouched in that case.
+    /// cannot be decoded. The parser is left untouched in that case — the
+    /// ring is cloned off, not moved, so an aborted restore never empties
+    /// it.
     pub fn restore_screen(
         &mut self,
         bytes: &[u8],
@@ -132,6 +140,7 @@ impl<CB: crate::callbacks::Callbacks> Parser<CB> {
         let screen = crate::Screen::restore(
             bytes,
             self.screen.screen.scrollback_len(),
+            self.screen.screen.scrollback_ring(),
         )?;
         self.screen.screen = screen;
         self.parser = crate::vte::Parser::new();

@@ -507,7 +507,12 @@ fn voyages_dir(state_dir: &Path) -> PathBuf {
     state_dir.join("voyages")
 }
 
-fn voyage_root_path(state_dir: &Path, voyage_id: &str) -> PathBuf {
+/// `pub(crate)`: also the FE attach client's own path to the CURRENT
+/// voyage's `seg/` dir (`fe_client_win.rs`'s scrollback replay reads the
+/// open segment there before every checkpoint restore) — the same
+/// `<state_dir>/voyages/<voyage_id>` shape every other reader in this
+/// crate already uses, not a second copy of it.
+pub(crate) fn voyage_root_path(state_dir: &Path, voyage_id: &str) -> PathBuf {
     voyages_dir(state_dir).join(voyage_id)
 }
 

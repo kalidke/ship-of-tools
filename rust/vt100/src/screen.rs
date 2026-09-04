@@ -1196,9 +1196,19 @@ impl Screen {
     /// `scrollback_len` is the *restorer's* scrollback capacity, not the
     /// checkpointing side's: a capsule keeps no scrollback, so its capacity
     /// says nothing about how much the attaching client wants to retain.
+    ///
+    /// `scrollback` is the restorer's OWN pre-restore ring, moved into the
+    /// freshly restored screen rather than starting it over at empty — the
+    /// wire format itself still carries none (see `crate::checkpoint`'s
+    /// own doc); this is the caller (`Parser::restore_screen`) handing
+    /// across what its own parser already had. An empty `VecDeque` (a
+    /// caller with nothing to carry over, or that deliberately wants a
+    /// clean slate) is the ordinary case this replaces — no behavior
+    /// change for it.
     pub(crate) fn restore(
         bytes: &[u8],
         scrollback_len: usize,
+        scrollback: std::collections::VecDeque<crate::row::Row>,
     ) -> Result<Self, crate::checkpoint::CheckpointError> {
         // Refuse an oversized payload before decoding any of it, so a valid
         // header followed by megabytes of trailing bytes is rejected on
@@ -1268,15 +1278,18 @@ impl Screen {
             &mut r,
             size,
             scrollback_len,
+            scrollback,
             "the cursor is outside the terminal",
             "the saved cursor is outside the terminal",
         )?;
         // The alternate grid never accumulates scrollback, matching how
-        // `Screen::new` constructs it.
+        // `Screen::new` constructs it — so it gets an empty ring here
+        // regardless of what the restorer passed in above.
         let alternate_grid = crate::grid::Grid::read_checkpoint(
             &mut r,
             size,
             0,
+            std::collections::VecDeque::new(),
             "the alternate grid's cursor is outside the terminal",
             "the alternate grid's saved cursor is outside the terminal",
         )?;
@@ -1296,5 +1309,14 @@ impl Screen {
     /// The scrollback capacity the normal grid was configured with.
     pub(crate) fn scrollback_len(&self) -> usize {
         self.grid.scrollback_len()
+    }
+
+    /// A clone of the normal grid's own scrollback ring — see
+    /// [`crate::grid::Grid::scrollback_ring`]'s own doc.
+    /// [`Parser::restore_screen`](crate::Parser::restore_screen) is the
+    /// only caller: it reads this off the screen ABOUT to be replaced and
+    /// hands it to [`Self::restore`] so the ring survives the replacement.
+    pub(crate) fn scrollback_ring(&self) -> std::collections::VecDeque<crate::row::Row> {
+        self.grid.scrollback_ring()
     }
 }

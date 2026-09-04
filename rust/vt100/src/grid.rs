@@ -199,6 +199,17 @@ impl Grid {
         self.scrollback_offset = rows.min(self.scrollback.len());
     }
 
+    /// A clone of this grid's own scrollback ring — the checkpoint wire
+    /// format never carries scrollback (see `crate::checkpoint`'s own
+    /// doc), so this is how [`Screen::restore`](crate::Screen::restore)
+    /// gets one to carry into a freshly restored grid instead of leaving
+    /// it at empty. A clone, not a move: the caller must be free to
+    /// abandon a restore attempt (a malformed checkpoint) without having
+    /// already emptied the grid it read this from.
+    pub(crate) fn scrollback_ring(&self) -> std::collections::VecDeque<crate::row::Row> {
+        self.scrollback.clone()
+    }
+
     pub fn write_contents(&self, contents: &mut String) {
         let mut wrapping = false;
         for row in self.visible_rows() {
@@ -617,6 +628,7 @@ impl Grid {
         r: &mut crate::checkpoint::Reader<'_>,
         size: Size,
         scrollback_len: usize,
+        scrollback: std::collections::VecDeque<crate::row::Row>,
         which: &'static str,
         which_saved: &'static str,
     ) -> Result<Self, crate::checkpoint::CheckpointError> {
@@ -685,7 +697,11 @@ impl Grid {
             scroll_bottom,
             origin_mode,
             saved_origin_mode,
-            scrollback: std::collections::VecDeque::new(),
+            // Carried over from whichever ring the caller passed in — see
+            // `scrollback_ring`'s own doc and this function's callers
+            // (`Screen::restore`). Already within `scrollback_len`: it
+            // came from a grid that enforced that bound on every push.
+            scrollback,
             scrollback_len,
             scrollback_offset: 0,
         })

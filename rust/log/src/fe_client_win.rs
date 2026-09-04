@@ -90,14 +90,15 @@ use crate::fe_client::{
 };
 use crate::pipe_win::{self, PipeClient};
 use crate::pointer::{self, PointerState};
-use crate::supervisor::state_dir_hash;
+use crate::recovery::{self, LatestLegState};
+use crate::supervisor::{state_dir_hash, voyage_root_path};
 use crate::wire::{
     self, AttachClient, AttachServer, DecodedFrame, ResizeRefusedReason, SupervisorOp,
     SupervisorPhase, SupervisorReply, SupervisorRequest, TakeRefusedReason,
 };
 use std::collections::VecDeque;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
@@ -152,6 +153,14 @@ const PUMP_DRAIN_CAP_BYTES: usize = 1024 * 1024;
 /// ADR 0041 "Terminal state"). Matches `term::LocalTerminal`'s own value
 /// for parity between the two drawer backends.
 const SCROLLBACK_ROWS: usize = 5000;
+/// Bounds how much of the current leg's own producer output
+/// [`scrollback_replay_tail`] reads back and replays into the parser
+/// before every checkpoint restore — an attach-time, one-shot read, not a
+/// steady-state cost, but still bounded rather than "the whole open
+/// segment": a long-lived leg's segment can be arbitrarily large, and only
+/// the TAIL of it can ever end up visible in [`SCROLLBACK_ROWS`] rows of
+/// ring anyway.
+const SCROLLBACK_REPLAY_MAX_BYTES: usize = 512 * 1024;
 
 // -----------------------------------------------------------------------
 // Small bounded I/O helpers over PipeClient, shared by every lane this
@@ -401,6 +410,118 @@ fn attach_and_collect_checkpoint(
 }
 
 // -----------------------------------------------------------------------
+// Scrollback replay: the current leg's own recorded output, read straight
+// off disk (never over the wire — the voyage store is local, and this is
+// the SAME state_dir the pointer/voyage lookups above already use). See
+// `pump`'s `Checkpoint` arm for how the result gets used.
+// -----------------------------------------------------------------------
+
+/// Reads up to [`SCROLLBACK_REPLAY_MAX_BYTES`] of the current leg's own
+/// producer output, tail-first, in order — from the leg's OPEN segment
+/// only (never a previous sealed segment of the same leg: the checkpoint
+/// this replay precedes corresponds to the open segment's own tip, and
+/// stopping there keeps this a bounded, single-file read rather than a
+/// walk of the whole leg's history). Never errors outward: a missing
+/// pointer, an absent/unreadable `seg/` dir, a leg that has no open
+/// segment (sealed right as this ran — rare, and the very next attach
+/// resolves it), or a corrupt segment all mean "no replay, attach
+/// proceeds" — this is a best-effort scrollback seed, not a correctness
+/// path (the checkpoint restore right after this is what makes the
+/// VISIBLE screen exact regardless of whether this found anything).
+/// A partial trailing frame (the segment is still being written) is
+/// skipped, never treated as an error — `SegmentReader::read`'s own
+/// `strict_sealed: false` tail-tear handling does that for free.
+fn scrollback_replay_tail(state_dir: &Path) -> Vec<u8> {
+    let voyage_id = match pointer::validate(state_dir) {
+        PointerState::Valid(id) => id,
+        PointerState::NotFound | PointerState::Corrupt | PointerState::OtherIo(_) => {
+            return Vec::new();
+        }
+    };
+    let seg_dir = voyage_root_path(state_dir, &voyage_id).join("seg");
+    let epoch = match recovery::latest_leg_state(&seg_dir) {
+        Ok(LatestLegState::Unsealed { epoch }) => epoch,
+        Ok(LatestLegState::Sealed { .. } | LatestLegState::NoLeg) | Err(_) => return Vec::new(),
+    };
+    let entries = match std::fs::read_dir(&seg_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let open_path = entries.flatten().find_map(|entry| {
+        let name = entry.file_name();
+        let name = name.to_str()?;
+        let (_, seg_epoch, state) = crate::SegmentIdentity::parse_file_name(name)?;
+        (seg_epoch == epoch && state == crate::SegmentState::Open).then(|| entry.path())
+    });
+    let Some(open_path) = open_path else {
+        return Vec::new();
+    };
+    let reader = match crate::SegmentReader::read(&open_path, false) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "sot-fe-attach: scrollback replay: could not read the open segment ({e}); \
+                 attaching with no replay"
+            );
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for env in &reader.frames {
+        if env.class != crate::Class::Producer {
+            continue;
+        }
+        // A spilled payload (`payload_ref`, large frames only) is skipped
+        // rather than fetched from the blob store: best-effort, and the
+        // ordinary case for interactive terminal output is inline.
+        let Some(payload) = env.payload.as_ref() else { continue };
+        let Some(b64) = payload.get("bytes_b64").and_then(|v| v.as_str()) else { continue };
+        out.extend_from_slice(&decode_b64(b64));
+    }
+    if out.len() > SCROLLBACK_REPLAY_MAX_BYTES {
+        let keep_from = out.len() - SCROLLBACK_REPLAY_MAX_BYTES;
+        out.drain(..keep_from);
+    }
+    out
+}
+
+/// Minimal base64 decoder (standard alphabet) — mirrors the ENCODER in
+/// `capsule_win.rs`'s own `base64_engine` (itself duplicated from
+/// `capsule.rs`, per that module's own doc: no shared home for it in this
+/// crate). Copied from `capsule.rs`'s test-only `decode_b64`, made
+/// production here since [`scrollback_replay_tail`] is a real caller.
+/// Malformed input decodes best-effort rather than erroring — a corrupt
+/// frame in the replay tail means less replay, never a panic.
+fn decode_b64(s: &str) -> Vec<u8> {
+    let val = |c: u8| -> u32 {
+        match c {
+            b'A'..=b'Z' => u32::from(c - b'A'),
+            b'a'..=b'z' => u32::from(c - b'a' + 26),
+            b'0'..=b'9' => u32::from(c - b'0' + 52),
+            b'+' => 62,
+            b'/' => 63,
+            _ => 0,
+        }
+    };
+    let bytes: Vec<u8> = s.bytes().filter(|&c| c != b'=').collect();
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let mut n = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            n |= val(c) << (18 - 6 * i);
+        }
+        out.push((n >> 16) as u8);
+        if chunk.len() > 2 {
+            out.push((n >> 8) as u8);
+        }
+        if chunk.len() > 3 {
+            out.push(n as u8);
+        }
+    }
+    out
+}
+
+// -----------------------------------------------------------------------
 // Worker <-> foreground messages
 // -----------------------------------------------------------------------
 
@@ -501,6 +622,14 @@ pub struct FeAttachClient {
     /// silently ate whatever non-marker event happened to be next in
     /// line). `drain_fe_down_markers` drains ONLY this queue.
     pending_fe_down_markers: VecDeque<serde_json::Value>,
+    /// The CALLER's own `state_dir` (see `attach`'s doc), kept here so
+    /// `pump`'s `Checkpoint` arm can find the current leg's own segment
+    /// for [`scrollback_replay_tail`] — the worker thread already owns a
+    /// copy (moved into it below), this is a second, foreground-side one
+    /// for that read alone, matching the worker's own "re-read the
+    /// pointer fresh every time" contract rather than caching the voyage
+    /// id this struct would otherwise have no way to keep current.
+    state_dir: PathBuf,
 }
 
 impl FeAttachClient {
@@ -540,6 +669,11 @@ impl FeAttachClient {
         let fe_down = FeDownBaseline::capture(fe_down_last_evidence);
         let queued_bytes = Arc::new(AtomicUsize::new(0));
         let worker_queued_bytes = Arc::clone(&queued_bytes);
+        // The worker below takes its own copy by move; `pump`'s
+        // `Checkpoint` arm needs one too (see the `state_dir` field's own
+        // doc), so clone before the move rather than threading it back
+        // through the event channel.
+        let pump_state_dir = state_dir.clone();
 
         thread::Builder::new()
             .name("sot-fe-attach-worker".to_string())
@@ -572,6 +706,7 @@ impl FeAttachClient {
             dead: false,
             queued_bytes,
             pending_fe_down_markers: VecDeque::new(),
+            state_dir: pump_state_dir,
         })
     }
 
@@ -593,6 +728,26 @@ impl FeAttachClient {
             }
             match self.events_rx.try_recv() {
                 Ok(ClientEvent::Checkpoint(bytes)) => {
+                    // Seed the parser's OWN scrollback ring from the
+                    // current leg's own recorded output BEFORE the
+                    // restore below — a checkpoint carries the visible
+                    // screen only (`Screen::checkpoint`'s own doc), and
+                    // `restore_screen` replaces the whole screen with one
+                    // built from it, which used to mean every re-attach
+                    // started scrollback over at empty even though the
+                    // capsule's own voyage already recorded the lines
+                    // that scrolled off. `restore_screen` now keeps
+                    // whatever ring THIS parser already had (vt100
+                    // crate, `Parser::restore_screen`'s own doc) — this
+                    // is what gives it something to keep: replayed bytes
+                    // that scroll off the (throwaway) screen below land
+                    // in the ring exactly as live output would, and the
+                    // restore that follows then makes the VISIBLE screen
+                    // exact regardless.
+                    let replay = scrollback_replay_tail(&self.state_dir);
+                    if !replay.is_empty() {
+                        self.parser.process(&replay);
+                    }
                     if let Err(e) = self.parser.restore_screen(&bytes) {
                         self.status = format!("checkpoint restore failed: {e:?}");
                     } else {
@@ -1868,5 +2023,141 @@ fn handle_attach_frame(
         | DecodedFrame::AttachClient(_)
         | DecodedFrame::SupervisorRequest(_)
         | DecodedFrame::SupervisorReply(_) => FrameOutcome::Ignored,
+    }
+}
+
+// -----------------------------------------------------------------------
+// Unit tests for the scrollback-replay tail reader (`scrollback_replay_tail`,
+// `decode_b64`) — no pipe, no worker thread, no real capsule: just the
+// on-disk voyage shape those two private functions read. The real-process
+// acceptance coverage (a live capsule leg, a real attach) lives in
+// `tests/fe_client_win.rs`.
+// -----------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::segment::tests::{test_env, test_header};
+    use crate::segment::{Commit, SegmentWriter};
+    use crate::SegmentState;
+    use serde_json::json;
+
+    /// Test-only base64 ENCODER — the production side of the codec
+    /// [`decode_b64`] is tested against. Mirrors `capsule_win.rs`'s own
+    /// `base64_engine::encode_b64` (private to that module, and itself a
+    /// deliberate duplicate of `capsule.rs`'s — see that module's doc):
+    /// this crate has no shared home for the encoder either, and here it
+    /// exists purely to build synthetic `bytes_b64` payloads, never to
+    /// ship one.
+    fn encode_b64(data: &[u8]) -> String {
+        const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+        for chunk in data.chunks(3) {
+            let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+            let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+            out.push(TABLE[(n >> 18) as usize & 63] as char);
+            out.push(TABLE[(n >> 12) as usize & 63] as char);
+            out.push(if chunk.len() > 1 { TABLE[(n >> 6) as usize & 63] as char } else { '=' });
+            out.push(if chunk.len() > 2 { TABLE[n as usize & 63] as char } else { '=' });
+        }
+        out
+    }
+
+    #[test]
+    fn decode_b64_round_trips_the_encoder() {
+        for sample in [
+            &b""[..],
+            b"a",
+            b"ab",
+            b"abc",
+            b"hello, scrollback replay\r\n",
+        ] {
+            assert_eq!(decode_b64(&encode_b64(sample)), sample);
+        }
+    }
+
+    /// Publishes `drawer.voyage` and writes an OPEN (never sealed) segment
+    /// under `<state_dir>/voyages/<id>/seg/` carrying one Producer frame
+    /// per entry of `lines`, each base64-encoded into `bytes_b64` — the
+    /// same shape a real capsule leg writes (`capsule.rs`'s own
+    /// `producer_frame`), built with `segment.rs`'s own `test_env`/
+    /// `test_header` helpers rather than a second hand-rolled envelope
+    /// builder. Returns the segment's on-disk path so a test can inspect
+    /// or truncate the raw bytes afterward.
+    fn seed_open_segment(state_dir: &Path, lines: &[&str]) -> PathBuf {
+        std::fs::create_dir_all(state_dir).unwrap();
+        let voyage_id = uuid::Uuid::now_v7().to_string();
+        pointer::publish(state_dir, &voyage_id).unwrap();
+        let seg_dir = voyage_root_path(state_dir, &voyage_id).join("seg");
+        std::fs::create_dir_all(&seg_dir).unwrap();
+        let mut w = SegmentWriter::create(&seg_dir, test_header(&voyage_id, 0, 1, None)).unwrap();
+        let path = w.identity().path(&seg_dir, SegmentState::Open);
+        for (n, line) in (1u64..).zip(lines) {
+            let mut env = test_env(1, n);
+            env.payload = Some(json!({"bytes_b64": encode_b64(line.as_bytes())}));
+            w.append(&env, Commit::Immediate).unwrap();
+        }
+        // Deliberately never sealed: `path` stays a live leg's `.open`
+        // file, matching what an in-progress attach reads.
+        path
+    }
+
+    #[test]
+    fn replays_producer_output_in_order_up_to_the_byte_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let lines = ["line one\r\n", "line two\r\n", "line three\r\n"];
+        seed_open_segment(dir.path(), &lines);
+
+        let replayed = scrollback_replay_tail(dir.path());
+        assert_eq!(replayed, lines.concat().into_bytes());
+    }
+
+    #[test]
+    fn a_partial_trailing_frame_is_skipped_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let lines = ["line one\r\n", "line two\r\n", "line three\r\n"];
+        let path = seed_open_segment(dir.path(), &lines);
+
+        let whole = std::fs::read(&path).unwrap();
+        let complete_replay = scrollback_replay_tail(dir.path());
+        assert_eq!(complete_replay, lines.concat().into_bytes());
+
+        // Cut into the middle of the LAST record — a live leg's `.open`
+        // file read mid-write looks exactly like this: every earlier
+        // record intact, the final one provably incomplete.
+        let torn_len = whole.len() - 5;
+        std::fs::write(&path, &whole[..torn_len]).unwrap();
+
+        let torn_replay = scrollback_replay_tail(dir.path());
+        // Never an error and never a panic (a missing/unreadable segment
+        // returns empty, per this function's own doc) — the property
+        // under test is that the torn LAST frame is dropped while every
+        // earlier, complete frame still replays.
+        assert_eq!(torn_replay, lines[..2].concat().into_bytes());
+        assert!(torn_replay.len() < complete_replay.len());
+    }
+
+    #[test]
+    fn no_pointer_means_no_replay_not_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(scrollback_replay_tail(dir.path()), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn replay_is_bounded_to_the_configured_byte_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        // Comfortably over the cap so truncation is unambiguous, but
+        // still a handful of frames (each under the per-record limit) —
+        // this is a bound test, not a stress test.
+        let line = "x".repeat(600);
+        let lines: Vec<&str> = std::iter::repeat(line.as_str())
+            .take((SCROLLBACK_REPLAY_MAX_BYTES / line.len()) + 10)
+            .collect();
+        seed_open_segment(dir.path(), &lines);
+
+        let replayed = scrollback_replay_tail(dir.path());
+        assert_eq!(replayed.len(), SCROLLBACK_REPLAY_MAX_BYTES);
+        // It is the TAIL that survives, not the head.
+        assert!(lines.concat().into_bytes().ends_with(&replayed));
     }
 }
