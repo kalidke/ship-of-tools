@@ -47,6 +47,12 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// ~= 9s worst case) but still a real bound, never "forever."
 const BOUND: Duration = Duration::from_secs(30);
 
+/// Pinned `SOT_STATE_HOST` for every `spawn_sotd` in this file — a fixed,
+/// known per-host registry dir name instead of whatever `%COMPUTERNAME%`
+/// happens to be on the runner (`workspaces::state_host`'s fallback).
+/// `Env::seed_default_capsule_toml` computes the same path from it.
+const TEST_STATE_HOST: &str = "testhost";
+
 fn sotd_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
 }
@@ -161,7 +167,11 @@ impl Env {
     /// own registry root reads `%XDG_CONFIG_HOME%` — both overridden here
     /// so this process's capsule state and workspace registry both live
     /// under the SAME temp root a second `sotd` launch (the adoption leg
-    /// of this test) can point at again.
+    /// of this test) can point at again. `SOT_STATE_HOST` is pinned so
+    /// the per-host registry dir (`workspaces::state_host`, which
+    /// otherwise falls back to `%COMPUTERNAME%`) is a fixed, known name —
+    /// `seed_default_capsule_toml` below has to compute the SAME path
+    /// from the test side to pre-write a toml this daemon will read.
     fn spawn_sotd(&self) -> KillGuard {
         let child = Command::new(sotd_exe())
             .arg("--socket")
@@ -170,12 +180,56 @@ impl Env {
             .arg(&self.daemon_project_root)
             .env("LOCALAPPDATA", &self.state_root)
             .env("XDG_CONFIG_HOME", &self.config_root)
+            .env("SOT_STATE_HOST", TEST_STATE_HOST)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn sotd");
         KillGuard(Some(child))
+    }
+
+    /// Pre-write the default row's own toml BEFORE `spawn_sotd` boots the
+    /// daemon, with `runtime = "capsule"` and the given `agent` — the
+    /// same registry path `workspaces::save`/`load_toml` use
+    /// (`<LOCALAPPDATA>\config\workspaces-<SOT_STATE_HOST>\<slug>.toml`),
+    /// computed the same way the daemon computes it: `--project-root`'s
+    /// own basename run through `sot_protocol::slug` (no `--label` is
+    /// ever passed in this file). Only `workspace_id`/`slug`/
+    /// `project_root` are required for `load_toml` to treat this as
+    /// canonical (`workspaces.rs`'s own doc); every other field the
+    /// daemon needs defaults sensibly. This is what makes a capsule
+    /// default row runnable on a CI runner: the daemon's own fresh-boot
+    /// seed always picks `agent = "claude"` on Windows (`server.rs`), and
+    /// `agent = "none"` is preserved instead ONLY when a pre-existing
+    /// on-disk row already carries `runtime = "capsule"`.
+    fn seed_default_capsule_toml(&self, agent: &str) {
+        let slug = sot_protocol::slug(
+            self.daemon_project_root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("daemon_project_root has a file name"),
+        );
+        // `sot_log::state_dir::sot_state_dir()` joins "sot" onto
+        // `%LOCALAPPDATA%` itself; `workspaces::app_config_dir` joins
+        // "config" onto THAT — same two segments `state_dir_path` below
+        // (this file's other daemon-computed path) already accounts for.
+        let dir = self
+            .state_root
+            .join("sot")
+            .join("config")
+            .join(format!("workspaces-{TEST_STATE_HOST}"));
+        std::fs::create_dir_all(&dir).expect("mkdir pre-seeded workspaces dir");
+        let project_root = self.daemon_project_root.to_string_lossy();
+        let body = format!(
+            "workspace_id  = \"ws-preseeded-default\"\n\
+             slug          = \"{slug}\"\n\
+             project_root  = \"{project_root}\"\n\
+             runtime       = \"capsule\"\n\
+             agent         = \"{agent}\"\n"
+        );
+        std::fs::write(dir.join(format!("{slug}.toml")), body)
+            .expect("write pre-seeded default row toml");
     }
 }
 
@@ -592,6 +646,16 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     );
 
     let env = Env::new("dsa");
+    // Pre-write the default row's own toml as a capsule with the
+    // placeholder "none" agent (the same leg every other test in this
+    // file uses) BEFORE boot: on Windows a fresh-boot default row is
+    // unconditionally seeded `agent = "claude"` (`server.rs`), and no
+    // `claude` binary exists on a CI runner — the leg fails to spawn,
+    // flaps past the anti-flap bound, and the row never reaches `Ready`.
+    // `server.rs`'s own re-seed rule only overwrites agent/autostart when
+    // the ON-DISK runtime is NOT already "capsule", so this pre-existing
+    // row survives untouched.
+    env.seed_default_capsule_toml("none");
     let mut daemon = env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
