@@ -269,6 +269,17 @@ pub async fn run(opts: Opts) -> Result<()> {
     // them as constructor args.
     let existing_default = workspaces.resolve(Some(&paths::slug(&default_label)));
     let (seed_autostart, seed_agent, seed_agent_name, seed_task) = match &existing_default {
+        // Windows only: a default row whose on-disk runtime is not
+        // "capsule" is a CORRUPTED row (the same field incident
+        // `default_row_runtime`'s own doc describes) — whatever wrote
+        // "tmux" there flipped `agent`/`autostart_claude` to "none"/
+        // false alongside it, so preserving them via the plain
+        // `Some(existing)` arm below would boot a capsule with no
+        // agent. Re-seed with the same "claude" launcher the
+        // first-ever-launch Windows arm uses, below.
+        Some(existing) if cfg!(windows) && existing.runtime != "capsule" => {
+            (true, "claude".to_string(), String::new(), String::new())
+        }
         Some(existing) => (
             existing.autostart_claude,
             existing.agent.clone(),
@@ -310,7 +321,8 @@ pub async fn run(opts: Opts) -> Result<()> {
                 workspace_id = %existing.workspace_id,
                 on_disk_runtime = %existing.runtime,
                 "default workspace runtime on Windows must be capsule (ADR 0042 L1a); \
-                 correcting a stale on-disk value"
+                 correcting a stale on-disk value and re-seeding its agent/autostart \
+                 (a corrupted row's launch fields, not just its runtime)"
             );
         }
     }
