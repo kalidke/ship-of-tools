@@ -4565,6 +4565,36 @@ const FRAME_BUDGET: std::time::Duration = std::time::Duration::from_micros(8_333
 /// any realistic auto-repeat rate.
 const NAV_FIRE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// Local-host fallback for the workspace picker's starting directory
+/// (`State::begin_create_session`), used only once every higher-priority
+/// source (the `[sessions] new_session_root` setting, `$SOT_PROJECTS_ROOT`,
+/// the target host's `remote_home`, `$SOT_REMOTE_HOME`) has come up empty.
+/// `env_home` is `$HOME`; `os_home` is what `dirs::home_dir()` reports (the
+/// Win32 known-folder API on Windows). Prefers `env_home` when set (an
+/// explicit override wins), then `os_home`, and only degrades to a bare
+/// filesystem root — which carries no `Prefix`/drive-letter component on
+/// Windows — when neither is available.
+///
+/// A bare `/` here used to be the ONLY local fallback: `$HOME` is unset on
+/// a plain Windows launch (no git-bash/MSYS in the process env), so the
+/// picker's first `directory.list` request went out rooted at `/`. That
+/// "works" only because a leading-slash path resolves against the
+/// backend's *current* drive — and every further drill-in the picker
+/// performs joins onto that same driveless string (`PathBuf::push` never
+/// re-derives a dropped prefix), so the eventual `workspace.create`
+/// persisted a driveless root (observed:
+/// `project_root = "/Users\<user>\HomeLab\<repo>"`, no `C:`). Consulting
+/// `dirs::home_dir()` — what the OS itself reports — before falling all
+/// the way to `/` keeps the drive letter from the very first request.
+///
+/// A standalone (non-method) function so this has a seam to unit-test
+/// without constructing a full `State`.
+fn picker_local_home_fallback(env_home: Option<String>, os_home: Option<PathBuf>) -> String {
+    env_home
+        .or_else(|| os_home.map(|h| h.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "/".to_string())
+}
+
 impl State {
     fn new(
         event_loop: &ActiveEventLoop,
@@ -8045,8 +8075,10 @@ impl State {
         //      browses the backend's filesystem, not the frontend's; the FRONTEND's
         //      $HOME is meaningless to the BACKEND).
         //   3. The launcher-set SOT_REMOTE_HOME, if it propagated.
-        //   4. Frontend's own $HOME — useful only for local hosts.
-        //   5. Filesystem root.
+        //   4+. Frontend's own $HOME, then the OS-reported home dir, then
+        //      the filesystem root — see `picker_local_home_fallback`,
+        //      whose doc comment explains why step 4 alone (a bare `/`)
+        //      was a Windows drive-letter bug.
         let host_home = self
             .hosts_config
             .hosts
@@ -8060,8 +8092,9 @@ impl State {
             .or_else(|| std::env::var("SOT_PROJECTS_ROOT").ok())
             .or(host_home)
             .or_else(|| std::env::var("SOT_REMOTE_HOME").ok())
-            .or_else(|| std::env::var("HOME").ok())
-            .unwrap_or_else(|| "/".to_string());
+            .unwrap_or_else(|| {
+                picker_local_home_fallback(std::env::var("HOME").ok(), dirs::home_dir())
+            });
         self.workspace_picker = Some(WorkspacePicker {
             host: host.clone(),
             current_path: start.clone(),
@@ -22121,6 +22154,54 @@ fn force_os_foreground(window: &winit::window::Window) -> bool {
 mod tests {
     use super::*;
     use sot_protocol::TreeNode;
+
+    // Workspace-create picker root: a Windows FE with no `$HOME` in its
+    // process env must not seed the picker (and hence `workspace.create`'s
+    // `project_root`) with a driveless `/` — see `picker_local_home_fallback`.
+
+    #[test]
+    fn picker_local_home_fallback_prefers_env_home() {
+        assert_eq!(
+            picker_local_home_fallback(
+                Some("/home/u/explicit".to_string()),
+                Some(PathBuf::from(r"C:\Users\u"))
+            ),
+            "/home/u/explicit"
+        );
+    }
+
+    #[test]
+    fn picker_local_home_fallback_uses_os_home_over_bare_root() {
+        // This is the regression: before the fix, an absent `$HOME` fell
+        // straight to "/" even when the OS could report a real home dir.
+        assert_eq!(
+            picker_local_home_fallback(None, Some(PathBuf::from("/home/u"))),
+            "/home/u"
+        );
+    }
+
+    #[test]
+    fn picker_local_home_fallback_falls_back_to_root_when_nothing_resolves() {
+        assert_eq!(picker_local_home_fallback(None, None), "/");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn picker_local_home_fallback_keeps_drive_letter_backslash_form() {
+        assert_eq!(
+            picker_local_home_fallback(None, Some(PathBuf::from(r"C:\Users\u\HomeLab\r"))),
+            r"C:\Users\u\HomeLab\r"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn picker_local_home_fallback_keeps_drive_letter_forward_slash_form() {
+        assert_eq!(
+            picker_local_home_fallback(None, Some(PathBuf::from("C:/Users/u/HomeLab/r"))),
+            "C:/Users/u/HomeLab/r"
+        );
+    }
 
     // State-nav (ADR 0023): agent work-state tone + staleness aging.
     fn agent_payload(state: &str, status_at: &str) -> serde_json::Map<String, serde_json::Value> {
