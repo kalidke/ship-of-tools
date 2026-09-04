@@ -466,6 +466,15 @@ struct Conn {
     /// genuine protocol violation, not a routine "some other connection's
     /// late echo" to wave through.
     last_keepalive_nonce: Option<u64>,
+    /// The attach-lane protocol version this connection negotiated at
+    /// `hello` (Codex round on #194, finding 1 — "attach proto v2 bound
+    /// to checkpoint v2"). Defaults to [`wire::ATTACH_PROTO_V1`], the
+    /// same value a connection that has not said hello yet would be
+    /// refused down to if it tried anything else — never read before a
+    /// successful hello sets it for real, since `BeginCheckpoint`
+    /// structurally cannot fire before then (a connection reaches
+    /// `Watcher` only via a hello-accepted `PostHello`).
+    attach_proto_version: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -736,6 +745,7 @@ impl AttachProto {
                 outstanding_sends: 0,
                 last_send_progress: now,
                 last_keepalive_nonce: None,
+                attach_proto_version: wire::ATTACH_PROTO_V1,
             },
         );
         self.non_watcher_count += 1;
@@ -1101,6 +1111,22 @@ impl AttachProto {
             .is_some_and(|cp| matches!(cp, CheckpointProgress::AwaitingGround { .. }))
     }
 
+    /// The attach-lane protocol version `conn` negotiated at `hello`
+    /// (Codex round on #194, finding 1 — "attach proto v2 bound to
+    /// checkpoint v2"). `capsule_win.rs`'s `BeginCheckpoint` handler
+    /// reads this to decide which checkpoint format version to encode:
+    /// [`wire::ATTACH_PROTO_V1`] gets checkpoint format v1 (no
+    /// scrollback ring — the shape an old client's own vt100 fork build
+    /// can actually read); anything newer gets the current format.
+    /// [`wire::ATTACH_PROTO_V1`] for an unknown `conn` too — the same
+    /// conservative default a connection that has not said hello yet
+    /// carries, which `BeginCheckpoint` can structurally never fire for.
+    pub fn negotiated_proto(&self, conn: ConnId) -> u32 {
+        self.conns
+            .get(&conn)
+            .map_or(wire::ATTACH_PROTO_V1, |c| c.attach_proto_version)
+    }
+
     /// The loop encoded `conn`'s checkpoint (only it can — see the module
     /// doc) and hands back the bytes. Wraps them in `Arc` ONCE and emits
     /// only the FIRST chunk (finding 10: streamed, not materialized all at
@@ -1337,6 +1363,7 @@ impl AttachProto {
                     if let Role::Unclassified { deadline } = c.role {
                         c.role = Role::PostHello { deadline };
                     }
+                    c.attach_proto_version = v;
                 }
                 let bytes = wire::encode_attach_server(&AttachServer::HelloOk { proto: v }).expect("fixed-shape body");
                 vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)]
@@ -2172,7 +2199,7 @@ mod tests {
         assert_eq!(
             decoded,
             DecodedFrame::AttachServer(AttachServer::HelloRefused {
-                supported: wire::ATTACH_PROTO_V1
+                supported: wire::ATTACH_PROTO_V2
             })
         );
         // The connection only actually closes once this reply's

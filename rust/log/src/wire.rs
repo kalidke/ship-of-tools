@@ -134,8 +134,9 @@
 //! # Checkpoint chunk arithmetic
 //!
 //! The vt100 fork's worst-case encoded checkpoint (both grids at the
-//! ADR 0041 maximum 512×256 geometry, `rust/vt100/src/checkpoint.rs`'s
-//! `MAX_CHECKPOINT_LEN`) is a PROVEN 8,651,327 bytes. This module pins
+//! ADR 0041 maximum 512×256 geometry, PLUS a full 200-row scrollback ring
+//! on the normal grid — `rust/vt100/src/checkpoint.rs`'s
+//! `MAX_CHECKPOINT_LEN`) is a PROVEN 12,030,729 bytes. This module pins
 //! that number as [`MAX_CHECKPOINT_LEN`] rather than depending on the
 //! `vt100` crate: the checkpoint's bytes are opaque to the wire (they
 //! ride inside `checkpoint_chunk` exactly like any other payload), and
@@ -147,7 +148,7 @@
 //! `checkpoint_chunk` can carry within the outer [`MAX_BODY_LEN`] cap.
 //! [`CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD`] is what a GREEDY encoder (one
 //! that always fills a chunk to that payload bound) produces for the
-//! worst-case checkpoint — 9 — but it is NOT a protocol maximum: nothing
+//! worst-case checkpoint — 12 — but it is NOT a protocol maximum: nothing
 //! on the wire counts or caps `checkpoint_chunk` frames, and a sender
 //! using smaller chunks may legally emit more of them, including empty
 //! non-final ones. A decoder must never reject a stream for having "too
@@ -247,17 +248,44 @@ fn validate_operation_id(field: &'static str, s: String) -> Result<String, WireE
 /// 0041: "the lane rejects the pair it did not [recognize]").
 pub const SUPERVISOR_PROTO_V1: u32 = 1;
 
-/// The only attach-lane protocol version this build speaks. Attach proto
-/// v1 binds checkpoint format v1 (`rust/vt100/src/checkpoint::VERSION`) —
-/// that binding is why `hello` can refuse before any checkpoint byte is
-/// ever generated, rather than failing partway through a multi-MiB
-/// transfer.
+/// The original attach-lane protocol version, still spoken by this
+/// build for backward compatibility. `hello` refuses an incompatible
+/// client before any checkpoint byte is ever generated, rather than
+/// failing partway through a multi-MiB transfer.
+///
+/// Bound 1:1 to checkpoint format v1 (no scrollback ring) — see
+/// [`ATTACH_PROTO_V2`]'s own doc for why that binding, once implicit, is
+/// now enforced explicitly rather than merely documented.
 pub const ATTACH_PROTO_V1: u32 = 1;
 
+/// The current attach-lane protocol version (Codex round on #194,
+/// finding 1 — "attach proto v2 bound to checkpoint v2").
+///
+/// A checkpoint reader tolerates every format version from
+/// `rust/vt100/src/checkpoint::MIN_READABLE_VERSION` up
+/// (`checkpoint::VERSION`, now 2, carries the scrollback ring) — but a
+/// WRITER built before that ring existed does not: its own `VERSION`
+/// constant is hardcoded to 1, so `Screen::restore` on that build
+/// refuses a v2 payload outright, and that build's own pinned
+/// `wire::MAX_CHECKPOINT_LEN` (8,651,327 B) predates the ring's larger
+/// bound too, so even collecting an oversized transfer can fail before
+/// restore is ever reached. Negotiating the OUTER attach-lane framing
+/// version is what lets a capsule know, before it ever encodes a byte,
+/// whether the peer on the other end can read a ring at all:
+/// `ATTACH_PROTO_V2` promises checkpoint format v2 may follow;
+/// `ATTACH_PROTO_V1` promises the capsule will encode v1 (no ring)
+/// instead, regardless of how much scrollback the capsule itself keeps
+/// live. `negotiate` accepts either from a client; which one a
+/// connection settled on is what a capsule's `BeginCheckpoint` handling
+/// reads back (`attach_proto::AttachProto::negotiated_proto`) to decide
+/// which format version to encode.
+pub const ATTACH_PROTO_V2: u32 = 2;
+
 /// The proven worst-case encoded size of a vt100-fork checkpoint (ADR
-/// 0041 "Terminal state", step 3 as built) — see the module doc for why
-/// this is a pinned literal rather than a cross-crate reference.
-pub const MAX_CHECKPOINT_LEN: usize = 8_651_327;
+/// 0041 "Terminal state", step 3 as built, plus the scrollback ring
+/// revision) — see the module doc for why this is a pinned literal rather
+/// than a cross-crate reference.
+pub const MAX_CHECKPOINT_LEN: usize = 12_030_729;
 
 /// Fixed body overhead in a `checkpoint_chunk` frame ahead of its `bytes`:
 /// the tag byte plus the `last` flag byte.
@@ -269,14 +297,14 @@ pub const MAX_CHECKPOINT_CHUNK_PAYLOAD: usize = MAX_BODY_LEN - CHECKPOINT_CHUNK_
 
 /// What a GREEDY encoder — one that always fills a `checkpoint_chunk` to
 /// [`MAX_CHECKPOINT_CHUNK_PAYLOAD`] — produces for the worst-case
-/// checkpoint: 8 full chunks of 1,048,574 B plus one 262,735 B chunk, 9
+/// checkpoint: 11 full chunks of 1,048,574 B plus one 496,415 B chunk, 12
 /// total. This is NOT a protocol maximum a decoder may enforce (see the
 /// module doc's "Checkpoint chunk arithmetic" section) — it is what THIS
 /// crate's own arithmetic test exercises, and the compile-time assertion
 /// below fails loudly if either bound ever moves without the other.
 pub const CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD: usize =
     MAX_CHECKPOINT_LEN.div_ceil(MAX_CHECKPOINT_CHUNK_PAYLOAD);
-const _: () = assert!(CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD == 9);
+const _: () = assert!(CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD == 12);
 
 // ---------------------------------------------------------------------
 // Tags
@@ -581,17 +609,23 @@ pub enum Negotiated {
     Refused { supported: u32 },
 }
 
-/// Pure hello negotiation: v1 is the only version this build speaks.
-/// Called BEFORE any checkpoint byte is generated — an incompatible pair
-/// is refused here, not partway through a multi-MiB transfer, because
-/// attach proto v1 binds checkpoint format v1.
+/// Pure hello negotiation: this build speaks [`ATTACH_PROTO_V1`] and
+/// [`ATTACH_PROTO_V2`], echoing back exactly whichever one the client
+/// asked for (never silently upgrading it) — called BEFORE any
+/// checkpoint byte is generated, so an incompatible pair is refused
+/// here, not partway through a multi-MiB transfer. A refusal reports the
+/// NEWEST version this build speaks, matching the existing
+/// oldest-first-fallback shape a client already retries through: a
+/// future, still-newer client refused here learns to try
+/// `ATTACH_PROTO_V2` next, the same way today's client falls back to
+/// `ATTACH_PROTO_V1` against an older capsule.
 #[must_use]
 pub fn negotiate(client_proto: u32) -> Negotiated {
-    if client_proto == ATTACH_PROTO_V1 {
-        Negotiated::Accepted(ATTACH_PROTO_V1)
+    if client_proto == ATTACH_PROTO_V1 || client_proto == ATTACH_PROTO_V2 {
+        Negotiated::Accepted(client_proto)
     } else {
         Negotiated::Refused {
-            supported: ATTACH_PROTO_V1,
+            supported: ATTACH_PROTO_V2,
         }
     }
 }
@@ -2437,13 +2471,33 @@ mod tests {
 
     #[test]
     fn negotiate_accepts_v1() {
-        assert_eq!(negotiate(1), Negotiated::Accepted(1));
+        assert_eq!(negotiate(ATTACH_PROTO_V1), Negotiated::Accepted(ATTACH_PROTO_V1));
+    }
+
+    /// Codex round on #194: v2 landed alongside the scrollback ring, and
+    /// `negotiate` echoes back exactly what a client asked for -- never
+    /// silently upgrading v1 to v2, and accepting v2 as its own version,
+    /// not the older one.
+    #[test]
+    fn negotiate_accepts_v2() {
+        assert_eq!(
+            negotiate(ATTACH_PROTO_V2),
+            Negotiated::Accepted(ATTACH_PROTO_V2)
+        );
     }
 
     #[test]
     fn negotiate_refuses_anything_else() {
-        assert_eq!(negotiate(2), Negotiated::Refused { supported: 1 });
-        assert_eq!(negotiate(0), Negotiated::Refused { supported: 1 });
+        assert_eq!(
+            negotiate(3),
+            Negotiated::Refused { supported: ATTACH_PROTO_V2 }
+        );
+        assert_eq!(
+            negotiate(0),
+            Negotiated::Refused {
+                supported: ATTACH_PROTO_V2
+            }
+        );
     }
 
     // ---- chunk arithmetic ------------------------------------------------
@@ -2451,7 +2505,7 @@ mod tests {
     #[test]
     fn greedy_chunking_of_the_max_checkpoint_uses_the_computed_count() {
         assert_eq!(MAX_CHECKPOINT_CHUNK_PAYLOAD, 1_048_574);
-        assert_eq!(CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD, 9);
+        assert_eq!(CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD, 12);
 
         let mut remaining = MAX_CHECKPOINT_LEN;
         let mut splitter = FrameSplitter::new();

@@ -1132,13 +1132,16 @@ impl MouseProtocolEncoding {
 
 impl Screen {
     /// Serializes the complete terminal state for hand-off to a client that
-    /// must reproduce this screen exactly.
+    /// must reproduce this screen exactly, at this build's current format
+    /// version. See [`checkpoint_at_version`](Self::checkpoint_at_version)
+    /// for encoding at an explicit, possibly older version instead — this
+    /// is exactly `self.checkpoint_at_version(checkpoint::VERSION)`.
     ///
     /// Both grids ride, along with alternate-screen identity, the current and
     /// saved cursor, the current and saved attributes, the scroll region,
-    /// origin mode, per-row wrap flags, and the input modes. Scrollback does
-    /// not — see [`crate::checkpoint`] for the format and for what is
-    /// deliberately excluded.
+    /// origin mode, per-row wrap flags, the input modes, and the normal
+    /// grid's bounded scrollback ring — see [`crate::checkpoint`] for the
+    /// format and for what is deliberately excluded.
     ///
     /// The result is at most [`MAX_CHECKPOINT_LEN`](crate::MAX_CHECKPOINT_LEN)
     /// bytes — which is why this can fail. `Parser` and
@@ -1154,6 +1157,42 @@ impl Screen {
     pub fn checkpoint(
         &self,
     ) -> Result<Vec<u8>, crate::checkpoint::CheckpointError> {
+        self.checkpoint_at_version(crate::checkpoint::VERSION)
+    }
+
+    /// Serializes at an EXPLICIT, possibly older format version, rather
+    /// than this build's current one — for a peer that negotiated an
+    /// older attach-lane protocol and therefore cannot read anything
+    /// newer (ADR 0041 "attach proto v2 bound to checkpoint v2": an old
+    /// client's own vt100 fork build refuses a checkpoint version newer
+    /// than the one it was built against, so a capsule that knows it is
+    /// talking to one must not encode a ring into it, no matter how much
+    /// scrollback the capsule's own live parser keeps).
+    ///
+    /// `version` must be in
+    /// `checkpoint::MIN_READABLE_VERSION..=checkpoint::VERSION` — the
+    /// same range [`restore`](Self::restore) accepts, so anything this
+    /// build can write, it can also read back. Below version 2, the
+    /// normal grid's scrollback ring is simply not written (see
+    /// [`crate::grid::Grid::write_checkpoint`]'s own `carries_scrollback`
+    /// doc) — the ring itself is untouched; only THIS ONE serialization
+    /// omits it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::Unrepresentable`](crate::CheckpointError)
+    /// for a `version` outside that range, or for the same screen-shape
+    /// reasons [`checkpoint`](Self::checkpoint) can fail.
+    pub fn checkpoint_at_version(
+        &self,
+        version: u16,
+    ) -> Result<Vec<u8>, crate::checkpoint::CheckpointError> {
+        if version < crate::checkpoint::MIN_READABLE_VERSION || version > crate::checkpoint::VERSION
+        {
+            return Err(crate::checkpoint::CheckpointError::Unrepresentable(
+                "requested checkpoint version is outside the range this build can write and read back",
+            ));
+        }
         let size = self.grid.size();
         if size.rows < crate::grid::MIN_ROWS
             || size.cols < crate::grid::MIN_COLS
@@ -1171,7 +1210,7 @@ impl Screen {
         }
         let mut out = Vec::new();
         out.extend_from_slice(crate::checkpoint::MAGIC);
-        crate::checkpoint::write_u16(&mut out, crate::checkpoint::VERSION);
+        crate::checkpoint::write_u16(&mut out, version);
         crate::checkpoint::write_u16(&mut out, size.rows);
         crate::checkpoint::write_u16(&mut out, size.cols);
         out.push(self.modes);
@@ -1179,8 +1218,11 @@ impl Screen {
         out.push(self.mouse_protocol_encoding.checkpoint_tag());
         self.attrs.write_checkpoint(&mut out);
         self.saved_attrs.write_checkpoint(&mut out);
-        self.grid.write_checkpoint(&mut out)?;
-        self.alternate_grid.write_checkpoint(&mut out)?;
+        // Only the normal grid ever carries a scrollback ring, and only
+        // at version 2+ — see `Grid::write_checkpoint`'s own doc.
+        let carries_scrollback = version >= 2;
+        self.grid.write_checkpoint(&mut out, carries_scrollback)?;
+        self.alternate_grid.write_checkpoint(&mut out, false)?;
         debug_assert!(out.len() <= crate::checkpoint::MAX_CHECKPOINT_LEN);
         Ok(out)
     }
@@ -1194,8 +1236,9 @@ impl Screen {
     /// public path because it does both, atomically.
     ///
     /// `scrollback_len` is the *restorer's* scrollback capacity, not the
-    /// checkpointing side's: a capsule keeps no scrollback, so its capacity
-    /// says nothing about how much the attaching client wants to retain.
+    /// checkpointing side's: the two are independent, and if the checkpoint's
+    /// own ring holds more rows than `scrollback_len` keeps, the oldest are
+    /// dropped to fit — see [`crate::grid::Grid::read_checkpoint`].
     pub(crate) fn restore(
         bytes: &[u8],
         scrollback_len: usize,
@@ -1219,13 +1262,20 @@ impl Screen {
             ));
         }
         let version = r.u16()?;
-        if version != crate::checkpoint::VERSION {
+        if version < crate::checkpoint::MIN_READABLE_VERSION
+            || version > crate::checkpoint::VERSION
+        {
             return Err(
                 crate::checkpoint::CheckpointError::UnsupportedVersion(
                     version,
                 ),
             );
         }
+        // Version 1 has no scrollback field anywhere — restoring one
+        // produces an empty ring, same as a version-2 payload whose count
+        // read zero. Only the normal grid ever gets a scrollback field, and
+        // only from version 2 on.
+        let carries_scrollback_field = version >= 2;
         let rows = r.u16()?;
         let cols = r.u16()?;
         // A screen below `grid::MIN_ROWS` x `MIN_COLS` is not merely out of
@@ -1268,15 +1318,18 @@ impl Screen {
             &mut r,
             size,
             scrollback_len,
+            carries_scrollback_field,
             "the cursor is outside the terminal",
             "the saved cursor is outside the terminal",
         )?;
         // The alternate grid never accumulates scrollback, matching how
-        // `Screen::new` constructs it.
+        // `Screen::new` constructs it, and never carries a scrollback field
+        // at any version.
         let alternate_grid = crate::grid::Grid::read_checkpoint(
             &mut r,
             size,
             0,
+            false,
             "the alternate grid's cursor is outside the terminal",
             "the alternate grid's saved cursor is outside the terminal",
         )?;

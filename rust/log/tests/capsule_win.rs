@@ -269,8 +269,17 @@ impl Transport for TestTransport {
 mod frame {
     use super::wire;
 
+    /// The MODERN client's own default (Codex round on #194): hellos at
+    /// the current attach proto, which is what every test in this file
+    /// that does not care about version negotiation itself should get,
+    /// so a checkpoint it collects carries a scrollback ring like a real
+    /// current client's would. [`hello_at`] is the explicit-version
+    /// escape hatch for tests that DO care (e.g. an old client's v1).
     pub fn hello() -> Vec<u8> {
-        wire::encode_attach_client(&wire::AttachClient::Hello { proto: wire::ATTACH_PROTO_V1 }).unwrap()
+        hello_at(wire::ATTACH_PROTO_V2)
+    }
+    pub fn hello_at(proto: u32) -> Vec<u8> {
+        wire::encode_attach_client(&wire::AttachClient::Hello { proto }).unwrap()
     }
     pub fn attach(controller_id: &str) -> Vec<u8> {
         wire::encode_attach_client(&wire::AttachClient::Attach { controller_id: controller_id.into() }).unwrap()
@@ -907,7 +916,18 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     // engineer a precise cut point; is_ground's own unit tests already
     // cover that. Real elapsed time only, no fixed assumption about where
     // the loop's ground boundary lands.
-    std::thread::sleep(Duration::from_millis(150));
+    //
+    // Long enough that the scrollback-ring assertion below (added with the
+    // ring itself) has real content to find: `SCRIPT_BLOCK` writes one
+    // line roughly every 59 ms (one byte per 1 ms sleep, ~59 bytes/line),
+    // so at this 25-row screen a nominal run scrolls a couple hundred
+    // lines off in 15 s -- comfortably more than a screenful even if a
+    // loaded runner's per-byte sleep runs several times its nominal length
+    // (the windows-latest-vs-windows-2022 conhost timing gap measured
+    // elsewhere in this file was ~2x, not 10x). Still not an engineered
+    // cut point: nothing here pins how MANY lines land in the checkpoint,
+    // only that it is comfortably more than a screenful.
+    std::thread::sleep(Duration::from_millis(15_000));
 
     const CONN: ConnId = 1;
     transport.open(CONN);
@@ -1050,25 +1070,54 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
 
     // Finding 13, part 2 (the U0 oracle): the wire checkpoint must be
     // byte-identical to one computed independently by feeding a fresh
-    // reference parser exactly the prefix.
-    let mut reference_at_watermark = vt100_ctt::Parser::new(rows, cols, 0);
+    // reference parser exactly the prefix. The reference's own scrollback
+    // capacity must match the capsule's own live parser
+    // (`CAPSULE_SCROLLBACK_ROWS`) -- the checkpoint now carries a
+    // scrollback ring, so a reference built at a different capacity would
+    // disagree about how much of it survives, independent of any real
+    // divergence in what was actually recorded.
+    let mut reference_at_watermark =
+        vt100_ctt::Parser::new(rows, cols, capsule_win::CAPSULE_SCROLLBACK_ROWS);
     reference_at_watermark.process(prefix);
-    let reference_checkpoint =
-        reference_at_watermark.screen().checkpoint().expect("prefix screen must be representable");
+    let reference_checkpoint = reference_at_watermark
+        .screen()
+        .checkpoint()
+        .expect("prefix screen must be representable");
     assert_eq!(
         checkpoint_bytes, reference_checkpoint,
         "the wire checkpoint must be byte-identical to an independently computed checkpoint of the same prefix"
     );
 
+    // The scrollback ring itself must actually have arrived -- the defect
+    // this fixed was an attach handing the client an empty ring every
+    // time (`ring_len = 0` on every attach, regardless of how much had
+    // scrolled off). Not a fixed expected count: real elapsed time drives
+    // how many lines the producer got through before this checkpoint's cut
+    // (see the sleep above), so this asserts only that SOME history rode
+    // along, which is what the defect actually broke.
+    let mut ring_check = vt100_ctt::Parser::new(rows, cols, capsule_win::CAPSULE_SCROLLBACK_ROWS);
+    ring_check
+        .restore_screen(&checkpoint_bytes)
+        .expect("checkpoint must decode");
+    ring_check.screen_mut().set_scrollback(usize::MAX);
+    assert!(
+        ring_check.screen().scrollback() > 0,
+        "attach must hand over a nonempty scrollback ring; got an empty one"
+    );
+
     // And the full round trip, at the same checkpoint-byte granularity: a
     // fresh parser restored from the wire checkpoint and replayed with the
     // exact suffix must reach a state whose OWN checkpoint is
-    // byte-identical to a from-scratch parser's, fed the entire voyage.
-    let mut restored = vt100_ctt::Parser::new(rows, cols, 0);
-    restored.restore_screen(&checkpoint_bytes).expect("checkpoint must decode");
+    // byte-identical to a from-scratch parser's, fed the entire voyage --
+    // both at the SAME scrollback capacity as the capsule's own parser,
+    // for the same reason as above.
+    let mut restored = vt100_ctt::Parser::new(rows, cols, capsule_win::CAPSULE_SCROLLBACK_ROWS);
+    restored
+        .restore_screen(&checkpoint_bytes)
+        .expect("checkpoint must decode");
     restored.process(&suffix);
 
-    let mut reference = vt100_ctt::Parser::new(rows, cols, 0);
+    let mut reference = vt100_ctt::Parser::new(rows, cols, capsule_win::CAPSULE_SCROLLBACK_ROWS);
     reference.process(&total);
 
     assert_eq!(
@@ -1077,6 +1126,83 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
         "checkpoint + subsequent stream must reproduce the reference session byte-for-byte"
     );
     assert_eq!(summary.exit_kind, ExitKind::Requested);
+}
+
+/// ADR 0041 "attach proto v2 bound to checkpoint v2" (Codex round on
+/// #194, finding 1): a connection that negotiates attach proto v1 -- an
+/// OLD client's own default, predating the scrollback ring -- must get a
+/// checkpoint format v1 payload: no scrollback ring, even though the
+/// capsule's own live parser keeps one (`CAPSULE_SCROLLBACK_ROWS`).
+/// Proves the version-gated encode path in `capsule_win::run`'s
+/// `BeginCheckpoint` handling, independent of the ring-arrival test above
+/// (which hellos at v2, the modern client's own default).
+#[test]
+fn hello_v1_gets_a_checkpoint_with_no_scrollback_ring() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
+    let argv = vec![
+        helper,
+        "--script".to_string(),
+        "50".to_string(),
+        "--linger".to_string(),
+    ];
+    let (rows, cols) = (4u16, 20u16);
+    let cfg = config(dir.path(), "hellov1", argv, cols, rows);
+    let root = cfg.voyage_root.clone();
+    let transport = TestTransport::new();
+    let (tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule_win::run(cfg, rx, &mut t)
+    });
+
+    // Enough real elapsed time that a v2 hello would find a nonempty
+    // ring here too -- proving this test's negative result is the
+    // version gate, not merely an empty ring to begin with (same pacing
+    // rationale as the ring-arrival test above: `SCRIPT_BLOCK` writes
+    // one line roughly every 59 ms).
+    std::thread::sleep(Duration::from_millis(4000));
+
+    const CONN: ConnId = 1;
+    transport.open(CONN);
+    transport.feed(CONN, frame::hello_at(wire::ATTACH_PROTO_V1));
+    let mut watcher = FrameWatcher::new(&transport);
+    let negotiated = watcher.wait_for("v1 hello_ok", CONN, Duration::from_secs(10), |f| {
+        if let wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { proto }) = f {
+            Some(*proto)
+        } else {
+            None
+        }
+    });
+    assert_eq!(
+        negotiated,
+        wire::ATTACH_PROTO_V1,
+        "the capsule must echo back exactly the negotiated version"
+    );
+
+    transport.feed(CONN, frame::attach("watcher"));
+    let checkpoint_bytes =
+        watcher.collect_checkpoint("v1 checkpoint", CONN, Duration::from_secs(10));
+
+    tx.send(Command::Kill).unwrap();
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return within the teardown bound")
+        .unwrap();
+    verify_voyage(&root, "hellov1").unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+
+    let mut restored = vt100_ctt::Parser::new(rows, cols, 100);
+    restored
+        .restore_screen(&checkpoint_bytes)
+        .expect("a v1 checkpoint must decode");
+    restored.screen_mut().set_scrollback(usize::MAX);
+    assert_eq!(
+        restored.screen().scrollback(),
+        0,
+        "a v1-negotiated connection must receive a checkpoint with no ring"
+    );
 }
 
 /// Test 8: the wire input WAL folds every legal `idem_key` chain exactly,
