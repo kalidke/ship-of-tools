@@ -150,48 +150,6 @@ pub fn phase_str(phase: sot_log::wire::SupervisorPhase) -> &'static str {
     }
 }
 
-/// What a capsule workspace's supervisor lane means for a caller that
-/// just probed it (`phase_of`'s return value) — the ONE decision matrix
-/// shared by `ensure_started` (`pty.open`'s start-on-attach,
-/// [`windows_runtime::start_mode_needed`]) and `resume_all` (daemon
-/// boot), so there is exactly one place that answers "is a supervisor
-/// already alive for this state dir?". Pure function of the phase
-/// string, so it's testable on every platform even though the probe that
-/// produces the string ([`windows_runtime::phase_of`]) is Windows-only.
-///
-/// This is the daemon-boot fix: before it, `resume_all` skipped straight
-/// to spawning `--resume` for every row with a published pointer,
-/// including one whose OLD supervisor (from before this daemon restart)
-/// was still alive and holding `supervisor.lock` — the new leg lost the
-/// fence, exited 69, and the watchdog marked the row terminal out from
-/// under a run the old supervisor was still actually running. Routing
-/// both callers through this matrix means a lane that still answers is
-/// always `Alive` — adopted, never raced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(windows), allow(dead_code))]
-pub enum LaneDecision {
-    /// [`NEVER_STARTED_PHASE`]: no published pointer, nothing has ever
-    /// run. Needs [`StartMode::Start`].
-    NeverStarted,
-    /// [`UNREACHABLE_PHASE`]: a pointer exists but the lane does not
-    /// answer — its supervisor is gone. Needs [`StartMode::Resume`].
-    Dead,
-    /// Any answered lifecycle phase: a supervisor is alive RIGHT NOW.
-    /// Spawn nothing — adopt it.
-    Alive,
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-pub fn lane_decision(phase: &str) -> LaneDecision {
-    if phase == NEVER_STARTED_PHASE {
-        LaneDecision::NeverStarted
-    } else if phase == UNREACHABLE_PHASE {
-        LaneDecision::Dead
-    } else {
-        LaneDecision::Alive
-    }
-}
-
 /// ADR 0042 L1a (Codex review finding 6): the daemon's own watchdog
 /// restart budget for a capsule supervisor — ADR 0041's own launcher
 /// restart sequence ("restart with `--resume` on the launcher's shipped
@@ -315,9 +273,9 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
 #[cfg(windows)]
 mod windows_runtime {
     use super::{
-        agent_argv, capsule_supervisor_env, lane_decision, mode_flag, LaneDecision, StartMode,
-        LANE_CONCURRENCY, LIST_LANE_DEADLINE, MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB,
-        RESTART_BACKOFFS, RESTART_WINDOW,
+        agent_argv, capsule_supervisor_env, mode_flag, phase_str, StartMode, LANE_CONCURRENCY,
+        LIST_LANE_DEADLINE, MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB, NEVER_STARTED_PHASE,
+        RESTART_BACKOFFS, RESTART_WINDOW, UNREACHABLE_PHASE,
     };
     use crate::workspaces::Workspaces;
     use std::io::ErrorKind;
@@ -353,6 +311,15 @@ mod windows_runtime {
     /// (`EXIT_TERMINAL`) — unconditionally terminal to
     /// [`wait_and_classify`], never restarted (rule F, shrink round).
     const EXIT_TERMINAL: i32 = 69;
+    /// `sot-capsule supervise`'s own fence-contention exit code
+    /// (`sot_log::supervisor::EXIT_CONTENDED` — see that const's own doc
+    /// for the full reasoning): the authority fence was already held by
+    /// a LIVE supervisor. Distinct from [`EXIT_TERMINAL`] in
+    /// [`wait_and_classify`] — NEVER a failure of this workspace's own
+    /// run, only proof some other leg (almost always the previous
+    /// authority for this SAME state dir, still finishing its own
+    /// teardown) currently holds the fence.
+    const EXIT_CONTENDED: i32 = 70;
 
     /// `sot-capsule[.exe]`, resolved next to the daemon's own executable —
     /// "the `sot-capsule` binary path: next to the daemon's own
@@ -466,7 +433,10 @@ mod windows_runtime {
             return phase;
         }
         match sot_log::supervisor_client::query_status(state_dir) {
-            Ok(report) => super::phase_str(report.phase),
+            // The retained process handle (the second element) is not
+            // this caller's concern -- a one-shot phase probe, dropped
+            // (closing the handle) the instant this returns.
+            Ok((report, _process)) => super::phase_str(report.phase),
             Err(e) => {
                 tracing::debug!(state_dir = ?state_dir, error = %e, "capsule workspace: supervisor lane unreachable");
                 super::UNREACHABLE_PHASE
@@ -486,7 +456,7 @@ mod windows_runtime {
         state_dir: &Path,
         reason: &str,
     ) -> std::io::Result<Option<sot_log::supervisor_client::EndRunOutcome>> {
-        let status = sot_log::supervisor_client::query_status(state_dir)
+        let (status, _process) = sot_log::supervisor_client::query_status(state_dir)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         let Some(voyage) = status.voyage else {
             return Ok(None);
@@ -533,7 +503,7 @@ mod windows_runtime {
         let degraded = spawned.degraded;
         workspaces.clear_capsule_terminal(&workspace_id);
         spawn_starting_release_poll(workspace_id.clone(), state_dir.to_path_buf(), workspaces.clone());
-        spawn_watchdog(
+        install_watchdog(
             workspace_id,
             sot_capsule_exe.to_path_buf(),
             state_dir.to_path_buf(),
@@ -541,7 +511,7 @@ mod windows_runtime {
             cwd.to_path_buf(),
             agent_name.to_string(),
             slug,
-            spawned.child,
+            WatchedLeg::Spawned(spawned.child),
             workspaces,
         );
         Ok(degraded)
@@ -641,21 +611,25 @@ mod windows_runtime {
     /// Whether a capsule workspace's supervisor needs starting before
     /// `pty.open` can honestly answer `attach_direct` — and if so, with
     /// which start mode. Reuses [`phase_of`]'s own two failure phases
-    /// rather than a new probe: [`super::NEVER_STARTED_PHASE`] (no
-    /// published pointer — nothing has ever run) means `Start`;
-    /// [`super::UNREACHABLE_PHASE`] (a pointer exists but its lane does
-    /// not answer — the same "dead
+    /// rather than a new probe: [`NEVER_STARTED_PHASE`] (no published
+    /// pointer — nothing has ever run) means `Start`; [`UNREACHABLE_PHASE`]
+    /// (a pointer exists but its lane does not answer — the same "dead
     /// supervisor" case the watchdog/`resume_all` already resume with
     /// `--resume`) means `Resume`. Any answered lifecycle phase means a
     /// supervisor is already up — `None`, nothing to do. BLOCKING
-    /// (`phase_of` itself is). Routes through [`lane_decision`] — the
-    /// same matrix `resume_all` now uses — so this stays the one place
-    /// that decides "is a supervisor already alive for this state dir?".
+    /// (`phase_of` itself is).
+    ///
+    /// `resume_all` (daemon boot) now matches on this SAME function
+    /// (round-2 Codex finding: one decision oracle, not a second one) —
+    /// `None` means adopt (a lane already answers), `Some(Resume)` means
+    /// spawn (pointer published, lane dead), `Some(Start)` means the boot
+    /// scan's own defensive no-op (it should never see this — its own
+    /// candidate filter already requires a published pointer).
     fn start_mode_needed(state_dir: &Path) -> Option<StartMode> {
-        match lane_decision(phase_of(state_dir)) {
-            LaneDecision::NeverStarted => Some(StartMode::Start),
-            LaneDecision::Dead => Some(StartMode::Resume),
-            LaneDecision::Alive => None,
+        match phase_of(state_dir) {
+            NEVER_STARTED_PHASE => Some(StartMode::Start),
+            UNREACHABLE_PHASE => Some(StartMode::Resume),
+            _ => None,
         }
     }
 
@@ -732,25 +706,119 @@ mod windows_runtime {
         /// terminal mark anyway — "the supervisor's own three legs, not a
         /// rolling restart loop."
         Terminal,
+        /// Exit 70 (`EXIT_CONTENDED`) — round-2 Codex finding, daemon-
+        /// boot-adopts-supervisor fix: the authority fence was already
+        /// held by a LIVE supervisor when this leg tried to acquire it.
+        /// NEVER treated as [`Terminal`] (that would mark a perfectly
+        /// healthy workspace terminal out from under a run some OTHER
+        /// leg is still actively serving) and never blindly retried with
+        /// `--resume` either (which would likely race the SAME
+        /// still-tearing-down fence again) — [`install_watchdog`] instead
+        /// re-probes the lane for adoption over a short bound.
+        Contended,
         /// Anything else: a genuine crash needing the restart sequence.
         Crash,
     }
 
-    /// Waits for `child` to exit and classifies the result.
-    async fn wait_and_classify(child: &mut Child, workspace_id: &str) -> LegOutcome {
-        let status = match child.wait().await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: wait() failed; treating as a crash");
-                return LegOutcome::Crash;
+    /// One capsule leg's process handle, unified so the SAME watchdog
+    /// loop ([`install_watchdog`]) can wait on and classify EITHER a leg
+    /// this daemon just spawned itself (`Spawned`, an owned [`Child`]) OR
+    /// one it ADOPTED already alive from a previous daemon lifetime
+    /// (`Adopted`, the retained process handle the supervisor lane's own
+    /// challenge proved — `sot_log::supervisor_client::query_status`'s
+    /// second return value). Round-2 Codex finding: an adopted leg had NO
+    /// watchdog at all before this — its own eventual crash was never
+    /// restarted, a 69 was never recorded, and a Terminal lane simply
+    /// went quiet ("unreachable") once its process actually exited.
+    enum WatchedLeg {
+        Spawned(Child),
+        Adopted(sot_log::supervisor_client::ChallengedProcess),
+    }
+
+    /// How long an adopted leg's blocking wait blocks before looping to
+    /// check again — purely a "how often does a blocking-pool thread
+    /// wake up for no reason" knob, never a correctness bound:
+    /// [`sot_log::supervisor_client::ChallengedProcess::wait`] returns
+    /// the INSTANT the process actually dies, so a longer interval only
+    /// means fewer wasted wakeups, never slower death detection.
+    const ADOPTED_LEG_WAIT_POLL: Duration = Duration::from_secs(300);
+
+    /// Waits for `leg` to end and classifies the result — the SAME
+    /// classification whether the leg is a child this daemon just
+    /// spawned or one it adopted. A spawned child is awaited async, the
+    /// normal way; an adopted process has no async-awaitable primitive
+    /// (`ChallengedProcess::wait` is a synchronous, bounded
+    /// `WaitForSingleObject`), so it is waited on ONE blocking task that
+    /// owns it for the wait's whole duration, looping
+    /// [`ADOPTED_LEG_WAIT_POLL`] at a time until it reports exit, then
+    /// its exit code is read the same way
+    /// `sot_log::challenge::ChallengedProcess::exit_code_after_confirmed_exit`
+    /// documents its own precondition: only after `wait` has already
+    /// confirmed death.
+    async fn wait_and_classify(leg: WatchedLeg, workspace_id: &str) -> LegOutcome {
+        let code = match leg {
+            WatchedLeg::Spawned(mut child) => match child.wait().await {
+                Ok(status) => status.code(),
+                Err(e) => {
+                    tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: wait() failed; treating as a crash");
+                    return LegOutcome::Crash;
+                }
+            },
+            WatchedLeg::Adopted(process) => {
+                let result = tokio::task::spawn_blocking(move || loop {
+                    match process.wait(ADOPTED_LEG_WAIT_POLL) {
+                        Ok(true) => {
+                            return process
+                                .exit_code_after_confirmed_exit()
+                                .map(|c| c as i32)
+                                .map_err(|e| e.to_string());
+                        }
+                        Ok(false) => continue,
+                        Err(e) => return Err(e.to_string()),
+                    }
+                })
+                .await;
+                match result {
+                    Ok(Ok(code)) => Some(code),
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            workspace_id = %workspace_id, error = %e,
+                            "capsule supervisor watchdog: waiting on the adopted process failed; treating as a crash"
+                        );
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            workspace_id = %workspace_id, error = %e,
+                            "capsule supervisor watchdog: adopted-process wait task did not complete; treating as a crash"
+                        );
+                        None
+                    }
+                }
             }
         };
-        match status.code() {
+        match code {
             Some(EXIT_CLEAN) => LegOutcome::Clean,
             Some(EXIT_TERMINAL) => LegOutcome::Terminal,
+            Some(EXIT_CONTENDED) => LegOutcome::Contended,
             _ => LegOutcome::Crash,
         }
     }
+
+    /// Bound on how long [`install_watchdog`] keeps re-probing a
+    /// [`LegOutcome::Contended`] leg for adoption before giving up —
+    /// matches [`sot_log::pipe_win::TEARDOWN_AGGREGATE_DEADLINE`] (the
+    /// authority's own documented worst-case teardown budget: it drops
+    /// its lane before releasing the fence) plus margin for this
+    /// process's own connect/challenge round trip on top of that.
+    const CONTENTION_RETRY_BOUND: Duration = Duration::from_secs(25);
+    /// How often [`install_watchdog`] re-probes within
+    /// [`CONTENTION_RETRY_BOUND`] — matches the cadence
+    /// `spawn_starting_release_poll` and `workspace.list`'s own lane
+    /// gather already use elsewhere in this file for "is the lane up
+    /// yet" polling, just slower (contention resolving is rarer and the
+    /// bound is longer).
+    const CONTENTION_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
     /// The watchdog itself: waits for the leg to exit, classifies it, and
     /// on a crash restarts with `--resume` under ADR 0041's own launcher
@@ -762,14 +830,37 @@ mod windows_runtime {
     /// F) marks terminal immediately, on its very first occurrence, with
     /// no restart attempt at all.
     ///
+    /// ONE function for both origins (round-2 Codex finding): [`leg`]
+    /// starts as either a [`WatchedLeg::Spawned`] child ([`spawn_and_watch`]'s
+    /// own call) or a [`WatchedLeg::Adopted`] process
+    /// ([`watch_adopted_leg`]'s), and every SUBSEQUENT leg — a crash
+    /// restart, or an adoption that resolves a [`LegOutcome::Contended`]
+    /// — can be either kind too, decided fresh each time by what actually
+    /// happens.
+    ///
+    /// A [`LegOutcome::Contended`] leg is neither terminal nor a normal
+    /// crash: it means some OTHER process currently holds the fence
+    /// (almost always the previous authority for this SAME state dir,
+    /// still finishing its own teardown), so this re-probes the lane for
+    /// up to [`CONTENTION_RETRY_BOUND`], at [`CONTENTION_RETRY_INTERVAL`]
+    /// — the instant that OTHER lane answers, it is ADOPTED (a fresh
+    /// [`WatchedLeg::Adopted`], watched exactly like any other leg); if
+    /// the bound elapses with nothing answering, this simply RETURNS —
+    /// no terminal mark, no restart — leaving the row to read whatever
+    /// [`phase_of`] naturally reports (`unreachable`, if truly nothing is
+    /// left) and the next `pty.open` attach's [`ensure_started`] to
+    /// re-probe and start fresh.
+    ///
     /// Rule D half 2: releases the `starting` claim
     /// (`Workspaces::end_capsule_start`) on EVERY leg's outcome —
     /// idempotent (harmless once [`spawn_starting_release_poll`], half 1,
-    /// already cleared it for the success case) and correct regardless:
-    /// once a leg's fate is known, "a launch is in flight" is no longer
-    /// true for THIS leg (a restart, if one follows, is this SAME
-    /// launch's own retry, not a new external request).
-    fn spawn_watchdog(
+    /// already cleared it for the success case, and ALWAYS harmless for
+    /// a leg that started life adopted, which never held the claim in
+    /// the first place) and correct regardless: once a leg's fate is
+    /// known, "a launch is in flight" is no longer true for THIS leg (a
+    /// restart, if one follows, is this SAME watchdog's own retry, not a
+    /// new external request).
+    fn install_watchdog(
         workspace_id: String,
         sot_capsule_exe: PathBuf,
         state_dir: PathBuf,
@@ -777,21 +868,20 @@ mod windows_runtime {
         cwd: PathBuf,
         agent_name: String,
         slug: String,
-        child: Child,
+        leg: WatchedLeg,
         workspaces: Workspaces,
     ) {
         tokio::spawn(async move {
-            let mut child_opt = Some(child);
+            let mut leg_opt = Some(leg);
             let mut restart_times: Vec<Instant> = Vec::new();
             loop {
-                let outcome = match child_opt.as_mut() {
-                    Some(c) => wait_and_classify(c, &workspace_id).await,
-                    // A previous restart attempt itself failed to spawn
-                    // (no live child to wait on) -- counts as another
-                    // crash against the same budget.
+                let outcome = match leg_opt.take() {
+                    Some(l) => wait_and_classify(l, &workspace_id).await,
+                    // A previous restart/adoption attempt itself found
+                    // nothing to wait on -- counts as another crash
+                    // against the same budget.
                     None => LegOutcome::Crash,
                 };
-                child_opt = None;
                 workspaces.end_capsule_start(&workspace_id);
                 match outcome {
                     LegOutcome::Clean => return,
@@ -802,6 +892,44 @@ mod windows_runtime {
                         );
                         workspaces.mark_capsule_terminal(&workspace_id);
                         return;
+                    }
+                    LegOutcome::Contended => {
+                        tracing::warn!(
+                            workspace_id = %workspace_id, bound = ?CONTENTION_RETRY_BOUND,
+                            "capsule supervisor watchdog: leg exited contended (70) -- re-probing for adoption, no terminal mark"
+                        );
+                        let deadline = Instant::now() + CONTENTION_RETRY_BOUND;
+                        let mut adopted = None;
+                        while Instant::now() < deadline {
+                            tokio::time::sleep(CONTENTION_RETRY_INTERVAL).await;
+                            let dir = state_dir.clone();
+                            let probe = tokio::task::spawn_blocking(move || {
+                                sot_log::supervisor_client::query_status(&dir)
+                            })
+                            .await;
+                            if let Ok(Ok((status, process))) = probe {
+                                tracing::info!(
+                                    workspace_id = %workspace_id, phase = phase_str(status.phase),
+                                    "capsule supervisor watchdog: contention resolved -- adopted the surviving lane"
+                                );
+                                adopted = Some(process);
+                                break;
+                            }
+                        }
+                        match adopted {
+                            Some(process) => {
+                                leg_opt = Some(WatchedLeg::Adopted(process));
+                                continue;
+                            }
+                            None => {
+                                tracing::warn!(
+                                    workspace_id = %workspace_id, bound = ?CONTENTION_RETRY_BOUND,
+                                    "capsule supervisor watchdog: still contended after the bound -- \
+                                     leaving the row for the next attach, no terminal mark"
+                                );
+                                return;
+                            }
+                        }
                     }
                     LegOutcome::Crash => {
                         let now = Instant::now();
@@ -831,7 +959,7 @@ mod windows_runtime {
                             &workspace_id,
                             &slug,
                         ) {
-                            Ok(spawned) => child_opt = Some(spawned.child),
+                            Ok(spawned) => leg_opt = Some(WatchedLeg::Spawned(spawned.child)),
                             Err(e) => {
                                 tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: restart spawn failed");
                             }
@@ -840,6 +968,41 @@ mod windows_runtime {
                 }
             }
         });
+    }
+
+    /// [`resume_all`]'s own watchdog entry point for a workspace it
+    /// ADOPTED (found a lane already answering, spawned nothing) — the
+    /// `WatchedLeg::Adopted` counterpart of [`spawn_and_watch`]'s
+    /// `WatchedLeg::Spawned` one, sharing [`install_watchdog`] rather
+    /// than a second implementation. Deliberately skips
+    /// `clear_capsule_terminal`/`spawn_starting_release_poll`: those are
+    /// bookkeeping for a SPAWN ATTEMPT this daemon itself just made
+    /// (`try_begin_capsule_start`'s claim, a fresh chance after a stale
+    /// terminal mark) — adoption never takes that claim and, at boot,
+    /// this daemon's OWN `capsule_terminal` set is fresh regardless, so
+    /// there is nothing here for either to do.
+    fn watch_adopted_leg(
+        workspace_id: String,
+        sot_capsule_exe: PathBuf,
+        state_dir: PathBuf,
+        argv: Vec<String>,
+        cwd: PathBuf,
+        agent_name: String,
+        slug: String,
+        process: sot_log::supervisor_client::ChallengedProcess,
+        workspaces: Workspaces,
+    ) {
+        install_watchdog(
+            workspace_id,
+            sot_capsule_exe,
+            state_dir,
+            argv,
+            cwd,
+            agent_name,
+            slug,
+            WatchedLeg::Adopted(process),
+            workspaces,
+        );
     }
 
     /// On daemon startup: resume every REGISTERED capsule workspace's
@@ -857,25 +1020,35 @@ mod windows_runtime {
     /// (the field finding behind this shrink round).
     ///
     /// PROBE before spawning (the daemon-boot-adopts-supervisor fix):
-    /// each candidate is decided by [`lane_decision`] — the SAME matrix
-    /// [`start_mode_needed`] uses for `pty.open`'s start-on-attach — over
-    /// a real [`phase_of`] query of its lane, not the pointer's mere
-    /// existence. `LaneDecision::Alive` means a supervisor from a
-    /// PREVIOUS daemon lifetime is still up and answering (the daemon
-    /// restarted — e.g. an FE relaunch rebooting the local daemon — while
-    /// its capsule supervisors, spawned detached by ADR 0042 design,
-    /// outlived it): this scan ADOPTS it — logs one line and spawns
-    /// nothing — rather than racing a second `--resume` leg against the
-    /// live one's `supervisor.lock`. That race is exactly what this fix
-    /// closes: the new leg always loses the fence, exits 69
-    /// (`EXIT_TERMINAL`), and the watchdog then marks the row
-    /// `capsule_terminal` — wrongly, since the old supervisor is still
-    /// actually running the voyage the whole time. Only
-    /// `LaneDecision::Dead` (pointer published, lane doesn't answer —
-    /// its supervisor really is gone) still spawns `--resume` here.
-    /// `LaneDecision::NeverStarted` shouldn't occur (the candidate filter
-    /// below already requires a published pointer) but is handled
-    /// defensively as a skip, same as before this fix.
+    /// each candidate is decided by [`start_mode_needed`] — the SAME
+    /// function `pty.open`'s start-on-attach uses, over a real
+    /// [`phase_of`] query of its lane, not the pointer's mere existence
+    /// (round-2 Codex finding: one decision oracle, not a second
+    /// `LaneDecision` type). `None` means a supervisor from a PREVIOUS
+    /// daemon lifetime is still up and answering (the daemon restarted —
+    /// e.g. an FE relaunch rebooting the local daemon — while its capsule
+    /// supervisors, spawned detached by ADR 0042 design, outlived it):
+    /// this scan ADOPTS it — logs one line, fetches the lane's own
+    /// retained process handle via a second `query_status` call, and
+    /// hands it to [`watch_adopted_leg`] — rather than racing a second
+    /// `--resume` leg against the live one's `supervisor.lock`. That
+    /// race is exactly what this fix closes: before it, the new leg
+    /// always lost the fence, exited 69 (`EXIT_TERMINAL`), and the
+    /// watchdog marked the row `capsule_terminal` — wrongly, since the
+    /// old supervisor was still actually running the voyage the whole
+    /// time (a genuinely still-tearing-down old lane instead gets the
+    /// new `EXIT_CONTENDED` — see that const's own doc — never
+    /// `EXIT_TERMINAL`, so a fresh spawn's own watchdog re-probes for
+    /// adoption instead of marking terminal either). An adopted row
+    /// reporting `EndedNoRespawn` (a resting authority) is STILL adopted
+    /// here, unconditionally — no spawn either way — because a resting
+    /// authority is stopped by the end flow and restarted by reset, both
+    /// #182's territory, not this scan's. Only `Some(StartMode::Resume)`
+    /// (pointer published, lane doesn't answer — its supervisor really
+    /// is gone) still spawns `--resume` here. `Some(StartMode::Start)`
+    /// shouldn't occur (the candidate filter below already requires a
+    /// published pointer) but is handled defensively as a skip, same as
+    /// before this fix.
     ///
     /// A state directory with NO matching registry entry is left
     /// COMPLETELY untouched, logged once (ADR 0042: "the daemon's
@@ -897,10 +1070,17 @@ mod windows_runtime {
     /// a semaphore — thousands of preserved workspaces cannot turn this
     /// into an unbounded synchronous fan-out before the listener binds.
     pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
-        if sot_capsule_exe().is_err() {
-            tracing::warn!("capsule workspace resume-scan: could not locate sot-capsule.exe next to this daemon");
-            return;
-        }
+        // Resolved ONCE here, not re-resolved per candidate below: cheap
+        // either way (`std::env::current_exe()`), but a single resolved
+        // `PathBuf` cloned into each task is simpler than a fallible call
+        // repeated inside every spawned closure.
+        let exe = match sot_capsule_exe() {
+            Ok(e) => e,
+            Err(_) => {
+                tracing::warn!("capsule workspace resume-scan: could not locate sot-capsule.exe next to this daemon");
+                return;
+            }
+        };
         let candidates: Vec<(String, Vec<String>, PathBuf, String, String)> = workspaces
             .list()
             .into_iter()
@@ -933,18 +1113,59 @@ mod windows_runtime {
             let permit = semaphore.clone();
             let state_root = state_root.clone();
             let workspaces = workspaces.clone();
+            let exe = exe.clone();
             joins.push(tokio::spawn(async move {
                 let _permit = permit.acquire_owned().await;
                 let state_dir = super::state_dir_for(&state_root, &workspace_id);
-                let phase = phase_of(&state_dir);
-                match lane_decision(phase) {
-                    LaneDecision::Alive => {
-                        tracing::info!(
-                            workspace_id = %workspace_id, phase,
-                            "capsule supervisor adopted (alive from a previous daemon)"
-                        );
+                // `start_mode_needed` is documented BLOCKING (`phase_of`
+                // itself is a real lane connect+challenge+status round
+                // trip) -- run it the same way `workspace.list`'s own
+                // lane gather already does, not directly inside this
+                // async task.
+                let mode = {
+                    let dir = state_dir.clone();
+                    tokio::task::spawn_blocking(move || start_mode_needed(&dir)).await.unwrap_or(Some(StartMode::Resume))
+                };
+                match mode {
+                    None => {
+                        // Alive: fetch the SAME lane's retained process
+                        // handle via a second, explicit `query_status`
+                        // call -- `start_mode_needed`'s own probe already
+                        // proved it answers but (by design, shared with
+                        // `ensure_started`) doesn't retain the handle this
+                        // scan specifically needs to install a watchdog.
+                        // A benign race: the lane could go quiet between
+                        // the two calls (the old supervisor finally
+                        // exiting on its own) -- this second call then
+                        // simply fails and this arm logs at debug and
+                        // does nothing further; the row reads whatever
+                        // `phase_of` next reports, and the next attach's
+                        // `ensure_started` starts it fresh if needed.
+                        let dir = state_dir.clone();
+                        let probe = tokio::task::spawn_blocking(move || {
+                            sot_log::supervisor_client::query_status(&dir)
+                        })
+                        .await;
+                        match probe {
+                            Ok(Ok((status, process))) => {
+                                tracing::info!(
+                                    workspace_id = %workspace_id, phase = phase_str(status.phase),
+                                    "capsule supervisor adopted (alive from a previous daemon)"
+                                );
+                                watch_adopted_leg(workspace_id, exe, state_dir, argv, cwd, agent_name, slug, process, workspaces);
+                            }
+                            Ok(Err(e)) => {
+                                tracing::debug!(
+                                    workspace_id = %workspace_id, error = %e,
+                                    "capsule workspace resume-scan: lane went quiet between the adopt probe and the follow-up query; skipping"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule workspace resume-scan: adopt probe task did not complete");
+                            }
+                        }
                     }
-                    LaneDecision::Dead => {
+                    Some(StartMode::Resume) => {
                         match start_supervisor(&state_root, &workspace_id, StartMode::Resume, &argv, &cwd, &agent_name, &slug, workspaces) {
                             Ok(Some(degraded)) => {
                                 tracing::info!(workspace_id = %workspace_id, degraded, "capsule workspace supervisor resumed");
@@ -957,7 +1178,7 @@ mod windows_runtime {
                             }
                         }
                     }
-                    LaneDecision::NeverStarted => {
+                    Some(StartMode::Start) => {
                         // Shouldn't happen -- the candidate filter above
                         // already required a published pointer -- but
                         // stays a no-op rather than a Start: fresh starts
@@ -1102,36 +1323,6 @@ mod tests {
             SupervisorPhase::Terminal,
         ] {
             assert_ne!(phase_str(p), UNREACHABLE_PHASE);
-        }
-    }
-
-    #[test]
-    fn lane_decision_is_the_one_matrix_ensure_started_and_resume_all_both_use() {
-        // Daemon-boot-adopts-supervisor fix: `resume_all` used to spawn
-        // `--resume` unconditionally for every row with a published
-        // pointer, racing a second leg into a lane that might still be
-        // alive from a previous daemon lifetime. This matrix is what both
-        // `ensure_started`'s `start_mode_needed` (pty.open start-on-attach)
-        // and `resume_all` (daemon boot) now share to decide it — pure and
-        // portable (the real probe that PRODUCES the phase string,
-        // `windows_runtime::phase_of`, is Windows-only, but the decision
-        // over an already-known phase isn't and is exercised here on every
-        // platform).
-        use sot_log::wire::SupervisorPhase;
-        assert_eq!(lane_decision(NEVER_STARTED_PHASE), LaneDecision::NeverStarted);
-        assert_eq!(lane_decision(UNREACHABLE_PHASE), LaneDecision::Dead);
-        for p in [
-            SupervisorPhase::Starting,
-            SupervisorPhase::Ready,
-            SupervisorPhase::Ending,
-            SupervisorPhase::EndedNoRespawn,
-            SupervisorPhase::Terminal,
-        ] {
-            assert_eq!(
-                lane_decision(phase_str(p)),
-                LaneDecision::Alive,
-                "every answered lifecycle phase ({p:?}) must read as an alive, adoptable lane"
-            );
         }
     }
 
