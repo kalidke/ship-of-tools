@@ -1018,22 +1018,107 @@ pub(crate) fn state_host() -> String {
 }
 
 /// One-time migration: rename the legacy UNSUFFIXED state dirs to this
-/// host's suffixed ones. Runs at daemon boot (from `load_all`); the first
-/// post-deploy boot on the cohort inherits the legacy state (that's the
-/// primary dev box — the only daemon that ever wrote it), every other host starts fresh, and
+/// host's suffixed ones. Runs at daemon boot (from `load_all`, after
+/// `migrate_legacy_windows_config_dir` on Windows); the first post-deploy
+/// boot on the cohort inherits the legacy state (that's the primary dev box
+/// — the only daemon that ever wrote it), every other host starts fresh, and
 /// public single-home installs have nothing to migrate. Rename failures warn
 /// and leave the legacy dir in place (nothing is destroyed).
+///
+/// The plain rename only covers "suffixed sibling absent yet". When it's
+/// already THERE, this folds instead of skipping (`fold_unsuffixed_into_per_host`)
+/// — field defect (2026-09-04): on Windows, `migrate_legacy_windows_config_dir`
+/// can itself deposit an un-suffixed `workspaces`/`sessions` at the new root
+/// — a SECONDARY legacy candidate's un-suffixed dir merges in verbatim-named
+/// (see that function's secondary-candidate doc) — and if the PRIMARY
+/// candidate (or an earlier boot's default-workspace write) already produced
+/// the suffixed sibling at the new root first, the plain rename below used to
+/// be a no-op: the secondary's rows sat un-suffixed at the new root forever,
+/// in a directory `workspaces_dir()`/`sessions_dir()` never scans. A box that
+/// already ran that broken migration has the identical shape stranded at the
+/// new root from a prior boot — same fold, no separate recovery path, so
+/// there is exactly one place that ever reads or writes an un-suffixed
+/// registry dir under `app_config_dir()`.
 pub(crate) fn migrate_legacy_state_dirs() {
     for name in ["workspaces", "sessions"] {
         let legacy = app_config_dir().join(name);
         let per_host = app_config_dir().join(format!("{name}-{}", state_host()));
-        if legacy.is_dir() && !per_host.exists() {
+        if !legacy.is_dir() {
+            continue;
+        }
+        if !per_host.exists() {
             match std::fs::rename(&legacy, &per_host) {
                 Ok(()) => tracing::info!(from = %legacy.display(), to = %per_host.display(),
                     "migrated legacy state dir to per-host (ADR 0013/0014 addendum)"),
                 Err(e) => tracing::warn!(error = %e, from = %legacy.display(),
                     "legacy state dir migration failed — leaving in place"),
             }
+            continue;
+        }
+        fold_unsuffixed_into_per_host(&legacy, &per_host);
+    }
+}
+
+/// Fold every `.toml` sitting directly in `legacy` (an un-suffixed registry
+/// dir) into `per_host` (its host-suffixed sibling, which already exists),
+/// then remove `legacy` once it's empty. Same non-colliding merge rule as
+/// `merge_secondary_legacy_windows_children`: a name already present at the
+/// destination wins outright — that file is left at `legacy`, untouched, and
+/// only warned about (naming both paths); nothing at `per_host` is ever
+/// overwritten. Unlike that function, this one MOVES (not copies) each
+/// non-colliding file and deletes the source directory when empty — `legacy`
+/// here is a dir this daemon owns under its OWN new root, not an
+/// still-independently-live legacy candidate root that must be left exactly
+/// as found either way. Logs one line per moved toml (field-log
+/// distinguishability, matching `migrate_legacy_windows_config_dir`'s own
+/// convention). Best-effort: an unreadable `legacy` dir, or a failed
+/// individual rename, is a warning, not a boot error — the daemon still
+/// starts against whatever `per_host` alone resolves to.
+fn fold_unsuffixed_into_per_host(legacy: &Path, per_host: &Path) {
+    let entries = match std::fs::read_dir(legacy) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(error = %e, dir = %legacy.display(),
+                "could not read a stranded un-suffixed state dir to fold it into the per-host one");
+            return;
+        }
+    };
+    // Counts anything left behind at `legacy` — a name collision, a failed
+    // rename, or a non-toml entry — so `legacy` is only removed once it's
+    // genuinely empty, never a non-empty dir masquerading as folded.
+    let mut left_behind = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("toml") {
+            left_behind += 1;
+            continue;
+        }
+        let Some(name) = path.file_name() else {
+            left_behind += 1;
+            continue;
+        };
+        let dst = per_host.join(name);
+        if dst.exists() {
+            tracing::warn!(from = %path.display(), to = %dst.display(),
+                "a stranded un-suffixed registry has a toml with the same name as one \
+                 already at the per-host dir — left in place, not folded (rename by hand to adopt it)");
+            left_behind += 1;
+            continue;
+        }
+        match std::fs::rename(&path, &dst) {
+            Ok(()) => tracing::info!(from = %path.display(), to = %dst.display(),
+                "folded a stranded un-suffixed registry toml into the per-host dir"),
+            Err(e) => {
+                tracing::warn!(error = %e, from = %path.display(), to = %dst.display(),
+                    "could not fold a stranded un-suffixed registry toml into the per-host dir");
+                left_behind += 1;
+            }
+        }
+    }
+    if left_behind == 0 {
+        if let Err(e) = std::fs::remove_dir(legacy) {
+            tracing::warn!(error = %e, dir = %legacy.display(),
+                "folded every toml out of a stranded un-suffixed registry dir but could not remove it");
         }
     }
 }
@@ -1769,6 +1854,13 @@ cursor_path = "src/lib.jl"
         localappdata: Option<std::ffi::OsString>,
         userprofile: Option<std::ffi::OsString>,
         system_drive: Option<std::ffi::OsString>,
+        // Snapshotted/restored too (not just set) because a few tests below
+        // pin it to a known value so `migrate_legacy_state_dirs`'s
+        // `state_host()` calls resolve deterministically — the real
+        // hostname would otherwise leak into the "-<host>" suffix these
+        // tests assert on, and a leaked value would poison every other
+        // `state_host()`-reading test sharing this crate-wide lock.
+        sot_state_host: Option<std::ffi::OsString>,
     }
 
     impl Drop for EnvGuard {
@@ -1779,6 +1871,7 @@ cursor_path = "src/lib.jl"
                 ("LOCALAPPDATA", &self.localappdata),
                 ("USERPROFILE", &self.userprofile),
                 ("SystemDrive", &self.system_drive),
+                ("SOT_STATE_HOST", &self.sot_state_host),
             ] {
                 match val {
                     Some(v) => std::env::set_var(key, v),
@@ -1798,6 +1891,7 @@ cursor_path = "src/lib.jl"
             localappdata: std::env::var_os("LOCALAPPDATA"),
             userprofile: std::env::var_os("USERPROFILE"),
             system_drive: std::env::var_os("SystemDrive"),
+            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
             _serial: serial,
         }
     }
@@ -2173,5 +2267,127 @@ runtime       = "tmux"
         };
         assert_eq!(outcome_for(&s.userprofile_legacy()), Some(ProbeOutcome::Empty));
         assert_eq!(outcome_for(&s.system_drive_legacy()), Some(ProbeOutcome::Found));
+    }
+
+    /// End-to-end field defect (2026-09-04): a PRIMARY legacy candidate
+    /// already had the host-suffixed dir (an earlier boot at that root had
+    /// already run the per-host migration), while a SECONDARY candidate
+    /// still had an un-suffixed one holding a row the primary never saw.
+    /// `migrate_legacy_windows_config_dir` moves the primary's suffixed dir
+    /// straight across (name preserved) and merges the secondary's
+    /// un-suffixed one in verbatim-named — landing an un-suffixed
+    /// `workspaces` at the new root right next to the suffixed one.
+    /// `migrate_legacy_state_dirs`, called right after (mirroring
+    /// `scan_disk`'s own call order), used to see the suffixed sibling
+    /// already present and stop, stranding the secondary's row where the
+    /// daemon's own `workspaces_dir()` never scans. This proves both the
+    /// stranding (mid-run) and the fold that now recovers it.
+    #[test]
+    #[cfg(windows)]
+    fn migrate_then_fold_lands_every_legacy_row_in_the_host_suffixed_dir() {
+        let _guard = env_guarded();
+        std::env::set_var("SOT_STATE_HOST", "host");
+        let s = MigrationScratch::new("migrate-then-fold");
+        let primary = s.userprofile_legacy();
+        std::fs::create_dir_all(primary.join("workspaces-host")).unwrap();
+        std::fs::write(primary.join("workspaces-host").join("alpha.toml"), "alpha").unwrap();
+        let secondary = s.system_drive_legacy();
+        std::fs::create_dir_all(secondary.join("workspaces")).unwrap();
+        std::fs::write(secondary.join("workspaces").join("beta.toml"), "beta").unwrap();
+        s.apply_env();
+
+        migrate_legacy_windows_config_dir().unwrap();
+        // Confirms the setup reproduces the stranding, not just the fix:
+        // beta landed un-suffixed at the new root, next to workspaces-host.
+        assert!(s.new_root().join("workspaces").join("beta.toml").is_file());
+
+        migrate_legacy_state_dirs();
+
+        let dst = s.new_root().join("workspaces-host");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("alpha.toml")).unwrap(),
+            "alpha"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.join("beta.toml")).unwrap(),
+            "beta"
+        );
+        assert!(
+            !s.new_root().join("workspaces").exists(),
+            "the stranded un-suffixed dir must be folded in and removed"
+        );
+    }
+
+    /// A box that already ran the broken migration once (a pre-fix build)
+    /// has the stranding baked in from a PRIOR boot — not created fresh by
+    /// THIS boot's `migrate_legacy_windows_config_dir` (that step is a
+    /// no-op here: `app_config_dir()`'s backend children are already
+    /// non-empty). Exercises `migrate_legacy_state_dirs` folding a
+    /// pre-existing stranded dir on its own, with no windows-config-dir
+    /// migration involved at all.
+    #[test]
+    #[cfg(windows)]
+    fn fold_adopts_a_dir_stranded_by_an_earlier_broken_boot() {
+        let _guard = env_guarded();
+        std::env::set_var("SOT_STATE_HOST", "host");
+        let s = MigrationScratch::new("fold-stranded");
+        s.apply_env();
+        let new_root = s.new_root();
+        std::fs::create_dir_all(new_root.join("workspaces-host")).unwrap();
+        std::fs::write(new_root.join("workspaces-host").join("gamma.toml"), "gamma").unwrap();
+        std::fs::create_dir_all(new_root.join("workspaces")).unwrap();
+        std::fs::write(new_root.join("workspaces").join("delta.toml"), "delta").unwrap();
+
+        migrate_legacy_state_dirs();
+
+        let dst = new_root.join("workspaces-host");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("gamma.toml")).unwrap(),
+            "gamma"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.join("delta.toml")).unwrap(),
+            "delta"
+        );
+        assert!(!new_root.join("workspaces").exists());
+    }
+
+    /// Collision: the destination already has a toml with the same name.
+    /// The destination row wins outright; the source file is left exactly
+    /// where it was (not deleted, not overwritten) and the now-not-actually
+    /// -empty legacy dir is left too, not removed — same rule
+    /// `migrate_legacy_windows_config_dir`'s own secondary-candidate merge
+    /// uses (`merge_secondary_legacy_windows_children`).
+    #[test]
+    #[cfg(windows)]
+    fn fold_keeps_the_destination_row_on_a_name_collision() {
+        let _guard = env_guarded();
+        std::env::set_var("SOT_STATE_HOST", "host");
+        let s = MigrationScratch::new("fold-collision");
+        s.apply_env();
+        let new_root = s.new_root();
+        std::fs::create_dir_all(new_root.join("workspaces-host")).unwrap();
+        std::fs::write(
+            new_root.join("workspaces-host").join("alpha.toml"),
+            "canonical",
+        )
+        .unwrap();
+        std::fs::create_dir_all(new_root.join("workspaces")).unwrap();
+        std::fs::write(new_root.join("workspaces").join("alpha.toml"), "stray").unwrap();
+
+        migrate_legacy_state_dirs();
+
+        assert_eq!(
+            std::fs::read_to_string(new_root.join("workspaces-host").join("alpha.toml")).unwrap(),
+            "canonical"
+        );
+        assert_eq!(
+            std::fs::read_to_string(new_root.join("workspaces").join("alpha.toml")).unwrap(),
+            "stray"
+        );
+        assert!(
+            new_root.join("workspaces").is_dir(),
+            "non-empty legacy dir must not be removed"
+        );
     }
 }
