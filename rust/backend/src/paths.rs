@@ -129,6 +129,17 @@ pub fn simplify_verbatim(p: std::path::PathBuf) -> std::path::PathBuf {
                 return PathBuf::from(rest.to_string());
             }
         }
+        // A toml saved before the reader unescaped `toml_quote`'s output
+        // (or hand-edited raw) carries this prefix with one fewer leading
+        // backslash than the true verbatim form once `toml_unquote` runs:
+        // its leading `\\` reads as one escaped backslash, halving `\\?\`
+        // to `\?\`. Accept that shape too (workspaces.rs `toml_unquote`).
+        if let Some(rest) = s.strip_prefix(r"\?\") {
+            let b = rest.as_bytes();
+            if b.len() >= 2 && b[1] == b':' {
+                return PathBuf::from(rest.to_string());
+            }
+        }
         p
     }
     #[cfg(not(windows))]
@@ -155,6 +166,17 @@ mod verbatim_tests {
         assert_eq!(
             simplify_verbatim(PathBuf::from(r"\\?\UNC\srv\share\x")),
             PathBuf::from(r"\\srv\share\x")
+        );
+    }
+
+    #[test]
+    fn strips_single_backslash_drive_verbatim() {
+        // The shape `toml_unquote` (workspaces.rs) produces for a raw,
+        // never-escaped legacy write of `\\?\C:\...`: its leading `\\`
+        // reads as one escaped backslash, halving the prefix to `\?\`.
+        assert_eq!(
+            simplify_verbatim(PathBuf::from(r"\?\C:\Users\k\proj")),
+            PathBuf::from(r"C:\Users\k\proj")
         );
     }
 

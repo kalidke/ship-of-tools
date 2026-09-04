@@ -971,11 +971,11 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
     body.push_str(&format!("agent         = {}\n", toml_quote(&ws.agent)));
     // agent_name / task are free text — quote+escape them exactly as
     // `label` is via `toml_quote` (handles quotes, backslashes, and
-    // \n/\r/\t). `strip_quotes` on the load side only removes the
-    // surrounding quotes without unescaping, so — same as `label` —
-    // an embedded `"` or newline does not round-trip perfectly. In
-    // practice comm-spawn keeps `task` single-line, so this matches the
-    // existing `label` limitation rather than introducing a new one.
+    // \n/\r/\t). The load side pairs `strip_quotes` with `toml_unquote`
+    // (its inverse), so — same as `label` — an embedded `"` or newline
+    // now round-trips exactly (field defect fixed 2026-09-04: the reader
+    // used to only strip the surrounding quotes, leaving every escape
+    // literal — see `toml_unquote`'s doc).
     body.push_str(&format!("agent_name    = {}\n", toml_quote(&ws.agent_name)));
     body.push_str(&format!("task          = {}\n", toml_quote(&ws.task)));
     body.push_str(&format!("runtime       = {}\n", toml_quote(&ws.runtime)));
@@ -1487,7 +1487,7 @@ fn parse_kv(text: &str) -> HashMap<String, String> {
             break;
         }
         let Some((k, v)) = t.split_once('=') else { continue };
-        out.insert(k.trim().to_string(), strip_quotes(v.trim()).to_string());
+        out.insert(k.trim().to_string(), toml_unquote(strip_quotes(v.trim())));
     }
     out
 }
@@ -1510,7 +1510,7 @@ fn parse_section(text: &str, section: &str) -> HashMap<String, String> {
             continue;
         }
         let Some((k, v)) = t.split_once('=') else { continue };
-        out.insert(k.trim().to_string(), strip_quotes(v.trim()).to_string());
+        out.insert(k.trim().to_string(), toml_unquote(strip_quotes(v.trim())));
     }
     out
 }
@@ -1565,6 +1565,12 @@ fn strip_canonical_top_and_kernel(text: &str) -> String {
     out
 }
 
+/// Strips the surrounding `"..."` only — no unescaping. Every reader that
+/// pulls a string value out of a workspace toml pairs this with
+/// `toml_unquote` (its inverse escapes are `toml_quote`'s), never used
+/// alone: a bare `strip_quotes` reproduced `toml_quote`'s doubled
+/// backslashes verbatim on load, the bug this pairing fixes (field defect
+/// 2026-09-04 — see `toml_unquote`'s own doc).
 fn strip_quotes(s: &str) -> &str {
     let s = s.trim();
     let b = s.as_bytes();
@@ -1589,6 +1595,51 @@ fn toml_quote(s: &str) -> String {
         }
     }
     out.push('"');
+    out
+}
+
+/// Inverse of `toml_quote`, applied to the inside of the quotes
+/// (`strip_quotes`'s output): `\\`→`\`, `\"`→`"`, `\n`, `\r`, `\t`. An
+/// escape this doesn't recognize (`\U`, `\k`, a lone trailing `\`, …) is
+/// kept verbatim as backslash+char rather than dropped, so a toml written
+/// by an even older build that never escaped anything at all still loads
+/// unchanged — this only widens what the reader accepts, never narrows it.
+///
+/// Field defect (2026-09-04): before this existed, `load_toml` fed
+/// `strip_quotes`'s output straight through, so every saved value that
+/// `toml_quote` had escaped loaded back with the escapes still literal —
+/// a `project_root` containing `\` round-tripped as doubled backslashes
+/// (harmless on Windows, which tolerates repeated separators, so this hid
+/// for months) and a saved Windows verbatim root (`\\?\C:\...`, doubled by
+/// the writer to `\\\\?\\C:\\...`) never matched `paths::simplify_verbatim`
+/// at all, so `CreateProcess` rejected it as a working directory
+/// (`capsule supervisor spawn failed: The directory name is invalid. (os
+/// error 267)`). `simplify_verbatim` also grew a second, single-backslash
+/// prefix form to match: pass this function's OWN output through the
+/// unescaper once (a raw, never-escaped legacy write's leading `\\`
+/// reads as one escaped backslash, "halving" `\\?\` to `\?\`) and you can
+/// see why both shapes are real on-disk data now, not just one.
+fn toml_unquote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
     out
 }
 
@@ -1792,6 +1843,14 @@ runtime      = "capsule"
     /// form regardless of what's on disk. Windows-only: `simplify_verbatim`
     /// is a no-op on every other platform, so this toml would (correctly)
     /// load unchanged there.
+    ///
+    /// This file's `project_root` line is raw/unescaped — the shape a
+    /// build that never escaped anything at all would have written. Once
+    /// `toml_unquote` runs (below `load_toml_canonical`'s escaped-writer
+    /// sibling `_unescapes_writer_escaped_verbatim_prefix`), its leading
+    /// `\\` reads as one escaped backslash and the prefix halves to
+    /// `\?\` — exercising `simplify_verbatim`'s single-backslash branch,
+    /// not its original double-backslash one.
     #[test]
     #[cfg(windows)]
     fn load_toml_canonical_strips_windows_verbatim_prefix() {
@@ -1819,6 +1878,43 @@ created      = 1700000000
             ws.project_root,
             PathBuf::from(r"C:\Users\u\.julia\dev\Gamma.jl")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The realistic on-disk shape after this fix: the real writer
+    /// (`toml_quote`) escapes every backslash, so a pre-fix-build `save()`
+    /// of a verbatim root doubles them — `\\?\C:\...` becomes
+    /// `\\\\?\\C:\\...` in the file. `load_toml` must unescape
+    /// (`toml_unquote`) before `simplify_verbatim` ever sees it, which
+    /// restores the true `\\?\` prefix and strips it via
+    /// `simplify_verbatim`'s original double-backslash branch — the
+    /// sibling test above covers the OTHER on-disk shape (a raw,
+    /// never-escaped write, which lands on the new single-backslash
+    /// branch instead).
+    #[test]
+    #[cfg(windows)]
+    fn load_toml_canonical_unescapes_writer_escaped_verbatim_prefix() {
+        let dir = std::env::temp_dir().join(format!(
+            "sot-ws-test-verbatim-escaped-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("delta.toml");
+        std::fs::write(
+            &p,
+            r#"
+workspace_id = "ws-delta-1"
+slug         = "delta"
+label        = "Delta.jl"
+project_root = "\\\\?\\C:\\Users\\u\\HomeLab\\x"
+tmux_session = "sot-be-delta"
+created      = 1700000000
+"#,
+        )
+        .unwrap();
+        let ws = load_toml(&p, false).unwrap().unwrap();
+        assert_eq!(ws.project_root, PathBuf::from(r"C:\Users\u\HomeLab\x"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1944,6 +2040,86 @@ cursor_path = "src/lib.jl"
             sot_state_host: std::env::var_os("SOT_STATE_HOST"),
             _serial: serial,
         }
+    }
+
+    /// Field defect (2026-09-04) root-cause test: the writer (`toml_quote`)
+    /// escapes every backslash, but the pre-fix reader (`strip_quotes`
+    /// alone) never undid that, so a `project_root` containing `\` came
+    /// back with every backslash DOUBLED — a no-op disguise on Windows,
+    /// which tolerates repeated separators, but not an identity round
+    /// trip. Runs on every OS: this is a `toml_quote`/`toml_unquote`
+    /// symmetry bug, independent of `simplify_verbatim` (which is a
+    /// no-op here — the path below isn't verbatim-prefixed).
+    #[test]
+    fn save_load_round_trips_backslash_project_root() {
+        let _guard = env_guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-ws-test-roundtrip-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        std::env::set_var("LOCALAPPDATA", &dir);
+        std::env::remove_var("USERPROFILE");
+        std::env::set_var("SOT_STATE_HOST", "roundtrip-test");
+
+        let ws = Workspace::meta_only(
+            "ws-rt-1".to_string(),
+            "rt-backslash".to_string(),
+            "RoundTrip.jl".to_string(),
+            PathBuf::from(r"C:\Users\u\HomeLab\x"),
+            "sot-be-rt-backslash".to_string(),
+            1700000000,
+            false,
+            "none".to_string(),
+            String::new(),
+            String::new(),
+        );
+        let toml_path = save(&ws).unwrap();
+        let loaded = load_toml(&toml_path, false).unwrap().unwrap();
+        assert_eq!(
+            loaded.project_root, ws.project_root,
+            "project_root must round-trip through save()/load_toml() identically"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Same round trip, covering `toml_quote`'s other escapes — an
+    /// embedded `"` and a newline — via `agent_name`/`task`, the two
+    /// free-text fields that share its quoting (see `save()`'s comment
+    /// above the `agent_name`/`task` lines).
+    #[test]
+    fn save_load_round_trips_quotes_and_newlines_in_free_text_fields() {
+        let _guard = env_guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-ws-test-roundtrip-quotes-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        std::env::set_var("LOCALAPPDATA", &dir);
+        std::env::remove_var("USERPROFILE");
+        std::env::set_var("SOT_STATE_HOST", "roundtrip-test");
+
+        let ws = Workspace::meta_only(
+            "ws-rt-2".to_string(),
+            "rt-quotes".to_string(),
+            "RoundTrip2.jl".to_string(),
+            PathBuf::from("/home/u/RoundTrip2.jl"),
+            "sot-be-rt-quotes".to_string(),
+            1700000000,
+            false,
+            "claude".to_string(),
+            "peer-\"nick\"".to_string(),
+            "line one\nline two".to_string(),
+        );
+        let toml_path = save(&ws).unwrap();
+        let loaded = load_toml(&toml_path, false).unwrap().unwrap();
+        assert_eq!(loaded.agent_name, ws.agent_name);
+        assert_eq!(loaded.task, ws.task);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
