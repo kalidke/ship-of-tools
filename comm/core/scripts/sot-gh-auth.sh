@@ -127,7 +127,8 @@ finish() {
 poll() {
     need gh; need curl; need jq
     [ -f "$STATE" ] || { echo "sot-gh-auth: no pending request — run 'sot-gh-auth.sh request' first" >&2; exit 6; }
-    local device_code interval expires waited=0 tok access err dcfile
+    # dcfile is not `local`: the EXIT trap below fires after poll() has returned.
+    local device_code interval expires waited=0 tok access err
     device_code=$(jq -r '.device_code' "$STATE")
     interval=$(jq -r '.interval' "$STATE"); [ "$interval" -ge 1 ] 2>/dev/null || interval=5
     expires=$(jq -r '.expires_in' "$STATE"); [ "$expires" -ge 1 ] 2>/dev/null || expires=899
