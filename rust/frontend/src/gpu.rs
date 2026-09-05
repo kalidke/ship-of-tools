@@ -20989,13 +20989,14 @@ impl ApplicationHandler for App {
             // scoped to fullscreen only; windowed keeps the efficient on-demand
             // tick below (DWM already composites it at a steady rate).
             //
-            // Opt-out: `[display] fullscreen_vsync_pin` (default true, so
-            // existing users see no change). There is no VRR/adaptive-sync
-            // detection API worth trusting, so a fixed-refresh panel (most
-            // laptops) pays this continuously with nothing to show for it —
+            // Opt-in: `[display] fullscreen_vsync_pin` — default false,
+            // because most panels are fixed-refresh and the pin only burns
+            // power for no visible benefit. There is no VRR/adaptive-sync
+            // detection API worth trusting, so a VRR/OLED panel that pumps
+            // brightness in borderless fullscreen opts in explicitly —
             // measured ~28% of a core + ~10% iGPU on a 1440x900 laptop
-            // panel. Off, fullscreen falls through to the same on-demand
-            // idle path windowed uses below.
+            // panel. Off (the default), fullscreen falls through to the
+            // same on-demand idle path windowed uses below.
             if state.settings.fullscreen_vsync_pin && state.window.fullscreen().is_some() {
                 state.window.request_redraw();
                 event_loop.set_control_flow(ControlFlow::Wait);

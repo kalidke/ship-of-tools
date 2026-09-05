@@ -89,20 +89,22 @@ present, `high` already resolves to it.
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `fullscreen_vsync_pin` | bool | `true` | While fullscreen, keep requesting a redraw every vsync instead of falling back to the on-demand idle tick. |
+| `fullscreen_vsync_pin` | bool | `false` | While fullscreen, keep requesting a redraw every vsync instead of falling back to the on-demand idle tick. |
 
 In borderless fullscreen, DWM composition disengages and the panel's refresh
 follows the frontend's present cadence directly. The efficient on-demand idle
 path presents ~1 frame/sec, which drives a VRR/adaptive-sync OLED panel into
 the 1–10 Hz band where low-framerate compensation makes brightness pump
-visibly. With the pin on (the default — unchanged behaviour for existing
-users), fullscreen instead requests a redraw every vsync so the panel stays
-pinned at its native refresh; this costs continuous GPU while fullscreen.
+visibly. With the pin on, fullscreen instead requests a redraw every vsync so
+the panel stays pinned at its native refresh; this costs continuous GPU while
+fullscreen.
 
 There is no VRR/adaptive-sync detection API worth trusting, so this is a
-setting rather than a heuristic. Set `false` on a fixed-refresh panel (most
-laptops), where the pin only burns power for no visible benefit — measured
-~28% of a core and ~10% of the iGPU continuously on a 1440x900 laptop panel.
+setting rather than a heuristic, and it defaults to `false`: most panels are
+fixed-refresh and the pin only burns power for no visible benefit — measured
+25.5 points of one core and 8.5 points of iGPU 3D continuously at idle in
+fullscreen (measured on one laptop). Set `true` on a VRR/adaptive-sync OLED
+panel that pumps brightness in borderless fullscreen.
 
 ### Example
 
@@ -123,7 +125,7 @@ resume_command = "claude --permission-mode auto --continue /sot-fe-session-start
 power_preference = "low"        # low (integrated, default) | high (discrete)
 
 [display]
-fullscreen_vsync_pin = true     # default true | false on a fixed-refresh panel
+fullscreen_vsync_pin = false    # default false | true on a VRR/OLED panel
 ```
 
 ## `hosts.toml`

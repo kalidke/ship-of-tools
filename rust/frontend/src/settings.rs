@@ -74,15 +74,16 @@
 //                                   # frontend restart to take effect.
 //
 //   [display]
-//   fullscreen_vsync_pin = true     # default true. While fullscreen, keep
-//                                   # a steady vsync-paced redraw so a
-//                                   # VRR/adaptive-sync panel doesn't drop
-//                                   # into the low-framerate band where
-//                                   # brightness pumps (see gpu.rs). Costs
-//                                   # continuous GPU while fullscreen; set
-//                                   # false on a fixed-refresh panel (e.g.
-//                                   # most laptops) to fall back to the
-//                                   # efficient on-demand idle path.
+//   fullscreen_vsync_pin = false    # default false. While fullscreen, keep
+//                                   # a steady vsync-paced redraw instead of
+//                                   # the efficient on-demand idle path.
+//                                   # Set true on a VRR/adaptive-sync OLED
+//                                   # panel that pumps brightness in
+//                                   # borderless fullscreen (see gpu.rs);
+//                                   # everyone else stays off. Costs 25.5
+//                                   # points of one core + 8.5 points of
+//                                   # iGPU 3D continuously at idle in
+//                                   # fullscreen (measured on one laptop).
 //
 // `columns` lists named slots in left-to-right order; `widths` is the
 // matching fractional split (must sum to ~1.0; values renormalised on
@@ -354,13 +355,14 @@ pub struct Settings {
     /// borderless fullscreen disengages DWM composition, so the on-demand
     /// idle path's ~1 fps present drives the panel into the 1–10 Hz
     /// low-framerate-compensation band, where brightness visibly pumps.
-    /// When `true` (default — unchanged behaviour for existing users),
-    /// `about_to_wait` keeps requesting redraws every vsync while
-    /// fullscreen so the panel stays pinned at its native refresh; this
-    /// costs continuous GPU while fullscreen. Set `false` on a
-    /// fixed-refresh panel (most laptops) to fall back to the same
-    /// efficient on-demand idle path fullscreen uses windowed. No VRR
-    /// detection API is trusted here, so this is a setting, not a probe.
+    /// Default `false` — most panels are fixed-refresh and the pin buys
+    /// them nothing. Set `true` on a VRR/adaptive-sync OLED panel that
+    /// pumps brightness in borderless fullscreen: `about_to_wait` then
+    /// keeps requesting redraws every vsync while fullscreen so the panel
+    /// stays pinned at its native refresh. Costs 25.5 points of one core
+    /// and 8.5 points of iGPU 3D continuously at idle in fullscreen
+    /// (measured on one laptop). No VRR detection API is trusted here,
+    /// so this is a setting, not a probe.
     pub fullscreen_vsync_pin: bool,
 }
 
@@ -380,7 +382,7 @@ impl Default for Settings {
             nav_spill_ms: 2000,
             gpu_power_preference: GpuPowerPreference::Low,
             attach_only: false,
-            fullscreen_vsync_pin: true,
+            fullscreen_vsync_pin: false,
         }
     }
 }
@@ -802,15 +804,16 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_vsync_pin_defaults_true_and_parses() {
-        // Default true = unchanged behaviour for existing users (#15's
-        // steady-redraw guard stays on until someone opts out).
-        assert!(Settings::default().fullscreen_vsync_pin);
+    fn fullscreen_vsync_pin_defaults_false_and_parses() {
+        // Default false — most panels are fixed-refresh; #15's
+        // steady-redraw guard stays off until someone opts in on a
+        // VRR/OLED panel that pumps brightness in borderless fullscreen.
+        assert!(!Settings::default().fullscreen_vsync_pin);
         let mut s = Settings::default();
-        s.merge_text("[display]\nfullscreen_vsync_pin = false\n");
-        assert!(!s.fullscreen_vsync_pin);
         s.merge_text("[display]\nfullscreen_vsync_pin = true\n");
         assert!(s.fullscreen_vsync_pin);
+        s.merge_text("[display]\nfullscreen_vsync_pin = false\n");
+        assert!(!s.fullscreen_vsync_pin);
     }
 
     #[test]
