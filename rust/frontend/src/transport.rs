@@ -569,6 +569,12 @@ pub struct WorkspaceInfo {
     pub tmux_session: String,
     pub kernel_running: bool,
     pub is_default: bool,
+    /// Which agent this workspace auto-starts: "claude" | "codex" | "none".
+    /// 2026-09-04 amendment: a host's DEFAULT row with `agent == "none"` is
+    /// the inert anchor (ADR 0042 §"the default local row is an inert
+    /// anchor") — `session_host_children` filters it out of the Sessions
+    /// tree entirely rather than rendering it as a session.
+    pub agent: String,
     /// Contract (b): the FE launches claude (ccb) on first attach to a
     /// workspace with `autostart_claude == true`. `agent_name` is the comm
     /// handle the bootstrap joins as (informational on the FE side).
@@ -3418,6 +3424,7 @@ fn handle_response_frame(
                                 tmux_session: w.tmux_session,
                                 kernel_running: w.kernel_running,
                                 is_default: w.is_default,
+                                agent: w.agent,
                                 autostart_claude: w.autostart_claude,
                                 agent_name: w.agent_name,
                                 task: w.task,

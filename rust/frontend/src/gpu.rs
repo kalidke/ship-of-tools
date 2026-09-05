@@ -2218,6 +2218,19 @@ fn expand_hosts_root(tree: &mut TreeView, mode: Mode, children: Vec<TreeNode>) -
 /// (already pure). Shared by `try_expand_session_host_local` (first
 /// expand) and `resplice_expanded_session_hosts` (re-expand after a
 /// refresh) so both splice identical rows from identical data.
+///
+/// 2026-09-04 amendment (owner ruling): a host's DEFAULT row with
+/// `agent == "none"` is the daemon's inert anchor workspace, not a
+/// session — it never appears here at all, in either kind or shape.
+/// `workspace.list` still returns it (`is_default: true`, needed so the
+/// daemon still has a fallback workspace and the FE's own
+/// `default_workspace_slug` bookkeeping still resolves), but this is the
+/// ONE place that turns that list into visible rows, so filtering here
+/// is enough to keep it off the Sessions tree everywhere (the `[+ create
+/// new]` row and the user's own sessions are all that remain). A default
+/// row that still carries a real agent (an existing box before its own
+/// converge to this amendment — `local.toml` is never rewritten) is
+/// untouched: still a normal, visible session row, exactly as before.
 fn session_host_children(
     host: &HostKey,
     list: &[crate::transport::WorkspaceInfo],
@@ -2233,7 +2246,11 @@ fn session_host_children(
         payload,
     };
     let mut kids = vec![create_row];
-    kids.extend(list.iter().map(|w| State::build_session_row(host, w)));
+    kids.extend(
+        list.iter()
+            .filter(|w| !(w.is_default && w.agent == "none"))
+            .map(|w| State::build_session_row(host, w)),
+    );
     kids
 }
 
@@ -25261,6 +25278,7 @@ mod tests {
             tmux_session: tmux_session.to_string(),
             kernel_running: false,
             is_default: false,
+            agent: String::new(),
             autostart_claude: false,
             agent_name: String::new(),
             task: String::new(),
@@ -25272,6 +25290,43 @@ mod tests {
             state_dir: None,
             phase: None,
         }
+    }
+
+    #[test]
+    fn session_host_children_hides_the_default_row_when_it_has_no_agent() {
+        // 2026-09-04 amendment: the default local row with `agent ==
+        // "none"` is the daemon's inert anchor, not a session — it must
+        // not appear in the Sessions tree at all, not even under its own
+        // kind. Only `[+ create new]` plus the user's own sessions
+        // should come back.
+        let host: HostKey = "local".to_string();
+        let mut anchor = ws_info("sot", "sot-be-sot");
+        anchor.is_default = true;
+        anchor.agent = "none".to_string();
+        let mut user_session = ws_info("alpha", "sot-be-alpha");
+        user_session.agent = "claude".to_string();
+        let list = vec![anchor, user_session];
+        let kids = session_host_children(&host, &list);
+        let kinds: Vec<&str> = kids.iter().map(|n| n.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["session_create", "session"]);
+        assert!(kids.iter().all(|n| !n.id.contains("sot-be-sot")));
+        assert!(kids.iter().any(|n| n.id.contains("sot-be-alpha")));
+    }
+
+    #[test]
+    fn session_host_children_keeps_the_default_row_when_it_still_has_an_agent() {
+        // An existing box that hasn't converged past the old seed (its
+        // `local.toml` is never rewritten by this amendment) still shows
+        // its default row as a normal session, unchanged.
+        let host: HostKey = "local".to_string();
+        let mut anchor = ws_info("sot", "sot-be-sot");
+        anchor.is_default = true;
+        anchor.agent = "claude".to_string();
+        let list = vec![anchor];
+        let kids = session_host_children(&host, &list);
+        let kinds: Vec<&str> = kids.iter().map(|n| n.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["session_create", "session"]);
+        assert!(kids.iter().any(|n| n.id.contains("sot-be-sot")));
     }
 
     #[test]

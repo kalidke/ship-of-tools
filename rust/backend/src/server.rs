@@ -268,36 +268,29 @@ pub async fn run(opts: Opts) -> Result<()> {
     // construction rather than patched after, since `from_label` takes
     // them as constructor args.
     let existing_default = workspaces.resolve(Some(&paths::slug(&default_label)));
-    let (seed_autostart, seed_agent, seed_agent_name, seed_task) = match &existing_default {
-        // Windows only: a default row whose on-disk runtime is not
-        // "capsule" is a CORRUPTED row (the same field incident
-        // `default_row_runtime`'s own doc describes) — whatever wrote
-        // "tmux" there flipped `agent`/`autostart_claude` to "none"/
-        // false alongside it, so preserving them via the plain
-        // `Some(existing)` arm below would boot a capsule with no
-        // agent. Re-seed with the same "claude" launcher the
-        // first-ever-launch Windows arm uses, below.
-        Some(existing) if cfg!(windows) && existing.runtime != "capsule" => {
-            (true, "claude".to_string(), String::new(), String::new())
-        }
-        Some(existing) => (
-            existing.autostart_claude,
-            existing.agent.clone(),
-            existing.agent_name.clone(),
-            existing.task.clone(),
-        ),
-        // First-ever launch, Windows: every NEW workspace is a capsule
-        // with no bare-shell knob (ADR 0042 L1a) — the daemon's own
-        // home/default row is no exception, and a capsule with no agent
-        // starts a producer with nothing to attach the frontend's own
-        // "special SoT LLM" surface to. Seed it with the same "claude"
-        // launcher `workspace.create` defaults an autostarting workspace
-        // to, so start-on-attach launches the agent, not a bare shell.
-        None if cfg!(windows) => (true, "claude".to_string(), String::new(), String::new()),
-        // First-ever launch, every other host: untouched —
-        // `from_label`'s own tmux-row defaults (no autostart, no agent).
-        None => (false, "none".to_string(), String::new(), String::new()),
-    };
+    // 2026-09-04 amendment (owner ruling): the daemon's own home/default
+    // row is an INERT ANCHOR — the workspace it falls back to and the
+    // way to browse this machine's files, not a session — so a
+    // genuinely first-ever launch seeds no agent and no autostart on
+    // every host alike (before this amendment, Windows seeded
+    // `agent = "claude"`, `autostart_claude = true` here, so pressing
+    // Enter on it silently started a claude capsule and the row looked
+    // like every other session — the exact confusion this amendment
+    // removes). `default_row_launch_seed` (workspaces.rs, the launch-field
+    // counterpart of `default_row_runtime` below) is the one place this
+    // decision — and the Windows corrupted-row re-seed's OWN identical
+    // fallback — is made, so it stays unit-testable without a live
+    // registry.
+    let (seed_autostart, seed_agent, seed_agent_name, seed_task) =
+        workspaces::default_row_launch_seed(existing_default.as_deref().map(|e| {
+            (
+                e.runtime.as_str(),
+                e.autostart_claude,
+                e.agent.as_str(),
+                e.agent_name.as_str(),
+                e.task.as_str(),
+            )
+        }));
     let mut default_ws_seed = Workspace::from_label(
         &default_label,
         files_mode.root_path().to_path_buf(),
@@ -322,7 +315,8 @@ pub async fn run(opts: Opts) -> Result<()> {
                 on_disk_runtime = %existing.runtime,
                 "default workspace runtime on Windows must be capsule (ADR 0042 L1a); \
                  correcting a stale on-disk value and re-seeding its agent/autostart \
-                 (a corrupted row's launch fields, not just its runtime)"
+                 to the inert anchor defaults (a corrupted row's launch fields, not \
+                 just its runtime)"
             );
         }
     }
@@ -1401,8 +1395,27 @@ where
                         // via `ensure_started`) — before ever answering
                         // `attach_direct` below. `ensure_started` is a no-op
                         // when a supervisor already answers.
+                        //
+                        // 2026-09-04 amendment: EXCEPT for the default row
+                        // when it carries no agent — the inert anchor (see
+                        // the seed arms in this file's startup routine).
+                        // `agent_argv("none")` is a REAL leg (the bare
+                        // platform shell), so skipping this unconditionally
+                        // for every `agent == "none"` row would silently
+                        // stop starting the bare shell every OTHER capsule
+                        // row can still ask for; only the default row's own
+                        // anchor semantics make "no agent" mean "nothing to
+                        // start" here. The frontend never sends `pty.open`
+                        // for this row at all (it isn't even listed), so
+                        // this is belt-and-suspenders against a stale/other
+                        // client — falls through to the SAME `attach_direct`
+                        // answer an unstarted row gets today, naming a
+                        // `state_dir` nothing has published to yet.
                         #[cfg(windows)]
-                        {
+                        let is_inert_default_anchor = ws.agent == "none"
+                            && workspaces.default_id().as_deref() == Some(ws.workspace_id.as_str());
+                        #[cfg(windows)]
+                        if !is_inert_default_anchor {
                             let ensure_result = match state_root.clone() {
                                 None => Err(
                                     "could not resolve this machine's state root (%LOCALAPPDATA% unset)"
