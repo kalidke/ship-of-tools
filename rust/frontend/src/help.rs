@@ -503,7 +503,11 @@ mod tests {
             let s = border(&Context::default(), &b, width);
             assert!(unicode_width::UnicodeWidthStr::width(s.as_str()) <= width);
         }
-        assert_eq!(border(&Context::default(), &b, 12), "Ctrl+? Help");
+        // The label is OS-rendered (glyphs on macOS), so derive the expectation.
+        assert_eq!(
+            border(&Context::default(), &b, 12),
+            format!("{} Help", b.first_label(Action::ToggleHelp))
+        );
     }
     #[test]
     fn confirmation_help_exposes_only_the_active_decision() {

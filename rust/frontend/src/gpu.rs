@@ -14687,8 +14687,6 @@ impl State {
         );
         let mode = self.mode;
         let focus = self.focus;
-        let help_state = &self.help;
-        let help_bindings = &self.bindings;
         let help_context = self.help_context();
         let maximized = self.maximized;
         // State-nav selected-session contrast lever, snapshotted for the draw
@@ -15202,6 +15200,12 @@ impl State {
         // borrowing `self`. Suppressed while the picker is open — the picker's
         // own footer already carries the legend inline.
 
+        // Borrowed LAST, after every `&mut self` pump above (the Windows-only
+        // attach-term pumps included): the draw closure captures these two
+        // references, so taking them any earlier spans those mutations and
+        // fails the borrow check on the platform that has them.
+        let help_state = &self.help;
+        let help_bindings = &self.bindings;
         self.terminal
             .draw(|frame| {
                 let area = frame.area();
