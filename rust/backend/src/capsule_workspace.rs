@@ -332,9 +332,10 @@ pub(crate) fn pair_verdict(reported: Option<&str>, own: &str) -> Result<(), Stri
             "sot-capsule.exe build {} does not match this daemon's build {own}: rebuild the pair \
              (cargo build --release -p sot-backend -p sot-log; a sot-capsule.exe pinned by running \
              supervisors must be renamed aside first). Rows still held by supervisors of the old \
-             build: end them from a frontend of that build, or kill BOTH their `sot-capsule \
-             supervise` and `sot-capsule run` processes (the journal recovers) and attach the row \
-             again -- this daemon never adopts or respawns a foreign supervisor on its own",
+             build: end them from a frontend of that build, or kill only their `sot-capsule \
+             supervise` process and attach the row again -- the run leg and the agent in it \
+             survive, and the new supervisor adopts them (the management exchange is not \
+             build-gated); this daemon never adopts or respawns a foreign supervisor on its own",
             got.unwrap_or("unknown (binary predates `build-id`)")
         )),
     }
@@ -593,8 +594,8 @@ mod windows_runtime {
             tracing::warn!(
                 state_dir = ?state_dir, error = %text,
                 "capsule row is held by a supervisor from ANOTHER build; this daemon cannot attach, adopt, end \
-                 or destroy it. Recovery: end it from a frontend of that build, or kill BOTH its `sot-capsule \
-                 supervise` and `sot-capsule run` processes (the journal recovers) and attach the row again"
+                 or destroy it. Recovery: end it from a frontend of that build, or kill only its `sot-capsule \
+                 supervise` process and attach the row again (the run leg and its agent survive and are adopted)"
             );
         }
     }
@@ -1175,13 +1176,20 @@ mod windows_runtime {
                                 sot_log::supervisor_client::query_status(&dir)
                             })
                             .await;
-                            if let Ok(Ok((status, process))) = probe {
-                                tracing::info!(
-                                    workspace_id = %workspace_id, phase = phase_str(status.phase),
-                                    "capsule supervisor watchdog: contention resolved -- adopted the surviving lane"
-                                );
-                                adopted = Some(process);
-                                break;
+                            match probe {
+                                Ok(Ok((status, process))) => {
+                                    tracing::info!(
+                                        workspace_id = %workspace_id, phase = phase_str(status.phase),
+                                        "capsule supervisor watchdog: contention resolved -- adopted the surviving lane"
+                                    );
+                                    adopted = Some(process);
+                                    break;
+                                }
+                                // A foreign holder is first met HERE when the row was
+                                // never probed before this leg (a fresh spawn that
+                                // exited contended) -- note it the same once-per-row way.
+                                Ok(Err(e)) => note_if_foreign(&state_dir, &e),
+                                Err(_) => {}
                             }
                         }
                         match adopted {
@@ -1758,7 +1766,7 @@ mod pair_verdict_tests {
     fn a_different_build_is_refused_with_the_recovery() {
         let e = pair_verdict(Some("97deece7"), "9f774f74").unwrap_err();
         assert!(e.contains("97deece7") && e.contains("9f774f74"), "{e}");
-        assert!(e.contains("renamed aside") && e.contains("attach the row again"), "{e}");
+        assert!(e.contains("renamed aside") && e.contains("attach the row again") && e.contains("only their"), "{e}");
     }
 
     #[test]

@@ -975,7 +975,7 @@ function Invoke-FreshnessPass {
                 Rename-Item -Path (Join-Path $devBinDir 'sot-capsule.exe') -NewName $staleName -ErrorAction Stop
                 $renamedAside = Join-Path $devBinDir $staleName
                 Write-SupLog "freshness: sot-capsule.exe pinned by $($capsuleSessionsAlive.Count) live supervisors - renamed aside as $staleName; rebuilding the full pair"
-                $script:launchNotices.Add("$($capsuleSessionsAlive.Count) running capsule supervisor(s) are on the previous build and cannot attach to this frontend: end them from a frontend of that build, or kill both their 'sot-capsule supervise' and 'sot-capsule run' processes and attach the row again") | Out-Null
+                $script:launchNotices.Add("$($capsuleSessionsAlive.Count) running capsule supervisor(s) are on the previous build and cannot attach to this frontend: end them from a frontend of that build, or kill only their 'sot-capsule supervise' process and attach the row again (the run leg and its agent survive and are adopted)") | Out-Null
             } catch {
                 Write-SupLog "freshness: could not rename the pinned sot-capsule.exe aside ($($_.Exception.Message)); the pair build below will refresh sotd.exe only"
                 $script:launchNotices.Add("sot-capsule.exe is pinned and could not be renamed aside; kill the running sot-capsule.exe processes and relaunch") | Out-Null
