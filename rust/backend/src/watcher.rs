@@ -9,13 +9,25 @@
 // the FE can ignore other workspaces' traffic (node ids like
 // `files:README.md` collide across repos). notify reports raw OS events; a
 // small async dispatcher debounces per-path bursts (editors typically save 2–4
-// events for one logical save), bumps the session ring once per logical change,
-// and fans out to per-connection subscribers via a broadcast channel.
+// events for one logical save) and fans out to per-connection subscribers via
+// a broadcast channel — each connection filters to what ITS active workspace
+// can use before writing a frame (`preview_changed_visible`, server.rs).
 //
-// Why bump the ring at all: clients that reconnect after a disconnect see the
-// preview.changed entries via replay and re-fetch any cursored / pinned
-// previews they care about. Without ring bumping, a reconnecting client
-// silently keeps stale bytes.
+// NOT bumped onto the session ring (2026-09 rework): a reconnecting client
+// already unconditionally re-fetches tree.root + preview.get for whatever
+// workspace it resumes into, so a preview.changed's only job — "something
+// changed, go re-fetch" — is redundant with that fetch on reconnect, and
+// replaying old preview.changed entries verbatim (session.rs's `replay_after`
+// doesn't know about the per-connection filter above) would leak a
+// reconnecting client every FOREIGN-workspace event it missed while it was
+// away, defeating the filter. So this event category is live-only,
+// best-effort, and carries no revision (`PreviewChanged` has no `revision`
+// field; the outgoing frame carries no `rev` either) — it never touches
+// `Session::bump`, the ring, hello's replay, or a client's
+// `last_seen_revision` watermark. Everything else that watermark still
+// tracks: tree.invalidate, preview.served, preview.scale_set, image.cropped,
+// concept.written, file.written, file.deleted, tmux.session_created/killed,
+// workspace.create/destroy (see their own `Session::bump` call sites).
 //
 // REGISTRATION (the 2026-07-11 fix): we do NOT hand notify one recursive
 // `watch(root, Recursive)`. On Linux that registers one inotify watch per
@@ -50,11 +62,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use notify::{RecursiveMode, Watcher as NotifyWatcher};
-use serde_json::json;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::files_mode::FilesMode;
-use crate::session::Session;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
@@ -73,11 +83,11 @@ impl ChangeKind {
     }
 }
 
-/// One deduplicated, session-bumped file change. Receivers turn this into a
-/// `preview.changed` evt frame with the carried revision.
+/// One deduplicated file change. Receivers turn this into a `preview.changed`
+/// evt frame — carrying NO revision (see this module's header comment: this
+/// event category is deliberately outside the session ring).
 #[derive(Debug, Clone)]
 pub struct PreviewChanged {
-    pub revision: u64,
     pub path: PathBuf,
     pub node_id: Option<String>,
     pub kind: ChangeKind,
@@ -120,7 +130,6 @@ impl Watcher {
     /// onto the SHARED `broadcast_tx` bus (created once in `server::run`).
     pub fn spawn(
         root: &Path,
-        session: Session,
         files_mode: Arc<FilesMode>,
         broadcast_tx: broadcast::Sender<PreviewChanged>,
         workspace_slug: Option<String>,
@@ -181,11 +190,11 @@ impl Watcher {
                 .context("spawn watch-manage thread")?;
         }
 
-        // Dispatcher: forward dir lifecycle hints to the manager, then debounce
-        // per-path, bump the session ring, broadcast.
+        // Dispatcher: forward dir lifecycle hints to the manager, then
+        // debounce per-path and broadcast (NOT the session ring — see this
+        // module's header comment).
         let bus = broadcast_tx.clone();
         let fm = files_mode.clone();
-        let sess = session.clone();
         let slug = workspace_slug;
         tokio::spawn(async move {
             let mut last_emit: HashMap<PathBuf, Instant> = HashMap::new();
@@ -221,18 +230,12 @@ impl Watcher {
                 }
 
                 let node_id = fm.path_to_node_id(&path);
-                let payload = json!({
-                    "path": path.to_string_lossy(),
-                    "node_id": node_id,
-                    "kind": kind.as_str(),
-                    "workspace_id": slug,
-                });
-                let revision = sess.bump("preview.changed", payload).await;
 
-                // `send` only errors when there are zero subscribers. That's
-                // fine — events still landed on the ring for the next client.
+                // `send` only errors when there are zero subscribers — fine,
+                // there's simply nobody live to tell right now (and, per this
+                // module's header comment, deliberately nobody to catch up
+                // later either).
                 let _ = bus.send(PreviewChanged {
-                    revision,
                     path,
                     node_id,
                     kind,

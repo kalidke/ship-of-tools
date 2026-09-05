@@ -201,6 +201,31 @@ mod verbatim_tests {
             &PathBuf::from(r"C:\Users\k\proj")
         ));
     }
+
+    /// A plain (non-verbatim) Windows path — what a `notify` watcher event
+    /// actually carries (`to_string_lossy()` off the raw OS path, never
+    /// canonicalized to `\\?\...`). This wasn't exercised until the
+    /// preview.changed per-connection fan-out filter (server.rs
+    /// `preview_changed_visible`) started depending on `path_within_root` for
+    /// exactly this shape — the OLD filter did a bare `/`-only string
+    /// `strip_prefix`, which a `\`-separated event path never matched at all.
+    #[test]
+    fn path_within_root_accepts_plain_windows_child() {
+        assert!(path_within_root(
+            &PathBuf::from(r"C:\a\b\file.jl"),
+            &PathBuf::from(r"C:\a\b")
+        ));
+        assert!(path_within_root(
+            &PathBuf::from(r"C:\a\b\sub\file.jl"),
+            &PathBuf::from(r"C:\a\b")
+        ));
+        // The lookalike-sibling rejection holds here too — component-based
+        // comparison, not a string prefix.
+        assert!(!path_within_root(
+            &PathBuf::from(r"C:\a\bx\file.jl"),
+            &PathBuf::from(r"C:\a\b")
+        ));
+    }
 }
 
 /// `simplify_verbatim` is a Windows-only rewrite — everywhere else (this

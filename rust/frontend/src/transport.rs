@@ -49,7 +49,8 @@ use sot_protocol::{
     PtyWriteReq, QuartoOpenReq, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt, ReplRunFileReq,
     ReplRunFileRes, TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxListPanesReq, TmuxListPanesRes,
     TmuxPane, ToggleHiddenReq, TreeChildrenReq, TreeChildrenRes, TreeNode, TreeRootReq,
-    TreeRootRes, VideoOpenReq, VideoOpenRes, WorkspaceListReq, WorkspaceListRes,
+    TreeRootRes, VideoOpenReq, VideoOpenRes, WorkspaceActivateReq, WorkspaceListReq,
+    WorkspaceListRes,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{self as tmpsc, UnboundedReceiver, UnboundedSender};
@@ -859,6 +860,19 @@ pub enum OutgoingReq {
     /// The response carries the new state but the FE ignores it (the re-fetch
     /// is authoritative), so no PendingKind is stamped.
     ToggleHidden { workspace_id: Option<String> },
+    /// Explicit "this connection's view is now `workspace_id`" signal
+    /// (`workspace.activate`, `None` = default workspace). Fired
+    /// UNCONDITIONALLY as the very first wire action of `switch_to_workspace`
+    /// (gpu.rs) — including a UI-cache hit that fires no other request at
+    /// all — and once more on reconnect, right after `hello` succeeds
+    /// (`IncomingEvt::Connected`'s resume handling). Replaces inferring the
+    /// active workspace daemon-side from whichever op's `workspace_id`
+    /// happened to arrive next, which could leave the daemon's
+    /// `preview.changed` fan-out filter stuck on a stale workspace
+    /// indefinitely (Codex review). Response echoes back the canonical id
+    /// the daemon resolved to, but the FE doesn't act on it today — no
+    /// PendingKind is stamped, mirroring `ToggleHidden` above.
+    WorkspaceActivate { workspace_id: Option<String> },
     /// Ask the kernel for its loaded-modules list. Response surfaces as
     /// `IncomingEvt::ModulesList`. Currently the only kernel.request the
     /// frontend issues directly; expand the enum as more land.
@@ -1964,6 +1978,22 @@ where
                         // No PendingKind: the response's new-state is redundant
                         // with the tree.root re-fetch gpu.rs fires right after,
                         // and an unmatched response id is silently ignored.
+                    }
+                    OutgoingReq::WorkspaceActivate { workspace_id } => {
+                        tracing::debug!(?workspace_id, id, "→ workspace.activate");
+                        codec::write_frame(
+                            &mut tx,
+                            &Frame::req(
+                                id,
+                                op::WORKSPACE_ACTIVATE,
+                                serde_json::to_value(WorkspaceActivateReq { workspace_id })?,
+                            ),
+                            None,
+                        )
+                        .await?;
+                        // No PendingKind: the FE doesn't act on the echoed
+                        // canonical id today; an unmatched response id is
+                        // silently ignored (same idiom as ToggleHidden above).
                     }
                     OutgoingReq::ModulesList { workspace_id } => {
                         tracing::debug!(?workspace_id, id, "→ kernel.request modules.list");

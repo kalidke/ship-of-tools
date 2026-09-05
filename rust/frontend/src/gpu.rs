@@ -1306,8 +1306,14 @@ fn parent_files_node_id(node_id: &str) -> String {
 /// Translate a backend-absolute file path into the ACTIVE workspace's
 /// `files:<rel>` node id, when the path lies inside `root`. Returns `None`
 /// for paths outside the root, the root itself, and lookalike siblings
-/// (`/a/ws` vs `/a/wsx` — the boundary `/` is required). Backend paths are
-/// always unix-style, so `/` is the only separator to handle.
+/// (`/a/ws` vs `/a/wsx` — the boundary separator is required).
+///
+/// Accepts EITHER `/` or `\` as the boundary/rel separator and always
+/// normalizes the derived id to `/`: every OTHER convention in this module
+/// is unix-style (node ids are unix-style on the wire regardless of host OS,
+/// per files_mode.rs), but a native Windows `notify` watcher event path is
+/// `\`-separated (`to_string_lossy()` off the raw OS path, never
+/// canonicalized) — a `/`-only rule silently matched nothing there.
 ///
 /// This is the `preview.changed` addressing scheme: workspaces overlap (an
 /// umbrella workspace registered over the same tree, watch budgets capping
@@ -1315,12 +1321,12 @@ fn parent_files_node_id(node_id: &str) -> String {
 /// never exist — but every copy carries the absolute path, and any copy
 /// whose path is inside the active root is ours to act on.
 fn files_node_id_under_root(path: &str, root: &str) -> Option<String> {
-    let root = root.trim_end_matches('/');
-    let rel = path.strip_prefix(root)?.strip_prefix('/')?;
+    let root = root.trim_end_matches(['/', '\\']);
+    let rel = path.strip_prefix(root)?.strip_prefix(['/', '\\'])?;
     if rel.is_empty() {
         return None;
     }
-    Some(format!("files:{rel}"))
+    Some(format!("files:{}", rel.replace('\\', "/")))
 }
 
 /// Resolve a `preview.changed` event to a node id in the ACTIVE workspace's
@@ -7817,6 +7823,22 @@ impl State {
         // happens to clear it.
         self.preview_fatal = None;
         self.active_workspace_id = slug.clone();
+        // Explicit "this connection's view is now `slug`" signal
+        // (`workspace.activate`) — fired UNCONDITIONALLY, before any of the
+        // cache-dependent work below (the snapshot-restore may find
+        // everything cached and fire no other request at all; a switch back
+        // to the default workspace, `slug: None`, fires no `pty.open`
+        // either). Both are exactly the cases where the daemon's
+        // `preview.changed` fan-out filter used to have nothing to learn the
+        // new active workspace from and could sit on the stale one
+        // indefinitely (Codex review) — this is the one signal it can
+        // always count on. `self.active_host` is already the NEW host (set
+        // just above), so this routes correctly even on a cross-host switch.
+        if let Err(e) = self.send(crate::transport::OutgoingReq::WorkspaceActivate {
+            workspace_id: slug.clone(),
+        }) {
+            tracing::warn!(error = %e, "drop workspace.activate on switch — channel closed");
+        }
         // A workspace change invalidates any one-shot reveal armed for the
         // PREVIOUS workspace. Its `tree.root` reply is dropped by the TreeRoot
         // workspace guard WITHOUT consuming `pending_switch_reveal`, so a stale
@@ -11256,6 +11278,29 @@ impl State {
                     // above) doesn't re-fire the active workspace's resume
                     // flow redundantly.
                     if event_host == self.active_host {
+                        // Carry the resumed active workspace across the
+                        // reconnect (right after `hello` succeeds — this
+                        // whole `Connected` event fires as soon as it does).
+                        // The transport's own hello-time fetch just above
+                        // (before this event ever reaches the GPU thread) is
+                        // always against the DEFAULT workspace and has no
+                        // access to chrome state, so it can't send this
+                        // itself — hence firing it here rather than baking
+                        // it into `hello`'s own payload (the smaller of the
+                        // two fixes: no wire-shape change to `hello`, and it
+                        // reuses the exact mechanism an ordinary switch
+                        // already uses). Fired even when nothing else in
+                        // this arm goes on to re-request anything (e.g.
+                        // resumed into Sessions mode) — the daemon must
+                        // still learn the resumed workspace so its
+                        // `preview.changed` fan-out filter doesn't sit on
+                        // the default workspace indefinitely (Codex review).
+                        let _ = self.send_to(
+                            &event_host,
+                            crate::transport::OutgoingReq::WorkspaceActivate {
+                                workspace_id: self.active_workspace_id.clone(),
+                            },
+                        );
                         let had_batch = self.upload_batch.take().is_some();
                         if self.upload.take().is_some() || had_batch {
                             self.status =
@@ -24311,6 +24356,35 @@ mod tests {
         // The root itself is not a files node.
         assert_eq!(files_node_id_under_root("/a/ws", "/a/ws"), None);
         assert_eq!(files_node_id_under_root("/a/ws/", "/a/ws"), None);
+    }
+
+    #[test]
+    fn files_node_id_under_root_accepts_windows_backslash_paths() {
+        // Not `#[cfg(windows)]` — this is pure string manipulation (no
+        // `Path`/`Component`), so it's exactly as correct run on Linux CI as
+        // on a real Windows box, and proving that here is the whole point:
+        // a native Windows `notify` event path is `\`-separated, and the
+        // derived node id must still come out unix-style on the wire.
+        assert_eq!(
+            files_node_id_under_root(r"C:\a\b\file.jl", r"C:\a\b"),
+            Some("files:file.jl".to_string())
+        );
+        assert_eq!(
+            files_node_id_under_root(r"C:\a\b\sub\file.jl", r"C:\a\b"),
+            Some("files:sub/file.jl".to_string())
+        );
+        // Trailing backslash on the root is tolerated, same as `/`.
+        assert_eq!(
+            files_node_id_under_root(r"C:\a\b\file.jl", r"C:\a\b\"),
+            Some("files:file.jl".to_string())
+        );
+        // The lookalike-sibling rejection holds with backslashes too.
+        assert_eq!(
+            files_node_id_under_root(r"C:\a\bx\file.jl", r"C:\a\b"),
+            None
+        );
+        // The root itself is not a files node.
+        assert_eq!(files_node_id_under_root(r"C:\a\b", r"C:\a\b"), None);
     }
 
     #[test]
