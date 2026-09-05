@@ -1303,6 +1303,11 @@ try {
             Invoke-FreshnessPass
             $localDaemonReady = Invoke-LocalDaemonEnsure
             Set-LaunchNoticeEnv
+            # The freshness pass just wrote 'Rebuilding frontend...' to the
+            # status file, and the loop's own DONE write is one-shot (the
+            # splash was dismissed on the first launch), so settle the file
+            # here or it reads mid-sentence for the rest of the run.
+            Set-LaunchStatus 'DONE'
         }
 
         # Crash-loop rollback (ADR 0030 §4): a just-applied update that dies

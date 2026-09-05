@@ -758,6 +758,22 @@ fn scan_dir(reg: &Workspaces, dir: &Path, legacy: bool) -> Result<usize> {
             continue;
         }
         match load_toml(&path, legacy) {
+            // A legacy-dir toml is the ADR 0013 migration SOURCE, never the
+            // source of truth: `scan_disk` reads the canonical dir first,
+            // and `insert`'s "same slug -> new metadata wins" would
+            // otherwise let this stale copy overwrite the canonical row's
+            // runtime/agent/autostart/task in memory on EVERY boot (field
+            // defect 2026-09-05: a Windows box carrying both
+            // `sessions-<host>\local.toml` and `workspaces-<host>\local.toml`
+            // logged the ADR 0042 "correcting a stale on-disk tmux" line at
+            // each start although the canonical file already said capsule).
+            Ok(Some(ws)) if legacy && reg.resolve(Some(&ws.slug)).is_some() => {
+                tracing::debug!(
+                    toml = ?path,
+                    slug = %ws.slug,
+                    "legacy toml shadowed by its canonical row; skipping"
+                );
+            }
             Ok(Some(ws)) => {
                 reg.insert(ws);
                 count += 1;
@@ -837,11 +853,10 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         // "tmux" made the daemon try to secure a tmux socket dir before
         // failing to spawn a nonexistent `tmux.exe` (field evidence,
         // v0.6.0-rc.3 — see `paths::tmux_socket_path`'s doc).
-        #[cfg(windows)]
-        let default_runtime = "capsule";
-        #[cfg(not(windows))]
-        let default_runtime = "tmux";
-        let runtime = kv.get("runtime").cloned().unwrap_or_else(|| default_runtime.to_string());
+        let runtime = kv
+            .get("runtime")
+            .cloned()
+            .unwrap_or_else(|| missing_runtime_default().to_string());
         let mut ws = Workspace::meta_only(
             workspace_id,
             slug,
@@ -895,7 +910,7 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or_else(now_unix);
     // Legacy [backend] tomls predate these keys → default false / "".
-    Ok(Some(Workspace::meta_only(
+    let mut ws = Workspace::meta_only(
         workspace_id,
         slug,
         label,
@@ -906,7 +921,28 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         "none".to_string(),
         String::new(),
         String::new(),
-    )))
+    );
+    // ...and the `runtime` key: same per-OS default as the canonical pass
+    // above, so a legacy-only row on Windows is startable at all.
+    ws.runtime = missing_runtime_default().to_string();
+    Ok(Some(ws))
+}
+
+/// The runtime a toml that PREDATES the `runtime` key (ADR 0042 L1a) gets
+/// on this platform, shared by both `load_toml` passes: "tmux" (matching
+/// `meta_only`'s own default, so every pre-capsule workspace keeps its
+/// behaviour byte-for-byte) — except on Windows (Codex review, PR #175),
+/// where it's "capsule": tmux never runs there at all, so a "tmux" default
+/// made the daemon try to secure a tmux socket dir before failing to spawn
+/// a nonexistent `tmux.exe` (field evidence, v0.6.0-rc.3 — see
+/// `paths::tmux_socket_path`'s doc). A PRESENT but wrong value is a
+/// different question, answered by `default_row_runtime` below.
+fn missing_runtime_default() -> &'static str {
+    if cfg!(windows) {
+        "capsule"
+    } else {
+        "tmux"
+    }
 }
 
 /// The single decision of what runtime the daemon's own default/home row
@@ -1981,6 +2017,80 @@ pid          = 12345
         assert_eq!(ws.slug, "legacypkg_jl");
         assert_eq!(ws.label, "LegacyPkg.jl");
         assert_eq!(ws.project_root, PathBuf::from("/home/u/LegacyPkg.jl"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Field defect (2026-09-05): a box carrying BOTH the canonical
+    /// `workspaces-<host>/<slug>.toml` and a leftover legacy
+    /// `sessions-<host>/<slug>.toml` for the same slug re-registered the
+    /// legacy copy second, and `insert`'s "same slug -> new metadata wins"
+    /// let the stale copy overwrite the canonical row in memory on every
+    /// boot — runtime back to the legacy default, agent/autostart/task
+    /// back to the legacy blanks. Visible as the ADR 0042 "correcting a
+    /// stale on-disk tmux value" log line on a box whose canonical file
+    /// already said capsule. The canonical row must win: the legacy file
+    /// is a migration source, not a source of truth. Runs on every OS.
+    #[test]
+    fn scan_disk_legacy_toml_never_overrides_canonical_row_of_same_slug() {
+        let _guard = env_guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-ws-test-legacy-shadow-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Distinct subdirs so neither the unix XDG root nor the Windows
+        // LOCALAPPDATA root doubles as the other's legacy-candidate dir
+        // for the boot-time migrations `scan_disk` runs first.
+        std::env::set_var("XDG_CONFIG_HOME", dir.join("xdg"));
+        std::env::set_var("LOCALAPPDATA", &dir);
+        std::env::remove_var("USERPROFILE");
+        std::env::set_var("SOT_STATE_HOST", "legacy-shadow-test");
+
+        let canonical_dir = workspaces_dir();
+        std::fs::create_dir_all(&canonical_dir).unwrap();
+        std::fs::write(
+            canonical_dir.join("local.toml"),
+            r#"
+workspace_id  = "ws-local-1"
+slug          = "local"
+label         = "local"
+project_root  = "/home/u"
+tmux_session  = "sot-be-local"
+created       = 1700000000
+autostart_claude = true
+agent         = "claude"
+agent_name    = "kal-local"
+task          = "hello"
+runtime       = "capsule"
+"#,
+        )
+        .unwrap();
+        let legacy_dir = sessions_dir();
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(
+            legacy_dir.join("local.toml"),
+            r#"
+[backend]
+session_id   = "ws-local-1"
+label        = "local"
+project_dir  = "/home/u"
+tmux_session = "sot-be-local"
+started      = 1600000000
+"#,
+        )
+        .unwrap();
+
+        let reg = Workspaces::new();
+        let count = scan_disk(&reg).unwrap();
+        assert_eq!(count, 1, "the shadowed legacy toml is not an insert");
+        let ws = reg.resolve(Some("local")).unwrap();
+        assert_eq!(ws.workspace_id, "ws-local-1");
+        assert_eq!(ws.runtime, "capsule");
+        assert!(ws.autostart_claude);
+        assert_eq!(ws.agent, "claude");
+        assert_eq!(ws.agent_name, "kal-local");
+        assert_eq!(ws.task, "hello");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
