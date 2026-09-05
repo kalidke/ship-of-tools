@@ -12,7 +12,7 @@
 //   Windows:   named pipe,       e.g. `\\.\pipe\sot-spike`
 // interprocess accepts both verbatim via `GenericFilePath::to_fs_name`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -947,6 +947,19 @@ where
     // op is gated on this flag.
     let mut authenticated = expected_token.is_none();
 
+    // This connection's active workspace (slug, project_root), made EXPLICIT
+    // here instead of staying implicit. There is no `workspace.switch` request
+    // on the wire — the frontend's single "switch chrome" entry point
+    // (`switch_to_workspace`, gpu.rs) just sets its own `active_workspace_id`
+    // and then fires ordinary nav/preview/repl/file/concept ops stamped with
+    // it (`op_names_active_workspace` below lists exactly those), or fires
+    // nothing at all when the switch hits its UI cache. So "the last such op's
+    // workspace_id" IS this connection's active workspace, as well as the
+    // daemon can know it without a new request type; `None` until the first
+    // one arrives (a fresh hello keeps seeing every event — see
+    // `preview_changed_visible`).
+    let mut active_workspace: Option<(String, PathBuf)> = None;
+
     // One file-watcher subscription per connection. Each connection writes
     // its own preview.changed evt frame; the broadcast channel's per-
     // receiver lag detection lets us notice and log if this connection is
@@ -1034,7 +1047,7 @@ where
                 }
                 change = recv_watcher(&mut watcher_rx) => {
                     if authenticated {
-                        write_preview_changed(&mut tx, change, transport).await?;
+                        write_preview_changed(&mut tx, change, transport, active_workspace.as_ref()).await?;
                     }
                     continue;
                 }
@@ -1087,7 +1100,7 @@ where
                 }
                 change = recv_watcher(&mut watcher_rx) => {
                     if authenticated {
-                        write_preview_changed(&mut tx, change, transport).await?;
+                        write_preview_changed(&mut tx, change, transport, active_workspace.as_ref()).await?;
                     }
                     continue;
                 }
@@ -1144,6 +1157,24 @@ where
             });
             write_frame_to(&mut tx, &Frame::res(frame.id, &frame.op, payload), None).await?;
             continue;
+        }
+
+        // Update this connection's active workspace (see `active_workspace`'s
+        // declaration above) from any op that names one. `hinted` mirrors the
+        // `Option<String>` these ops' typed `*Req::workspace_id` fields
+        // deserialize to: `None` both when the key is entirely absent
+        // (`#[serde(skip_serializing_if = "Option::is_none")]` — the FE omits
+        // it for the default workspace) and when it's JSON `null`, so
+        // `workspaces.resolve(hinted)` resolving `None` to the default
+        // workspace correctly catches a switch BACK to the default, not just
+        // switches to a named one. An unresolvable workspace_id (race with a
+        // concurrent destroy) leaves the tracking untouched rather than
+        // clobbering it with nothing.
+        if op_names_active_workspace(frame.op.as_str()) {
+            let hinted = frame.payload.get("workspace_id").and_then(|v| v.as_str());
+            if let Some(ws) = workspaces.resolve(hinted) {
+                active_workspace = Some((ws.slug.clone(), ws.project_root.clone()));
+            }
         }
 
         // Each arm evaluates to `Result<HandlerOutput>`; the containment block
@@ -1794,19 +1825,111 @@ async fn recv_watcher(
     }
 }
 
+/// Ops whose payload carries a `workspace_id: Option<String>` field naming
+/// the workspace THIS CONNECTION is currently viewing/acting in — i.e. every
+/// op the frontend's `switch_to_workspace` (gpu.rs) stamps with its own
+/// `active_workspace_id` (nav, preview, repl, file, concept, kernel). Used to
+/// keep `active_workspace` (`handle_connection`) current without a new
+/// `workspace.switch` request type.
+///
+/// `workspace.destroy` is deliberately EXCLUDED even though it carries a
+/// `workspace_id`: that field is REQUIRED and names the VICTIM workspace —
+/// the Sessions-mode picker can destroy a row that isn't the one this
+/// connection is currently viewing — so treating it as an active-workspace
+/// signal would mislabel the connection's own view. `workspace.create` and
+/// `workspace.list` carry no `workspace_id` at all (not listed). Every other
+/// op (hello, tmux.*, pty.*, agent.*, fe.command.*, directory.list,
+/// video.open, docs.open, quarto.open, math.render, file.upload/download,
+/// update.*, monitor.*) has no workspace-scoping concept and is likewise
+/// absent.
+fn op_names_active_workspace(op_str: &str) -> bool {
+    matches!(
+        op_str,
+        op::TREE_ROOT
+            | op::TREE_CHILDREN
+            | op::NAV_TOGGLE_HIDDEN
+            | op::PREVIEW_GET
+            | op::PREVIEW_SET_SCALE
+            | op::IMAGE_CROP
+            | op::KERNEL_REQUEST
+            | op::CONCEPT_READ
+            | op::CONCEPT_WRITE
+            | op::CONCEPT_LIST
+            | op::FILE_READ
+            | op::FILE_WRITE
+            | op::FILE_DELETE
+            | op::REPL_EVAL
+            | op::REPL_RUN_FILE
+            | op::REPL_INTERRUPT
+            | op::REPL_EXECUTE
+    )
+}
+
+/// Containment check mirroring `files_node_id_under_root` in
+/// `rust/frontend/src/gpu.rs` byte-for-byte: trim `root`'s trailing
+/// separator, then require the REMAINDER of `path` to start with `/` — so
+/// `/a/ws` never matches the sibling `/a/wsx` (a bare `strip_prefix` would).
+/// Backend paths are always unix-style (project roots are backend-host
+/// paths), so `/` is the only separator to handle — do not invent a new
+/// normalisation here; if the frontend's rule changes, mirror it again.
+fn path_under_root(path: &Path, root: &Path) -> bool {
+    let path = path.to_string_lossy();
+    let root = root.to_string_lossy();
+    let root = root.trim_end_matches('/');
+    match path.strip_prefix(root).and_then(|s| s.strip_prefix('/')) {
+        Some(rel) => !rel.is_empty(),
+        None => false,
+    }
+}
+
+/// Whether a `preview.changed` event should reach a connection whose active
+/// workspace is `active` (`(slug, project_root)`; `None` = not yet observed —
+/// a fresh connection, before its first workspace-scoped op, keeps seeing
+/// every event exactly as before this filter existed).
+///
+/// The SAME two-path predicate `resolve_preview_changed` applies frontend-side
+/// (`rust/frontend/src/gpu.rs`), just evaluated once at fan-out instead of
+/// once per received-and-discarded frame:
+/// (a) the event is tagged with the active workspace's slug, or
+/// (b) workspaces overlap (umbrella roots registered over the same tree,
+///     watch budgets capping a watcher's coverage) so the event's absolute
+///     path lies under the active workspace's project root even when tagged
+///     with a different slug.
+/// A tag-only filter would break case (b) — that's why the frontend never
+/// used one, and why this mirrors its rule instead of inventing a simpler one.
+fn preview_changed_visible(change: &PreviewChanged, active: Option<&(String, PathBuf)>) -> bool {
+    let Some((slug, root)) = active else {
+        return true;
+    };
+    if change.workspace_id.as_deref() == Some(slug.as_str()) {
+        return true;
+    }
+    path_under_root(&change.path, root)
+}
+
 /// Translates one watcher event into a `preview.changed` evt frame on the
-/// wire. Returns `Ok(true)` if a frame was written, `Ok(false)` if the
-/// receiver was lagged or closed (skip and keep the connection alive).
+/// wire — but only when `active_workspace` says this connection can use it
+/// (`preview_changed_visible`); otherwise the event is silently dropped here,
+/// before a frame decode/JSON-parse/redraw is spent on the frontend for
+/// traffic it would have discarded anyway (the measured flood this filter
+/// exists for). Returns `Ok(true)` if a frame was written, `Ok(false)` if the
+/// receiver was lagged/closed, or if the event was filtered for this
+/// connection's active workspace (skip and keep the connection alive either
+/// way).
 async fn write_preview_changed<W>(
     tx: &mut W,
     change: Result<PreviewChanged, broadcast::error::RecvError>,
     transport: &'static str,
+    active_workspace: Option<&(String, PathBuf)>,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
     match change {
         Ok(c) => {
+            if !preview_changed_visible(&c, active_workspace) {
+                return Ok(false);
+            }
             let payload = serde_json::json!({
                 "path": c.path.to_string_lossy(),
                 "node_id": c.node_id,
@@ -2322,5 +2445,87 @@ mod tests {
         // ("Churned for 17m 59s", not "(17m"), so it reads idle, not working.
         let s = format!("✻ Churned for 17m 59s · 1 shell, 1 monitor still running\n{IDLE_FOOTER}");
         assert_eq!(pane_activity(&s), "idle");
+    }
+
+    // Per-connection preview.changed fan-out filter (the flood fix): a
+    // connection must see exactly what its active workspace can use — same
+    // workspace tag, or a foreign-tagged event whose path is under the
+    // active root (workspaces overlap by design) — and nothing else, except
+    // before any active workspace has been observed at all.
+    mod preview_changed_fanout {
+        use super::super::preview_changed_visible;
+        use crate::watcher::{ChangeKind, PreviewChanged};
+        use std::path::PathBuf;
+
+        fn change(workspace_id: Option<&str>, path: &str) -> PreviewChanged {
+            PreviewChanged {
+                revision: 1,
+                path: PathBuf::from(path),
+                node_id: Some("files:x".to_string()),
+                kind: ChangeKind::Modified,
+                workspace_id: workspace_id.map(str::to_string),
+            }
+        }
+
+        fn active(slug: &str, root: &str) -> (String, PathBuf) {
+            (slug.to_string(), PathBuf::from(root))
+        }
+
+        #[test]
+        fn same_workspace_tag_is_sent() {
+            let c = change(Some("alpha"), "/anywhere/at/all");
+            let a = active("alpha", "/repos/alpha");
+            assert!(preview_changed_visible(&c, Some(&a)));
+        }
+
+        #[test]
+        fn foreign_tag_under_active_root_is_sent() {
+            // The umbrella-workspace / watch-budget case: tagged "beta" but the
+            // path is really inside the active workspace's own tree.
+            let c = change(Some("beta"), "/repos/alpha/src/main.jl");
+            let a = active("alpha", "/repos/alpha");
+            assert!(preview_changed_visible(&c, Some(&a)));
+        }
+
+        #[test]
+        fn foreign_tag_elsewhere_is_dropped() {
+            let c = change(Some("beta"), "/repos/beta/src/main.jl");
+            let a = active("alpha", "/repos/alpha");
+            assert!(!preview_changed_visible(&c, Some(&a)));
+        }
+
+        #[test]
+        fn sibling_path_is_not_a_false_containment_match() {
+            // "/repos/alphax" is NOT under "/repos/alpha" — the boundary `/`
+            // is required (mirrors `files_node_id_under_root`, gpu.rs).
+            let c = change(Some("beta"), "/repos/alphax/src/main.jl");
+            let a = active("alpha", "/repos/alpha");
+            assert!(!preview_changed_visible(&c, Some(&a)));
+        }
+
+        #[test]
+        fn no_active_workspace_yet_sends_everything() {
+            // Fresh connection, before its first workspace-scoped op —
+            // today's (pre-filter) behaviour.
+            let c = change(Some("beta"), "/repos/beta/src/main.jl");
+            assert!(preview_changed_visible(&c, None));
+        }
+    }
+
+    // `op_names_active_workspace` gates which ops update the per-connection
+    // active-workspace tracking. `workspace.destroy` must stay excluded even
+    // though it carries a `workspace_id`: it names the DESTROY TARGET, not
+    // necessarily the workspace this connection is viewing.
+    #[test]
+    fn destroy_does_not_name_the_active_workspace() {
+        use super::op_names_active_workspace;
+        use sot_protocol::op;
+
+        assert!(!op_names_active_workspace(op::WORKSPACE_DESTROY));
+        assert!(!op_names_active_workspace(op::WORKSPACE_CREATE));
+        assert!(!op_names_active_workspace(op::WORKSPACE_LIST));
+        assert!(!op_names_active_workspace(op::HELLO));
+        assert!(op_names_active_workspace(op::TREE_ROOT));
+        assert!(op_names_active_workspace(op::PREVIEW_GET));
     }
 }
