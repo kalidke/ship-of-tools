@@ -49,7 +49,8 @@ use sot_protocol::{
     PtyWriteReq, QuartoOpenReq, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt, ReplRunFileReq,
     ReplRunFileRes, TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxListPanesReq, TmuxListPanesRes,
     TmuxPane, ToggleHiddenReq, TreeChildrenReq, TreeChildrenRes, TreeNode, TreeRootReq,
-    TreeRootRes, VideoOpenReq, VideoOpenRes, WorkspaceListReq, WorkspaceListRes,
+    TreeRootRes, VideoOpenReq, VideoOpenRes, WorkspaceActivateReq, WorkspaceListReq,
+    WorkspaceListRes,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{self as tmpsc, UnboundedReceiver, UnboundedSender};
@@ -871,6 +872,19 @@ pub enum OutgoingReq {
     /// The response carries the new state but the FE ignores it (the re-fetch
     /// is authoritative), so no PendingKind is stamped.
     ToggleHidden { workspace_id: Option<String> },
+    /// Explicit "this connection's view is now `workspace_id`" signal
+    /// (`workspace.activate`, `None` = default workspace). Fired
+    /// UNCONDITIONALLY as the very first wire action of `switch_to_workspace`
+    /// (gpu.rs) — including a UI-cache hit that fires no other request at
+    /// all — and once more on reconnect, right after `hello` succeeds
+    /// (`IncomingEvt::Connected`'s resume handling). Replaces inferring the
+    /// active workspace daemon-side from whichever op's `workspace_id`
+    /// happened to arrive next, which could leave the daemon's
+    /// `preview.changed` fan-out filter stuck on a stale workspace
+    /// indefinitely (Codex review). Response echoes back the canonical id
+    /// the daemon resolved to, but the FE doesn't act on it today — no
+    /// PendingKind is stamped, mirroring `ToggleHidden` above.
+    WorkspaceActivate { workspace_id: Option<String> },
     /// Ask the kernel for its loaded-modules list. Response surfaces as
     /// `IncomingEvt::ModulesList`. Currently the only kernel.request the
     /// frontend issues directly; expand the enum as more land.
@@ -1976,6 +1990,22 @@ where
                         // No PendingKind: the response's new-state is redundant
                         // with the tree.root re-fetch gpu.rs fires right after,
                         // and an unmatched response id is silently ignored.
+                    }
+                    OutgoingReq::WorkspaceActivate { workspace_id } => {
+                        tracing::debug!(?workspace_id, id, "→ workspace.activate");
+                        codec::write_frame(
+                            &mut tx,
+                            &Frame::req(
+                                id,
+                                op::WORKSPACE_ACTIVATE,
+                                serde_json::to_value(WorkspaceActivateReq { workspace_id })?,
+                            ),
+                            None,
+                        )
+                        .await?;
+                        // No PendingKind: the FE doesn't act on the echoed
+                        // canonical id today; an unmatched response id is
+                        // silently ignored (same idiom as ToggleHidden above).
                     }
                     OutgoingReq::ModulesList { workspace_id } => {
                         tracing::debug!(?workspace_id, id, "→ kernel.request modules.list");
@@ -3963,6 +3993,52 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(
             matches!(&events[0], (h, IncomingEvt::FigureGetFailed { url }) if h == &host && url == "figures/weird.png")
+        );
+    }
+
+    /// Version-skew seam: a NEW frontend against an OLD daemon (no
+    /// `workspace.activate` support). `OutgoingReq::WorkspaceActivate`
+    /// deliberately stamps NO `PendingKind` (see its send-site comment) —
+    /// so an old daemon's generic unknown-op reply (`server.rs`'s `other =>`
+    /// catch-all: `{"error": "unknown op: workspace.activate"}`, same `op`
+    /// and `id` echoed back) finds nothing in `pending` and MUST fall all
+    /// the way through to the generic `IncomingEvt::Event` catch-all —
+    /// which gpu.rs's own catch-all (`else { tracing::debug!(%op, "evt"); }`)
+    /// only logs at debug and does nothing else. This is what makes the skew
+    /// safe: no status-line error, no retry, no effect on the switch that
+    /// sent it. A real `WorkspaceActivateRes` success reply lands the exact
+    /// same way (also no `PendingKind`), so this one test covers both.
+    #[test]
+    fn workspace_activate_reply_with_no_pending_falls_through_to_generic_event() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+        let frame = Frame::res(
+            11,
+            op::WORKSPACE_ACTIVATE,
+            serde_json::json!({"error": "unknown op: workspace.activate"}),
+        );
+        let host = "test-host".to_string();
+        handle_response_frame(frame, None, &mut pending, &evt_tx, &host);
+
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            (h, IncomingEvt::Event { op, payload }) => {
+                assert_eq!(h, &host);
+                assert_eq!(op, op::WORKSPACE_ACTIVATE);
+                assert_eq!(
+                    payload.get("error").and_then(|v| v.as_str()),
+                    Some("unknown op: workspace.activate")
+                );
+            }
+            other => panic!(
+                "expected the generic IncomingEvt::Event fallback (no status-line \
+                 variant exists for this op), got {other:?}"
+            ),
+        }
+        assert!(
+            pending.is_empty(),
+            "no PendingKind was ever inserted for workspace.activate — nothing to strand"
         );
     }
 

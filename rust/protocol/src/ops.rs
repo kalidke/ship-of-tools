@@ -134,6 +134,23 @@ pub mod op {
     /// kernel-handle-constructed flag). The default workspace is
     /// included in the list and marked via `is_default`.
     pub const WORKSPACE_LIST: &str = "workspace.list";
+    /// Client→daemon: explicitly names the workspace THIS CONNECTION is now
+    /// viewing/acting in. Sent by the frontend's single "switch chrome"
+    /// entry point (`switch_to_workspace`, gpu.rs) UNCONDITIONALLY as the
+    /// very first wire action of any workspace switch — including a UI-cache
+    /// hit that fires no other request at all, and a switch back to the
+    /// default workspace (`workspace_id: None`, same convention as
+    /// `TreeRootReq`) — so the daemon's per-connection "active workspace"
+    /// (used to fan out `preview.changed` only to a connection whose view
+    /// can use it) is never left to be inferred from whatever unrelated op
+    /// happens to arrive next. Also sent once on reconnect, right after
+    /// `hello` succeeds, so a resumed connection's active workspace is known
+    /// before the first tree/preview request lands. Request is
+    /// `WorkspaceActivateReq`; response `WorkspaceActivateRes` echoes back
+    /// the CANONICAL id actually resolved (`None` if `workspace_id` didn't
+    /// resolve — a stale id, or a race with a concurrent destroy — which
+    /// the frontend does not act on today but could log).
+    pub const WORKSPACE_ACTIVATE: &str = "workspace.activate";
     /// Destroy a registered workspace (ADR 0014). Backend shuts down
     /// the workspace's kernel child if it was spawned, kills the
     /// `sot-be-<slug>` tmux session, removes the toml from disk,
@@ -1230,6 +1247,27 @@ pub struct WorkspaceListEntry {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceListRes {
     pub workspaces: Vec<WorkspaceListEntry>,
+}
+
+/// `workspace.activate` request. See `op::WORKSPACE_ACTIVATE` for who sends
+/// this and why. `None` = the default workspace, same convention as
+/// `TreeRootReq::workspace_id`; accepted as either a workspace_id or a slug
+/// (the backend's `resolve` takes either).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceActivateReq {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+}
+
+/// `workspace.activate` response. `workspace_id` is the CANONICAL id the
+/// daemon resolved `req.workspace_id` to (present even when the request
+/// named a slug, or named nothing and resolved to the default workspace).
+/// `None` when it didn't resolve to anything live — the frontend does not
+/// act on this today, but a future version could surface it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceActivateRes {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 /// `workspace.destroy` request — identify the target workspace by id or

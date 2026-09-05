@@ -239,4 +239,50 @@ mod tests {
             "nothing may reach the wire — containment depends on it"
         );
     }
+
+    // Version-skew seam (backend/frontend paired across a release boundary,
+    // e.g. new frontends against an old daemon or vice versa): `rev` is
+    // `Option<u64>` with `#[serde(default, skip_serializing_if =
+    // "Option::is_none")]` (see `Frame`'s own doc) — omitted from the wire
+    // when absent, and deserializes to `None` when the key is missing at
+    // all. That combination is what lets EITHER side omit `rev` (a NEW
+    // daemon's `preview.changed`, now deliberately outside the session
+    // ring — see `watcher.rs`) without the OTHER side choking: nothing
+    // about `rev`'s shape changed for this fix, only whether a given event
+    // ever gets one stamped.
+    #[tokio::test]
+    async fn rev_omitted_round_trips_to_none() {
+        let mut wire: Vec<u8> = Vec::new();
+        // `Frame::evt` leaves `rev: None`; `write_frame` then OMITS the key
+        // entirely (skip_serializing_if) — this is exactly what a
+        // `preview.changed` frame looks like on the wire post-fix.
+        let f = Frame::evt("preview.changed", serde_json::json!({"path": "/a/b"}));
+        write_frame(&mut wire, &f, None).await.unwrap();
+        assert!(
+            !String::from_utf8_lossy(&wire).contains("\"rev\""),
+            "rev must be OMITTED, not sent as null, when absent"
+        );
+        let mut r = tokio::io::BufReader::new(std::io::Cursor::new(wire));
+        let (parsed, _) = read_frame(&mut r).await.unwrap();
+        assert_eq!(
+            parsed.rev, None,
+            "a frame with no `rev` key must deserialize to None, not error \
+             (an OLD frontend parsing a NEW daemon's un-stamped preview.changed \
+             depends on exactly this)"
+        );
+    }
+
+    // The reverse pairing: an OLD daemon still stamps `rev` on every
+    // preview.changed (it never adopted this fix). A NEW frontend must
+    // parse that unchanged and simply carry the value — nothing downstream
+    // treats an unexpectedly-present `rev` as an error.
+    #[tokio::test]
+    async fn rev_present_round_trips_and_is_not_rejected() {
+        let mut wire: Vec<u8> = Vec::new();
+        let f = Frame::evt("preview.changed", serde_json::json!({"path": "/a/b"})).with_rev(42);
+        write_frame(&mut wire, &f, None).await.unwrap();
+        let mut r = tokio::io::BufReader::new(std::io::Cursor::new(wire));
+        let (parsed, _) = read_frame(&mut r).await.unwrap();
+        assert_eq!(parsed.rev, Some(42));
+    }
 }

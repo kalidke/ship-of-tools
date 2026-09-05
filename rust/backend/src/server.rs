@@ -530,10 +530,13 @@ pub async fn run(opts: Opts) -> Result<()> {
     // catches up any workspace registered before this line). Previously a
     // single watcher covered only the default workspace root, so no other
     // workspace's nav ever live-refreshed (the documented KNOWN GAP).
-    // Events carry the workspace slug; the FE filters on it.
+    // Events carry the workspace slug; each connection filters on it (and on
+    // path-under-root) at write time — `preview_changed_visible` below. Not
+    // paired with `session` (the ring handle): `preview.changed` no longer
+    // touches the session ring at all — see `watcher.rs`'s header comment.
     let (preview_changed_tx, _preview_changed_rx) =
         broadcast::channel::<PreviewChanged>(256);
-    workspaces.set_watch_bus(session.clone(), preview_changed_tx.clone());
+    workspaces.set_watch_bus(preview_changed_tx.clone());
 
     // Workspace lifecycle bus: parallel to the file watcher's broadcast, but
     // typed `WorkspaceChanged`. Handlers publish on a successful create/
@@ -953,6 +956,36 @@ where
     // op is gated on this flag.
     let mut authenticated = expected_token.is_none();
 
+    // This connection's active workspace, made EXPLICIT via `workspace.activate`
+    // (`op::WORKSPACE_ACTIVATE`) — the frontend's single "switch chrome" entry
+    // point (`switch_to_workspace`, gpu.rs) fires it UNCONDITIONALLY as the
+    // very first wire action of any switch, including a UI-cache hit that
+    // fires no other request at all, and a switch back to the default
+    // workspace. Also fired once on reconnect, right after `hello` succeeds.
+    // A prior revision of this fix INFERRED the active workspace from
+    // whichever op's `workspace_id` happened to arrive next — dropped
+    // (Codex review): a cache hit fired no op, so the daemon could sit on a
+    // stale workspace indefinitely, and a client reconnect's initial
+    // default-workspace fetch could clobber a resumed non-default workspace
+    // before the frontend got around to re-requesting it.
+    //
+    // Stores ONLY the canonical `workspace_id` (never a cached slug/root
+    // tuple): resolving fresh at every use (`preview_changed_visible`) is
+    // what makes a same-slug reinsertion, an uncanonical stored root, or a
+    // stale slug match after a destroy-then-recreate impossible to leak —
+    // there is no cache left to go stale.
+    //
+    // `None` = never activated (a fresh connection, before its first
+    // `workspace.activate`) — keeps seeing every `preview.changed` event,
+    // exactly as before this filter existed. `Some(id)` where `id` no longer
+    // RESOLVES (the workspace was destroyed since activation, or the
+    // activate itself named something that never resolved) is a DIFFERENT
+    // state — `preview_changed_visible` drops every event in that case
+    // rather than falling back to "send everything": the connection told us
+    // it was viewing a specific workspace, so there is no view left to serve
+    // traffic to until the next successful activate.
+    let mut active_workspace: Option<String> = None;
+
     // One file-watcher subscription per connection. Each connection writes
     // its own preview.changed evt frame; the broadcast channel's per-
     // receiver lag detection lets us notice and log if this connection is
@@ -1040,7 +1073,14 @@ where
                 }
                 change = recv_watcher(&mut watcher_rx) => {
                     if authenticated {
-                        write_preview_changed(&mut tx, change, transport).await?;
+                        write_preview_changed(
+                            &mut tx,
+                            change,
+                            transport,
+                            active_workspace.as_deref(),
+                            &workspaces,
+                        )
+                        .await?;
                     }
                     continue;
                 }
@@ -1093,7 +1133,14 @@ where
                 }
                 change = recv_watcher(&mut watcher_rx) => {
                     if authenticated {
-                        write_preview_changed(&mut tx, change, transport).await?;
+                        write_preview_changed(
+                            &mut tx,
+                            change,
+                            transport,
+                            active_workspace.as_deref(),
+                            &workspaces,
+                        )
+                        .await?;
                     }
                     continue;
                 }
@@ -1316,6 +1363,32 @@ where
             }
             op::WORKSPACE_LIST => {
                 handlers::handle_workspace_list(frame.id, frame.payload, &workspaces).await
+            }
+            op::WORKSPACE_ACTIVATE => {
+                // Update `active_workspace` (declared above) HERE, inline —
+                // same pattern as HELLO's auth flag just above: peek the raw
+                // JSON for `workspace_id` before the typed parse the handler
+                // does again, so a malformed payload still reaches the
+                // handler's ordinary error path instead of silently
+                // skipping the state update.
+                //
+                // Store the RESOLVED canonical id when it resolves. When it
+                // doesn't (a stale id, or a race with a concurrent destroy),
+                // record the raw hint verbatim rather than leaving the
+                // PREVIOUS activation in place — the frontend just told us
+                // its view moved off that workspace, so continuing to
+                // filter by the stale one would leak the old view's events
+                // into the new one. `preview_changed_visible` re-resolves at
+                // write time and drops everything for an id that still
+                // doesn't resolve then.
+                let hinted = frame.payload.get("workspace_id").and_then(|v| v.as_str());
+                active_workspace = Some(
+                    workspaces
+                        .resolve(hinted)
+                        .map(|ws| ws.workspace_id.clone())
+                        .unwrap_or_else(|| hinted.unwrap_or_default().to_string()),
+                );
+                handlers::handle_workspace_activate(frame.id, frame.payload, &workspaces).await
             }
             op::AGENT_SEND => {
                 handlers::handle_agent_send(frame.id, frame.payload, &agent_events_tx).await
@@ -1828,26 +1901,105 @@ async fn recv_watcher(
     }
 }
 
+/// Whether a `preview.changed` event should reach a connection whose active
+/// workspace is `active_workspace_id` — the CANONICAL id from this
+/// connection's last `workspace.activate` (see `active_workspace`'s
+/// declaration in `handle_connection`). Resolves it FRESH against
+/// `workspaces` on every call rather than trusting a cached slug/root: a
+/// same-slug reinsertion, an uncanonical stored root, or a stale slug match
+/// after a destroy-then-recreate can otherwise leak a wrong answer.
+///
+/// - `None` = never activated (a fresh connection, before its first
+///   `workspace.activate`) — keeps seeing every event, exactly as before
+///   this filter existed.
+/// - `Some(id)` that no longer resolves (the workspace was destroyed since
+///   activation) drops EVERY event — deliberately not "send everything":
+///   the connection told us it was viewing a specific workspace, and that
+///   workspace is gone, so there is no view left to serve traffic to.
+/// - `Some(id)` that resolves: the SAME two-path predicate
+///   `resolve_preview_changed` applies frontend-side
+///   (`rust/frontend/src/gpu.rs`), just evaluated once at fan-out instead of
+///   once per received-and-discarded frame — (a) the event is tagged with
+///   the active workspace's slug, or (b) workspaces overlap (umbrella roots
+///   registered over the same tree, watch budgets capping a watcher's
+///   coverage) so the event's absolute path lies under the active
+///   workspace's CANONICAL root (`FilesMode::root_path`, not the raw stored
+///   `project_root`) even when tagged with a different slug. A tag-only
+///   filter would break case (b) — that's why the frontend never used one,
+///   and why this mirrors its rule instead of inventing a simpler one.
+///
+/// Containment reuses `paths::path_within_root` (component-aware; correctly
+/// rejects the lookalike sibling `/a/wsx` against root `/a/ws`, and — unlike
+/// a bare `/`-only prefix check — handles a native Windows event path from
+/// `notify`, which is `\`-separated). `path_within_root` treats the root
+/// itself as contained; a `preview.changed` for the root path itself (rare —
+/// a rename/touch of the project directory node) is intentionally excluded
+/// here, matching this filter's original behaviour.
+fn preview_changed_visible(
+    change: &PreviewChanged,
+    active_workspace_id: Option<&str>,
+    workspaces: &Workspaces,
+) -> bool {
+    let Some(id) = active_workspace_id else {
+        return true;
+    };
+    let Some(ws) = workspaces.resolve(Some(id)) else {
+        return false;
+    };
+    if change.workspace_id.as_deref() == Some(ws.slug.as_str()) {
+        return true;
+    }
+    // `files_mode()` errors only if the root has vanished from disk since
+    // construction (or on the very first call, if it never canonicalized at
+    // all) — fall back to the tag-only check above rather than guessing at
+    // containment with an un-canonicalized path.
+    match ws.files_mode() {
+        Ok(fm) => {
+            let root = fm.root_path();
+            change.path != root && paths::path_within_root(&change.path, root)
+        }
+        Err(_) => false,
+    }
+}
+
 /// Translates one watcher event into a `preview.changed` evt frame on the
-/// wire. Returns `Ok(true)` if a frame was written, `Ok(false)` if the
-/// receiver was lagged or closed (skip and keep the connection alive).
+/// wire — but only when `active_workspace_id` says this connection can use
+/// it (`preview_changed_visible`); otherwise the event is silently dropped
+/// here, before a frame decode/JSON-parse/redraw is spent on the frontend
+/// for traffic it would have discarded anyway (the measured flood this
+/// filter exists for). Returns `Ok(true)` if a frame was written, `Ok(false)`
+/// if the receiver was lagged/closed, or if the event was filtered for this
+/// connection's active workspace (skip and keep the connection alive either
+/// way).
+///
+/// No `.with_rev(...)` on the outgoing frame, deliberately: `preview.changed`
+/// is NOT part of the session revision ring (`watcher.rs` never calls
+/// `Session::bump` for it) — see that module's header comment for why a
+/// reconnect doesn't need to replay these. Stamping a revision here would
+/// silently re-couple this event to the ring's watermark bookkeeping the
+/// other half of that fix removes.
 async fn write_preview_changed<W>(
     tx: &mut W,
     change: Result<PreviewChanged, broadcast::error::RecvError>,
     transport: &'static str,
+    active_workspace_id: Option<&str>,
+    workspaces: &Workspaces,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
     match change {
         Ok(c) => {
+            if !preview_changed_visible(&c, active_workspace_id, workspaces) {
+                return Ok(false);
+            }
             let payload = serde_json::json!({
                 "path": c.path.to_string_lossy(),
                 "node_id": c.node_id,
                 "kind": c.kind.as_str(),
                 "workspace_id": c.workspace_id,
             });
-            let frame = Frame::evt(op::PREVIEW_CHANGED, payload).with_rev(c.revision);
+            let frame = Frame::evt(op::PREVIEW_CHANGED, payload);
             write_frame_to(tx, &frame, None).await?;
             Ok(true)
         }
@@ -2356,5 +2508,112 @@ mod tests {
         // ("Churned for 17m 59s", not "(17m"), so it reads idle, not working.
         let s = format!("✻ Churned for 17m 59s · 1 shell, 1 monitor still running\n{IDLE_FOOTER}");
         assert_eq!(pane_activity(&s), "idle");
+    }
+
+    // Per-connection preview.changed fan-out filter (the flood fix): a
+    // connection must see exactly what its ACTIVATED workspace can use —
+    // same workspace tag, or a foreign-tagged event whose path is under the
+    // active root (workspaces overlap by design) — and nothing else, except
+    // before any `workspace.activate` has landed at all (send everything)
+    // and after an activated id stops resolving (send nothing until the
+    // next activate). Real on-disk roots throughout: `preview_changed_visible`
+    // resolves through `Workspace::files_mode()`, which canonicalizes
+    // (paths.rs `simplify_verbatim`) — exactly the "uncanonical stored root"
+    // failure mode this rework closes, so a literal `PathBuf` root would
+    // test nothing.
+    mod preview_changed_fanout {
+        use super::super::preview_changed_visible;
+        use crate::watcher::{ChangeKind, PreviewChanged};
+        use crate::workspaces::{Workspace, Workspaces};
+        use std::path::PathBuf;
+
+        fn change(workspace_id: Option<&str>, path: PathBuf) -> PreviewChanged {
+            PreviewChanged {
+                path,
+                node_id: Some("files:x".to_string()),
+                kind: ChangeKind::Modified,
+                workspace_id: workspace_id.map(str::to_string),
+            }
+        }
+
+        /// A registry with one real, on-disk workspace named `slug`.
+        /// Returns (registry, its CANONICAL workspace_id, its canonicalized
+        /// root). Caller removes the returned root's directory when done.
+        fn registry_with_workspace(tag: &str, slug: &str) -> (Workspaces, String, PathBuf) {
+            let dir = std::env::temp_dir().join(format!(
+                "sot-preview-fanout-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let workspaces = Workspaces::new();
+            let ws = workspaces.insert(Workspace::from_label(
+                slug,
+                dir,
+                false,
+                "none".to_string(),
+                String::new(),
+                String::new(),
+            ));
+            let root = ws.files_mode().unwrap().root_path().to_path_buf();
+            (workspaces, ws.workspace_id.clone(), root)
+        }
+
+        #[test]
+        fn same_workspace_tag_is_sent() {
+            let (workspaces, id, root) = registry_with_workspace("tag", "alpha");
+            // Trusted on the tag alone — the path doesn't even need to be
+            // real or nearby.
+            let c = change(Some("alpha"), PathBuf::from("/anywhere/at/all"));
+            assert!(preview_changed_visible(&c, Some(&id), &workspaces));
+            let _ = std::fs::remove_dir_all(&root);
+        }
+
+        #[test]
+        fn foreign_tag_under_active_root_is_sent() {
+            // The umbrella-workspace / watch-budget case: tagged "beta" but
+            // the path is really inside the active workspace's own
+            // (canonical, on-disk) tree.
+            let (workspaces, id, root) = registry_with_workspace("under", "alpha");
+            let c = change(Some("beta"), root.join("src").join("main.jl"));
+            assert!(preview_changed_visible(&c, Some(&id), &workspaces));
+            let _ = std::fs::remove_dir_all(&root);
+        }
+
+        #[test]
+        fn foreign_tag_elsewhere_is_dropped() {
+            let (workspaces, id, root) = registry_with_workspace("elsewhere", "alpha");
+            let c = change(Some("beta"), PathBuf::from("/repos/beta/src/main.jl"));
+            assert!(!preview_changed_visible(&c, Some(&id), &workspaces));
+            let _ = std::fs::remove_dir_all(&root);
+        }
+
+        #[test]
+        fn no_active_workspace_yet_sends_everything() {
+            // Fresh connection, before its first `workspace.activate` —
+            // today's (pre-filter) behaviour. Registry is irrelevant: `None`
+            // short-circuits before it's ever consulted.
+            let workspaces = Workspaces::new();
+            let c = change(Some("beta"), PathBuf::from("/repos/beta/src/main.jl"));
+            assert!(preview_changed_visible(&c, None, &workspaces));
+        }
+
+        #[test]
+        fn activated_id_no_longer_registered_drops_everything() {
+            // The workspace was destroyed since this connection activated
+            // it (or the activate itself named something that never
+            // resolved) — drop, don't fall back to "send everything": the
+            // registry has nothing to fall back TO.
+            let workspaces = Workspaces::new();
+            let c = change(Some("alpha"), PathBuf::from("/repos/alpha/src/main.jl"));
+            assert!(!preview_changed_visible(
+                &c,
+                Some("ws-no-longer-exists"),
+                &workspaces
+            ));
+        }
     }
 }

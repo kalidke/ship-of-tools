@@ -4932,6 +4932,39 @@ pub async fn handle_workspace_list(
     )])
 }
 
+/// `workspace.activate` — builds the ack. The connection-local state this
+/// updates (`active_workspace`, `server.rs`'s `handle_connection`) is
+/// mutated by the CALLER, not here — this function only resolves
+/// `req.workspace_id` (again; the caller does the same resolve to learn
+/// what to store, mirroring how the `HELLO` arm computes the auth flag
+/// inline before calling `handle_hello`) and echoes back the canonical id,
+/// or `None` when it didn't resolve. See `op::WORKSPACE_ACTIVATE` (ops.rs)
+/// for the full design.
+pub async fn handle_workspace_activate(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    workspaces: &Workspaces,
+) -> Result<HandlerOutput> {
+    use sot_protocol::{WorkspaceActivateReq, WorkspaceActivateRes};
+    let req: WorkspaceActivateReq =
+        serde_json::from_value(payload_json).context("workspace.activate payload")?;
+    let resolved = workspaces
+        .resolve(req.workspace_id.as_deref())
+        .map(|ws| ws.workspace_id.clone());
+    tracing::info!(
+        requested = req.workspace_id.as_deref().unwrap_or("<default>"),
+        resolved = resolved.as_deref().unwrap_or("<unresolved>"),
+        "workspace.activate"
+    );
+    let res = WorkspaceActivateRes {
+        workspace_id: resolved,
+    };
+    Ok(vec![(
+        Frame::res(req_id, op::WORKSPACE_ACTIVATE, serde_json::to_value(res)?),
+        None,
+    )])
+}
+
 pub async fn handle_directory_list(
     req_id: u64,
     payload_json: serde_json::Value,

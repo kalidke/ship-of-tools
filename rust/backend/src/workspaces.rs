@@ -34,7 +34,6 @@ use crate::files_mode::FilesMode;
 use crate::kernel::Kernel;
 use crate::paths;
 use crate::repl::{Repl, ReplFrameMsg};
-use crate::session::Session;
 use crate::watcher::{PreviewChanged, Watcher};
 
 /// One deduplicated workspace lifecycle event. The daemon broadcasts one
@@ -365,10 +364,13 @@ struct Inner {
     /// `comm-status idle` only ever reports idle, so an actively-generating
     /// agent reads idle without this. Empty until the first capture tick.
     pane_activity: HashMap<String, String>,
-    /// The shared preview.changed bus + session handle for per-workspace
-    /// watcher spawns (2026-07-10 multiwatch). Installed once at startup via
-    /// `set_watch_bus`, before workspace registration; `None` in tests.
-    watch_bus: Option<(Session, broadcast::Sender<PreviewChanged>)>,
+    /// The shared preview.changed bus for per-workspace watcher spawns
+    /// (2026-07-10 multiwatch). Installed once at startup via
+    /// `set_watch_bus`, before workspace registration; `None` in tests. No
+    /// longer paired with a `Session` handle (2026-09 rework): `preview.changed`
+    /// is no longer bumped onto the session ring — see `watcher.rs`'s header
+    /// comment.
+    watch_bus: Option<broadcast::Sender<PreviewChanged>>,
     /// ADR 0042 slice L1a (Codex review finding 6): workspace ids whose
     /// capsule supervisor watchdog gave up — the ADR 0041 launcher
     /// restart sequence (1/3/7/15/30s, at most 5 in 60s) exhausted
@@ -449,8 +451,8 @@ impl Workspaces {
         g.by_slug
             .insert(arc.slug.clone(), arc.workspace_id.clone());
         g.by_id.insert(arc.workspace_id.clone(), arc.clone());
-        if let Some((sess, tx)) = g.watch_bus.clone() {
-            Self::spawn_workspace_watcher(&arc, sess, tx);
+        if let Some(tx) = g.watch_bus.clone() {
+            Self::spawn_workspace_watcher(&arc, tx);
         }
         arc
     }
@@ -460,22 +462,12 @@ impl Workspaces {
     /// registration walk to a background thread — the NFS-stall hardening),
     /// so calling under the registry lock is fine. Failure is a warning:
     /// previews still work, that workspace just won't live-refresh.
-    fn spawn_workspace_watcher(
-        ws: &Arc<Workspace>,
-        session: Session,
-        tx: broadcast::Sender<PreviewChanged>,
-    ) {
+    fn spawn_workspace_watcher(ws: &Arc<Workspace>, tx: broadcast::Sender<PreviewChanged>) {
         if ws.watcher.get().is_some() {
             return; // already spawned (or recorded as failed)
         }
         let spawned = match ws.files_mode() {
-            Ok(fm) => match Watcher::spawn(
-                fm.root_path(),
-                session,
-                fm.clone(),
-                tx,
-                Some(ws.slug.clone()),
-            ) {
+            Ok(fm) => match Watcher::spawn(fm.root_path(), fm.clone(), tx, Some(ws.slug.clone())) {
                 Ok(w) => Some(Arc::new(w)),
                 Err(e) => {
                     tracing::warn!(slug = %ws.slug, error = %e,
@@ -495,14 +487,14 @@ impl Workspaces {
     /// Install the watch bus and spawn watchers for every ALREADY-registered
     /// workspace (registration order at startup isn't guaranteed relative to
     /// bus creation). Idempotent per workspace via the `watcher` OnceLock.
-    pub fn set_watch_bus(&self, session: Session, tx: broadcast::Sender<PreviewChanged>) {
+    pub fn set_watch_bus(&self, tx: broadcast::Sender<PreviewChanged>) {
         let existing: Vec<Arc<Workspace>> = {
             let mut g = self.inner.write().expect("workspaces lock");
-            g.watch_bus = Some((session.clone(), tx.clone()));
+            g.watch_bus = Some(tx.clone());
             g.by_id.values().cloned().collect()
         };
         for ws in existing {
-            Self::spawn_workspace_watcher(&ws, session.clone(), tx.clone());
+            Self::spawn_workspace_watcher(&ws, tx.clone());
         }
     }
 
