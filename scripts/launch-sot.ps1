@@ -1216,9 +1216,12 @@ try {
                 try { $frontend.Refresh(); if ($frontend.MainWindowHandle -ne 0) { break } } catch { }
                 Start-Sleep -Milliseconds 250
             }
-            Set-LaunchStatus 'DONE'
             $splashDismissed = $true
         }
+        # DONE after EVERY spawn, not only the splashed first one: a converge
+        # (exit 76) re-runs the freshness pass, which writes 'Rebuilding
+        # frontend...', and nothing else settles the file afterwards.
+        Set-LaunchStatus 'DONE'
 
         # Tunnel supervisor: poll every ssh process every 500ms while the
         # frontend runs. If one exits (laptop wake, wifi flap, backend sshd
