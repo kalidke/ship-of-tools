@@ -4654,6 +4654,41 @@ fn picker_local_home_fallback(env_home: Option<String>, os_home: Option<PathBuf>
         .unwrap_or_else(|| "/".to_string())
 }
 
+/// Where the create-workspace picker starts for `host`. The picker browses
+/// the TARGET daemon's filesystem, so the answer must be a path on that
+/// machine. `default_row_root` is that daemon's own default row, anchored
+/// at its user home (ADR 0042) -- the one per-host path the frontend holds
+/// for every host. For the implicit "local" host a `configured` projects
+/// root counts only when it exists HERE (`local_dir_exists`; the frontend
+/// runs on that machine): a backend path such as `/home/u/dev` on a Windows
+/// box is ignored, so the local picker starts at the user's own directory
+/// until the user sets one. Remote hosts keep the configured root first
+/// (a projects dir beats a home), then the host's remote home, then the
+/// daemon's default root, then the frontend's own home as the last resort
+/// it always was.
+fn picker_start_for_host(
+    host: &str,
+    default_row_root: Option<&str>,
+    configured: Option<&str>,
+    remote_home: Option<&str>,
+    fe_home: String,
+    local_dir_exists: impl Fn(&str) -> bool,
+) -> String {
+    let pick = |candidates: [Option<&str>; 3]| {
+        candidates
+            .into_iter()
+            .flatten()
+            .next()
+            .map(str::to_string)
+            .unwrap_or(fe_home.clone())
+    };
+    if host == "local" {
+        pick([configured.filter(|p| local_dir_exists(p)), default_row_root, None])
+    } else {
+        pick([configured, remote_home, default_row_root])
+    }
+}
+
 impl State {
     fn new(
         event_loop: &ActiveEventLoop,
@@ -8154,22 +8189,40 @@ impl State {
         //      the filesystem root — see `picker_local_home_fallback`,
         //      whose doc comment explains why step 4 alone (a bare `/`)
         //      was a Windows drive-letter bug.
+        //   Every tier above names a path on some BACKEND; the picker
+        //   browses the TARGET host's filesystem, so for the implicit
+        //   "local" host they are wrong by construction (field defect
+        //   2026-09-05: a Windows box proposed the remote backend's Linux
+        //   home to its own local daemon). Each host's daemon reports its
+        //   default row, anchored at that machine's user home (ADR 0042),
+        //   which is the one per-host path the frontend always holds --
+        //   see `picker_start_for_host`.
         let host_home = self
             .hosts_config
             .hosts
             .iter()
             .find(|h| h.name == host)
             .and_then(|h| h.remote_home.clone());
-        let start = self
+        let default_row_root = self
+            .workspace_lists
+            .get(&host)
+            .and_then(|l| l.iter().find(|w| w.is_default))
+            .map(|w| w.project_root.clone());
+        let configured = self
             .settings
             .new_session_root
             .clone()
-            .or_else(|| std::env::var("SOT_PROJECTS_ROOT").ok())
-            .or(host_home)
-            .or_else(|| std::env::var("SOT_REMOTE_HOME").ok())
-            .unwrap_or_else(|| {
-                picker_local_home_fallback(std::env::var("HOME").ok(), dirs::home_dir())
-            });
+            .or_else(|| std::env::var("SOT_PROJECTS_ROOT").ok());
+        let remote_home = host_home.or_else(|| std::env::var("SOT_REMOTE_HOME").ok());
+        let fe_home = picker_local_home_fallback(std::env::var("HOME").ok(), dirs::home_dir());
+        let start = picker_start_for_host(
+            &host,
+            default_row_root.as_deref(),
+            configured.as_deref(),
+            remote_home.as_deref(),
+            fe_home,
+            |p| std::path::Path::new(p).is_dir(),
+        );
         self.workspace_picker = Some(WorkspacePicker {
             host: host.clone(),
             current_path: start.clone(),
@@ -22357,6 +22410,52 @@ mod tests {
     // Workspace-create picker root: a Windows FE with no `$HOME` in its
     // process env must not seed the picker (and hence `workspace.create`'s
     // `project_root`) with a driveless `/` — see `picker_local_home_fallback`.
+
+    /// Field defect (2026-09-05): on a Windows box, "+ create new" under
+    /// the LOCAL host started the picker at the remote backend's Linux home.
+    #[test]
+    fn local_host_ignores_a_configured_root_that_does_not_exist_here() {
+        let start = picker_start_for_host(
+            "local",
+            Some(r"C:\Users\u"),
+            Some("/home/u/dev"),
+            Some("/home/u"),
+            "C:/fe-home".to_string(),
+            |_| false,
+        );
+        assert_eq!(start, r"C:\Users\u");
+    }
+
+    #[test]
+    fn local_host_honours_a_configured_root_that_exists_here() {
+        let start = picker_start_for_host(
+            "local",
+            Some(r"C:\Users\u"),
+            Some(r"C:\Users\u\dev"),
+            None,
+            "C:/fe-home".to_string(),
+            |p| p.ends_with("dev"),
+        );
+        assert_eq!(start, r"C:\Users\u\dev");
+    }
+
+    #[test]
+    fn local_host_falls_back_to_the_frontends_home_without_a_default_row() {
+        let start = picker_start_for_host("local", None, None, Some("/home/u"), "C:/fe-home".to_string(), |_| false);
+        assert_eq!(start, "C:/fe-home");
+    }
+
+    #[test]
+    fn remote_host_keeps_configured_then_remote_home_then_default_row() {
+        let cfg = picker_start_for_host("kitt", Some("/home/u"), Some("/home/u/dev"), Some("/home/u"), "C:/fe".into(), |_| false);
+        assert_eq!(cfg, "/home/u/dev");
+        let home = picker_start_for_host("kitt", Some("/home/u"), None, Some("/home/remote"), "C:/fe".into(), |_| false);
+        assert_eq!(home, "/home/remote");
+        let row = picker_start_for_host("kitt", Some("/home/u"), None, None, "C:/fe".into(), |_| false);
+        assert_eq!(row, "/home/u");
+        let last = picker_start_for_host("kitt", None, None, None, "C:/fe".into(), |_| false);
+        assert_eq!(last, "C:/fe");
+    }
 
     #[test]
     fn picker_local_home_fallback_prefers_env_home() {
