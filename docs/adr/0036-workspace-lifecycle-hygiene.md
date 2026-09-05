@@ -41,7 +41,9 @@ other deletes state on a timer.
 ### Phase 1 (this change): `workspace.create` refuses duplicate roots
 
 On create, canonicalize the requested `project_root` and compare it against
-the canonical root of every registered workspace:
+the canonical root of every registered workspace — except the daemon's inert
+default anchor (ADR 0042 amendment; it is not a session and never runs an
+agent, so a real session at its root is not this collision):
 
 - **Match with a different slug → refuse** with a structured error:
 
