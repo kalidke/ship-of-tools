@@ -569,6 +569,15 @@ pub struct WorkspaceInfo {
     pub tmux_session: String,
     pub kernel_running: bool,
     pub is_default: bool,
+    /// Which agent this workspace auto-starts: "claude" | "codex" | "none".
+    /// 2026-09-04 amendment: a host's DEFAULT CAPSULE row with `agent ==
+    /// "none"` is the inert anchor (ADR 0042 §"the default local row is
+    /// an inert anchor") — `session_host_children` filters it out of the
+    /// Sessions tree entirely rather than rendering it as a session. A
+    /// TMUX default row with `agent == "none"` (a shared backend's own
+    /// `.SoT` row — the SoT LLM lives in the drawer, not as a workspace
+    /// agent) is NOT this anchor and stays a normal, visible session.
+    pub agent: String,
     /// Contract (b): the FE launches claude (ccb) on first attach to a
     /// workspace with `autostart_claude == true`. `agent_name` is the comm
     /// handle the bootstrap joins as (informational on the FE side).
@@ -605,12 +614,15 @@ pub struct WorkspaceInfo {
     /// reporting `""`) changes nothing there either.
     ///
     /// Deserialized on every platform (the wire contract doesn't fork by
-    /// FE OS) but read by gpu.rs only from `#[cfg(windows)]` call sites —
-    /// L1b fix 5: capsule has nothing to attach to off Windows, so a
-    /// non-Windows build must behave byte-for-byte like `main`, which
-    /// has no idea these fields exist. Hence the allow below, on all
-    /// three: parsed everywhere, acted on nowhere but Windows.
-    #[allow(dead_code)]
+    /// FE OS). Historically read by gpu.rs only from `#[cfg(windows)]`
+    /// call sites (L1b fix 5: capsule has nothing to attach to off
+    /// Windows) — 2026-09-04 amendment adds one platform-agnostic
+    /// reader, `session_host_children`'s inert-anchor filter, which must
+    /// tell a Windows capsule default row (`agent == "none"` there means
+    /// "never seeded an agent") apart from a shared backend's own TMUX
+    /// default row (`agent == "none"` there is normal — the SoT LLM
+    /// lives in the drawer). `""` from a daemon that predates L1a reads
+    /// as neither and is simply never filtered.
     pub runtime: String,
     /// The capsule's state directory (host-local absolute path) —
     /// `Some` only for `runtime == "capsule"` rows. L1b is single-host:
@@ -3418,6 +3430,7 @@ fn handle_response_frame(
                                 tmux_session: w.tmux_session,
                                 kernel_running: w.kernel_running,
                                 is_default: w.is_default,
+                                agent: w.agent,
                                 autostart_claude: w.autostart_claude,
                                 agent_name: w.agent_name,
                                 task: w.task,

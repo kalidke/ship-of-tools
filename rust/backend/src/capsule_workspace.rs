@@ -1237,10 +1237,32 @@ mod windows_runtime {
                 return;
             }
         };
+        // 2026-09-04 amendment: the default CAPSULE row is an inert
+        // anchor when it carries no agent — never started, never
+        // resumed here either, even on the rare box where a pointer
+        // already exists for it (e.g. a hand-edited toml that dropped
+        // its agent after a prior real run). Every OTHER `agent ==
+        // "none"` capsule row still resumes normally: `agent_argv("none")`
+        // is a real leg (the bare platform shell), so "no agent" only
+        // means "nothing to start" for this one anchor row, not for
+        // capsule rows in general. Spelled out fully as `runtime ==
+        // "capsule"` even though the filter just above already requires
+        // it (redundant here, not on a shared backend's `.SoT` row: a
+        // TMUX default row with no agent is normal — the SoT LLM lives
+        // in the drawer, not as a workspace agent — and must never read
+        // as this anchor; this scan's own candidate list is capsule-only
+        // regardless, but the predicate should say what it means on its
+        // own).
+        let default_id = workspaces.default_id();
         let candidates: Vec<(String, Vec<String>, PathBuf, String, String)> = workspaces
             .list()
             .into_iter()
             .filter(|ws| ws.runtime == "capsule")
+            .filter(|ws| {
+                !(ws.agent == "none"
+                    && ws.runtime == "capsule"
+                    && default_id.as_deref() == Some(ws.workspace_id.as_str()))
+            })
             .filter(|ws| {
                 let state_dir = super::state_dir_for(&state_root, &ws.workspace_id);
                 sot_log::pointer::pointer_path(&state_dir).is_file()

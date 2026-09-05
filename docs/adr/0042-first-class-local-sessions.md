@@ -43,6 +43,23 @@ drawer tenants. Messaging between sessions on any hosts is sot-comm exactly
 as today: each session's agent joins the relay through the host's tunnel to
 the backend daemon, which is what the drawer's agent already does.
 
+**Amendment (owner ruling, 2026-09-04): the default local row is an inert
+anchor, not a session.** "I don't want it to be listed in our sessions on
+the sessions row — it will confuse users." A host's daemon still seeds and
+keeps a DEFAULT workspace row (project root = the home dir) as its own
+fallback and the way to browse that machine's files, but that row is no
+longer a session by default: it seeds with no agent (`agent = "none"`,
+`autostart_claude = false`) and, for as long as it carries no agent, nothing
+ever starts on it (Windows: neither `pty.open`'s start-on-attach nor the
+boot resume-scan touch it) and it is not listed — `workspace.list` still
+reports it (`is_default: true`, the daemon's own fallback bookkeeping still
+needs it), but the frontend filters it out of a host's children before
+building any rows at all, leaving only `[+ create new]` and the sessions
+the user actually created; the host node itself remains the anchor. A box
+that hasn't converged past the old seed (its `local.toml` is never
+rewritten by this amendment) keeps whatever agent it already has and
+behaves exactly as before — a visible, ordinary session row.
+
 ## Build order — three slices, each landing green and off by default
 
 ### L1 — the capsule workspace runtime (daemon + frontend, one host)

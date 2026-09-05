@@ -939,6 +939,50 @@ pub(crate) fn default_row_runtime(existing: Option<&str>, first_launch_default: 
     }
 }
 
+/// The single decision of what LAUNCH FIELDS (`autostart_claude`, `agent`,
+/// `agent_name`, `task`) the daemon's own default/home row gets at boot —
+/// the counterpart of [`default_row_runtime`] above, for the launch
+/// fields rather than the runtime string.
+///
+/// 2026-09-04 amendment (owner ruling): the default/home row is an INERT
+/// ANCHOR, not a session — the workspace the daemon falls back to and
+/// the way to browse this machine's files. A genuinely first-ever launch
+/// (`existing: None`) therefore seeds no agent and no autostart, on
+/// EVERY host alike — no OS branch needed here any more (before this
+/// amendment Windows alone seeded `agent = "claude"`,
+/// `autostart_claude = true`, so pressing Enter on the row silently
+/// started a claude capsule and it looked like every other session).
+///
+/// `existing` survives verbatim UNLESS it is a Windows CORRUPTED row —
+/// `existing.0` (its on-disk `runtime`) is not `"capsule"`, the same
+/// field incident [`default_row_runtime`]'s own doc describes: whatever
+/// wrote a stale `"tmux"` there flipped `agent`/`autostart_claude`
+/// alongside it, so preserving them verbatim would boot a capsule with a
+/// corrupted agent. That row re-seeds to the SAME inert defaults a
+/// first-ever launch gets, rather than carrying the corruption forward.
+///
+/// `existing` is `(runtime, autostart_claude, agent, agent_name, task)`
+/// — the persisted row's own fields, read back before `Workspace::from_label`
+/// would otherwise silently replace them (`insert`'s "new metadata wins"
+/// semantics, `server::run`'s own doc).
+pub(crate) fn default_row_launch_seed(
+    existing: Option<(&str, bool, &str, &str, &str)>,
+) -> (bool, String, String, String) {
+    match existing {
+        Some((runtime, autostart_claude, agent, agent_name, task))
+            if !(cfg!(windows) && runtime != "capsule") =>
+        {
+            (
+                autostart_claude,
+                agent.to_string(),
+                agent_name.to_string(),
+                task.to_string(),
+            )
+        }
+        _ => (false, "none".to_string(), String::new(), String::new()),
+    }
+}
+
 /// Write `~/.config/sot/workspaces/<slug>.toml`. Frontend-managed
 /// sections (`[nav_state]`, `[layout]`, …) that the file already
 /// contains are preserved — same approach as `session_state.rs`.
@@ -2231,6 +2275,73 @@ runtime       = "tmux"
         assert_eq!(corrected, "capsule");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 2026-09-04 amendment: a genuinely first-ever launch seeds the
+    /// default/home row as an INERT ANCHOR — no agent, no autostart — on
+    /// EVERY host, not just non-Windows. Runs (and must pass) on every
+    /// platform: unlike the corrupted-row case below, this arm no longer
+    /// branches on `cfg!(windows)` at all.
+    #[test]
+    fn default_row_launch_seed_first_launch_is_inert_everywhere() {
+        assert_eq!(
+            default_row_launch_seed(None),
+            (false, "none".to_string(), String::new(), String::new())
+        );
+    }
+
+    /// An existing default row whose on-disk `runtime` is `"capsule"` —
+    /// healthy on every platform this function runs on (Windows requires
+    /// it; every other host merely permits it) — survives verbatim: its
+    /// launch fields are never silently clobbered back to the inert
+    /// defaults just because it was re-registered at boot.
+    #[test]
+    fn default_row_launch_seed_preserves_a_healthy_existing_row() {
+        assert_eq!(
+            default_row_launch_seed(Some(("capsule", true, "claude", "kal-sot", "hello"))),
+            (
+                true,
+                "claude".to_string(),
+                "kal-sot".to_string(),
+                "hello".to_string()
+            )
+        );
+    }
+
+    /// Non-Windows only: `runtime` values other than `"capsule"` (e.g.
+    /// the ordinary `"tmux"` every non-Windows row actually carries) are
+    /// never "corrupted" off Windows — the corrupted-row re-seed is a
+    /// Windows-only concept (`default_row_runtime`'s own doc: tmux is
+    /// refused outright on Windows, #177, so only THERE is a non-capsule
+    /// runtime necessarily a leftover). Existing launch fields still
+    /// survive verbatim.
+    #[test]
+    #[cfg(not(windows))]
+    fn default_row_launch_seed_preserves_a_tmux_row_off_windows() {
+        assert_eq!(
+            default_row_launch_seed(Some(("tmux", true, "claude", "kal-sot", "hello"))),
+            (
+                true,
+                "claude".to_string(),
+                "kal-sot".to_string(),
+                "hello".to_string()
+            )
+        );
+    }
+
+    /// Windows only (#185's corrupted-row incident): an on-disk `runtime`
+    /// other than `"capsule"` means whatever wrote it also flipped
+    /// `agent`/`autostart_claude` — preserving those verbatim would boot
+    /// a capsule with a corrupted agent, so this row re-seeds to the same
+    /// inert defaults a first-ever launch gets, same as
+    /// `default_row_runtime` re-seeds its runtime to `"capsule"` for it.
+    #[test]
+    #[cfg(windows)]
+    fn default_row_launch_seed_reseeds_a_corrupted_windows_row_to_inert() {
+        assert_eq!(
+            default_row_launch_seed(Some(("tmux", true, "claude", "kal-sot", "hello"))),
+            (false, "none".to_string(), String::new(), String::new())
+        );
     }
 
     /// Scratch roots for one migration test: `USERPROFILE`-, `SystemDrive`-
