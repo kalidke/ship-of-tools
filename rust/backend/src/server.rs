@@ -268,6 +268,26 @@ pub async fn run(opts: Opts) -> Result<()> {
     // construction rather than patched after, since `from_label` takes
     // them as constructor args.
     let existing_default = workspaces.resolve(Some(&paths::slug(&default_label)));
+    // ADR 0042 amendment (2026-09-04) governs a FIRST-EVER row only: the
+    // preserve arm below keeps an existing default row's launch fields
+    // verbatim, so a box whose row a pre-amendment daemon had already
+    // stamped with an agent keeps behaving as before — a visible, startable
+    // session at the home root — with no signal that a one-time cleanup is
+    // owed (field day 2026-09-05: found by forensics on a Windows box). Say
+    // so at boot, once, naming the remedy; never rewrite the row (it may be
+    // a session the user is relying on).
+    if let Some(existing) = &existing_default {
+        if existing.runtime == "capsule" && existing.agent != "none" {
+            tracing::warn!(
+                workspace_id = %existing.workspace_id,
+                agent = %existing.agent,
+                toml = %workspaces::toml_path_for(&existing.slug).display(),
+                "default workspace carries an agent, so it lists and starts as an ordinary session \
+                 (a pre-2026-09-04 seed, or a deliberate choice); to make it the inert anchor: stop \
+                 the daemon, set agent = \"none\" and autostart_claude = false in that toml, start again"
+            );
+        }
+    }
     // 2026-09-04 amendment (owner ruling): the daemon's own home/default
     // row is an INERT ANCHOR — the workspace it falls back to and the
     // way to browse this machine's files, not a session — so a
