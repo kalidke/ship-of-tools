@@ -313,6 +313,31 @@ pub enum EndRunOutcome {
     NotEnded(String),
 }
 
+/// The pair invariant, decided from what `sot-capsule.exe build-id`
+/// printed (`reported`, `None` when it printed nothing usable -- a binary
+/// that predates the subcommand answers with its usage on stderr and exit
+/// 2) against this daemon's own lane build id. Both halves of the pair
+/// carry `sot_log::exchange::SUPERVISOR_LANE_BUILD_ID`; the supervisor
+/// hello refuses a mismatch as `version_skew` (ADR 0041 build boundary),
+/// so a capsule spawned from a binary of another build could never be
+/// attached, adopted, ended or destroyed by this daemon -- a dead row that
+/// looked started (field day 2026-09-05: a launcher pair rebuild that had
+/// to leave a pinned `sot-capsule.exe` behind produced exactly that for
+/// every capsule spawned afterwards, with no error anywhere until attach).
+/// Portable so the verdict text is unit-tested on every host.
+pub(crate) fn pair_verdict(reported: Option<&str>, own: &str) -> Result<(), String> {
+    match reported {
+        Some(got) if got == own => Ok(()),
+        got => Err(format!(
+            "sot-capsule.exe build {} does not match this daemon's build {own}: rebuild the pair \
+             (cargo build --release -p sot-backend -p sot-log; a sot-capsule.exe pinned by running \
+             supervisors must be renamed aside first, then those supervisors ended or killed so the \
+             daemon respawns them from the new binary)",
+            got.unwrap_or("unknown (binary predates `build-id`)")
+        )),
+    }
+}
+
 #[cfg(windows)]
 mod windows_runtime {
     use super::{
@@ -376,6 +401,28 @@ mod windows_runtime {
         Ok(dir.join("sot-capsule.exe"))
     }
 
+    /// Refuse to spawn a capsule from a binary of another build -- see
+    /// `super::pair_verdict`. Runs `sot-capsule.exe build-id` (prints one
+    /// line and exits; no window, no console) and compares. Spawns are
+    /// rare (attach, boot resume, watchdog restart), so the extra process
+    /// per spawn is not worth a cache.
+    fn check_pair(sot_capsule_exe: &Path) -> std::io::Result<()> {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let out = std::process::Command::new(sot_capsule_exe)
+            .arg("build-id")
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .output()?;
+        let reported = out
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        super::pair_verdict(reported.as_deref(), sot_log::exchange::SUPERVISOR_LANE_BUILD_ID)
+            .map_err(std::io::Error::other)
+    }
+
     /// What [`spawn_detached_supervisor`] reports about how the spawn went.
     struct SpawnedSupervisor {
         child: Child,
@@ -416,6 +463,7 @@ mod windows_runtime {
         workspace_id: &str,
         slug: &str,
     ) -> std::io::Result<SpawnedSupervisor> {
+        check_pair(sot_capsule_exe)?;
         let base_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
         let build = |flags: u32, survival: &str| -> Command {
             // `tokio::process::Command` re-exposes `.creation_flags()`
@@ -1319,10 +1367,25 @@ mod windows_runtime {
                                 watch_adopted_leg(workspace_id, exe, state_dir, argv, cwd, agent_name, slug, process, workspaces);
                             }
                             Ok(Err(e)) => {
-                                tracing::debug!(
-                                    workspace_id = %workspace_id, error = %e,
-                                    "capsule workspace resume-scan: lane went quiet between the adopt probe and the follow-up query; skipping"
-                                );
+                                // A supervisor of ANOTHER build answers the hello with
+                                // `version_skew` and the client reports `foreign` (the
+                                // error is a state string, hence the text match): that
+                                // row cannot be adopted, ended or destroyed by this
+                                // daemon, so say so loudly with the recovery instead of
+                                // the quiet skip a merely-departed lane earns.
+                                if e.to_string().contains("foreign") {
+                                    tracing::warn!(
+                                        workspace_id = %workspace_id, error = %e,
+                                        "capsule workspace resume-scan: a supervisor from another build holds this row; \
+                                         end it from a frontend of that build, or kill its sot-capsule.exe processes and \
+                                         this daemon respawns the row from the current binary"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        workspace_id = %workspace_id, error = %e,
+                                        "capsule workspace resume-scan: lane went quiet between the adopt probe and the follow-up query; skipping"
+                                    );
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule workspace resume-scan: adopt probe task did not complete");
@@ -1622,5 +1685,28 @@ mod tests {
         std::env::remove_var("HOME");
         std::env::remove_var("USERPROFILE");
         assert_eq!(capsule_comm_home_str(), None);
+    }
+}
+
+#[cfg(test)]
+mod pair_verdict_tests {
+    use super::pair_verdict;
+
+    #[test]
+    fn matching_build_ids_pass() {
+        assert!(pair_verdict(Some("abc123"), "abc123").is_ok());
+    }
+
+    #[test]
+    fn a_different_build_is_refused_with_the_recovery() {
+        let e = pair_verdict(Some("97deece7"), "9f774f74").unwrap_err();
+        assert!(e.contains("97deece7") && e.contains("9f774f74"), "{e}");
+        assert!(e.contains("renamed aside"), "{e}");
+    }
+
+    #[test]
+    fn a_binary_that_predates_the_subcommand_is_refused_too() {
+        let e = pair_verdict(None, "9f774f74").unwrap_err();
+        assert!(e.contains("predates"), "{e}");
     }
 }

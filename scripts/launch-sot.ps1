@@ -984,20 +984,33 @@ function Invoke-FreshnessPass {
             $stopOut2 = & $sotLocalDaemon -Stop 6>&1 2>&1
             foreach ($l in @($stopOut2)) { if ("$l".Trim()) { Write-SupLog "$l" } }
         }
+        # Stale images renamed aside by an earlier pass (below): a mapped
+        # one refuses deletion and is left for a later pass; a free one goes.
+        Get-ChildItem -Path (Join-Path $devBinDir 'sot-capsule-stale-*.exe') -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
         if ($capsuleSessionsAlive.Count -gt 0) {
-            Write-SupLog "freshness: local capsule sessions alive - rebuilding sotd.exe only; sot-capsule.exe waits for its supervisors (U4's upgrade transaction is the durable answer)"
-            $script:launchNotices.Add("sot-capsule.exe in use by $($capsuleSessionsAlive.Count) supervisors; end those workspaces to update it") | Out-Null
-            Write-SupLog "freshness: cargo build -p sot-backend"
-            $capOut = cargo build --release -p sot-backend --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                $capExcerpt = @(Get-FailureExcerpt -Output $capOut -Kind 'cargo')
-                Write-SupLog "freshness: backend (sotd.exe) rebuild FAILED (non-fatal, continuing with whatever binary exists). message: $($capExcerpt -join ' / ')"
-                $script:launchNotices.Add("backend rebuild failed - running the existing sotd.exe: $(Limit-NoticeText $capExcerpt[0])") | Out-Null
-            } else {
-                Write-SupLog "freshness: backend (sotd.exe) rebuilt; sot-capsule.exe left as-is (pinned by live supervisors)"
+            # Live supervisors pin sot-capsule.exe, so an in-place rebuild
+            # fails -- and the old answer ("end those workspaces to update
+            # it") was a deadlock: a capsule of another build can neither
+            # be attached nor destroyed by the new daemon (field day
+            # 2026-09-05). Windows permits RENAMING a mapped image, which
+            # frees the canonical path for the pair build; the running
+            # supervisors keep executing the renamed file until their
+            # workspaces end or their processes are killed (the daemon then
+            # respawns them from the new binary, journals recovering).
+            $staleName = "sot-capsule-stale-$(Get-Date -Format 'yyyyMMdd-HHmmss').exe"
+            try {
+                Rename-Item -Path (Join-Path $devBinDir 'sot-capsule.exe') -NewName $staleName -ErrorAction Stop
+                Write-SupLog "freshness: sot-capsule.exe pinned by $($capsuleSessionsAlive.Count) live supervisors - renamed aside as $staleName; rebuilding the full pair"
+                $script:launchNotices.Add("$($capsuleSessionsAlive.Count) running capsule supervisor(s) are on the previous build and cannot attach to this frontend: kill their sot-capsule.exe processes and the daemon respawns them fresh") | Out-Null
+            } catch {
+                Write-SupLog "freshness: could not rename the pinned sot-capsule.exe aside ($($_.Exception.Message)); the pair build below will refresh sotd.exe only"
+                $script:launchNotices.Add("sot-capsule.exe is pinned and could not be renamed aside; kill the running sot-capsule.exe processes and relaunch") | Out-Null
             }
-        } else {
-            Write-SupLog "freshness: cargo build -p sot-backend -p sot-log"
+        }
+        # The full pair build, unconditionally: the only difference a pinned
+        # image makes is the rename above.
+        Write-SupLog "freshness: cargo build -p sot-backend -p sot-log"
             $capOut = cargo build --release -p sot-backend -p sot-log --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
             if ($LASTEXITCODE -ne 0) {
                 $capExcerpt = @(Get-FailureExcerpt -Output $capOut -Kind 'cargo')
@@ -1006,7 +1019,6 @@ function Invoke-FreshnessPass {
             } else {
                 Write-SupLog "freshness: backend pair (sotd.exe, sot-capsule.exe) rebuilt"
             }
-        }
         }
     } finally {
         $ErrorActionPreference = $savedEAP
