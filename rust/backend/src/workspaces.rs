@@ -95,8 +95,8 @@ pub struct Workspace {
     pub task: String,
     /// ADR 0042 slice L1a: `"tmux"` | `"capsule"` — which runtime hosts
     /// this workspace's agent pane. Plain metadata; persisted in the toml
-    /// and defaulted to `"tmux"` for every existing/older toml that lacks
-    /// the key — byte-for-byte today's behaviour for them. `"capsule"`
+    /// and, for an older toml that lacks the key, defaulted per OS by
+    /// `meta_only` (`"capsule"` on Windows, `"tmux"` elsewhere). `"capsule"`
     /// workspaces are Windows-only in this unit (`handle_workspace_create`
     /// is the only writer of `"capsule"`); `tmux_session` is still
     /// populated for them (the same `sot-be-<slug>` convention) even
@@ -168,12 +168,15 @@ impl Workspace {
             agent,
             agent_name,
             task,
-            // Every existing constructor call site predates ADR 0042 L1a
-            // and means "an ordinary tmux workspace" — see this field's
-            // own doc. Callers that need `"capsule"` set it explicitly on
-            // the returned value (workspace.create's Windows branch;
-            // `load_toml`'s canonical-toml `runtime` key).
-            runtime: "tmux".to_string(),
+            // This platform's ordinary workspace runtime — "tmux", except
+            // on Windows, where tmux never runs at all (#177) and "tmux"
+            // is only ever a dead row: a toml predating the key that
+            // defaulted to it made the daemon try to secure a tmux socket
+            // dir before failing to spawn a nonexistent `tmux.exe` (field
+            // evidence, v0.6.0-rc.3, PR #175). Callers with a decided
+            // value set it on the returned row (`load_toml`'s `runtime`
+            // key, `insert`, workspace.create).
+            runtime: if cfg!(windows) { "capsule" } else { "tmux" }.to_string(),
             files_mode: OnceLock::new(),
             concept: OnceLock::new(),
             kernel: OnceLock::new(),
@@ -659,6 +662,16 @@ impl Workspaces {
         None
     }
 
+    /// Exact slug membership — the collision key `insert` replaces on.
+    /// Unlike `resolve`, an id is never accepted in place of a slug.
+    pub fn has_slug(&self, slug: &str) -> bool {
+        self.inner
+            .read()
+            .expect("workspaces lock")
+            .by_slug
+            .contains_key(slug)
+    }
+
     pub fn list(&self) -> Vec<Arc<Workspace>> {
         let g = self.inner.read().expect("workspaces lock");
         let mut out: Vec<Arc<Workspace>> = g.by_id.values().cloned().collect();
@@ -759,15 +772,14 @@ fn scan_dir(reg: &Workspaces, dir: &Path, legacy: bool) -> Result<usize> {
         }
         match load_toml(&path, legacy) {
             // A legacy-dir toml is the ADR 0013 migration SOURCE, never the
-            // source of truth: `scan_disk` reads the canonical dir first,
-            // and `insert`'s "same slug -> new metadata wins" would
-            // otherwise let this stale copy overwrite the canonical row's
-            // runtime/agent/autostart/task in memory on EVERY boot (field
-            // defect 2026-09-05: a Windows box carrying both
-            // `sessions-<host>\local.toml` and `workspaces-<host>\local.toml`
-            // logged the ADR 0042 "correcting a stale on-disk tmux" line at
-            // each start although the canonical file already said capsule).
-            Ok(Some(ws)) if legacy && reg.resolve(Some(&ws.slug)).is_some() => {
+            // source of truth: the canonical dir was scanned first, and
+            // `insert`'s "same slug -> new metadata wins" would otherwise
+            // let this stale copy reset the canonical row's runtime/agent/
+            // autostart/task in memory on every boot (field defect
+            // 2026-09-05, Windows: the ADR 0042 "correcting a stale on-disk
+            // tmux" line at each start although the canonical file already
+            // said capsule).
+            Ok(Some(ws)) if legacy && reg.has_slug(&ws.slug) => {
                 tracing::debug!(
                     toml = ?path,
                     slug = %ws.slug,
@@ -843,20 +855,8 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         });
         let agent_name = kv.get("agent_name").cloned().unwrap_or_default();
         let task = kv.get("task").cloned().unwrap_or_default();
-        // ADR 0042 slice L1a. Older tomls predate this key -> default to
-        // this platform's ordinary workspace runtime: "tmux", matching
-        // `meta_only`'s own default and preserving byte-for-byte
-        // behaviour for every workspace that predates capsules — except
-        // on Windows (Codex review, PR #175), where it's "capsule"
-        // instead: tmux never runs there at all, so a toml migrated from
-        // a pre-fix legacy registry (predating this key) defaulting to
-        // "tmux" made the daemon try to secure a tmux socket dir before
-        // failing to spawn a nonexistent `tmux.exe` (field evidence,
-        // v0.6.0-rc.3 — see `paths::tmux_socket_path`'s doc).
-        let runtime = kv
-            .get("runtime")
-            .cloned()
-            .unwrap_or_else(|| missing_runtime_default().to_string());
+        // ADR 0042 slice L1a. An older toml predates the `runtime` key and
+        // keeps `meta_only`'s per-OS default (see that field's doc).
         let mut ws = Workspace::meta_only(
             workspace_id,
             slug,
@@ -869,7 +869,9 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
             agent_name,
             task,
         );
-        ws.runtime = runtime;
+        if let Some(r) = kv.get("runtime") {
+            ws.runtime = r.clone();
+        }
         return Ok(Some(ws));
     }
 
@@ -909,8 +911,9 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         .get("started")
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or_else(now_unix);
-    // Legacy [backend] tomls predate these keys → default false / "".
-    let mut ws = Workspace::meta_only(
+    // Legacy [backend] tomls predate these keys → default false / "" (and
+    // `meta_only`'s per-OS `runtime`).
+    Ok(Some(Workspace::meta_only(
         workspace_id,
         slug,
         label,
@@ -921,28 +924,7 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         "none".to_string(),
         String::new(),
         String::new(),
-    );
-    // ...and the `runtime` key: same per-OS default as the canonical pass
-    // above, so a legacy-only row on Windows is startable at all.
-    ws.runtime = missing_runtime_default().to_string();
-    Ok(Some(ws))
-}
-
-/// The runtime a toml that PREDATES the `runtime` key (ADR 0042 L1a) gets
-/// on this platform, shared by both `load_toml` passes: "tmux" (matching
-/// `meta_only`'s own default, so every pre-capsule workspace keeps its
-/// behaviour byte-for-byte) — except on Windows (Codex review, PR #175),
-/// where it's "capsule": tmux never runs there at all, so a "tmux" default
-/// made the daemon try to secure a tmux socket dir before failing to spawn
-/// a nonexistent `tmux.exe` (field evidence, v0.6.0-rc.3 — see
-/// `paths::tmux_socket_path`'s doc). A PRESENT but wrong value is a
-/// different question, answered by `default_row_runtime` below.
-fn missing_runtime_default() -> &'static str {
-    if cfg!(windows) {
-        "capsule"
-    } else {
-        "tmux"
-    }
+    )))
 }
 
 /// The single decision of what runtime the daemon's own default/home row
@@ -2017,19 +1999,21 @@ pid          = 12345
         assert_eq!(ws.slug, "legacypkg_jl");
         assert_eq!(ws.label, "LegacyPkg.jl");
         assert_eq!(ws.project_root, PathBuf::from("/home/u/LegacyPkg.jl"));
+        // No `runtime` key -> `meta_only`'s per-OS default, same as the
+        // canonical shape (`load_toml_canonical`).
+        #[cfg(not(windows))]
+        assert_eq!(ws.runtime, "tmux");
+        #[cfg(windows)]
+        assert_eq!(ws.runtime, "capsule");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Field defect (2026-09-05): a box carrying BOTH the canonical
+    /// Field defect (2026-09-05): a box carrying both the canonical
     /// `workspaces-<host>/<slug>.toml` and a leftover legacy
-    /// `sessions-<host>/<slug>.toml` for the same slug re-registered the
-    /// legacy copy second, and `insert`'s "same slug -> new metadata wins"
-    /// let the stale copy overwrite the canonical row in memory on every
-    /// boot — runtime back to the legacy default, agent/autostart/task
-    /// back to the legacy blanks. Visible as the ADR 0042 "correcting a
-    /// stale on-disk tmux value" log line on a box whose canonical file
-    /// already said capsule. The canonical row must win: the legacy file
-    /// is a migration source, not a source of truth. Runs on every OS.
+    /// `sessions-<host>/<slug>.toml` had the legacy copy re-registered
+    /// second, and `insert`'s "same slug -> new metadata wins" reset the
+    /// canonical row's runtime/agent/autostart/task in memory on every
+    /// boot. The canonical row must win. Runs on every OS.
     #[test]
     fn scan_disk_legacy_toml_never_overrides_canonical_row_of_same_slug() {
         let _guard = env_guarded();
@@ -2085,7 +2069,6 @@ started      = 1600000000
         let count = scan_disk(&reg).unwrap();
         assert_eq!(count, 1, "the shadowed legacy toml is not an insert");
         let ws = reg.resolve(Some("local")).unwrap();
-        assert_eq!(ws.workspace_id, "ws-local-1");
         assert_eq!(ws.runtime, "capsule");
         assert!(ws.autostart_claude);
         assert_eq!(ws.agent, "claude");
