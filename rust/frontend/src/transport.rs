@@ -3983,6 +3983,52 @@ mod tests {
         );
     }
 
+    /// Version-skew seam: a NEW frontend against an OLD daemon (no
+    /// `workspace.activate` support). `OutgoingReq::WorkspaceActivate`
+    /// deliberately stamps NO `PendingKind` (see its send-site comment) —
+    /// so an old daemon's generic unknown-op reply (`server.rs`'s `other =>`
+    /// catch-all: `{"error": "unknown op: workspace.activate"}`, same `op`
+    /// and `id` echoed back) finds nothing in `pending` and MUST fall all
+    /// the way through to the generic `IncomingEvt::Event` catch-all —
+    /// which gpu.rs's own catch-all (`else { tracing::debug!(%op, "evt"); }`)
+    /// only logs at debug and does nothing else. This is what makes the skew
+    /// safe: no status-line error, no retry, no effect on the switch that
+    /// sent it. A real `WorkspaceActivateRes` success reply lands the exact
+    /// same way (also no `PendingKind`), so this one test covers both.
+    #[test]
+    fn workspace_activate_reply_with_no_pending_falls_through_to_generic_event() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+        let frame = Frame::res(
+            11,
+            op::WORKSPACE_ACTIVATE,
+            serde_json::json!({"error": "unknown op: workspace.activate"}),
+        );
+        let host = "test-host".to_string();
+        handle_response_frame(frame, None, &mut pending, &evt_tx, &host);
+
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            (h, IncomingEvt::Event { op, payload }) => {
+                assert_eq!(h, &host);
+                assert_eq!(op, op::WORKSPACE_ACTIVATE);
+                assert_eq!(
+                    payload.get("error").and_then(|v| v.as_str()),
+                    Some("unknown op: workspace.activate")
+                );
+            }
+            other => panic!(
+                "expected the generic IncomingEvt::Event fallback (no status-line \
+                 variant exists for this op), got {other:?}"
+            ),
+        }
+        assert!(
+            pending.is_empty(),
+            "no PendingKind was ever inserted for workspace.activate — nothing to strand"
+        );
+    }
+
     /// Fix 2 (disconnect strands pending forever): dropping the guard —
     /// standing in for `run_protocol` returning through any of its exit
     /// paths — must flush every outstanding `FigureGet` as
