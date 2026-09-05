@@ -625,6 +625,18 @@ pub async fn run(opts: Opts) -> Result<()> {
                 let mut current: std::collections::HashMap<String, String> =
                     std::collections::HashMap::new();
                 for ws in ws_reg.list() {
+                    // A capsule row has no tmux pane to capture (ADR 0042):
+                    // it still carries a `tmux_session` name, but there is
+                    // no session behind it to poll — on Windows this is
+                    // EVERY row, so without this skip we'd spawn a blocking
+                    // task and hit `TmuxClient::run`'s refusal (#177) for
+                    // each one, every tick, forever, for nothing. `current`
+                    // (and thus `last`, replaced wholesale below) simply
+                    // never gains an entry for these rows, so no separate
+                    // bookkeeping cleanup is needed.
+                    if ws.runtime == "capsule" {
+                        continue;
+                    }
                     let session = ws.tmux_session.clone();
                     if session.is_empty() || current.contains_key(&session) {
                         continue;
