@@ -1396,23 +1396,32 @@ where
                         // `attach_direct` below. `ensure_started` is a no-op
                         // when a supervisor already answers.
                         //
-                        // 2026-09-04 amendment: EXCEPT for the default row
-                        // when it carries no agent — the inert anchor (see
-                        // the seed arms in this file's startup routine).
-                        // `agent_argv("none")` is a REAL leg (the bare
-                        // platform shell), so skipping this unconditionally
-                        // for every `agent == "none"` row would silently
-                        // stop starting the bare shell every OTHER capsule
-                        // row can still ask for; only the default row's own
-                        // anchor semantics make "no agent" mean "nothing to
-                        // start" here. The frontend never sends `pty.open`
-                        // for this row at all (it isn't even listed), so
-                        // this is belt-and-suspenders against a stale/other
-                        // client — falls through to the SAME `attach_direct`
-                        // answer an unstarted row gets today, naming a
-                        // `state_dir` nothing has published to yet.
+                        // 2026-09-04 amendment: EXCEPT for the default
+                        // CAPSULE row when it carries no agent — the inert
+                        // anchor (see the seed arms in this file's startup
+                        // routine). `agent_argv("none")` is a REAL leg (the
+                        // bare platform shell), so skipping this
+                        // unconditionally for every `agent == "none"` row
+                        // would silently stop starting the bare shell every
+                        // OTHER capsule row can still ask for; only the
+                        // default row's own anchor semantics make "no
+                        // agent" mean "nothing to start" here. Spelled out
+                        // fully as `runtime == "capsule"` even though this
+                        // whole branch already sits inside `ws.runtime ==
+                        // "capsule"` above (redundant here, not on a shared
+                        // backend's `.SoT` row: a TMUX default row with no
+                        // agent is normal — the SoT LLM lives in the
+                        // drawer, not as a workspace agent — and must never
+                        // read as this anchor). The frontend never sends
+                        // `pty.open` for this row at all (it isn't even
+                        // listed), so this is belt-and-suspenders against a
+                        // stale/other client — falls through to the SAME
+                        // `attach_direct` answer an unstarted row gets
+                        // today, naming a `state_dir` nothing has published
+                        // to yet.
                         #[cfg(windows)]
                         let is_inert_default_anchor = ws.agent == "none"
+                            && ws.runtime == "capsule"
                             && workspaces.default_id().as_deref() == Some(ws.workspace_id.as_str());
                         #[cfg(windows)]
                         if !is_inert_default_anchor {
