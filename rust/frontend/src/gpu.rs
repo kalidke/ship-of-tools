@@ -13265,21 +13265,39 @@ impl State {
                         );
                         // Receipt log — the arm used to skip silently, which
                         // made the live-refresh path undiagnosable from the FE
-                        // log (2026-08-17 forensics). Events are debounced
-                        // daemon-side, so info-level is low-volume.
+                        // log (2026-08-17 forensics). The level splits on the
+                        // OUTCOME, not on arrival: a resolved event is rare and
+                        // actionable, an unresolved one is the bulk of a busy
+                        // host's traffic. The old comment here claimed
+                        // "debounced daemon-side, so info-level is low-volume";
+                        // measured on a laptop FE 2026-09-05 that is false —
+                        // 109 events in a 30 s idle window, 101 of them
+                        // unresolved, ~2.9 KB/s of formatted disk writes for
+                        // events that are then discarded. Keeping both outcomes
+                        // at info made the diagnostic log proportional to the
+                        // flood it exists to diagnose. Both paths still log
+                        // every field, so RUST_LOG=sot::gpu=debug restores the
+                        // 2026-08-17 forensic view verbatim.
+                        let Some(node_id) = resolved else {
+                            // Not ours to render (foreign workspace, or the
+                            // active root is unknown and the tag didn't match).
+                            tracing::debug!(
+                                kind,
+                                event_ws = ?event_ws,
+                                path = ?event_path,
+                                active_ws = ?active_ws,
+                                "preview.changed dropped — not the active view"
+                            );
+                            continue;
+                        };
                         tracing::info!(
                             kind,
                             event_ws = ?event_ws,
                             path = ?event_path,
                             active_ws = ?active_ws,
-                            resolved = ?resolved,
+                            resolved = %node_id,
                             "preview.changed received"
                         );
-                        let Some(node_id) = resolved else {
-                            // Not ours to render (foreign workspace, or the
-                            // active root is unknown and the tag didn't match).
-                            continue;
-                        };
                         if kind == "created" || kind == "removed" {
                             let parent = parent_files_node_id(&node_id);
                             self.refresh_tree_dir_if_expanded(&parent);
