@@ -31,7 +31,9 @@ use ratatui::{
 use crate::chrome::WgpuBackend;
 use crate::edit_buffer::EditBuffer;
 use crate::hosts::HostKey;
-use crate::keybindings::{Action, KeyBindings};
+use crate::keybindings::{Action, KeyBindings, Modifiers};
+use crate::help;
+use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use crate::preview::markdown::{
     FigureMetrics, FigureMetricsMap, MarkdownPreview, MathMetrics, MathMetricsMap,
     BODY_SIZE as MD_BODY_SIZE,
@@ -156,6 +158,7 @@ enum DrawerContent {
     Repl,
     Terminal,
     Monitor,
+    Help,
 }
 
 impl DrawerContent {
@@ -4089,12 +4092,11 @@ struct State {
     /// the file-preview markdown when `edit_state` is Some. None when
     /// not in edit mode.
     preview_edit: Option<MarkdownPreview>,
-    /// `?` toggles a keybindings help overlay over the preview pane.
-    /// `help_open` gates it; `preview_help` is the shaped (monospace)
-    /// buffer, rebuilt on open + on resize. Independent of `edit_state`
-    /// and takes draw precedence over both edit and the normal preview.
-    help_open: bool,
-    preview_help: Option<MarkdownPreview>,
+    help: help::Help,
+    help_origin: Option<(PaneFocus, DrawerContent, bool)>,
+    help_start_pending: bool,
+    help_peek_start_pending: bool,
+    help_back_quad: Option<(u8, Quad)>,
     /// ADR 0030 §2 / ADR 0042 L2a: a persistent, blocking "update needed"
     /// message shown when a host's daemon refuses the handshake on a
     /// protocol-version skew. Keyed by `HostKey` — each host's own hello
@@ -4104,7 +4106,7 @@ struct State {
     /// `rebuild_fatal_overlay`/`show_fatal`). A host's entry is removed on
     /// its own next successful `Connected` (not every host's). `preview_fatal`
     /// is the shaped buffer for whichever host is CURRENTLY active, rebuilt
-    /// on set + on resize + on an active-host switch (mirrors `preview_help`).
+    /// on set + on resize + on an active-host switch.
     protocol_mismatch: HashMap<HostKey, String>,
     preview_fatal: Option<MarkdownPreview>,
     /// Cache of MathJax-rendered SVGs keyed by `(latex, display)`.
@@ -5475,8 +5477,11 @@ impl State {
             focus_on_first_frame: true,
             edit_state: None,
             preview_edit: None,
-            help_open: cli.start_help,
-            preview_help: None,
+            help: help::Help::default(),
+            help_origin: None,
+            help_start_pending: cli.start_help,
+            help_peek_start_pending: cli.start_help_peek,
+            help_back_quad: None,
             protocol_mismatch: HashMap::new(),
             preview_fatal: None,
             math_cache: std::collections::HashMap::new(),
@@ -10741,10 +10746,6 @@ impl State {
         if let Some((mime, bytes)) = self.preview_src.clone() {
             self.render_preview_source(&mime, &bytes);
         }
-        // Reflow the help overlay at the new scale if it's open.
-        if self.help_open {
-            self.rebuild_help_overlay();
-        }
     }
 
     /// Fire `math.render` for every block in the latest markdown
@@ -10989,80 +10990,96 @@ impl State {
         out
     }
 
-    /// (Re)build the keybindings help overlay buffer at the current
-    /// preview-pane width. Static content — a monospace, focus-grouped
-    /// cheat-sheet of the major bindings — so it's cheap to rebuild on
-    /// open / resize. Bindings here mirror the handlers in this file; keep
-    /// them in sync when adding a key.
-    fn rebuild_help_overlay(&mut self) {
-        const HELP: &str = "\
-  Ship of Tools — key bindings    ( ? or Esc to close )
+    fn help_peek_expired(&self) -> bool {
+        self.help.peek.as_ref().is_some_and(|p| p.opacity(std::time::Instant::now()) <= 0.0)
+    }
 
-  Move between panes & sessions   (works in any focus)
-    Ctrl+← → ↑ ↓    move focus between panes
-    Shift+← →       switch session (cycle workspace)
-    Alt+=  maximize pane            Esc  restore (un-maximize / exit wide preview)
-    Alt++  wide preview — hide / show the LLM pane (nav + full-width preview)
-    Ctrl+Shift+S   selfie — save a PNG of the whole window
+    fn help_context(&self) -> help::Context {
+        let pane = match self.focus {
+            PaneFocus::NavTree => help::Pane::Nav,
+            PaneFocus::Preview => help::Pane::Preview,
+            PaneFocus::Llm => help::Pane::Agent,
+            PaneFocus::Repl => match self.drawer {
+                DrawerContent::Terminal => help::Pane::Terminal,
+                DrawerContent::Monitor => help::Pane::Monitor,
+                DrawerContent::Help => help::Pane::Help,
+                _ => help::Pane::Repl,
+            },
+        };
+        let editing = self.focus == PaneFocus::Preview && self.edit_state.is_some();
+        let prompt = self.focus == PaneFocus::NavTree && self.nav_prompt.is_some();
+        let picker = self.focus == PaneFocus::NavTree && self.workspace_picker.is_some();
+        let file = if pane == help::Pane::Preview { self.previewed_files_path() }
+            else if pane == help::Pane::Nav { self.cursored_files_path() } else { None };
+        help::Context {
+            pane, mode: match self.mode { Mode::Files => help::Mode::Files, Mode::Modules => help::Mode::Modules,
+                Mode::Sessions => help::Mode::Sessions, Mode::Hosts => help::Mode::Hosts },
+            file, image: self.preview_png.is_some(),
+            pages: self.preview_page.is_some_and(|(_, count)| count > 1),
+            editable: self.preview_png.is_none() && self.previewed_files_path().is_some()
+                || self.concept.as_ref().is_some_and(|c| c.exists && self.concept_target_fired.as_ref() == Some(&c.target)),
+            confirmation: if matches!(self.nav_prompt, Some(NavPrompt::ConfirmDelete { .. })) && prompt {
+                help::Confirmation::Delete
+            } else if editing && self.edit_state.as_ref().is_some_and(|e| e.confirm_discard) {
+                help::Confirmation::Discard
+            } else if editing && self.edit_state.as_ref().is_some_and(|e| e.stale_banner) {
+                help::Confirmation::Stale
+            } else { help::Confirmation::None },
+            workspace_locked: self.edit_state.is_some(),
+            picker, prompt, editing, modal: editing || prompt || picker,
+            restore: self.maximized || self.wide_preview && self.edit_state.is_none()
+                && self.nav_prompt.is_none() && self.workspace_picker.is_none()
+                && matches!(self.focus, PaneFocus::NavTree | PaneFocus::Preview),
+            session: self.tree.rows.get(self.tree.selected).is_some_and(|r| r.node.kind == "session"),
+            alternate_screen: match pane {
+                help::Pane::Terminal => {
+                    #[cfg(windows)]
+                    let screen = self.local_term.as_ref().map(|t| t.screen())
+                        .or_else(|| self.attach_term.as_ref().map(|t| t.screen()));
+                    #[cfg(not(windows))]
+                    let screen = self.local_term.as_ref().map(|t| t.screen());
+                    screen.is_some_and(|s| s.alternate_screen())
+                }
+                help::Pane::Agent => {
+                    // Tmux always owns scrollback paging. A Windows capsule in
+                    // alternate-screen mode instead receives the original key.
+                    #[cfg(windows)]
+                    { self.pane_feed == PaneFeed::Capsule && self.pane_attach_term.as_ref()
+                        .is_some_and(|t| t.screen().alternate_screen()) }
+                    #[cfg(not(windows))]
+                    { false }
+                },
+                _ => false,
+            },
+        }
+    }
 
-  Drawers   (works in any focus)
-    Ctrl+J  REPL          Ctrl+T  terminal          Ctrl+M  monitor
+    fn open_help_drawer(&mut self, context: help::Context) {
+        if self.help_origin.is_none() {
+            self.help_origin = Some((self.focus, self.drawer, self.maximized));
+        }
+        self.help.open(context);
+        self.drawer = DrawerContent::Help;
+        self.maximized = false;
+        self.focus = PaneFocus::Repl;
+        self.window.request_redraw();
+    }
 
-  Modes (Nav focus)
-    f   Files          m   Modules
-    s   Sessions       h   Hosts
-
-  Navigate (Nav focus)
-    ↑ ↓   move cursor     → / ←   expand / collapse     Enter   open / pick
-
-  Files (Nav focus)
-    d   download cursored file to your machine
-    u   upload local file(s) (OS picker, multi-select) into the cursored folder
-    o   open       (html→browser · .jl→Pluto · video→browser · .qmd→quick render)
-    O   open + run code chunks  (.qmd execute)
-    W   open the built docs site in browser  (deep-links a built docs page)
-    r   run .jl in a fresh REPL     R   run .jl in current REPL
-    p   pin preview                 Ctrl+C  copy file path
-    Ctrl+N  new file                Ctrl+D  delete file
-    .   show / hide hidden files (dotfiles) in the tree
-
-  Sessions (Nav focus, s)
-    Enter on a session row     switch to it
-    Enter on the '+' row       open the new-session folder picker, then:
-        Enter        create with a CLAUDE CODE agent
-        Shift+Enter  folder only — shell, no agent
-        Ctrl+Enter   create with a CODEX agent
-    Shift+D   destroy the cursored session (press D again to confirm)
-
-  Preview focus
-    ↑ ↓ scroll     h l 0  scroll wide table     y  copy code blocks
-    image:  Shift+↑ ↓ (or + / -)  zoom    r / 0  reset    ← →  pan
-    PgDn/PgUp or n/p   next / prev page  (paginated previews, e.g. PDF)
-    e   edit concept annotation   (Ctrl+S save · Esc discard)
-    o / O / W   open the SHOWN file  (same as Nav — acts on what you see)
-
-  REPL drawer
-    r on a .jl   run in a FRESH repl (restarts the process in that project)
-    R on a .jl   run in the current repl        Ctrl+L   clear scrollback
-
-  LLM pane (mouse)
-    drag           select text (multi-line)   Ctrl+Shift+C  copy selection
-    click outside  clear selection            wheel         scroll history
-
-  Quit:  q  (or Ctrl+Q)
-";
-        let width = self.md_rect_px.w.max(1.0);
-        let scale = self.scale * self.text_scale_mult;
-        self.preview_help = Some(MarkdownPreview::new_plain(
-            self.text.font_system_mut(),
-            HELP,
-            width,
-            scale,
-        ));
+    fn close_help_drawer(&mut self) {
+        if let Some((focus, drawer, maximized)) = self.help_origin.take() {
+            self.focus = focus;
+            self.drawer = drawer;
+            self.maximized = maximized;
+        } else {
+            self.drawer = DrawerContent::Closed;
+            self.focus = PaneFocus::NavTree;
+        }
+        self.help.peek = None;
+        self.window.request_redraw();
     }
 
     /// Rebuild the ADR 0030 protocol-mismatch overlay buffer from
-    /// `protocol_mismatch`. Mirrors `rebuild_help_overlay` — a plain monospace
+    /// `protocol_mismatch` as a plain monospace
     /// buffer shaped to the preview width — so it reuses the same overlay paint
     /// path. No-op (clears the buffer) when no mismatch is set.
     fn rebuild_fatal_overlay(&mut self) {
@@ -11139,19 +11156,24 @@ impl State {
         // Priority: stale > discard-confirm > selection > modified > clean.
         let mut footer = String::from("\n\n");
         if edit.stale_banner {
-            footer.push_str(
-                "── STALE: file changed on disk since you started editing.  [r] reload (discard your edits)  [k] keep editing (next save will fail again) ──",
-            );
+            footer.push_str(&format!(
+                "── STALE: file changed on disk. {} reload (discard edits) · {} keep editing ──",
+                self.bindings.labels(Action::StaleReload), self.bindings.labels(Action::StaleKeep)));
+
         } else if edit.confirm_discard {
-            footer.push_str(
-                "── DISCARD UNSAVED EDITS?  [y]/[Esc] throw away changes  [n] keep editing ──",
-            );
+            footer.push_str(&format!(
+                "── DISCARD UNSAVED EDITS? {} discard · another key keeps editing ──",
+                self.bindings.labels(Action::DiscardConfirm)));
+
         } else if has_sel {
-            footer.push_str("── edit mode · selection · Ctrl+C copy · Ctrl+X cut · Ctrl+S save ──");
+            footer.push_str(&format!("── edit mode · selection · {} copy · {} cut · {} save ──",
+                self.bindings.first_label(Action::EditCopy), self.bindings.first_label(Action::EditCut), self.bindings.first_label(Action::EditSave)));
         } else if edit.is_dirty() {
-            footer.push_str("── edit mode · modified · Ctrl+S save · Esc discard ──");
+            footer.push_str(&format!("── edit mode · modified · {} save · {} discard ──",
+                self.bindings.first_label(Action::EditSave), self.bindings.first_label(Action::Cancel)));
         } else {
-            footer.push_str("── edit mode · clean · Ctrl+S save · Esc exit ──");
+            footer.push_str(&format!("── edit mode · clean · {} save · {} exit ──",
+                self.bindings.first_label(Action::EditSave), self.bindings.first_label(Action::Cancel)));
         }
         spans.push((footer, false));
         let width = self.concept_rect_px.w.max(1.0);
@@ -11407,7 +11429,7 @@ impl State {
                         let had_batch = self.upload_batch.take().is_some();
                         if self.upload.take().is_some() || had_batch {
                             self.status =
-                                "upload interrupted by reconnect — press u to retry".to_string();
+                                format!("upload interrupted by reconnect — {} to retry", self.bindings.first_label(Action::Upload));
                             self.notify_sticky_until =
                                 Some(std::time::Instant::now() + NOTIFY_STICKY);
                         }
@@ -14423,6 +14445,15 @@ impl State {
     }
 
     fn redraw(&mut self) -> Result<()> {
+        if self.help_peek_start_pending {
+            self.help_peek_start_pending = false;
+            self.help.peek = Some(help::Peek { context: self.help_context(), started: std::time::Instant::now() });
+        }
+        if self.help_start_pending {
+            self.help_start_pending = false;
+            self.open_help_drawer(self.help_context());
+        }
+
         self.drain_events();
         // Prune finished status-change flashes; while any is still fading,
         // mark dirty so the frame loop keeps animating it (the fast-repaint
@@ -14656,6 +14687,7 @@ impl State {
         );
         let mode = self.mode;
         let focus = self.focus;
+        let help_context = self.help_context();
         let maximized = self.maximized;
         // State-nav selected-session contrast lever, snapshotted for the draw
         // closure (it mustn't borrow `self`).
@@ -14723,22 +14755,13 @@ impl State {
         self.repl_image_slots = repl_slots;
         let repl_input = self.repl_input.clone();
         let repl_pkg_mode = self.repl_pkg_mode;
-        // Snapshot for nav scroll calc: body_lines lays out as
-        // [status, hint, blank, (tree rows...), blank, concept, blank, key],
-        // so the cursor's body index is 3 + tree.selected when the tree
-        // isn't empty.
-        // Pick the cursor position from the picker when it's active so
-        // the scroll math keeps the highlighted picker row in the
-        // comfort zone. body_lines starts with 3 chrome header lines
-        // (status / hint / blank), then tree_lines. Files-mode's first
-        // tree row is therefore at body row 3 (+ self.tree.selected).
-        // The picker prepends 2 extra title rows (path header + key
-        // hint) inside tree_lines, so the first picker entry sits at
-        // body row 3 + 2 = 5 (+ picker.selected).
+        // The navigation body begins with status + spacer. The picker adds
+        // two path/header rows before its entries. Keep scroll and hit testing
+        // aligned when the help legend moves from the body to the border.
         let (nav_cursor_body_pos, nav_has_cursor) = match &self.workspace_picker {
-            Some(p) => (5usize.saturating_add(p.selected), !p.entries.is_empty()),
+            Some(p) => (4usize.saturating_add(p.selected), !p.entries.is_empty()),
             None => (
-                3usize.saturating_add(self.tree.selected),
+                2usize.saturating_add(self.tree.selected),
                 !self.tree.rows.is_empty(),
             ),
         };
@@ -15016,7 +15039,9 @@ impl State {
             // Splitting them stops the common muscle-memory error of hitting
             // Enter to open a folder and instead spawning a session.
             rows.push((
-                "  → into folder · ← up · ↑↓ move · Esc cancel".to_string(),
+                format!("  {} into · {} up · {} move · {} cancel",
+                    self.bindings.first_label(Action::NavExpand), self.bindings.first_label(Action::NavCollapse),
+                    self.bindings.first_label(Action::NavDown), self.bindings.first_label(Action::Cancel)),
                 false,
                 false,
                 false,
@@ -15025,7 +15050,8 @@ impl State {
                 false,
             ));
             rows.push((
-                "  Enter = create here · Shift+Enter bare · Ctrl+Enter codex".to_string(),
+                format!("  {} Claude · {} bare · {} Codex", self.bindings.first_label(Action::SessionCreate),
+                    self.bindings.first_label(Action::SessionCreateBare), self.bindings.first_label(Action::SessionCreateCodex)),
                 false,
                 false,
                 false,
@@ -15152,7 +15178,7 @@ impl State {
         // the preset itself (Llm column dropped, width to Preview) so
         // layout::compute needs no new inputs — the Llm-less path is
         // the same one the portrait preset already exercises.
-        let layout_preset = {
+        let mut layout_preset = {
             let p = self.settings.resolve_preset(self.monitor_aspect);
             if self.wide_preview {
                 p.wide_preview()
@@ -15160,6 +15186,9 @@ impl State {
                 p.clone()
             }
         };
+        if drawer == DrawerContent::Help && layout_preset.drawer.is_none() {
+            layout_preset.drawer = Some(crate::settings::Slot::Repl);
+        }
         // `drawer` was bound above (after the terminal lazy-spawn/close).
         let drawer_open = drawer.is_open();
         // T1: full path of the file the preview is showing, snapshotted here
@@ -15170,8 +15199,13 @@ impl State {
         // whether to show the standalone three-key create legend without
         // borrowing `self`. Suppressed while the picker is open — the picker's
         // own footer already carries the legend inline.
-        let picker_open = self.workspace_picker.is_some();
 
+        // Borrowed LAST, after every `&mut self` pump above (the Windows-only
+        // attach-term pumps included): the draw closure captures these two
+        // references, so taking them any earlier spans those mutations and
+        // fails the borrow check on the platform that has them.
+        let help_state = &self.help;
+        let help_bindings = &self.bindings;
         self.terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -15230,42 +15264,8 @@ impl State {
                     mode.label(),
                     if nav_focus { "· [FOCUS]" } else { "" }
                 );
-                // Header leads with the SURVIVAL keys (maintainer note, 2026-07-04): `?`
-                // only works with nav focus, so a user stuck in another pane
-                // needs the pane-switch chord permanently visible — this line
-                // is the way back. Everything else lives in the `?` overlay
-                // (rebuild_help_overlay); the old two-row inline hints clipped
-                // on narrow nav columns, so this stays one short row.
-                let mut body_lines = vec![RtLine::from(vec![Span::styled(
-                    "  Ctrl+←→↑↓ switch pane · ↑↓ move · ? help",
-                    Style::default().fg(Color::LightCyan),
-                )])];
-                // Sessions mode: the three-key create legend (ADR 0031), shown
-                // the moment you switch into Sessions mode so the agent choice
-                // is visible without opening `?` or drilling into the picker.
-                // Suppressed while the picker is open — its footer carries the
-                // same legend inline (below). One short row; the nav body does
-                // not wrap, so keep it inside a narrow column.
-                // Tree-nav movement legend + (Sessions only) the create legend.
-                // Files / Modules / Sessions share the same →into / ←up / ↑↓move
-                // gestures, so the movement row shows in all three — it makes →
-                // discoverable as "descend" and stops Enter from being mistaken
-                // for it (in Files, Enter opens; in Sessions' picker, Enter
-                // creates). The three-key create legend is Sessions-only.
-                // Suppressed in the picker — its footer carries both inline.
-                let tree_nav = matches!(mode, Mode::Files | Mode::Modules | Mode::Sessions);
-                if tree_nav && !picker_open {
-                    if mode == Mode::Sessions {
-                        body_lines.push(RtLine::from(vec![Span::styled(
-                            "  new: Enter claude · Shift+Enter bare · Ctrl+Enter codex",
-                            Style::default().fg(Color::DarkGray),
-                        )]));
-                    }
-                    body_lines.push(RtLine::from(vec![Span::styled(
-                        "  move: → into · ← up · ↑↓ rows",
-                        Style::default().fg(Color::DarkGray),
-                    )]));
-                }
+                // Help lives on the focused border; keep the nav header compact.
+                let mut body_lines = Vec::new();
                 body_lines.push(RtLine::from(vec![
                     Span::styled("status: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(status.clone(), Style::default().fg(Color::LightGreen)),
@@ -15535,6 +15535,7 @@ impl State {
                     (DrawerContent::Terminal, true) => " terminal · [FOCUS] ".to_string(),
                     (DrawerContent::Terminal, false) => " terminal ".to_string(),
                     (DrawerContent::Monitor, _) => " monitor ".to_string(),
+                    (DrawerContent::Help, _) => " help ".to_string(),
                     (_, true) => " repl · julia · [FOCUS] ".to_string(),
                     (_, false) => " repl · julia ".to_string(),
                 };
@@ -15624,6 +15625,9 @@ impl State {
                 // when it shows the Terminal (G3) the vt100 grid is painted
                 // into `repl_rect` after the wireframe instead.
                 frame.render_widget(nav_body, nav_rect);
+                if drawer == DrawerContent::Help {
+                    help::render(frame, repl_rect, help_state, help_bindings);
+                }
                 if drawer == DrawerContent::Repl {
                     frame.render_widget(scroll_para, repl_split[0]);
                     frame.render_widget(input_para, repl_split[1]);
@@ -15695,6 +15699,24 @@ impl State {
                         title_w(repl_rect),
                         title_style_for(repl_focus),
                     );
+                }
+
+                let focused_rect = match focus {
+                    PaneFocus::NavTree => nav_rect, PaneFocus::Preview => preview_rect,
+                    PaneFocus::Llm => llm_rect, PaneFocus::Repl => repl_rect,
+                };
+                if focused_rect.width > 2 {
+                    let width = focused_rect.width.saturating_sub(2) as usize;
+                    let title = format!(" {} · ", help_context.title());
+                    let title_width = unicode_width::UnicodeWidthStr::width(title.as_str());
+                    let hint = help::border(&help_context, help_bindings, width.saturating_sub(title_width));
+                    let title = help::truncate(&format!("{title}{hint}"), width);
+                    // Clear old title glyphs before writing the shorter dynamic title.
+                    for x in focused_rect.x..focused_rect.x + focused_rect.width {
+                        buf[(x, focused_rect.y.saturating_sub(1))].set_symbol("─").set_style(border_style);
+                    }
+                    write_title(buf, focused_rect.x + 1, focused_rect.y.saturating_sub(1),
+                        &title, width as u16, focus_title_style);
                 }
 
                 // Live local-time clock, right-aligned on the top edge just
@@ -16184,16 +16206,14 @@ impl State {
         // the preview pane over EVERYTHING (help included) until a clean
         // reconnect clears it. Rebuilt lazily below once md_rect_px is known.
         let show_fatal = self.protocol_mismatch.contains_key(&self.active_host);
-        // Help overlay takes the preview pane over everything else when open.
-        let show_help = !show_fatal && self.help_open && self.preview_help.is_some();
-        let show_png = self.preview_png.is_some() && !show_help && !show_fatal;
+        let show_png = self.preview_png.is_some() && !show_fatal;
         let show_svg = false;
         let show_concept = false;
         // Edit mode owns the preview pane: the file viewer hides so
         // the editable annotation body has the whole rect.
         let show_edit =
-            !show_fatal && !show_help && self.edit_state.is_some() && self.preview_edit.is_some();
-        let show_md = !show_fatal && !show_help && !show_png && !show_edit;
+            !show_fatal && self.edit_state.is_some() && self.preview_edit.is_some();
+        let show_md = !show_fatal && !show_png && !show_edit;
 
         // Figure caption (agent-supplied, ADR 0025): a band RESERVED at the
         // bottom of the preview pane. Computed here, before `png_rect`, because
@@ -16286,12 +16306,6 @@ impl State {
             }
         } else {
             self.monitor_quad = None;
-        }
-        // `--start-help` (capture harness) opens the overlay before any `?`
-        // press. Build it lazily here, once md_rect_px reflects the real
-        // preview width so the cheat sheet wraps right; renders next frame.
-        if self.help_open && self.preview_help.is_none() {
-            self.rebuild_help_overlay();
         }
         // ADR 0030 §2: same lazy build for the protocol-mismatch overlay, once
         // md_rect_px reflects the real preview width so the message wraps right.
@@ -16525,23 +16539,6 @@ impl State {
                 });
             }
         }
-        if show_help {
-            if let Some(ph) = self.preview_help.as_ref() {
-                extras.push(crate::text::ExtraArea {
-                    buffer: &ph.buffer,
-                    x: preview_rect.x,
-                    y: preview_rect.y,
-                    right: preview_rect.x + preview_rect.w,
-                    bottom: preview_rect.y + preview_rect.h,
-                    clip_left: None,
-                    clip_top: None,
-                    // Cool cyan tint distinguishes the help overlay from the
-                    // gold edit modal and the neutral read-only preview.
-                    color: (150, 210, 220),
-                    scroll_y_px: 0.0,
-                });
-            }
-        }
         // ADR 0030 §2: protocol-mismatch overlay, reusing the help overlay's
         // paint path but with a warm red tint so it reads as an error, not a
         // cheat sheet. Trumps everything (highest priority in the cascade).
@@ -16627,13 +16624,55 @@ impl State {
             &extras,
         )?;
 
+        let mut help_overlay_rect = None;
+        let mut help_overlay_lines = Vec::new();
+        let mut help_opacity = 1.0;
+        if let Some(peek) = self.help.peek.clone() {
+            let now = std::time::Instant::now();
+            help_opacity = peek.opacity(now);
+            if help_opacity <= 0.0 || peek.context != self.help_context() {
+                self.help.peek = None;
+            } else {
+                let rect = match peek.context.pane {
+                    help::Pane::Nav => self.pane_rects.nav,
+                    help::Pane::Preview => self.pane_rects.preview,
+                    help::Pane::Agent => self.pane_rects.llm,
+                    _ => self.pane_rects.repl,
+                };
+                let content = help::peek_lines(&peek.context, &self.bindings);
+                let text_width = rect.width.saturating_sub(4) as usize;
+                let longest = content.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.as_str())).max().unwrap_or(0);
+                if text_width < longest || rect.height < content.len() as u16 + 2 {
+                    self.open_help_drawer(peek.context);
+                } else {
+                    self.nav_spill_segments.clear();
+                    let px = ScreenRect {
+                        x: self.chrome_origin_x + rect.x as f32 * self.cell_w,
+                        y: self.chrome_origin_y + rect.y as f32 * self.cell_h,
+                        w: rect.width as f32 * self.cell_w,
+                        h: (content.len() as f32 + 2.0) * self.cell_h,
+                    };
+                    help_overlay_rect = Some(px);
+                    help_overlay_lines = content.into_iter().enumerate().map(|(i, text)| crate::text::Line {
+                        text, x: px.x + 2.0 * self.cell_w, y: px.y + (i as f32 + 1.0) * self.cell_h,
+                        color: Some((167, 222, 231)), bold: i == 0, italic: false, dim: false,
+                    }).collect();
+                    let alpha = (help_opacity * 245.0).round() as u8;
+                    if self.help_back_quad.as_ref().map(|(a, _)| *a) != Some(alpha) {
+                        self.help_back_quad = Some((alpha, Quad::from_rgba8(&self.device, &self.queue,
+                            &self.quad_pipeline, &[14, 30, 46, alpha], 1, 1)?));
+                    }
+                }
+            }
+        }
+
         // Nav-spill overlay text: the segments the draw closure just
         // collected, converted cell→px with the SAME origin/cell math the
         // chrome lines use so the overlay realigns pixel-identically over
         // the row it covers. Prepared EVERY frame — an empty list is what
         // clears the overlay renderer's retained geometry (see
         // `prepare_overlay`'s doc), so no `if` around this call.
-        let overlay_lines: Vec<crate::text::Line> = self
+        let mut overlay_lines: Vec<crate::text::Line> = self
             .nav_spill_segments
             .iter()
             .map(|seg| crate::text::Line {
@@ -16646,12 +16685,15 @@ impl State {
                 dim: seg.dim,
             })
             .collect();
+        let fade_start = overlay_lines.len();
+        overlay_lines.extend(help_overlay_lines);
         self.text.prepare_overlay(
             &self.device,
             &self.queue,
             self.config.width,
             self.config.height,
             &overlay_lines,
+            Some((fade_start, help_opacity)),
         )?;
 
         let frame = match self.surface.get_current_texture() {
@@ -17513,6 +17555,14 @@ impl State {
                     &strip_rects,
                     (self.config.width, self.config.height),
                 )?;
+            }
+            if let (Some(rect), Some((_, quad))) = (help_overlay_rect, self.help_back_quad.as_mut()) {
+                rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+                quad.render(&self.queue, &self.quad_pipeline, &mut rpass,
+                    rect, (self.config.width, self.config.height))?;
+            }
+            if !overlay_lines.is_empty() {
+                rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
                 self.text.render_overlay(&mut rpass)?;
             }
         }
@@ -18482,6 +18532,12 @@ impl ApplicationHandler for App {
                 if rows_above == 0 {
                     return;
                 }
+                if state.drawer == DrawerContent::Help && state.focus == PaneFocus::Repl {
+                    state.help.move_selection(-(rows_above as isize), &state.bindings);
+                    state.window.request_redraw();
+                    return;
+                }
+
                 // Preview's scroll origin is the top of the doc, REPL
                 // and LLM's are the tail — sign flip lives in each
                 // pane's apply step so a single positive `rows_above`
@@ -18691,6 +18747,8 @@ impl ApplicationHandler for App {
                 if event.state != ElementState::Pressed {
                     return;
                 }
+                if matches!(event.logical_key, Key::Named(NamedKey::Control | NamedKey::Shift |
+                    NamedKey::Alt | NamedKey::Super | NamedKey::Meta | NamedKey::AltGraph)) { return; }
                 // Snapshot-and-clear the destroy arm. The D handler
                 // re-arms on first press; any other key (cursor move,
                 // mode switch, etc.) silently clears it. Same pattern
@@ -18702,6 +18760,62 @@ impl ApplicationHandler for App {
                 let alt = self.modifiers.alt_key();
                 let shift = self.modifiers.shift_key();
                 let super_ = self.modifiers.super_key();
+                let base_key = event.key_without_modifiers();
+                let context = state.help_context();
+                let action = state.bindings.resolve(&event.logical_key, Some(&base_key),
+                    Modifiers { ctrl, alt, shift, super_ }, |a| context.allows(a));
+                if !event.repeat && action == Some(Action::ToggleHelpDrawer) {
+                    if state.drawer == DrawerContent::Help { state.close_help_drawer(); }
+                    else { state.open_help_drawer(context); }
+                    return;
+                }
+                if action == Some(Action::ToggleHelp) {
+                    tracing::debug!(repeat = event.repeat, peek = state.help.peek.is_some(), ?context, "context help requested");
+                    if event.repeat { return; }
+                    if state.drawer == DrawerContent::Help && state.focus == PaneFocus::Repl {
+                        state.close_help_drawer();
+                    } else if let Some(peek) = state.help.peek.take() {
+                        state.open_help_drawer(peek.context);
+                    } else {
+                        state.help.peek = Some(help::Peek { context, started: std::time::Instant::now() });
+                        state.window.request_redraw();
+                    }
+                    return;
+                }
+                if state.help.peek.take().is_some() {
+                    state.window.request_redraw();
+                    if event.logical_key == Key::Named(NamedKey::Escape) { return; }
+                }
+                // Browsing Help consumes its own input; no typed search leaks into Julia.
+                if state.drawer == DrawerContent::Help && state.focus == PaneFocus::Repl
+                    && !action.is_some_and(|a| matches!(a.spec().scope,
+                        crate::keybindings::Scope::Global | crate::keybindings::Scope::Workspace |
+                        crate::keybindings::Scope::Restore))
+                {
+                    tracing::debug!(?event.logical_key, ?action, "help drawer key");
+                    match &event.logical_key {
+                        _ if action == Some(Action::HelpClose) => state.close_help_drawer(),
+                        _ if action == Some(Action::HelpUp) => state.help.move_selection(-1, &state.bindings),
+                        _ if action == Some(Action::HelpDown) => state.help.move_selection(1, &state.bindings),
+                        _ if action == Some(Action::HelpPageUp) => state.help.move_selection(-8, &state.bindings),
+                        _ if action == Some(Action::HelpPageDown) => state.help.move_selection(8, &state.bindings),
+                        _ if action == Some(Action::HelpScope) && !event.repeat => { state.help.all_panes = !state.help.all_panes; state.help.selected = 0; }
+                        Key::Named(NamedKey::Backspace) => { state.help.query.pop(); state.help.selected = 0; }
+                        _ if action == Some(Action::HelpManual) && !event.repeat => {
+                            if let Some(a) = state.help.selected_action(&state.bindings) {
+                                if let Err(e) = open_url_in_browser(help::manual_url(a)) {
+                                    state.status = format!("Open help manual failed: {e}");
+                                }
+                            }
+                        }
+                        Key::Character(c) if !ctrl && !super_ => { state.help.query.push_str(c); state.help.selected = 0; }
+                        Key::Named(NamedKey::Space) => { state.help.query.push(' '); state.help.selected = 0; }
+                        _ => {}
+                    }
+                    state.window.request_redraw();
+                    return;
+                }
+
                 tracing::info!(
                     ?event.logical_key,
                     label = %label,
@@ -18715,13 +18829,7 @@ impl ApplicationHandler for App {
                 // it's there when wifi comes back and the user
                 // doesn't want to wait the up-to-5s backoff cap.
                 if !event.repeat
-                    && state.bindings.matches(
-                        Action::Reconnect,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    )
+                    && action == Some(Action::Reconnect)
                 {
                     // ADR 0042 L2a (Codex review, PR #163): ONE shared
                     // `reconnect_now` Arc<Notify> is cloned into EVERY
@@ -18742,13 +18850,7 @@ impl ApplicationHandler for App {
                 // (Ctrl+F clashes with readline forward-char in the
                 // LLM shell, so we avoid it).
                 if !event.repeat
-                    && state.bindings.matches(
-                        Action::ToggleFullscreen,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    )
+                    && action == Some(Action::ToggleFullscreen)
                 {
                     let entering_fullscreen = state.window.fullscreen().is_none();
                     let new_fs = if entering_fullscreen {
@@ -18780,39 +18882,21 @@ impl ApplicationHandler for App {
                 // Intercepted before per-pane dispatch so it works even in LLM
                 // focus (where most Ctrl+letter bytes forward to the pty).
                 if !event.repeat {
-                    if state.bindings.matches(
-                        Action::FontScaleUp,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    if action == Some(Action::FontScaleUp) {
                         state.apply_text_scale(state.text_scale_mult + 0.1);
                         state.persist_resume_state();
                         state.last_key = Some(label);
                         state.window.request_redraw();
                         return;
                     }
-                    if state.bindings.matches(
-                        Action::FontScaleDown,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    if action == Some(Action::FontScaleDown) {
                         state.apply_text_scale(state.text_scale_mult - 0.1);
                         state.persist_resume_state();
                         state.last_key = Some(label);
                         state.window.request_redraw();
                         return;
                     }
-                    if state.bindings.matches(
-                        Action::FontScaleReset,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    if action == Some(Action::FontScaleReset) {
                         state.apply_text_scale(1.0);
                         state.persist_resume_state();
                         state.last_key = Some(label);
@@ -18827,37 +18911,13 @@ impl ApplicationHandler for App {
                     // Spatial pane focus is keymap-driven (focus.pane_*); the
                     // default Ctrl+Arrow chords keep it disjoint from plain
                     // arrows (per-pane nav) and Shift+Arrow (workspace cycle).
-                    let dir = if state.bindings.matches(
-                        Action::FocusPaneRight,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    let dir = if action == Some(Action::FocusPaneRight) {
                         Some(SpatialDir::Right)
-                    } else if state.bindings.matches(
-                        Action::FocusPaneLeft,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    } else if action == Some(Action::FocusPaneLeft) {
                         Some(SpatialDir::Left)
-                    } else if state.bindings.matches(
-                        Action::FocusPaneUp,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    } else if action == Some(Action::FocusPaneUp) {
                         Some(SpatialDir::Up)
-                    } else if state.bindings.matches(
-                        Action::FocusPaneDown,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    } else if action == Some(Action::FocusPaneDown) {
                         Some(SpatialDir::Down)
                     } else {
                         None
@@ -18902,24 +18962,12 @@ impl ApplicationHandler for App {
                 // hijack arrows in the editor; the default Shift+Arrow chords
                 // keep it disjoint from Ctrl+Arrow (pane focus) above.
                 if !event.repeat && state.edit_state.is_none() {
-                    if state.bindings.matches(
-                        Action::WorkspaceCycleNext,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    if action == Some(Action::WorkspaceCycleNext) {
                         state.cycle_workspace(1);
                         state.last_key = Some(label);
                         return;
                     }
-                    if state.bindings.matches(
-                        Action::WorkspaceCyclePrev,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    if action == Some(Action::WorkspaceCyclePrev) {
                         state.cycle_workspace(-1);
                         state.last_key = Some(label);
                         return;
@@ -18936,29 +18984,14 @@ impl ApplicationHandler for App {
                 // only un-maximises when a pane is actually maximised —
                 // otherwise Esc falls through to the pty / edit mode / etc.
                 if !event.repeat {
-                    if state.bindings.matches(
-                        Action::MaximizePane,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    if action == Some(Action::MaximizePane) {
                         state.maximized = true;
                         state.last_key = Some(label);
                         state.window.request_redraw();
                         return;
                     }
-                    // `!help_open` so the help overlay's Esc wins when it's up
-                    // (it's modal); un-maximize resumes once the overlay closes.
                     if state.maximized
-                        && !state.help_open
-                        && state.bindings.matches(
-                            Action::RestoreLayout,
-                            &event.logical_key,
-                            ctrl,
-                            alt,
-                            shift,
-                        )
+                        && action == Some(Action::RestoreLayout)
                     {
                         state.maximized = false;
                         state.last_key = Some(label);
@@ -18976,18 +19009,11 @@ impl ApplicationHandler for App {
                     // keep cancelling those first.
                     if state.wide_preview
                         && !state.maximized
-                        && !state.help_open
                         && state.edit_state.is_none()
                         && state.nav_prompt.is_none()
                         && state.workspace_picker.is_none()
                         && matches!(state.focus, PaneFocus::NavTree | PaneFocus::Preview)
-                        && state.bindings.matches(
-                            Action::RestoreLayout,
-                            &event.logical_key,
-                            ctrl,
-                            alt,
-                            shift,
-                        )
+                        && action == Some(Action::RestoreLayout)
                     {
                         state.wide_preview = false;
                         state.last_key = Some(label);
@@ -19002,13 +19028,7 @@ impl ApplicationHandler for App {
                     // the chord to the shell). Focus on the pane being
                     // hidden bounces to Preview, same rule as the
                     // drawer-close bounce.
-                    if state.bindings.matches(
-                        Action::ToggleWidePreview,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    if action == Some(Action::ToggleWidePreview) {
                         state.wide_preview = !state.wide_preview;
                         if state.wide_preview && state.focus == PaneFocus::Llm {
                             state.focus = PaneFocus::Preview;
@@ -19017,47 +19037,12 @@ impl ApplicationHandler for App {
                         state.window.request_redraw();
                         return;
                     }
-                    // `?` toggles the keybindings help overlay. Gated to the
-                    // two reading panes + no edit modal, so a literal `?`
-                    // typed into the REPL / terminal / LLM / concept editor is
-                    // never swallowed. Esc closes it from here too.
-                    if !ctrl
-                        && !alt
-                        && state.edit_state.is_none()
-                        && matches!(state.focus, PaneFocus::NavTree | PaneFocus::Preview)
-                    {
-                        if state.bindings.matches(
-                            Action::ToggleHelp,
-                            &event.logical_key,
-                            ctrl,
-                            alt,
-                            shift,
-                        ) {
-                            state.help_open = !state.help_open;
-                            if state.help_open {
-                                state.rebuild_help_overlay();
-                            }
-                            state.last_key = Some(label);
-                            state.window.request_redraw();
-                            return;
-                        }
-                    }
-                    if state.help_open {
-                        if let Key::Named(NamedKey::Escape) = &event.logical_key {
-                            state.help_open = false;
-                            state.last_key = Some(label);
-                            state.window.request_redraw();
-                            return;
-                        }
-                    }
                     // Ctrl+Shift+S: whole-window selfie to a timestamped PNG.
                     // Handled here in the global-chord region so it fires from
                     // ANY pane — including the terminal/REPL drawers, before
                     // keystrokes route into a pty. The readback runs in the
                     // render loop on the next frame (request_redraw below).
-                    if state
-                        .bindings
-                        .matches(Action::Selfie, &event.logical_key, ctrl, alt, shift)
+                    if action == Some(Action::Selfie)
                     {
                         state.selfie_pending = Some(selfie_path());
                         state.last_key = Some(label);
@@ -19083,34 +19068,17 @@ impl ApplicationHandler for App {
                     // drawer.repl / drawer.terminal / drawer.monitor) so the
                     // chords reconfigure without a recompile. Defaults Ctrl+j /
                     // Ctrl+t / Ctrl+m preserve the prior behaviour.
-                    let drawer_key = if state.bindings.matches(
-                        Action::ToggleReplDrawer,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    let drawer_key = if action == Some(Action::ToggleReplDrawer) {
                         Some(DrawerContent::Repl)
-                    } else if state.bindings.matches(
-                        Action::ToggleTerminalDrawer,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    } else if action == Some(Action::ToggleTerminalDrawer) {
                         Some(DrawerContent::Terminal)
-                    } else if state.bindings.matches(
-                        Action::ToggleMonitorDrawer,
-                        &event.logical_key,
-                        ctrl,
-                        alt,
-                        shift,
-                    ) {
+                    } else if action == Some(Action::ToggleMonitorDrawer) {
                         Some(DrawerContent::Monitor)
                     } else {
                         None
                     };
                     if let Some(slot) = drawer_key {
+                        state.help_origin = None;
                         state.drawer = state.drawer.toggle(slot);
                         if state.drawer.is_open() {
                             state.focus = PaneFocus::Repl;
@@ -19162,26 +19130,26 @@ impl ApplicationHandler for App {
                 // (manual scroll would desync) and LLM passes alt+arrow
                 // through to the pty so tmux/shell keep alt-keybinds —
                 // both fall through to the per-pane match below.
-                if alt && !ctrl {
+                if matches!(action, Some(Action::ScrollLineUp | Action::ScrollLineDown)) {
                     let row_step: i32 = 1;
-                    match (state.focus, &event.logical_key) {
-                        (PaneFocus::Repl, Key::Named(NamedKey::ArrowUp)) => {
+                    match (state.focus, action) {
+                        (PaneFocus::Repl, Some(Action::ScrollLineUp)) => {
                             state.repl_scroll = state.repl_scroll.saturating_add(row_step as u16);
                             state.window.request_redraw();
                             return;
                         }
-                        (PaneFocus::Repl, Key::Named(NamedKey::ArrowDown)) => {
+                        (PaneFocus::Repl, Some(Action::ScrollLineDown)) => {
                             state.repl_scroll = state.repl_scroll.saturating_sub(row_step as u16);
                             state.window.request_redraw();
                             return;
                         }
-                        (PaneFocus::Preview, Key::Named(NamedKey::ArrowUp)) => {
+                        (PaneFocus::Preview, Some(Action::ScrollLineUp)) => {
                             state.preview_scroll =
                                 state.preview_scroll.saturating_sub(row_step as u16);
                             state.window.request_redraw();
                             return;
                         }
-                        (PaneFocus::Preview, Key::Named(NamedKey::ArrowDown)) => {
+                        (PaneFocus::Preview, Some(Action::ScrollLineDown)) => {
                             state.preview_scroll =
                                 state.preview_scroll.saturating_add(row_step as u16);
                             state.window.request_redraw();
@@ -19200,47 +19168,14 @@ impl ApplicationHandler for App {
                 // table wider than the preview pane; otherwise the
                 // redraw clamp keeps scroll at 0.
                 if state.focus == PaneFocus::Preview
-                    && !ctrl
-                    && !alt
-                    && !super_
                     && state.preview_png.is_none()
                     && state.edit_state.is_none()
                 {
                     let step = state.preview_md.body_em().max(8.0);
-                    match &event.logical_key {
-                        Key::Character(s) if s.as_str() == "h" => {
-                            state.md_table_scroll_px = (state.md_table_scroll_px - step).max(0.0);
-                            state.window.request_redraw();
-                            return;
-                        }
-                        Key::Character(s) if s.as_str() == "l" => {
-                            // Clamp happens in redraw against the
-                            // widest table's natural_w_px; harmless to
-                            // overshoot here.
-                            state.md_table_scroll_px += step;
-                            state.window.request_redraw();
-                            return;
-                        }
-                        Key::Character(s) if s.as_str() == "0" => {
-                            state.md_table_scroll_px = 0.0;
-                            state.window.request_redraw();
-                            return;
-                        }
-                        // ArrowLeft / ArrowRight mirror h/l so the
-                        // pan UX matches the PNG pan/zoom convention.
-                        // Gated against `preview_png.is_none()` above
-                        // so PNG previews retain their arrow-driven
-                        // pan via the Action::PreviewPngPan* bindings.
-                        Key::Named(NamedKey::ArrowLeft) => {
-                            state.md_table_scroll_px = (state.md_table_scroll_px - step).max(0.0);
-                            state.window.request_redraw();
-                            return;
-                        }
-                        Key::Named(NamedKey::ArrowRight) => {
-                            state.md_table_scroll_px += step;
-                            state.window.request_redraw();
-                            return;
-                        }
+                    match action {
+                        Some(Action::TableLeft) => { state.md_table_scroll_px = (state.md_table_scroll_px - step).max(0.0); state.window.request_redraw(); return; }
+                        Some(Action::TableRight) => { state.md_table_scroll_px += step; state.window.request_redraw(); return; }
+                        Some(Action::TableReset) => { state.md_table_scroll_px = 0.0; state.window.request_redraw(); return; }
                         _ => {}
                     }
                 }
@@ -19280,66 +19215,45 @@ impl ApplicationHandler for App {
                             // the parent. Esc cancels.
                             // Commit is keymap-driven (.sot/keybindings.toml:
                             // session.create / session.create_bare) for no-recompile
-                            // reconfig. Check the bare (Shift+Enter) chord BEFORE
-                            // the plain-Enter chord: a non-shift "Enter" chord also
-                            // matches when shift is held, so order disambiguates.
+                            // reconfig. The resolver distinguishes Enter from Shift+Enter.
                             if !event.repeat
-                                && state.bindings.matches(
-                                    Action::SessionCreateCodex,
-                                    &event.logical_key,
-                                    ctrl,
-                                    alt,
-                                    shift,
-                                )
+                                && action == Some(Action::SessionCreateCodex)
                             {
                                 state.picker_confirm_selected("codex");
                                 return;
                             }
                             if !event.repeat
-                                && state.bindings.matches(
-                                    Action::SessionCreateBare,
-                                    &event.logical_key,
-                                    ctrl,
-                                    alt,
-                                    shift,
-                                )
+                                && action == Some(Action::SessionCreateBare)
                             {
                                 state.picker_confirm_selected("none");
                                 return;
                             }
                             if !event.repeat
-                                && state.bindings.matches(
-                                    Action::SessionCreate,
-                                    &event.logical_key,
-                                    ctrl,
-                                    alt,
-                                    shift,
-                                )
+                                && action == Some(Action::SessionCreate)
                             {
                                 state.picker_confirm_selected("claude");
                                 return;
                             }
-                            match &event.logical_key {
-                                Key::Named(NamedKey::ArrowDown) => {
+                            match action {
+                                Some(Action::NavDown) => {
                                     state.picker_cursor_down();
                                     return;
                                 }
-                                Key::Named(NamedKey::ArrowUp) => {
+                                Some(Action::NavUp) => {
                                     state.picker_cursor_up();
                                     return;
                                 }
-                                Key::Named(NamedKey::ArrowRight) if !event.repeat => {
+                                Some(Action::NavExpand) if !event.repeat => {
                                     state.picker_drill_in();
                                     return;
                                 }
-                                Key::Named(NamedKey::ArrowLeft)
-                                | Key::Named(NamedKey::Backspace)
+                                Some(Action::NavCollapse | Action::PickerParent)
                                     if !event.repeat =>
                                 {
                                     state.picker_ascend();
                                     return;
                                 }
-                                Key::Named(NamedKey::Escape) if !event.repeat => {
+                                Some(Action::Cancel) if !event.repeat => {
                                     state.picker_cancel();
                                     return;
                                 }
@@ -19363,11 +19277,7 @@ impl ApplicationHandler for App {
                             // text-input behaviour below — branch on variant.
                             if matches!(state.nav_prompt, Some(NavPrompt::ConfirmDelete { .. })) {
                                 match &event.logical_key {
-                                    Key::Character(s)
-                                        if !ctrl
-                                            && !alt
-                                            && !super_
-                                            && s.eq_ignore_ascii_case("y") =>
+                                    _ if action == Some(Action::DeleteConfirm) && !event.repeat =>
                                     {
                                         state.confirm_delete_file();
                                         return;
@@ -19380,7 +19290,7 @@ impl ApplicationHandler for App {
                                 }
                             }
                             match &event.logical_key {
-                                Key::Named(NamedKey::Enter) if !event.repeat => {
+                                _ if action == Some(Action::Confirm) && !event.repeat => {
                                     // Route Enter to whichever text prompt is open.
                                     if matches!(
                                         state.nav_prompt,
@@ -19392,7 +19302,7 @@ impl ApplicationHandler for App {
                                     }
                                     return;
                                 }
-                                Key::Named(NamedKey::Escape) if !event.repeat => {
+                                _ if action == Some(Action::Cancel) && !event.repeat => {
                                     state.cancel_nav_prompt();
                                     return;
                                 }
@@ -19428,13 +19338,7 @@ impl ApplicationHandler for App {
                         // the BL pty. Capture mode sets `should_exit` on
                         // its own and never sees user input.
                         if !event.repeat
-                            && state.bindings.matches(
-                                Action::Quit,
-                                &event.logical_key,
-                                ctrl,
-                                alt,
-                                shift,
-                            )
+                            && action == Some(Action::Quit)
                         {
                             state.request_quit(event_loop, "Ctrl+Q quit action");
                             return;
@@ -19448,10 +19352,7 @@ impl ApplicationHandler for App {
                         // but in NavTree there's no pty, so the universal
                         // copy convention reads cleanly here.
                         if !event.repeat
-                            && ctrl
-                            && !shift
-                            && !alt
-                            && matches!(&event.logical_key, Key::Character(s) if s.eq_ignore_ascii_case("c"))
+                            && action == Some(Action::CopyPath)
                             && state.copy_navtree_path()
                         {
                             state.last_key = Some(label);
@@ -19464,10 +19365,7 @@ impl ApplicationHandler for App {
                         // through to normal nav). Reuses `file.write` with
                         // empty content — no backend op is added.
                         if !event.repeat
-                            && ctrl
-                            && !shift
-                            && !alt
-                            && matches!(&event.logical_key, Key::Character(s) if s.eq_ignore_ascii_case("n"))
+                            && action == Some(Action::NewFile)
                             && matches!(state.mode, Mode::Files)
                             && state.begin_create_file()
                         {
@@ -19482,10 +19380,7 @@ impl ApplicationHandler for App {
                         // nav). This is the NavTree-focus Ctrl+D; the preview-
                         // focus Ctrl+D (half-page scroll) is a separate block.
                         if !event.repeat
-                            && ctrl
-                            && !shift
-                            && !alt
-                            && matches!(&event.logical_key, Key::Character(s) if s.eq_ignore_ascii_case("d"))
+                            && action == Some(Action::DeleteFile)
                             && matches!(state.mode, Mode::Files)
                             && state.begin_delete_file()
                         {
@@ -19493,14 +19388,14 @@ impl ApplicationHandler for App {
                             state.window.request_redraw();
                             return;
                         }
-                        match &event.logical_key {
-                            Key::Named(NamedKey::ArrowDown) => {
+                        match action {
+                            Some(Action::NavDown) => {
                                 state.tree.move_down();
                             }
-                            Key::Named(NamedKey::ArrowUp) => {
+                            Some(Action::NavUp) => {
                                 state.tree.move_up();
                             }
-                            Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::Enter)
+                            Some(Action::NavExpand) | Some(Action::NavOpen)
                                 if !event.repeat =>
                             {
                                 // Enter in Sessions mode dispatches to the
@@ -19512,7 +19407,7 @@ impl ApplicationHandler for App {
                                 // users can explore the panes list without
                                 // re-targeting the BL pane.
                                 let is_enter =
-                                    matches!(event.logical_key, Key::Named(NamedKey::Enter));
+                                    action == Some(Action::NavOpen);
                                 if is_enter && matches!(state.mode, Mode::Hosts) {
                                     // ADR 0015: persist the selected host
                                     // so the next launcher run targets
@@ -19600,7 +19495,7 @@ impl ApplicationHandler for App {
                                 }
                                 state.try_expand_selected();
                             }
-                            Key::Named(NamedKey::ArrowLeft) if !event.repeat => {
+                            Some(Action::NavCollapse) if !event.repeat => {
                                 if !state.collapse_selected_row() {
                                     if let Some(p) = state.tree.parent_of_selected() {
                                         state.tree.selected = p;
@@ -19612,36 +19507,15 @@ impl ApplicationHandler for App {
                             // match guards, so the default single-char chords
                             // (f/m/s/h) stay literal text everywhere else — this
                             // arm only runs inside the nav-focus match.
-                            k if !event.repeat
-                                && state.bindings.matches(
-                                    Action::ModeFiles,
-                                    k,
-                                    ctrl,
-                                    alt,
-                                    shift,
-                                ) =>
+                            Some(Action::ModeFiles) if !event.repeat =>
                             {
                                 state.enter_mode(Mode::Files);
                             }
-                            k if !event.repeat
-                                && state.bindings.matches(
-                                    Action::ModeModules,
-                                    k,
-                                    ctrl,
-                                    alt,
-                                    shift,
-                                ) =>
+                            Some(Action::ModeModules) if !event.repeat =>
                             {
                                 state.enter_mode(Mode::Modules);
                             }
-                            k if !event.repeat
-                                && state.bindings.matches(
-                                    Action::ModeSessions,
-                                    k,
-                                    ctrl,
-                                    alt,
-                                    shift,
-                                ) =>
+                            Some(Action::ModeSessions) if !event.repeat =>
                             {
                                 state.enter_mode(Mode::Sessions);
                             }
@@ -19649,7 +19523,7 @@ impl ApplicationHandler for App {
                             // cursor row. Only meaningful in Files mode
                             // — `toggle_pin` filters rows whose id
                             // doesn't start with `files:`.
-                            Key::Character(s) if !event.repeat && s.as_str() == "p" => {
+                            Some(Action::TogglePin) if !event.repeat => {
                                 state.toggle_pin();
                             }
                             // ADR 0015 — `h` enters Mode::Hosts, populating
@@ -19658,14 +19532,7 @@ impl ApplicationHandler for App {
                             // startup and lives entirely on the frontend
                             // side. Cursor on the currently-selected host
                             // is the natural way in.
-                            k if !event.repeat
-                                && state.bindings.matches(
-                                    Action::ModeHosts,
-                                    k,
-                                    ctrl,
-                                    alt,
-                                    shift,
-                                ) =>
+                            Some(Action::ModeHosts) if !event.repeat =>
                             {
                                 state.enter_mode(Mode::Hosts);
                             }
@@ -19673,14 +19540,7 @@ impl ApplicationHandler for App {
                             // (nav-focus-gated via the keymap so it stays
                             // literal text in the pty/editor/prompts). Sends
                             // nav.toggle_hidden + re-fetches the files tree.
-                            k if !event.repeat
-                                && state.bindings.matches(
-                                    Action::ToggleHidden,
-                                    k,
-                                    ctrl,
-                                    alt,
-                                    shift,
-                                ) =>
+                            Some(Action::ToggleHidden) if !event.repeat =>
                             {
                                 state.toggle_hidden_files();
                             }
@@ -19698,11 +19558,7 @@ impl ApplicationHandler for App {
                             // a default CAPSULE row instead ends its
                             // run and keeps the row (backend-side too —
                             // see `WorkspaceDestroyed`'s `kept` branch).
-                            Key::Character(s)
-                                if !event.repeat
-                                // caps-lock-immune: Shift+d under Caps Lock arrives as "d"
-                                && (s.as_str() == "D" || (shift && s.eq_ignore_ascii_case("D")))
-                                && matches!(state.mode, Mode::Sessions) =>
+                            Some(Action::SessionDestroy) if !event.repeat =>
                             {
                                 let Some(row) = state.tree.rows.get(state.tree.selected) else {
                                     return;
@@ -19759,7 +19615,7 @@ impl ApplicationHandler for App {
                                 } else {
                                     state.pending_destroy_target = Some(target);
                                     state.status =
-                                        format!("press D again to destroy '{target_label}' · any other key cancels");
+                                        format!("press {} again to destroy '{target_label}' · any other key cancels", state.bindings.first_label(Action::SessionDestroy));
                                     state.window.request_redraw();
                                 }
                             }
@@ -19771,7 +19627,7 @@ impl ApplicationHandler for App {
                             // by the cursored row's path, not preview
                             // mime — the JuliaSource plugin renders .jl
                             // as tokens-JSON.
-                            Key::Character(s) if !event.repeat && s.as_str() == "o" => {
+                            Some(Action::OpenExternal) if !event.repeat => {
                                 let cursored = state.cursored_files_path();
                                 state.open_path_external(cursored);
                             }
@@ -19781,11 +19637,7 @@ impl ApplicationHandler for App {
                             // over a forwarded loopback port. Sends the cursored
                             // path so a built docs page deep-links; otherwise the
                             // backend opens the index. `W` works from any mode.
-                            Key::Character(s)
-                                if !event.repeat
-                                    // caps-lock-immune (maintainer report, 2026-07-03: "Shift+W isn't
-                                    // working" — Caps Lock made it arrive as "w")
-                                    && (s.as_str() == "W" || (shift && s.eq_ignore_ascii_case("W"))) =>
+                            Some(Action::OpenDocs) if !event.repeat =>
                             {
                                 let path = state.cursored_files_path().unwrap_or_default();
                                 state.docs_open_external(path);
@@ -19794,10 +19646,7 @@ impl ApplicationHandler for App {
                             // for a cursored `.qmd`, then open in the browser.
                             // Slower + needs the language kernels on the backend
                             // host; `o` is the fast no-execute path.
-                            Key::Character(s)
-                                if !event.repeat
-                                    && (s.as_str() == "O"
-                                        || (shift && s.eq_ignore_ascii_case("O"))) =>
+                            Some(Action::OpenExecute) if !event.repeat =>
                             {
                                 let cursored = state.cursored_files_path();
                                 state.quarto_open_execute(cursored);
@@ -19805,16 +19654,14 @@ impl ApplicationHandler for App {
                             // `d`: download the cursored file row to the local
                             // OS downloads dir (OS-independent), non-clobbering.
                             // Transport streams chunks; dir rows are a no-op.
-                            Key::Character(s)
-                                if !event.repeat && !ctrl && !alt && s.as_str() == "d" =>
+                            Some(Action::Download) if !event.repeat =>
                             {
                                 state.start_download();
                             }
                             // `u`: pick a local file via the native OS dialog
                             // and upload it to the cursored nav folder (the dir
                             // itself for a dir row, else the file's parent).
-                            Key::Character(s)
-                                if !event.repeat && !ctrl && !alt && s.as_str() == "u" =>
+                            Some(Action::Upload) if !event.repeat =>
                             {
                                 state.start_upload();
                             }
@@ -19828,8 +19675,7 @@ impl ApplicationHandler for App {
                             // existing repl frame stream into the REPL
                             // drawer. Future: mirror the last image
                             // frame to the preview pane (TODO row 161).
-                            Key::Character(s)
-                                if !event.repeat && (s.as_str() == "r" || s.as_str() == "R") =>
+                            Some(Action::RunFresh | Action::RunCurrent) if !event.repeat =>
                             {
                                 let Some(abs) = state.cursored_files_path() else {
                                     return;
@@ -19839,7 +19685,7 @@ impl ApplicationHandler for App {
                                         "`r`/`R` ignored — not a .jl file");
                                     return;
                                 }
-                                let fresh = s.as_str() == "r";
+                                let fresh = action == Some(Action::RunFresh);
                                 let basename = abs
                                     .rsplit(['/', '\\'])
                                     .next()
@@ -19877,7 +19723,7 @@ impl ApplicationHandler for App {
                                     let excess = state.repl_log.len() - 255;
                                     state.repl_log.drain(0..excess);
                                 }
-                                let synthetic_code = format!("{} {}", s.as_str(), abs);
+                                let synthetic_code = format!("{} {}", if fresh { "r" } else { "R" }, abs);
                                 state.repl_log.push(ReplEntry {
                                     eval_id,
                                     code: synthetic_code,
@@ -19946,10 +19792,7 @@ impl ApplicationHandler for App {
                         // is the process-restart gesture). Terminal drawer
                         // unaffected — its pty owns Ctrl+L natively.
                         if !event.repeat
-                            && ctrl
-                            && !alt
-                            && state.drawer != DrawerContent::Terminal
-                            && matches!(&event.logical_key, Key::Character(s) if s.eq_ignore_ascii_case("l"))
+                            && action == Some(Action::ReplClear)
                         {
                             state.repl_log.clear();
                             state.repl_images.clear();
@@ -19967,16 +19810,7 @@ impl ApplicationHandler for App {
                         // terminal/REPL split below, where Ctrl+V would
                         // otherwise send a bare 0x16 to the pty or type a
                         // literal "v" into the buffer.
-                        let is_paste_shortcut = !event.repeat
-                            && match &event.logical_key {
-                                Key::Character(s)
-                                    if s.eq_ignore_ascii_case("v") && (ctrl || super_) =>
-                                {
-                                    true
-                                }
-                                Key::Named(NamedKey::Insert) if shift => true,
-                                _ => false,
-                            };
+                        let is_paste_shortcut = !event.repeat && action == Some(Action::Paste);
                         if is_paste_shortcut {
                             if state.drawer == DrawerContent::Terminal {
                                 forward_clipboard_paste_to_local_term(state);
@@ -20024,15 +19858,15 @@ impl ApplicationHandler for App {
                                 .map(|t| t.screen().alternate_screen())
                                 .or(attach_alt_screen)
                                 .unwrap_or(false);
-                            if !shift && !alt_screen {
+                            if !alt_screen {
                                 match &event.logical_key {
-                                    Key::Named(NamedKey::PageUp) => {
+                                    _ if action == Some(Action::ScrollPageUp) => {
                                         let new = (state.term_scroll as i32 + page_step).max(0);
                                         state.term_scroll = new as u16;
                                         state.window.request_redraw();
                                         return;
                                     }
-                                    Key::Named(NamedKey::PageDown) => {
+                                    _ if action == Some(Action::ScrollPageDown) => {
                                         let new = (state.term_scroll as i32 - page_step).max(0);
                                         state.term_scroll = new as u16;
                                         state.window.request_redraw();
@@ -20072,25 +19906,25 @@ impl ApplicationHandler for App {
                         let h = state.pane_rects.repl.height as i32;
                         let page_step = (h / 3).max(1);
                         match &event.logical_key {
-                            Key::Named(NamedKey::PageUp) => {
+                            _ if action == Some(Action::ScrollPageUp) => {
                                 let new = (state.repl_scroll as i32 + page_step).max(0);
                                 state.repl_scroll = new as u16;
                                 state.window.request_redraw();
                                 return;
                             }
-                            Key::Named(NamedKey::PageDown) => {
+                            _ if action == Some(Action::ScrollPageDown) => {
                                 let new = (state.repl_scroll as i32 - page_step).max(0);
                                 state.repl_scroll = new as u16;
                                 state.window.request_redraw();
                                 return;
                             }
-                            Key::Character(s) if ctrl && s.as_str() == "u" => {
+                            _ if action == Some(Action::PreviewHalfUp) => {
                                 let new = (state.repl_scroll as i32 + h / 2).max(0);
                                 state.repl_scroll = new as u16;
                                 state.window.request_redraw();
                                 return;
                             }
-                            Key::Character(s) if ctrl && s.as_str() == "d" => {
+                            _ if action == Some(Action::PreviewHalfDown) => {
                                 let new = (state.repl_scroll as i32 - h / 2).max(0);
                                 state.repl_scroll = new as u16;
                                 state.window.request_redraw();
@@ -20104,7 +19938,7 @@ impl ApplicationHandler for App {
                             // interrupts its CURRENT_EVAL). With nothing running,
                             // Ctrl+C clears the input line (standard REPL UX)
                             // instead of typing a literal 'c'.
-                            Key::Character(s) if ctrl && s.as_str() == "c" => {
+                            _ if action == Some(Action::ReplInterrupt) => {
                                 if state.repl_log.iter().any(|e| e.in_flight) {
                                     if let Err(e) =
                                         state.send(crate::transport::OutgoingReq::ReplInterrupt {
@@ -20128,7 +19962,7 @@ impl ApplicationHandler for App {
                             // so hold-to-walk feels natural. Returns
                             // early so the input-buffer match below
                             // doesn't also see the keypress.
-                            Key::Named(NamedKey::ArrowUp) => {
+                            _ if action == Some(Action::ReplHistoryPrev) => {
                                 if let Some(prev) = state.history_step_back() {
                                     state.repl_input = prev;
                                     state.repl_scroll = 0;
@@ -20136,7 +19970,7 @@ impl ApplicationHandler for App {
                                 }
                                 return;
                             }
-                            Key::Named(NamedKey::ArrowDown) => {
+                            _ if action == Some(Action::ReplHistoryNext) => {
                                 if let Some(next) = state.history_step_forward() {
                                     state.repl_input = next;
                                     state.repl_scroll = 0;
@@ -20151,7 +19985,7 @@ impl ApplicationHandler for App {
                             // does NOT exit the app from inside the REPL
                             // — exit only happens from tree focus, which
                             // is the safer default for an input pane.
-                            Key::Named(NamedKey::Escape) if !event.repeat => {
+                            _ if action == Some(Action::ReturnNav) && !event.repeat => {
                                 state.focus = PaneFocus::NavTree;
                             }
                             // Shift+Enter inserts a literal newline into
@@ -20160,11 +19994,11 @@ impl ApplicationHandler for App {
                             // Discord / VS Code REPLs and a handful of
                             // shells. Repeat is allowed so hold-down
                             // appends multiple blank lines.
-                            Key::Named(NamedKey::Enter) if shift => {
+                            _ if action == Some(Action::ReplNewline) => {
                                 state.repl_input.push('\n');
                                 state.repl_scroll = 0;
                             }
-                            Key::Named(NamedKey::Enter) if !event.repeat => {
+                            _ if action == Some(Action::ReplSubmit) && !event.repeat => {
                                 state.submit_repl_input();
                                 // Snap back to live when the user
                                 // commits a line — the new entry is at
@@ -20239,13 +20073,7 @@ impl ApplicationHandler for App {
                                     // chosen 2026-06-09: first Esc raises this
                                     // prompt, a second Esc exits). `n` or any
                                     // other key cancels back to editing.
-                                    Key::Named(NamedKey::Escape) if !event.repeat => {
-                                        state.edit_state = None;
-                                        state.preview_edit = None;
-                                    }
-                                    Key::Character(s)
-                                        if !event.repeat
-                                            && s.as_str().eq_ignore_ascii_case("y") =>
+                                    _ if action == Some(Action::DiscardConfirm) && !event.repeat =>
                                     {
                                         state.edit_state = None;
                                         state.preview_edit = None;
@@ -20265,9 +20093,7 @@ impl ApplicationHandler for App {
                             // file changes or the user reloads.
                             if edit.stale_banner {
                                 match &event.logical_key {
-                                    Key::Character(s)
-                                        if !event.repeat
-                                            && s.as_str().eq_ignore_ascii_case("r") =>
+                                    _ if action == Some(Action::StaleReload) && !event.repeat =>
                                     {
                                         // Reload from disk, discarding edits. For
                                         // a file edit re-fire file.read (the
@@ -20296,9 +20122,7 @@ impl ApplicationHandler for App {
                                             }
                                         }
                                     }
-                                    Key::Character(s)
-                                        if !event.repeat
-                                            && s.as_str().eq_ignore_ascii_case("k") =>
+                                    _ if action == Some(Action::StaleKeep) && !event.repeat =>
                                     {
                                         edit.stale_banner = false;
                                     }
@@ -20319,7 +20143,7 @@ impl ApplicationHandler for App {
                             // rebuilds during cursor-only navigation.
                             let mut buf_changed = false;
                             match &event.logical_key {
-                                Key::Named(NamedKey::Escape) if !event.repeat => {
+                                _ if action == Some(Action::Cancel) && !event.repeat => {
                                     // Dirty buffer → confirm modal.
                                     // Clean buffer → discard right
                                     // away (no value in asking when
@@ -20343,7 +20167,7 @@ impl ApplicationHandler for App {
                                     state.window.request_redraw();
                                     return;
                                 }
-                                Key::Character(s) if ctrl && s.as_str() == "s" => {
+                                _ if action == Some(Action::EditSave) => {
                                     let content = edit.full_content();
                                     let ws = state.active_workspace_id.clone();
                                     if let Some(node_id) = edit.file_node_id.clone() {
@@ -20374,12 +20198,12 @@ impl ApplicationHandler for App {
                                         }
                                     }
                                 }
-                                Key::Character(s) if ctrl && s.as_str() == "z" => {
+                                _ if action == Some(Action::EditUndo) => {
                                     if edit.buf.undo() {
                                         buf_changed = true;
                                     }
                                 }
-                                Key::Character(s) if ctrl && s.as_str() == "y" => {
+                                _ if action == Some(Action::EditRedo) => {
                                     if edit.buf.redo() {
                                         buf_changed = true;
                                     }
@@ -20387,8 +20211,7 @@ impl ApplicationHandler for App {
                                 // Ctrl+C: copy the active selection to the OS
                                 // clipboard. Consumed even with no selection so
                                 // it never types a literal "c" into the buffer.
-                                Key::Character(s)
-                                    if ctrl && s.as_str().eq_ignore_ascii_case("c") =>
+                                _ if action == Some(Action::EditCopy) =>
                                 {
                                     if let Some(sel) = edit.buf.selected_text() {
                                         let text = sel.to_string();
@@ -20409,8 +20232,7 @@ impl ApplicationHandler for App {
                                 // Ctrl+X: cut — copy the selection, then delete
                                 // it as one undo step. No selection → consumed
                                 // no-op (never types an "x").
-                                Key::Character(s)
-                                    if ctrl && s.as_str().eq_ignore_ascii_case("x") =>
+                                _ if action == Some(Action::EditCut) =>
                                 {
                                     if let Some(sel) = edit.buf.selected_text() {
                                         let text = sel.to_string();
@@ -20432,8 +20254,7 @@ impl ApplicationHandler for App {
                                 // Character arm below and types a literal "v".
                                 // Normalize line endings to the buffer's `\n`
                                 // convention (Enter inserts `\n`).
-                                Key::Character(s)
-                                    if (ctrl || super_) && s.as_str().eq_ignore_ascii_case("v") =>
+                                _ if action == Some(Action::EditPaste) =>
                                 {
                                     if let Some(text) = read_clipboard_text() {
                                         edit.buf.insert_str(
@@ -20442,24 +20263,15 @@ impl ApplicationHandler for App {
                                         buf_changed = true;
                                     }
                                 }
-                                // Shift+Insert paste — same as Ctrl+V.
-                                Key::Named(NamedKey::Insert) if shift => {
-                                    if let Some(text) = read_clipboard_text() {
-                                        edit.buf.insert_str(
-                                            &text.replace("\r\n", "\n").replace('\r', "\n"),
-                                        );
-                                        buf_changed = true;
-                                    }
-                                }
-                                Key::Named(NamedKey::Enter) => {
+                                _ if action == Some(Action::EditNewline) => {
                                     edit.buf.insert_char('\n');
                                     buf_changed = true;
                                 }
-                                Key::Named(NamedKey::Backspace) => {
+                                _ if action == Some(Action::EditBackspace) => {
                                     edit.buf.backspace();
                                     buf_changed = true;
                                 }
-                                Key::Named(NamedKey::Delete) => {
+                                _ if action == Some(Action::EditDelete) => {
                                     edit.buf.delete();
                                     buf_changed = true;
                                 }
@@ -20468,43 +20280,43 @@ impl ApplicationHandler for App {
                                 // plain motion. (Shift+Arrow no longer cycles
                                 // workspaces here — that's gated to non-edit
                                 // mode at the top of the key handler.)
-                                Key::Named(NamedKey::ArrowLeft) => {
+                                _ if action == Some(Action::EditLeft) => {
                                     edit.buf.set_selecting(shift);
                                     edit.buf.move_left();
                                 }
-                                Key::Named(NamedKey::ArrowRight) => {
+                                _ if action == Some(Action::EditRight) => {
                                     edit.buf.set_selecting(shift);
                                     edit.buf.move_right();
                                 }
-                                Key::Named(NamedKey::ArrowUp) => {
+                                _ if action == Some(Action::EditUp) => {
                                     edit.buf.set_selecting(shift);
                                     edit.buf.move_up();
                                 }
-                                Key::Named(NamedKey::ArrowDown) => {
+                                _ if action == Some(Action::EditDown) => {
                                     edit.buf.set_selecting(shift);
                                     edit.buf.move_down();
                                 }
-                                Key::Named(NamedKey::Home) if ctrl => {
+                                _ if action == Some(Action::EditStart) => {
                                     edit.buf.set_selecting(shift);
                                     edit.buf.move_buf_start();
                                 }
-                                Key::Named(NamedKey::End) if ctrl => {
+                                _ if action == Some(Action::EditFinish) => {
                                     edit.buf.set_selecting(shift);
                                     edit.buf.move_buf_end();
                                 }
-                                Key::Named(NamedKey::Home) => {
+                                _ if action == Some(Action::EditHome) => {
                                     edit.buf.set_selecting(shift);
                                     edit.buf.move_line_start();
                                 }
-                                Key::Named(NamedKey::End) => {
+                                _ if action == Some(Action::EditEnd) => {
                                     edit.buf.set_selecting(shift);
                                     edit.buf.move_line_end();
                                 }
-                                Key::Named(NamedKey::PageUp) => {
+                                _ if action == Some(Action::EditPageUp) => {
                                     edit.buf.set_selecting(shift);
                                     edit.buf.move_up_rows(page_rows);
                                 }
-                                Key::Named(NamedKey::PageDown) => {
+                                _ if action == Some(Action::EditPageDown) => {
                                     edit.buf.set_selecting(shift);
                                     edit.buf.move_down_rows(page_rows);
                                 }
@@ -20542,20 +20354,11 @@ impl ApplicationHandler for App {
                         // PgDn fall through to the text-scroll arms below.
                         // No autorepeat: each page is a fresh pdftoppm run.
                         if let Some((page, count)) = state.preview_page {
-                            if count > 1 && !ctrl && !alt && !event.repeat {
+                            if count > 1 && !event.repeat {
                                 {
-                                    let next = match &event.logical_key {
-                                        Key::Character(s) => match s.as_str() {
-                                            "n" => Some(page.saturating_add(1).min(count)),
-                                            "p" => Some(page.saturating_sub(1).max(1)),
-                                            _ => None,
-                                        },
-                                        Key::Named(NamedKey::PageDown) => {
-                                            Some(page.saturating_add(1).min(count))
-                                        }
-                                        Key::Named(NamedKey::PageUp) => {
-                                            Some(page.saturating_sub(1).max(1))
-                                        }
+                                    let next = match action {
+                                        Some(Action::PageNext) => Some(page.saturating_add(1).min(count)),
+                                        Some(Action::PagePrev) => Some(page.saturating_sub(1).max(1)),
                                         _ => None,
                                     };
                                     if let Some(np) = next {
@@ -20649,15 +20452,13 @@ impl ApplicationHandler for App {
                             // gets generous headroom; a tiny already-magnified
                             // image is held near fit.
                             let zoom_max = png_zoom_max(pane_w, pane_h, img_px);
-                            let k = &event.logical_key;
-                            let b = &state.bindings;
                             let mut handled = true;
                             if !event.repeat
-                                && b.matches(Action::PreviewPngReset, k, ctrl, alt, shift)
+                                && action == Some(Action::PreviewPngReset)
                             {
                                 state.preview_png_zoom = 1.0;
                                 state.preview_png_pan_px = (0.0, 0.0);
-                            } else if b.matches(Action::PreviewPngZoomIn, k, ctrl, alt, shift) {
+                            } else if action == Some(Action::PreviewPngZoomIn) {
                                 // Zoom sequence: 1.0 → 1.25 → 2 → 3 → 4 → …
                                 // up to the per-image ceiling (`zoom_max`).
                                 // Once we're past 1.5×, step in integer
@@ -20684,7 +20485,7 @@ impl ApplicationHandler for App {
                                 let next = raw_next.clamp(1.0, zoom_max);
                                 state.scale_png_pan_for_zoom(cur, next);
                                 state.preview_png_zoom = next;
-                            } else if b.matches(Action::PreviewPngZoomOut, k, ctrl, alt, shift) {
+                            } else if action == Some(Action::PreviewPngZoomOut) {
                                 // Mirror of zoom-in: integer-step down
                                 // from ≥ 2, then drop back through 1.25
                                 // → 1.0. Hitting 2.0 → 1.25 is the
@@ -20707,15 +20508,15 @@ impl ApplicationHandler for App {
                                 if state.preview_png_zoom <= 1.0 {
                                     state.preview_png_pan_px = (0.0, 0.0);
                                 }
-                            } else if b.matches(Action::PreviewPngPanLeft, k, ctrl, alt, shift) {
+                            } else if action == Some(Action::PreviewPngPanLeft) {
                                 state.preview_png_pan_px.0 += pane_w * PAN_FRAC;
-                            } else if b.matches(Action::PreviewPngPanRight, k, ctrl, alt, shift) {
+                            } else if action == Some(Action::PreviewPngPanRight) {
                                 state.preview_png_pan_px.0 -= pane_w * PAN_FRAC;
-                            } else if b.matches(Action::PreviewPngPanUp, k, ctrl, alt, shift) {
+                            } else if action == Some(Action::PreviewPngPanUp) {
                                 state.preview_png_pan_px.1 += pane_h * PAN_FRAC;
-                            } else if b.matches(Action::PreviewPngPanDown, k, ctrl, alt, shift) {
+                            } else if action == Some(Action::PreviewPngPanDown) {
                                 state.preview_png_pan_px.1 -= pane_h * PAN_FRAC;
-                            } else if b.matches(Action::PreviewScalebarToggle, k, ctrl, alt, shift)
+                            } else if action == Some(Action::PreviewScalebarToggle)
                             {
                                 // ADR 0034 Ctrl+S. With a scale present this
                                 // flips the overlay; with NONE it opens the
@@ -20742,8 +20543,8 @@ impl ApplicationHandler for App {
                                 return;
                             }
                         }
-                        match &event.logical_key {
-                            Key::Named(NamedKey::Escape) if !event.repeat => {
+                        match action {
+                            Some(Action::ReturnNav) if !event.repeat => {
                                 state.focus = PaneFocus::NavTree;
                             }
                             // ADR 0022: `c` captures the visible image ROI and
@@ -20759,7 +20560,7 @@ impl ApplicationHandler for App {
                             // to the LLM pane once the crop paste lands — the
                             // focus move itself lives in the ImageCropped arm,
                             // not here, because the crop is async and may fail.
-                            Key::Character(s) if !event.repeat && s.as_str() == "c" => {
+                            Some(Action::CaptureRegion) if !event.repeat => {
                                 state.capture_roi();
                             }
                             // `e` enters edit mode for the cursored
@@ -20773,7 +20574,7 @@ impl ApplicationHandler for App {
                             // pastes cleanly into another editor. No-op
                             // when the preview isn't markdown or carries no
                             // code blocks.
-                            Key::Character(s) if !event.repeat && s.as_str() == "y" => {
+                            Some(Action::CopyCode) if !event.repeat => {
                                 let sources = &state.preview_md.code_block_sources;
                                 if !sources.is_empty() {
                                     let joined = sources.join("\n");
@@ -20797,16 +20598,13 @@ impl ApplicationHandler for App {
                             // whose preview is SHOWING — pinned/badge-consumed
                             // previews can differ from the nav cursor — with
                             // fallback to the cursored row.
-                            Key::Character(s) if !event.repeat && s.as_str() == "o" => {
+                            Some(Action::OpenExternal) if !event.repeat => {
                                 let shown = state
                                     .previewed_files_path()
                                     .or_else(|| state.cursored_files_path());
                                 state.open_path_external(shown);
                             }
-                            Key::Character(s)
-                                if !event.repeat
-                                    && (s.as_str() == "W"
-                                        || (shift && s.eq_ignore_ascii_case("W"))) =>
+                            Some(Action::OpenDocs) if !event.repeat =>
                             {
                                 let path = state
                                     .previewed_files_path()
@@ -20814,17 +20612,14 @@ impl ApplicationHandler for App {
                                     .unwrap_or_default();
                                 state.docs_open_external(path);
                             }
-                            Key::Character(s)
-                                if !event.repeat
-                                    && (s.as_str() == "O"
-                                        || (shift && s.eq_ignore_ascii_case("O"))) =>
+                            Some(Action::OpenExecute) if !event.repeat =>
                             {
                                 let shown = state
                                     .previewed_files_path()
                                     .or_else(|| state.cursored_files_path());
                                 state.quarto_open_execute(shown);
                             }
-                            Key::Character(s) if !event.repeat && s.as_str() == "e" => {
+                            Some(Action::EditFile) if !event.repeat => {
                                 // Concept-annotation edit takes priority when one
                                 // is loaded for the cursored node (content is
                                 // already in `state.concept`).
@@ -20876,7 +20671,7 @@ impl ApplicationHandler for App {
                                     }
                                 }
                             }
-                            Key::Named(NamedKey::PageUp) => {
+                            Some(Action::ScrollPageUp) => {
                                 // 1/3-pane step preserves reading
                                 // context — full-page jumps lost the
                                 // user's place. Ctrl+u still half-pages
@@ -20886,7 +20681,7 @@ impl ApplicationHandler for App {
                                 let new = (state.preview_scroll as i32 - page_step).max(0);
                                 state.preview_scroll = new as u16;
                             }
-                            Key::Named(NamedKey::PageDown) => {
+                            Some(Action::ScrollPageDown) => {
                                 let page_step = (h / 3).max(1);
                                 let new = (state.preview_scroll as i32 + page_step).max(0);
                                 state.preview_scroll = new as u16;
@@ -20896,24 +20691,24 @@ impl ApplicationHandler for App {
                             // PNG previews intercept these earlier
                             // (Action::PreviewPngPanUp/Down) so this
                             // arm only fires for non-PNG content.
-                            Key::Named(NamedKey::ArrowUp) => {
+                            Some(Action::PreviewUp) => {
                                 state.preview_scroll = state.preview_scroll.saturating_sub(1);
                             }
-                            Key::Named(NamedKey::ArrowDown) => {
+                            Some(Action::PreviewDown) => {
                                 state.preview_scroll = state.preview_scroll.saturating_add(1);
                             }
-                            Key::Named(NamedKey::Home) if !event.repeat => {
+                            Some(Action::PreviewStart) if !event.repeat => {
                                 state.preview_scroll = 0;
                             }
-                            Key::Named(NamedKey::End) if !event.repeat => {
+                            Some(Action::PreviewEnd) if !event.repeat => {
                                 // Redraw clamps to (total - visible).
                                 state.preview_scroll = u16::MAX;
                             }
-                            Key::Character(s) if ctrl && s.as_str() == "u" => {
+                            Some(Action::PreviewHalfUp) => {
                                 let new = (state.preview_scroll as i32 - h / 2).max(0);
                                 state.preview_scroll = new as u16;
                             }
-                            Key::Character(s) if ctrl && s.as_str() == "d" => {
+                            Some(Action::PreviewHalfDown) => {
                                 let new = (state.preview_scroll as i32 + h / 2).max(0);
                                 state.preview_scroll = new as u16;
                             }
@@ -20941,9 +20736,7 @@ impl ApplicationHandler for App {
                         // No selection? Fall through so a stray
                         // Ctrl+Shift+C still hits the pty.
                         if !event.repeat
-                            && ctrl
-                            && shift
-                            && matches!(&event.logical_key, Key::Character(s) if s.eq_ignore_ascii_case("c"))
+                            && action == Some(Action::CopySelection)
                             && state.llm_selection.is_some()
                         {
                             state.copy_llm_selection();
@@ -20951,16 +20744,7 @@ impl ApplicationHandler for App {
                             state.window.request_redraw();
                             return;
                         }
-                        let is_paste_shortcut = !event.repeat
-                            && match &event.logical_key {
-                                Key::Character(s)
-                                    if s.eq_ignore_ascii_case("v") && (ctrl || super_) =>
-                                {
-                                    true
-                                }
-                                Key::Named(NamedKey::Insert) if shift => true,
-                                _ => false,
-                            };
+                        let is_paste_shortcut = !event.repeat && action == Some(Action::Paste);
                         if is_paste_shortcut {
                             forward_clipboard_paste_to_llm(state);
                             state.last_key = Some(label);
@@ -20979,10 +20763,10 @@ impl ApplicationHandler for App {
                         // bytes — the escape hatch for a remote app that
                         // wants the key itself. Repeats allowed: holding
                         // PgUp keeps paging.
-                        if !shift {
-                            let scroll = match &event.logical_key {
-                                Key::Named(NamedKey::PageUp) => Some(true),
-                                Key::Named(NamedKey::PageDown) => Some(false),
+                        if matches!(action, Some(Action::ScrollPageUp | Action::ScrollPageDown)) {
+                            let scroll = match action {
+                                Some(Action::ScrollPageUp) => Some(true),
+                                Some(Action::ScrollPageDown) => Some(false),
                                 _ => None,
                             };
                             if let Some(up) = scroll {
@@ -21102,6 +20886,10 @@ impl ApplicationHandler for App {
             event_loop.exit();
             return;
         }
+        if state.help_peek_expired() {
+            state.help.peek = None;
+            state.window.request_redraw();
+        }
         // Notify toast expiry: once the sticky window elapses, restore the
         // normal connection status so the toast doesn't linger until the next
         // event. The idle/flash tick below brings us back here within ~1s.
@@ -21161,12 +20949,19 @@ impl ApplicationHandler for App {
             // over the fade, smooth enough to read as a blink) only while a
             // flash is live; `redraw` prunes finished flashes so we fall back
             // to the 1s idle tick automatically once none remain.
-            let interval = if state.flash_starts.is_empty() {
+            let fading_help = state.help.peek.as_ref().is_some_and(|p| p.started.elapsed() >= help::PEEK_HOLD);
+            let interval = if fading_help {
+                std::time::Duration::from_millis(16)
+            } else if state.flash_starts.is_empty() {
                 std::time::Duration::from_secs(1)
             } else {
                 std::time::Duration::from_millis(80)
             };
-            let deadline = std::time::Instant::now() + interval;
+            let mut deadline = std::time::Instant::now() + interval;
+            if let Some(peek) = &state.help.peek {
+                let fade_at = peek.started + help::PEEK_HOLD;
+                if fade_at > std::time::Instant::now() { deadline = deadline.min(fade_at); }
+            }
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             return;
         }

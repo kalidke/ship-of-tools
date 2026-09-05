@@ -57,7 +57,8 @@ MATRIX=(
   "preview-pdf|repo|--capture-preview examples/preview/sample.pdf --capture-delay-ms 60000"
   "preview-hdf5|repo|--capture-preview examples/preview/sample.h5 --capture-delay-ms 90000"
   "monitor-drawer|fixture|--start-monitor --capture-delay-ms 12000"
-  "help-overlay|none|--start-help --capture-delay-ms 1500"
+  "help-overlay|none|--start-focus preview --start-help-peek --capture-delay-ms 500"
+  "help-drawer|none|--start-focus preview --start-help --capture-delay-ms 1500"
   # REPL figure: --demo-repl-eval submits through the FE's own path (external
   # protocol evals are dropped by design). The REPL boots in the SHIM env with
   # cwd = the daemon's cwd (pinned to the project root above), so the staged

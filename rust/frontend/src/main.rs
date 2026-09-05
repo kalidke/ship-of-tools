@@ -13,6 +13,7 @@ mod cli;
 mod download;
 mod edit_buffer;
 mod gpu;
+mod help;
 mod hosts;
 mod keybindings;
 mod layout;

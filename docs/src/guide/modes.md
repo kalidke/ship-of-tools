@@ -101,7 +101,8 @@ Mode switches share the keymap with pane focus and layout. The relevant chords:
 | `Ctrl+ArrowLeft/Right/Up/Down` | move pane focus (4-way, spatial) |
 | `Alt+=` | maximize the focused pane; `Escape` restores |
 | `Ctrl+j` / `Ctrl+t` / `Ctrl+m` | toggle the REPL / Terminal / Monitor drawers |
-| `?` | toggle the help overlay |
+| `Ctrl+?` | show pane actions briefly; press again for the Help drawer |
+| `F1` | open or close the Help drawer |
 
 Because the mode keys are plain single characters, they are deliberately scoped to
 navigation focus — the keymap matches them only when a nav pane is focused, so

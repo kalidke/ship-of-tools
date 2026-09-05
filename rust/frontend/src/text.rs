@@ -404,7 +404,8 @@ impl TextLayer {
     /// renderer re-renders its last prepared geometry, so skipping the
     /// call on an "overlay just vanished" frame would ghost the previous
     /// frame's overlay forever. An empty `lines` is the cheap and correct
-    /// way to clear (prepare with zero areas).
+    /// way to clear (prepare with zero areas). `fade` applies opacity to
+    /// lines at or after its index, leaving earlier overlay lines opaque.
     pub fn prepare_overlay(
         &mut self,
         device: &wgpu::Device,
@@ -412,6 +413,7 @@ impl TextLayer {
         width: u32,
         height: u32,
         lines: &[Line],
+        fade: Option<(usize, f32)>,
     ) -> Result<()> {
         while self.overlay_buffers.len() < lines.len() {
             self.overlay_buffers
@@ -462,7 +464,8 @@ impl TextLayer {
             .overlay_buffers
             .iter()
             .zip(lines.iter())
-            .map(|(buf, line)| {
+            .enumerate()
+            .map(|(index, (buf, line))| {
                 // Same default-fg / DIM conventions as the main chrome
                 // areas so an overlay row is colour-identical to the
                 // underlying row it covers.
@@ -483,7 +486,8 @@ impl TextLayer {
                         right: width as i32,
                         bottom: height as i32,
                     },
-                    default_color: Color::rgb(r, g, b),
+                    default_color: Color::rgba(r, g, b, fade.filter(|(start, _)| index >= *start)
+                        .map(|(_, opacity)| (opacity * 255.0).round() as u8).unwrap_or(255)),
                     custom_glyphs: &[],
                 }
             })

@@ -131,9 +131,10 @@ pub struct Cli {
     /// the pin sigil and the `[pinned *]` preview-title chrome without
     /// keyboard injection. One-shot.
     pub auto_pin: bool,
-    /// Open the `?` keybindings help overlay at startup. For the `--capture`
-    /// harness, which can't inject a `?` keypress mid-render.
+    /// Open the persistent Help drawer at startup (also useful for captures).
     pub start_help: bool,
+    /// Show the temporary pane-action overlay on the first frame.
+    pub start_help_peek: bool,
     /// Open the Ctrl+M server-monitor drawer at startup (subscribed, with the
     /// default history prefill). For the `--capture` harness, which can't
     /// inject a Ctrl+M keypress mid-render.
@@ -204,6 +205,7 @@ impl Cli {
         let mut capture_cycle: i32 = 0;
         let mut auto_pin = false;
         let mut start_help = false;
+        let mut start_help_peek = false;
         let mut start_monitor = false;
         let mut start_scalebar = false;
         let mut ephemeral = false;
@@ -240,16 +242,17 @@ Display:
   --contrast-mode       high-contrast rendering
   --start-fullscreen    start fullscreen      --start-maximized   start maximized
   --start-monitor <n>   pick monitor          --start-mode <m>    files|modules|sessions|hosts
-  --start-path <p>      cursor a path         --start-help        open the ? overlay
+  --start-path <p>      cursor a path         --start-help        open the Help drawer
 
 Automation / dev (screenshots, demos):
   --capture <png> [--capture-delay-ms <ms>] [--capture-cycle] [--capture-preview]
   --start-scalebar      scalebar overlay on (ADR 0034; needs a scaled raster)
   --demo-sessions <a:working,b:idle,...>      --demo-repl-eval <file>
+  --start-help-peek     show the temporary pane overlay at startup
   --ephemeral           don't persist state   --relaunched        (set by the supervisor)
 
-The full keymap lives in the app: press ? — the nav pane header always
-shows the pane-switch keys."#);
+Ctrl+? shows pane actions briefly; press again for the Help drawer.
+F1 opens Help directly. Focused pane borders show the active shortcuts."#);
                     std::process::exit(0);
                 }
                 "--socket" => {
@@ -357,6 +360,9 @@ shows the pane-switch keys."#);
                 "--auto-pin" => {
                     auto_pin = true;
                 }
+                "--start-help-peek" => {
+                    start_help_peek = true;
+                }
                 "--start-help" => {
                     start_help = true;
                 }
@@ -442,6 +448,7 @@ shows the pane-switch keys."#);
             capture_cycle,
             auto_pin,
             start_help,
+            start_help_peek,
             start_monitor,
             start_scalebar,
             ephemeral,
