@@ -189,27 +189,25 @@ impl Env {
         KillGuard(Some(child))
     }
 
-    /// Pre-write the default row's own toml BEFORE `spawn_sotd` boots the
-    /// daemon, with `runtime = "capsule"` and the given `agent` — the
-    /// same registry path `workspaces::save`/`load_toml` use
-    /// (`<LOCALAPPDATA>\config\workspaces-<SOT_STATE_HOST>\<slug>.toml`),
-    /// computed the same way the daemon computes it: `--project-root`'s
-    /// own basename run through `sot_protocol::slug` (no `--label` is
-    /// ever passed in this file). Only `workspace_id`/`slug`/
-    /// `project_root` are required for `load_toml` to treat this as
-    /// canonical (`workspaces.rs`'s own doc); every other field the
-    /// daemon needs defaults sensibly. This is what makes a capsule
-    /// default row runnable on a CI runner: the daemon's own fresh-boot
-    /// seed always picks `agent = "claude"` on Windows (`server.rs`), and
-    /// `agent = "none"` is preserved instead ONLY when a pre-existing
-    /// on-disk row already carries `runtime = "capsule"`.
-    fn seed_default_capsule_toml(&self, agent: &str) {
-        let slug = sot_protocol::slug(
-            self.daemon_project_root
-                .file_name()
-                .and_then(|n| n.to_str())
-                .expect("daemon_project_root has a file name"),
-        );
+    /// Pre-write an ARBITRARY capsule row's own toml BEFORE `spawn_sotd`
+    /// boots the daemon, with `runtime = "capsule"` and the given
+    /// `agent` — the same registry path `workspaces::save`/`load_toml`
+    /// use (`<LOCALAPPDATA>\config\workspaces-<SOT_STATE_HOST>\<slug>.toml`).
+    /// Only `workspace_id`/`slug`/`project_root` are required for
+    /// `load_toml` to treat this as canonical (`workspaces.rs`'s own
+    /// doc); every other field the daemon needs defaults sensibly.
+    ///
+    /// 2026-09-04 amendment: `scan_disk` (`workspaces.rs`, which loads
+    /// this toml) runs BEFORE the daemon's own default-row seed logic
+    /// and has no spawn side effect of its own (`scan_dir` only ever
+    /// calls `reg.insert`) — so a NON-default slug pre-written this way
+    /// registers as a plain, ordinary capsule workspace whose supervisor
+    /// has NEVER been started by anything, the one precondition
+    /// `workspace.create`'s own handler can never produce (it spawns
+    /// synchronously as part of creation itself). This is what lets a
+    /// test exercise `pty.open`'s start-on-attach (`ensure_started`) on
+    /// an ordinary row instead of the default one.
+    fn seed_capsule_toml(&self, workspace_id: &str, slug: &str, project_root: &Path, agent: &str) {
         // `sot_log::state_dir::sot_state_dir()` joins "sot" onto
         // `%LOCALAPPDATA%` itself; `workspaces::app_config_dir` joins
         // "config" onto THAT — same two segments `state_dir_path` below
@@ -220,16 +218,46 @@ impl Env {
             .join("config")
             .join(format!("workspaces-{TEST_STATE_HOST}"));
         std::fs::create_dir_all(&dir).expect("mkdir pre-seeded workspaces dir");
-        let project_root = self.daemon_project_root.to_string_lossy();
+        let project_root = project_root.to_string_lossy();
         let body = format!(
-            "workspace_id  = \"ws-preseeded-default\"\n\
+            "workspace_id  = \"{workspace_id}\"\n\
              slug          = \"{slug}\"\n\
              project_root  = \"{project_root}\"\n\
              runtime       = \"capsule\"\n\
              agent         = \"{agent}\"\n"
         );
         std::fs::write(dir.join(format!("{slug}.toml")), body)
-            .expect("write pre-seeded default row toml");
+            .expect("write pre-seeded capsule row toml");
+    }
+
+    /// [`seed_capsule_toml`] specialized to the DEFAULT row: slug
+    /// computed the same way the daemon computes it (`--project-root`'s
+    /// own basename run through `sot_protocol::slug`; no `--label` is
+    /// ever passed in this file) so `server.rs`'s own boot seed resolves
+    /// THIS pre-written row as "the existing default" rather than
+    /// minting a fresh one. Before the 2026-09-04 amendment this is what
+    /// made a capsule default row runnable on a CI runner at all (the
+    /// fresh-boot seed used to unconditionally pick `agent = "claude"`
+    /// on Windows, and no `claude` binary exists on a CI runner); the
+    /// fresh-boot seed is now `agent = "none"` on every host regardless
+    /// (the default row's own inert-anchor default), so this helper
+    /// today exists only for
+    /// `capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroyable`,
+    /// which deliberately seeds a REAL (if unlaunchable) agent to
+    /// reproduce a row that is NOT the inert anchor.
+    fn seed_default_capsule_toml(&self, agent: &str) {
+        let slug = sot_protocol::slug(
+            self.daemon_project_root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("daemon_project_root has a file name"),
+        );
+        self.seed_capsule_toml(
+            "ws-preseeded-default",
+            &slug,
+            &self.daemon_project_root,
+            agent,
+        );
     }
 }
 
@@ -623,19 +651,34 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     }
 }
 
-/// Field finding (v0.6.0-rc.2 shakedown): the daemon's own default/home
-/// workspace is registered with `runtime: "capsule"` at startup (ADR 0042
-/// L1a, server.rs's default-workspace seed), but `workspace.create` was
-/// the ONLY path that ever spawned a capsule's supervisor — this row was
-/// never created through it, so it never got one. Selecting it in the
-/// frontend sent `pty.open`, which answered `attach_direct` against a
-/// supervisor that had never been started, parking the frontend on an
-/// empty pane with no way to start the session. This proves the fix:
-/// `pty.open` on this row now starts the supervisor itself (start-on-
-/// attach, sharing `workspace.create`'s own spawn path) before ever
-/// answering `attach_direct`.
+/// 2026-09-04 amendment (owner ruling): the daemon's own default/home
+/// row is now an INERT ANCHOR when it carries no agent (`agent ==
+/// "none"`) — the workspace it falls back to and the way to browse this
+/// machine's files, never a session. This supersedes the old
+/// `capsule_default_workspace_starts_its_supervisor_on_first_attach`
+/// (which this test replaces): before this amendment, `pty.open`'s
+/// start-on-attach spawned a supervisor for this row unconditionally
+/// (the v0.6.0-rc.2 field fix below); now it must NOT, specifically
+/// because its agent is "none" and it is the daemon's default. Proves
+/// the inverse of the old claim: `pty.open` still answers
+/// `attach_direct` (the SAME response every capsule row gets, never a
+/// special error — see `server.rs`'s own `pty.open` handler), but
+/// nothing is ever spawned behind it — no state dir, no lane, the row's
+/// own phase never leaves "stopped".
+/// `capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after_end`
+/// (below) is where the "start-on-attach actually spawns something"
+/// proof now lives, on an ordinary row.
+///
+/// (v0.6.0-rc.2 field finding, for context: the daemon's own default/home
+/// workspace is registered with `runtime: "capsule"` at startup, but
+/// `workspace.create` was the ONLY path that ever spawned a capsule's
+/// supervisor — this row was never created through it, so it never got
+/// one, and selecting it in the frontend parked it on an empty pane
+/// forever. Start-on-attach closed that gap for every capsule row
+/// generally; this amendment carves the DEFAULT-with-no-agent row back
+/// out of it specifically.)
 #[tokio::test]
-async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
+async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
     let _serial = SERIAL.lock().await;
     assert!(
         sot_capsule_exe().is_file(),
@@ -645,22 +688,16 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
         sot_capsule_exe()
     );
 
-    let env = Env::new("dsa");
-    // Pre-write the default row's own toml as a capsule with the
-    // placeholder "none" agent (the same leg every other test in this
-    // file uses) BEFORE boot: on Windows a fresh-boot default row is
-    // unconditionally seeded `agent = "claude"` (`server.rs`), and no
-    // `claude` binary exists on a CI runner — the leg fails to spawn,
-    // flaps past the anti-flap bound, and the row never reaches `Ready`.
-    // `server.rs`'s own re-seed rule only overwrites agent/autostart when
-    // the ON-DISK runtime is NOT already "capsule", so this pre-existing
-    // row survives untouched.
+    let env = Env::new("dna");
+    // Pre-write the default row's own toml as the INERT-ANCHOR agent,
+    // "none" — the exact shape a fresh-boot default row seeds today on
+    // EVERY host (server.rs's 2026-09-04 amendment). Pre-writing it here
+    // keeps this test's precondition explicit and independent of that
+    // default ever changing again.
     env.seed_default_capsule_toml("none");
     let mut daemon = env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
-    // Find the default row — never touched `workspace.create`, so its
-    // supervisor has never been spawned.
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
     next_id += 1;
     let default_row = list_payload["workspaces"]
@@ -671,6 +708,7 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
         .cloned()
         .expect("a default workspace row");
     assert_eq!(default_row["runtime"], "capsule", "default row: {default_row:?}");
+    assert_eq!(default_row["agent"], "none", "default row: {default_row:?}");
     let default_workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
     let default_target = default_row["tmux_session"].as_str().expect("tmux_session").to_string();
 
@@ -680,15 +718,13 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     // `Env::spawn_sotd`).
     let state_dir_path = env.state_root.join("sot").join("workspaces").join(&default_workspace_id);
 
-    // Rule H: prove the "never started" precondition BEFORE `pty.open` —
-    // no state dir on disk at all, and `workspace.list`'s own row already
-    // reads "stopped" from THIS first list call. Rule B guarantees this:
-    // the startup resume-scan (`resume_all`) SKIPS every row with no
-    // published voyage pointer, so it never touched this row — without
-    // rule B this assertion would race the resume-scan and could flake.
+    // Precondition: no state dir on disk at all, and `workspace.list`'s
+    // own row already reads "stopped" from THIS first list call (rule B:
+    // the startup resume-scan skips every row with no published voyage
+    // pointer, so it never touched this one either).
     assert!(
         !state_dir_path.exists(),
-        "the default capsule's state dir must not exist before its first attach: {state_dir_path:?}"
+        "the default capsule's state dir must not exist before this test's own attach: {state_dir_path:?}"
     );
     assert_eq!(
         default_row["phase"].as_str(),
@@ -701,10 +737,133 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     // (`pty::DEFAULT_TMUX_TARGET` == "sot-llm"), never a workspace row;
     // `server.rs`'s `workspace_for_tmux(requested_target)` only resolves
     // to this row when `target` matches its `tmux_session`. This is
-    // exactly what the frontend sends attaching a capsule row.
+    // exactly what the frontend sends attaching a capsule row — though
+    // in practice the frontend never sends it for THIS row at all
+    // (2026-09-04's own frontend-side filter, tested separately in
+    // `gpu.rs`); this is belt-and-suspenders coverage of the backend
+    // guard alone.
     let pty_req = serde_json::json!({
         "cols": 80, "rows": 24, "user_switch": true, "target": default_target,
     });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+
+    // Dwell across a window comfortably longer than every OTHER
+    // start-on-attach proof in this file needs to first observe its own
+    // state dir/lane — if the anchor rule regressed and a supervisor
+    // silently started anyway, this window is generous enough to catch
+    // it; asserted continuously throughout, never just once at the end.
+    let never_started_deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < never_started_deadline {
+        assert!(
+            !state_dir_path.exists(),
+            "the default row's agent-none anchor must never spawn a supervisor on attach: {state_dir_path:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        try_query_status(state_dir_path.clone()).await.is_none(),
+        "the default row's agent-none anchor's lane must never answer after an attach attempt"
+    );
+
+    // `workspace.list` must still read "stopped" — never "starting" or
+    // "ready".
+    let payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    let row = find_row(&payload, &default_workspace_id).expect("default row still listed");
+    assert_eq!(
+        row["phase"].as_str(),
+        Some("stopped"),
+        "the default row's agent-none anchor must still read \"stopped\" after an attach attempt: {row:?}"
+    );
+
+    if let Some(child) = daemon.take() {
+        kill_and_wait_bounded(child).await;
+    }
+}
+
+/// 2026-09-04 amendment: the default row's own "never touched by
+/// `workspace.create`" precondition no longer proves `pty.open`'s
+/// start-on-attach actually spawns anything — that row is now the inert
+/// anchor by design (see
+/// `capsule_default_workspace_with_no_agent_is_never_started_on_attach`,
+/// above, which this test's predecessor was split into). This moves
+/// that proof, plus the #182 items A.1/C end -> reattach -> new-voyage-
+/// via-reset proof, onto an ORDINARY (non-default) capsule row instead —
+/// pre-seeded via `Env::seed_capsule_toml` rather than
+/// `workspace.create`, since `workspace.create`'s own handler spawns
+/// synchronously as part of creation and so never leaves a row in the
+/// "registered but never started" state start-on-attach needs to prove
+/// anything at all. Seeded with the placeholder `agent = "none"` —
+/// unchanged and intended: the inert-anchor rule is scoped to the
+/// DEFAULT row specifically (ADR 0042's amendment), so an ordinary row
+/// with no agent still runs the same `agent_argv("none")` == `cmd.exe`
+/// placeholder every other created-workspace test in this file relies
+/// on.
+///
+/// The #182 proof itself can't route through `workspace.destroy` here
+/// the way the old default-row test did — that op only KEEPS a row's
+/// registry entry for the DEFAULT workspace
+/// (`handle_workspace_destroy`'s own doc: "the default workspace's ROW
+/// is never destroyed here"); on a NON-default row it actually REMOVES
+/// the registry entry once the run is confirmed ended, which would
+/// delete the very row this test needs to re-attach to. Ends the run
+/// directly over the lane instead (`sot_log::supervisor_client::end_run`
+/// + `stop` — the same primitives `capsule_workspace::end_run`, the
+/// daemon's OWN wrapper `workspace.destroy` calls, itself uses),
+/// leaving the row fully registered and untouched; `pty.open`'s
+/// start-on-attach (`ensure_started`) then discovers the durable end
+/// marker on its very next attach and mints a new voyage via `reset` —
+/// the exact mechanic this proves, regardless of which row it runs on.
+#[tokio::test]
+async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after_end() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "sot-capsule.exe not found next to sotd.exe at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd.exe was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("car");
+    // Pre-seed an ORDINARY (non-default) capsule row — never touched by
+    // `workspace.create`, so its supervisor has never been spawned.
+    env.seed_capsule_toml(
+        "ws-preseeded-extra",
+        "extra",
+        &env.workspace_project_root,
+        "none",
+    );
+    let mut daemon = env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let row = find_row(&list_payload, "ws-preseeded-extra").expect("the pre-seeded row is registered");
+    assert_eq!(row["runtime"], "capsule", "row: {row:?}");
+    let workspace_id = row["workspace_id"].as_str().expect("workspace_id").to_string();
+    let target = row["tmux_session"].as_str().expect("tmux_session").to_string();
+
+    // Same path arithmetic `capsule_workspace::state_dir_for` uses.
+    let state_dir_path = env.state_root.join("sot").join("workspaces").join(&workspace_id);
+
+    // Rule H: prove the "never started" precondition BEFORE `pty.open` —
+    // no state dir on disk at all, and `workspace.list`'s own row already
+    // reads "stopped" from THIS first list call (rule B: the startup
+    // resume-scan skips every row with no published voyage pointer, so
+    // it never touched this one).
+    assert!(
+        !state_dir_path.exists(),
+        "the pre-seeded row's state dir must not exist before its first attach: {state_dir_path:?}"
+    );
+    assert_eq!(
+        row["phase"].as_str(),
+        Some("stopped"),
+        "the pre-seeded row's phase must read \"stopped\" before its first attach: {row:?}"
+    );
+
+    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
     let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
@@ -712,7 +871,7 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     assert_eq!(
         pty_res.payload["state_dir"].as_str(),
         Some(expected_state_dir.as_str()),
-        "pty.open's attach_direct state_dir should be the default workspace's own capsule state dir"
+        "pty.open's attach_direct state_dir should be this row's own capsule state dir"
     );
 
     // The state dir appears on disk — start-on-attach actually spawned
@@ -721,7 +880,7 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     while !state_dir_path.is_dir() {
         assert!(
             Instant::now() < dir_deadline,
-            "timed out waiting for the default capsule's state dir to appear: {state_dir_path:?}"
+            "timed out waiting for the pre-seeded row's state dir to appear: {state_dir_path:?}"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -734,15 +893,12 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
             async move { try_query_status(dir).await }
         },
         BOUND,
-        "the default capsule's supervisor lane to answer a status query",
+        "the pre-seeded row's supervisor lane to answer a status query",
     )
     .await;
 
     // The row reaches Ready (leg spawned, ConPTY up, challenge proven)
-    // before this test ends it -- the same thing a user destroying a
-    // session effectively waits for: pressing D while still Starting is
-    // honestly retryable (EndRunOutcome::Starting), not a bug this test
-    // exists to reproduce.
+    // before this test ends its run.
     poll_until(
         || {
             let dir = state_dir_path.clone();
@@ -752,44 +908,33 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
             }
         },
         BOUND,
-        "the default capsule's supervisor to reach phase Ready",
+        "the pre-seeded row's supervisor to reach phase Ready",
     )
     .await;
 
-    // --- #182 items A.1/C: end the default row, then prove attach
-    // recovers it via `reset` with a NEW voyage (not the old flat
-    // refusal, and not a resurrected ended one) ---
+    // --- #182 items A.1/C: end the run directly over the lane (never
+    // `workspace.destroy` — see this test's own doc for why), then
+    // prove attach recovers it via `reset` with a NEW voyage (not the
+    // old flat refusal, and not a resurrected ended one) ---
     let (original_status, _process) = sot_log::supervisor_client::query_status(&state_dir_path)
-        .expect("query_status before workspace.destroy");
+        .expect("query_status before ending the run");
     let original_voyage = original_status
         .voyage
         .expect("a ready capsule has a voyage");
 
-    // workspace.destroy on the DEFAULT row: ends the run instead of the
-    // old flat refusal (the original defect this PR fixes) — success,
-    // `kept`, never an error.
-    let destroy_req = serde_json::json!({ "workspace_id": default_workspace_id });
-    let destroy_res = call(&mut conn, next_id, op::WORKSPACE_DESTROY, destroy_req).await;
-    next_id += 1;
-    assert!(
-        destroy_res.payload.get("error").is_none(),
-        "workspace.destroy on the default row failed: {:?}",
-        destroy_res.payload
-    );
-    assert!(
-        destroy_res
-            .payload
-            .get("kept")
-            .and_then(|v| v.as_str())
-            .is_some(),
-        "default row destroy must report kept: {:?}",
-        destroy_res.payload
-    );
+    sot_log::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end")
+        .expect("end_run over the lane");
+    // Mirrors `capsule_workspace::end_run`'s own follow-up (the daemon's
+    // wrapper `workspace.destroy` calls): a confirmed end still leaves
+    // the authority itself running until an explicit `stop`.
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::stop(&dir)
+    })
+    .await;
 
-    // Item A.1: `end_run`'s own `stop` now WAITS for confirmed process
-    // death, so the authority must already be gone by the time the
-    // response above landed — same leak-proof idiom the create/destroy
-    // test uses.
+    // Item A.1: the authority must already be gone before this test
+    // re-attaches — same leak-proof idiom the create/destroy test uses.
     poll_until(
         || {
             let dir = state_dir_path.clone();
@@ -802,7 +947,7 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
             }
         },
         BOUND,
-        "the ended default row's supervisor lane to go silent",
+        "the ended row's supervisor lane to go silent",
     )
     .await;
 
@@ -822,7 +967,7 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     let ready_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
     let new_voyage = loop {
         let reattach_req = serde_json::json!({
-            "cols": 80, "rows": 24, "user_switch": true, "target": default_target,
+            "cols": 80, "rows": 24, "user_switch": true, "target": target,
         });
         let reattach_res = call(&mut conn, next_id, op::PTY_OPEN, reattach_req).await;
         next_id += 1;
@@ -838,7 +983,7 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
         }
         assert!(
             Instant::now() < ready_deadline,
-            "timed out waiting for the default row to recover via reset after being ended"
+            "timed out waiting for the pre-seeded row to recover via reset after being ended"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
@@ -854,10 +999,8 @@ async fn capsule_default_workspace_starts_its_supervisor_on_first_attach() {
     // Child` for it here (the daemon owns the actual spawn), so this
     // stops it over its own lane instead — the same
     // `sot_log::supervisor_client::stop` the create-test's own adoption
-    // proof uses. Best-effort: the lane may already be gone (a `claude`
-    // producer missing from this runner's PATH would eventually make the
-    // supervisor's own internal flap budget give up and exit on its
-    // own, per rule F) — either way nothing is left running afterward.
+    // proof uses. Best-effort: nothing is left running afterward either
+    // way.
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || sot_log::supervisor_client::stop(&dir)
@@ -1000,10 +1143,10 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
     }
 }
 
-/// Round-2 Codex finding: the pre-spawn probe alone (the test above)
-/// cannot close the narrower race where the OLD lane has already gone
-/// quiet but its fence has not yet released (`sot-capsule supervise`
-/// drops its lane BEFORE releasing `supervisor.lock` — up to
+/// Round-2 Codex finding: the pre-spawn probe alone (the boot-adopts
+/// test above) cannot close the narrower race where the OLD lane has
+/// already gone quiet but its fence has not yet released (`sot-capsule
+/// supervise` drops its lane BEFORE releasing `supervisor.lock` — up to
 /// `pipe_win::TEARDOWN_AGGREGATE_DEADLINE`, 20s). A spawn that starts
 /// into that window must exit `EXIT_CONTENDED` (70), never
 /// `EXIT_TERMINAL` (69), and the daemon's watchdog must re-probe for
@@ -1013,17 +1156,28 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
 /// using a "fake lock holder": `sot_log::fence::lock_supervisor` is
 /// `pub`, so this test pre-holds `supervisor.lock` at a workspace's
 /// state dir from THIS TEST PROCESS itself, a real cross-process kernel
-/// lock with no lane, leg, or pointer ever published behind it —
-/// exactly the shape a spawned `sot-capsule.exe` cannot tell apart from
-/// a genuinely live supervisor's own fence, only faster to construct
-/// than actually racing one. Uses the DEFAULT workspace (never the
-/// `workspace.create` path) because a fresh workspace's `workspace_id` —
-/// and therefore its state dir — is only known AFTER creation, too late
-/// to pre-fence it; the default row's id is fixed and its state dir is
-/// pointer-free before this test's own fence pre-empts it (the same
-/// precondition `capsule_default_workspace_starts_its_supervisor_on_first_attach`
-/// proves), so `pty.open`'s start-on-attach (`ensure_started`) spawns
-/// straight into the held fence.
+/// lock that `supervise_inner` acquires as its very FIRST act — BEFORE
+/// it ever consults `--start` vs `--resume` (`rust/log/src/supervisor.rs`)
+/// — so the contention this proves is identical whichever mode the next
+/// spawn uses.
+///
+/// 2026-09-04 amendment: no longer the DEFAULT workspace. Before this
+/// amendment, the default row's fixed, known-ahead-of-boot identity gave
+/// this test a state dir that was pointer-free before its own first
+/// attach — the one way to pre-fence a workspace before its FIRST spawn,
+/// since a created workspace's `workspace_id` (hence its state dir) is
+/// only known AFTER `workspace.create` returns, and that handler spawns
+/// synchronously as part of creation itself, too late to pre-fence. The
+/// default row is now the inert anchor when it has no agent (see
+/// `capsule_default_workspace_with_no_agent_is_never_started_on_attach`)
+/// and can no longer be used this way. This test instead creates an
+/// ordinary row, lets it reach Ready once normally, STOPS its authority
+/// (the leg, and the run's own published pointer, both survive — ADR
+/// 0041 Lifecycle), THEN pre-fences its now-EXISTING state dir: the next
+/// attach needs a RESUME spawn (pointer published, lane dead) rather
+/// than a fresh Start, but the fence check above runs before mode is
+/// ever consulted either way, so this is the exact same contention this
+/// test always proved, just reached via `--resume` instead of `--start`.
 #[tokio::test]
 async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_terminal() {
     let _serial = SERIAL.lock().await;
@@ -1039,48 +1193,75 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
     let mut daemon = env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
-    let list_payload = call(
-        &mut conn,
-        next_id,
-        op::WORKSPACE_LIST,
-        serde_json::json!({}),
-    )
-    .await
-    .payload;
+    let create_req = serde_json::json!({
+        "label": "cnt-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
     next_id += 1;
-    let default_row = list_payload["workspaces"]
-        .as_array()
-        .expect("workspaces array")
-        .iter()
-        .find(|w| w["is_default"].as_bool() == Some(true))
-        .cloned()
-        .expect("a default workspace row");
-    let default_workspace_id = default_row["workspace_id"]
+    assert!(
+        create_res.payload.get("error").is_none(),
+        "workspace.create failed: {:?}",
+        create_res.payload
+    );
+    let workspace_id = create_res.payload["workspace_id"]
         .as_str()
         .expect("workspace_id")
         .to_string();
-    let default_target = default_row["tmux_session"]
+    let target = create_res.payload["tmux_session"]
         .as_str()
         .expect("tmux_session")
         .to_string();
-    let state_dir_path = env
-        .state_root
-        .join("sot")
-        .join("workspaces")
-        .join(&default_workspace_id);
-    assert!(
-        !state_dir_path.exists(),
-        "the default capsule's state dir must not exist before this test pre-fences it: {state_dir_path:?}"
-    );
+
+    let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
+    let state_dir = loop {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({}))
+            .await
+            .payload;
+        if let Some(row) = find_row(&payload, &workspace_id) {
+            assert_eq!(row["runtime"], "capsule", "row: {row:?}");
+            if let (Some(sd), Some("ready")) = (row["state_dir"].as_str(), row["phase"].as_str()) {
+                break sd.to_string();
+            }
+        }
+        assert!(
+            Instant::now() < list_deadline,
+            "timed out waiting for workspace.list to report phase \"ready\" for the new capsule workspace"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let state_dir_path = PathBuf::from(&state_dir);
+
+    // Stop the supervisor authority over its own lane — its capsule leg
+    // and the run's own published pointer both survive (ADR 0041
+    // Lifecycle) — so the NEXT attach needs a RESUME spawn, straight
+    // into the fence this test is about to pre-hold.
+    tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::stop(&dir).expect("stop the supervisor authority")
+    })
+    .await
+    .unwrap();
+    poll_until(
+        || {
+            let dir = state_dir_path.clone();
+            async move { if try_query_status(dir).await.is_none() { Some(()) } else { None } }
+        },
+        BOUND,
+        "the stopped supervisor's own lane to go silent",
+    )
+    .await;
 
     // The fake lock holder itself: held for this test's whole remaining
-    // body, released only at the very end.
-    std::fs::create_dir_all(&state_dir_path).expect("mkdir state_dir_path");
+    // body, released only at the very end. The state dir already exists
+    // (the earlier real spawn created it) — no `create_dir_all` needed.
     let fake_lock = sot_log::fence::lock_supervisor(&state_dir_path)
         .expect("pre-hold the fence from the test process");
 
     let pty_req = serde_json::json!({
-        "cols": 80, "rows": 24, "user_switch": true, "target": default_target,
+        "cols": 80, "rows": 24, "user_switch": true, "target": target,
     });
     let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
     next_id += 1;
@@ -1093,9 +1274,7 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
     // Poll workspace.list across a window comfortably longer than the
     // daemon's own contention-retry bound (private to
     // capsule_workspace.rs, ~25s) — the row must NEVER read "terminal"
-    // (this test's own regression proof) throughout. It keeps reading
-    // "stopped" (no pointer was ever published behind our fake lock) —
-    // never "terminal" — the whole time.
+    // (this test's own regression proof) throughout.
     let observe_deadline = Instant::now() + Duration::from_secs(45);
     while Instant::now() < observe_deadline {
         let id = next_id;
@@ -1103,7 +1282,7 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
         let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({}))
             .await
             .payload;
-        if let Some(row) = find_row(&payload, &default_workspace_id) {
+        if let Some(row) = find_row(&payload, &workspace_id) {
             assert_ne!(
                 row["phase"].as_str(),
                 Some("terminal"),
@@ -1133,14 +1312,17 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
 /// already gone fully silent by the time `workspace.destroy` reached it
 /// surfaced as "supervisor lane unreachable" and was reported `Kept`
 /// forever -- the row could never actually be destroyed. This test uses
-/// the SAME "no `claude` on a CI runner's PATH" precondition
-/// `capsule_default_workspace_starts_its_supervisor_on_first_attach`
-/// already relies on (no new fixture machinery): seed the default row's
-/// own toml with `agent = "claude"` before boot, attach it once to
-/// trigger start-on-attach, and prove (1) the row reaches phase
-/// "terminal" within a bound rather than cycling Starting -> Terminal
-/// forever, and (2) `workspace.destroy` on it then succeeds and the
-/// supervisor's own lane goes silent.
+/// the SAME "no `claude` on a CI runner's PATH" precondition to force
+/// the failure deterministically (no new fixture machinery): seed the
+/// default row's own toml with `agent = "claude"` before boot -- a REAL
+/// (if unlaunchable) agent, so this row is NOT the 2026-09-04
+/// inert-anchor amendment's concern (that only ever applies to
+/// `agent == "none"`; see
+/// `capsule_default_workspace_with_no_agent_is_never_started_on_attach`)
+/// -- attach it once to trigger start-on-attach, and prove (1) the row
+/// reaches phase "terminal" within a bound rather than cycling
+/// Starting -> Terminal forever, and (2) `workspace.destroy` on it then
+/// succeeds and the supervisor's own lane goes silent.
 #[tokio::test]
 async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroyable() {
     let _serial = SERIAL.lock().await;
