@@ -1,249 +1,461 @@
-// keybindings.rs — user-configurable keybindings for the frontend.
-//
-// Phase-1 surface intentionally tiny: a handful of named actions, each
-// mapped to one or more chord strings (e.g. "Alt+=" or "Ctrl+ArrowRight").
-// Defaults live in `KeyBindings::defaults()`. A `keybindings.toml` file
-// is read at startup and overrides the defaults action-by-action; missing
-// actions in the file fall through to defaults so the user only writes
-// what they want to change.
-//
-// File discovery, in priority order:
-//   1. $SOT_KEYBINDINGS  — explicit override path
-//   2. <repo-root>/.sot/keybindings.toml  — project-level
-//   3. $HOME/.config/sot/keybindings.toml  — user-level
-//
-// File format is a single `[keys]` table mapping action → chord (or list
-// of chords). The parser is dirt-simple — only `key = "value"` and
-// `key = ["v1", "v2"]` lines are recognised; comments start with `#`;
-// other lines are ignored. Real TOML is overkill for this surface.
-
+// One action catalog supplies dispatch, resolved shortcut labels and contextual help.
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-
 use winit::keyboard::{Key, NamedKey};
 
-/// Named actions the chrome can bind to. Add a variant here, give it a
-/// default chord in `KeyBindings::defaults()`, and the keybindings file
-/// can override it. Existing hardcoded keybinds (Ctrl+Arrow focus move,
-/// f/m mode switch, q/Esc quit) will migrate here incrementally — for
-/// now the file can only customise the actions listed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Action {
-    /// Maximise the focused pane to fill the window.
-    MaximizePane,
-    /// Restore the full layout: un-maximize, and (from the reading
-    /// panes) exit wide-preview — one layer per press.
-    RestoreLayout,
-    /// Toggle wide-preview: hide the LLM column and hand its width to
-    /// the preview pane (nav keeps its width). Default Alt++
-    /// (Alt+Shift+= on US layouts).
-    ToggleWidePreview,
-    /// PNG preview pane: zoom the canvas in.
-    PreviewPngZoomIn,
-    /// PNG preview pane: zoom the canvas out (clamped at fit-to-pane).
-    PreviewPngZoomOut,
-    /// PNG preview pane: reset zoom + pan to fit-to-pane, centred.
-    PreviewPngReset,
-    /// PNG preview pane: pan the canvas left/right/up/down by a fixed
-    /// fraction of the pane size. Render-time clamp keeps the canvas
-    /// covering the pane.
-    PreviewPngPanLeft,
-    PreviewPngPanRight,
-    PreviewPngPanUp,
-    PreviewPngPanDown,
-    /// Raster preview pane: toggle the dynamic physical scalebar overlay
-    /// (ADR 0034). Only acts when the shown preview carries a physical scale.
-    PreviewScalebarToggle,
-    /// Sessions picker: commit the cursored directory as a new workspace,
-    /// auto-starting the comm-aware agent (ccb) in its pane.
-    SessionCreate,
-    /// Sessions picker: commit the cursored directory as a new workspace
-    /// with NO LLM agent — a bare shell/REPL session. Default Shift+Enter.
-    SessionCreateBare,
-    /// Sessions picker: commit the cursored directory as a new workspace
-    /// auto-starting a CODEX session (ccx, ADR 0031). Default Ctrl+Enter.
-    SessionCreateCodex,
-    /// Nav focus: switch the root tree to Files mode. Default `f`.
-    ModeFiles,
-    /// Nav focus: switch the root tree to Modules mode. Default `m`.
-    ModeModules,
-    /// Nav focus: switch the root tree to Sessions mode. Default `s`.
-    ModeSessions,
-    /// Nav focus: switch the root tree to Hosts mode. Default `h`.
-    ModeHosts,
-    /// Nav focus (Files mode): toggle showing hidden dotfiles. Default `.`.
-    ToggleHidden,
-    /// Toggle the REPL drawer (focus into it / bounce back). Default Ctrl+j.
-    ToggleReplDrawer,
-    /// Toggle the Terminal drawer. Default Ctrl+t.
-    ToggleTerminalDrawer,
-    /// Toggle the Monitor drawer (ADR 0020). Default Ctrl+m.
-    ToggleMonitorDrawer,
-    /// Move pane focus to the pane left/right/up/down of the current one
-    /// (4-way grid). Defaults Ctrl+Arrow{Left,Right,Up,Down}.
-    FocusPaneLeft,
-    FocusPaneRight,
-    FocusPaneUp,
-    FocusPaneDown,
-    /// Cycle the active workspace forward/backward. Defaults Shift+Arrow
-    /// Right/Left. Suppressed in edit mode (gated at the call site).
-    WorkspaceCycleNext,
-    WorkspaceCyclePrev,
-    /// Quit the application. Default Ctrl+q (nav focus only at the call site).
-    Quit,
-    /// Toggle the keybindings help overlay. Default `?`.
-    ToggleHelp,
-    /// Toggle borderless fullscreen. Default F11.
-    ToggleFullscreen,
-    /// Collapse transport backoff and reconnect now. Default F5.
-    Reconnect,
-    /// Global font scale up / down / reset. Defaults Ctrl+= (and Ctrl++) /
-    /// Ctrl+- (and Ctrl+_) / Ctrl+0.
-    FontScaleUp,
-    FontScaleDown,
-    FontScaleReset,
-    /// Capture the whole window to a timestamped PNG (a "selfie"). Fires from
-    /// any pane. Default Ctrl+Shift+S.
-    Selfie,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Global,
+    Workspace,
+    Restore,
+    Scroll,
+    Text,
+    Picker,
+    Nav,
+    FileNav,
+    Files,
+    Navigation,
+    Session,
+    File,
+    Quarto,
+    Julia,
+    Repl,
+    Pty,
+    Llm,
+    Pages,
+    Image,
+    Reading,
+    PreviewFile,
+    PageScroll,
+    Edit,
+    Modal,
+    Prompt,
+    HalfScroll,
+    Help,
+    DeleteConfirm,
+    DiscardConfirm,
+    StaleEdit,
 }
 
-impl Action {
-    fn parse(name: &str) -> Option<Self> {
-        match name.trim() {
-            "pane.maximize" | "maximize_pane" => Some(Action::MaximizePane),
-            "pane.restore" | "restore_layout" => Some(Action::RestoreLayout),
-            "layout.wide_preview" => Some(Action::ToggleWidePreview),
-            "preview.png.zoom_in" => Some(Action::PreviewPngZoomIn),
-            "preview.png.zoom_out" => Some(Action::PreviewPngZoomOut),
-            "preview.png.reset" => Some(Action::PreviewPngReset),
-            "preview.png.pan_left" => Some(Action::PreviewPngPanLeft),
-            "preview.png.pan_right" => Some(Action::PreviewPngPanRight),
-            "preview.png.pan_up" => Some(Action::PreviewPngPanUp),
-            "preview.png.pan_down" => Some(Action::PreviewPngPanDown),
-            "preview.scalebar.toggle" => Some(Action::PreviewScalebarToggle),
-            "session.create" => Some(Action::SessionCreate),
-            "session.create_bare" => Some(Action::SessionCreateBare),
-            "session.create_codex" => Some(Action::SessionCreateCodex),
-            "mode.files" => Some(Action::ModeFiles),
-            "mode.modules" => Some(Action::ModeModules),
-            "mode.sessions" => Some(Action::ModeSessions),
-            "mode.hosts" => Some(Action::ModeHosts),
-            "files.toggle_hidden" => Some(Action::ToggleHidden),
-            "drawer.repl" => Some(Action::ToggleReplDrawer),
-            "drawer.terminal" => Some(Action::ToggleTerminalDrawer),
-            "drawer.monitor" => Some(Action::ToggleMonitorDrawer),
-            "focus.pane_left" => Some(Action::FocusPaneLeft),
-            "focus.pane_right" => Some(Action::FocusPaneRight),
-            "focus.pane_up" => Some(Action::FocusPaneUp),
-            "focus.pane_down" => Some(Action::FocusPaneDown),
-            "workspace.cycle_next" => Some(Action::WorkspaceCycleNext),
-            "workspace.cycle_prev" => Some(Action::WorkspaceCyclePrev),
-            "quit" => Some(Action::Quit),
-            "help.toggle" => Some(Action::ToggleHelp),
-            "view.fullscreen" => Some(Action::ToggleFullscreen),
-            "transport.reconnect" => Some(Action::Reconnect),
-            "font.scale_up" => Some(Action::FontScaleUp),
-            "font.scale_down" => Some(Action::FontScaleDown),
-            "font.scale_reset" => Some(Action::FontScaleReset),
-            "view.selfie" => Some(Action::Selfie),
-            _ => None,
+pub struct ActionSpec {
+    pub action: Action,
+    pub name: &'static str,
+    pub defaults: &'static [&'static str],
+    pub label: &'static str,
+    pub detail: &'static str,
+    pub group: &'static str,
+    pub scope: Scope,
+}
+macro_rules! actions {
+    ($( $action:ident, $name:literal, [$($key:literal),*], $label:literal, $detail:literal, $group:literal, $scope:ident; )*) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum Action { $($action),* }
+        pub static ACTIONS: &[ActionSpec] = &[$(ActionSpec {
+            action: Action::$action, name: $name, defaults: &[$($key),*],
+            label: $label, detail: $detail, group: $group, scope: Scope::$scope,
+        }),*];
+        impl Action {
+            pub fn spec(self) -> &'static ActionSpec { &ACTIONS[self as usize] }
+            fn parse(name: &str) -> Option<Self> {
+                match name.trim() {
+                    "maximize_pane" => Some(Self::MaximizePane),
+                    "restore_layout" => Some(Self::RestoreLayout),
+                    $($name => Some(Self::$action),)*
+                    _ => None,
+                }
+            }
         }
     }
 }
+actions! {
+    ToggleHelp, "help.toggle", ["Ctrl+?"], "Pane actions", "Show actions here for five seconds; press again to browse them in the Help drawer.", "Help", Global;
+    ToggleHelpDrawer, "drawer.help", ["F1"], "Help drawer", "Browse and search actions for the pane you were using. Escape restores the previous drawer.", "Help", Global;
+    Reconnect, "transport.reconnect", ["F5"], "Reconnect", "Retry backend connections immediately.", "Window", Global;
+    ToggleFullscreen, "view.fullscreen", ["F11"], "Fullscreen", "Toggle borderless fullscreen.", "Window", Global;
+    FontScaleUp, "font.scale_up", ["Ctrl+=", "Ctrl++"], "Larger text", "Increase the frontend font size.", "Window", Global;
+    FontScaleDown, "font.scale_down", ["Ctrl+-", "Ctrl+_"], "Smaller text", "Decrease the frontend font size.", "Window", Global;
+    FontScaleReset, "font.scale_reset", ["Ctrl+0"], "Reset text size", "Restore the default frontend font size.", "Window", Global;
+    FocusPaneLeft, "focus.pane_left", ["Ctrl+ArrowLeft"], "Focus left", "Move keyboard focus to the pane on the left.", "Window", Global;
+    FocusPaneRight, "focus.pane_right", ["Ctrl+ArrowRight"], "Focus right", "Move keyboard focus to the pane on the right.", "Window", Global;
+    FocusPaneUp, "focus.pane_up", ["Ctrl+ArrowUp"], "Focus above", "Move keyboard focus to the pane above.", "Window", Global;
+    FocusPaneDown, "focus.pane_down", ["Ctrl+ArrowDown"], "Focus below", "Move keyboard focus to the drawer or pane below.", "Window", Global;
+    WorkspaceCycleNext, "workspace.cycle_next", ["Shift+ArrowRight"], "Next session", "Switch to the next workspace.", "Window", Workspace;
+    WorkspaceCyclePrev, "workspace.cycle_prev", ["Shift+ArrowLeft"], "Previous session", "Switch to the previous workspace.", "Window", Workspace;
+    MaximizePane, "pane.maximize", ["Alt+="], "Maximize pane", "Fill the window with the focused pane.", "Window", Global;
+    RestoreLayout, "pane.restore", ["Escape"], "Restore layout", "Undo maximization, then wide preview, one layer at a time.", "Window", Restore;
+    ToggleWidePreview, "layout.wide_preview", ["Alt++"], "Wide preview", "Hide or show the agent column to give the preview more room.", "Window", Global;
+    Selfie, "view.selfie", ["Ctrl+Shift+S"], "Screenshot", "Save a PNG of the whole frontend window.", "Window", Global;
+    ToggleReplDrawer, "drawer.repl", ["Ctrl+j"], "Julia drawer", "Show or hide the Julia REPL. Changing drawer views keeps Julia running.", "Drawers", Global;
+    ToggleTerminalDrawer, "drawer.terminal", ["Ctrl+t"], "Terminal drawer", "Show or hide the frontend-local terminal.", "Drawers", Global;
+    ToggleMonitorDrawer, "drawer.monitor", ["Ctrl+m"], "Monitor drawer", "Show or hide host resource charts.", "Drawers", Global;
+    ScrollLineUp, "view.scroll_line_up", ["Alt+ArrowUp"], "Scroll up one line", "Scroll without moving the input cursor.", "Scroll", Scroll;
+    ScrollLineDown, "view.scroll_line_down", ["Alt+ArrowDown"], "Scroll down one line", "Scroll without moving the input cursor.", "Scroll", Scroll;
+    TableLeft, "preview.table_left", ["h", "ArrowLeft"], "Scroll left", "Move horizontally through a wide text table.", "Text", Text;
+    TableRight, "preview.table_right", ["l", "ArrowRight"], "Scroll right", "Move horizontally through a wide text table.", "Text", Text;
+    TableReset, "preview.table_reset", ["0"], "Table start", "Return to the left edge of a wide table.", "Text", Text;
+    SessionCreateCodex, "session.create_codex", ["Ctrl+Enter"], "Create with Codex", "Create a workspace in the selected folder with a Codex agent.", "Picker", Picker;
+    SessionCreateBare, "session.create_bare", ["Shift+Enter"], "Create without agent", "Create a workspace in the selected folder with a shell and no agent.", "Picker", Picker;
+    SessionCreate, "session.create", ["Enter"], "Create with Claude", "Create a workspace in the selected folder with a Claude Code agent.", "Picker", Picker;
+    Quit, "quit", ["Ctrl+q"], "Quit SoT", "Close the frontend from navigation focus.", "Navigation", Nav;
+    CopyPath, "files.copy_path", ["Ctrl+c", "c"], "Copy path", "Copy the selected file's backend path to the clipboard.", "Files", FileNav;
+    NewFile, "files.new", ["Ctrl+n"], "New file", "Create a file in the selected directory after entering its name.", "Files", Files;
+    DeleteFile, "files.delete", ["Ctrl+d"], "Delete file", "Delete the selected file after confirmation. Directories are refused.", "Files", FileNav;
+    NavDown, "nav.down", ["ArrowDown"], "Move down", "Select the next row.", "Navigation", Navigation;
+    NavUp, "nav.up", ["ArrowUp"], "Move up", "Select the previous row.", "Navigation", Navigation;
+    NavExpand, "nav.expand", ["ArrowRight"], "Expand", "Expand the selected node or descend into a folder.", "Navigation", Navigation;
+    NavOpen, "nav.open", ["Enter"], "Open or select", "Open the selected node; in Sessions or Hosts, select that target.", "Navigation", Nav;
+    NavCollapse, "nav.collapse", ["ArrowLeft"], "Collapse", "Collapse the node or go to its parent.", "Navigation", Navigation;
+    ModeFiles, "mode.files", ["f"], "Files mode", "Browse project files.", "Navigation", Nav;
+    ModeModules, "mode.modules", ["m"], "Modules mode", "Browse Julia modules and methods.", "Navigation", Nav;
+    ModeSessions, "mode.sessions", ["s"], "Sessions mode", "Browse workspaces and agent sessions.", "Navigation", Nav;
+    TogglePin, "files.pin", ["p"], "Pin or unpin preview", "Keep the selected file in preview while browsing. Unpin returns to the pinned file.", "Files", Files;
+    ModeHosts, "mode.hosts", ["h"], "Hosts mode", "Browse backend hosts.", "Navigation", Nav;
+    ToggleHidden, "files.toggle_hidden", ["."], "Hidden files", "Show or hide dotfiles.", "Files", Files;
+    SessionDestroy, "session.destroy", ["Shift+d"], "Destroy session", "Press twice to destroy the selected session. Any other command cancels confirmation.", "Sessions", Session;
+    OpenExternal, "file.open", ["o"], "Open externally", "Open HTML, video or an interactive document in the browser; Julia files open in Pluto.", "Files", File;
+    OpenDocs, "file.docs", ["Shift+w"], "Open built docs", "Open the built documentation site for this file in the browser.", "Files", File;
+    OpenExecute, "file.execute", ["Shift+o"], "Render and execute", "Render a Quarto document and execute its code chunks.", "Files", Quarto;
+    Download, "files.download", ["d"], "Download file", "Download the selected file to the frontend machine.", "Files", FileNav;
+    Upload, "files.upload", ["u"], "Upload files", "Choose local files to upload into the selected directory.", "Files", Files;
+    RunFresh, "files.run_fresh", ["r"], "Run in fresh REPL", "Restart Julia in this project and run the selected Julia file. Existing REPL variables are cleared.", "Julia", Julia;
+    RunCurrent, "files.run_current", ["Shift+r"], "Run in current REPL", "Run the selected Julia file using the current Julia session and its variables.", "Julia", Julia;
+    ReplClear, "repl.clear", ["Ctrl+l"], "Clear scrollback", "Clear the displayed REPL output; Julia's variables remain.", "Julia", Repl;
+    Paste, "input.paste", ["Ctrl+v", "Super+v", "Shift+Insert"], "Paste", "Paste the clipboard into this pane.", "Input", Pty;
+    CopySelection, "agent.copy", ["Ctrl+Shift+c"], "Copy selection", "Copy selected agent output to the clipboard.", "Agent", Llm;
+    PageNext, "preview.page_next", ["n", "PageDown"], "Next page", "Show the next page of the displayed document.", "Pages", Pages;
+    PagePrev, "preview.page_prev", ["p", "PageUp"], "Previous page", "Show the previous page of the displayed document.", "Pages", Pages;
+    PreviewPngReset, "preview.png.reset", ["r", "0"], "Fit image", "Reset zoom and pan to fit the image in the pane.", "Image", Image;
+    PreviewPngZoomIn, "preview.png.zoom_in", ["Shift+ArrowUp", "+", "="], "Zoom in", "Enlarge the displayed image. Fit image restores the overview.", "Image", Image;
+    PreviewPngZoomOut, "preview.png.zoom_out", ["Shift+ArrowDown", "-"], "Zoom out", "Reduce image zoom down to fit-to-pane.", "Image", Image;
+    PreviewPngPanLeft, "preview.png.pan_left", ["ArrowLeft"], "Pan left", "Move across the zoomed image.", "Image", Image;
+    PreviewPngPanRight, "preview.png.pan_right", ["ArrowRight"], "Pan right", "Move across the zoomed image.", "Image", Image;
+    PreviewPngPanUp, "preview.png.pan_up", ["ArrowUp"], "Pan up", "Move across the zoomed image.", "Image", Image;
+    PreviewPngPanDown, "preview.png.pan_down", ["ArrowDown"], "Pan down", "Move across the zoomed image.", "Image", Image;
+    PreviewScalebarToggle, "preview.scalebar.toggle", ["Ctrl+s"], "Scalebar", "Toggle the physical scalebar, or enter the pixel size when scale is unknown.", "Image", Image;
+    ReturnNav, "view.return_nav", ["Escape"], "Return to navigation", "Move focus back to the navigation tree.", "View", Reading;
+    CaptureRegion, "preview.capture", ["c", "Ctrl+c"], "Send visible region", "Crop the visible image region and attach it to the agent input.", "Image", Image;
+    CopyCode, "preview.copy_code", ["y"], "Copy code blocks", "Copy the displayed markdown code blocks to the clipboard.", "Text", Text;
+    EditFile, "preview.edit", ["e"], "Edit", "Edit the displayed file or its concept annotation.", "Text", PreviewFile;
+    ScrollPageUp, "view.page_up", ["PageUp"], "Scroll up", "Scroll back through this pane.", "Scroll", PageScroll;
+    ScrollPageDown, "view.page_down", ["PageDown"], "Scroll down", "Scroll forward through this pane.", "Scroll", PageScroll;
+    PreviewUp, "preview.up", ["ArrowUp"], "Scroll up one line", "Move up through the displayed text.", "Text", Text;
+    PreviewDown, "preview.down", ["ArrowDown"], "Scroll down one line", "Move down through the displayed text.", "Text", Text;
+    PreviewStart, "preview.start", ["Home"], "Document start", "Scroll to the beginning of the displayed text.", "Text", Text;
+    PreviewEnd, "preview.end", ["End"], "Document end", "Scroll to the end of the displayed text.", "Text", Text;
+    PreviewHalfUp, "preview.half_up", ["Ctrl+u"], "Half page up", "Scroll up half a pane.", "Text", HalfScroll;
+    PreviewHalfDown, "preview.half_down", ["Ctrl+d"], "Half page down", "Scroll down half a pane.", "Text", HalfScroll;
+    HelpUp, "help.up", ["ArrowUp"], "Previous action", "Previous action in the Help drawer.", "Help", Help;
+    HelpDown, "help.down", ["ArrowDown"], "Next action", "Next action in the Help drawer.", "Help", Help;
+    HelpPageUp, "help.page_up", ["PageUp"], "Previous actions", "Previous actions in the Help drawer.", "Help", Help;
+    HelpPageDown, "help.page_down", ["PageDown"], "Next actions", "Next actions in the Help drawer.", "Help", Help;
+    HelpScope, "help.scope", ["Tab"], "This pane or all panes", "This pane or all panes in the Help drawer.", "Help", Help;
+    HelpManual, "help.manual", ["Enter"], "Open manual", "Open manual in the Help drawer.", "Help", Help;
+    HelpClose, "help.close", ["Escape"], "Return to work", "Return to work in the Help drawer.", "Help", Help;
+    DeleteConfirm, "files.confirm_delete", ["y", "Shift+y"], "Confirm deletion", "Delete the file named in the confirmation prompt. Any other key cancels.", "Input", DeleteConfirm;
+    DiscardConfirm, "edit.confirm_discard", ["y", "Shift+y", "Escape"], "Discard edits", "Discard unsaved edits and close the editor. Another key returns to editing.", "Editor", DiscardConfirm;
+    StaleReload, "edit.reload", ["r", "Shift+r"], "Reload from disk", "Discard this edit buffer and reload the externally changed file.", "Editor", StaleEdit;
+    StaleKeep, "edit.keep", ["k", "Shift+k"], "Keep editing", "Dismiss the external-change warning and continue editing.", "Editor", StaleEdit;
+    EditUndo, "edit.undo", ["Ctrl+z", "Super+z"], "Undo", "Undo in the editor.", "Editor", Edit;
+    EditRedo, "edit.redo", ["Ctrl+y", "Super+Shift+z"], "Redo", "Redo in the editor.", "Editor", Edit;
+    EditCopy, "edit.copy", ["Ctrl+c", "Super+c"], "Copy selection", "Copy selection in the editor.", "Editor", Edit;
+    EditCut, "edit.cut", ["Ctrl+x", "Super+x"], "Cut selection", "Cut selection in the editor.", "Editor", Edit;
+    EditPaste, "edit.paste", ["Ctrl+v", "Super+v", "Shift+Insert"], "Paste", "Paste in the editor.", "Editor", Edit;
+    EditNewline, "edit.newline", ["Enter"], "Insert newline", "Insert newline in the editor.", "Editor", Edit;
+    EditBackspace, "edit.backspace", ["Backspace"], "Delete previous character", "Delete previous character in the editor.", "Editor", Edit;
+    EditDelete, "edit.delete", ["Delete"], "Delete next character", "Delete next character in the editor.", "Editor", Edit;
+    EditLeft, "edit.left", ["ArrowLeft", "Shift+ArrowLeft"], "Move left", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
+    EditRight, "edit.right", ["ArrowRight", "Shift+ArrowRight"], "Move right", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
+    EditUp, "edit.up", ["ArrowUp", "Shift+ArrowUp"], "Move up", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
+    EditDown, "edit.down", ["ArrowDown", "Shift+ArrowDown"], "Move down", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
+    EditHome, "edit.home", ["Home", "Shift+Home"], "Line start", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
+    EditEnd, "edit.end", ["End", "Shift+End"], "Line end", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
+    EditPageUp, "edit.page_up", ["PageUp", "Shift+PageUp"], "Page up", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
+    EditPageDown, "edit.page_down", ["PageDown", "Shift+PageDown"], "Page down", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
+    EditStart, "edit.start", ["Ctrl+Home", "Shift+Ctrl+Home"], "Document start", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
+    EditFinish, "edit.finish", ["Ctrl+End", "Shift+Ctrl+End"], "Document end", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
+    EditSave, "edit.save", ["Ctrl+s", "Super+s"], "Save edits", "Save the current file or concept annotation.", "Editor", Edit;
+    Cancel, "input.cancel", ["Escape"], "Cancel or close", "Cancel the current input. Unsaved edits require confirmation.", "Input", Modal;
+    Confirm, "input.confirm", ["Enter"], "Confirm input", "Submit the entered filename or value.", "Input", Prompt;
+    ReplInterrupt, "repl.interrupt", ["Ctrl+c"], "Interrupt or clear input", "Interrupt the current evaluation, or clear the input when Julia is idle.", "Julia", Repl;
+    ReplHistoryPrev, "repl.history_prev", ["ArrowUp"], "Previous input", "Recall the previous Julia input.", "Julia", Repl;
+    ReplHistoryNext, "repl.history_next", ["ArrowDown"], "Next input", "Recall the next Julia input.", "Julia", Repl;
+    PickerParent, "picker.parent", ["Backspace"], "Parent folder", "Go to the parent folder in the new-session picker.", "Picker", Picker;
+    ReplSubmit, "repl.submit", ["Enter"], "Evaluate", "Evaluate the current Julia input.", "Julia", Repl;
+    ReplNewline, "repl.newline", ["Shift+Enter"], "Insert newline", "Continue the Julia input on another line.", "Julia", Repl;
+}
 
-/// Parsed chord — a key plus modifier flags.
+/// Modifier identity is independent of the OS glyph used to display it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub super_: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Chord {
     ctrl: bool,
     alt: bool,
     shift: bool,
+    super_: bool,
     key: ChordKey,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ChordKey {
-    /// A typed character ("z", "=", "+", "-").
     Char(String),
-    /// A named key ("Tab", "ArrowRight", "Escape", "Enter").
     Named(NamedKey),
 }
-
 impl Chord {
-    /// Parse a chord string like "Alt+=" or "Ctrl+ArrowRight". Returns
-    /// `None` for any malformed input — caller falls back to defaults.
     fn parse(s: &str) -> Option<Self> {
-        // Single-character chords like "+" / "-" / "=" need to bypass the
-        // `+`-delimited modifier parse — otherwise `split('+')` on "+"
-        // gives ["", ""] which filters to empty and returns None.
-        let trimmed = s.trim();
-        if trimmed.chars().count() == 1 {
-            return Some(Chord {
-                ctrl: false,
-                alt: false,
-                shift: false,
-                key: ChordKey::Char(trimmed.to_string()),
-            });
-        }
-        // A literal "+" key after modifiers (e.g. "Ctrl++", "Ctrl+Shift++"):
-        // `split('+')` would swallow it, so peel the trailing "+" off as the
-        // key and parse what precedes the final separator '+' as modifiers.
-        if let Some(mods) = trimmed.strip_suffix("++") {
-            let mut ctrl = false;
-            let mut alt = false;
-            let mut shift = false;
-            for m in mods.split('+').map(str::trim).filter(|p| !p.is_empty()) {
-                match m.to_ascii_lowercase().as_str() {
-                    "ctrl" | "control" => ctrl = true,
-                    "alt" | "option" | "meta" => alt = true,
-                    "shift" => shift = true,
-                    _ => return None,
+        let s = s.trim();
+        let (mods, key) = if s == "+" {
+            ("", "+")
+        } else if let Some(m) = s.strip_suffix("++") {
+            (m, "+")
+        } else {
+            s.rsplit_once('+').unwrap_or(("", s))
+        };
+        let mut chord = Self {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            super_: false,
+            key: if key.chars().count() == 1 {
+                ChordKey::Char(key.into())
+            } else {
+                ChordKey::Named(named_key_from_str(key)?)
+            },
+        };
+        for m in mods.split('+').filter(|s| !s.is_empty()) {
+            match m.trim().to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => chord.ctrl = true,
+                "alt" | "option" | "meta" => chord.alt = true, // legacy Meta alias
+                "shift" => chord.shift = true,
+                "super" | "cmd" | "command" | "win" => chord.super_ = true,
+                "primary" => {
+                    if cfg!(target_os = "macos") {
+                        chord.super_ = true
+                    } else {
+                        chord.ctrl = true
+                    }
                 }
-            }
-            return Some(Chord { ctrl, alt, shift, key: ChordKey::Char("+".to_string()) });
-        }
-        let parts: Vec<&str> = s.split('+').map(str::trim).filter(|p| !p.is_empty()).collect();
-        if parts.is_empty() {
-            return None;
-        }
-        let mut ctrl = false;
-        let mut alt = false;
-        let mut shift = false;
-        for m in &parts[..parts.len() - 1] {
-            match m.to_ascii_lowercase().as_str() {
-                "ctrl" | "control" => ctrl = true,
-                "alt" | "option" | "meta" => alt = true,
-                "shift" => shift = true,
                 _ => return None,
             }
         }
-        let last = parts[parts.len() - 1];
-        let key = if last.chars().count() == 1 {
-            ChordKey::Char(last.to_string())
-        } else {
-            ChordKey::Named(named_key_from_str(last)?)
-        };
-        Some(Chord { ctrl, alt, shift, key })
-    }
-
-    fn matches(&self, key: &Key, ctrl: bool, alt: bool, shift: bool) -> bool {
-        if self.ctrl != ctrl || self.alt != alt {
-            return false;
+        // A bare uppercase character is a shifted action (r and R stay distinct).
+        if !chord.ctrl
+            && !chord.alt
+            && !chord.super_
+            && key.chars().any(|c| c.is_ascii_uppercase())
+            && key.len() == 1
+        {
+            chord.shift = true;
         }
-        // Shift is special: typing `=` may report shift=false on a US
-        // layout but typing `+` reports shift=true. We only enforce
-        // shift when the chord declares it, since the character itself
-        // already encodes the shift state on most layouts.
-        if self.shift && !shift {
+        Some(chord)
+    }
+    fn matches_input(&self, key: &Key, base: Option<&Key>, m: Modifiers) -> bool {
+        if (self.ctrl, self.alt, self.super_) != (m.ctrl, m.alt, m.super_) {
             return false;
         }
         match (&self.key, key) {
-            (ChordKey::Char(c), Key::Character(s)) => s.as_str().eq_ignore_ascii_case(c),
-            (ChordKey::Named(n), Key::Named(k)) => n == k,
+            (ChordKey::Named(n), Key::Named(k)) => n == k && self.shift == m.shift,
+            (ChordKey::Char(c), _) => {
+                let letter = c.chars().all(|c| c.is_ascii_alphabetic());
+                if (letter || self.shift) && self.shift != m.shift {
+                    return false;
+                }
+                let same = |k: &Key| {
+                    matches!(k, Key::Character(s) if
+                    if letter { s.eq_ignore_ascii_case(c) } else { s.as_str() == c })
+                };
+                if same(key) {
+                    return true;
+                }
+                // Option may transform a letter on macOS. Explicit shifted base
+                // punctuation (Ctrl+Shift+/) also uses the layout's unmodified key.
+                // Never treat an unshifted '=' as '+' through this fallback.
+                (letter && (m.ctrl || m.alt || m.super_) || self.shift) && base.is_some_and(same)
+            }
             _ => false,
         }
     }
+    #[cfg(test)]
+    fn matches(&self, key: &Key, ctrl: bool, alt: bool, shift: bool) -> bool {
+        self.matches_input(
+            key,
+            None,
+            Modifiers {
+                ctrl,
+                alt,
+                shift,
+                super_: false,
+            },
+        )
+    }
+    fn label(&self, mac: bool) -> String {
+        let mut parts = Vec::new();
+        for (set, name, glyph) in [
+            (self.ctrl, "Ctrl", "⌃"),
+            (self.alt, "Alt", "⌥"),
+            (self.shift, "Shift", "⇧"),
+            (
+                self.super_,
+                if cfg!(windows) { "Win" } else { "Super" },
+                "⌘",
+            ),
+        ] {
+            if set {
+                parts.push(if mac { glyph.into() } else { name.into() });
+            }
+        }
+        parts.push(match &self.key {
+            ChordKey::Char(s) => {
+                if self.ctrl || self.alt || self.shift || self.super_ {
+                    s.to_uppercase()
+                } else {
+                    s.clone()
+                }
+            }
+            ChordKey::Named(n) => match n {
+                NamedKey::ArrowUp => "↑".into(),
+                NamedKey::ArrowDown => "↓".into(),
+                NamedKey::ArrowLeft => "←".into(),
+                NamedKey::ArrowRight => "→".into(),
+                NamedKey::Escape => "Esc".into(),
+                NamedKey::PageUp => "PgUp".into(),
+                NamedKey::PageDown => "PgDn".into(),
+                _ => format!("{n:?}"),
+            },
+        });
+        parts.join(if mac { "" } else { "+" })
+    }
 }
 
+#[derive(Debug, Clone)]
+pub struct KeyBindings {
+    chords: HashMap<Action, Vec<Chord>>,
+}
+impl KeyBindings {
+    pub fn defaults() -> Self {
+        Self {
+            chords: ACTIONS
+                .iter()
+                .map(|s| {
+                    (
+                        s.action,
+                        s.defaults
+                            .iter()
+                            .map(|k| Chord::parse(k).expect("invalid default keybinding"))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        }
+    }
+    pub fn load_layered() -> Self {
+        let mut b = Self::defaults();
+        if let Some(path) = find_keybindings_file() {
+            match fs::read_to_string(&path) {
+                Ok(text) => b.merge_text(&text),
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "cannot read keybindings")
+                }
+            }
+        }
+        b
+    }
+    pub fn merge_text(&mut self, text: &str) {
+        for (i, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+                continue;
+            }
+            let Some((name, value)) = line.split_once('=') else {
+                continue;
+            };
+            let Some(action) = Action::parse(name) else {
+                tracing::warn!(line = i + 1, %name, "unknown keybinding action");
+                continue;
+            };
+            let keys = parse_value(without_comment(value));
+            let parsed: Option<Vec<_>> = keys.iter().map(|s| Chord::parse(s)).collect();
+            match parsed {
+                Some(chords) if !chords.is_empty() => {
+                    self.chords.insert(action, chords);
+                }
+                _ => {
+                    tracing::warn!(line = i + 1, %name, "invalid keybinding; keeping previous binding")
+                }
+            }
+        }
+    }
+    /// Catalog order is dispatch precedence. Help filters with the same predicate.
+    pub fn resolve(
+        &self,
+        key: &Key,
+        base: Option<&Key>,
+        m: Modifiers,
+        allowed: impl Fn(Action) -> bool,
+    ) -> Option<Action> {
+        ACTIONS
+            .iter()
+            .find(|s| {
+                allowed(s.action)
+                    && self.chords[&s.action]
+                        .iter()
+                        .any(|c| c.matches_input(key, base, m))
+            })
+            .map(|s| s.action)
+    }
+    /// Only advertise chords this action actually wins in the current context.
+    pub fn active_labels(&self, action: Action, allowed: impl Fn(Action) -> bool) -> Vec<String> {
+        self.chords[&action]
+            .iter()
+            .filter(|c| {
+                let key = match &c.key {
+                    ChordKey::Char(s) => Key::Character(s.clone().into()),
+                    ChordKey::Named(n) => Key::Named(*n),
+                };
+                self.resolve(
+                    &key,
+                    Some(&key),
+                    Modifiers {
+                        ctrl: c.ctrl,
+                        alt: c.alt,
+                        shift: c.shift,
+                        super_: c.super_,
+                    },
+                    &allowed,
+                ) == Some(action)
+            })
+            .map(|c| c.label(cfg!(target_os = "macos")))
+            .collect()
+    }
+    pub fn labels(&self, action: Action) -> String {
+        self.labels_for(action, cfg!(target_os = "macos"))
+    }
+    pub fn labels_for(&self, action: Action, mac: bool) -> String {
+        self.chords[&action]
+            .iter()
+            .map(|c| c.label(mac))
+            .collect::<Vec<_>>()
+            .join(" / ")
+    }
+    pub fn first_label(&self, action: Action) -> String {
+        self.chords[&action]
+            .first()
+            .map(|c| c.label(cfg!(target_os = "macos")))
+            .unwrap_or_default()
+    }
+    #[cfg(test)]
+    fn matches(&self, action: Action, key: &Key, ctrl: bool, alt: bool, shift: bool) -> bool {
+        self.chords[&action]
+            .iter()
+            .any(|c| c.matches(key, ctrl, alt, shift))
+    }
+}
 fn named_key_from_str(s: &str) -> Option<NamedKey> {
     Some(match s {
         "Tab" => NamedKey::Tab,
@@ -251,6 +463,7 @@ fn named_key_from_str(s: &str) -> Option<NamedKey> {
         "Escape" | "Esc" => NamedKey::Escape,
         "Space" => NamedKey::Space,
         "Backspace" => NamedKey::Backspace,
+        "Insert" => NamedKey::Insert,
         "Delete" => NamedKey::Delete,
         "ArrowUp" | "Up" => NamedKey::ArrowUp,
         "ArrowDown" | "Down" => NamedKey::ArrowDown,
@@ -276,277 +489,18 @@ fn named_key_from_str(s: &str) -> Option<NamedKey> {
     })
 }
 
-/// Per-action chord list. Multiple chords per action let the user have
-/// e.g. both `Alt+=` and `Ctrl+m` bound to maximise without losing one.
-#[derive(Debug, Clone)]
-pub struct KeyBindings {
-    maximize_pane: Vec<Chord>,
-    restore_layout: Vec<Chord>,
-    toggle_wide_preview: Vec<Chord>,
-    preview_png_zoom_in: Vec<Chord>,
-    preview_png_zoom_out: Vec<Chord>,
-    preview_png_reset: Vec<Chord>,
-    preview_png_pan_left: Vec<Chord>,
-    preview_png_pan_right: Vec<Chord>,
-    preview_png_pan_up: Vec<Chord>,
-    preview_png_pan_down: Vec<Chord>,
-    preview_scalebar_toggle: Vec<Chord>,
-    session_create: Vec<Chord>,
-    session_create_bare: Vec<Chord>,
-    session_create_codex: Vec<Chord>,
-    mode_files: Vec<Chord>,
-    mode_modules: Vec<Chord>,
-    mode_sessions: Vec<Chord>,
-    mode_hosts: Vec<Chord>,
-    toggle_hidden: Vec<Chord>,
-    toggle_repl_drawer: Vec<Chord>,
-    toggle_terminal_drawer: Vec<Chord>,
-    toggle_monitor_drawer: Vec<Chord>,
-    focus_pane_left: Vec<Chord>,
-    focus_pane_right: Vec<Chord>,
-    focus_pane_up: Vec<Chord>,
-    focus_pane_down: Vec<Chord>,
-    workspace_cycle_next: Vec<Chord>,
-    workspace_cycle_prev: Vec<Chord>,
-    quit: Vec<Chord>,
-    toggle_help: Vec<Chord>,
-    toggle_fullscreen: Vec<Chord>,
-    reconnect: Vec<Chord>,
-    font_scale_up: Vec<Chord>,
-    font_scale_down: Vec<Chord>,
-    font_scale_reset: Vec<Chord>,
-    selfie: Vec<Chord>,
-}
-
-impl KeyBindings {
-    /// Built-in defaults. Used when no keybindings file is found.
-    pub fn defaults() -> Self {
-        // The default-set is small but should always parse; unwraps here
-        // are tested by `defaults_parse_clean` below so a typo can't ship.
-        Self {
-            maximize_pane: vec![Chord::parse("Alt+=").unwrap()],
-            // Esc restores the full layout — but only while a pane is
-            // maximized (the dispatch guards on `state.maximized`), so Esc
-            // still passes through to the pty / edit mode / etc. otherwise.
-            restore_layout: vec![Chord::parse("Escape").unwrap()],
-            // Wide-preview toggle: Alt++ is the shifted neighbour of Alt+=
-            // (maximize) — same physical key, one more modifier, so the
-            // pane-management family stays on one keycap. Alt+z was the
-            // first pick but the NVIDIA overlay grabs it system-wide and
-            // the app never sees it (maintainer, 2026-07-30).
-            toggle_wide_preview: vec![Chord::parse("Alt++").unwrap()],
-            // PNG preview zoom keeps the user's fingers on the arrow
-            // cluster (Shift+ArrowUp/Down) and also supports the
-            // muscle-memory `+`/`=`/`-` chords.
-            preview_png_zoom_in: vec![
-                Chord::parse("Shift+ArrowUp").unwrap(),
-                Chord::parse("+").unwrap(),
-                Chord::parse("=").unwrap(),
-            ],
-            preview_png_zoom_out: vec![
-                Chord::parse("Shift+ArrowDown").unwrap(),
-                Chord::parse("-").unwrap(),
-            ],
-            preview_png_reset: vec![
-                Chord::parse("r").unwrap(),
-                Chord::parse("0").unwrap(),
-            ],
-            preview_png_pan_left: vec![Chord::parse("ArrowLeft").unwrap()],
-            preview_png_pan_right: vec![Chord::parse("ArrowRight").unwrap()],
-            preview_png_pan_up: vec![Chord::parse("ArrowUp").unwrap()],
-            preview_png_pan_down: vec![Chord::parse("ArrowDown").unwrap()],
-            // Scalebar overlay toggle (ADR 0034). Ctrl+S per the maintainer
-            // (2026-07-20) — `s` alone is the Sessions-mode switch, and
-            // Ctrl+Shift+S is the selfie, so Ctrl+S is the free slot. With no
-            // physical scale present this opens the pixel-size prompt rather
-            // than no-opping.
-            preview_scalebar_toggle: vec![Chord::parse("Ctrl+s").unwrap()],
-            // Sessions picker commit: Enter = with agent (ccb), Shift+Enter =
-            // bare (no LLM). The call site checks `session.create_bare` before
-            // `session.create`, since a non-shift "Enter" chord also matches
-            // when shift is held.
-            session_create: vec![Chord::parse("Enter").unwrap()],
-            session_create_bare: vec![Chord::parse("Shift+Enter").unwrap()],
-            session_create_codex: vec![Chord::parse("Ctrl+Enter").unwrap()],
-            // Mode switches (nav focus only — gated at the call site, so these
-            // single-char chords stay literal text in the pty/edit contexts).
-            mode_files: vec![Chord::parse("f").unwrap()],
-            mode_modules: vec![Chord::parse("m").unwrap()],
-            mode_sessions: vec![Chord::parse("s").unwrap()],
-            mode_hosts: vec![Chord::parse("h").unwrap()],
-            // Show/hide hidden dotfiles in Files mode (nav focus only — the
-            // single-char chord stays literal text in the pty/edit contexts).
-            toggle_hidden: vec![Chord::parse(".").unwrap()],
-            // Drawer toggles (global).
-            toggle_repl_drawer: vec![Chord::parse("Ctrl+j").unwrap()],
-            toggle_terminal_drawer: vec![Chord::parse("Ctrl+t").unwrap()],
-            toggle_monitor_drawer: vec![Chord::parse("Ctrl+m").unwrap()],
-            // Spatial pane focus (global). Ctrl+Arrow keeps it disjoint from
-            // plain arrows (per-pane nav) and Shift+Arrow (workspace cycle).
-            focus_pane_left: vec![Chord::parse("Ctrl+ArrowLeft").unwrap()],
-            focus_pane_right: vec![Chord::parse("Ctrl+ArrowRight").unwrap()],
-            focus_pane_up: vec![Chord::parse("Ctrl+ArrowUp").unwrap()],
-            focus_pane_down: vec![Chord::parse("Ctrl+ArrowDown").unwrap()],
-            // Workspace cycle (global, suppressed in edit mode at the call site).
-            workspace_cycle_next: vec![Chord::parse("Shift+ArrowRight").unwrap()],
-            workspace_cycle_prev: vec![Chord::parse("Shift+ArrowLeft").unwrap()],
-            // Global chrome.
-            quit: vec![Chord::parse("Ctrl+q").unwrap()],
-            toggle_help: vec![Chord::parse("?").unwrap()],
-            toggle_fullscreen: vec![Chord::parse("F11").unwrap()],
-            reconnect: vec![Chord::parse("F5").unwrap()],
-            // "=" and shifted "+" both zoom in; "-" and shifted "_" both zoom
-            // out (matches the prior hardcoded behaviour on US layouts).
-            font_scale_up: vec![
-                Chord::parse("Ctrl+=").unwrap(),
-                Chord::parse("Ctrl++").unwrap(),
-            ],
-            font_scale_down: vec![
-                Chord::parse("Ctrl+-").unwrap(),
-                Chord::parse("Ctrl+_").unwrap(),
-            ],
-            font_scale_reset: vec![Chord::parse("Ctrl+0").unwrap()],
-            // Whole-window screenshot to a timestamped PNG (fires from any pane).
-            selfie: vec![Chord::parse("Ctrl+Shift+S").unwrap()],
+fn without_comment(value: &str) -> &str {
+    let mut quote = None;
+    for (i, c) in value.char_indices() {
+        if Some(c) == quote {
+            quote = None;
+        } else if quote.is_none() && matches!(c, '\'' | '"') {
+            quote = Some(c);
+        } else if c == '#' && quote.is_none() {
+            return &value[..i];
         }
     }
-
-    /// Layered load: defaults overlaid with whatever
-    /// `find_keybindings_file()` returns. A failed load logs at warn
-    /// level and falls back to defaults — the chrome should never crash
-    /// just because the user wrote a malformed config.
-    pub fn load_layered() -> Self {
-        let mut bindings = Self::defaults();
-        if let Some(path) = find_keybindings_file() {
-            match fs::read_to_string(&path) {
-                Ok(contents) => {
-                    bindings.merge_text(&contents);
-                    tracing::info!(path = %path.display(), "keybindings loaded");
-                }
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), error = %e,
-                        "failed to read keybindings file; using defaults");
-                }
-            }
-        }
-        bindings
-    }
-
-    /// Apply a parsed keybindings file on top of `self`. Each recognised
-    /// action wholly replaces the default chord list (so `Alt+=` is
-    /// dropped if the user writes `pane.maximize = "Ctrl+m"`); writing
-    /// a list `["a", "b"]` keeps both. Unknown actions and unparseable
-    /// chord strings are warned and skipped.
-    fn merge_text(&mut self, contents: &str) {
-        for (lineno, raw) in contents.lines().enumerate() {
-            let line = raw.split('#').next().unwrap_or("").trim();
-            if line.is_empty() || line.starts_with('[') {
-                continue;
-            }
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            let key = key.trim();
-            let value = value.trim();
-            let Some(action) = Action::parse(key) else {
-                tracing::warn!(line = lineno + 1, key, "unknown action in keybindings");
-                continue;
-            };
-            let chord_strs = parse_value(value);
-            let mut chords = Vec::new();
-            for s in chord_strs {
-                if let Some(c) = Chord::parse(&s) {
-                    chords.push(c);
-                } else {
-                    tracing::warn!(line = lineno + 1, chord = %s,
-                        "unparseable chord; skipping");
-                }
-            }
-            if !chords.is_empty() {
-                match action {
-                    Action::MaximizePane => self.maximize_pane = chords,
-                    Action::RestoreLayout => self.restore_layout = chords,
-                    Action::ToggleWidePreview => self.toggle_wide_preview = chords,
-                    Action::PreviewPngZoomIn => self.preview_png_zoom_in = chords,
-                    Action::PreviewPngZoomOut => self.preview_png_zoom_out = chords,
-                    Action::PreviewPngReset => self.preview_png_reset = chords,
-                    Action::PreviewPngPanLeft => self.preview_png_pan_left = chords,
-                    Action::PreviewPngPanRight => self.preview_png_pan_right = chords,
-                    Action::PreviewPngPanUp => self.preview_png_pan_up = chords,
-                    Action::PreviewPngPanDown => self.preview_png_pan_down = chords,
-                    Action::PreviewScalebarToggle => self.preview_scalebar_toggle = chords,
-                    Action::SessionCreate => self.session_create = chords,
-                    Action::SessionCreateBare => self.session_create_bare = chords,
-                    Action::SessionCreateCodex => self.session_create_codex = chords,
-                    Action::ModeFiles => self.mode_files = chords,
-                    Action::ModeModules => self.mode_modules = chords,
-                    Action::ModeSessions => self.mode_sessions = chords,
-                    Action::ModeHosts => self.mode_hosts = chords,
-                    Action::ToggleHidden => self.toggle_hidden = chords,
-                    Action::ToggleReplDrawer => self.toggle_repl_drawer = chords,
-                    Action::ToggleTerminalDrawer => self.toggle_terminal_drawer = chords,
-                    Action::ToggleMonitorDrawer => self.toggle_monitor_drawer = chords,
-                    Action::FocusPaneLeft => self.focus_pane_left = chords,
-                    Action::FocusPaneRight => self.focus_pane_right = chords,
-                    Action::FocusPaneUp => self.focus_pane_up = chords,
-                    Action::FocusPaneDown => self.focus_pane_down = chords,
-                    Action::WorkspaceCycleNext => self.workspace_cycle_next = chords,
-                    Action::WorkspaceCyclePrev => self.workspace_cycle_prev = chords,
-                    Action::Quit => self.quit = chords,
-                    Action::ToggleHelp => self.toggle_help = chords,
-                    Action::ToggleFullscreen => self.toggle_fullscreen = chords,
-                    Action::Reconnect => self.reconnect = chords,
-                    Action::FontScaleUp => self.font_scale_up = chords,
-                    Action::FontScaleDown => self.font_scale_down = chords,
-                    Action::FontScaleReset => self.font_scale_reset = chords,
-                    Action::Selfie => self.selfie = chords,
-                }
-            }
-        }
-    }
-
-    /// Does the runtime key event match any chord bound to `action`?
-    pub fn matches(&self, action: Action, key: &Key, ctrl: bool, alt: bool, shift: bool) -> bool {
-        let list = match action {
-            Action::MaximizePane => &self.maximize_pane,
-            Action::RestoreLayout => &self.restore_layout,
-            Action::ToggleWidePreview => &self.toggle_wide_preview,
-            Action::PreviewPngZoomIn => &self.preview_png_zoom_in,
-            Action::PreviewPngZoomOut => &self.preview_png_zoom_out,
-            Action::PreviewPngReset => &self.preview_png_reset,
-            Action::PreviewPngPanLeft => &self.preview_png_pan_left,
-            Action::PreviewPngPanRight => &self.preview_png_pan_right,
-            Action::PreviewPngPanUp => &self.preview_png_pan_up,
-            Action::PreviewPngPanDown => &self.preview_png_pan_down,
-            Action::PreviewScalebarToggle => &self.preview_scalebar_toggle,
-            Action::SessionCreate => &self.session_create,
-            Action::SessionCreateBare => &self.session_create_bare,
-            Action::SessionCreateCodex => &self.session_create_codex,
-            Action::ModeFiles => &self.mode_files,
-            Action::ModeModules => &self.mode_modules,
-            Action::ModeSessions => &self.mode_sessions,
-            Action::ModeHosts => &self.mode_hosts,
-            Action::ToggleHidden => &self.toggle_hidden,
-            Action::ToggleReplDrawer => &self.toggle_repl_drawer,
-            Action::ToggleTerminalDrawer => &self.toggle_terminal_drawer,
-            Action::ToggleMonitorDrawer => &self.toggle_monitor_drawer,
-            Action::FocusPaneLeft => &self.focus_pane_left,
-            Action::FocusPaneRight => &self.focus_pane_right,
-            Action::FocusPaneUp => &self.focus_pane_up,
-            Action::FocusPaneDown => &self.focus_pane_down,
-            Action::WorkspaceCycleNext => &self.workspace_cycle_next,
-            Action::WorkspaceCyclePrev => &self.workspace_cycle_prev,
-            Action::Quit => &self.quit,
-            Action::ToggleHelp => &self.toggle_help,
-            Action::ToggleFullscreen => &self.toggle_fullscreen,
-            Action::Reconnect => &self.reconnect,
-            Action::FontScaleUp => &self.font_scale_up,
-            Action::FontScaleDown => &self.font_scale_down,
-            Action::FontScaleReset => &self.font_scale_reset,
-            Action::Selfie => &self.selfie,
-        };
-        list.iter().any(|c| c.matches(key, ctrl, alt, shift))
-    }
+    value
 }
 
 /// Pull a value off the right of `key = ...`. Supports a single quoted
@@ -555,12 +509,23 @@ impl KeyBindings {
 fn parse_value(v: &str) -> Vec<String> {
     let v = v.trim();
     if let Some(inner) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-        inner
-            .split(',')
-            .map(str::trim)
-            .map(strip_quotes)
-            .filter(|s| !s.is_empty())
-            .collect()
+        let mut values = Vec::new();
+        let mut quote = None;
+        let mut start = 0;
+        for (i, c) in inner.char_indices() {
+            if Some(c) == quote {
+                quote = None;
+            } else if quote.is_none() && matches!(c, '\'' | '"') {
+                quote = Some(c);
+            } else if c == ',' && quote.is_none() {
+                values.push(strip_quotes(inner[start..i].trim()));
+                start = i + 1;
+            }
+        }
+        if !inner[start..].trim().is_empty() {
+            values.push(strip_quotes(inner[start..].trim()));
+        }
+        values
     } else {
         vec![strip_quotes(v)]
     }
@@ -740,5 +705,182 @@ mod tests {
         assert!(b.matches(Action::Selfie, &lower, true, false, true));
         // Ctrl without Shift must NOT trigger it.
         assert!(!b.matches(Action::Selfie, &s, true, false, false));
+    }
+    #[test]
+    fn help_supports_control_question_mark_and_remapping() {
+        let mut b = KeyBindings::defaults();
+        let q = Key::Character("?".into());
+        let modifiers = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(
+            b.resolve(&q, Some(&Key::Character("/".into())), modifiers, |_| true),
+            Some(Action::ToggleHelp)
+        );
+        assert_eq!(b.resolve(&q, None, Modifiers::default(), |_| true), None);
+        b.merge_text("help.toggle = \"Cmd+Shift+/\"");
+        assert_eq!(
+            b.resolve(
+                &q,
+                Some(&Key::Character("/".into())),
+                Modifiers {
+                    super_: true,
+                    shift: true,
+                    ..Modifiers::default()
+                },
+                |_| true
+            ),
+            Some(Action::ToggleHelp)
+        );
+        assert_ne!(
+            b.resolve(&q, None, modifiers, |_| true),
+            Some(Action::ToggleHelp)
+        );
+        assert_eq!(b.labels_for(Action::ToggleHelp, true), "⇧⌘/");
+    }
+    #[test]
+    fn control_command_shift_and_text_case_are_distinct() {
+        let b = KeyBindings::defaults();
+        let c = crate::help::Context {
+            file: Some("fit.jl".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            b.resolve(
+                &Key::Character("r".into()),
+                None,
+                Modifiers::default(),
+                |a| c.allows(a)
+            ),
+            Some(Action::RunFresh)
+        );
+        assert_eq!(
+            b.resolve(
+                &Key::Character("R".into()),
+                None,
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                },
+                |a| c.allows(a)
+            ),
+            Some(Action::RunCurrent)
+        );
+        let image = crate::help::Context {
+            pane: crate::help::Pane::Preview,
+            image: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            b.resolve(
+                &Key::Character("s".into()),
+                None,
+                Modifiers {
+                    super_: true,
+                    ..Modifiers::default()
+                },
+                |a| image.allows(a)
+            ),
+            None
+        );
+        assert_eq!(
+            b.resolve(
+                &Key::Character("S".into()),
+                None,
+                Modifiers {
+                    ctrl: true,
+                    shift: true,
+                    ..Modifiers::default()
+                },
+                |a| image.allows(a)
+            ),
+            Some(Action::Selfie)
+        );
+        assert_eq!(
+            b.resolve(
+                &Key::Named(NamedKey::ArrowUp),
+                None,
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                },
+                |a| image.allows(a)
+            ),
+            Some(Action::PreviewPngZoomIn)
+        );
+    }
+    #[test]
+    fn remapped_file_actions_and_conflicts_are_honest() {
+        let mut b = KeyBindings::defaults();
+        b.merge_text("files.run_fresh = \"F8\"\npane.maximize = \"Ctrl+m\"");
+        let c = crate::help::Context {
+            file: Some("fit.jl".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            b.resolve(&Key::Named(NamedKey::F8), None, Modifiers::default(), |a| c
+                .allows(a)),
+            Some(Action::RunFresh)
+        );
+        assert_eq!(
+            b.resolve(
+                &Key::Character("r".into()),
+                None,
+                Modifiers::default(),
+                |a| c.allows(a)
+            ),
+            None
+        );
+        assert!(b
+            .active_labels(Action::ToggleMonitorDrawer, |a| c.allows(a))
+            .is_empty());
+        assert_eq!(
+            b.active_labels(Action::MaximizePane, |a| c.allows(a)).len(),
+            1
+        );
+    }
+    #[test]
+    fn option_letter_uses_layout_base_and_punctuation_keeps_identity() {
+        let c = Chord::parse("Option+z").unwrap();
+        assert!(c.matches_input(
+            &Key::Character("Ω".into()),
+            Some(&Key::Character("z".into())),
+            Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            }
+        ));
+        assert!(!Chord::parse("Alt+=").unwrap().matches_input(
+            &Key::Character("+".into()),
+            Some(&Key::Character("=".into())),
+            Modifiers {
+                alt: true,
+                shift: true,
+                ..Modifiers::default()
+            }
+        ));
+        let mut b = KeyBindings::defaults();
+        b.merge_text("help.toggle = [\"Ctrl+,\", \"#\"] # comment");
+        assert_eq!(b.labels_for(Action::ToggleHelp, false), "Ctrl+, / #");
+    }
+    #[test]
+    fn primary_uses_frontend_os_and_control_never_becomes_command() {
+        let primary = Chord::parse("Primary+p").unwrap();
+        assert_eq!(primary.super_, cfg!(target_os = "macos"));
+        assert_eq!(primary.ctrl, !cfg!(target_os = "macos"));
+        let control = Chord::parse("Control+p").unwrap();
+        assert!(control.ctrl && !control.super_);
+        assert_eq!(control.label(true), "⌃P");
+        let command = Chord::parse("Command+p").unwrap();
+        assert!(command.super_ && !command.ctrl);
+        assert_eq!(command.label(true), "⌘P");
+        let win = Chord::parse("Win+p").unwrap();
+        assert_eq!(win, command);
+        assert_eq!(
+            win.label(false),
+            if cfg!(windows) { "Win+P" } else { "Super+P" }
+        );
     }
 }

@@ -1,7 +1,7 @@
 # The Panes
 
 Ship of Tools is a **four-pane** window over a **shared bottom drawer**. The panes
-are fixed in role; the drawer swaps between three contents. Every pane is
+are fixed in role; the drawer swaps between four contents. Every pane is
 keyboard-driven and every chord is rebindable — see
 [Keybindings](../../ref/keybindings.md).
 
@@ -44,6 +44,13 @@ than stacking:
 
 Drawer toggles are **global** — they fire even when another pane holds focus.
 
+## Help drawer
+
+**F1** opens the Help drawer for the pane you were using. Type to search, use
+arrows to select an action, Tab to browse all panes, and Enter to open its manual.
+Escape restores the previous drawer and focus. The Help view preserves its source
+context while you read; switching away leaves Julia and terminal processes running.
+
 ## Focus and layout
 
 | Action | Key |
@@ -54,7 +61,8 @@ Drawer toggles are **global** — they fire even when another pane holds focus.
 | Wide-preview: hide the LLM column, hand its width to the preview | `Alt++` |
 | Restore the layout, one layer per press (un-maximize, then exit wide-preview) | `Esc` (only while maximized or in wide-preview) |
 | Cycle the active workspace | `Shift+Arrow` |
-| Help overlay (build-current keymap) | `?` |
+| Temporary pane actions / promote to Help drawer | `Ctrl+?` / press again |
+| Open Help directly | `F1` |
 
 Plain arrows, `Ctrl+Arrow`, and `Shift+Arrow` are three disjoint roles, so they
 never collide. The authoritative, build-current chord list is in

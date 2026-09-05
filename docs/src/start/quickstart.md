@@ -63,7 +63,8 @@ A handful of keys get you moving immediately:
 | `Ctrl+J` | toggle the **REPL** drawer — a persistent Julia session |
 | `Ctrl+T` | toggle the **Terminal** drawer — a local shell |
 | `Ctrl+Arrow` | move focus between the four panes |
-| `?` | the in-app help overlay — the live, authoritative keymap |
+| `Ctrl+?` | pane actions for five seconds; press again to browse Help |
+| `F1` | the searchable Help drawer, showing your loaded shortcuts |
 
 That's enough to look around, run code, and get help from inside the app.
 For the rest of the panes, drawers, and modes, walk through

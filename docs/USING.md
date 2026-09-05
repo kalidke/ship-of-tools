@@ -11,6 +11,15 @@ preview, orchestrator, REPL) lets you steer, watch, and review while the agent
 writes and runs the code. It is opinionated by design — the layout isn't
 configured, it's built around one workflow.
 
+## Help while you work
+
+The focused pane's border shows relevant shortcuts. Press **Ctrl+?** for a
+five-second action overlay, then press it again for the persistent **Help drawer**.
+**F1** opens Help directly. Search actions, inspect their current bindings, and
+follow their manual links. Help shares the drawer with Julia, Terminal and Monitor;
+Julia continues running when another drawer view is shown. Escape returns you to
+where you were working. See `docs/src/ref/keybindings.md` for configuration.
+
 ## Ask the app, not just the docs
 
 Your workspace's Claude Code agent — running in the **orchestrator pane**

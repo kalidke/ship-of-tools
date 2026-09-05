@@ -9,15 +9,16 @@
 # fall through to the default. Multiple chords per action: use a list.
 #
 # Chord grammar: zero or more modifier+ tokens followed by one key.
-#   modifiers: ctrl, alt (alias: option, meta), shift  (case-insensitive)
+#   modifiers: ctrl, alt (option, legacy meta), shift, super (cmd, command, win)
+#              primary = Command on macOS, Control elsewhere (case-insensitive)
 #   key:       a single character ("=", "z", "+") OR a NamedKey
 #              (Tab, Enter, Escape, Space, Backspace, Delete, ArrowUp,
 #              ArrowDown, ArrowLeft, ArrowRight, PageUp, PageDown,
 #              Home, End)
 #
-# Shift is enforced only when the chord declares it — typing `+` already
-# carries shift on a US layout, so writing `Alt+=` matches both `=` and `+`
-# when alt is held; writing `Alt+Shift+=` enforces the shift state.
+# Letters and named keys match Shift exactly: r and Shift+r are distinct.
+# Punctuation uses the typed character: Alt++ binds plus, Alt+= binds equals.
+# macOS labels distinguish Control (⌃), Command (⌘), Option (⌥), and Shift (⇧).
 
 [keys]
 # Maximise the focused pane to fill the window.
@@ -34,9 +35,7 @@ layout.wide_preview = "Alt++"
 # Sessions picker — commit the cursored directory as a new workspace.
 #   session.create      → start the comm-aware agent (ccb) in the pane
 #   session.create_bare → bare session, NO LLM agent (plain shell/REPL)
-# session.create_bare is matched BEFORE session.create, so a non-shift
-# session.create chord still fires when its shifted bare variant is held —
-# keep create_bare on a strictly-more-specific chord (e.g. add Shift).
+# Enter and Shift+Enter are distinct chords.
 session.create = "Enter"
 session.create_bare = "Shift+Enter"
 # Mode switches (active only in nav focus — single-char chords stay literal
@@ -63,7 +62,8 @@ workspace.cycle_next = "Shift+ArrowRight"
 workspace.cycle_prev = "Shift+ArrowLeft"
 # Global chrome.
 quit = "Ctrl+q"                 # nav focus only (won't fire in the pty panes)
-help.toggle = "?"               # nav / preview focus, outside edit mode
+help.toggle = "Ctrl+?"          # five-second pane overlay; again opens Help
+drawer.help = "F1"              # open/close the persistent Help drawer
 view.fullscreen = "F11"
 transport.reconnect = "F5"
 # Font scale. "=" and shifted "+" both zoom in; "-" and "_" both zoom out.
