@@ -640,6 +640,21 @@ pub struct WorkspaceInfo {
     pub phase: Option<String>,
 }
 
+impl WorkspaceInfo {
+    /// The 2026-09-04 amendment's inert anchor: a default row that is a
+    /// Windows capsule and has never been seeded an agent. Shared by every
+    /// consumer that must not treat this row as a session — the Sessions
+    /// tree (`session_host_children`, gpu.rs) and the bottom session strip's
+    /// cache build (`fresh_workspace_caches`, gpu.rs), so the two never
+    /// drift on what "inert" means. Deliberately narrower than a bare
+    /// `is_default && agent == "none"`: a TMUX default row with no agent is
+    /// a shared backend's own `.SoT` row (the SoT LLM lives in the drawer,
+    /// not as a workspace agent) and must stay visible.
+    pub(crate) fn is_inert_anchor(&self) -> bool {
+        self.is_default && self.agent == "none" && self.runtime == "capsule"
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkspaceCreatedInfo {
     #[allow(dead_code)] // exposed by the protocol; frontend currently

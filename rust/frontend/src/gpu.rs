@@ -2231,9 +2231,12 @@ fn expand_hosts_root(tree: &mut TreeView, mode: Mode, children: Vec<TreeNode>) -
 /// `workspace.list` still returns it (`is_default: true`, needed so the
 /// daemon still has a fallback workspace and the FE's own
 /// `default_workspace_slug` bookkeeping still resolves), but this is the
-/// ONE place that turns that list into visible rows, so filtering here
-/// is enough to keep it off the Sessions tree everywhere (the `[+ create
-/// new]` row and the user's own sessions are all that remain).
+/// ONE place that turns that list into visible TREE rows, so filtering
+/// here is enough to keep it off the Sessions tree (the `[+ create new]`
+/// row and the user's own sessions are all that remain). The bottom
+/// session STRIP is a separate list (`fresh_workspace_caches`, below) —
+/// same amendment applies there via the same
+/// `WorkspaceInfo::is_inert_anchor` predicate so the two never drift.
 ///
 /// The `runtime == "capsule"` leg matters: a shared backend's own
 /// default row (`.SoT`, `runtime == "tmux"`) ALSO carries `agent ==
@@ -2262,7 +2265,7 @@ fn session_host_children(
     let mut kids = vec![create_row];
     kids.extend(
         list.iter()
-            .filter(|w| !(w.is_default && w.agent == "none" && w.runtime == "capsule"))
+            .filter(|w| !w.is_inert_anchor())
             .map(|w| State::build_session_row(host, w)),
     );
     kids
@@ -2370,6 +2373,13 @@ fn pane_tree_children(
 /// unit-testable. `default_workspace_slug` resolves only from
 /// `active_host`'s own flagged row — "the default workspace of the
 /// connection we're on".
+///
+/// 2026-09-05: an inert-anchor row (`WorkspaceInfo::is_inert_anchor`,
+/// shared with `session_host_children`'s tree filter) is excluded from
+/// `workspace_slugs`/`workspace_labels` — see the inline comment below for
+/// what stays and why. Without this the row was invisible in the Sessions
+/// TREE (#202) but still showed up in the bottom session STRIP, which is
+/// built from this function, not from the tree.
 fn fresh_workspace_caches(
     ordered_hosts: &[HostKey],
     lists: &HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>>,
@@ -2393,12 +2403,15 @@ fn fresh_workspace_caches(
         };
         for w in list {
             let ws_key: WsKey = (host.clone(), w.slug.clone());
-            let label = if w.label.is_empty() {
-                w.slug.clone()
-            } else {
-                w.label.clone()
-            };
-            out.workspace_labels.insert(ws_key.clone(), label);
+            let is_inert = w.is_inert_anchor();
+            if !is_inert {
+                let label = if w.label.is_empty() {
+                    w.slug.clone()
+                } else {
+                    w.label.clone()
+                };
+                out.workspace_labels.insert(ws_key.clone(), label);
+            }
             out.workspace_project_roots
                 .insert(ws_key.clone(), w.project_root.clone());
             out.workspace_states.insert(
@@ -2411,7 +2424,19 @@ fn fresh_workspace_caches(
                 out.repl_lifecycle
                     .insert(ws_key.clone(), w.repl_state.clone());
             }
-            out.workspace_slugs.push(ws_key.clone());
+            // The inert anchor (session_host_children's filter, above) must
+            // be hidden from the bottom STRIP too — not pushed into
+            // `workspace_slugs`, the list the strip iterates to render rows
+            // and workspace-cycle keybindings walk (`workspace_labels`
+            // above is likewise skipped: no label to render). Everything
+            // else here is kept: `workspace_project_roots` /
+            // `workspace_id_slugs` are harmless (the daemon still lists the
+            // row), and `default_workspace_slug` below is the strip's own
+            // active-index fallback — it must still resolve to this row
+            // when it's the connection's default.
+            if !is_inert {
+                out.workspace_slugs.push(ws_key.clone());
+            }
             let tmux_key: WsKey = tmux_session_key(&host, &w.tmux_session);
             out.workspace_autostart.insert(
                 tmux_key.clone(),
@@ -25829,6 +25854,68 @@ mod tests {
         let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
         assert!(fresh.workspace_slugs.is_empty());
         assert!(fresh.default_workspace_slug.is_none());
+    }
+
+    #[test]
+    fn fresh_workspace_caches_hides_the_inert_anchor_from_the_strip_but_keeps_its_default_slug() {
+        // The bottom session strip is built from workspace_slugs/labels,
+        // NOT from session_host_children's tree — so the same inert-anchor
+        // amendment (2026-09-04) must be applied here too, or the strip
+        // still shows a row the tree hides (the bug this test module is
+        // extended for). `default_workspace_slug` must still resolve to
+        // the anchor: it's the strip's own active-index fallback.
+        let host: HostKey = "local".to_string();
+        let mut anchor = ws_info("sot", "sot-be-sot");
+        anchor.is_default = true;
+        anchor.agent = "none".to_string();
+        anchor.runtime = "capsule".to_string();
+        let list = vec![anchor];
+        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        lists.insert(host.clone(), list);
+        let ordered = vec![host.clone()];
+        let fresh = fresh_workspace_caches(&ordered, &lists, &host);
+
+        let anchor_key: WsKey = (host.clone(), "sot".to_string());
+        assert!(
+            fresh.workspace_slugs.is_empty(),
+            "the inert anchor must not be pushed into workspace_slugs: {:?}",
+            fresh.workspace_slugs
+        );
+        assert!(
+            !fresh.workspace_labels.contains_key(&anchor_key),
+            "the inert anchor must get no label"
+        );
+        assert_eq!(
+            fresh.default_workspace_slug.as_deref(),
+            Some("sot"),
+            "default_workspace_slug must still name the anchor — the strip's own \
+             active-index fallback needs it"
+        );
+    }
+
+    #[test]
+    fn fresh_workspace_caches_keeps_a_default_tmux_row_with_no_agent_in_the_strip() {
+        // A shared backend's own `.SoT` default row (runtime == "tmux",
+        // agent == "none") is NOT the inert anchor — the SoT LLM lives in
+        // the drawer there, not as a workspace agent — and must stay a
+        // normal, visible strip entry exactly as before this amendment.
+        let host: HostKey = "local".to_string();
+        let mut default_row = ws_info("sot", "sot-be-sot");
+        default_row.is_default = true;
+        default_row.agent = "none".to_string();
+        default_row.runtime = "tmux".to_string();
+        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        lists.insert(host.clone(), vec![default_row]);
+        let ordered = vec![host.clone()];
+        let fresh = fresh_workspace_caches(&ordered, &lists, &host);
+
+        let key: WsKey = (host.clone(), "sot".to_string());
+        assert!(
+            fresh.workspace_slugs.contains(&key),
+            "a default TMUX row with no agent stays in workspace_slugs: {:?}",
+            fresh.workspace_slugs
+        );
+        assert!(fresh.workspace_labels.contains_key(&key));
     }
 
     /// A fake `req_tx`: `Vec<(HostKey, UnboundedSender<OutgoingReq>)>` is
