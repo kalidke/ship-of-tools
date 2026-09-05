@@ -1639,9 +1639,11 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     # fresh, not-yet-allowlisted name so this test forces a deliberate
     # choice about it. `c` is sot-fe's fe_cmd — always one of a small
     # fixed set of literal verbs from a case dispatch, never raw text.
+    # `ag` is comm-spawn.sh's --agent kind — validated to `claude|codex`
+    # before it is ever bound, never raw text.
     # A line whose first non-blank character is '#' is skipped entirely
     # (a prose mention of `--arg NAME`, not a real binding).
-    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p "
+    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag "
     local bad="" dir file name line match comment_lines
     dir="$(cd "$SCRIPTS_DIR/../../adapters/claude/hooks" && pwd)"
     for file in "$SCRIPTS_DIR"/*.sh "$SCRIPTS_DIR/sot-fe" "$dir"/*.sh; do

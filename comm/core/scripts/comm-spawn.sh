@@ -20,6 +20,9 @@
 #                 silently absorb an existing one even if it shares a project
 #                 root. The legacy two-positional form (`<name> <repo-path>`)
 #                 still works and is equivalent to passing --name.
+#   --agent       agent kind for the workspace row: claude (default) | codex
+#                 (ADR 0031). The daemon launches ccb or ccx accordingly on the
+#                 tmux path; --no-workspace mode launches the same pair directly.
 #   --label       FE workspace label (default: basename of repo-path); guarded to
 #                 the repo basename so a session stays findable next to its repo.
 #   --display-label  FE label that deliberately DIFFERS from the repo basename
@@ -87,7 +90,7 @@ SOT_TMUX_SOCK="$(sot_tmux_socket)" \
 # once TASK is known, rather than handed a placeholder nothing can reach.
 SPAWNER="$NAME"
 
-NAME=""; REPO_PATH=""; EXPERTISE=""; TASK=""; LABEL=""; DISPLAY_LABEL=""; ENDPOINT=""; NO_WS=false
+NAME=""; REPO_PATH=""; EXPERTISE=""; TASK=""; LABEL=""; DISPLAY_LABEL=""; ENDPOINT=""; NO_WS=false; AGENT="claude"
 NAME_FLAG=""; POSITIONAL=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -95,6 +98,8 @@ while [ $# -gt 0 ]; do
         --name=*)        NAME_FLAG="${1#--name=}"; shift ;;
         --expertise)     EXPERTISE="$2"; shift 2 ;;
         --task)          TASK="$2"; shift 2 ;;
+        --agent)         AGENT="$2"; shift 2 ;;
+        --agent=*)       AGENT="${1#--agent=}"; shift ;;
         --label)         LABEL="$2"; shift 2 ;;
         --display-label) DISPLAY_LABEL="$2"; shift 2 ;;
         --endpoint)      ENDPOINT="$2"; shift 2 ;;
@@ -126,7 +131,11 @@ fi
 case "${#POSITIONAL[@]}" in
     1) REPO_PATH="${POSITIONAL[0]}" ;;
     2) NAME="${POSITIONAL[0]}"; REPO_PATH="${POSITIONAL[1]}" ;;
-    *) echo "usage: comm-spawn.sh [--name NAME] <repo-path> [--expertise \"...\"] [--task \"...\"] [--label L] [--no-workspace]" >&2; exit 1 ;;
+    *) echo "usage: comm-spawn.sh [--name NAME] <repo-path> [--agent claude|codex] [--expertise \"...\"] [--task \"...\"] [--label L] [--no-workspace]" >&2; exit 1 ;;
+esac
+case "$AGENT" in
+    claude|codex) ;;
+    *) echo "ERROR: --agent must be claude or codex (got '$AGENT')" >&2; exit 1 ;;
 esac
 if [ -n "$NAME_FLAG" ]; then
     if [ -n "$NAME" ]; then
@@ -304,7 +313,7 @@ if [ -n "${SOT_COMM_LAUNCH:-}" ]; then
 else
     LAUNCH="SOT_COMM_NAME=$(printf '%q' "$NAME")"
     [ -n "$EXPERTISE" ] && LAUNCH="$LAUNCH SOT_COMM_EXPERTISE=$(printf '%q' "$EXPERTISE")"
-    LAUNCH="$LAUNCH $HOME/.local/bin/ccb"
+    LAUNCH="$LAUNCH $HOME/.local/bin/$([ "$AGENT" = codex ] && echo ccx || echo ccb)"
 fi
 WAIT="${SOT_COMM_SPAWN_WAIT:-6}"
 BIN="$COMM_HOME/bin"
@@ -443,8 +452,11 @@ else
     # "/" — neither may reach jq via --arg.
     SPAWN_LABEL_FILE="$(sot_jq_rawfile "$LABEL")" || exit 1
     SPAWN_PATH_FILE="$(sot_jq_rawfile "$REPO_PATH")" || exit 1
-    REQ="$(jq -nc --rawfile l "$SPAWN_LABEL_FILE" --rawfile p "$SPAWN_PATH_FILE" --arg an "$NAME" \
-        '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:$p,autostart_claude:true,agent_name:$an,task:"",boot:true}}')"
+    # agent: explicit kind (ADR 0031) — the daemon's tmux launcher picks ccb/ccx
+    # by it; autostart_claude stays true as the legacy fallback an older daemon
+    # derives the kind from.
+    REQ="$(jq -nc --rawfile l "$SPAWN_LABEL_FILE" --rawfile p "$SPAWN_PATH_FILE" --arg an "$NAME" --arg ag "$AGENT" \
+        '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:$p,autostart_claude:true,agent:$ag,agent_name:$an,task:"",boot:true}}')"
     rm -f "$SPAWN_LABEL_FILE" "$SPAWN_PATH_FILE"
     RESP="$(sot_send "$REQ" workspace.create || true)"
     SLUG="$(printf '%s' "$RESP" | jq -r '.payload.slug // empty' 2>/dev/null || true)"
@@ -483,11 +495,11 @@ else
     # owns the terminal; a detached session can't init claude). The agent joins
     # comm + reads its repo CLAUDE.md; nothing is pasted.
     [ -n "$SPAWNER" ] && with_lock registry_touch "$SPAWNER" 2>/dev/null || true
-    echo "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (autostart_claude=true; NO brief — agent uses its repo CLAUDE.md)."
+    echo "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (agent=${AGENT}, autostart; NO brief — agent uses its repo CLAUDE.md / AGENTS.md)."
     if [ -n "$SPAWNER" ]; then
-        echo "The FE auto-starts ccb on first attach; the agent joins comm (~1 min) and reports to @${SPAWNER}."
+        echo "The daemon/FE auto-starts $([ "$AGENT" = codex ] && echo ccx || echo ccb) on first attach; the agent joins comm (~1 min) and reports to @${SPAWNER}."
     else
-        echo "The FE auto-starts ccb on first attach; the agent joins comm (~1 min). This spawning session has no resolved identity of its own, so give the agent an explicit reply target if one is needed."
+        echo "The daemon/FE auto-starts $([ "$AGENT" = codex ] && echo ccx || echo ccb) on first attach; the agent joins comm (~1 min). This spawning session has no resolved identity of its own, so give the agent an explicit reply target if one is needed."
     fi
 fi
 # Deliver any --task as an ordinary durable comm message (NOT a startup brief):
