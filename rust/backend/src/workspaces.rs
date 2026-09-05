@@ -644,6 +644,22 @@ impl Workspaces {
         g.default_id.clone()
     }
 
+    /// ADR 0042 amendment (owner ruling, 2026-09-04): is `ws` this
+    /// daemon's default row in its INERT ANCHOR state — the fallback
+    /// row that browses the machine's files but is NOT a session? True
+    /// only for the default row, with no agent, on the capsule runtime:
+    /// the runtime term is load-bearing, not redundant — a TMUX default
+    /// row with no agent is a shared backend's ordinary `.SoT` (its pane
+    /// hosts the SoT LLM, a real session) and must never read as the
+    /// anchor. The ONE predicate for every daemon-side consequence of
+    /// "not a session": nothing starts it on attach, and it does not
+    /// claim its root against a real session (the duplicate-root gate).
+    pub fn is_inert_default_anchor(&self, ws: &Workspace) -> bool {
+        ws.agent == "none"
+            && ws.runtime == "capsule"
+            && self.default_id().as_deref() == Some(ws.workspace_id.as_str())
+    }
+
     /// Resolve an optional workspace_id to a workspace handle. `None`
     /// → default. A non-default id that's missing is `None` (caller's
     /// responsibility to error). The returned `Arc` shares the same
@@ -1728,6 +1744,29 @@ mod tests {
         reg.insert(ws);
         reg.set_default(&id);
         assert_eq!(reg.resolve(None).unwrap().slug, "alpha");
+    }
+
+    #[test]
+    fn inert_default_anchor_is_the_default_capsule_row_with_no_agent_only() {
+        let reg = Workspaces::new();
+        let mut row = Workspace::from_label("local", PathBuf::from("/home/u"), false, "none".into(), String::new(), String::new());
+        row.runtime = "capsule".to_string();
+        let row = reg.insert(row);
+        // Not the default yet -> an ordinary (if agent-less) capsule row.
+        assert!(!reg.is_inert_default_anchor(&row));
+        reg.set_default(&row.workspace_id);
+        assert!(reg.is_inert_default_anchor(&row));
+        // Same default row on the tmux runtime: a shared backend's `.SoT`,
+        // a real session -- never the anchor.
+        let mut tmux = Workspace::from_label("local", PathBuf::from("/home/u"), false, "none".into(), String::new(), String::new());
+        tmux.runtime = "tmux".to_string();
+        let tmux = reg.insert(tmux);
+        assert!(!reg.is_inert_default_anchor(&tmux));
+        // Default capsule row that carries an agent: a session, not the anchor.
+        let mut agent = Workspace::from_label("local", PathBuf::from("/home/u"), true, "claude".into(), String::new(), String::new());
+        agent.runtime = "capsule".to_string();
+        let agent = reg.insert(agent);
+        assert!(!reg.is_inert_default_anchor(&agent));
     }
 
     #[test]

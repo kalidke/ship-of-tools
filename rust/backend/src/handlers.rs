@@ -2740,27 +2740,29 @@ pub async fn handle_math_render(
 
 /// Duplicate-root gate lookup (ADR 0036 Phase 1): the first registered
 /// workspace whose `project_root` canonicalizes to `candidate_canon` while
-/// carrying a slug OTHER than `incoming_slug`. Same-slug matches are
-/// deliberately invisible here — a same-slug create is the id-preserving
-/// metadata refresh `Workspaces::insert` has always performed, and boot/spawn
-/// flows rely on that idempotence. A registered root that no longer
-/// canonicalizes (deleted dir, dangling symlink) is skipped, not fatal:
-/// judging that workspace is the Phase 2 reap's job, not the create path's.
+/// carrying a slug OTHER than `incoming_slug` — excluding the inert default
+/// anchor (`Workspaces::is_inert_default_anchor`, ADR 0042 amendment): it is
+/// not a session and never runs an agent, so a real session at its root (a
+/// local host's home dir) is not the two-agents-one-tree collision this gate
+/// refuses. Same-slug matches are deliberately invisible here — a same-slug
+/// create is the id-preserving metadata refresh `Workspaces::insert` has
+/// always performed, and boot/spawn flows rely on that idempotence. A
+/// registered root that no longer canonicalizes (deleted dir, dangling
+/// symlink) is skipped, not fatal: judging that workspace is the Phase 2
+/// reap's job, not the create path's.
 fn find_other_workspace_with_root(
     candidate_canon: &std::path::Path,
     incoming_slug: &str,
-    workspaces: &[std::sync::Arc<crate::workspaces::Workspace>],
+    workspaces: &crate::workspaces::Workspaces,
 ) -> Option<std::sync::Arc<crate::workspaces::Workspace>> {
-    workspaces
-        .iter()
-        .find(|w| {
-            w.slug != incoming_slug
-                && w.project_root
-                    .canonicalize()
-                    .map(|c| c == candidate_canon)
-                    .unwrap_or(false)
-        })
-        .cloned()
+    workspaces.list().into_iter().find(|w| {
+        w.slug != incoming_slug
+            && !workspaces.is_inert_default_anchor(w)
+            && w.project_root
+                .canonicalize()
+                .map(|c| c == candidate_canon)
+                .unwrap_or(false)
+    })
 }
 
 /// Canonicalizes `path` and returns it if it resolves under `root`'s
@@ -3790,7 +3792,7 @@ pub async fn handle_workspace_create(
     match project_root.canonicalize() {
         Ok(canon) => {
             if let Some(existing) =
-                find_other_workspace_with_root(&canon, &incoming_slug, &workspaces.list())
+                find_other_workspace_with_root(&canon, &incoming_slug, workspaces)
             {
                 let payload = json!({
                     "error": format!(
@@ -5096,9 +5098,8 @@ fn into_proto_pane(p: crate::tmux::PaneInfo) -> TmuxPane {
 #[cfg(test)]
 mod duplicate_root_tests {
     use super::find_other_workspace_with_root;
-    use crate::workspaces::Workspace;
+    use crate::workspaces::{Workspace, Workspaces};
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
 
     /// Unique on-disk dir per test (no tempfile dev-dep; pid + a counter keep
     /// parallel tests from colliding). Never cleaned up — OS temp is fine.
@@ -5115,21 +5116,22 @@ mod duplicate_root_tests {
         d
     }
 
-    fn ws(label: &str, root: &Path) -> Arc<Workspace> {
-        Arc::new(Workspace::from_label(
-            label,
-            root.to_path_buf(),
-            false,
-            "none".into(),
-            String::new(),
-            String::new(),
-        ))
+    fn ws(label: &str, root: &Path) -> Workspace {
+        Workspace::from_label(label, root.to_path_buf(), false, "none".into(), String::new(), String::new())
+    }
+
+    fn reg(rows: Vec<Workspace>) -> Workspaces {
+        let r = Workspaces::new();
+        for w in rows {
+            r.insert(w);
+        }
+        r
     }
 
     #[test]
     fn same_root_different_slug_is_found() {
         let root = scratch_dir("hit");
-        let existing = vec![ws("sot", &root)];
+        let existing = reg(vec![ws("sot", &root)]);
         let canon = root.canonicalize().unwrap();
         let hit = find_other_workspace_with_root(&canon, "ship-of-tools", &existing)
             .expect("a second identity for one root must be caught");
@@ -5141,7 +5143,7 @@ mod duplicate_root_tests {
         // A same-slug create is Workspaces::insert's id-preserving metadata
         // refresh; the gate must not turn that idempotent path into an error.
         let root = scratch_dir("refresh");
-        let existing = vec![ws("sot", &root)];
+        let existing = reg(vec![ws("sot", &root)]);
         let canon = root.canonicalize().unwrap();
         assert!(find_other_workspace_with_root(&canon, "sot", &existing).is_none());
     }
@@ -5150,7 +5152,7 @@ mod duplicate_root_tests {
     fn different_roots_pass() {
         let a = scratch_dir("a");
         let b = scratch_dir("b");
-        let existing = vec![ws("sot", &a)];
+        let existing = reg(vec![ws("sot", &a)]);
         let canon = b.canonicalize().unwrap();
         assert!(find_other_workspace_with_root(&canon, "other", &existing).is_none());
     }
@@ -5165,11 +5167,38 @@ mod duplicate_root_tests {
         let link = std::env::temp_dir().join(format!("sot-duproot-link-{}", std::process::id()));
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(&root, &link).expect("create symlink");
-        let existing = vec![ws("sot", &link)];
+        let existing = reg(vec![ws("sot", &link)]);
         let canon = root.canonicalize().unwrap();
         let hit = find_other_workspace_with_root(&canon, "ship-of-tools", &existing)
             .expect("symlinked duplicate must be caught");
         assert_eq!(hit.slug, "sot");
+    }
+
+    /// ADR 0042 amendment: the inert default anchor (a capsule default row
+    /// with no agent, root = the home dir) is not a session, so a session
+    /// created at that root passes the gate — while the same default row on
+    /// the tmux runtime (a shared backend's `.SoT`, whose pane IS a session)
+    /// is still refused.
+    #[test]
+    fn inert_default_anchor_does_not_block_a_session_at_its_root() {
+        let root = scratch_dir("anchor");
+        let canon = root.canonicalize().unwrap();
+        let existing = Workspaces::new();
+        let mut anchor = ws("local", &root);
+        anchor.runtime = "capsule".to_string();
+        let anchor = existing.insert(anchor);
+        existing.set_default(&anchor.workspace_id);
+        assert!(
+            find_other_workspace_with_root(&canon, "home-session", &existing).is_none(),
+            "the inert anchor must not claim its root against a real session"
+        );
+        // Control: the same default row on the tmux runtime is a real
+        // session and is still caught (same-slug insert keeps the id, so
+        // it stays the default).
+        let mut sot = ws("local", &root);
+        sot.runtime = "tmux".to_string();
+        existing.insert(sot);
+        assert!(find_other_workspace_with_root(&canon, "home-session", &existing).is_some());
     }
 
     #[test]
@@ -5179,7 +5208,7 @@ mod duplicate_root_tests {
         let gone = std::env::temp_dir().join(format!("sot-duproot-gone-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&gone);
         let live = scratch_dir("live");
-        let existing = vec![ws("dead", &gone)];
+        let existing = reg(vec![ws("dead", &gone)]);
         let canon = live.canonicalize().unwrap();
         assert!(find_other_workspace_with_root(&canon, "other", &existing).is_none());
     }
