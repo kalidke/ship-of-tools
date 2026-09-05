@@ -1505,9 +1505,7 @@ where
                         // today, naming a `state_dir` nothing has published
                         // to yet.
                         #[cfg(windows)]
-                        let is_inert_default_anchor = ws.agent == "none"
-                            && ws.runtime == "capsule"
-                            && workspaces.default_id().as_deref() == Some(ws.workspace_id.as_str());
+                        let is_inert_default_anchor = workspaces.is_inert_default_anchor(&ws);
                         #[cfg(windows)]
                         if !is_inert_default_anchor {
                             let ensure_result = match state_root.clone() {

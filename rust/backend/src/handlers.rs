@@ -2738,6 +2738,24 @@ pub async fn handle_math_render(
     }
 }
 
+/// The rows the duplicate-root gate compares against: every registered
+/// workspace EXCEPT the inert default anchor
+/// (`Workspaces::is_inert_default_anchor`, ADR 0042 amendment). The anchor
+/// is not a session — it never runs an agent — so a real session created
+/// at its root (a local host's home dir) is not the two-agents-one-tree
+/// collision the gate exists to refuse (field defect 2026-09-05: a
+/// home-root create on a Windows box was refused `duplicate_root` against
+/// a row the frontend does not even list).
+fn duplicate_root_candidates(
+    workspaces: &crate::workspaces::Workspaces,
+) -> Vec<std::sync::Arc<crate::workspaces::Workspace>> {
+    workspaces
+        .list()
+        .into_iter()
+        .filter(|w| !workspaces.is_inert_default_anchor(w))
+        .collect()
+}
+
 /// Duplicate-root gate lookup (ADR 0036 Phase 1): the first registered
 /// workspace whose `project_root` canonicalizes to `candidate_canon` while
 /// carrying a slug OTHER than `incoming_slug`. Same-slug matches are
@@ -3790,7 +3808,7 @@ pub async fn handle_workspace_create(
     match project_root.canonicalize() {
         Ok(canon) => {
             if let Some(existing) =
-                find_other_workspace_with_root(&canon, &incoming_slug, &workspaces.list())
+                find_other_workspace_with_root(&canon, &incoming_slug, &duplicate_root_candidates(workspaces))
             {
                 let payload = json!({
                     "error": format!(
@@ -5095,8 +5113,8 @@ fn into_proto_pane(p: crate::tmux::PaneInfo) -> TmuxPane {
 
 #[cfg(test)]
 mod duplicate_root_tests {
-    use super::find_other_workspace_with_root;
-    use crate::workspaces::Workspace;
+    use super::{duplicate_root_candidates, find_other_workspace_with_root};
+    use crate::workspaces::{Workspace, Workspaces};
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
@@ -5170,6 +5188,32 @@ mod duplicate_root_tests {
         let hit = find_other_workspace_with_root(&canon, "ship-of-tools", &existing)
             .expect("symlinked duplicate must be caught");
         assert_eq!(hit.slug, "sot");
+    }
+
+    /// ADR 0042 amendment: the inert default anchor (a capsule default row
+    /// with no agent, root = the home dir) is not a session, so a session
+    /// created at that root passes the gate — while the same default row on
+    /// the tmux runtime (a shared backend's `.SoT`, whose pane IS a session)
+    /// is still refused.
+    #[test]
+    fn inert_default_anchor_does_not_block_a_session_at_its_root() {
+        let root = scratch_dir("anchor");
+        let canon = root.canonicalize().unwrap();
+        let reg = Workspaces::new();
+        let mut anchor = Workspace::from_label("local", root.clone(), false, "none".into(), String::new(), String::new());
+        anchor.runtime = "capsule".to_string();
+        let anchor = reg.insert(anchor);
+        reg.set_default(&anchor.workspace_id);
+        assert!(
+            find_other_workspace_with_root(&canon, "home-session", &duplicate_root_candidates(&reg)).is_none(),
+            "the inert anchor must not claim its root against a real session"
+        );
+        // Control: same row, tmux runtime -- a real session, still caught.
+        let mut sot = Workspace::from_label("local", root.clone(), false, "none".into(), String::new(), String::new());
+        sot.runtime = "tmux".to_string();
+        let sot = reg.insert(sot);
+        reg.set_default(&sot.workspace_id);
+        assert!(find_other_workspace_with_root(&canon, "home-session", &duplicate_root_candidates(&reg)).is_some());
     }
 
     #[test]
