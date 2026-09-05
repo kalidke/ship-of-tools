@@ -17,12 +17,15 @@
 #
 # Usage:
 #   comm-worktree-new.sh <shortname> [--base <ref>] [--branch <name>]
-#                        [--task "..."] [--expertise "a, b"] [--no-spawn]
+#                        [--agent claude|codex] [--task "..."] [--expertise "a, b"]
+#                        [--no-spawn]
 #
 #   <shortname>     lowercase [a-z0-9-], <=64 chars. Names the worktree; the
 #                   session becomes <repo>-wt-<shortname>.
 #   --base <ref>    git ref to branch FROM (default: HEAD of the current repo).
 #   --branch <name> branch to CREATE for the worktree (default: wt/<shortname>).
+#   --agent K       agent kind for the spawned session: claude (default) | codex
+#                   (passed through to comm-spawn.sh --agent).
 #   --task "..."    initial instruction handed to the spawned session.
 #   --expertise "..." comma-separated expertise tags for the spawned session.
 #   --no-spawn      create the worktree only; don't spawn a session.
@@ -35,7 +38,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
-SHORT=""; BASE_REF=""; BRANCH=""; TASK=""; EXPERTISE=""; SPAWN=true; SYMLINKS=true; DISPLAY_PREFIX_FLAG=""
+SHORT=""; BASE_REF=""; BRANCH=""; TASK=""; EXPERTISE=""; SPAWN=true; SYMLINKS=true; DISPLAY_PREFIX_FLAG=""; AGENT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)        usage; exit 0 ;;
@@ -46,6 +49,8 @@ while [ $# -gt 0 ]; do
         --base=*)       BASE_REF="${1#--base=}"; shift ;;
         --branch)       BRANCH="$2"; shift 2 ;;
         --branch=*)     BRANCH="${1#--branch=}"; shift ;;
+        --agent)        AGENT="$2"; shift 2 ;;
+        --agent=*)      AGENT="${1#--agent=}"; shift ;;
         --task)         TASK="$2"; shift 2 ;;
         --task=*)       TASK="${1#--task=}"; shift ;;
         --expertise)    EXPERTISE="$2"; shift 2 ;;
@@ -156,7 +161,7 @@ fi
 
 if [ "$SPAWN" != true ]; then
     echo "(--no-spawn) session not started; to spawn later:"
-    echo "  comm-spawn.sh '$HANDLE' '$WT' --display-label '$LABEL'"
+    echo "  comm-spawn.sh '$HANDLE' '$WT' --display-label '$LABEL'${AGENT:+ --agent $AGENT}"
     exit 0
 fi
 
@@ -172,7 +177,7 @@ FULL_TASK="${TASK:+$TASK
 # '.SoT-wt-<short>' grouping prefix). comm-spawn's --label is guarded to the repo
 # basename; --display-label is the explicit decouple (handle stays repo-based).
 "$SCRIPT_DIR/comm-spawn.sh" "$HANDLE" "$WT" --display-label "$LABEL" \
-    ${EXPERTISE:+--expertise "$EXPERTISE"} --task "$FULL_TASK"
+    ${AGENT:+--agent "$AGENT"} ${EXPERTISE:+--expertise "$EXPERTISE"} --task "$FULL_TASK"
 echo "spawned session @$HANDLE bound to $WT"
 
 # Notify the parent/main (skip if the spawner IS the parent and equals HANDLE,
