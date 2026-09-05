@@ -313,6 +313,34 @@ pub enum EndRunOutcome {
     NotEnded(String),
 }
 
+/// The pair invariant, decided from what `sot-capsule.exe build-id`
+/// printed (`reported`, `None` when it printed nothing usable -- a binary
+/// that predates the subcommand answers with its usage on stderr and exit
+/// 2) against this daemon's own lane build id. Both halves of the pair
+/// carry `sot_log::exchange::SUPERVISOR_LANE_BUILD_ID`; the supervisor
+/// hello refuses a mismatch as `version_skew` (ADR 0041 build boundary),
+/// so a capsule spawned from a binary of another build could never be
+/// attached, adopted, ended or destroyed by this daemon -- a dead row that
+/// looked started (field day 2026-09-05: a launcher pair rebuild that had
+/// to leave a pinned `sot-capsule.exe` behind produced exactly that for
+/// every capsule spawned afterwards, with no error anywhere until attach).
+/// Portable so the verdict text is unit-tested on every host.
+pub(crate) fn pair_verdict(reported: Option<&str>, own: &str) -> Result<(), String> {
+    match reported {
+        Some(got) if got == own => Ok(()),
+        got => Err(format!(
+            "sot-capsule.exe build {} does not match this daemon's build {own}: rebuild the pair \
+             (cargo build --release -p sot-backend -p sot-log; a sot-capsule.exe pinned by running \
+             supervisors must be renamed aside first). Rows still held by supervisors of the old \
+             build: end them from a frontend of that build, or kill only their `sot-capsule \
+             supervise` process and attach the row again -- the run leg and the agent in it \
+             survive, and the new supervisor adopts them (the management exchange is not \
+             build-gated); this daemon never adopts or respawns a foreign supervisor on its own",
+            got.unwrap_or("unknown (binary predates `build-id`)")
+        )),
+    }
+}
+
 #[cfg(windows)]
 mod windows_runtime {
     use super::{
@@ -376,6 +404,63 @@ mod windows_runtime {
         Ok(dir.join("sot-capsule.exe"))
     }
 
+    /// Refuse to spawn a capsule from a binary of another build -- see
+    /// `super::pair_verdict`. Runs `sot-capsule.exe build-id` (one line,
+    /// exits at once; no window) under a hard bound: the probe is killed
+    /// and reaped if it has not exited within `PAIR_PROBE_BOUND`, so a
+    /// wedged binary can never hold a runtime worker or a `starting`
+    /// claim open. A mismatch is `ErrorKind::Unsupported` -- the one kind
+    /// the watchdog treats as terminal at once rather than a crash to
+    /// retry. Spawns are rare (attach, boot resume, watchdog restart), so
+    /// the extra process per spawn is not worth a cache.
+    const PAIR_PROBE_BOUND: Duration = Duration::from_secs(5);
+    fn check_pair(sot_capsule_exe: &Path) -> std::io::Result<()> {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut child = std::process::Command::new(sot_capsule_exe)
+            .arg("build-id")
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let deadline = Instant::now() + PAIR_PROBE_BOUND;
+        let status = loop {
+            if let Some(s) = child.try_wait()? {
+                break s;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(
+                    ErrorKind::TimedOut,
+                    format!("sot-capsule.exe build-id did not answer within {PAIR_PROBE_BOUND:?}"),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        if let Some(mut o) = child.stdout.take() {
+            let _ = std::io::Read::read_to_string(&mut o, &mut stdout);
+        }
+        if let Some(mut e) = child.stderr.take() {
+            let _ = std::io::Read::read_to_string(&mut e, &mut stderr);
+        }
+        let reported = stdout.trim();
+        if !status.success() && !stderr.contains("usage:") {
+            // Not the pre-`build-id` binary answering with its usage line:
+            // a real failure to run the probe -- report it as such.
+            return Err(std::io::Error::other(format!(
+                "sot-capsule.exe build-id failed ({status}): {}",
+                stderr.trim()
+            )));
+        }
+        let reported = (status.success() && !reported.is_empty()).then_some(reported);
+        super::pair_verdict(reported, sot_log::exchange::SUPERVISOR_LANE_BUILD_ID)
+            .map_err(|m| std::io::Error::new(ErrorKind::Unsupported, m))
+    }
+
     /// What [`spawn_detached_supervisor`] reports about how the spawn went.
     struct SpawnedSupervisor {
         child: Child,
@@ -416,6 +501,7 @@ mod windows_runtime {
         workspace_id: &str,
         slug: &str,
     ) -> std::io::Result<SpawnedSupervisor> {
+        check_pair(sot_capsule_exe)?;
         let base_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
         let build = |flags: u32, survival: &str| -> Command {
             // `tokio::process::Command` re-exposes `.creation_flags()`
@@ -481,9 +567,36 @@ mod windows_runtime {
             // (closing the handle) the instant this returns.
             Ok((report, _process)) => super::phase_str(report.phase),
             Err(e) => {
+                note_if_foreign(state_dir, &e);
                 tracing::debug!(state_dir = ?state_dir, error = %e, "capsule workspace: supervisor lane unreachable");
                 super::UNREACHABLE_PHASE
             }
+        }
+    }
+
+    /// A supervisor of ANOTHER build answers the hello with `version_skew`
+    /// and the client reports it as `foreign` (`query_status` erases the
+    /// typed `ChallengeOutcome::Foreign` into a state string, hence the
+    /// text match). `phase_of` then reads "unreachable" and every start
+    /// decision treats the row as restartable, but a fresh spawn only
+    /// exits contended against the old fence -- the row is a dead end
+    /// until an operator acts. Say so ONCE per row per daemon lifetime
+    /// (`phase_of` is also the list poll's probe), with the recovery.
+    fn note_if_foreign(state_dir: &Path, e: &dyn std::fmt::Display) {
+        use std::sync::{Mutex, OnceLock};
+        let text = e.to_string();
+        if !text.contains("foreign") {
+            return;
+        }
+        static NOTED: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+        let mut noted = NOTED.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+        if noted.insert(state_dir.to_path_buf()) {
+            tracing::warn!(
+                state_dir = ?state_dir, error = %text,
+                "capsule row is held by a supervisor from ANOTHER build; this daemon cannot attach, adopt, end \
+                 or destroy it. Recovery: end it from a frontend of that build, or kill only its `sot-capsule \
+                 supervise` process and attach the row again (the run leg and its agent survive and are adopted)"
+            );
         }
     }
 
@@ -1063,13 +1176,20 @@ mod windows_runtime {
                                 sot_log::supervisor_client::query_status(&dir)
                             })
                             .await;
-                            if let Ok(Ok((status, process))) = probe {
-                                tracing::info!(
-                                    workspace_id = %workspace_id, phase = phase_str(status.phase),
-                                    "capsule supervisor watchdog: contention resolved -- adopted the surviving lane"
-                                );
-                                adopted = Some(process);
-                                break;
+                            match probe {
+                                Ok(Ok((status, process))) => {
+                                    tracing::info!(
+                                        workspace_id = %workspace_id, phase = phase_str(status.phase),
+                                        "capsule supervisor watchdog: contention resolved -- adopted the surviving lane"
+                                    );
+                                    adopted = Some(process);
+                                    break;
+                                }
+                                // A foreign holder is first met HERE when the row was
+                                // never probed before this leg (a fresh spawn that
+                                // exited contended) -- note it the same once-per-row way.
+                                Ok(Err(e)) => note_if_foreign(&state_dir, &e),
+                                Err(_) => {}
                             }
                         }
                         match adopted {
@@ -1116,6 +1236,14 @@ mod windows_runtime {
                             &slug,
                         ) {
                             Ok(spawned) => leg_opt = Some(WatchedLeg::Spawned(spawned.child)),
+                            Err(e) if e.kind() == ErrorKind::Unsupported => {
+                                // `check_pair` refused: the binary next to this daemon
+                                // is another build. No retry can change that -- mark
+                                // terminal now (the error names the recovery).
+                                tracing::error!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: pair mismatch -- marking terminal, no restart");
+                                workspaces.mark_capsule_terminal(&workspace_id);
+                                return;
+                            }
                             Err(e) => {
                                 tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: restart spawn failed");
                             }
@@ -1622,5 +1750,28 @@ mod tests {
         std::env::remove_var("HOME");
         std::env::remove_var("USERPROFILE");
         assert_eq!(capsule_comm_home_str(), None);
+    }
+}
+
+#[cfg(test)]
+mod pair_verdict_tests {
+    use super::pair_verdict;
+
+    #[test]
+    fn matching_build_ids_pass() {
+        assert!(pair_verdict(Some("abc123"), "abc123").is_ok());
+    }
+
+    #[test]
+    fn a_different_build_is_refused_with_the_recovery() {
+        let e = pair_verdict(Some("97deece7"), "9f774f74").unwrap_err();
+        assert!(e.contains("97deece7") && e.contains("9f774f74"), "{e}");
+        assert!(e.contains("renamed aside") && e.contains("attach the row again") && e.contains("only their"), "{e}");
+    }
+
+    #[test]
+    fn a_binary_that_predates_the_subcommand_is_refused_too() {
+        let e = pair_verdict(None, "9f774f74").unwrap_err();
+        assert!(e.contains("predates"), "{e}");
     }
 }

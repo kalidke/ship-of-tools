@@ -68,8 +68,13 @@ const MAX_PIPE_INSTANCES: u32 = 8;
 #[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let top_usage = "usage: sot-capsule <run|supervise|endrun|reset> ...";
+    let top_usage = "usage: sot-capsule <run|supervise|endrun|reset|build-id> ...";
     match args.first().map(String::as_str) {
+        // The lane build id this binary will answer the supervisor hello
+        // with -- the daemon reads it before every spawn (`sot-backend`'s
+        // `check_pair`) so a sotd/sot-capsule pair from two builds is
+        // refused up front instead of failing every attach as `Foreign`.
+        Some("build-id") => println!("{}", sot_log::exchange::SUPERVISOR_LANE_BUILD_ID),
         Some("run") => cmd_run(&args[1..]),
         Some("supervise") => cmd_supervise(&args[1..]),
         Some("endrun") => cmd_endrun(&args[1..]),

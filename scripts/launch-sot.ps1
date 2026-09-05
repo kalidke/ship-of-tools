@@ -938,41 +938,12 @@ function Invoke-FreshnessPass {
         # daemon. A converge respawn (exit 76) re-ensures it too, right
         # after calling this function -- see the do/while loop.
         #
-        # Mixed-version pair guard, REVISED (2026-09-04 field report): the
-        # ORIGINAL fix here skipped the WHOLE rebuild -- the daemon stop
-        # too -- whenever a capsule supervisor was alive, reasoning that
-        # publishing a fresh sotd.exe next to an OLD sot-capsule.exe would
-        # be a mismatched pair. In practice that pins sotd.exe to whatever
-        # build was running when the supervisor was spawned: a capsule
-        # supervisor is long-lived BY DESIGN (ADR 0042; #184 makes a
-        # rebooted daemon adopt it), so one live workspace on a box quietly
-        # freezes its daemon forever, skipping every daemon-side migration
-        # (e.g. #191's boot migration) for as long as that workspace lives
-        # -- observed live: an rc.3-era sotd.exe under an up-to-date FE,
-        # kept up by exactly the orphan capsule #191's migration exists to
-        # fix.
-        #
-        # The rule now: THE DAEMON IS ALWAYS REBUILT; only the capsule
-        # BINARY waits for its supervisors. `sot-capsule.exe` is pinned by
-        # a live supervisor (a SEPARATE, detached process from sotd, ADR
-        # 0042 L1a); `sotd.exe` is pinned only by the running daemon, which
-        # is stopped unconditionally right below regardless of capsule
-        # state (same stop the no-capsule path always did). With the
-        # daemon stopped, `cargo build --release -p sot-backend` (no `-p
-        # sot-log`) rebuilds exactly `sotd.exe`: sot-backend depends on
-        # sot-log as a LIBRARY only (its own `[[bin]]` is `sotd`), and
-        # cargo builds a non-selected package's library artifacts to link
-        # against but never its OTHER bin targets -- so `sot-capsule`
-        # (an auto-discovered `src/bin` of the sot-log PACKAGE) is not
-        # touched, verified via `rust/backend/Cargo.toml` (`sot-log = {
-        # path = "../log" }`, a dependency, not a workspace member being
-        # built) and `rust/log/src/bin/sot-capsule.rs` (a target of the
-        # sot-log package, never sot-backend's). The full pair rebuild
-        # (`-p sot-backend -p sot-log`) still runs, unchanged, whenever no
-        # capsule supervisor is alive. Surfaced in the launch notice too
-        # (converge follow-up) -- the supervisor itself is never stopped
-        # here: it owns live workspace state and survives the daemon by
-        # design.
+        # Pair rule: the daemon is stopped (it pins sotd.exe) and the FULL
+        # pair is always rebuilt. A sot-capsule.exe pinned by live capsule
+        # supervisors -- long-lived by design, never stopped here -- is
+        # renamed aside first (below); the daemon itself refuses to spawn a
+        # capsule from a binary of another build (its pair guard), so a
+        # half-updated pair can no longer produce foreign rows silently.
         $devBinDir = Split-Path $backendExe -Parent
         $capsuleSessionsAlive = @(Get-CimInstance Win32_Process -Filter "Name='sot-capsule.exe'" -ErrorAction SilentlyContinue |
             Where-Object {
@@ -984,29 +955,54 @@ function Invoke-FreshnessPass {
             $stopOut2 = & $sotLocalDaemon -Stop 6>&1 2>&1
             foreach ($l in @($stopOut2)) { if ("$l".Trim()) { Write-SupLog "$l" } }
         }
+        # Stale images renamed aside by an earlier pass (below): a mapped
+        # one refuses deletion and is left for a later pass; a free one goes.
+        Get-ChildItem -Path (Join-Path $devBinDir 'sot-capsule-stale-*.exe') -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
         if ($capsuleSessionsAlive.Count -gt 0) {
-            Write-SupLog "freshness: local capsule sessions alive - rebuilding sotd.exe only; sot-capsule.exe waits for its supervisors (U4's upgrade transaction is the durable answer)"
-            $script:launchNotices.Add("sot-capsule.exe in use by $($capsuleSessionsAlive.Count) supervisors; end those workspaces to update it") | Out-Null
-            Write-SupLog "freshness: cargo build -p sot-backend"
-            $capOut = cargo build --release -p sot-backend --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                $capExcerpt = @(Get-FailureExcerpt -Output $capOut -Kind 'cargo')
-                Write-SupLog "freshness: backend (sotd.exe) rebuild FAILED (non-fatal, continuing with whatever binary exists). message: $($capExcerpt -join ' / ')"
-                $script:launchNotices.Add("backend rebuild failed - running the existing sotd.exe: $(Limit-NoticeText $capExcerpt[0])") | Out-Null
-            } else {
-                Write-SupLog "freshness: backend (sotd.exe) rebuilt; sot-capsule.exe left as-is (pinned by live supervisors)"
+            # Live supervisors pin sot-capsule.exe, so an in-place rebuild
+            # fails -- and the old answer ("end those workspaces to update
+            # it") was a deadlock: a capsule of another build can neither
+            # be attached nor destroyed by the new daemon (field day
+            # 2026-09-05). Windows permits RENAMING a mapped image, which
+            # frees the canonical path for the pair build; the running
+            # supervisors keep executing the renamed file until their
+            # workspaces end or their processes are killed (the daemon then
+            # respawns them from the new binary, journals recovering).
+            $staleName = "sot-capsule-stale-$(Get-Date -Format 'yyyyMMdd-HHmmss').exe"
+            $renamedAside = $null
+            try {
+                Rename-Item -Path (Join-Path $devBinDir 'sot-capsule.exe') -NewName $staleName -ErrorAction Stop
+                $renamedAside = Join-Path $devBinDir $staleName
+                Write-SupLog "freshness: sot-capsule.exe pinned by $($capsuleSessionsAlive.Count) live supervisors - renamed aside as $staleName; rebuilding the full pair"
+                $script:launchNotices.Add("$($capsuleSessionsAlive.Count) running capsule supervisor(s) are on the previous build and cannot attach to this frontend: end them from a frontend of that build, or kill only their 'sot-capsule supervise' process and attach the row again (the run leg and its agent survive and are adopted)") | Out-Null
+            } catch {
+                Write-SupLog "freshness: could not rename the pinned sot-capsule.exe aside ($($_.Exception.Message)); the pair build below will refresh sotd.exe only"
+                $script:launchNotices.Add("sot-capsule.exe is pinned and could not be renamed aside; kill the running sot-capsule.exe processes and relaunch") | Out-Null
             }
-        } else {
-            Write-SupLog "freshness: cargo build -p sot-backend -p sot-log"
+        }
+        # The full pair build, unconditionally: the only difference a pinned
+        # image makes is the rename above.
+        Write-SupLog "freshness: cargo build -p sot-backend -p sot-log"
             $capOut = cargo build --release -p sot-backend -p sot-log --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
             if ($LASTEXITCODE -ne 0) {
                 $capExcerpt = @(Get-FailureExcerpt -Output $capOut -Kind 'cargo')
                 Write-SupLog "freshness: backend pair rebuild FAILED (non-fatal, continuing with whatever pair exists). message: $($capExcerpt -join ' / ')"
+                # A renamed-aside image must come back, or there is no
+                # sot-capsule.exe at all and the local daemon cannot start.
+                # Copying a mapped image is permitted (only overwrite is not).
+                if ($renamedAside -and -not (Test-Path (Join-Path $devBinDir 'sot-capsule.exe'))) {
+                    try {
+                        Copy-Item -Path $renamedAside -Destination (Join-Path $devBinDir 'sot-capsule.exe') -ErrorAction Stop
+                        Write-SupLog "freshness: restored the previous sot-capsule.exe from $staleName after the failed build"
+                    } catch {
+                        Write-SupLog "freshness: could NOT restore sot-capsule.exe from $staleName ($($_.Exception.Message)) - no capsule binary until the next successful build"
+                    }
+                }
                 $script:launchNotices.Add("backend rebuild failed - running the existing sotd.exe/sot-capsule.exe pair: $(Limit-NoticeText $capExcerpt[0])") | Out-Null
             } else {
                 Write-SupLog "freshness: backend pair (sotd.exe, sot-capsule.exe) rebuilt"
             }
-        }
         }
     } finally {
         $ErrorActionPreference = $savedEAP
