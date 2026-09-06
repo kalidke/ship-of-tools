@@ -52,6 +52,12 @@ work there; Help shows them as unavailable in those panes.
 
 ## Modifiers and keyboard layouts
 
+On Windows the operating system hands the frontend the *unshifted* key while
+`Ctrl`, `Alt` or `Win` is held (`Ctrl+Shift+/` arrives as `/`). A chord written
+with the shifted symbol, such as the default `Ctrl+?`, is therefore matched
+through the US layout's shifted pairs when Shift is held; `Ctrl+/` and `Ctrl+?`
+stay distinct. Other layouts see the symbol they actually deliver.
+
 Supported modifier names are `Ctrl`/`Control`, `Alt`/`Option`, `Shift`, and
 `Super`/`Cmd`/`Command`/`Win`. The legacy `Meta` alias continues to mean `Alt`.
 `Primary` means Command on macOS and Control on Windows/Linux.

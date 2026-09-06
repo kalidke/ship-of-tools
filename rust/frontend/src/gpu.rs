@@ -18852,6 +18852,9 @@ impl ApplicationHandler for App {
                     label = %label,
                     repeat = event.repeat,
                     ctrl,
+                    shift,
+                    alt,
+                    super_,
                     "key pressed"
                 );
                 // F5: manual reconnect trigger — collapses the

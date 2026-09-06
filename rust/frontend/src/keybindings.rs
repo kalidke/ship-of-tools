@@ -189,6 +189,19 @@ actions! {
 }
 
 /// Modifier identity is independent of the OS glyph used to display it.
+/// The US layout's shifted symbol for an unshifted printable key. Consulted
+/// only when a platform hands over the unshifted key while Shift is held with
+/// a modifier (Windows under Ctrl/Alt); see `Chord::matches_input`.
+fn us_shifted(base: &str) -> Option<&'static str> {
+    Some(match base {
+        "/" => "?", "=" => "+", "-" => "_", ";" => ":", "'" => "\"", "," => "<", "." => ">",
+        "[" => "{", "]" => "}", "\\" => "|", "`" => "~",
+        "1" => "!", "2" => "@", "3" => "#", "4" => "$", "5" => "%", "6" => "^", "7" => "&",
+        "8" => "*", "9" => "(", "0" => ")",
+        _ => return None,
+    })
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Modifiers {
     pub ctrl: bool,
@@ -281,8 +294,27 @@ impl Chord {
                     matches!(k, Key::Character(s) if
                     if letter { s.eq_ignore_ascii_case(c) } else { s.as_str() == c })
                 };
+                // Windows delivers the UNSHIFTED printable while Ctrl/Alt/Super is
+                // held (Character("/") for Ctrl+Shift+/), so a punctuation chord
+                // spelled with its shifted symbol ("Ctrl+?") never sees that
+                // character there (field, 2026-09-06: the shipped Ctrl+? could not
+                // fire on any Windows box). When Shift is held with a modifier,
+                // read the delivered base through the US layout's shifted pairs --
+                // the one piece of layout knowledge this file carries, used only
+                // on this path: a directly delivered "?" already matched above.
+                let shifted_base = !letter && m.shift && (m.ctrl || m.alt || m.super_);
                 if same(key) {
-                    return true;
+                    // Ctrl+Shift+/ on Windows arrives as "/": it was typed as "?",
+                    // so the unshifted chord "Ctrl+/" must not claim it.
+                    return !(shifted_base && !self.shift && us_shifted(c).is_some());
+                }
+                if shifted_base {
+                    let as_shifted = |k: &Key| {
+                        matches!(k, Key::Character(s) if us_shifted(s.as_str()) == Some(c.as_str()))
+                    };
+                    if as_shifted(key) || base.is_some_and(as_shifted) {
+                        return true;
+                    }
                 }
                 // Option may transform a letter on macOS. Explicit shifted base
                 // punctuation (Ctrl+Shift+/) also uses the layout's unmodified key.
@@ -933,5 +965,43 @@ mod literal_text_tests {
         // Help advertises accordingly: no label for the bare override in a text pane.
         assert!(b.active_labels(Action::ToggleHelp, true, |_| true).is_empty());
         assert!(!b.active_labels(Action::ToggleHelp, false, |_| true).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod windows_shifted_punctuation_tests {
+    use super::*;
+    use winit::keyboard::Key;
+
+    /// Field (2026-09-06), verbatim from a Windows frontend log: pressing
+    /// Ctrl+Shift+/ delivers `Character("/")` with ctrl held -- never "?".
+    /// The shipped default `Ctrl+?` must fire on it, and the unshifted chord
+    /// `Ctrl+/` must not (the user typed "?").
+    #[test]
+    fn windows_delivers_the_unshifted_key_and_ctrl_question_still_fires() {
+        let b = KeyBindings::defaults();
+        let slash = Key::Character("/".into());
+        let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Modifiers::default() };
+        assert_eq!(
+            b.resolve(&slash, Some(&slash), ctrl_shift, false, |_| true),
+            Some(Action::ToggleHelp)
+        );
+        let mut c = KeyBindings::defaults();
+        c.merge_text("preview.table_reset = \"Ctrl+/\"");
+        // Ctrl+Shift+/ (typed "?") is NOT the unshifted chord...
+        assert_ne!(c.resolve(&slash, Some(&slash), ctrl_shift, false, |_| true), Some(Action::TableReset));
+        // ...but plain Ctrl+/ is, and it is not Help.
+        let ctrl = Modifiers { ctrl: true, ..Modifiers::default() };
+        assert_eq!(c.resolve(&slash, Some(&slash), ctrl, false, |_| true), Some(Action::TableReset));
+        assert_ne!(b.resolve(&slash, Some(&slash), ctrl, false, |_| true), Some(Action::ToggleHelp));
+    }
+
+    /// Linux/macOS deliver the shifted symbol itself; unchanged.
+    #[test]
+    fn a_directly_delivered_question_mark_still_matches() {
+        let b = KeyBindings::defaults();
+        let q = Key::Character("?".into());
+        let m = Modifiers { ctrl: true, shift: true, ..Modifiers::default() };
+        assert_eq!(b.resolve(&q, Some(&Key::Character("/".into())), m, false, |_| true), Some(Action::ToggleHelp));
     }
 }
