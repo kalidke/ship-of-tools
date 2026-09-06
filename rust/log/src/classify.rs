@@ -12,7 +12,11 @@
 //! This module is generic over [`ProbeOps`] exactly like `probe.rs`
 //! itself, so the SAME transition logic is driven scripted-only by a
 //! model test (no real OS object touched) and for real by
-//! [`crate::probe::RealProbeOps`] — see `tests/supervisor_win.rs`.
+//! `crate::probe_win::RealProbeOps` — see `tests/supervisor_win.rs`.
+//! Portable (L1-unix LU1a): this module makes no OS call of its own —
+//! everything platform-specific is behind [`ProbeOps`] — so its unit
+//! tests (against `ScriptedProbeOps`) now run on every CI platform, not
+//! merely on Windows.
 //!
 //! Cadence and deadlines are the CALLER's job (this module invents no
 //! constant of its own — see ADR 0041's own "the numbers, pinned here so
@@ -25,8 +29,6 @@
 //! stage_boundary)` — "2s, clamped to the episode's remaining wall
 //! time" — because that clamp is part of the transition logic itself,
 //! not a policy choice a caller could reasonably vary.
-
-#![cfg(windows)]
 
 use crate::challenge::ChallengeOutcome;
 use crate::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};

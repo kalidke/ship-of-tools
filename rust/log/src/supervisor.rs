@@ -177,7 +177,7 @@
 //! connection-COUNT cap) does not bound per-tick THROUGHPUT. Leftover
 //! transport events simply stay queued in the transport's own channel
 //! for a LATER tick — no extra bookkeeping needed, since each event is
-//! already bounded to `pipe_win::READ_BUF_LEN` (64 KiB) by the
+//! already bounded to `transport::READ_BUF_LEN` (64 KiB) by the
 //! transport, which means this ONE cap already transitively bounds
 //! per-tick FRAME-processing work too. An earlier version of this fix
 //! also queued decoded frames per-connection with a second, separate
@@ -186,13 +186,14 @@
 
 #![cfg(windows)]
 
-use crate::challenge::{self, ChallengeOutcome, ChallengedProcess};
+use crate::challenge::ChallengeOutcome;
+use crate::challenge_win::{self, ChallengedProcess};
 use crate::classify::{self, ProbeOutcome};
 use crate::fsutil;
 use crate::journal;
 use crate::pipe_win::{self, ConnId, PipeServer, TransportEvent, PIPE_CONNECT_BOUND};
 use crate::pointer::{self, PointerState};
-use crate::probe::RealProbeOps;
+use crate::probe_win::RealProbeOps;
 use crate::recovery::{self, LatestLegState};
 use crate::segment::RetentionClass;
 use crate::verify;
@@ -233,7 +234,7 @@ const MAIN_LOOP_POLL: Duration = Duration::from_millis(100);
 /// watchdogs, and `Terminal` grace of their own turn indefinitely.
 /// Leftover events stay queued in the transport's own channel, drained
 /// on a LATER tick — never dropped, no extra bookkeeping needed: each
-/// event is itself already bounded to `pipe_win::READ_BUF_LEN` by the
+/// event is itself already bounded to `transport::READ_BUF_LEN` by the
 /// transport, so this ONE cap already transitively bounds per-tick
 /// frame-processing work too (see `handle_lane_bytes`'s own doc — a
 /// separate frame-level quota and queue were tried and then deleted,
@@ -436,7 +437,7 @@ pub fn connect_and_challenge_with_build_for_test(
 ) -> crate::Result<(pipe_win::PipeClient, ChallengeOutcome<ChallengedProcess>)> {
     let conn = pipe_win::connect_supervisor_pipe_unchallenged(h)?;
     let mut exchange = crate::exchange::SupervisorLaneExchange::new(build.to_string());
-    let outcome = challenge::challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
+    let outcome = challenge_win::challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
     Ok((conn, outcome))
 }
 
@@ -456,7 +457,7 @@ pub(crate) fn connect_and_challenge(
 ) -> crate::Result<(pipe_win::PipeClient, ChallengedProcess)> {
     let conn = pipe_win::connect_supervisor_pipe_unchallenged(h)?;
     let mut exchange = crate::exchange::SupervisorLaneExchange::new(build.to_string());
-    match challenge::challenge(&conn, &mut exchange, deadline) {
+    match challenge_win::challenge(&conn, &mut exchange, deadline) {
         ChallengeOutcome::Proven(process) => Ok((conn, process)),
         ChallengeOutcome::Foreign => Err(err_state("supervisor lane challenge: foreign")),
         ChallengeOutcome::Undetermined => Err(err_state("supervisor lane challenge: undetermined")),
@@ -801,7 +802,7 @@ fn end_run_over_mgmt_lane(voyage_id: &str, reason: &str) -> crate::Result<EndRun
         Err(e) => return Err(e.into()),
     };
     let mut exchange = crate::exchange::VoyageMgmtExchange::default();
-    match challenge::challenge(&conn, &mut exchange, Instant::now() + END_RUN_CHALLENGE_BOUND) {
+    match challenge_win::challenge(&conn, &mut exchange, Instant::now() + END_RUN_CHALLENGE_BOUND) {
         ChallengeOutcome::Foreign => Ok(EndRunOutcome::Foreign),
         ChallengeOutcome::Undetermined => Ok(EndRunOutcome::Pending),
         ChallengeOutcome::Proven(process) => {
@@ -872,7 +873,7 @@ fn probe_writer_liveness(state_dir: &Path, voyage_id: &str) -> WriterLiveness {
         Err(_) => return WriterLiveness::Ambiguous,
     };
     let mut exchange = crate::exchange::VoyageMgmtExchange::default();
-    match challenge::challenge(&conn, &mut exchange, Instant::now() + LIVENESS_PROBE_BUDGET) {
+    match challenge_win::challenge(&conn, &mut exchange, Instant::now() + LIVENESS_PROBE_BUDGET) {
         ChallengeOutcome::Proven(_) => WriterLiveness::Alive,
         ChallengeOutcome::Foreign | ChallengeOutcome::Undetermined => WriterLiveness::Ambiguous,
     }
@@ -2007,7 +2008,7 @@ fn service_lane(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, ctx: &mut 
 /// sustained single connection's throughput, so `MAX_LANE_INSTANCES`
 /// alone does not bound it — a genuine, not merely theoretical, per-tick
 /// starvation risk). EACH `Bytes` event this function processes is
-/// itself already bounded to `pipe_win::READ_BUF_LEN` (64 KiB) by the
+/// itself already bounded to `transport::READ_BUF_LEN` (64 KiB) by the
 /// transport, so bounding events-per-tick already transitively bounds
 /// frames-per-tick too — an EARLIER version of this fix additionally
 /// queued decoded frames per-connection with a SECOND quota and a sweep

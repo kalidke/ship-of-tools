@@ -5,12 +5,12 @@
 //! ([`wire::FrameSplitter`]) already builds and is tested on every
 //! platform, so this module's frame-loop precedence logic is exercised by
 //! REAL executed tests everywhere, not merely compile-checked on
-//! Windows. `challenge::challenge` (Windows-only, since steps 1-3 are
-//! genuine Win32 calls) is the ONLY caller of either trait method, and
-//! calls them only after step 3 (SID equality) has already succeeded —
-//! implementing [`IdentityExchange`] cannot skip or reorder the OS
-//! authentication steps, because this trait never sees the connection
-//! until they are done.
+//! Windows. `challenge::exchange_identity` (portable — steps 1-3, the
+//! genuine OS calls, are each platform's own job) is the ONLY caller of
+//! either trait method, and is called only after step 3 (identity
+//! equality) has already succeeded — implementing [`IdentityExchange`]
+//! cannot skip or reorder the OS authentication steps, because this
+//! trait never sees the connection until they are done.
 
 use crate::wire::{self, DecodedFrame, MgmtReply, MgmtRequest, SupervisorReply, SupervisorRequest};
 
@@ -28,7 +28,7 @@ pub enum ExchangeDecode {
     /// should have been a single round trip. An unproven server — this
     /// lane's own framing is the only thing that can tell "one clean
     /// reply" from "trailing protocol corruption", which is exactly why
-    /// this decision lives in the lane, not in `challenge::challenge`.
+    /// this decision lives in the lane, not in `challenge::exchange_identity`.
     Foreign,
 }
 

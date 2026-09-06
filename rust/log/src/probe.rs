@@ -7,25 +7,28 @@
 //! an injectable clock — so a model test can drive every row (A1-A5,
 //! B0-B9) deterministically with a SCRIPTED implementation that touches
 //! NO real OS object, while the shipped classifier drives the SAME trait
-//! with a REAL one.
+//! with a REAL one. This module is the platform-neutral core: the
+//! mechanical outcome enums, the [`ProbeOps`] trait itself, and the
+//! scripted test support (`ScriptedProbeOps` and its dummy types) — the
+//! REAL implementation over actual OS objects (`RealProbeOps`,
+//! `SpawnedChild`) is necessarily platform-specific and lives in
+//! `probe_win.rs` today; a `probe_unix.rs` counterpart is a later L1-unix
+//! unit.
 //!
-//! U0 SCOPE: the seam and both implementations below. Which observation
-//! MEANS `READY`/`ABSENT`/`FOREIGN`/`PENDING`/... is the classifier's own
-//! call (a later unit) and is deliberately absent here.
+//! U0 SCOPE: the seam and both implementations (real and scripted). Which
+//! observation MEANS `READY`/`ABSENT`/`FOREIGN`/`PENDING`/... is the
+//! classifier's own call (a later unit) and is deliberately absent here.
 //!
 //! # Round-1 review: associated types, not concrete OS objects
 //!
 //! `ProbeOps` is generic over three associated types (`Conn`,
 //! `SpawnedChild`, `Process`) rather than hard-wiring `PipeClient` /
-//! `ChallengedProcess`. `RealProbeOps` binds them to the real Windows
-//! types; `ScriptedProbeOps` binds them to zero-sized dummy types that
-//! never touch the OS at all — so a model test can construct every row
-//! without a real pipe, a real spawned process, or a real challenge.
+//! `ChallengedProcess`. `probe_win::RealProbeOps` binds them to the real
+//! Windows types; `ScriptedProbeOps` binds them to zero-sized dummy types
+//! that never touch the OS at all — so a model test can construct every
+//! row without a real pipe, a real spawned process, or a real challenge.
 
-#![cfg(windows)]
-
-use crate::challenge::{self, ChallengeOutcome};
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use crate::challenge::ChallengeOutcome;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -88,7 +91,8 @@ pub trait ProbeOps {
     /// created it.
     type SpawnedChild;
     /// A proven server's retained identity (Stage A4/B1's READY/ADOPTED
-    /// evidence) — `challenge::ChallengedProcess` for the real impl.
+    /// evidence) — `crate::challenge_win::ChallengedProcess` for the real
+    /// impl.
     type Process;
 
     /// A1: attempt to spawn the capsule child. The CALLER supplies what
@@ -138,192 +142,6 @@ pub trait ProbeOps {
     /// elapsed-time observation (an expired episode deadline, a blown
     /// readiness cutoff) without a real sleep.
     fn now(&self) -> Instant;
-}
-
-/// A just-spawned, NOT YET CHALLENGED child process handle. Stage A's
-/// A1-A3 observations are about THIS type, never `ChallengedProcess`:
-/// nothing has proven this handle's identity (it's ours only because we
-/// just created it), so it carries none of the SID/creation-time
-/// provenance a `ChallengedProcess` does — just enough to wait on it or
-/// kill it. Dropping this closes the handle.
-#[derive(Debug)]
-pub struct SpawnedChild {
-    handle: OwnedHandle,
-}
-
-impl SpawnedChild {
-    // U1a Codex round-1, Blocker 2: `RealProbeOps` (the only caller of
-    // this constructor) is now `pub(crate)` with no in-crate consumer
-    // yet either -- deliberate scaffolding for U2's classifier, not dead
-    // code to delete (see `RealProbeOps`'s own doc).
-    #[allow(dead_code)]
-    fn from_child(child: std::process::Child) -> Self {
-        use std::os::windows::io::IntoRawHandle;
-        // `into_raw_handle` consumes `child`, transferring ownership of
-        // the PROCESS handle to us; any piped stdio the caller requested
-        // are separate handles, dropped normally as `child`'s other
-        // fields go out of scope here — untouched by this handoff.
-        let raw = child.into_raw_handle();
-        // SAFETY: `raw` came from `IntoRawHandle::into_raw_handle`,
-        // which transfers unique ownership.
-        let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
-        Self { handle }
-    }
-
-    fn raw(&self) -> windows_sys::Win32::Foundation::HANDLE {
-        self.handle.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE
-    }
-
-    /// See [`challenge::wait_handle`]'s doc for the bound.
-    pub fn wait(&self, timeout: Duration) -> std::io::Result<bool> {
-        challenge::wait_handle(self.raw(), timeout)
-    }
-
-    pub fn terminate(&self) -> std::io::Result<()> {
-        challenge::terminate_handle(self.raw())
-    }
-
-    /// This CHILD's own `(pid, creation time)`, read directly off the
-    /// handle THIS episode spawned — independent of anything a challenge
-    /// over its pipe observed (Codex review round 1, finding 10). A4's
-    /// own transition ("alive, within cutoff, challenge proves it") never
-    /// compared the challenged server's identity against the child that
-    /// was actually spawned: a stale, orphaned capsule left over from a
-    /// prior crash, still bound under the SAME voyage id while this new
-    /// child's own pipe hadn't come up yet, would answer the challenge
-    /// first and be accepted as if it WERE the freshly spawned leg. This
-    /// is the independent half of that comparison; `classify::probe_owned_spawn`
-    /// is the caller that actually compares it against the challenge's
-    /// own `ChallengedProcess::pid`/`created`.
-    pub fn identity(&self) -> std::io::Result<(u32, u64)> {
-        use windows_sys::Win32::System::Threading::GetProcessId;
-        let pid = unsafe { GetProcessId(self.raw()) };
-        if pid == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let created = challenge::creation_filetime_bits(self.raw())?;
-        Ok((pid, created))
-    }
-}
-
-/// The real implementation: `connect_voyage_pipe_unchallenged`,
-/// `challenge::challenge` (with the voyage mgmt lane's
-/// `VoyageMgmtExchange`), `std::process` spawn, and the bounded
-/// wait/terminate helpers, unmediated. No decisions — just the mechanical
-/// OS calls the classifier drives through [`ProbeOps`]. `connect` uses the
-/// UNCHALLENGED connect (`pipe_win::connect_voyage_pipe` itself runs SID
-/// authentication internally, which would collapse Stage B's own
-/// connect-then-challenge rows — see that function's doc) — it currently
-/// carries that raw connect's existing ~2s internal retry on
-/// `PIPE_BUSY`/`FILE_NOT_FOUND`; U0 does not change that function's
-/// behavior, so this is what's available today (a later unit may want a
-/// non-retrying variant for the classifier's own 500ms-spaced probe loop).
-///
-/// # `pub(crate)`, not `pub` (U1a Codex round-1, Blocker 2)
-///
-/// An earlier version of this type was `pub`, which made the UNCHALLENGED
-/// connection it hands back through `ConnectOutcome::Connected` a public
-/// path to raw pipe I/O: external code could call
-/// `RealProbeOps.connect(id)`, extract the `PipeClient`, and read/write it
-/// directly without ever running `challenge`/`authenticate_server` — the
-/// exact leak `connect_voyage_pipe`'s own enforcement exists to close,
-/// reopened one layer up. `RealProbeOps` has no production consumer today
-/// (this whole module is scaffolding — see the module doc), so nothing
-/// depends on it being public, and `sot-capsule` (a separate bin CRATE
-/// TARGET, `src/bin/sot-capsule.rs`) cannot see `pub(crate)` items
-/// regardless: it only ever reaches this library through its `pub` API.
-/// That is the intended shape once U2's classifier lands — a `pub`
-/// function/type living IN THIS CRATE, wrapping `RealProbeOps` internally,
-/// which `sot-capsule` calls — never `RealProbeOps` directly. Keeping the
-/// trait (`ProbeOps`) and the scripted implementation (`ScriptedProbeOps`,
-/// already gated behind `cfg(test)`/`test-support`) at their current
-/// visibility is unaffected: neither one hands back a real, unauthenticated
-/// `PipeClient` to anything outside this crate.
-#[allow(dead_code)] // deliberate scaffolding, no consumer until U2 -- see this type's own doc
-pub(crate) struct RealProbeOps;
-
-impl ProbeOps for RealProbeOps {
-    type Conn = crate::pipe_win::PipeClient;
-    type SpawnedChild = SpawnedChild;
-    type Process = challenge::ChallengedProcess;
-
-    fn spawn(&self, command: &mut std::process::Command) -> SpawnOutcome<Self::SpawnedChild> {
-        match command.spawn() {
-            Ok(child) => SpawnOutcome::Spawned(SpawnedChild::from_child(child)),
-            Err(e) => SpawnOutcome::Failed(e),
-        }
-    }
-
-    fn wait_child(&self, child: &Self::SpawnedChild, timeout: Duration) -> WaitOutcome {
-        match child.wait(timeout) {
-            Ok(true) => WaitOutcome::Exited,
-            Ok(false) => WaitOutcome::StillRunning,
-            Err(_) => WaitOutcome::WaitFailed,
-        }
-    }
-
-    fn kill_child(&self, child: &Self::SpawnedChild) -> std::io::Result<()> {
-        child.terminate()
-    }
-
-    fn connect(&self, voyage_id: &str) -> ConnectOutcome<Self::Conn> {
-        match crate::pipe_win::connect_voyage_pipe_unchallenged(voyage_id) {
-            Ok(client) => ConnectOutcome::Connected(client),
-            Err(crate::pipe_win::PipeError::Io { source, .. }) => {
-                use windows_sys::Win32::Foundation::{
-                    ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY,
-                };
-                match source.raw_os_error() {
-                    Some(c) if c == ERROR_FILE_NOT_FOUND as i32 => ConnectOutcome::FileNotFound,
-                    Some(c) if c == ERROR_PIPE_BUSY as i32 => ConnectOutcome::PipeBusy,
-                    Some(c) if c == ERROR_ACCESS_DENIED as i32 => ConnectOutcome::AccessDenied,
-                    _ => ConnectOutcome::OtherIo(source),
-                }
-            }
-            Err(other) => ConnectOutcome::OtherIo(std::io::Error::other(other)),
-        }
-    }
-
-    fn challenge(&self, conn: &Self::Conn, deadline: Instant) -> ChallengeOutcome<Self::Process> {
-        let mut exchange = crate::exchange::VoyageMgmtExchange::default();
-        challenge::challenge(conn, &mut exchange, deadline)
-    }
-
-    fn writer_fence_probe(&self, voyage_root: &Path) -> FenceProbe {
-        let lock_path = voyage_root.join("writer.lock");
-        match crate::fsutil::lock_writer(&lock_path) {
-            // The guard drops here, releasing the fence immediately --
-            // this is a PROBE, never a hold.
-            Ok(_guard) => FenceProbe::Free,
-            Err(crate::Error::State(_)) => FenceProbe::Held,
-            Err(crate::Error::Io(e)) => FenceProbe::Error(e),
-            Err(other) => FenceProbe::Error(std::io::Error::other(other)),
-        }
-    }
-
-    fn wait_exit(&self, process: &Self::Process, timeout: Duration) -> WaitOutcome {
-        match process.wait(timeout) {
-            Ok(true) => WaitOutcome::Exited,
-            Ok(false) => WaitOutcome::StillRunning,
-            Err(_) => WaitOutcome::WaitFailed,
-        }
-    }
-
-    fn terminate(&self, process: &Self::Process) -> std::io::Result<()> {
-        process.terminate()
-    }
-
-    fn spawned_identity(&self, child: &Self::SpawnedChild) -> std::io::Result<(u32, u64)> {
-        child.identity()
-    }
-
-    fn proven_identity(&self, process: &Self::Process) -> (u32, u64) {
-        (process.pid(), process.created())
-    }
-
-    fn now(&self) -> Instant {
-        Instant::now()
-    }
 }
 
 // ---------------------------------------------------------------------

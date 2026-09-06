@@ -230,7 +230,10 @@
 
 #![cfg(windows)]
 
-use crate::transport::{join_within, JOIN_POLL_INTERVAL, TEARDOWN_AGGREGATE_DEADLINE};
+use crate::transport::{
+    join_within, OutboundBudget, StartGate, BYTES_ABANDON_AFTER, EVENTS_CHANNEL_CAP,
+    EVENTS_RETRY_INTERVAL, JOIN_POLL_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
+};
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
@@ -256,34 +259,6 @@ use windows_sys::Win32::System::Pipes::{
 };
 use windows_sys::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
-
-/// Bound on one outstanding overlapped `ReadFile` (ADR 0041: "the transport
-/// just must not read unboundedly ahead").
-const READ_BUF_LEN: usize = 65_536;
-
-/// Per-connection outbound byte budget: enqueued-but-not-yet-physically-
-/// written bytes, INCLUDING the writer's in-flight item, may never exceed
-/// this. Sized to the same order of magnitude as the ADR's own "4 MiB
-/// per-watcher queue" figure — not a literal citation of it (that number
-/// bounds a different queue, the future capsule's checkpoint transfer),
-/// just a consistent order of magnitude for this transport's own ceiling.
-const OUTBOUND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
-
-/// The `events()` channel's item capacity: sized so a run of maximum-size
-/// `Bytes` deliveries caps buffered inbound at roughly the same order of
-/// magnitude as [`OUTBOUND_BUDGET_BYTES`].
-const EVENTS_CHANNEL_CAP: usize = OUTBOUND_BUDGET_BYTES / READ_BUF_LEN;
-
-/// How long a stalled delivery (lifecycle retry, or one `Bytes` attempt)
-/// sleeps between retries against a full `events` channel.
-const EVENTS_RETRY_INTERVAL: Duration = Duration::from_millis(20);
-
-/// How long [`deliver_bytes`] may retry a single `Bytes` chunk against a
-/// full `events` channel before abandoning it and force-closing the
-/// connection with a guaranteed `Closed`. Generous relative to
-/// [`EVENTS_RETRY_INTERVAL`] — this is "the consumer has genuinely
-/// stalled," not routine backpressure.
-const BYTES_ABANDON_AFTER: Duration = Duration::from_secs(5);
 
 /// Extra capacity on the bounded reaper inbox beyond `max_instances` — a
 /// connection's own at-most-once teardown flag already caps live `Torn`
@@ -416,7 +391,7 @@ pub enum PipeError {
     ConcurrentSubmit,
     /// U1a: `connect_voyage_pipe`'s own SID authentication (ADR 0041
     /// Lifecycle "The challenge", steps 1-3 via
-    /// `challenge::authenticate_server` — NOT the full five-step
+    /// `challenge_win::authenticate_server` — NOT the full five-step
     /// `challenge()`, see that function's own doc) answered with a
     /// WELL-FORMED WRONG proof — a different token-user SID behind the
     /// pipe. A loud, typed failure: never retried as if the peer might
@@ -955,89 +930,11 @@ fn create_pipe_instance(
     Ok(unsafe { OwnedHandle::from_raw_handle(h as RawHandle) })
 }
 
-/// Per-connection outbound byte accounting: reserved eagerly by
-/// [`PipeServer::send`] before an item is even queued, released only once
-/// the writer's `submit_and_wait` for that item RETURNS (success or
-/// failure) — the in-flight item stays counted the whole time. The cap is
-/// always [`OUTBOUND_BUDGET_BYTES`] — not configurable, so no field for
-/// it.
-struct OutboundBudget {
-    used: Mutex<usize>,
-}
-
-impl OutboundBudget {
-    fn new() -> Self {
-        Self {
-            used: Mutex::new(0),
-        }
-    }
-
-    fn try_reserve(&self, n: usize) -> bool {
-        let mut used = self.used.lock().unwrap();
-        if *used + n > OUTBOUND_BUDGET_BYTES {
-            return false;
-        }
-        *used += n;
-        true
-    }
-
-    fn release(&self, n: usize) {
-        let mut used = self.used.lock().unwrap();
-        *used = used.saturating_sub(n);
-    }
-}
-
 /// One queued outbound send: raw bytes, plus an optional marker to echo
 /// back on physical write completion.
 struct WriteCmd {
     bytes: Vec<u8>,
     marker: Option<SendMarker>,
-}
-
-/// A connection's reader/writer threads block here until released — the
-/// gate is opened only after the `ConnHandle` is in the map and `Accepted`
-/// has been RELIABLY queued, or `abort`ed if the connection could not be
-/// fully set up, in which case the gated thread returns immediately,
-/// having never touched the pipe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GateSignal {
-    Wait,
-    Start,
-    Abort,
-}
-
-struct StartGate {
-    state: Mutex<GateSignal>,
-    cv: Condvar,
-}
-
-impl StartGate {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            state: Mutex::new(GateSignal::Wait),
-            cv: Condvar::new(),
-        })
-    }
-
-    /// Blocks until `open` or `abort`; returns `true` to proceed, `false`
-    /// to return immediately without ever touching the pipe.
-    fn wait_for_start(&self) -> bool {
-        let mut st = self.state.lock().unwrap();
-        while *st == GateSignal::Wait {
-            st = self.cv.wait(st).unwrap();
-        }
-        *st == GateSignal::Start
-    }
-
-    fn open(&self) {
-        *self.state.lock().unwrap() = GateSignal::Start;
-        self.cv.notify_all();
-    }
-
-    fn abort(&self) {
-        *self.state.lock().unwrap() = GateSignal::Abort;
-        self.cv.notify_all();
-    }
 }
 
 /// A registry-verified, temporarily-live view of one instance's raw
@@ -2468,7 +2365,7 @@ fn map_sid_auth_outcome(outcome: crate::challenge::SidAuthOutcome) -> Result<(),
 /// directional (governs who may CONNECT, not who MADE the object), so a
 /// raw successful `CreateFileW` here proves nothing about who is on the
 /// other end; this function runs
-/// [`crate::challenge::authenticate_server`] (identify the peer process,
+/// [`crate::challenge_win::authenticate_server`] (identify the peer process,
 /// compare its token-user SID to this account's — NOT the full five-step
 /// `challenge()`, which additionally binds a reply's own pid/creation to
 /// this connection and needs a lane-specific request to get one) before
@@ -2481,8 +2378,8 @@ fn map_sid_auth_outcome(outcome: crate::challenge::SidAuthOutcome) -> Result<(),
 /// authentication is a loud, typed [`PipeError::Foreign`] or
 /// [`PipeError::Undetermined`] — never a silent retry. A caller that
 /// needs the FULL proof (mgmt lane; the probe classifier) runs
-/// `challenge::challenge` itself on top of this — see
-/// `probe::RealProbeOps` for exactly that composition.
+/// `challenge_win::challenge` itself on top of this — see
+/// `probe_win::RealProbeOps` for exactly that composition.
 ///
 /// Retries `CreateFileW` (bounded, 2s total) on `ERROR_PIPE_BUSY` (all
 /// instances currently connected — waits on `WaitNamedPipeW` between
@@ -2491,18 +2388,18 @@ fn map_sid_auth_outcome(outcome: crate::challenge::SidAuthOutcome) -> Result<(),
 /// failures.
 pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, PipeError> {
     let client = connect_voyage_pipe_unchallenged(voyage_id)?;
-    map_sid_auth_outcome(crate::challenge::authenticate_server(&client))?;
+    map_sid_auth_outcome(crate::challenge_win::authenticate_server(&client))?;
     Ok(client)
 }
 
 /// The raw connect, with NO authentication — every step-5 client must go
 /// through [`connect_voyage_pipe`] instead. `pub(crate)`, and MUST STAY
 /// `pub(crate)` (U1a Codex round-1, Blocker 2): the only in-crate consumer
-/// is `probe::RealProbeOps::connect`, which is itself `pub(crate)` for
+/// is `probe_win::RealProbeOps::connect`, which is itself `pub(crate)` for
 /// exactly this reason — an unchallenged `PipeClient` reachable through a
 /// PUBLIC type would be a public path to raw pipe I/O on an unauthenticated
 /// connection, defeating this whole module's own enforcement. See
-/// `probe.rs`'s module doc for why making `RealProbeOps` crate-private
+/// `probe_win.rs`'s module doc for why making `RealProbeOps` crate-private
 /// costs nothing today (no production code instantiates it yet) and stays
 /// architecturally sound once U2's classifier lands (a public function
 /// in THIS crate, reachable from `sot-capsule`'s separate bin target,
@@ -2523,11 +2420,11 @@ pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeCl
 
 /// ADR 0041 step 6 U2: connect to the supervisor lane's own pipe with NO
 /// authentication — every real caller must run the SAME five-step
-/// [`crate::challenge::challenge`] the mgmt lane's own client does (the
+/// [`crate::challenge_win::challenge`] the mgmt lane's own client does (the
 /// supervisor lane's security is "MUTUAL", not the weaker SID-only proof
 /// [`connect_voyage_pipe`] settles for), so unlike that function this one
 /// intentionally has no `_unchallenged`-free sibling here — the caller
-/// composes the full challenge itself, exactly as `probe::RealProbeOps`
+/// composes the full challenge itself, exactly as `probe_win::RealProbeOps`
 /// does for the mgmt lane's own unchallenged connect.
 pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient, PipeError> {
     connect_named_pipe_unchallenged(supervisor_pipe_name_wide(h))
@@ -2717,10 +2614,6 @@ impl PipeClient {
 /// serve — see `challenge.rs`'s own doc for why that module depends on
 /// this trait rather than on `PipeClient` by name.
 impl crate::challenge::ChallengeableConnection for PipeClient {
-    fn raw_handle(&self) -> HANDLE {
-        self.raw.0
-    }
-
     fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
         PipeClient::write_all(self, bytes).map_err(pipe_error_to_io)
     }
@@ -2731,6 +2624,15 @@ impl crate::challenge::ChallengeableConnection for PipeClient {
 
     fn cancel(&self) {
         PipeClient::cancel(self)
+    }
+}
+
+/// L1-unix LU1a: the Windows-shaped extension half of the same-connection
+/// challenge — see `challenge_win.rs`'s own doc for why this is a separate
+/// trait from [`crate::challenge::ChallengeableConnection`] above.
+impl crate::challenge_win::PipeChallengeable for PipeClient {
+    fn raw_handle(&self) -> HANDLE {
+        self.raw.0
     }
 }
 

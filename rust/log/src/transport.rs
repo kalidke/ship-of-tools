@@ -17,6 +17,7 @@
 
 use crate::attach_proto::ConnId;
 use crate::Result;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -240,5 +241,128 @@ pub(crate) fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
             return false;
         }
         thread::sleep(JOIN_POLL_INTERVAL);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Shared implementation helpers — both platforms' transports use these
+// (L1-unix LU1a, hoisted out of `pipe_win.rs`). Not part of the
+// `Transport` CONTRACT above; a Unix transport implementation is free to
+// reuse them exactly as `pipe_win.rs` does, or not, at its own
+// discretion.
+// ---------------------------------------------------------------------
+
+/// Bound on one outstanding overlapped `ReadFile` (ADR 0041: "the transport
+/// just must not read unboundedly ahead").
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const READ_BUF_LEN: usize = 65_536;
+
+/// Per-connection outbound byte budget: enqueued-but-not-yet-physically-
+/// written bytes, INCLUDING the writer's in-flight item, may never exceed
+/// this. Sized to the same order of magnitude as the ADR's own "4 MiB
+/// per-watcher queue" figure — not a literal citation of it (that number
+/// bounds a different queue, the future capsule's checkpoint transfer),
+/// just a consistent order of magnitude for this transport's own ceiling.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const OUTBOUND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+
+/// The `events()` channel's item capacity: sized so a run of maximum-size
+/// `Bytes` deliveries caps buffered inbound at roughly the same order of
+/// magnitude as [`OUTBOUND_BUDGET_BYTES`].
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const EVENTS_CHANNEL_CAP: usize = OUTBOUND_BUDGET_BYTES / READ_BUF_LEN;
+
+/// How long a stalled delivery (lifecycle retry, or one `Bytes` attempt)
+/// sleeps between retries against a full `events` channel.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const EVENTS_RETRY_INTERVAL: Duration = Duration::from_millis(20);
+
+/// How long a stalled `Bytes` delivery may retry a single chunk against a
+/// full `events` channel before abandoning it and force-closing the
+/// connection with a guaranteed `Closed`. Generous relative to
+/// [`EVENTS_RETRY_INTERVAL`] — this is "the consumer has genuinely
+/// stalled," not routine backpressure.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const BYTES_ABANDON_AFTER: Duration = Duration::from_secs(5);
+
+/// Per-connection outbound byte accounting: reserved eagerly before an
+/// item is even queued, released only once the writer's submission for
+/// that item RETURNS (success or failure) — the in-flight item stays
+/// counted the whole time. The cap is always [`OUTBOUND_BUDGET_BYTES`] —
+/// not configurable, so no field for it.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) struct OutboundBudget {
+    used: Mutex<usize>,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl OutboundBudget {
+    pub(crate) fn new() -> Self {
+        Self {
+            used: Mutex::new(0),
+        }
+    }
+
+    pub(crate) fn try_reserve(&self, n: usize) -> bool {
+        let mut used = self.used.lock().unwrap();
+        if *used + n > OUTBOUND_BUDGET_BYTES {
+            return false;
+        }
+        *used += n;
+        true
+    }
+
+    pub(crate) fn release(&self, n: usize) {
+        let mut used = self.used.lock().unwrap();
+        *used = used.saturating_sub(n);
+    }
+}
+
+/// A connection's reader/writer threads block here until released — the
+/// gate is opened only after the connection is fully registered and its
+/// initial lifecycle event has been RELIABLY queued, or `abort`ed if the
+/// connection could not be fully set up, in which case the gated thread
+/// returns immediately, having never touched the transport.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GateSignal {
+    Wait,
+    Start,
+    Abort,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) struct StartGate {
+    state: Mutex<GateSignal>,
+    cv: Condvar,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl StartGate {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(GateSignal::Wait),
+            cv: Condvar::new(),
+        })
+    }
+
+    /// Blocks until `open` or `abort`; returns `true` to proceed, `false`
+    /// to return immediately without ever touching the pipe.
+    pub(crate) fn wait_for_start(&self) -> bool {
+        let mut st = self.state.lock().unwrap();
+        while *st == GateSignal::Wait {
+            st = self.cv.wait(st).unwrap();
+        }
+        *st == GateSignal::Start
+    }
+
+    pub(crate) fn open(&self) {
+        *self.state.lock().unwrap() = GateSignal::Start;
+        self.cv.notify_all();
+    }
+
+    pub(crate) fn abort(&self) {
+        *self.state.lock().unwrap() = GateSignal::Abort;
+        self.cv.notify_all();
     }
 }

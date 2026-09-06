@@ -32,8 +32,16 @@
 //! Two structural fixes from round 2 stay: the pipe is byte-type, so
 //! tests that check received content accumulate bytes across events
 //! rather than assuming one write equals one `Bytes` event.
+//!
+//! L1-unix LU1a: `challenge`/`ChallengedProcess`/`authenticate_server`
+//! moved to `sot_log::challenge_win` (the Windows steps 1-3 half); the
+//! `ChallengeableConnection` trait itself (`write_all`/`read`/`cancel`)
+//! stays in `sot_log::challenge`, and its raw-handle counterpart is now
+//! the separate `sot_log::challenge_win::PipeChallengeable` extension
+//! trait — see `InvalidHandleConn`'s own two `impl` blocks below.
 
-use sot_log::challenge::{challenge, ChallengeOutcome};
+use sot_log::challenge::ChallengeOutcome;
+use sot_log::challenge_win::challenge;
 use sot_log::exchange::VoyageMgmtExchange;
 use sot_log::pipe_win::{
     connect_voyage_pipe, ClosedReason, ConnId, PipeError, PipeServer, TransportEvent,
@@ -1248,7 +1256,7 @@ fn await_status_request(server: &PipeServer, conn_id: ConnId, timeout: Duration)
 /// Real challenge, real pipe, SAME process on both ends — a genuine
 /// same-user server, proven. Also this test's own shared "give me a real
 /// proven process" helper for the two tests below it.
-fn self_proven_challenge() -> ChallengeOutcome<sot_log::challenge::ChallengedProcess> {
+fn self_proven_challenge() -> ChallengeOutcome<sot_log::challenge_win::ChallengedProcess> {
     let voyage_id = fresh_voyage_id();
     let server = PipeServer::bind(&voyage_id, 1).expect("bind");
     let client = connect_voyage_pipe(&voyage_id).expect("connect");
@@ -1481,7 +1489,7 @@ fn cross_process_challenge_proves_a_real_child_server() {
 // U1a: SID authentication enforcement in the shared `connect_voyage_pipe`
 // constructor. Every step-5 client — mgmt or attach, tests and the e2e
 // harness included — now gets steps 1-3 of ADR 0041's same-connection
-// challenge (`challenge::authenticate_server`) as PART of connecting, not
+// challenge (`challenge_win::authenticate_server`) as PART of connecting, not
 // as a separate call the caller has to remember to make. This is
 // DELIBERATELY WEAKER than the full five-step `challenge()` (Codex round-1
 // Blocker 1): no reply round trip happens here, so no liveness/pid-binding
@@ -1545,9 +1553,6 @@ fn connect_voyage_pipe_sid_authentication_enforced_pass_against_a_genuine_server
 /// — that steps 1-3 alone can already produce.
 struct InvalidHandleConn;
 impl sot_log::challenge::ChallengeableConnection for InvalidHandleConn {
-    fn raw_handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
-        windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
-    }
     fn write_all(&self, _bytes: &[u8]) -> std::io::Result<()> {
         unreachable!("authenticate_server never sends a request")
     }
@@ -1558,10 +1563,19 @@ impl sot_log::challenge::ChallengeableConnection for InvalidHandleConn {
         unreachable!("authenticate_server never arms a reply watchdog")
     }
 }
+/// L1-unix LU1a: raw-handle access moved off `ChallengeableConnection`
+/// onto this separate, Windows-only extension trait — see
+/// `challenge_win.rs`'s own doc for why.
+impl sot_log::challenge_win::PipeChallengeable for InvalidHandleConn {
+    fn raw_handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+    }
+}
 
 #[test]
 fn authenticate_server_is_undetermined_when_step_one_itself_fails() {
-    use sot_log::challenge::{authenticate_server, SidAuthOutcome};
+    use sot_log::challenge::SidAuthOutcome;
+    use sot_log::challenge_win::authenticate_server;
     let outcome = authenticate_server(&InvalidHandleConn);
     assert!(matches!(outcome, SidAuthOutcome::Undetermined), "{outcome:?}");
 }

@@ -82,7 +82,8 @@
 //!   failure (finding 13) is a visible terminal error here, never a
 //!   silent "attached".
 
-use crate::challenge::{self, ChallengeOutcome, ChallengedProcess};
+use crate::challenge::{ChallengeOutcome, SidAuthOutcome};
+use crate::challenge_win::{self, ChallengedProcess};
 use crate::exchange::{SupervisorLaneExchange, VoyageMgmtExchange, SUPERVISOR_LANE_BUILD_ID};
 use crate::fe_client::{
     self, FeDownBaseline, InputWireOutcome, OutstandingSlot, QuitDispatcher, QuitState,
@@ -175,7 +176,7 @@ const SCROLLBACK_ROWS: usize = 5000;
 
 // -----------------------------------------------------------------------
 // Small bounded I/O helpers over PipeClient, shared by every lane this
-// module speaks (mirrors the pattern `challenge::challenge` itself uses:
+// module speaks (mirrors the pattern `challenge_win::challenge` itself uses:
 // `crate::deadline::run_with_deadline` racing the blocking call against a
 // `cancel()`-issuing watchdog).
 // -----------------------------------------------------------------------
@@ -278,13 +279,13 @@ impl FrameReader {
 /// challenge with this crate's own build identity — the production
 /// analog of `supervisor::connect_and_challenge_for_test` (test-support
 /// only), reusing the SAME primitives (`connect_supervisor_pipe_
-/// unchallenged`, `challenge::challenge`, `SupervisorLaneExchange`)
+/// unchallenged`, `challenge_win::challenge`, `SupervisorLaneExchange`)
 /// rather than depending on that test-gated helper.
 fn connect_supervisor_lane(h: &str) -> Result<(PipeClient, ChallengedProcess), LaneError> {
     let conn = pipe_win::connect_supervisor_pipe_unchallenged(h).map_err(|e| LaneError::Io(pipe_err_to_io(e)))?;
     let mut exchange = SupervisorLaneExchange::new(SUPERVISOR_LANE_BUILD_ID);
     let deadline = Instant::now() + HELLO_BUDGET;
-    match challenge::challenge(&conn, &mut exchange, deadline) {
+    match challenge_win::challenge(&conn, &mut exchange, deadline) {
         ChallengeOutcome::Proven(process) => Ok((conn, process)),
         // The shared challenge machinery folds "SID mismatch" and "a
         // well-formed WRONG reply" (which includes a genuine
@@ -358,7 +359,7 @@ fn capsule_identity_via_mgmt(voyage: &str) -> Result<ChallengedProcess, LaneErro
     let conn = pipe_win::connect_voyage_pipe_unchallenged(voyage).map_err(|e| LaneError::Io(pipe_err_to_io(e)))?;
     let mut exchange = VoyageMgmtExchange::default();
     let deadline = Instant::now() + STATUS_BUDGET;
-    match challenge::challenge(&conn, &mut exchange, deadline) {
+    match challenge_win::challenge(&conn, &mut exchange, deadline) {
         ChallengeOutcome::Proven(process) => Ok(process),
         ChallengeOutcome::Foreign => Err(LaneError::Protocol("voyage mgmt: foreign")),
         ChallengeOutcome::Undetermined => Err(LaneError::Protocol("voyage mgmt: undetermined")),
@@ -1037,13 +1038,13 @@ fn run_worker(
                 }
             }
         };
-        let attach_identity = match challenge::authenticate_server(&voyage_conn) {
-            challenge::SidAuthOutcome::Authenticated(a) => (a.pid, a.created),
-            challenge::SidAuthOutcome::Foreign => {
+        let attach_identity = match challenge_win::authenticate_server(&voyage_conn) {
+            SidAuthOutcome::Authenticated(a) => (a.pid, a.created),
+            SidAuthOutcome::Foreign => {
                 emit(ClientEvent::Terminal("voyage pipe: foreign".to_string()));
                 return;
             }
-            challenge::SidAuthOutcome::Undetermined => {
+            SidAuthOutcome::Undetermined => {
                 match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
                     WaitOutcome::Shutdown => break 'episodes,
                     WaitOutcome::Continue => continue 'episodes,
