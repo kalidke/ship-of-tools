@@ -16,6 +16,7 @@
 #   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <handle>]
 #   sot-fe open-url <http(s)-url>                  [--fe <handle>]
 #   sot-fe docs    <workspace> <abs-path>          [--fe <handle>]
+#   sot-fe relaunch --fe <handle> [--converge]
 #   sot-fe repl run  <workspace> <path>            [--fresh] [--timeout <s>] [--origin <who>]
 #   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>] [--origin <who>]
 #   sot-fe repl interrupt <workspace>              [--timeout <s>]
@@ -35,6 +36,10 @@
 #              port and opens it — runs JS/WebGL, no preview size caps. For a
 #              built site or a self-contained figure export. NOT an http URL
 #              (use open-url for those); path is confined to a workspace root.
+#   relaunch — ask ONE frontend to respawn itself (ADR 0017): plain (exit 75,
+#              re-stage + respawn) or --converge (exit 76: pull, rebuild,
+#              daemon-pair re-ensure, respawn). --fe is REQUIRED: a broadcast
+#              would bounce every attached frontend and is refused FE-side.
 #   repl     — run a .jl file (or eval code) in a workspace's persistent REPL
 #              and print the COLLECTED output (stdout/stderr/value/error +
 #              figure file paths). Unlike the other verbs this is a real
@@ -124,6 +129,7 @@ CMD="${1:-}"; [ -n "$CMD" ] && shift || usage 1
 ENDPOINT=""
 FE=""          # --fe handle → wire `target`
 URGENT=false
+CONVERGE=false   # --converge → relaunch exits 76 (pull + rebuild) instead of 75
 BOOT=false
 LEVEL=""
 NOTIFY_WS=""
@@ -139,6 +145,7 @@ POS=()         # positional args for the subcommand
 while [ $# -gt 0 ]; do
     case "$1" in
         --fe)       FE="$2"; shift 2 ;;
+        --converge) CONVERGE=true; shift ;;
         --endpoint) ENDPOINT="$2"; shift 2 ;;
         --urgent)   URGENT=true; shift ;;
         --boot)     BOOT=true; shift ;;
@@ -747,6 +754,11 @@ case "$CMD" in
         [ -n "$LEVEL" ]     && ARGS="$(printf '%s' "$ARGS" | jq -c --arg l "$LEVEL" '. + {level:$l}')"
         [ -n "$NOTIFY_WS" ] && ARGS="$(printf '%s' "$ARGS" | jq -c --arg w "$NOTIFY_WS" '. + {workspace:$w}')"
         send_fe_command notify "$ARGS"
+        ;;
+    relaunch)
+        [ -n "$FE" ] || { echo "usage: sot-fe relaunch --fe <handle> [--converge]  (a target is required)" >&2; exit 1; }
+        ARGS="$(jq -nc --argjson c "$([ "$CONVERGE" = true ] && echo true || echo false)" '{converge:$c}')"
+        send_fe_command relaunch "$ARGS"
         ;;
     open-url)
         URL="${POS[0]:-}"

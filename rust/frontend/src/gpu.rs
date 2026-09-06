@@ -7156,6 +7156,22 @@ impl State {
                     caption,
                 });
             }
+            FeCommand::Relaunch { converge } => {
+                // Same exit codes the sentinel watcher produces; the supervisor
+                // (launch-sot.ps1 / sot-launch) respawns us. `ephemeral` FEs
+                // (`--capture`) have no supervisor and must not exit for one.
+                if self.ephemeral {
+                    self.status = "relaunch refused · ephemeral frontend".to_string();
+                } else {
+                    tracing::info!(converge, "fe-command: relaunch");
+                    self.status = if converge { "converging…" } else { "relaunching…" }.to_string();
+                    self.relaunch_flag.store(
+                        if converge { 76 } else { 75 },
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+                self.window.request_redraw();
+            }
             FeCommand::Docs { workspace, path } => {
                 // No workspace switch: docs.open confines the absolute path to
                 // ANY registered workspace on the backend, so the active FE
@@ -18037,6 +18053,15 @@ fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) ->
             let path = str_arg("path")?;
             Some(FeCommand::Docs { workspace, path })
         }
+        "relaunch" => {
+            if !directed {
+                tracing::warn!("fe-command relaunch: broadcast refused; target one frontend with --fe");
+                return None;
+            }
+            Some(FeCommand::Relaunch {
+                converge: bool_arg("converge"),
+            })
+        }
         _ => None,
     }
 }
@@ -18215,6 +18240,11 @@ enum FeCommand {
     /// to ANY registered workspace, so no workspace switch is needed and
     /// `workspace` is carried for parity/logging only (the backend ignores it).
     Docs { workspace: String, path: String },
+    /// ADR 0017 self-relaunch, requested over the command channel: exit 75
+    /// (plain respawn) or 76 (`converge`: pull + rebuild + daemon-pair
+    /// re-ensure, then respawn). DIRECTED only -- a broadcast would bounce
+    /// every attached frontend at once.
+    Relaunch { converge: bool },
 }
 
 fn fe_cmd_default_dir() -> i32 {
