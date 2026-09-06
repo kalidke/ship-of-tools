@@ -23,7 +23,7 @@
 
 use crate::fe_client::{QuitDispatcher, QuitState};
 use crate::fe_client_win::{run_end_run_and_wait, FrameReader};
-use crate::pipe_win::TEARDOWN_AGGREGATE_DEADLINE;
+use crate::transport::TEARDOWN_AGGREGATE_DEADLINE;
 use crate::supervisor::{connect_and_challenge, err_state, send_and_read};
 use crate::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 use std::path::Path;

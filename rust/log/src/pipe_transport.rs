@@ -1,5 +1,5 @@
 //! The ADR 0041 step-5 bridge between [`crate::pipe_win`]'s real named-pipe
-//! transport and [`crate::capsule_win`]'s `Transport` trait — the deferred
+//! transport and [`crate::transport`]'s `Transport` trait — the deferred
 //! half of unit U3 (round 2). Neither side knows about the other:
 //! `pipe_win` is a byte transport with no opinion on what rides over it;
 //! `capsule_win::run` drives `AttachProto` against an abstract `Transport`.
@@ -51,7 +51,7 @@
 //! bound is the ONLY bound — exactly as intended.
 //!
 //! `Transport::try_recv_event` is on `run`'s own critical per-iteration
-//! path (see that method's doc in `capsule_win.rs`): it must never block
+//! path (see that method's doc in `transport.rs`): it must never block
 //! or add its own wait, since `run`'s ONE latency budget per iteration is
 //! its `output_rx.recv_timeout(GROUP_COMMIT_WINDOW)`. A plain
 //! `Receiver::try_recv()` (never `recv_timeout`) is what makes that true
@@ -63,7 +63,7 @@
 //! ever be accepted while this capsule holds the pipe's name — an
 //! unreachable-forever session if `run` just kept going regardless
 //! (round-2 e2e review, finding 4). This bridge translates it to
-//! [`capsule_win::TransportEvent::TransportFatal`], which `run` maps to an
+//! [`transport::TransportEvent::TransportFatal`], which `run` maps to an
 //! orderly self-end on the SAME path as an externally requested `EndRun`
 //! — see that variant's own doc for the full policy.
 //!
@@ -103,8 +103,8 @@
 
 #![cfg(windows)]
 
-use crate::capsule_win::{Transport, TransportEvent as CapsuleEvent};
 use crate::pipe_win::{ConnId, PipeServer, TransportEvent as PipeEvent};
+use crate::transport::{Transport, TransportEvent as CapsuleEvent};
 use crate::Result;
 use std::collections::HashSet;
 use std::time::Instant;

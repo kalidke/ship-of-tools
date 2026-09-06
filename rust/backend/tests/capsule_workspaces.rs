@@ -1147,7 +1147,7 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
 /// test above) cannot close the narrower race where the OLD lane has
 /// already gone quiet but its fence has not yet released (`sot-capsule
 /// supervise` drops its lane BEFORE releasing `supervisor.lock` — up to
-/// `pipe_win::TEARDOWN_AGGREGATE_DEADLINE`, 20s). A spawn that starts
+/// `transport::TEARDOWN_AGGREGATE_DEADLINE`, 20s). A spawn that starts
 /// into that window must exit `EXIT_CONTENDED` (70), never
 /// `EXIT_TERMINAL` (69), and the daemon's watchdog must re-probe for
 /// adoption rather than immediately marking the row `capsule_terminal`.

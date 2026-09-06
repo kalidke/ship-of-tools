@@ -1076,7 +1076,7 @@ mod windows_runtime {
 
     /// Bound on how long [`install_watchdog`] keeps re-probing a
     /// [`LegOutcome::Contended`] leg for adoption before giving up —
-    /// matches [`sot_log::pipe_win::TEARDOWN_AGGREGATE_DEADLINE`] (the
+    /// matches [`sot_log::transport::TEARDOWN_AGGREGATE_DEADLINE`] (the
     /// authority's own documented worst-case teardown budget: it drops
     /// its lane before releasing the fence) plus margin for this
     /// process's own connect/challenge round trip on top of that.

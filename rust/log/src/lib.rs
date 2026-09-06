@@ -21,6 +21,11 @@ pub mod challenge;
 pub mod classify;
 pub mod claude;
 pub mod conpty;
+// L1-unix, unit LU0: the platform-neutral transport contract (hoisted out
+// of `capsule_win`/`pipe_win`) -- deliberately NOT cfg-gated, unlike its
+// siblings below: `pipe_win`/`pipe_transport` are the Windows
+// implementation, a Unix implementation lands in LU1.
+pub mod transport;
 // ADR 0041 step 5, unit U3: the Windows named-pipe transport (server +
 // client). `pub`, matching `conpty`/`capsule_win`/`wire`: its tests live in
 // `tests/pipe_win.rs`, a separate integration-test crate that can only ever
@@ -28,7 +33,7 @@ pub mod conpty;
 // rather than `pub(crate)`.
 pub mod pipe_win;
 // ADR 0041 step 5, unit U3 round 2: the thin bridge from `pipe_win`'s real
-// named-pipe transport to `capsule_win`'s `Transport` trait. Lives in the
+// named-pipe transport to `transport`'s `Transport` trait. Lives in the
 // library (not the `sot-capsule` bin) for two reasons: `tests/e2e_pipe.rs`
 // needs to reach it, and the bin needs nothing from it beyond construction
 // -- one bridge, reused by both, rather than duplicated or made
@@ -178,7 +183,7 @@ pub enum Error {
     /// background failure on an already-bound pipe (`pipe_win`'s own
     /// `TransportEvent::AcceptError`, its accept loop's persistent-failure
     /// signal) never reaches this type at all — `pipe_transport.rs`
-    /// translates it to `capsule_win::TransportEvent::TransportFatal`
+    /// translates it to `transport::TransportEvent::TransportFatal`
     /// instead, delivered through `Transport::try_recv_event` like any
     /// other transport event, since by then `run` is already past `bind`
     /// and mid-loop, not somewhere a `Result` could propagate to.

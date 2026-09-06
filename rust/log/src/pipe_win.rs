@@ -230,6 +230,7 @@
 
 #![cfg(windows)]
 
+use crate::transport::{join_within, JOIN_POLL_INTERVAL, TEARDOWN_AGGREGATE_DEADLINE};
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
@@ -1659,62 +1660,6 @@ impl PipeServer {
             .unwrap()
             .get(&conn_id)
             .copied()
-    }
-}
-
-/// ADR 0041 Lifecycle "the pipe NAME disappears before any blocking
-/// join" / the bounds table's "teardown aggregate": 20 s TOTAL after the
-/// listener is gone, one absolute deadline shared by every join
-/// (acceptor, reaper, and — inside the reaper's own drain — every
-/// connection worker), loud on expiry.
-pub const TEARDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_secs(20);
-
-/// [`join_within`]'s poll granularity — small enough that a fast, healthy
-/// teardown (the ordinary case) never visibly waits for it, and small
-/// enough that a test proving "loud on expiry" against a short injected
-/// budget stays fast too.
-const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
-
-/// Wait for `jh` to finish without ever calling the BLOCKING
-/// `JoinHandle::join` — std gives that call no timeout, which is exactly
-/// what "each wait taking the remaining budget" (ADR 0041) rules out.
-/// Polls [`JoinHandle::is_finished`] (never blocks) until either it
-/// reports true (join it for real — `is_finished() == true` guarantees
-/// that call cannot then block — and return `true`) or `deadline` passes
-/// (`false`: LOUD, since this crate cannot force an OS thread to stop —
-/// the handle is simply dropped here, which detaches rather than kills
-/// it; the thread keeps running in the background). `pub(crate)`:
-/// `capsule_win.rs` reuses this SAME mechanism (Codex round-1 Blocker 3)
-/// to join its own closer/reader threads under the identical aggregate
-/// deadline, rather than a second bespoke poll loop.
-///
-/// **The exact boundary semantic (Codex round-2b, ruling on finding 2,
-/// a reasoned deviation from literal strictness):** expiry is terminal
-/// IFF a thread REMAINS UNFINISHED at the instant the budget is
-/// exhausted — `is_finished` is checked FIRST on every poll, including
-/// the one that observes the expired deadline, so a thread that
-/// genuinely finished at or before that exact instant is accepted
-/// (`true`) even though the deadline has ALSO passed by the time this
-/// function notices. This is deliberate, not a race: the invariant this
-/// bound exists to serve is "never proceed past an UNFINISHED worker",
-/// and a thread that has ALREADY finished leaves nothing dangling — it
-/// satisfies that invariant regardless of which check this function
-/// happened to run first. Flagging it as failed would be a false alarm,
-/// not a safety property. There is no "acceptance after the decision"
-/// hazard either way: once this function returns, its `bool` is the
-/// decision, made exactly once, from the caller's own single call site —
-/// nothing later re-evaluates or overturns it, whether the answer was
-/// `true` or `false`.
-pub(crate) fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
-    loop {
-        if jh.is_finished() {
-            let _ = jh.join();
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        thread::sleep(JOIN_POLL_INTERVAL);
     }
 }
 
