@@ -66,4 +66,5 @@ context while you read; switching away leaves Julia and terminal processes runni
 
 Plain arrows, `Ctrl+Arrow`, and `Shift+Arrow` are three disjoint roles, so they
 never collide. The authoritative, build-current chord list is in
-[Keybindings](../../ref/keybindings.md); when in doubt, `?` is the source of truth.
+[Keybindings](../../ref/keybindings.md); when in doubt, `Ctrl+?` (or `F1`) is
+the source of truth.

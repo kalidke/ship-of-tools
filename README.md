@@ -158,7 +158,7 @@ stamps the SoT icon + taskbar identity. Never point a shortcut at bare
 Launch the frontend; it connects to (or spawns) a backend and a Julia kernel.
 Switch modes with `f` (Files) / `m` (Modules), navigate with the arrow keys,
 toggle the REPL drawer with `Ctrl+J` and the Terminal with `Ctrl+T`, and press
-`?` for the full keymap. See the
+`Ctrl+?` (or `F1`) for the full keymap. See the
 [Guided Tour](https://kalidke.github.io/ship-of-tools/dev/start/tour/).
 
 ## How it works

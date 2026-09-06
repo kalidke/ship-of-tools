@@ -92,11 +92,12 @@ Two more nav-tree roots switch the *target*, not the content:
   and the next launch and any reconnect target it. Switching hosts is "pick →
   `Ctrl+Q` → relaunch".
 
-## Help — `?`
+## Help — `Ctrl+?` and `F1`
 
-Press `?` (in nav or preview focus, outside edit mode) for the in-app help
-overlay — the live, authoritative keymap for your build, including any rebinds.
-When in doubt, `?` is the source of truth.
+Press `Ctrl+?` for a five-second overlay of the focused pane's actions with
+their live bindings; press it again for the searchable Help drawer, or open the
+drawer directly with `F1`. Help reads the same action catalog dispatch uses,
+including any rebinds, so when in doubt it is the source of truth.
 
 ## Layout and focus
 
