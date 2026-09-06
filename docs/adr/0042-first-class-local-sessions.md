@@ -72,6 +72,80 @@ and is never listed); and Ship of Tools development runs in a `ship-of-tools`
 workspace row rooted at the checkout, exactly like every other project. The
 anchor's pane hosts nothing; the drawer stays terminal / monitor / Julia.
 
+**Amendment (2026-09-06) — the FE driver moves out of the drawer into a
+local capsule session (owner ruling 2026-09-05: "we should use the FE on a
+local session not the terminal drawer now. that was really intended for
+general purpose").** The Claude that drives a frontend box (`win-fe-<host>`)
+becomes a first-class local capsule workspace on that box; the drawer goes
+back to being a plain terminal. Five decisions, each chosen so that NOTHING
+new is added to the daemon, the protocol, or the workspace toml:
+
+1. **First turn = the generic `/sot-session-start`, unchanged launcher.** No
+   per-workspace first-turn field and no capsule env flag: the only things
+   the FE-specific `/sot-fe-session-start` ever did that the generic skill
+   does not are setting the handle and the relay endpoint by hand, and both
+   are now carried by the env the daemon pins (2, 3). The generic skill's
+   existing Windows branch (receive = the frontend's `fe-inbox.jsonl` +
+   the inbox Monitor; `comm-listen.sh` is a no-op there) becomes
+   self-contained by inlining the two steps it currently points at in the
+   FE skill; nothing else changes in it.
+2. **Identity stays `win-fe-<host>`, pinned through `agent_name`.** The
+   frontend PROCESS derives its own command-routing identity as
+   `win-fe-<lowercased hostname>` (`self_comm_handle`, `route_fe_command`),
+   every FE-targeting verb (`sot-fe … --fe <handle>`, `relaunch`) and the
+   `win-fe` family label address the box by it, and peers know the box by
+   it. Renaming the driver to the derived `ship-of-tools-<host>` would split
+   one box into two identities for no gain. `agent_name` already exists for
+   exactly this — an explicit name the daemon exports as `SOT_COMM_NAME`,
+   which `comm-join.sh` uses verbatim (ADR 0028 pin precedence). The row's
+   label stays its slug (`ship-of-tools`); only its comm handle is pinned.
+   Other local sessions on the same box keep the derived `<slug>-<host>`.
+3. **The relay endpoint is launcher env, inherited down.** Without an
+   explicit `SOT_RELAY_ENDPOINT`, `comm-lib.sh` scrapes the running `sotd`
+   for `--socket` — on a frontend box that is the LOCAL daemon's pipe, so a
+   capsule's sends would loop through the local relay and never reach the
+   backend network. The launcher therefore exports
+   `SOT_RELAY_ENDPOINT = tcp:127.0.0.1:<SOT_TCP_PORT>` (the tunnel to the
+   backend socket it already opens) before ensuring the local daemon;
+   `Start-Process` inherits it into `sotd --label local`, and the capsule
+   spawn inherits the daemon's env (only nesting vars are scrubbed). Same
+   shape as the Linux servers, whose `~/.bashrc` exports the endpoint
+   cluster-wide (ADR 0028). `PATH` already reaches `claude` the same way
+   (the drawer runs it from that PATH today). One-time cost: a persistent
+   local daemon started by an older launcher keeps its old env — stop it
+   once (`sot-local-daemon.ps1 -Stop`) and launch again.
+4. **The drawer's `[terminal] resume_command` retires, per box, AFTER the
+   driver is proven.** Order on each frontend box: the drawer session
+   `comm-leave`s (never two holders of `win-fe-<host>`; a pinned name is
+   never disambiguated) → the owner creates the local row (`+ create new`,
+   root = the box's checkout, agent `claude`, agent name `win-fe-<host>`)
+   → the capsule joins, arms its inbox Monitor, and a directed round trip
+   proves receive → then, and only then, the machine-local `settings.toml`
+   gets `resume_command = ""`. Doing it in the other order leaves the box
+   driverless after its next relaunch (the ryzen5 driver's objection on
+   2026-09-06 was exactly this). When the last box has cut over, the
+   built-in default (`DEFAULT_RESUME_COMMAND`) becomes none, the template
+   line goes, `/sot-fe-session-start` (Claude and Codex copies) is deleted,
+   and the docs that teach the ritual (ADR 0017 §4 note, setup/running/
+   terminal guides, config reference, sot-setup) point here instead.
+5. **Relaunch survival needs no work, but has two consequences.** Capsules
+   are detached supervisors adopted on daemon restart (ADR 0041), so the
+   driver rides through an ADR 0017 relaunch and even a full
+   `/sot-fe-shutdown` (offline while the tunnel is down, back when the
+   frontend returns) — strictly better than the `--continue` ritual, which
+   rebuilt a context each time. The trade until U4: the freshness pass
+   refuses to rebuild the daemon pair while any capsule is alive (pinned
+   image), so a `relaunch --converge` from a capsule-held driver converges
+   the frontend but not `sotd`/`sot-capsule`; converging the pair on a box
+   still means ending its capsule runs first. Also: a Windows capsule must
+   never run a relay-bridge loop (it pins `comm-relay.sh` open and blocks
+   `update_comm`); the generic skill's Windows branch already skips it.
+
+Deleted by this amendment once the boxes have cut over: the FE-specific
+bootstrap skill, the resume ritual's default and template line, and the
+"drawer session" as a comm identity. Open question 2 below is answered by
+decision 1.
+
 ## Build order — three slices, each landing green and off by default
 
 ### L1 — the capsule workspace runtime (daemon + frontend, one host)
@@ -302,7 +376,8 @@ retiring `-Local` (it keeps its "no tunnels, no freshness" meaning).
    Julia already, the frontend workstation may not — is a capsule workspace
    without a kernel acceptable on a host with no Julia (nav + preview + agent
    only)?
-2. Default agent launcher for a local capsule session: the same `ccb`-style
+2. *(Resolved 2026-09-06 by the FE-driver amendment above: the generic
+   first turn, identity and endpoint from the pinned env.)* Default agent launcher for a local capsule session: the same `ccb`-style
    wrapper the drawer uses, or a plain shell with the agent started by the
    user? Proposed: the drawer's wrapper, so a new local session is
    comm-aware from its first turn.
