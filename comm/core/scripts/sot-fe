@@ -264,7 +264,9 @@ send_fe_command() {
             win-fe-*) ;; # a real per-host handle
             *) echo "WARNING: --fe '$FE' is not a per-host handle (win-fe-<host>); FEs self-filter on their EXACT handle, so this likely matched NO frontend and was dropped silently. Omit --fe to reach all FEs." >&2 ;;
         esac
-        echo "note: --fe/--urgent are deprecated (2026-06-29, badge-floor only — we never force-switch the user's view)." >&2
+        # The badge-floor note is about the SHOW verbs' focus semantics; a
+        # relaunch has no view to steal and REQUIRES its target.
+        [ "$fe_cmd" = relaunch ] || echo "note: --fe/--urgent are deprecated (2026-06-29, badge-floor only — we never force-switch the user's view)." >&2
     fi
     case "$fe_cmd" in
         preview|reveal)
