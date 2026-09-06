@@ -10,14 +10,19 @@
 pub mod attach_proto;
 pub mod capsule;
 pub mod capsule_win;
-// ADR 0041 step 6, unit U0: the same-connection challenge and the
-// process-handle wrapper it returns. `pub`, matching `pipe_win`/
-// `capsule_win`: Windows-only (see the module's own `#![cfg(windows)]`).
+// ADR 0041 step 6, unit U0: the same-connection challenge's
+// platform-neutral core (the outcome vocabulary, the connection trait,
+// the wire half). L1-unix LU1a: ungated -- see the module's own doc.
 pub mod challenge;
+// L1-unix LU1a: the Windows half of the same-connection challenge --
+// steps 1-3, the retained process-handle wrapper, and the raw-handle
+// extension trait. `pub`, matching `pipe_win`/`capsule_win`: Windows-only,
+// self-gated (see the module's own `#![cfg(windows)]`).
+pub mod challenge_win;
 // ADR 0041 step 6, unit U2: the probe classifier (Stage A/B transition
 // table) `probe.rs` deliberately ships without — see that module's own
-// doc. `pub`, matching `challenge`/`probe`: Windows-only, and
-// `tests/supervisor_win.rs` needs to reach it.
+// doc. Portable (L1-unix LU1a): makes no OS call of its own, so its unit
+// tests now run on every platform, not merely Windows.
 pub mod classify;
 pub mod claude;
 pub mod conpty;
@@ -41,8 +46,14 @@ pub mod pipe_win;
 pub mod pipe_transport;
 // ADR 0041 step 6, unit U0: fault-injection scaffolding for the probe
 // classifier's own (later) model test. NO classifier logic lives here —
-// see the module's own doc.
+// see the module's own doc. Platform-neutral (L1-unix LU1a): the
+// mechanical outcome enums, the `ProbeOps` trait, and the scripted test
+// support -- the real OS-facing implementation is `probe_win`.
 pub mod probe;
+// L1-unix LU1a: the Windows half of the probe seam -- `RealProbeOps` and
+// `SpawnedChild`. `pub`, matching `probe`/`challenge_win`: Windows-only,
+// self-gated (see the module's own `#![cfg(windows)]`).
+pub mod probe_win;
 // Crate-private (Codex review finding, capsule_win.rs round): ADR 0041's
 // "one private machine" ruling means this module's items are not part of
 // the crate's public API — `capsule_win.rs` is the only real caller and
@@ -56,14 +67,15 @@ pub mod probe;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod host_handshake;
 // ADR 0041 step 6, unit U0 round-1: the three-state deadline race
-// challenge::challenge's exchange phase uses. Portable -- no OS
+// `challenge::exchange_identity`'s bounded body uses. Portable -- no OS
 // dependency at all -- so its own tests run everywhere, not merely on
 // Windows. Crate-private (round-2 finding 7): no caller outside this
 // crate needs it yet -- challenge.rs is a sibling module, not an
-// external consumer. Same `cfg_attr` reasoning as `host_handshake` just
-// above: its own tests are pure logic and run on every platform, but its
-// only real caller (`challenge.rs`) is Windows-only, so a non-Windows
-// build now has no caller at all for this now-private item.
+// external consumer. L1-unix LU1a: `exchange_identity` itself is now
+// ungated, but ITS only caller (each platform's own `challenge()`) is
+// still Windows-only until LU1c's `challenge_unix.rs` lands -- so, same
+// `cfg_attr` reasoning as `host_handshake` just above, a non-Windows
+// build still has no caller reaching this module yet.
 #[cfg_attr(not(windows), allow(dead_code))]
 mod deadline;
 pub mod envelope;
@@ -72,8 +84,9 @@ pub mod envelope;
 // from any OTHER crate, including a future sot-capsule binary target.
 pub mod fence;
 // ADR 0041 step 6, unit U0 round-1: a pipe lane's post-SID identity
-// exchange (encode request, decode reply) -- the one thing
-// challenge::challenge delegates per-lane. Portable, like `deadline`.
+// exchange (encode request, decode reply) -- the one thing every
+// platform's own `challenge()` delegates per-lane, via
+// `challenge::exchange_identity`. Portable, like `deadline`.
 pub mod exchange;
 // ADR 0041 step 6, unit U3: the FE attach-only client's PURE state
 // machines (the six FE rulings from "Step 6 as specified") -- portable,
@@ -91,8 +104,8 @@ pub mod fe_client_win;
 pub mod journal;
 // ADR 0041 step 6, unit U2: the parent-death lease a spawned capsule
 // checks as its first act after acquiring the writer fence — a named,
-// kernel-brokered mutex, Windows-only. `pub`, matching `challenge`/
-// `classify`/`probe`: `tests/supervisor_win.rs` needs to reach it.
+// kernel-brokered mutex, Windows-only. `pub`, matching `challenge_win`/
+// `probe_win`: `tests/supervisor_win.rs` needs to reach it.
 pub mod lease;
 // ADR 0041 step 6, unit U0: `drawer.voyage` publication + validation.
 // Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
@@ -112,12 +125,12 @@ pub mod segment;
 pub mod state_dir;
 // ADR 0041 step 6, unit U2: the authority -- `sot-capsule supervise`,
 // and `endrun`/`reset` as fence-acquiring in-process callers. `pub`,
-// matching `challenge`/`classify`/`lease`/`probe`: Windows-only, and
+// matching `challenge_win`/`lease`/`probe_win`: Windows-only, and
 // `tests/supervisor_win.rs` needs to reach it.
 pub mod supervisor;
 // ADR 0042 slice L1a: the small PRODUCTION supervisor-lane client for a
 // non-FE, non-test caller (the backend daemon's own capsule workspace
-// runtime) -- `pub`, matching `supervisor`/`challenge`/`fe_client_win`:
+// runtime) -- `pub`, matching `supervisor`/`challenge_win`/`fe_client_win`:
 // Windows-only, and `sot-backend` (a separate crate) needs to reach it.
 #[cfg(windows)]
 pub mod supervisor_client;

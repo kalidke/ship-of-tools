@@ -1,6 +1,7 @@
 //! A three-state deadline race, shared by anything in this crate that
 //! must bound a blocking operation it does not otherwise control (today:
-//! `challenge::challenge`'s post-SID identity exchange). Portable — no OS
+//! `challenge::exchange_identity`, shared by every platform's own
+//! `challenge()`). Portable — no OS
 //! dependency at all, just `std::thread`/`std::sync::atomic`/`std::time`
 //! — so its race logic is exercised by REAL executed tests on every CI
 //! platform, not merely compile-checked on Windows.

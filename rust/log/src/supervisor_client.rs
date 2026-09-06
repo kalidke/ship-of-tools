@@ -32,10 +32,10 @@ use std::time::{Duration, Instant};
 /// Re-exported so a caller outside this crate (`sot-backend`'s
 /// `capsule_workspace.rs`) can name the retained-process type this
 /// module's own [`connect`]/[`query_status`] return without also
-/// depending on `sot_log::challenge` directly — the SAME type, not a
+/// depending on `sot_log::challenge_win` directly — the SAME type, not a
 /// second one: `ChallengedProcess` IS the retained handle the challenge
 /// proves, reused here rather than wrapped.
-pub use crate::challenge::ChallengedProcess;
+pub use crate::challenge_win::ChallengedProcess;
 
 /// ADR 0041 Lifecycle "Every op has one budget: connect 2 s, request
 /// write 2 s..." — the same figure `fe_client_win.rs`'s own

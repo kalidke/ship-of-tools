@@ -1021,7 +1021,7 @@ mod windows_runtime {
     /// owns it for the wait's whole duration, looping
     /// [`ADOPTED_LEG_WAIT_POLL`] at a time until it reports exit, then
     /// its exit code is read the same way
-    /// `sot_log::challenge::ChallengedProcess::exit_code_after_confirmed_exit`
+    /// `sot_log::challenge_win::ChallengedProcess::exit_code_after_confirmed_exit`
     /// documents its own precondition: only after `wait` has already
     /// confirmed death.
     async fn wait_and_classify(leg: WatchedLeg, workspace_id: &str) -> LegOutcome {
