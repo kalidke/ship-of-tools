@@ -258,6 +258,14 @@ impl Chord {
         }
         Some(chord)
     }
+    /// No Ctrl/Alt/Super and a printable key: pressing it TYPES a character.
+    /// Such a chord (a user override like `help.toggle = "?"`) must never
+    /// fire where the pane consumes typed text -- the old keymap's
+    /// "nav-focus-gated so it stays literal text in the pty/editor/prompts"
+    /// invariant, kept in the resolver so Help's labels agree with dispatch.
+    fn is_bare_text(&self) -> bool {
+        !self.ctrl && !self.alt && !self.super_ && matches!(self.key, ChordKey::Char(_))
+    }
     fn matches_input(&self, key: &Key, base: Option<&Key>, m: Modifiers) -> bool {
         if (self.ctrl, self.alt, self.super_) != (m.ctrl, m.alt, m.super_) {
             return false;
@@ -395,11 +403,15 @@ impl KeyBindings {
         }
     }
     /// Catalog order is dispatch precedence. Help filters with the same predicate.
+    /// `literal_text`: the focused pane consumes typed characters (agent,
+    /// terminal, Julia input, editor, prompts, Help search), so a chord that
+    /// is just a printable key stays text there -- see `Chord::is_bare_text`.
     pub fn resolve(
         &self,
         key: &Key,
         base: Option<&Key>,
         m: Modifiers,
+        literal_text: bool,
         allowed: impl Fn(Action) -> bool,
     ) -> Option<Action> {
         ACTIONS
@@ -408,12 +420,12 @@ impl KeyBindings {
                 allowed(s.action)
                     && self.chords[&s.action]
                         .iter()
-                        .any(|c| c.matches_input(key, base, m))
+                        .any(|c| !(literal_text && c.is_bare_text()) && c.matches_input(key, base, m))
             })
             .map(|s| s.action)
     }
     /// Only advertise chords this action actually wins in the current context.
-    pub fn active_labels(&self, action: Action, allowed: impl Fn(Action) -> bool) -> Vec<String> {
+    pub fn active_labels(&self, action: Action, literal_text: bool, allowed: impl Fn(Action) -> bool) -> Vec<String> {
         self.chords[&action]
             .iter()
             .filter(|c| {
@@ -430,6 +442,7 @@ impl KeyBindings {
                         shift: c.shift,
                         super_: c.super_,
                     },
+                    literal_text,
                     &allowed,
                 ) == Some(action)
             })
@@ -719,10 +732,10 @@ mod tests {
             ..Modifiers::default()
         };
         assert_eq!(
-            b.resolve(&q, Some(&Key::Character("/".into())), modifiers, |_| true),
+            b.resolve(&q, Some(&Key::Character("/".into())), modifiers, false, |_| true),
             Some(Action::ToggleHelp)
         );
-        assert_eq!(b.resolve(&q, None, Modifiers::default(), |_| true), None);
+        assert_eq!(b.resolve(&q, None, Modifiers::default(), false, |_| true), None);
         b.merge_text("help.toggle = \"Cmd+Shift+/\"");
         assert_eq!(
             b.resolve(
@@ -733,12 +746,13 @@ mod tests {
                     shift: true,
                     ..Modifiers::default()
                 },
+                false,
                 |_| true
             ),
             Some(Action::ToggleHelp)
         );
         assert_ne!(
-            b.resolve(&q, None, modifiers, |_| true),
+            b.resolve(&q, None, modifiers, false, |_| true),
             Some(Action::ToggleHelp)
         );
         assert_eq!(b.labels_for(Action::ToggleHelp, true), "⇧⌘/");
@@ -755,6 +769,7 @@ mod tests {
                 &Key::Character("r".into()),
                 None,
                 Modifiers::default(),
+                false,
                 |a| c.allows(a)
             ),
             Some(Action::RunFresh)
@@ -767,6 +782,7 @@ mod tests {
                     shift: true,
                     ..Modifiers::default()
                 },
+                false,
                 |a| c.allows(a)
             ),
             Some(Action::RunCurrent)
@@ -784,6 +800,7 @@ mod tests {
                     super_: true,
                     ..Modifiers::default()
                 },
+                false,
                 |a| image.allows(a)
             ),
             None
@@ -797,6 +814,7 @@ mod tests {
                     shift: true,
                     ..Modifiers::default()
                 },
+                false,
                 |a| image.allows(a)
             ),
             Some(Action::Selfie)
@@ -809,6 +827,7 @@ mod tests {
                     shift: true,
                     ..Modifiers::default()
                 },
+                false,
                 |a| image.allows(a)
             ),
             Some(Action::PreviewPngZoomIn)
@@ -823,7 +842,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            b.resolve(&Key::Named(NamedKey::F8), None, Modifiers::default(), |a| c
+            b.resolve(&Key::Named(NamedKey::F8), None, Modifiers::default(), false, |a| c
                 .allows(a)),
             Some(Action::RunFresh)
         );
@@ -832,15 +851,16 @@ mod tests {
                 &Key::Character("r".into()),
                 None,
                 Modifiers::default(),
+                false,
                 |a| c.allows(a)
             ),
             None
         );
         assert!(b
-            .active_labels(Action::ToggleMonitorDrawer, |a| c.allows(a))
+            .active_labels(Action::ToggleMonitorDrawer, false, |a| c.allows(a))
             .is_empty());
         assert_eq!(
-            b.active_labels(Action::MaximizePane, |a| c.allows(a)).len(),
+            b.active_labels(Action::MaximizePane, false, |a| c.allows(a)).len(),
             1
         );
     }
@@ -885,5 +905,33 @@ mod tests {
             win.label(false),
             if cfg!(windows) { "Win+P" } else { "Super+P" }
         );
+    }
+}
+
+#[cfg(test)]
+mod literal_text_tests {
+    use super::*;
+    use winit::keyboard::Key;
+
+    /// Field case (2026-09-06): a machine's keybindings.toml binds bare `?`
+    /// to help; after the Help rollout that override must not steal a typed
+    /// `?` from a terminal or agent pane, while a chord with a modifier
+    /// still fires there.
+    #[test]
+    fn a_bare_character_override_stays_text_where_the_pane_types() {
+        let mut b = KeyBindings::defaults();
+        b.merge_text("help.toggle = \"?\"");
+        let q = Key::Character("?".into());
+        // Navigation focus: the override fires.
+        assert_eq!(b.resolve(&q, None, Modifiers::default(), false, |_| true), Some(Action::ToggleHelp));
+        // A text-consuming pane: the character is typed, nothing fires.
+        assert_eq!(b.resolve(&q, None, Modifiers::default(), true, |_| true), None);
+        // ...but a modified chord (Ctrl+t, the terminal drawer) still does.
+        let t = Key::Character("t".into());
+        let ctrl = Modifiers { ctrl: true, ..Modifiers::default() };
+        assert_eq!(b.resolve(&t, None, ctrl, true, |_| true), Some(Action::ToggleTerminalDrawer));
+        // Help advertises accordingly: no label for the bare override in a text pane.
+        assert!(b.active_labels(Action::ToggleHelp, true, |_| true).is_empty());
+        assert!(!b.active_labels(Action::ToggleHelp, false, |_| true).is_empty());
     }
 }

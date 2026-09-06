@@ -110,6 +110,15 @@ impl Context {
             DeleteConfirm | DiscardConfirm | StaleEdit => false,
         }
     }
+    /// Does the focused pane consume typed characters? Agent, terminal and
+    /// Julia input, the editor, prompts, and Help's own search field. A chord
+    /// that is just a printable key never dispatches here
+    /// (`KeyBindings::resolve`'s `literal_text`).
+    pub fn consumes_text(&self) -> bool {
+        self.editing
+            || self.prompt
+            || matches!(self.pane, Pane::Agent | Pane::Terminal | Pane::Repl | Pane::Help)
+    }
     pub fn title(&self) -> String {
         let pane = match self.pane {
             Pane::Nav => match self.mode {
@@ -260,7 +269,7 @@ pub fn border(context: &Context, bindings: &KeyBindings, width: usize) -> String
     };
     let mut hints = Vec::new();
     for &a in preferred.iter().filter(|a| context.allows(**a)) {
-        let keys = bindings.active_labels(a, |a| context.allows(a));
+        let keys = bindings.active_labels(a, context.consumes_text(), |a| context.allows(a));
         let Some(key) = keys.first() else {
             continue;
         };
@@ -304,7 +313,7 @@ pub fn peek_lines(context: &Context, bindings: &KeyBindings) -> Vec<String> {
         context.allows(s.action)
             && !matches!(s.scope, Scope::Global | Scope::Workspace | Scope::Restore)
     }) {
-        let keys = bindings.active_labels(spec.action, |a| context.allows(a));
+        let keys = bindings.active_labels(spec.action, context.consumes_text(), |a| context.allows(a));
         if !keys.is_empty() {
             lines.push(format!("{}  ·  {}", keys.join(" / "), spec.label));
         }
@@ -354,7 +363,7 @@ pub fn render(frame: &mut Frame<'_>, rect: Rect, help: &Help, bindings: &KeyBind
     ];
     for (i, a) in actions.iter().enumerate().skip(first).take(list_rows) {
         let s = a.spec();
-        let keys = bindings.active_labels(*a, |a| help.context.allows(a));
+        let keys = bindings.active_labels(*a, help.context.consumes_text(), |a| help.context.allows(a));
         let key_label = if help.all_panes && !help.context.allows(*a) {
             bindings.labels(*a)
         } else if keys.is_empty() {

@@ -45,6 +45,11 @@ previous binding. The active Help drawer and pane borders reflect that resolved
 result. When two actions share a chord in the same context, catalog order defines
 dispatch precedence; Help identifies a shadowed binding.
 
+Where a pane takes typed text (agent, terminal, Julia input, the editor,
+prompts, Help's search), a binding with no `Ctrl`, `Alt` or `Super` never
+fires: the character is typed. Bind such actions with a modifier if they must
+work there; Help shows them as unavailable in those panes.
+
 ## Modifiers and keyboard layouts
 
 Supported modifier names are `Ctrl`/`Control`, `Alt`/`Option`, `Shift`, and

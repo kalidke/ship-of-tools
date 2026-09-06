@@ -18794,7 +18794,7 @@ impl ApplicationHandler for App {
                 let base_key = event.key_without_modifiers();
                 let context = state.help_context();
                 let action = state.bindings.resolve(&event.logical_key, Some(&base_key),
-                    Modifiers { ctrl, alt, shift, super_ }, |a| context.allows(a));
+                    Modifiers { ctrl, alt, shift, super_ }, context.consumes_text(), |a| context.allows(a));
                 if !event.repeat && action == Some(Action::ToggleHelpDrawer) {
                     if state.drawer == DrawerContent::Help { state.close_help_drawer(); }
                     else { state.open_help_drawer(context); }
