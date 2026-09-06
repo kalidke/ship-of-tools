@@ -7,6 +7,9 @@ use winit::keyboard::{Key, NamedKey};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Global,
+    /// Files-mode navigation OR the new-session folder picker: the one
+    /// action that means the same thing in both (hidden entries).
+    FilesOrPicker,
     Workspace,
     Restore,
     Scroll,
@@ -111,7 +114,7 @@ actions! {
     ModeSessions, "mode.sessions", ["s"], "Sessions mode", "Browse workspaces and agent sessions.", "Navigation", Nav;
     TogglePin, "files.pin", ["p"], "Pin or unpin preview", "Keep the selected file in preview while browsing. Unpin returns to the pinned file.", "Files", Files;
     ModeHosts, "mode.hosts", ["h"], "Hosts mode", "Browse backend hosts.", "Navigation", Nav;
-    ToggleHidden, "files.toggle_hidden", ["."], "Hidden files", "Show or hide dotfiles.", "Files", Files;
+    ToggleHidden, "files.toggle_hidden", ["."], "Hidden files", "Show or hide dotfiles here or in the folder picker (a hidden folder can be a workspace root).", "Files", FilesOrPicker;
     SessionDestroy, "session.destroy", ["Shift+d"], "Destroy session", "Press twice to destroy the selected session. Any other command cancels confirmation.", "Sessions", Session;
     OpenExternal, "file.open", ["o"], "Open externally", "Open HTML, video or an interactive document in the browser; Julia files open in Pluto.", "Files", File;
     OpenDocs, "file.docs", ["Shift+w"], "Open built docs", "Open the built documentation site for this file in the browser.", "Files", File;

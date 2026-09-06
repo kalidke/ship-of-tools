@@ -85,6 +85,7 @@ impl Context {
             Nav => nav,
             FileNav => nav && file,
             Files => nav && self.mode == Mode::Files,
+            FilesOrPicker => (nav && self.mode == Mode::Files) || (self.pane == Pane::Nav && self.picker),
             Navigation => nav || self.picker,
             Session => nav && self.mode == Mode::Sessions && self.session,
             File => (nav || preview) && file,
@@ -478,6 +479,21 @@ mod tests {
         assert_eq!(h.context, c); // searching doesn't replace the origin context
         assert!(border(&c, &b, 100).contains(&b.first_label(Action::PreviewPngZoomIn)));
     }
+    /// A hidden folder (e.g. a Julia depot) is a legitimate workspace root,
+    /// so the picker must offer the same hidden toggle Files mode has --
+    /// and only Files mode among the nav modes.
+    #[test]
+    fn hidden_toggle_is_allowed_in_files_nav_and_in_the_picker_only() {
+        let files = Context { pane: Pane::Nav, mode: Mode::Files, ..Context::default() };
+        assert!(files.allows(Action::ToggleHidden));
+        let picker = Context { pane: Pane::Nav, mode: Mode::Sessions, picker: true, ..Context::default() };
+        assert!(picker.allows(Action::ToggleHidden));
+        let modules = Context { pane: Pane::Nav, mode: Mode::Modules, ..Context::default() };
+        assert!(!modules.allows(Action::ToggleHidden));
+        let preview = Context { pane: Pane::Preview, ..Context::default() };
+        assert!(!preview.allows(Action::ToggleHidden));
+    }
+
     #[test]
     fn input_and_pagination_suppress_unrelated_actions() {
         let c = Context {

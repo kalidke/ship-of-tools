@@ -485,6 +485,11 @@ struct WorkspacePicker {
     /// lifetime (ADR 0042 L2a). Every `directory.list`/`workspace.create`
     /// this picker fires routes via `send_to(&host, ...)`.
     host: HostKey,
+    /// Whether the listing includes dot-entries. Starts ON: a hidden folder
+    /// (a Julia depot, a dot-config tree) is a legitimate workspace root,
+    /// and the picker exists to choose roots. `.` toggles it, the same key
+    /// Files mode uses (`Action::ToggleHidden`, scope `FilesOrPicker`).
+    show_hidden: bool,
     /// Absolute path of the directory we're currently showing. The
     /// title bar in the NavTree displays this so the user always knows
     /// where they are.
@@ -8230,6 +8235,7 @@ impl State {
         );
         self.workspace_picker = Some(WorkspacePicker {
             host: host.clone(),
+            show_hidden: true,
             current_path: start.clone(),
             entries: Vec::new(),
             selected: 0,
@@ -8238,6 +8244,7 @@ impl State {
             &host,
             crate::transport::OutgoingReq::DirectoryList {
                 path: start.clone(),
+                include_hidden: true,
             },
         ) {
             tracing::warn!(error = %e, %host, %start, "drop initial directory.list — channel closed");
@@ -8285,9 +8292,10 @@ impl State {
                 p.entries.clear();
                 p.selected = 0;
             }
+            let include_hidden = self.workspace_picker.as_ref().is_some_and(|p| p.show_hidden);
             if let Err(e) = self.send_to(
                 &host,
-                crate::transport::OutgoingReq::DirectoryList { path: path.clone() },
+                crate::transport::OutgoingReq::DirectoryList { path: path.clone(), include_hidden },
             ) {
                 tracing::warn!(error = %e, %path, "drop directory.list (drill-in)");
             }
@@ -8317,9 +8325,10 @@ impl State {
                 p.entries.clear();
                 p.selected = 0;
             }
+            let include_hidden = self.workspace_picker.as_ref().is_some_and(|p| p.show_hidden);
             if let Err(e) = self.send_to(
                 &host,
-                crate::transport::OutgoingReq::DirectoryList { path: path.clone() },
+                crate::transport::OutgoingReq::DirectoryList { path: path.clone(), include_hidden },
             ) {
                 tracing::warn!(error = %e, %path, "drop directory.list (ascend)");
             }
@@ -8334,6 +8343,28 @@ impl State {
     /// Label is derived from the basename. Fires `workspace.create`;
     /// the response handler closes the picker and refreshes the
     /// Sessions list.
+    /// `.` in the picker: flip hidden entries and re-list the same folder.
+    fn picker_toggle_hidden(&mut self) {
+        let Some(p) = self.workspace_picker.as_mut() else {
+            return;
+        };
+        p.show_hidden = !p.show_hidden;
+        p.entries.clear();
+        p.selected = 0;
+        let (host, path, include_hidden) = (p.host.clone(), p.current_path.clone(), p.show_hidden);
+        if let Err(e) = self.send_to(
+            &host,
+            crate::transport::OutgoingReq::DirectoryList { path: path.clone(), include_hidden },
+        ) {
+            tracing::warn!(error = %e, %path, "drop directory.list (toggle hidden)");
+        }
+        self.status = format!(
+            "picker · {path} · hidden folders {}",
+            if include_hidden { "shown" } else { "hidden" }
+        );
+        self.window.request_redraw();
+    }
+
     fn picker_confirm_selected(&mut self, agent: &str) {
         let path = match self.workspace_picker.as_ref() {
             Some(p) => p
@@ -19542,7 +19573,11 @@ impl ApplicationHandler for App {
                             // nav.toggle_hidden + re-fetches the files tree.
                             Some(Action::ToggleHidden) if !event.repeat =>
                             {
-                                state.toggle_hidden_files();
+                                if state.workspace_picker.is_some() {
+                                    state.picker_toggle_hidden();
+                                } else {
+                                    state.toggle_hidden_files();
+                                }
                             }
                             // Capital D (Shift+d) in Sessions mode →
                             // destroy the cursor row's workspace. Two-

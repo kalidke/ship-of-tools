@@ -1108,7 +1108,7 @@ pub enum OutgoingReq {
     /// List subdirectories of `path`. Used by the Sessions-mode workspace
     /// picker so the user can pick an existing directory as the new
     /// workspace's project_root.
-    DirectoryList { path: String },
+    DirectoryList { path: String, include_hidden: bool },
     /// Register a new workspace with the daemon and create its tmux
     /// session (ADR 0014). Fired when the user confirms a directory in
     /// the workspace picker. Response surfaces as
@@ -2480,8 +2480,8 @@ where
                         .await?;
                         pending.insert(id, PendingKind::TmuxCapturePane { target });
                     }
-                    OutgoingReq::DirectoryList { path } => {
-                        tracing::debug!(%path, id, "→ directory.list");
+                    OutgoingReq::DirectoryList { path, include_hidden } => {
+                        tracing::debug!(%path, include_hidden, id, "→ directory.list");
                         codec::write_frame(
                             &mut tx,
                             &Frame::req(
@@ -2489,7 +2489,7 @@ where
                                 op::DIRECTORY_LIST,
                                 serde_json::to_value(sot_protocol::DirectoryListReq {
                                     path,
-                                    include_hidden: false,
+                                    include_hidden,
                                 })?,
                             ),
                             None,
