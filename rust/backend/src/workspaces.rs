@@ -644,20 +644,15 @@ impl Workspaces {
         g.default_id.clone()
     }
 
-    /// ADR 0042 amendment (owner ruling, 2026-09-04): is `ws` this
-    /// daemon's default row in its INERT ANCHOR state — the fallback
-    /// row that browses the machine's files but is NOT a session? True
-    /// only for the default row, with no agent, on the capsule runtime:
-    /// the runtime term is load-bearing, not redundant — a TMUX default
-    /// row with no agent is a shared backend's ordinary `.SoT` (its pane
-    /// hosts the SoT LLM, a real session) and must never read as the
-    /// anchor. The ONE predicate for every daemon-side consequence of
-    /// "not a session": nothing starts it on attach, and it does not
-    /// claim its root against a real session (the duplicate-root gate).
+    /// ADR 0042 amendment (owner rulings 2026-09-04 and 2026-09-06): is `ws`
+    /// this daemon's default row in its INERT ANCHOR state -- the fallback
+    /// row that browses the machine's files but is NOT a session, on every
+    /// host and runtime alike. The ONE predicate for every daemon-side
+    /// consequence of "not a session": nothing starts it on attach, and it
+    /// does not claim its root against a real session (the duplicate-root
+    /// gate). Ship of Tools development happens in a `ship-of-tools` row.
     pub fn is_inert_default_anchor(&self, ws: &Workspace) -> bool {
-        ws.agent == "none"
-            && ws.runtime == "capsule"
-            && self.default_id().as_deref() == Some(ws.workspace_id.as_str())
+        ws.agent == "none" && self.default_id().as_deref() == Some(ws.workspace_id.as_str())
     }
 
     /// Resolve an optional workspace_id to a workspace handle. `None`
@@ -1747,7 +1742,7 @@ mod tests {
     }
 
     #[test]
-    fn inert_default_anchor_is_the_default_capsule_row_with_no_agent_only() {
+    fn inert_default_anchor_is_the_default_row_with_no_agent_on_any_runtime() {
         let reg = Workspaces::new();
         let mut row = Workspace::from_label("local", PathBuf::from("/home/u"), false, "none".into(), String::new(), String::new());
         row.runtime = "capsule".to_string();
@@ -1756,12 +1751,12 @@ mod tests {
         assert!(!reg.is_inert_default_anchor(&row));
         reg.set_default(&row.workspace_id);
         assert!(reg.is_inert_default_anchor(&row));
-        // Same default row on the tmux runtime: a shared backend's `.SoT`,
-        // a real session -- never the anchor.
+        // The runtime does not matter (2026-09-06): a tmux backend's default
+        // row with no agent is the anchor too, and is hidden the same way.
         let mut tmux = Workspace::from_label("local", PathBuf::from("/home/u"), false, "none".into(), String::new(), String::new());
         tmux.runtime = "tmux".to_string();
         let tmux = reg.insert(tmux);
-        assert!(!reg.is_inert_default_anchor(&tmux));
+        assert!(reg.is_inert_default_anchor(&tmux));
         // Default capsule row that carries an agent: a session, not the anchor.
         let mut agent = Workspace::from_label("local", PathBuf::from("/home/u"), true, "claude".into(), String::new(), String::new());
         agent.runtime = "capsule".to_string();
@@ -2377,7 +2372,7 @@ cursor_path = "src/lib.jl"
             r#"
 workspace_id  = "ws-sot-1"
 slug          = "sot"
-label         = ".SoT"
+label         = "sot"
 project_root  = "/home/u/ship-of-tools"
 tmux_session  = "sot-be-sot"
 created       = 1700000000

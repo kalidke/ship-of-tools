@@ -2246,13 +2246,10 @@ fn expand_hosts_root(tree: &mut TreeView, mode: Mode, children: Vec<TreeNode>) -
 /// same amendment applies there via the same
 /// `WorkspaceInfo::is_inert_anchor` predicate so the two never drift.
 ///
-/// The `runtime == "capsule"` leg matters: a shared backend's own
-/// default row (`.SoT`, `runtime == "tmux"`) ALSO carries `agent ==
-/// "none"` by design — the SoT LLM lives in the drawer there, not as a
-/// workspace agent — and must stay visible as the owner's ordinary home
-/// session, exactly as before. The inert-anchor rule is for the Windows
-/// capsule default row only; a bare `is_default && agent == "none"`
-/// check (no runtime leg) would have hidden that tmux row too. A
+/// No runtime leg (owner ruling 2026-09-06, symmetry): a tmux backend's
+/// default row with no agent is the anchor too and is hidden the same way;
+/// Ship of Tools development runs in a `ship-of-tools` row like any other
+/// project, and the SoT LLM lives in the drawer. A
 /// default row that still carries a real agent (an existing capsule box
 /// before its own converge to this amendment — `local.toml` is never
 /// rewritten) is untouched: still a normal, visible session row.
@@ -25408,14 +25405,12 @@ mod tests {
     }
 
     #[test]
-    fn session_host_children_keeps_a_default_tmux_row_with_no_agent() {
-        // Coordinator correction (2026-09-04): a SHARED BACKEND's own
-        // default row is `runtime == "tmux"` and carries `agent ==
-        // "none"` BY DESIGN — the SoT LLM lives in the drawer, not as a
-        // workspace agent — and is nothing like the Windows capsule
-        // anchor. The inert-anchor filter must be scoped to
-        // `runtime == "capsule"` specifically, or this row (the owner's
-        // own home session, `.SoT`) would silently vanish from the tree.
+    fn session_host_children_hides_a_default_tmux_row_with_no_agent_too() {
+        // Owner ruling (2026-09-06, symmetry): a tmux backend's default row
+        // with no agent is the inert anchor exactly like the Windows capsule
+        // one -- a row that cannot be closed and invites an LLM pane it must
+        // not have. Dev happens in a `ship-of-tools` row; the anchor is
+        // never listed.
         let host: HostKey = "backend".to_string();
         let mut anchor = ws_info("sot", "sot-be-sot");
         anchor.is_default = true;
@@ -25424,8 +25419,7 @@ mod tests {
         let list = vec![anchor];
         let kids = session_host_children(&host, &list);
         let kinds: Vec<&str> = kids.iter().map(|n| n.kind.as_str()).collect();
-        assert_eq!(kinds, vec!["session_create", "session"]);
-        assert!(kids.iter().any(|n| n.id.contains("sot-be-sot")));
+        assert_eq!(kinds, vec!["session_create"]);
     }
 
     #[test]
@@ -25844,11 +25838,11 @@ mod tests {
     }
 
     #[test]
-    fn fresh_workspace_caches_keeps_a_default_tmux_row_with_no_agent_in_the_strip() {
-        // A shared backend's own `.SoT` default row (runtime == "tmux",
-        // agent == "none") is NOT the inert anchor — the SoT LLM lives in
-        // the drawer there, not as a workspace agent — and must stay a
-        // normal, visible strip entry exactly as before this amendment.
+    fn fresh_workspace_caches_hides_a_default_tmux_row_with_no_agent_from_the_strip_too() {
+        // Owner ruling (2026-09-06, symmetry): same anchor rule as the tree,
+        // on every runtime -- the strip never lists the default row without
+        // an agent, but `default_workspace_slug` still names it (the strip's
+        // own active-index fallback).
         let host: HostKey = "local".to_string();
         let mut default_row = ws_info("sot", "sot-be-sot");
         default_row.is_default = true;
@@ -25860,12 +25854,9 @@ mod tests {
         let fresh = fresh_workspace_caches(&ordered, &lists, &host);
 
         let key: WsKey = (host.clone(), "sot".to_string());
-        assert!(
-            fresh.workspace_slugs.contains(&key),
-            "a default TMUX row with no agent stays in workspace_slugs: {:?}",
-            fresh.workspace_slugs
-        );
-        assert!(fresh.workspace_labels.contains_key(&key));
+        assert!(!fresh.workspace_slugs.contains(&key), "{:?}", fresh.workspace_slugs);
+        assert!(!fresh.workspace_labels.contains_key(&key));
+        assert_eq!(fresh.default_workspace_slug.as_deref(), Some("sot"));
     }
 
     /// A fake `req_tx`: `Vec<(HostKey, UnboundedSender<OutgoingReq>)>` is

@@ -60,6 +60,18 @@ that hasn't converged past the old seed (its `local.toml` is never
 rewritten by this amendment) keeps whatever agent it already has and
 behaves exactly as before — a visible, ordinary session row.
 
+**Amendment (owner ruling, 2026-09-06): the anchor is hidden on every host.**
+The first amendment kept a tmux backend's default row visible when it carried
+no agent, as the home of that backend's SoT LLM pane. "I like symmetry. I can
+always open a terminal-only session, but it's confusing when I can't close a
+session that looks like the others, and users may naturally try to have an LLM
+pane there." So the inert-anchor predicate is `is_default && agent == "none"`
+with no runtime term, on the frontend and the daemon alike; the daemon's `.SoT`
+display relabel of its default row is retired (the row keeps its slug as label
+and is never listed); and Ship of Tools development runs in a `ship-of-tools`
+workspace row rooted at the checkout, exactly like every other project. The
+anchor's pane hosts nothing; the drawer stays terminal / monitor / Julia.
+
 ## Build order — three slices, each landing green and off by default
 
 ### L1 — the capsule workspace runtime (daemon + frontend, one host)

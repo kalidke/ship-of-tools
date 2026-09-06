@@ -3,8 +3,6 @@
 # display_prefix: the prefix for a worktree's sessions-list WORKSPACE LABEL only
 # (and thus its sort slug) — NOT the comm handle or the on-disk dir, which stay
 # repo-based (ship-of-tools-wt-<short>) so status/clean/sync group by the real
-# repo. Here ".SoT" -> label ".SoT-wt-<short>" -> slug "_sot-wt-<short>"; the
-# leading "_" (paths::slug maps "." -> "_") sorts BEFORE any letter, so the
-# worktree lands at the far left of the strip, right after the pinned default
-# "sot" workspace — i.e. grouped with the parent.
-display_prefix = ".SoT"
+# repo. The prefix is the repo's own row name, so a worktree sorts right next
+# to the `ship-of-tools` workspace it was cut from.
+display_prefix = "ship-of-tools"

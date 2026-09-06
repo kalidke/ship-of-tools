@@ -571,13 +571,10 @@ pub struct WorkspaceInfo {
     pub kernel_running: bool,
     pub is_default: bool,
     /// Which agent this workspace auto-starts: "claude" | "codex" | "none".
-    /// 2026-09-04 amendment: a host's DEFAULT CAPSULE row with `agent ==
-    /// "none"` is the inert anchor (ADR 0042 §"the default local row is
-    /// an inert anchor") — `session_host_children` filters it out of the
-    /// Sessions tree entirely rather than rendering it as a session. A
-    /// TMUX default row with `agent == "none"` (a shared backend's own
-    /// `.SoT` row — the SoT LLM lives in the drawer, not as a workspace
-    /// agent) is NOT this anchor and stays a normal, visible session.
+    /// A host's DEFAULT row with `agent == "none"` is the inert anchor (ADR
+    /// 0042 amendments 2026-09-04 / 2026-09-06), on every runtime —
+    /// `session_host_children` filters it out of the Sessions tree entirely
+    /// rather than rendering it as a session.
     pub agent: String,
     /// Contract (b): the FE launches claude (ccb) on first attach to a
     /// workspace with `autostart_claude == true`. `agent_name` is the comm
@@ -641,17 +638,16 @@ pub struct WorkspaceInfo {
 }
 
 impl WorkspaceInfo {
-    /// The 2026-09-04 amendment's inert anchor: a default row that is a
-    /// Windows capsule and has never been seeded an agent. Shared by every
-    /// consumer that must not treat this row as a session — the Sessions
-    /// tree (`session_host_children`, gpu.rs) and the bottom session strip's
-    /// cache build (`fresh_workspace_caches`, gpu.rs), so the two never
-    /// drift on what "inert" means. Deliberately narrower than a bare
-    /// `is_default && agent == "none"`: a TMUX default row with no agent is
-    /// a shared backend's own `.SoT` row (the SoT LLM lives in the drawer,
-    /// not as a workspace agent) and must stay visible.
+    /// The daemon's default row in its inert-anchor state: home-rooted, no
+    /// agent, not a session -- on EVERY host (owner ruling 2026-09-06: a row
+    /// that looks like a session but cannot be closed, and invites an LLM
+    /// pane it must not have, confuses; the SoT LLM lives in the drawer, and
+    /// Ship of Tools development runs in its own workspace row like any
+    /// other project). Shared by the Sessions tree (`session_host_children`)
+    /// and the bottom strip's cache build (`fresh_workspace_caches`) so the
+    /// two never drift on what "inert" means.
     pub(crate) fn is_inert_anchor(&self) -> bool {
-        self.is_default && self.agent == "none" && self.runtime == "capsule"
+        self.is_default && self.agent == "none"
     }
 }
 

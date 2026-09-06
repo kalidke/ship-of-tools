@@ -3892,14 +3892,6 @@ pub async fn handle_workspace_create(
         req.agent_name.clone(),
         req.task.clone(),
     );
-    // Keep the home/default workspace's display label sticky as ".SoT" — mirror
-    // the daemon-seed override in server.rs. A workspace.create for slug "sot"
-    // (e.g. comm-spawn pointed at the sot repo root) would otherwise clobber the
-    // cosmetic ".SoT" home label back to "sot" until the next restart. Slug (and
-    // hence tmux/handle) is untouched — label only.
-    if ws_seed.slug == "sot" {
-        ws_seed.label = ".SoT".to_string();
-    }
     // ADR 0042 slice L1a: every NEW workspace is a capsule workspace on
     // every host from L1 on — "runtime: tmux is never chosen for a new
     // session (no knob)". Windows-only in THIS unit (the Unix supervisor/
@@ -4920,8 +4912,8 @@ pub async fn handle_workspace_list(
             }
         })
         .collect();
-    // Pin the default workspace (the daemon's home/anchor — ".SoT") FIRST so it
-    // sits leftmost in the FE session strip, which renders in received order.
+    // Pin the default workspace (the daemon's home anchor) FIRST: the FE never
+    // lists it, but its position is the strip's own active-index fallback.
     // Stable sort: every other workspace keeps its alphabetical-by-slug order.
     entries.sort_by(|a, b| b.is_default.cmp(&a.is_default));
     tracing::debug!(count = entries.len(), "workspace.list");
@@ -5174,11 +5166,10 @@ mod duplicate_root_tests {
         assert_eq!(hit.slug, "sot");
     }
 
-    /// ADR 0042 amendment: the inert default anchor (a capsule default row
-    /// with no agent, root = the home dir) is not a session, so a session
-    /// created at that root passes the gate — while the same default row on
-    /// the tmux runtime (a shared backend's `.SoT`, whose pane IS a session)
-    /// is still refused.
+    /// ADR 0042 amendment: the inert default anchor (the default row with no
+    /// agent, root = the home dir, any runtime) is not a session, so a session
+    /// created at that root passes the gate — while a default row that
+    /// carries an agent is still refused.
     #[test]
     fn inert_default_anchor_does_not_block_a_session_at_its_root() {
         let root = scratch_dir("anchor");
@@ -5192,11 +5183,10 @@ mod duplicate_root_tests {
             find_other_workspace_with_root(&canon, "home-session", &existing).is_none(),
             "the inert anchor must not claim its root against a real session"
         );
-        // Control: the same default row on the tmux runtime is a real
-        // session and is still caught (same-slug insert keeps the id, so
-        // it stays the default).
+        // Control: the default row WITH an agent is a real session and is
+        // still caught (same-slug insert keeps the id, so it stays default).
         let mut sot = ws("local", &root);
-        sot.runtime = "tmux".to_string();
+        sot.agent = "claude".to_string();
         existing.insert(sot);
         assert!(find_other_workspace_with_root(&canon, "home-session", &existing).is_some());
     }

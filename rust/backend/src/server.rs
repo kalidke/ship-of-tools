@@ -344,14 +344,6 @@ pub async fn run(opts: Opts) -> Result<()> {
         existing_default.as_deref().map(|w| w.runtime.as_str()),
         &default_ws_seed.runtime,
     );
-    // Display the Ship of Tools home/default workspace as ".SoT" — the leading
-    // dot is cosmetic (the FE strip renders the label) and marks it as "home".
-    // Only the LABEL changes; the slug (hence the tmux session `sot-be-sot` and
-    // this daemon's own pane + comm handle) is untouched. Gated to the sot project
-    // so a daemon launched on another repo keeps its own name.
-    if default_ws_seed.slug == "sot" {
-        default_ws_seed.label = ".SoT".to_string();
-    }
     workspaces.insert(default_ws_seed);
     let default_ws = workspaces
         .resolve(Some(&paths::slug(&default_label)))
@@ -1510,14 +1502,11 @@ where
                         // would silently stop starting the bare shell every
                         // OTHER capsule row can still ask for; only the
                         // default row's own anchor semantics make "no
-                        // agent" mean "nothing to start" here. Spelled out
-                        // fully as `runtime == "capsule"` even though this
-                        // whole branch already sits inside `ws.runtime ==
-                        // "capsule"` above (redundant here, not on a shared
-                        // backend's `.SoT` row: a TMUX default row with no
-                        // agent is normal — the SoT LLM lives in the
-                        // drawer, not as a workspace agent — and must never
-                        // read as this anchor). The frontend never sends
+                        // agent" mean "nothing to start" here (the anchor
+                        // is the same on every runtime, 2026-09-06; this
+                        // branch sits inside `ws.runtime == "capsule"` only
+                        // because the capsule start path is Windows-only in
+                        // this unit). The frontend never sends
                         // `pty.open` for this row at all (it isn't even
                         // listed), so this is belt-and-suspenders against a
                         // stale/other client — falls through to the SAME
