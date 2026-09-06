@@ -14723,6 +14723,11 @@ impl State {
         // State-nav selected-session contrast lever, snapshotted for the draw
         // closure (it mustn't borrow `self`).
         let contrast_dim = self.contrast_dim;
+        // Owner ruling (2026-09-06): the wordmark gets the nav pane's own first
+        // row, top-left -- right-aligned on the first tree row it collided with
+        // text on every non-ultrawide. Snapshotted here: the draw closure must
+        // not borrow `self`.
+        let nav_logo_row = self.wordmark_quad.is_some();
         // Inline REPL figures, pass 1: decode any Image frame that has no
         // quad yet (base64 → RGBA → texture) and prune entries that aged
         // out of the log. Runs here, outside the draw closure, so texture
@@ -15275,7 +15280,19 @@ impl State {
                 // unchanged: nav = old TL (left column), preview = old
                 // TR (middle column), llm = old BL (rightmost column
                 // in the 3-col layout), repl = old BR (bottom drawer).
-                let nav_rect = geom.rect_for(crate::settings::Slot::Nav);
+                // `nav_frame_rect` is the pane as laid out (title and focus border
+                // hang off it); `nav_rect` is what the tree body may use -- one
+                // row shorter when the wordmark owns the first row.
+                let nav_frame_rect = geom.rect_for(crate::settings::Slot::Nav);
+                let nav_rect = if nav_logo_row && nav_frame_rect.height > 1 {
+                    ratatui::layout::Rect {
+                        y: nav_frame_rect.y + 1,
+                        height: nav_frame_rect.height - 1,
+                        ..nav_frame_rect
+                    }
+                } else {
+                    nav_frame_rect
+                };
                 let preview_rect = geom.rect_for(crate::settings::Slot::Preview);
                 let llm_rect = geom.rect_for(crate::settings::Slot::Llm);
                 let repl_rect = geom.rect_for(crate::settings::Slot::Repl);
@@ -15546,7 +15563,7 @@ impl State {
                 // Cache the four pane content rects for between-frame
                 // hit-testing (mouse wheel → which pane scrolls).
                 new_pane_rects = PaneRects {
-                    nav: nav_rect,
+                    nav: nav_frame_rect,
                     preview: preview_rect,
                     llm: llm_rect,
                     repl: repl_rect,
@@ -15691,13 +15708,13 @@ impl State {
                     }
                 };
                 let title_w = |rect: ratatui::layout::Rect| rect.width.saturating_sub(2);
-                if nav_rect.width > 0 {
+                if nav_frame_rect.width > 0 {
                     write_title(
                         buf,
-                        nav_rect.x + 1,
-                        nav_rect.y.saturating_sub(1),
+                        nav_frame_rect.x + 1,
+                        nav_frame_rect.y.saturating_sub(1),
                         &nav_title,
-                        title_w(nav_rect),
+                        title_w(nav_frame_rect),
                         title_style_for(nav_focus),
                     );
                 }
@@ -15733,7 +15750,7 @@ impl State {
                 }
 
                 let focused_rect = match focus {
-                    PaneFocus::NavTree => nav_rect, PaneFocus::Preview => preview_rect,
+                    PaneFocus::NavTree => nav_frame_rect, PaneFocus::Preview => preview_rect,
                     PaneFocus::Llm => llm_rect, PaneFocus::Repl => repl_rect,
                 };
                 if focused_rect.width > 2 {
@@ -17501,10 +17518,11 @@ impl State {
                     )?;
                 }
             }
-            // Wordmark — right-aligned on the nav pane's title row, clear of the
-            // left-aligned "nav · mode …" title and the "? for help" line below
-            // it. One row tall; width follows the PNG's native aspect, clamped so
-            // it never eats more than ~45% of the pane width.
+            // Wordmark — the nav pane's FIRST row, left-aligned (owner ruling
+            // 2026-09-06). The tree body starts on the row below (`nav_rect` in
+            // the draw closure is carved by the same `wordmark_quad.is_some()`),
+            // so nothing is ever drawn under it. One row tall; width follows the
+            // PNG's aspect, clamped to the pane's width minus a cell each side.
             if let Some((quad, nw, nh)) = self.wordmark_quad.as_ref() {
                 let nav = self.pane_rects.nav;
                 let nav_x = self.chrome_origin_x + nav.x as f32 * self.cell_w;
@@ -17512,7 +17530,7 @@ impl State {
                 let nav_w = nav.width as f32 * self.cell_w;
                 let mut wm_h = self.cell_h;
                 let mut wm_w = wm_h * (*nw as f32 / (*nh).max(1) as f32);
-                let max_w = (nav_w * 0.45).max(1.0);
+                let max_w = (nav_w - 2.0 * self.cell_w).max(1.0);
                 if wm_w > max_w {
                     wm_w = max_w;
                     wm_h = wm_w * (*nh as f32 / (*nw).max(1) as f32);
@@ -17522,8 +17540,8 @@ impl State {
                     &self.quad_pipeline,
                     &mut rpass,
                     ScreenRect {
-                        x: nav_x + nav_w - wm_w - self.cell_w,
-                        y: nav_y + 1.0,
+                        x: nav_x + self.cell_w,
+                        y: nav_y + (self.cell_h - wm_h) * 0.5,
                         w: wm_w,
                         h: wm_h,
                     },
