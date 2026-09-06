@@ -25,7 +25,8 @@
 //! were never actually gated. All four are fixed below.
 
 use sot_log::attach_proto::ConnId;
-use sot_log::capsule_win::{self, CapsuleWinConfig, Command, ExitKind, Transport, TransportEvent};
+use sot_log::capsule_win::{self, CapsuleWinConfig, Command, ExitKind};
+use sot_log::transport::{Transport, TransportEvent};
 use sot_log::segment::{RetentionClass, SegmentReader};
 use sot_log::verify::{leg_carries_run_end_marker, verify_voyage};
 use sot_log::wire::{self, Survival};

@@ -343,7 +343,7 @@ pub const EXIT_TERMINAL: i32 = 69;
 /// almost always the previous authority for this SAME state dir, still
 /// finishing its own teardown (it drops its lane BEFORE releasing the
 /// fence, and that teardown is bounded by
-/// `pipe_win::TEARDOWN_AGGREGATE_DEADLINE`, up to 20s) -- never a
+/// `transport::TEARDOWN_AGGREGATE_DEADLINE`, up to 20s) -- never a
 /// genuinely exhausted producer. A launcher that folded this into
 /// [`EXIT_TERMINAL`] would mark a perfectly healthy workspace terminal
 /// out from under a run the OTHER process is still actively serving. The

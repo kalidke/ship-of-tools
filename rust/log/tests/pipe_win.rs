@@ -37,8 +37,8 @@ use sot_log::challenge::{challenge, ChallengeOutcome};
 use sot_log::exchange::VoyageMgmtExchange;
 use sot_log::pipe_win::{
     connect_voyage_pipe, ClosedReason, ConnId, PipeError, PipeServer, TransportEvent,
-    TEARDOWN_AGGREGATE_DEADLINE,
 };
+use sot_log::transport::TEARDOWN_AGGREGATE_DEADLINE;
 use sot_log::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
