@@ -325,7 +325,7 @@ impl OutboundBudget {
 /// returns immediately, having never touched the transport.
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GateSignal {
+enum GateSignal {
     Wait,
     Start,
     Abort,
