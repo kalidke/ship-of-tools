@@ -154,33 +154,35 @@ pub(crate) fn exchange_identity(
     )
 }
 
-/// The peer's identity once SID-authenticated (steps 1-3 ONLY) — pid plus
-/// creation time read directly off the OS handle, NEVER off a reply (there
-/// is none). Deliberately a plain data struct with NO retained handle: the
-/// capabilities `ChallengedProcess` offers (`reverify`/`wait`/`terminate`)
-/// all depend on the full five-step proof's LIVE handle, and this weaker
-/// operation earns none of them — a caller that needs those must run the
-/// full `crate::challenge_win::challenge` itself. Deliberately NOT named
-/// `Proven` and NOT `ChallengedProcess` (U1a Codex round-1, Blocker 1): the
-/// two operations must never be typed identically, so no consumer can
-/// mistake SID-only authentication for the full reply-bound liveness
-/// proof.
+/// The peer's identity once authenticated (steps 1-3 ONLY — Windows:
+/// token-user SID comparison; Linux: `SO_PEERCRED` same-user comparison,
+/// ADR 0043 decision 18) — pid plus creation time read directly off the
+/// OS handle, NEVER off a reply (there is none). Deliberately a plain
+/// data struct with NO retained handle: the capabilities `ChallengedProcess`
+/// offers (`reverify`/`wait`/`terminate`) all depend on the full five-step
+/// proof's LIVE handle, and this weaker operation earns none of them — a
+/// caller that needs those must run the full `challenge()` itself.
+/// Deliberately NOT named `Proven` and NOT `ChallengedProcess` (U1a Codex
+/// round-1, Blocker 1): the two operations must never be typed
+/// identically, so no consumer can mistake peer-identity-only
+/// authentication for the full reply-bound liveness proof.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SidAuthenticated {
+pub struct PeerAuthenticated {
     pub pid: u32,
     pub created: u64,
 }
 
 /// What `crate::challenge_win::authenticate_server` concluded — a
 /// SEPARATE enum from [`ChallengeOutcome`] (not a generic instantiation of
-/// it) for the same reason `SidAuthenticated` is a separate type: nothing
+/// it) for the same reason `PeerAuthenticated` is a separate type: nothing
 /// here is ever spelled `Proven`.
 #[derive(Debug)]
-pub enum SidAuthOutcome {
-    /// The peer's token-user SID matches this account's.
-    Authenticated(SidAuthenticated),
-    /// A well-formed WRONG answer: the peer's SID differs. Never retried
-    /// as if it might still be legitimate.
+pub enum PeerAuthOutcome {
+    /// The peer's identity matches this account's (Windows: token-user
+    /// SID comparison; Linux: `SO_PEERCRED` same-user comparison).
+    Authenticated(PeerAuthenticated),
+    /// A well-formed WRONG answer: the peer's identity differs. Never
+    /// retried as if it might still be legitimate.
     Foreign,
     /// An OS-call failure anywhere in steps 1-3. Never classified as
     /// authenticated or foreign.

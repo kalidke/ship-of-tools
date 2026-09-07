@@ -12,9 +12,10 @@
 #![cfg(windows)]
 
 use crate::challenge::{
-    exchange_identity, ChallengeOutcome, ChallengeableConnection, SidAuthOutcome, SidAuthenticated,
+    exchange_identity, ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome, PeerAuthenticated,
     StatusFailure,
 };
+use crate::client::PeerProcess;
 use crate::exchange::IdentityExchange;
 use crate::fsutil;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
@@ -50,7 +51,7 @@ pub trait PipeChallengeable: ChallengeableConnection {
 /// time and again at [`reverify`](Self::reverify)), `PROCESS_SYNCHRONIZE`
 /// ([`wait`](Self::wait), the death signal). Dropping this closes the
 /// handle. ONLY the full five-step [`challenge()`] ever produces one —
-/// see [`SidAuthenticated`] for the deliberately weaker, deliberately
+/// see [`PeerAuthenticated`] for the deliberately weaker, deliberately
 /// handle-less steps-1-3-only counterpart.
 pub struct ChallengedProcess {
     handle: OwnedHandle,
@@ -128,6 +129,35 @@ impl ChallengedProcess {
             return Err(std::io::Error::last_os_error());
         }
         Ok(code)
+    }
+}
+
+/// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
+/// `ChallengedProcess` implements — `pid`/`created`/`reverify`/`wait`/
+/// `terminate` already have these exact signatures, so this is pure
+/// delegation. `exit_code_after_confirmed_exit` stays OUT of the trait
+/// (decisions 8/19): Linux's own counterpart returns `Option<i32>`, not
+/// a `u32` — the platforms disagree on the TYPE, not merely the
+/// mechanism.
+impl PeerProcess for ChallengedProcess {
+    fn pid(&self) -> u32 {
+        ChallengedProcess::pid(self)
+    }
+
+    fn created(&self) -> u64 {
+        ChallengedProcess::created(self)
+    }
+
+    fn reverify(&self) -> std::io::Result<bool> {
+        ChallengedProcess::reverify(self)
+    }
+
+    fn wait(&self, timeout: Duration) -> std::io::Result<bool> {
+        ChallengedProcess::wait(self, timeout)
+    }
+
+    fn terminate(&self) -> std::io::Result<()> {
+        ChallengedProcess::terminate(self)
     }
 }
 
@@ -301,24 +331,24 @@ pub fn challenge(
 /// before the caller ever sends its own.
 ///
 /// This is a WEAKER proof than [`challenge()`]'s full five steps — see
-/// [`SidAuthenticated`]'s own doc for exactly what it does and does not
+/// [`PeerAuthenticated`]'s own doc for exactly what it does and does not
 /// establish, and `connect_voyage_pipe`'s doc for the ADR's own
 /// under-specification of the attach lane's stronger-proof story. A lane
 /// that both wants and can afford the full proof (mgmt; the probe
 /// classifier) runs `challenge()` itself, on top of a connection this
 /// function already authenticated at the OS level.
-pub fn authenticate_server(conn: &dyn PipeChallengeable) -> SidAuthOutcome {
+pub fn authenticate_server(conn: &dyn PipeChallengeable) -> PeerAuthOutcome {
     match authenticate_steps_1_to_3(conn) {
-        ChallengeOutcome::Foreign => SidAuthOutcome::Foreign,
-        ChallengeOutcome::Undetermined => SidAuthOutcome::Undetermined,
+        ChallengeOutcome::Foreign => PeerAuthOutcome::Foreign,
+        ChallengeOutcome::Undetermined => PeerAuthOutcome::Undetermined,
         ChallengeOutcome::Proven((handle, pid)) => {
             // `created` is read directly off the handle -- a fact about
             // the process, never about a reply this function never waits
-            // for. The handle itself is then dropped: `SidAuthenticated`
+            // for. The handle itself is then dropped: `PeerAuthenticated`
             // retains nothing (see its own doc).
             match creation_filetime_bits(handle.as_raw_handle() as HANDLE) {
-                Ok(created) => SidAuthOutcome::Authenticated(SidAuthenticated { pid, created }),
-                Err(_) => SidAuthOutcome::Undetermined,
+                Ok(created) => PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created }),
+                Err(_) => PeerAuthOutcome::Undetermined,
             }
         }
     }

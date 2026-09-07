@@ -14,7 +14,7 @@
 //! different pid namespace, or a non-Linux kernel, may not report one at
 //! all) and no `pidfd_open`/`SO_PEERPIDFD` at all -- it fails closed at
 //! `socket_unix::connect_voyage_socket`'s own stub
-//! (`SocketError::Unsupported`), never here (ADR 0043 decision 8).
+//! (`TransportError::Unsupported`), never here (ADR 0043 decision 8).
 //!
 //! # Why `SO_PEERCRED` on the CLIENT's own fd works (verified empirically)
 //!
@@ -42,9 +42,10 @@
 #![cfg(target_os = "linux")]
 
 use crate::challenge::{
-    exchange_identity, ChallengeOutcome, ChallengeableConnection, SidAuthOutcome, SidAuthenticated,
+    exchange_identity, ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome, PeerAuthenticated,
     StatusFailure,
 };
+use crate::client::PeerProcess;
 use crate::exchange::IdentityExchange;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -393,7 +394,7 @@ fn authenticate_steps_1_to_3(
 /// A retained pidfd to a process this crate has PROVEN is the server
 /// behind one challenged connection: `(pidfd, pid, start-time ticks)`.
 /// Dropping this closes the pidfd. ONLY the full five-step [`challenge()`]
-/// ever produces one -- see [`SidAuthenticated`] for the deliberately
+/// ever produces one -- see [`PeerAuthenticated`] for the deliberately
 /// weaker, deliberately handle-less steps-1-3-only counterpart. Mirrors
 /// `challenge_win::ChallengedProcess` in shape; every method below swaps
 /// its Win32 mechanism for the Linux one the ADR names.
@@ -526,6 +527,35 @@ impl ChallengedProcess {
     }
 }
 
+/// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
+/// `ChallengedProcess` implements — `pid`/`created`/`reverify`/`wait`/
+/// `terminate` already have these exact signatures, so this is pure
+/// delegation. `exit_status_after_confirmed_exit` stays OUT of the trait
+/// (decisions 8/19): it returns `Option<i32>` here, a plain `u32` on
+/// Windows — the platforms disagree on the TYPE, not merely the
+/// mechanism.
+impl PeerProcess for ChallengedProcess {
+    fn pid(&self) -> u32 {
+        ChallengedProcess::pid(self)
+    }
+
+    fn created(&self) -> u64 {
+        ChallengedProcess::created(self)
+    }
+
+    fn reverify(&self) -> io::Result<bool> {
+        ChallengedProcess::reverify(self)
+    }
+
+    fn wait(&self, timeout: Duration) -> io::Result<bool> {
+        ChallengedProcess::wait(self, timeout)
+    }
+
+    fn terminate(&self) -> io::Result<()> {
+        ChallengedProcess::terminate(self)
+    }
+}
+
 /// The five pinned steps (ADR 0041 Lifecycle "The challenge", ADR 0043
 /// decision 8), in order: (1-2) `SO_PEERCRED` for `(pid, uid, gid)`; (3)
 /// same-user comparison; (4) only then `exchange`'s request on the SAME
@@ -586,14 +616,14 @@ pub fn challenge(
 /// identity. No wire I/O of any kind -- see `challenge_win::
 /// authenticate_server`'s own doc for why the shared, lane-agnostic
 /// connect constructor can only ever offer this, never the full proof.
-/// The pidfd IS dropped here (no retained object; `SidAuthenticated` is
+/// The pidfd IS dropped here (no retained object; `PeerAuthenticated` is
 /// the deliberately weaker type -- property 25).
-pub fn authenticate_server(conn: &dyn SocketChallengeable) -> SidAuthOutcome {
+pub fn authenticate_server(conn: &dyn SocketChallengeable) -> PeerAuthOutcome {
     match authenticate_steps_1_to_3(conn) {
-        ChallengeOutcome::Foreign => SidAuthOutcome::Foreign,
-        ChallengeOutcome::Undetermined => SidAuthOutcome::Undetermined,
+        ChallengeOutcome::Foreign => PeerAuthOutcome::Foreign,
+        ChallengeOutcome::Undetermined => PeerAuthOutcome::Undetermined,
         ChallengeOutcome::Proven((_pidfd, pid, created)) => {
-            SidAuthOutcome::Authenticated(SidAuthenticated { pid, created })
+            PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created })
         }
     }
 }

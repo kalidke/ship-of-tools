@@ -649,7 +649,7 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     // whatever the supervisor's own recovery believes.
     let pipe_gone = matches!(
         sot_log::pipe_win::connect_voyage_pipe(&voyage),
-        Err(sot_log::pipe_win::PipeError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound
+        Err(sot_log::transport::TransportError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound
     );
     assert!(pipe_gone, "the orphaned capsule's own mgmt pipe must be gone once its end_run is recovered");
 

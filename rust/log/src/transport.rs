@@ -17,6 +17,7 @@
 
 use crate::attach_proto::ConnId;
 use crate::Result;
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -377,4 +378,170 @@ impl StartGate {
         *self.state.lock().unwrap() = GateSignal::Abort;
         self.cv.notify_all();
     }
+}
+
+// ---------------------------------------------------------------------
+// L1-unix LU3a (ADR 0043 decisions 17/19): the ONE error type and event
+// vocabulary every concrete `pipe_win`/`socket_unix` transport now
+// produces, plus the `LaneServer` seam trait a step-6 supervisor will
+// eventually be generic over (LU3c). This section is a pure hoist —
+// `pipe_win::PipeError`/`socket_unix::SocketError` and each module's own
+// `TransportEvent`/`ClosedReason` were already identical in shape (Codex
+// review of ADR 0043's own sizing note); nothing here changes behavior,
+// and no consumer goes generic yet — every existing call site still
+// names the concrete `PipeServer`/`SocketServer`/`PipeClient`/
+// `SocketClient` type directly.
+// ---------------------------------------------------------------------
+
+/// Errors a concrete transport's own synchronous API surface can report
+/// at the call site — `crate::pipe_win`'s former `PipeError` and
+/// [`crate::socket_unix`]'s former `SocketError` merged into one type
+/// (ADR 0043 decision 17): the union of both platforms' variants,
+/// `Io { op, source }` kept verbatim (the shape production code already
+/// matches on), `InvalidMaxInstances` folded into `InvalidMaxConnections`
+/// (one name for one concept), and the Unix-only
+/// `PathTooLong`/`RuntimeDir`/`Unsupported` carried unconditionally — an
+/// enum variant costs nothing on a platform that never produces it.
+/// Background-thread failures still surface as [`LaneEvent::Closed`]/
+/// [`LaneEvent::AcceptError`] instead — this type is only ever returned
+/// from a synchronous call, never delivered through the event channel.
+#[derive(Debug, thiserror::Error)]
+pub enum TransportError {
+    #[error("invalid voyage id {0:?}: must be the canonical lowercase-hyphenated form of an RFC 4122 UUID")]
+    InvalidVoyageId(String),
+    #[error("max_connections must be between 1 and 255")]
+    InvalidMaxConnections,
+    // Unix only (never produced on Windows, where there is no `sun_path`
+    // limit to exceed): the exact byte ceiling is platform-specific
+    // (`crate::socket_unix::max_sun_path_bytes`, unreachable from this
+    // ungated module on a non-Unix target), so the message names the
+    // path without embedding a number this type cannot portably compute.
+    #[error("endpoint path {0:?} exceeds this platform's path-length limit")]
+    PathTooLong(PathBuf),
+    #[error("resolving the runtime dir: {0}")]
+    RuntimeDir(std::io::Error),
+    #[error("{op}: {source}")]
+    Io {
+        op: &'static str,
+        source: std::io::Error,
+    },
+    #[error("unknown or already-closed connection {0}")]
+    UnknownConnection(ConnId),
+    #[error("outbound budget exhausted for connection {0}")]
+    QueueFull(ConnId),
+    #[error("empty payload: this wire never carries a zero-length send")]
+    EmptyPayload,
+    #[error("payload of {0} bytes exceeds what a single write/read call can represent")]
+    PayloadTooLarge(usize),
+    #[error("operation cancelled")]
+    Cancelled,
+    /// A second same-direction client call (e.g. two concurrent `read`s)
+    /// was rejected before it ever touched the OS or a shared I/O slot —
+    /// misuse, not a race this crate resolves for the caller.
+    #[error("another operation is already pending on this client's same direction")]
+    ConcurrentSubmit,
+    /// A connect-time peer-identity check (ADR 0041 Lifecycle "The
+    /// challenge", steps 1-3 — Windows: token-user SID comparison via
+    /// `challenge_win::authenticate_server`; Linux: `SO_PEERCRED` same-
+    /// user comparison via `challenge_unix::authenticate_server` — NOT
+    /// the full five-step `challenge()`, see either function's own doc)
+    /// answered with a WELL-FORMED WRONG proof — a different account's
+    /// process is behind this endpoint. A loud, typed failure: never
+    /// retried as if the peer might still turn out legitimate.
+    #[error("the peer failed identity authentication (a different account's process is behind this endpoint)")]
+    Foreign,
+    /// Peer identity authentication could not be completed at all — an
+    /// OS-call failure anywhere in the platform's own steps 1-3. Never
+    /// silently treated as either authenticated or foreign (ADR 0041: "a
+    /// failure... is PENDING, never READY and never ADOPTED").
+    #[error("peer identity authentication could not be completed (peer identity undetermined)")]
+    Undetermined,
+    /// This Unix target has no kernel-provided peer-pid mechanism this
+    /// crate trusts (`SO_PEERCRED`'s pid field and `pidfd_open` are
+    /// Linux-specific) — the connect constructor fails closed here
+    /// rather than skip authentication silently. Never produced on
+    /// Windows.
+    #[error("{0}")]
+    Unsupported(&'static str),
+}
+
+/// Why a connection ended, reported once per connection on
+/// [`LaneEvent::Closed`] — hoisted (ADR 0043 decision 19) from
+/// `pipe_win`/`socket_unix`'s own byte-for-byte identical copies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClosedReason {
+    /// The peer disconnected (or this side observed a broken/reset/
+    /// unconnected endpoint) — detected by the connection's own reader
+    /// loop, or (rarely) its writer.
+    Eof,
+    /// The server's own `close` call tore this connection down.
+    Closed,
+    /// An I/O error other than a recognized disconnect ended a
+    /// connection's reader or writer loop, or its `Bytes` delivery was
+    /// abandoned — always paired with this guaranteed notification,
+    /// never a silent stream gap.
+    Error(String),
+}
+
+/// This transport's event surface to its consumer, hoisted (ADR 0043
+/// decision 19) from `pipe_win`/`socket_unix`'s own byte-for-byte
+/// identical copies — both platforms' servers produce the SAME event
+/// type now, so `pipe_transport`'s and `socket_transport`'s own
+/// `translate()` functions read this one type instead of two separately
+/// defined ones. Delivered over a `LaneServer::events()` receiver in the
+/// order the transport observed them; the consumer feeds `Bytes`
+/// payloads to its own [`crate::wire::FrameSplitter`] per connection.
+///
+/// Not to be confused with this module's own [`TransportEvent`] (the
+/// OLDER, ADR-0041-era capsule-facing contract `Transport::try_recv_event`
+/// returns) — that is a DIFFERENT vocabulary, one level up the stack
+/// (`ConnectionOpened`/`ConnectionClosed`/`TransportFatal`, no
+/// `ClosedReason`); `pipe_transport`/`socket_transport` translate FROM
+/// this type TO that one.
+#[derive(Debug)]
+pub enum LaneEvent {
+    /// A new connection accepted; `send`/`close` may now target it.
+    Accepted(ConnId),
+    /// Raw bytes read from a connection, in the order read. Never empty.
+    Bytes(ConnId, Vec<u8>),
+    /// A marker-tagged `send` call has physically completed.
+    Sent(ConnId, u64),
+    /// The connection ended; no further events for this `ConnId` follow.
+    Closed(ConnId, ClosedReason),
+    /// The accept loop hit a persistent, unrecoverable resource failure
+    /// and has stopped accepting new connections FOR GOOD — existing
+    /// connections are unaffected.
+    AcceptError(String),
+}
+
+/// L1-unix LU3a (ADR 0043 decision 19): what a step-6 supervisor needs
+/// from a lane's own server-side transport, seamed so it can eventually
+/// be generic over `PipeServer`/`SocketServer` (LU3c) — today, both
+/// implement this purely by delegation, and every existing consumer
+/// keeps calling the concrete type directly (no consumer goes generic in
+/// this lane). Only `bind_supervisor` is part of the seam: the plain
+/// voyage `bind` stays a concrete-type-only constructor, since nothing
+/// in this crate needs a generic voyage bind yet.
+pub trait LaneServer: Sized {
+    /// Bind the supervisor lane's own endpoint and start accepting.
+    /// `max_connections` must be in `1..=255`.
+    fn bind_supervisor(h: &str, max_connections: u32) -> std::result::Result<Self, TransportError>;
+    /// The event stream: single-consumer by convention (a `Receiver` is
+    /// not `Sync`).
+    fn events(&self) -> &std::sync::mpsc::Receiver<LaneEvent>;
+    /// Queue `bytes` for `conn`, tagged with `marker` if the caller wants
+    /// a [`LaneEvent::Sent`] once the OS write physically completes.
+    /// Non-blocking.
+    fn send(&self, conn: ConnId, bytes: Vec<u8>, marker: Option<u64>) -> std::result::Result<(), TransportError>;
+    /// Request that `conn` be torn down. Fire-and-forget; a no-op if
+    /// already gone or already tearing down.
+    fn close(&self, conn: ConnId);
+    /// Phase one of teardown: make the endpoint's NAME disappear and
+    /// issue cancellation to every worker — synchronous, no blocking
+    /// join.
+    fn disconnect_listener(&mut self);
+    /// Phase two: wait for every thread this transport owns, against one
+    /// shared absolute `deadline`. `true` iff every one finished within
+    /// budget; `false` — LOUD, terminal — on expiry.
+    fn join_workers(&mut self, deadline: Instant) -> bool;
 }

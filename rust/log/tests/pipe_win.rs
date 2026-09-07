@@ -43,10 +43,8 @@
 use sot_log::challenge::ChallengeOutcome;
 use sot_log::challenge_win::challenge;
 use sot_log::exchange::VoyageMgmtExchange;
-use sot_log::pipe_win::{
-    connect_voyage_pipe, ClosedReason, ConnId, PipeError, PipeServer, TransportEvent,
-};
-use sot_log::transport::TEARDOWN_AGGREGATE_DEADLINE;
+use sot_log::pipe_win::{connect_voyage_pipe, ConnId, PipeServer};
+use sot_log::transport::{ClosedReason, LaneEvent, TransportError, TEARDOWN_AGGREGATE_DEADLINE};
 use sot_log::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -109,7 +107,7 @@ fn fresh_voyage_id() -> String {
 }
 
 /// Bounded wait for the next transport event.
-fn next_event(server: &PipeServer, timeout: Duration) -> TransportEvent {
+fn next_event(server: &PipeServer, timeout: Duration) -> LaneEvent {
     server
         .events()
         .recv_timeout(timeout)
@@ -118,14 +116,14 @@ fn next_event(server: &PipeServer, timeout: Duration) -> TransportEvent {
 
 fn expect_accepted(server: &PipeServer, timeout: Duration) -> ConnId {
     match next_event(server, timeout) {
-        TransportEvent::Accepted(id) => id,
+        LaneEvent::Accepted(id) => id,
         other => panic!("expected Accepted, got {other:?}"),
     }
 }
 
 fn expect_closed(server: &PipeServer, conn_id: ConnId, timeout: Duration) -> ClosedReason {
     match next_event(server, timeout) {
-        TransportEvent::Closed(id, reason) => {
+        LaneEvent::Closed(id, reason) => {
             assert_eq!(id, conn_id, "Closed for the wrong connection");
             reason
         }
@@ -152,7 +150,7 @@ fn accumulate_bytes(
             out.len()
         );
         match next_event(server, remaining) {
-            TransportEvent::Bytes(cid, bytes) => {
+            LaneEvent::Bytes(cid, bytes) => {
                 assert_eq!(cid, conn_id, "Bytes for the wrong connection");
                 out.extend(bytes);
             }
@@ -437,7 +435,7 @@ fn server_and_client_exchange_bytes_and_sent_carries_marker() {
     assert_eq!(buf, inbound);
 
     match next_event(&server, TIMEOUT) {
-        TransportEvent::Sent(cid, marker) => {
+        LaneEvent::Sent(cid, marker) => {
             assert_eq!(cid, conn_id);
             assert_eq!(marker, 42);
         }
@@ -473,8 +471,8 @@ fn two_concurrent_clients_multiplexed_by_conn_id() {
         let remaining = deadline.saturating_duration_since(Instant::now());
         assert!(!remaining.is_zero(), "timed out: a={a_got:?} b={b_got:?}");
         match next_event(&server, remaining) {
-            TransportEvent::Bytes(cid, bytes) if cid == conn_a => a_got.extend(bytes),
-            TransportEvent::Bytes(cid, bytes) if cid == conn_b => b_got.extend(bytes),
+            LaneEvent::Bytes(cid, bytes) if cid == conn_a => a_got.extend(bytes),
+            LaneEvent::Bytes(cid, bytes) if cid == conn_b => b_got.extend(bytes),
             other => panic!("unexpected event: {other:?}"),
         }
     }
@@ -660,7 +658,7 @@ fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
     for _ in 0..128 {
         match server.send(stalled_conn, payload.clone(), None) {
             Ok(()) => {}
-            Err(PipeError::QueueFull(cid)) => {
+            Err(TransportError::QueueFull(cid)) => {
                 assert_eq!(cid, stalled_conn);
                 saw_full = true;
                 break;
@@ -811,7 +809,7 @@ fn flooded_never_reading_client_close_completes_within_bound() {
     for _ in 0..128 {
         match server.send(conn_id, payload.clone(), None) {
             Ok(()) => {}
-            Err(PipeError::QueueFull(cid)) => {
+            Err(TransportError::QueueFull(cid)) => {
                 assert_eq!(cid, conn_id);
                 saw_full = true;
                 break;
@@ -894,12 +892,12 @@ fn invalid_voyage_ids_and_instance_counts_are_rejected_loudly() {
     for bad in bad_ids {
         let err = PipeServer::bind(bad, 1).unwrap_err();
         assert!(
-            matches!(err, PipeError::InvalidVoyageId(_)),
+            matches!(err, TransportError::InvalidVoyageId(_)),
             "id {bad:?}: got {err}"
         );
         let err2 = connect_voyage_pipe(bad).unwrap_err();
         assert!(
-            matches!(err2, PipeError::InvalidVoyageId(_)),
+            matches!(err2, TransportError::InvalidVoyageId(_)),
             "id {bad:?}: got {err2}"
         );
     }
@@ -910,11 +908,11 @@ fn invalid_voyage_ids_and_instance_counts_are_rejected_loudly() {
     let id = fresh_voyage_id();
     assert!(matches!(
         PipeServer::bind(&id, 0).unwrap_err(),
-        PipeError::InvalidMaxInstances
+        TransportError::InvalidMaxConnections
     ));
     assert!(matches!(
         PipeServer::bind(&id, 256).unwrap_err(),
-        PipeError::InvalidMaxInstances
+        TransportError::InvalidMaxConnections
     ));
 }
 
@@ -995,7 +993,7 @@ fn eof_before_registration_smoke_test_accepts_either_honest_outcome() {
     drop(client); // no synchronization -- this IS the race under test
 
     match server.events().recv_timeout(Duration::from_secs(2)) {
-        Ok(TransportEvent::Accepted(conn_id)) => {
+        Ok(LaneEvent::Accepted(conn_id)) => {
             assert_eq!(expect_closed(&server, conn_id, TIMEOUT), ClosedReason::Eof);
         }
         Err(_timed_out) => {
@@ -1045,7 +1043,7 @@ fn sequential_connect_close_churn_does_not_leak_handles() {
 
 /// New coverage (round-3 finding 9): a `PipeClient::read` blocked on one
 /// thread is unblocked by `cancel()` called from another, returning
-/// `PipeError::Cancelled`.
+/// `TransportError::Cancelled`.
 #[test]
 fn client_read_cancel_unblocks_from_another_thread() {
     if !run_isolated("client_read_cancel_unblocks_from_another_thread") {
@@ -1067,7 +1065,7 @@ fn client_read_cancel_unblocks_from_another_thread() {
 
     let result = reader.join().unwrap();
     assert!(
-        matches!(result, Err(PipeError::Cancelled)),
+        matches!(result, Err(TransportError::Cancelled)),
         "expected Cancelled, got {result:?}"
     );
 
@@ -1107,7 +1105,7 @@ fn client_write_cancel_unblocks_from_another_thread() {
 
     let result = writer.join().unwrap();
     assert!(
-        matches!(result, PipeError::Cancelled),
+        matches!(result, TransportError::Cancelled),
         "expected Cancelled, got {result:?}"
     );
 
@@ -1147,7 +1145,7 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
     let deadline = Instant::now() + TIMEOUT;
     while Instant::now() < deadline {
         match server.events().recv_timeout(Duration::from_secs(1)) {
-            Ok(TransportEvent::Closed(cid, _)) if cid == conn_id => {
+            Ok(LaneEvent::Closed(cid, _)) if cid == conn_id => {
                 saw_closed = true;
                 break;
             }
@@ -1165,7 +1163,7 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
 }
 
 /// New coverage (round-3 finding 2/9): a SECOND concurrent same-direction
-/// `PipeClient::read` returns `PipeError::ConcurrentSubmit` rather than
+/// `PipeClient::read` returns `TransportError::ConcurrentSubmit` rather than
 /// racing the first caller's `OVERLAPPED`.
 #[test]
 fn concurrent_same_direction_client_read_returns_distinct_error() {
@@ -1188,14 +1186,14 @@ fn concurrent_same_direction_client_read_returns_distinct_error() {
     let mut buf_b = [0u8; 16];
     let result_b = client.read(&mut buf_b);
     assert!(
-        matches!(result_b, Err(PipeError::ConcurrentSubmit)),
+        matches!(result_b, Err(TransportError::ConcurrentSubmit)),
         "expected ConcurrentSubmit, got {result_b:?}"
     );
 
     client.cancel();
     let result_a = reader_a.join().unwrap();
     assert!(
-        matches!(result_a, Err(PipeError::Cancelled)),
+        matches!(result_a, Err(TransportError::Cancelled)),
         "expected Cancelled, got {result_a:?}"
     );
 
@@ -1204,7 +1202,7 @@ fn concurrent_same_direction_client_read_returns_distinct_error() {
 
 // Not exercised (round-3 finding 9's explicit "don't invent a seam"
 // guidance): `thread::Builder::spawn` failure injection (no seam exists
-// to force it deterministically) and `TransportEvent::AcceptError`
+// to force it deterministically) and `LaneEvent::AcceptError`
 // (every path to it is a genuine OS resource exhaustion this test suite
 // has no deterministic way to trigger).
 
@@ -1245,7 +1243,7 @@ fn await_status_request(server: &PipeServer, conn_id: ConnId, timeout: Duration)
         let remaining = deadline.saturating_duration_since(Instant::now());
         assert!(!remaining.is_zero(), "timed out waiting for the status request");
         match server.events().recv_timeout(remaining) {
-            Ok(TransportEvent::Bytes(cid, bytes)) if cid == conn_id => got.extend(bytes),
+            Ok(LaneEvent::Bytes(cid, bytes)) if cid == conn_id => got.extend(bytes),
             Ok(other) => panic!("unexpected event waiting for status: {other:?}"),
             Err(_) => panic!("timed out waiting for the status request"),
         }
@@ -1507,12 +1505,12 @@ fn cross_process_challenge_proves_a_real_child_server() {
 /// directly), so a regression that stopped calling `authenticate_server`
 /// at all would still pass this test (nothing here proves enforcement
 /// happened) -- that is exactly why the failure-mapping unit tests in
-/// `pipe_win.rs` itself (`map_sid_auth_outcome`) exist alongside it: they
+/// `pipe_win.rs` itself (`map_peer_auth_outcome`) exist alongside it: they
 /// prove the CONSTRUCTOR's mapping logic in isolation, and this test
 /// proves the happy path stays usable end to end.
 #[test]
-fn connect_voyage_pipe_sid_authentication_enforced_pass_against_a_genuine_server() {
-    if !run_isolated("connect_voyage_pipe_sid_authentication_enforced_pass_against_a_genuine_server") {
+fn connect_voyage_pipe_peer_authentication_enforced_pass_against_a_genuine_server() {
+    if !run_isolated("connect_voyage_pipe_peer_authentication_enforced_pass_against_a_genuine_server") {
         return;
     }
     let voyage_id = fresh_voyage_id();
@@ -1574,8 +1572,8 @@ impl sot_log::challenge_win::PipeChallengeable for InvalidHandleConn {
 
 #[test]
 fn authenticate_server_is_undetermined_when_step_one_itself_fails() {
-    use sot_log::challenge::SidAuthOutcome;
+    use sot_log::challenge::PeerAuthOutcome;
     use sot_log::challenge_win::authenticate_server;
     let outcome = authenticate_server(&InvalidHandleConn);
-    assert!(matches!(outcome, SidAuthOutcome::Undetermined), "{outcome:?}");
+    assert!(matches!(outcome, PeerAuthOutcome::Undetermined), "{outcome:?}");
 }

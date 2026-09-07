@@ -46,6 +46,13 @@ pub mod challenge_win;
 // `#![cfg(target_os = "linux")]`); other Unix fails closed at
 // `socket_unix::connect_voyage_socket`'s own stub instead.
 pub mod challenge_unix;
+// L1-unix LU3a (ADR 0043 decision 19): the three seam traits landed
+// before any consumer uses them -- `Client` (blanket-implements
+// `challenge::ChallengeableConnection`), `PeerProcess`, `Endpoint`.
+// Ungated, like `challenge`/`transport`: this is the CONTRACT, not an
+// implementation -- the implementing types live in `pipe_win.rs`/
+// `socket_unix.rs`/`challenge_win.rs`/`challenge_unix.rs` themselves.
+pub mod client;
 // ADR 0041 step 6, unit U2: the probe classifier (Stage A/B transition
 // table) `probe.rs` deliberately ships without — see that module's own
 // doc. Portable (L1-unix LU1a): makes no OS call of its own, so its unit
@@ -227,35 +234,23 @@ pub enum Error {
     #[cfg(windows)]
     #[error("conpty: {0}")]
     Conpty(#[from] conpty::ConptyError),
-    /// A named-pipe transport OPERATION failed (Windows-only: `pipe_win`
-    /// module) — binding the pipe (`PipeServer::bind`, inside
-    /// `PipeTransport::bind`) is the ONLY place `pipe_transport.rs`
-    /// converts one of these into this crate's own `Error`. A LATER,
-    /// background failure on an already-bound pipe (`pipe_win`'s own
-    /// `TransportEvent::AcceptError`, its accept loop's persistent-failure
-    /// signal) never reaches this type at all — `pipe_transport.rs`
-    /// translates it to `transport::TransportEvent::TransportFatal`
-    /// instead, delivered through `Transport::try_recv_event` like any
-    /// other transport event, since by then `run` is already past `bind`
-    /// and mid-loop, not somewhere a `Result` could propagate to.
-    #[cfg(windows)]
-    #[error("pipe transport: {0}")]
-    Pipe(#[from] pipe_win::PipeError),
-    /// A Unix-domain-socket transport OPERATION failed (Unix-only:
-    /// `socket_unix` module) — binding the socket (`SocketServer::bind`,
-    /// inside `SocketTransport::bind`) is the ONLY place
-    /// `socket_transport.rs` converts one of these into this crate's own
-    /// `Error` — mirrors the `Pipe` variant's own rule exactly. A LATER,
-    /// background failure on an already-bound socket (`socket_unix`'s own
-    /// `TransportEvent::AcceptError`) never reaches this type at all —
-    /// `socket_transport.rs` translates it to
-    /// `transport::TransportEvent::TransportFatal` instead, delivered
+    /// A transport OPERATION failed — the former Windows-only `Pipe`
+    /// variant (`pipe_win::PipeError`) and Unix-only `Socket` variant
+    /// (`socket_unix::SocketError`) merged into one ungated variant (ADR
+    /// 0043 decisions 17/19: one `transport::TransportError` now serves
+    /// both platforms). Binding the transport (`PipeServer::bind`/
+    /// `SocketServer::bind`, inside `PipeTransport::bind`/
+    /// `SocketTransport::bind`) is the ONLY place `pipe_transport.rs`/
+    /// `socket_transport.rs` convert one of these into this crate's own
+    /// `Error`. A LATER, background failure on an already-bound transport
+    /// (`LaneEvent::AcceptError`, the accept loop's persistent-failure
+    /// signal) never reaches this type at all — the bridge translates it
+    /// to `transport::TransportEvent::TransportFatal` instead, delivered
     /// through `Transport::try_recv_event` like any other transport
-    /// event, since by then the capsule's run loop is already past `bind`
-    /// and mid-loop, not somewhere a `Result` could propagate to.
-    #[cfg(unix)]
-    #[error("socket transport: {0}")]
-    Socket(#[from] socket_unix::SocketError),
+    /// event, since by then `run` is already past `bind` and mid-loop, not
+    /// somewhere a `Result` could propagate to.
+    #[error("transport: {0}")]
+    Transport(#[from] transport::TransportError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

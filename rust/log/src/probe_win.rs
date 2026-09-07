@@ -145,7 +145,7 @@ impl ProbeOps for RealProbeOps {
     fn connect(&self, voyage_id: &str) -> ConnectOutcome<Self::Conn> {
         match crate::pipe_win::connect_voyage_pipe_unchallenged(voyage_id) {
             Ok(client) => ConnectOutcome::Connected(client),
-            Err(crate::pipe_win::PipeError::Io { source, .. }) => {
+            Err(crate::transport::TransportError::Io { source, .. }) => {
                 use windows_sys::Win32::Foundation::{
                     ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY,
                 };

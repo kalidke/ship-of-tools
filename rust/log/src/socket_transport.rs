@@ -32,7 +32,7 @@
 //!
 //! # `AcceptError` maps to `TransportEvent::TransportFatal`
 //!
-//! `socket_unix::TransportEvent::AcceptError` means no future connection
+//! `crate::transport::LaneEvent::AcceptError` means no future connection
 //! can ever be accepted while this capsule holds the socket's name — this
 //! bridge translates it to [`transport::TransportEvent::TransportFatal`],
 //! which the capsule's run loop maps to an orderly self-end. See
@@ -50,8 +50,8 @@
 
 #![cfg(unix)]
 
-use crate::socket_unix::{ConnId, SocketServer, TransportEvent as SocketEvent};
-use crate::transport::{Transport, TransportEvent as CapsuleEvent};
+use crate::socket_unix::{ConnId, SocketServer};
+use crate::transport::{LaneEvent, Transport, TransportEvent as CapsuleEvent};
 use crate::Result;
 use std::collections::HashSet;
 use std::time::Instant;
@@ -96,7 +96,7 @@ impl Transport for SocketTransport {
 
     fn try_recv_event(&mut self) -> Option<CapsuleEvent> {
         let evt = self.server.as_ref()?.events().try_recv().ok()?;
-        if let SocketEvent::Closed(conn, _reason) = &evt {
+        if let LaneEvent::Closed(conn, _reason) = &evt {
             self.closing.remove(conn);
         }
         Some(translate(evt))
@@ -158,12 +158,12 @@ impl Transport for SocketTransport {
 /// `AcceptError` section for the one variant that maps to something
 /// other than a per-connection event). Identical five-arm shape to
 /// `pipe_transport::translate`.
-fn translate(evt: SocketEvent) -> CapsuleEvent {
+fn translate(evt: LaneEvent) -> CapsuleEvent {
     match evt {
-        SocketEvent::Accepted(conn) => CapsuleEvent::ConnectionOpened(conn),
-        SocketEvent::Bytes(conn, bytes) => CapsuleEvent::Bytes(conn, bytes),
-        SocketEvent::Sent(conn, marker) => CapsuleEvent::Sent(conn, marker),
-        SocketEvent::Closed(conn, _reason) => CapsuleEvent::ConnectionClosed(conn),
-        SocketEvent::AcceptError(message) => CapsuleEvent::TransportFatal(message),
+        LaneEvent::Accepted(conn) => CapsuleEvent::ConnectionOpened(conn),
+        LaneEvent::Bytes(conn, bytes) => CapsuleEvent::Bytes(conn, bytes),
+        LaneEvent::Sent(conn, marker) => CapsuleEvent::Sent(conn, marker),
+        LaneEvent::Closed(conn, _reason) => CapsuleEvent::ConnectionClosed(conn),
+        LaneEvent::AcceptError(message) => CapsuleEvent::TransportFatal(message),
     }
 }
