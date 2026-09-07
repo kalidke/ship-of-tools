@@ -70,7 +70,7 @@ impl Grid {
         // run ONLY when the column count actually changed (Codex round on
         // #194, finding 2). An unconditional resize here silently
         // discarded real wrap state on every SAME-width `set_size` call,
-        // including the one `fe_client_win.rs`'s `pump()` makes right
+        // including the one `fe_client_io.rs`'s `pump()` makes right
         // after every restore -- decoding a checkpoint's wrap flags only
         // to throw them away before the first paint. No separate
         // `row.wrap(false)` call is needed alongside it: `Row::resize`

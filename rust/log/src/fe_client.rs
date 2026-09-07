@@ -5,15 +5,16 @@
 //! on every CI platform, not merely compile-checked on Windows — the
 //! same split `attach_proto.rs` (the capsule's own Action-driven state
 //! machine) and `classify.rs` (the probe classifier) already use. The
-//! Windows-only runtime that wires these to a real `PipeClient` and a
-//! real `vt100_ctt::Parser` lives in `fe_client_win.rs`; it is the ONLY
-//! caller of anything here that also touches the OS.
+//! runtime that wires these to a real `Endpoint::Client` and a real
+//! `vt100_ctt::Parser` lives in `fe_client_io.rs` (L1-unix LU3b: generic
+//! over `Endpoint`, Windows+Linux — no longer Windows-only); it is the
+//! ONLY caller of anything here that also touches the OS.
 //!
 //! U3 SCOPE, pinned by "Step 6 units": "the six FE rulings in 'Step 6 as
 //! specified', checkpoint restore into the drawer's parser, and deletion
 //! of its DSR responder" — all "behind the same off-by-default flag" the
 //! frontend calls `drawer.attach_only` (the ADR names none explicitly;
-//! see `fe_client_win`'s own module doc for where it is read). Checkpoint
+//! see `fe_client_io`'s own module doc for where it is read). Checkpoint
 //! restore is `vt100_ctt::Parser::restore_screen` (already built, step 3)
 //! — nothing to add here. "Deletion of its DSR responder": the attach-only
 //! path never answers a DSR query at all — the capsule's own ConPTY DSR
@@ -590,7 +591,7 @@ impl ReconnectState {
     /// only invoking this when BOTH halves of the conjunction are
     /// currently true (Codex review round, finding 8: a live attach
     /// pipe with an unresponsive supervisor must never reach this at
-    /// all — see `fe_client_win.rs`'s own doc on where this is and is
+    /// all — see `fe_client_io.rs`'s own doc on where this is and is
     /// not called). `now` is checked against the FIRST time this
     /// condition was observed continuously.
     pub fn classify_unresponsive(&mut self, now: Instant) -> ReconnectDecision {
@@ -711,7 +712,7 @@ impl FeDownBaseline {
     /// `fe-inbox.jsonl`'s content as read at FE PROCESS START (before
     /// this run's own first append of ANY kind — the frontend calls
     /// this from `State::new`, never from drawer-open time; see
-    /// `fe_client_win`'s own module doc for the Codex review finding
+    /// `fe_client_io`'s own module doc for the Codex review finding
     /// this fixes).
     pub fn capture(last_evidence: Option<String>) -> Self {
         Self { last_evidence, first_attach_done: false }

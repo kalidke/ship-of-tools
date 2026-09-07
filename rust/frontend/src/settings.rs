@@ -342,7 +342,7 @@ pub struct Settings {
     /// Terminal drawer does not spawn a local PTY at all; it resolves the
     /// per-machine state dir, reads `drawer.voyage`, and attaches to a
     /// running `sot-capsule supervise` as a watcher (Windows only — see
-    /// `sot_log::fe_client_win`). Default `false`: OFF BY DEFAULT, and
+    /// `sot_log::fe_client_io`). Default `false`: OFF BY DEFAULT, and
     /// when off nothing the FE does today changes — the drawer keeps
     /// spawning `term::LocalTerminal` exactly as before this unit landed.
     /// Read once at drawer-creation time (not hot-reloaded mid-session,
