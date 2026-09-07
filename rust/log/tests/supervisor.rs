@@ -459,6 +459,11 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
 /// flake later. The ORDINARY (non-racing) end-run test keeps its
 /// deterministic `RecordClosed` assertion unchanged — this loosening is
 /// scoped to the race this test alone constructs.
+// Linux-only: the property is single-owner REAPING (a zombie is a Unix
+// notion); the Windows twin has nothing to assert, and the windows-latest
+// runner once lost the race's fallback query to a lane the supervisor had
+// already closed.
+#[cfg(target_os = "linux")]
 #[test]
 fn end_run_racing_a_self_exiting_leg_leaves_no_zombie() {
     let _serial = serial();
@@ -468,15 +473,12 @@ fn end_run_racing_a_self_exiting_leg_leaves_no_zombie() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    #[cfg(windows)]
-    const SELF_EXITING_SOON: &[&str] = &["cmd.exe", "/d", "/c", "ping -n 2 127.0.0.1 >nul & exit 0"];
-    #[cfg(target_os = "linux")]
     const SELF_EXITING_SOON: &[&str] = &["/bin/sh", "-c", "sleep 1; exit 0"];
 
     let child = spawn_supervisor(&state_dir, "--start", SELF_EXITING_SOON);
     let mut guard = KillGuard(Some(child));
 
-    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let mut conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
     // Immediately -- racing the leg's own ~1s self-exit against the
@@ -507,9 +509,21 @@ fn end_run_racing_a_self_exiting_leg_leaves_no_zombie() {
         Some(SupervisorOperationState::RecordClosed) => poll_to_terminal(&conn, op_id, Duration::from_secs(60)),
         Some(other) => other,
         None => poll_until(
-            || match query(&conn, op_id) {
-                SupervisorOperationState::Accepted => None,
-                other => Some(other),
+            // The supervisor may close this lane connection once the run has
+            // ended (idle eviction): a closed lane is not a verdict -- reconnect
+            // and ask the journal-backed operation state again.
+            || match request_for_test(
+                &conn,
+                &SupervisorRequest::Query { operation_id: op_id.to_string() },
+                Instant::now() + Duration::from_secs(5),
+            ) {
+                Ok(SupervisorReply::Operation(SupervisorOperationState::Accepted)) => None,
+                Ok(SupervisorReply::Operation(other)) => Some(other),
+                Ok(other) => panic!("expected Operation, got {other:?}"),
+                Err(_) => {
+                    conn = wait_for_lane(&h, Duration::from_secs(10));
+                    None
+                }
             },
             Duration::from_secs(60),
             "the operation to settle (journal-backed, since no wire reply ever arrived)",
