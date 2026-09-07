@@ -11,15 +11,16 @@
 //! file is Linux-only, but kept for one copy-paste source of truth with
 //! that file rather than a second, silently-diverging one).
 
-use sot_log::challenge::{ChallengeOutcome, ChallengeableConnection, SidAuthOutcome};
+use sot_log::challenge::{ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome};
 use sot_log::challenge_unix::{
     self, authenticate_server, challenge, self_start_ticks, ChallengedProcess, PeerCredentials,
     SocketChallengeable,
 };
 use sot_log::exchange::VoyageMgmtExchange;
 use sot_log::socket_unix::{
-    connect_voyage_socket, voyage_socket_path, ConnId, SocketClient, SocketServer, TransportEvent,
+    connect_voyage_socket, voyage_socket_path, ConnId, SocketClient, SocketServer,
 };
+use sot_log::transport::LaneEvent;
 use sot_log::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::RawFd;
@@ -103,7 +104,7 @@ fn isolated_runtime_dir() -> RuntimeDirGuard {
     RuntimeDirGuard { _tmp: tmp }
 }
 
-fn next_event(server: &SocketServer, timeout: Duration) -> TransportEvent {
+fn next_event(server: &SocketServer, timeout: Duration) -> LaneEvent {
     server
         .events()
         .recv_timeout(timeout)
@@ -112,7 +113,7 @@ fn next_event(server: &SocketServer, timeout: Duration) -> TransportEvent {
 
 fn expect_accepted(server: &SocketServer, timeout: Duration) -> ConnId {
     match next_event(server, timeout) {
-        TransportEvent::Accepted(id) => id,
+        LaneEvent::Accepted(id) => id,
         other => panic!("expected Accepted, got {other:?}"),
     }
 }
@@ -128,7 +129,7 @@ fn await_status_request(server: &SocketServer, conn_id: ConnId, timeout: Duratio
         let remaining = deadline.saturating_duration_since(Instant::now());
         assert!(!remaining.is_zero(), "timed out waiting for the status request");
         match server.events().recv_timeout(remaining) {
-            Ok(TransportEvent::Bytes(cid, bytes)) if cid == conn_id => got.extend(bytes),
+            Ok(LaneEvent::Bytes(cid, bytes)) if cid == conn_id => got.extend(bytes),
             Ok(other) => panic!("unexpected event waiting for status: {other:?}"),
             Err(_) => panic!("timed out waiting for the status request"),
         }
@@ -522,7 +523,7 @@ fn connect_voyage_socket_authentication_pass_against_a_genuine_server() {
     let deadline = Instant::now() + TIMEOUT;
     while got.len() < probe.len() {
         match server.events().recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(TransportEvent::Bytes(cid, bytes)) if cid == conn_id => got.extend(bytes),
+            Ok(LaneEvent::Bytes(cid, bytes)) if cid == conn_id => got.extend(bytes),
             other => panic!("unexpected event waiting for probe: {other:?}"),
         }
     }
@@ -567,7 +568,7 @@ impl SocketChallengeable for InvalidFdConn {
 #[test]
 fn authenticate_server_is_undetermined_when_step_one_itself_fails() {
     let outcome = authenticate_server(&InvalidFdConn);
-    assert!(matches!(outcome, SidAuthOutcome::Undetermined), "{outcome:?}");
+    assert!(matches!(outcome, PeerAuthOutcome::Undetermined), "{outcome:?}");
 }
 
 /// The race-free pin's own strict inequality (ADR 0043 decision 8): a
@@ -595,7 +596,7 @@ fn pin_rejects_a_peer_that_started_at_or_after_the_connection() {
         let conn_id = expect_accepted(&server, TIMEOUT);
         let client = SocketClient::from_stream_for_test(stream, own_start);
         assert!(
-            matches!(authenticate_server(&client), SidAuthOutcome::Undetermined),
+            matches!(authenticate_server(&client), PeerAuthOutcome::Undetermined),
             "a tie between the peer's start time and `established` must be Undetermined, never Proven"
         );
         drop(client);
@@ -604,7 +605,7 @@ fn pin_rejects_a_peer_that_started_at_or_after_the_connection() {
         // second connection's own `Accepted`, since both share one
         // server-wide events channel.
         match next_event(&server, TIMEOUT) {
-            TransportEvent::Closed(id, _) => assert_eq!(id, conn_id),
+            LaneEvent::Closed(id, _) => assert_eq!(id, conn_id),
             other => panic!("expected Closed for the first (dropped) connection, got {other:?}"),
         }
     }
@@ -613,7 +614,7 @@ fn pin_rejects_a_peer_that_started_at_or_after_the_connection() {
         expect_accepted(&server, TIMEOUT);
         let client = SocketClient::from_stream_for_test(stream, own_start + 1);
         assert!(
-            matches!(authenticate_server(&client), SidAuthOutcome::Authenticated(_)),
+            matches!(authenticate_server(&client), PeerAuthOutcome::Authenticated(_)),
             "a peer that started strictly before `established` must be authenticated"
         );
     }

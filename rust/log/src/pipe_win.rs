@@ -26,7 +26,7 @@
 //! `read`/`write_all` take `&self`: without this, two concurrent
 //! same-direction callers could both reset and reissue the one shared
 //! `OVERLAPPED`, corrupting whichever completed second. Rejecting it
-//! (`PipeError::ConcurrentSubmit` at the `PipeClient` boundary, never
+//! (`TransportError::ConcurrentSubmit` at the `PipeClient` boundary, never
 //! touching the OS) is what makes `unsafe impl Sync for IoSlot` sound:
 //! completion is always consumed by exactly the one thread that got past
 //! this check.
@@ -230,10 +230,11 @@
 
 #![cfg(windows)]
 
+use crate::client::{Client, Endpoint};
 use crate::transport::{
-    join_within, OutboundBudget, StartGate, BYTES_ABANDON_AFTER, CONNECT_BOUND,
-    EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL, JOIN_POLL_INTERVAL, READ_BUF_LEN,
-    TEARDOWN_AGGREGATE_DEADLINE,
+    join_within, ClosedReason, LaneEvent, LaneServer, OutboundBudget, StartGate, TransportError,
+    BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL,
+    JOIN_POLL_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
 };
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
@@ -306,11 +307,11 @@ fn wide_null(s: &str) -> Vec<u16> {
 /// this one already had from `drawer.voyage`'s own (stricter) validation.
 /// Anything that fails to parse at all (path-traversal shapes, wrong
 /// length, non-hex bytes) is rejected the same way.
-fn validate_voyage_id(voyage_id: &str) -> Result<(), PipeError> {
+fn validate_voyage_id(voyage_id: &str) -> Result<(), TransportError> {
     if crate::pointer::canonical_voyage_id(voyage_id).is_some() {
         Ok(())
     } else {
-        Err(PipeError::InvalidVoyageId(voyage_id.to_string()))
+        Err(TransportError::InvalidVoyageId(voyage_id.to_string()))
     }
 }
 
@@ -319,94 +320,16 @@ fn validate_voyage_id(voyage_id: &str) -> Result<(), PipeError> {
 pub type ConnId = u64;
 
 /// An opaque, caller-assigned correlation tag for one [`PipeServer::send`]
-/// call, echoed back on [`TransportEvent::Sent`] when the OS reports that
+/// call, echoed back on [`LaneEvent::Sent`] when the OS reports that
 /// send's `WriteFile` has PHYSICALLY completed.
 pub type SendMarker = u64;
 
-/// Why a connection ended, reported once per connection on
-/// [`TransportEvent::Closed`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ClosedReason {
-    /// The peer disconnected (or this side observed a broken/unconnected
-    /// pipe) — detected by the connection's own reader loop.
-    Eof,
-    /// [`PipeServer::close`] tore this connection down.
-    Closed,
-    /// An I/O error other than a recognized disconnect ended a
-    /// connection's reader or writer loop, or its `Bytes` delivery was
-    /// abandoned — always paired with this guaranteed notification,
-    /// never a silent stream gap.
-    Error(String),
-}
-
-/// This transport's event surface to its consumer. Delivered over
-/// [`PipeServer::events`] in the order this module observed them; the
-/// consumer feeds `Bytes` payloads to its own [`crate::wire::FrameSplitter`]
-/// per connection.
-#[derive(Debug)]
-pub enum TransportEvent {
-    /// A new connection accepted; `send`/`close` may now target it.
-    Accepted(ConnId),
-    /// Raw bytes read from a connection, in the order read. Never empty.
-    Bytes(ConnId, Vec<u8>),
-    /// The `WriteFile` for a marker-tagged [`PipeServer::send`] call has
-    /// physically completed.
-    Sent(ConnId, SendMarker),
-    /// The connection ended; no further events for this `ConnId` follow.
-    Closed(ConnId, ClosedReason),
-    /// The accept loop hit a persistent, unrecoverable resource failure
-    /// and has stopped accepting new connections FOR GOOD — existing
-    /// connections are unaffected.
-    AcceptError(String),
-}
-
-/// Errors this transport's own API surface can report synchronously, at
-/// the call site. Background-thread failures surface as
-/// [`TransportEvent::Closed`]/[`TransportEvent::AcceptError`] instead.
-#[derive(Debug, thiserror::Error)]
-pub enum PipeError {
-    #[error("invalid voyage id {0:?}: must be the canonical lowercase-hyphenated form of an RFC 4122 UUID")]
-    InvalidVoyageId(String),
-    #[error("max_instances must be between 1 and 255 (CreateNamedPipeW's own documented range)")]
-    InvalidMaxInstances,
-    #[error("{op}: {source}")]
-    Io {
-        op: &'static str,
-        source: std::io::Error,
-    },
-    #[error("unknown or already-closed connection {0}")]
-    UnknownConnection(ConnId),
-    #[error("outbound budget exhausted for connection {0}")]
-    QueueFull(ConnId),
-    #[error("empty payload: this wire never carries a zero-length send")]
-    EmptyPayload,
-    #[error("payload of {0} bytes exceeds what a single Win32 write/read call can represent")]
-    PayloadTooLarge(usize),
-    #[error("operation cancelled")]
-    Cancelled,
-    /// A second same-direction `PipeClient` call (e.g. two concurrent
-    /// `read`s) was rejected before it ever touched the OS or the shared
-    /// `OVERLAPPED` — misuse, not a race this module resolves for the
-    /// caller.
-    #[error("another operation is already pending on this client's same direction")]
-    ConcurrentSubmit,
-    /// U1a: `connect_voyage_pipe`'s own SID authentication (ADR 0041
-    /// Lifecycle "The challenge", steps 1-3 via
-    /// `challenge_win::authenticate_server` — NOT the full five-step
-    /// `challenge()`, see that function's own doc) answered with a
-    /// WELL-FORMED WRONG proof — a different token-user SID behind the
-    /// pipe. A loud, typed failure: never retried as if the peer might
-    /// still turn out legitimate.
-    #[error("connect_voyage_pipe: the peer failed SID authentication (a different account's process is behind this pipe)")]
-    Foreign,
-    /// U1a: SID authentication could not be completed at all — an OS-call
-    /// failure (`GetNamedPipeServerProcessId`, `OpenProcess`,
-    /// `OpenProcessToken`, `GetTokenInformation`, `GetProcessTimes`).
-    /// Never silently treated as either authenticated or foreign (ADR
-    /// 0041: "a failure... is PENDING, never READY and never ADOPTED").
-    #[error("connect_voyage_pipe: SID authentication could not be completed (peer identity undetermined)")]
-    Undetermined,
-}
+// `ClosedReason`, `LaneEvent`, and `TransportError` used to be defined
+// here (`PipeError`/this module's own event enums) — L1-unix LU3a (ADR
+// 0043 decisions 17/19) hoisted all three into `crate::transport`, since
+// `socket_unix.rs`'s own copies were byte-for-byte identical in shape and
+// both platforms' servers now produce the SAME event type. Imported
+// above; nothing in this module defines them anymore.
 
 /// A raw Windows `HANDLE`, asserted `Send` AND `Sync`. `Send`: exactly one
 /// owner ever calls `CloseHandle` on it, only after every thread using a
@@ -1173,7 +1096,7 @@ struct ServerShared {
     accept: Mutex<AcceptState>,
     accept_cv: Condvar,
     reaper_tx: SyncSender<ReaperMsg>,
-    events_tx: SyncSender<TransportEvent>,
+    events_tx: SyncSender<LaneEvent>,
     max_instances: u32,
     name: Vec<u16>,
     /// Set exactly once, by `PipeServer::disconnect_listener` (which
@@ -1232,7 +1155,7 @@ struct ServerShared {
 /// combination is the follow-up capsule unit's job, not this transport's.
 pub struct PipeServer {
     shared: Arc<ServerShared>,
-    events_rx: Receiver<TransportEvent>,
+    events_rx: Receiver<LaneEvent>,
     accept_jh: Option<JoinHandle<()>>,
     reaper_jh: Option<JoinHandle<()>>,
     /// Reader/writer `JoinHandle`s for every connection
@@ -1258,7 +1181,7 @@ impl PipeServer {
     /// handle can ever outlive this constructor) and start the reaper
     /// and accept threads. `max_instances` must be in Win32's own
     /// documented `1..=255` range.
-    pub fn bind(voyage_id: &str, max_instances: u32) -> Result<Self, PipeError> {
+    pub fn bind(voyage_id: &str, max_instances: u32) -> Result<Self, TransportError> {
         validate_voyage_id(voyage_id)?;
         Self::bind_named(pipe_name_wide(voyage_id), max_instances)
     }
@@ -1270,7 +1193,7 @@ impl PipeServer {
     /// own stable hash of the canonicalized state-dir path (ADR 0041
     /// Lifecycle "Name and identity") — this constructor does not derive
     /// or validate it as a voyage id, unlike [`Self::bind`].
-    pub fn bind_supervisor(h: &str, max_instances: u32) -> Result<Self, PipeError> {
+    pub fn bind_supervisor(h: &str, max_instances: u32) -> Result<Self, TransportError> {
         Self::bind_named(supervisor_pipe_name_wide(h), max_instances)
     }
 
@@ -1280,9 +1203,9 @@ impl PipeServer {
     /// squat-detecting first instance synchronously, then start the
     /// reaper and accept threads. `max_instances` must be in Win32's own
     /// documented `1..=255` range.
-    fn bind_named(name: Vec<u16>, max_instances: u32) -> Result<Self, PipeError> {
+    fn bind_named(name: Vec<u16>, max_instances: u32) -> Result<Self, TransportError> {
         if !(1..=255).contains(&max_instances) {
-            return Err(PipeError::InvalidMaxInstances);
+            return Err(TransportError::InvalidMaxConnections);
         }
 
         let (events_tx, events_rx) = mpsc::sync_channel(EVENTS_CHANNEL_CAP);
@@ -1325,7 +1248,7 @@ impl PipeServer {
                 (id, raw)
             }
             CreateOutcome::CreateFailed(e) => {
-                return Err(PipeError::Io {
+                return Err(TransportError::Io {
                     op: "CreateNamedPipeW(first instance)",
                     source: e,
                 })
@@ -1356,7 +1279,7 @@ impl PipeServer {
                 // `disconnect_listener`, nothing else will ever close it.
                 // `close_all` here is this failure path's ONLY chance.
                 shared.instances.close_all();
-                return Err(PipeError::Io {
+                return Err(TransportError::Io {
                     op: "spawn reaper thread",
                     source: e,
                 });
@@ -1376,7 +1299,7 @@ impl PipeServer {
                 shared.instances.close_all();
                 let _ = shared.reaper_tx.send(ReaperMsg::Shutdown);
                 reaper_jh.join().ok();
-                return Err(PipeError::Io {
+                return Err(TransportError::Io {
                     op: "spawn accept thread",
                     source: e,
                 });
@@ -1398,12 +1321,12 @@ impl PipeServer {
     /// reliable-lifecycle-delivery contract (see the module doc) is to
     /// keep draining this — a stalled consumer backs everything up but
     /// never silently loses a lifecycle event.
-    pub fn events(&self) -> &Receiver<TransportEvent> {
+    pub fn events(&self) -> &Receiver<LaneEvent> {
         &self.events_rx
     }
 
     /// Queue `bytes` for `conn_id`, tagged with `marker` if the caller
-    /// wants a [`TransportEvent::Sent`] once the OS write physically
+    /// wants a [`LaneEvent::Sent`] once the OS write physically
     /// completes. `bytes` must be non-empty and no larger than a single
     /// Win32 write can represent. Non-blocking: a full outbound budget or
     /// an unknown/already-closed connection both return `Err` immediately
@@ -1413,24 +1336,24 @@ impl PipeServer {
         conn_id: ConnId,
         bytes: Vec<u8>,
         marker: Option<SendMarker>,
-    ) -> Result<(), PipeError> {
+    ) -> Result<(), TransportError> {
         if bytes.is_empty() {
-            return Err(PipeError::EmptyPayload);
+            return Err(TransportError::EmptyPayload);
         }
         if bytes.len() > u32::MAX as usize {
-            return Err(PipeError::PayloadTooLarge(bytes.len()));
+            return Err(TransportError::PayloadTooLarge(bytes.len()));
         }
         let len = bytes.len();
         let map = self.shared.conns.lock().unwrap();
         let conn = map
             .get(&conn_id)
-            .ok_or(PipeError::UnknownConnection(conn_id))?;
+            .ok_or(TransportError::UnknownConnection(conn_id))?;
         if !conn.outbound.try_reserve(len) {
-            return Err(PipeError::QueueFull(conn_id));
+            return Err(TransportError::QueueFull(conn_id));
         }
         if conn.sender.send(WriteCmd { bytes, marker }).is_err() {
             conn.outbound.release(len);
-            return Err(PipeError::UnknownConnection(conn_id));
+            return Err(TransportError::UnknownConnection(conn_id));
         }
         Ok(())
     }
@@ -1438,7 +1361,7 @@ impl PipeServer {
     /// Request that `conn_id` be torn down: both directions cancelled,
     /// both threads joined, the instance recycled. Fire-and-forget — this
     /// enqueues the request at most once for the reaper thread;
-    /// completion is observed as [`TransportEvent::Closed`]. A no-op if
+    /// completion is observed as [`LaneEvent::Closed`]. A no-op if
     /// `conn_id` is already gone or already has a teardown in flight.
     pub fn close(&self, conn_id: ConnId) {
         let map = self.shared.conns.lock().unwrap();
@@ -1508,7 +1431,7 @@ impl PipeServer {
 
     /// Poll until `conn_id`'s writer has genuinely gone `ERROR_IO_PENDING`
     /// at the OS level (`IoSlot::is_genuinely_pending`) or `timeout`
-    /// elapses. `PipeError::QueueFull` alone only proves the outbound
+    /// elapses. `TransportError::QueueFull` alone only proves the outbound
     /// BYTE budget is reserved, and plain `SlotState::Pending` is ALSO
     /// set for a synchronously-completed write still awaiting result
     /// collection (Codex round-4 finding 3 / round-5 finding 2) — neither
@@ -1754,7 +1677,7 @@ fn stop_accept_loop(shared: &Arc<ServerShared>) {
 fn terminalize_accept_loop(shared: &Arc<ServerShared>, message: String) {
     stop_accept_loop(shared);
     shared.accept_cv.notify_all();
-    send_lifecycle_event(shared, TransportEvent::AcceptError(message));
+    send_lifecycle_event(shared, LaneEvent::AcceptError(message));
 }
 
 /// Set `id`/`raw` aside for reuse rather than closing it.
@@ -1798,7 +1721,7 @@ fn recycle_instance(shared: &Arc<ServerShared>, id: u64, raw: SendableHandle) {
 /// Deliver one lifecycle event (`Accepted`/`Sent`/`Closed`/`AcceptError`)
 /// RELIABLY — see the module doc's "Reliable lifecycle delivery" section
 /// for the full contract this implements.
-fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: TransportEvent) {
+fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
     let mut item = evt;
     loop {
         match shared.events_tx.try_send(item) {
@@ -1844,10 +1767,10 @@ fn request_teardown(
 /// connection attempt is unaffected.
 fn report_registration_failure(shared: &Arc<ServerShared>, what: &str, e: impl std::fmt::Display) {
     let conn_id = shared.next_id.fetch_add(1, Ordering::Relaxed);
-    send_lifecycle_event(shared, TransportEvent::Accepted(conn_id));
+    send_lifecycle_event(shared, LaneEvent::Accepted(conn_id));
     send_lifecycle_event(
         shared,
-        TransportEvent::Closed(conn_id, ClosedReason::Error(format!("{what}: {e}"))),
+        LaneEvent::Closed(conn_id, ClosedReason::Error(format!("{what}: {e}"))),
     );
 }
 
@@ -1878,7 +1801,7 @@ fn teardown_if_present(shared: &Arc<ServerShared>, conn_id: ConnId, reason: Opti
     // `close_all` already claimed this id.
     recycle_instance(shared, conn.registry_id, conn.raw);
     if let Some(reason) = reason {
-        send_lifecycle_event(shared, TransportEvent::Closed(conn_id, reason));
+        send_lifecycle_event(shared, LaneEvent::Closed(conn_id, reason));
     }
 }
 
@@ -1911,7 +1834,7 @@ fn reaper_loop(shared: Arc<ServerShared>, rx: Receiver<ReaperMsg>) {
 /// plain condvar — every state change that could satisfy this predicate
 /// (`Drop`, a recycle) already `notify_all`s, so a polling wait would
 /// buy nothing. `None` means: stop accepting — shutdown, a persistent
-/// creation failure already reported via `TransportEvent::AcceptError`,
+/// creation failure already reported via `LaneEvent::AcceptError`,
 /// or (rarely) a creation attempt that found the registry already torn
 /// down (`create_and_register` never even called `CreateNamedPipeW` in
 /// that case).
@@ -2156,7 +2079,7 @@ fn handle_new_connection(
     // RELIABLE, not best-effort: retries until the consumer actually has
     // room, so the gate below can never open onto a connection the
     // consumer was never told exists.
-    send_lifecycle_event(shared, TransportEvent::Accepted(conn_id));
+    send_lifecycle_event(shared, LaneEvent::Accepted(conn_id));
     gate.open(); // ONLY now may the reader/writer threads touch the pipe.
 }
 
@@ -2173,7 +2096,7 @@ fn deliver_bytes(
     bytes: Vec<u8>,
     slot: &IoSlot,
 ) -> bool {
-    let mut item = TransportEvent::Bytes(conn_id, bytes);
+    let mut item = LaneEvent::Bytes(conn_id, bytes);
     let deadline = Instant::now() + BYTES_ABANDON_AFTER;
     loop {
         match shared.events_tx.try_send(item) {
@@ -2288,7 +2211,7 @@ fn writer_loop(
         match result {
             Ok(_) => {
                 if let Some(marker) = cmd.marker {
-                    send_lifecycle_event(&shared, TransportEvent::Sent(conn_id, marker));
+                    send_lifecycle_event(&shared, LaneEvent::Sent(conn_id, marker));
                 }
             }
             Err(e) if is_completion_unproven(&e) => {
@@ -2342,7 +2265,7 @@ impl std::fmt::Debug for PipeClient {
     }
 }
 
-/// Maps [`crate::challenge::SidAuthOutcome`] to this module's own
+/// Maps [`crate::challenge::PeerAuthOutcome`] to this module's own
 /// `Result` — the exact logic [`connect_voyage_pipe`] runs, pulled out so
 /// it is directly unit-testable (U1a Codex round-1, minor cluster: "a
 /// constructor-level failure-mapping test") without needing an OS-level
@@ -2350,11 +2273,11 @@ impl std::fmt::Debug for PipeClient {
 /// is constructible in CI (a genuine Foreign result needs a second real
 /// account; the ADR itself scopes that proof to step 7's real-machine
 /// suite).
-fn map_sid_auth_outcome(outcome: crate::challenge::SidAuthOutcome) -> Result<(), PipeError> {
+fn map_peer_auth_outcome(outcome: crate::challenge::PeerAuthOutcome) -> Result<(), TransportError> {
     match outcome {
-        crate::challenge::SidAuthOutcome::Authenticated(_) => Ok(()),
-        crate::challenge::SidAuthOutcome::Foreign => Err(PipeError::Foreign),
-        crate::challenge::SidAuthOutcome::Undetermined => Err(PipeError::Undetermined),
+        crate::challenge::PeerAuthOutcome::Authenticated(_) => Ok(()),
+        crate::challenge::PeerAuthOutcome::Foreign => Err(TransportError::Foreign),
+        crate::challenge::PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined),
     }
 }
 
@@ -2376,8 +2299,8 @@ fn map_sid_auth_outcome(outcome: crate::challenge::SidAuthOutcome) -> Result<(),
 /// that, and this function must not consume either by sending a
 /// lane-specific request of its own; see `authenticate_server`'s own doc
 /// for why the full proof does not apply at this layer). A failed
-/// authentication is a loud, typed [`PipeError::Foreign`] or
-/// [`PipeError::Undetermined`] — never a silent retry. A caller that
+/// authentication is a loud, typed [`TransportError::Foreign`] or
+/// [`TransportError::Undetermined`] — never a silent retry. A caller that
 /// needs the FULL proof (mgmt lane; the probe classifier) runs
 /// `challenge_win::challenge` itself on top of this — see
 /// `probe_win::RealProbeOps` for exactly that composition.
@@ -2387,9 +2310,9 @@ fn map_sid_auth_outcome(outcome: crate::challenge::SidAuthOutcome) -> Result<(),
 /// attempts) and `ERROR_FILE_NOT_FOUND` (the server has not called `bind`
 /// yet) — both are ordinary races in a healthy multi-client server, not
 /// failures.
-pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, PipeError> {
+pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, TransportError> {
     let client = connect_voyage_pipe_unchallenged(voyage_id)?;
-    map_sid_auth_outcome(crate::challenge_win::authenticate_server(&client))?;
+    map_peer_auth_outcome(crate::challenge_win::authenticate_server(&client))?;
     Ok(client)
 }
 
@@ -2414,7 +2337,7 @@ pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, PipeError> {
 /// the probe episode's remaining wall time), so folding authentication
 /// into the connect itself here would collapse rows the classifier needs
 /// to tell apart.
-pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeClient, PipeError> {
+pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeClient, TransportError> {
     validate_voyage_id(voyage_id)?;
     connect_named_pipe_unchallenged(pipe_name_wide(voyage_id))
 }
@@ -2427,7 +2350,7 @@ pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeCl
 /// intentionally has no `_unchallenged`-free sibling here — the caller
 /// composes the full challenge itself, exactly as `probe_win::RealProbeOps`
 /// does for the mgmt lane's own unchallenged connect.
-pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient, PipeError> {
+pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient, TransportError> {
     connect_named_pipe_unchallenged(supervisor_pipe_name_wide(h))
 }
 
@@ -2438,7 +2361,7 @@ pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient
 /// authentication of any kind — every caller of either wrapper above is
 /// responsible for running the OS-level identity check (and, where the
 /// lane needs it, the full challenge) on top.
-fn connect_named_pipe_unchallenged(name: Vec<u16>) -> Result<PipeClient, PipeError> {
+fn connect_named_pipe_unchallenged(name: Vec<u16>) -> Result<PipeClient, TransportError> {
     let deadline = Instant::now() + CONNECT_BOUND;
     loop {
         let h = unsafe {
@@ -2455,11 +2378,11 @@ fn connect_named_pipe_unchallenged(name: Vec<u16>) -> Result<PipeClient, PipeErr
         if h != INVALID_HANDLE_VALUE {
             let handle = unsafe { OwnedHandle::from_raw_handle(h as RawHandle) };
             let raw = SendableHandle(h);
-            let read_slot = IoSlot::new().map_err(|e| PipeError::Io {
+            let read_slot = IoSlot::new().map_err(|e| TransportError::Io {
                 op: "CreateEventW(client read)",
                 source: e,
             })?;
-            let write_slot = IoSlot::new().map_err(|e| PipeError::Io {
+            let write_slot = IoSlot::new().map_err(|e| TransportError::Io {
                 op: "CreateEventW(client write)",
                 source: e,
             })?;
@@ -2475,7 +2398,7 @@ fn connect_named_pipe_unchallenged(name: Vec<u16>) -> Result<PipeClient, PipeErr
         let retryable =
             code == Some(ERROR_PIPE_BUSY as i32) || code == Some(ERROR_FILE_NOT_FOUND as i32);
         if !retryable || Instant::now() >= deadline {
-            return Err(PipeError::Io {
+            return Err(TransportError::Io {
                 op: "CreateFileW",
                 source: err,
             });
@@ -2493,7 +2416,7 @@ impl PipeClient {
     /// thread via [`PipeClient::cancel`]. `bytes` must be non-empty and no
     /// larger than a single Win32 write can represent. A concurrent
     /// SECOND `write_all` call from another thread returns
-    /// `Err(PipeError::ConcurrentSubmit)` rather than corrupting the
+    /// `Err(TransportError::ConcurrentSubmit)` rather than corrupting the
     /// shared `OVERLAPPED`. Named pipes complete a `WriteFile` as one
     /// atomic operation (byte-mode, no partial writes to retry-loop over).
     ///
@@ -2503,12 +2426,12 @@ impl PipeClient {
     /// the caller's behalf (the caller may free/reuse it the instant
     /// this call returns), so it aborts the process instead — see
     /// `CompletionUnproven`'s own doc.
-    pub fn write_all(&self, bytes: &[u8]) -> Result<(), PipeError> {
+    pub fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
         if bytes.is_empty() {
-            return Err(PipeError::EmptyPayload);
+            return Err(TransportError::EmptyPayload);
         }
         if bytes.len() > u32::MAX as usize {
-            return Err(PipeError::PayloadTooLarge(bytes.len()));
+            return Err(TransportError::PayloadTooLarge(bytes.len()));
         }
         let result = self.write_slot.submit_and_wait(
             self.raw.0,
@@ -2543,7 +2466,7 @@ impl PipeClient {
     /// silently narrows to zero at the `u32` Win32 boundary (exactly
     /// 4 GiB) would have the identical failure. A concurrent SECOND
     /// `read` call from another thread returns
-    /// `Err(PipeError::ConcurrentSubmit)`. `Ok(0)` means the server closed
+    /// `Err(TransportError::ConcurrentSubmit)`. `Ok(0)` means the server closed
     /// its end (ordered EOF) — NEVER a successful zero-byte completion,
     /// which this method silently retries past (this transport's own
     /// `send`/`write_all` never produce one).
@@ -2551,12 +2474,12 @@ impl PipeClient {
     /// `buf` is BORROWED from the caller — see `write_all`'s own doc for
     /// why a [`CompletionUnproven`] result here aborts the process
     /// instead of returning.
-    pub fn read(&self, buf: &mut [u8]) -> Result<usize, PipeError> {
+    pub fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
         if buf.is_empty() {
-            return Err(PipeError::EmptyPayload);
+            return Err(TransportError::EmptyPayload);
         }
         if buf.len() > u32::MAX as usize {
-            return Err(PipeError::PayloadTooLarge(buf.len()));
+            return Err(TransportError::PayloadTooLarge(buf.len()));
         }
         loop {
             let result = self.read_slot.submit_and_wait(
@@ -2593,7 +2516,7 @@ impl PipeClient {
 
     /// Cancel whatever is currently in flight on EITHER direction, from
     /// any thread — safe to call concurrently with `read`/`write_all` on
-    /// another thread. A cancelled call returns `Err(PipeError::Cancelled)`,
+    /// another thread. A cancelled call returns `Err(TransportError::Cancelled)`,
     /// distinct from an ordered EOF, an ordinary I/O error, or
     /// `ConcurrentSubmit`.
     pub fn cancel(&self) {
@@ -2602,17 +2525,21 @@ impl PipeClient {
     }
 }
 
-/// ADR 0041 step 6, unit U0: the voyage pipe is one of the (currently
-/// one, eventually two) pipe families the same-connection challenge must
-/// serve — see `challenge.rs`'s own doc for why that module depends on
-/// this trait rather than on `PipeClient` by name.
-impl crate::challenge::ChallengeableConnection for PipeClient {
-    fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
-        PipeClient::write_all(self, bytes).map_err(pipe_error_to_io)
+/// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
+/// client implements — `write_all`/`read`/`cancel` already have this
+/// exact signature (modulo the error type, unified by decision 17), so
+/// this is pure delegation. The blanket `impl<C: Client>
+/// ChallengeableConnection for C` in `crate::client` is what makes
+/// `PipeClient` challengeable now — the hand-written façade this impl
+/// used to be (`pipe_error_to_io`, its own `TransportError -> io::Error`
+/// mapping) is gone; `crate::client`'s ONE mapping replaces it.
+impl Client for PipeClient {
+    fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
+        PipeClient::write_all(self, bytes)
     }
 
-    fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
-        PipeClient::read(self, buf).map_err(pipe_error_to_io)
+    fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
+        PipeClient::read(self, buf)
     }
 
     fn cancel(&self) {
@@ -2629,39 +2556,86 @@ impl crate::challenge_win::PipeChallengeable for PipeClient {
     }
 }
 
-/// Map a [`PipeError`] to a plain `io::Error` for the `challenge`
-/// module's trait boundary, which depends on neither pipe family's own
-/// error type by name. `Io` unwraps to its underlying `std::io::Error`
-/// (preserving `ErrorKind` — e.g. a disconnect code); everything else
-/// (`Cancelled`, the misuse variants) wraps opaquely — none of them
-/// distinguishes further at the challenge's own three-way
-/// Proven/Foreign/Undetermined split, which only ever asks "did this
-/// fail," never which failure.
-fn pipe_error_to_io(e: PipeError) -> std::io::Error {
-    match e {
-        PipeError::Io { source, .. } => source,
-        other => std::io::Error::other(other),
+/// L1-unix LU3a (ADR 0043 decision 19): the Windows `Endpoint` — a unit
+/// struct (the concrete pipe/socket family is the type itself, not a
+/// value any instance carries) delegating straight to the free functions
+/// this module already exposes.
+pub struct PipeEndpoint;
+
+impl Endpoint for PipeEndpoint {
+    type Client = PipeClient;
+    type Process = crate::challenge_win::ChallengedProcess;
+
+    fn connect_voyage_unchallenged(voyage_id: &str) -> Result<Self::Client, TransportError> {
+        connect_voyage_pipe_unchallenged(voyage_id)
+    }
+
+    fn connect_supervisor_unchallenged(h: &str) -> Result<Self::Client, TransportError> {
+        connect_supervisor_pipe_unchallenged(h)
+    }
+
+    fn challenge(
+        conn: &Self::Client,
+        exchange: &mut dyn crate::exchange::IdentityExchange,
+        reply_deadline: Instant,
+    ) -> crate::challenge::ChallengeOutcome<Self::Process> {
+        crate::challenge_win::challenge(conn, exchange, reply_deadline)
+    }
+
+    fn authenticate_server(conn: &Self::Client) -> crate::challenge::PeerAuthOutcome {
+        crate::challenge_win::authenticate_server(conn)
+    }
+}
+
+/// L1-unix LU3a (ADR 0043 decision 19): `PipeServer`'s own `LaneServer`
+/// seam — pure delegation to the inherent methods above, which already
+/// have these exact signatures (modulo the error type, unified by
+/// decision 17). Every existing consumer keeps calling the concrete
+/// `PipeServer` methods directly; nothing is generic yet (LU3c).
+impl LaneServer for PipeServer {
+    fn bind_supervisor(h: &str, max_connections: u32) -> Result<Self, TransportError> {
+        PipeServer::bind_supervisor(h, max_connections)
+    }
+
+    fn events(&self) -> &std::sync::mpsc::Receiver<LaneEvent> {
+        PipeServer::events(self)
+    }
+
+    fn send(&self, conn: ConnId, bytes: Vec<u8>, marker: Option<u64>) -> Result<(), TransportError> {
+        PipeServer::send(self, conn, bytes, marker)
+    }
+
+    fn close(&self, conn: ConnId) {
+        PipeServer::close(self, conn)
+    }
+
+    fn disconnect_listener(&mut self) {
+        PipeServer::disconnect_listener(self)
+    }
+
+    fn join_workers(&mut self, deadline: Instant) -> bool {
+        PipeServer::join_workers(self, deadline)
     }
 }
 
 /// Shared client-side error mapping: `ERROR_OPERATION_ABORTED` becomes
-/// [`PipeError::Cancelled`]; the [`ConcurrentSubmitMarker`] becomes
-/// [`PipeError::ConcurrentSubmit`]; everything else is an ordinary I/O
+/// [`TransportError::Cancelled`]; the [`ConcurrentSubmitMarker`] becomes
+/// [`TransportError::ConcurrentSubmit`]; everything else is an ordinary I/O
 /// failure.
-fn map_client_io_error(op: &'static str) -> impl Fn(std::io::Error) -> PipeError {
+fn map_client_io_error(op: &'static str) -> impl Fn(std::io::Error) -> TransportError {
     move |e| {
         if is_concurrent_submit(&e) {
-            PipeError::ConcurrentSubmit
+            TransportError::ConcurrentSubmit
         } else if e.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) {
-            PipeError::Cancelled
+            TransportError::Cancelled
         } else {
-            PipeError::Io { op, source: e }
+            TransportError::Io { op, source: e }
         }
     }
 }
 
 /// U1a Codex round-1, minor cluster: a constructor-level failure-mapping
-/// test for `connect_voyage_pipe`'s own `map_sid_auth_outcome`, proving
+/// test for `connect_voyage_pipe`'s own `map_peer_auth_outcome`, proving
 /// the mapping code the constructor actually runs -- not `challenge`/
 /// `authenticate_server` directly, and not through a live pipe (a genuine
 /// OS-level Foreign/Undetermined through a real connection needs either a
@@ -2670,32 +2644,32 @@ fn map_client_io_error(op: &'static str) -> impl Fn(std::io::Error) -> PipeError
 /// undetermined_when_step_one_itself_fails` in the integration test for
 /// the OS-call-failure case proven against a real, deliberately invalid
 /// handle instead). Lives here (not in `tests/pipe_win.rs`) because
-/// `map_sid_auth_outcome` is a private implementation detail with no
+/// `map_peer_auth_outcome` is a private implementation detail with no
 /// reason to be `pub` merely for testability, and a pure mapping over
-/// already-constructed `SidAuthOutcome` values needs no real pipe --
+/// already-constructed `PeerAuthOutcome` values needs no real pipe --
 /// exactly the kind of test this crate's OTHER pure-logic modules
 /// (`attach_proto`, `wire`, `exchange`) already keep inline.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::challenge::{SidAuthOutcome, SidAuthenticated};
+    use crate::challenge::{PeerAuthOutcome, PeerAuthenticated};
 
     #[test]
-    fn map_sid_auth_outcome_authenticated_is_ok() {
-        let outcome = SidAuthOutcome::Authenticated(SidAuthenticated { pid: 4242, created: 7 });
-        assert!(map_sid_auth_outcome(outcome).is_ok());
+    fn map_peer_auth_outcome_authenticated_is_ok() {
+        let outcome = PeerAuthOutcome::Authenticated(PeerAuthenticated { pid: 4242, created: 7 });
+        assert!(map_peer_auth_outcome(outcome).is_ok());
     }
 
     #[test]
-    fn map_sid_auth_outcome_foreign_is_the_typed_pipe_error() {
-        assert!(matches!(map_sid_auth_outcome(SidAuthOutcome::Foreign), Err(PipeError::Foreign)));
+    fn map_peer_auth_outcome_foreign_is_the_typed_transport_error() {
+        assert!(matches!(map_peer_auth_outcome(PeerAuthOutcome::Foreign), Err(TransportError::Foreign)));
     }
 
     #[test]
-    fn map_sid_auth_outcome_undetermined_is_the_typed_pipe_error() {
+    fn map_peer_auth_outcome_undetermined_is_the_typed_transport_error() {
         assert!(matches!(
-            map_sid_auth_outcome(SidAuthOutcome::Undetermined),
-            Err(PipeError::Undetermined)
+            map_peer_auth_outcome(PeerAuthOutcome::Undetermined),
+            Err(TransportError::Undetermined)
         ));
     }
 

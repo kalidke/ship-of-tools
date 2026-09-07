@@ -191,12 +191,12 @@ use crate::challenge_win::{self, ChallengedProcess};
 use crate::classify::{self, ProbeOutcome};
 use crate::fsutil;
 use crate::journal;
-use crate::pipe_win::{self, ConnId, PipeServer, TransportEvent};
+use crate::pipe_win::{self, ConnId, PipeServer};
 use crate::pointer::{self, PointerState};
 use crate::probe_win::RealProbeOps;
 use crate::recovery::{self, LatestLegState};
 use crate::segment::RetentionClass;
-use crate::transport::CONNECT_BOUND;
+use crate::transport::{LaneEvent, CONNECT_BOUND};
 use crate::verify;
 use crate::voyage::VoyageStore;
 use crate::wire::{
@@ -795,7 +795,7 @@ fn read_one_frame(conn: &pipe_win::PipeClient, deadline: Instant) -> crate::Resu
 fn end_run_over_mgmt_lane(voyage_id: &str, reason: &str) -> crate::Result<EndRunOutcome> {
     let conn = match pipe_win::connect_voyage_pipe_unchallenged(voyage_id) {
         Ok(c) => c,
-        Err(pipe_win::PipeError::Io { source, .. })
+        Err(crate::transport::TransportError::Io { source, .. })
             if source.kind() == std::io::ErrorKind::NotFound =>
         {
             return Ok(EndRunOutcome::Absent);
@@ -861,7 +861,7 @@ enum WriterLiveness {
 fn probe_writer_liveness(state_dir: &Path, voyage_id: &str) -> WriterLiveness {
     let conn = match pipe_win::connect_voyage_pipe_unchallenged(voyage_id) {
         Ok(c) => c,
-        Err(pipe_win::PipeError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+        Err(crate::transport::TransportError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
             let root = voyage_root_path(state_dir, voyage_id);
             return match fsutil::lock_writer(&root.join("writer.lock")) {
                 Ok(lock) => {
@@ -1900,7 +1900,7 @@ fn force_terminal(lifecycle: &mut Lifecycle, detail: String) {
 
 /// A refusal (or `stop`) reply queued as a connection's LAST word waits
 /// through TWO stages before actually closing: first for
-/// `TransportEvent::Sent` (the write has physically completed) or a
+/// `LaneEvent::Sent` (the write has physically completed) or a
 /// bounded deadline if it never arrives, THEN an additional flush-grace
 /// window so the client's own `read()` has a real chance to drain the
 /// bytes before this end tears the connection down.
@@ -1930,7 +1930,7 @@ struct LaneCtx<'a> {
 }
 
 /// Services the lane's event queue once. Returns `true` iff the accept
-/// loop has died PERMANENTLY (`TransportEvent::AcceptError` — the
+/// loop has died PERMANENTLY (`LaneEvent::AcceptError` — the
 /// transport's own doc: "stopped accepting new connections FOR GOOD"),
 /// which the caller treats as terminal.
 fn service_lane(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, ctx: &mut LaneCtx, now: Instant) -> bool {
@@ -1946,19 +1946,19 @@ fn service_lane(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, ctx: &mut 
     for _ in 0..LANE_EVENT_QUOTA {
         let Ok(event) = lane.events().try_recv() else { break };
         match event {
-            TransportEvent::Accepted(id) => {
+            LaneEvent::Accepted(id) => {
                 conns.insert(
                     id,
                     Conn { splitter: wire::FrameSplitter::new(), hello_ok: false, last_activity: now, pending_close: None },
                 );
             }
-            TransportEvent::Bytes(id, bytes) => {
+            LaneEvent::Bytes(id, bytes) => {
                 handle_lane_bytes(lane, conns, id, &bytes, ctx, now);
             }
-            TransportEvent::Closed(id, _reason) => {
+            LaneEvent::Closed(id, _reason) => {
                 conns.remove(&id);
             }
-            TransportEvent::Sent(id, _marker) => {
+            LaneEvent::Sent(id, _marker) => {
                 // N4/M3 (Codex review round 3): a `stop` reply is
                 // tracked through this SAME per-connection mechanism,
                 // not a second bespoke one — see `CommandEffect::Stop`'s
@@ -1971,7 +1971,7 @@ fn service_lane(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, ctx: &mut 
                     }
                 }
             }
-            TransportEvent::AcceptError(e) => {
+            LaneEvent::AcceptError(e) => {
                 eprintln!("sot-capsule supervise: supervisor lane accept loop failed permanently: {e}");
                 accept_loop_dead = true;
             }

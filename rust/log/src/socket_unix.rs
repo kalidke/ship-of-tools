@@ -133,9 +133,17 @@
 
 #![cfg(unix)]
 
+use crate::client::Client;
+// `Endpoint`'s only implementor here (`SocketEndpoint`) is Linux-only
+// (`challenge_unix` is Linux-only) -- a plain, unconditional `use` would
+// warn "unused import" on a non-Linux Unix build (macOS CI), the same
+// device this crate already uses for `deadline.rs`/`exchange_identity`.
+#[cfg(target_os = "linux")]
+use crate::client::Endpoint;
 use crate::transport::{
-    join_within, OutboundBudget, StartGate, BYTES_ABANDON_AFTER, CONNECT_BOUND,
-    EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
+    join_within, ClosedReason, LaneEvent, LaneServer, OutboundBudget, StartGate, TransportError,
+    BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL, READ_BUF_LEN,
+    TEARDOWN_AGGREGATE_DEADLINE,
 };
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -181,105 +189,16 @@ fn max_sun_path_bytes() -> usize {
 pub type ConnId = u64;
 
 /// An opaque, caller-assigned correlation tag for one
-/// [`SocketServer::send`] call, echoed back on [`TransportEvent::Sent`]
+/// [`SocketServer::send`] call, echoed back on [`LaneEvent::Sent`]
 /// when the OS reports that send's `write` has PHYSICALLY completed.
 pub type SendMarker = u64;
 
-/// Why a connection ended, reported once per connection on
-/// [`TransportEvent::Closed`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ClosedReason {
-    /// The peer disconnected (or this side observed a broken/reset/
-    /// unconnected stream) — detected by the connection's own reader
-    /// loop, or (rarely) its writer.
-    Eof,
-    /// [`SocketServer::close`] tore this connection down.
-    Closed,
-    /// An I/O error other than a recognized disconnect ended a
-    /// connection's reader or writer loop, or its `Bytes` delivery was
-    /// abandoned — always paired with this guaranteed notification,
-    /// never a silent stream gap.
-    Error(String),
-}
-
-/// This transport's event surface to its consumer. Delivered over
-/// [`SocketServer::events`] in the order this module observed them; the
-/// consumer feeds `Bytes` payloads to its own [`crate::wire::FrameSplitter`]
-/// per connection. Field-for-field identical to `pipe_win::TransportEvent`
-/// so [`crate::socket_transport`]'s own `translate()` is the same five-arm
-/// map as `pipe_transport`'s.
-#[derive(Debug)]
-pub enum TransportEvent {
-    /// A new connection accepted; `send`/`close` may now target it.
-    Accepted(ConnId),
-    /// Raw bytes read from a connection, in the order read. Never empty.
-    Bytes(ConnId, Vec<u8>),
-    /// The `write` for a marker-tagged [`SocketServer::send`] call has
-    /// physically completed.
-    Sent(ConnId, SendMarker),
-    /// The connection ended; no further events for this `ConnId` follow.
-    Closed(ConnId, ClosedReason),
-    /// The accept loop hit a persistent, unrecoverable resource failure
-    /// and has stopped accepting new connections FOR GOOD — existing
-    /// connections are unaffected.
-    AcceptError(String),
-}
-
-/// Errors this transport's own API surface can report synchronously, at
-/// the call site. Background-thread failures surface as
-/// [`TransportEvent::Closed`]/[`TransportEvent::AcceptError`] instead.
-#[derive(Debug, thiserror::Error)]
-pub enum SocketError {
-    #[error("invalid voyage id {0:?}: must be the canonical lowercase-hyphenated form of an RFC 4122 UUID")]
-    InvalidVoyageId(String),
-    #[error("max_connections must be between 1 and 255")]
-    InvalidMaxConnections,
-    #[error("socket path {0:?} exceeds sun_path's {limit}-byte limit", limit = max_sun_path_bytes())]
-    PathTooLong(PathBuf),
-    #[error("resolving the runtime dir: {0}")]
-    RuntimeDir(std::io::Error),
-    #[error("{op}: {source}")]
-    Io {
-        op: &'static str,
-        source: std::io::Error,
-    },
-    #[error("unknown or already-closed connection {0}")]
-    UnknownConnection(ConnId),
-    #[error("outbound budget exhausted for connection {0}")]
-    QueueFull(ConnId),
-    #[error("empty payload: this wire never carries a zero-length send")]
-    EmptyPayload,
-    #[error("payload of {0} bytes exceeds what a single write/read call can represent")]
-    PayloadTooLarge(usize),
-    /// LU1c: a client-side blocking call was cancelled from another
-    /// thread — [`SocketClient::cancel`].
-    #[error("operation cancelled")]
-    Cancelled,
-    /// LU1c: a second same-direction client call (e.g. two concurrent
-    /// `read`s) was rejected before it ever touched the OS.
-    #[error("another operation is already pending on this client's same direction")]
-    ConcurrentSubmit,
-    /// LU1c: `connect_voyage_socket`'s own peer-identity authentication
-    /// (`challenge_unix::authenticate_server`, ADR 0043 decision 8's
-    /// steps 1-3 — NOT the full five-step `challenge()`) answered with a
-    /// WELL-FORMED WRONG proof — a different account's process is behind
-    /// this socket. A loud, typed failure: never retried as if the peer
-    /// might still turn out legitimate. Mirrors `PipeError::Foreign`.
-    #[error("connect_voyage_socket: the peer failed same-user authentication (a different account's process is behind this socket)")]
-    Foreign,
-    /// LU1c: peer-identity authentication could not be completed at all
-    /// — an OS-call failure anywhere in `challenge_unix`'s steps 1-3.
-    /// Never silently treated as either authenticated or foreign. Mirrors
-    /// `PipeError::Undetermined`.
-    #[error("connect_voyage_socket: peer authentication could not be completed (peer identity undetermined)")]
-    Undetermined,
-    /// LU1c (ADR 0043 decision 8): this Unix target has no kernel-
-    /// provided peer-pid mechanism this crate trusts (`SO_PEERCRED`'s pid
-    /// field and `pidfd_open` are Linux-specific) — `connect_voyage_socket`
-    /// fails closed here rather than skip authentication silently.
-    #[error("{0}")]
-    Unsupported(&'static str),
-}
+// `ClosedReason`, `LaneEvent`, and `TransportError` used to be defined
+// here (`SocketError`/this module's own event enums) — L1-unix LU3a (ADR
+// 0043 decisions 17/19) hoisted all three into `crate::transport`, since
+// `pipe_win.rs`'s own copies were byte-for-byte identical in shape and
+// both platforms' servers now produce the SAME event type. Imported
+// below; nothing in this module defines them anymore.
 
 // ---------------------------------------------------------------------
 // Paths (ADR 0043 decision 1).
@@ -290,7 +209,7 @@ pub enum SocketError {
 /// same check [`crate::pipe_win`]'s own `validate_voyage_id` runs,
 /// delegating to the SAME `pointer::canonical_voyage_id` (one
 /// implementation, not two that can drift).
-pub fn voyage_socket_path(voyage_id: &str) -> Result<PathBuf, SocketError> {
+pub fn voyage_socket_path(voyage_id: &str) -> Result<PathBuf, TransportError> {
     validate_voyage_id(voyage_id)?;
     socket_path(&format!("voyage-{voyage_id}"))
 }
@@ -300,23 +219,23 @@ pub fn voyage_socket_path(voyage_id: &str) -> Result<PathBuf, SocketError> {
 /// caller's own stable hash of the canonicalized state-dir path; this
 /// function neither derives nor validates it as a voyage id, unlike
 /// [`voyage_socket_path`] — matching `pipe_win::supervisor_pipe_name_wide`.
-pub fn supervisor_socket_path(h: &str) -> Result<PathBuf, SocketError> {
+pub fn supervisor_socket_path(h: &str) -> Result<PathBuf, TransportError> {
     socket_path(&format!("supervisor-{h}"))
 }
 
-fn validate_voyage_id(voyage_id: &str) -> Result<(), SocketError> {
+fn validate_voyage_id(voyage_id: &str) -> Result<(), TransportError> {
     if crate::pointer::canonical_voyage_id(voyage_id).is_some() {
         Ok(())
     } else {
-        Err(SocketError::InvalidVoyageId(voyage_id.to_string()))
+        Err(TransportError::InvalidVoyageId(voyage_id.to_string()))
     }
 }
 
-fn socket_path(file_name: &str) -> Result<PathBuf, SocketError> {
-    let dir = crate::state_dir::runtime_dir().map_err(SocketError::RuntimeDir)?;
+fn socket_path(file_name: &str) -> Result<PathBuf, TransportError> {
+    let dir = crate::state_dir::runtime_dir().map_err(TransportError::RuntimeDir)?;
     let path = dir.join(format!("{file_name}.sock"));
     if path.as_os_str().as_bytes().len() > max_sun_path_bytes() {
-        return Err(SocketError::PathTooLong(path));
+        return Err(TransportError::PathTooLong(path));
     }
     Ok(path)
 }
@@ -435,7 +354,7 @@ struct ServerShared {
     conns: Mutex<HashMap<ConnId, ConnHandle>>,
     next_id: AtomicU64,
     reaper_tx: SyncSender<ReaperMsg>,
-    events_tx: SyncSender<TransportEvent>,
+    events_tx: SyncSender<LaneEvent>,
     max_connections: u32,
     /// TWO jobs, both won via `compare_exchange` (Codex review finding 1):
     /// (a) the ONE escape for [`send_lifecycle_event`]'s otherwise-
@@ -486,7 +405,7 @@ struct ServerShared {
 /// lock.
 pub struct SocketServer {
     shared: Arc<ServerShared>,
-    events_rx: Receiver<TransportEvent>,
+    events_rx: Receiver<LaneEvent>,
     accept_jh: Option<JoinHandle<()>>,
     reaper_jh: Option<JoinHandle<()>>,
     /// Reader/writer `JoinHandle`s for every connection
@@ -507,7 +426,7 @@ impl std::fmt::Debug for SocketServer {
 impl SocketServer {
     /// Bind `<runtime_dir>/voyage-<voyage_id>.sock` and start accepting.
     /// `max_connections` must be in `1..=255`.
-    pub fn bind(voyage_id: &str, max_connections: u32) -> Result<Self, SocketError> {
+    pub fn bind(voyage_id: &str, max_connections: u32) -> Result<Self, TransportError> {
         let path = voyage_socket_path(voyage_id)?;
         Self::bind_named(path, max_connections)
     }
@@ -515,14 +434,14 @@ impl SocketServer {
     /// The supervisor lane's own socket,
     /// `<runtime_dir>/supervisor-<h>.sock` — otherwise identical to
     /// [`Self::bind`].
-    pub fn bind_supervisor(h: &str, max_connections: u32) -> Result<Self, SocketError> {
+    pub fn bind_supervisor(h: &str, max_connections: u32) -> Result<Self, TransportError> {
         let path = supervisor_socket_path(h)?;
         Self::bind_named(path, max_connections)
     }
 
-    fn bind_named(path: PathBuf, max_connections: u32) -> Result<Self, SocketError> {
+    fn bind_named(path: PathBuf, max_connections: u32) -> Result<Self, TransportError> {
         if !(1..=255).contains(&max_connections) {
-            return Err(SocketError::InvalidMaxConnections);
+            return Err(TransportError::InvalidMaxConnections);
         }
         let dir = path
             .parent()
@@ -538,7 +457,7 @@ impl SocketServer {
         let file_name = path
             .file_name()
             .expect("a socket path built by socket_path() always has a file name");
-        let file_name = CString::new(file_name.as_bytes()).map_err(|_| SocketError::Io {
+        let file_name = CString::new(file_name.as_bytes()).map_err(|_| TransportError::Io {
             op: "CString::new(socket file name)",
             source: io::Error::new(io::ErrorKind::InvalidInput, "socket file name contains a NUL byte"),
         })?;
@@ -562,7 +481,7 @@ impl SocketServer {
         let mut fds: [RawFd; 2] = [-1, -1];
         let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
         if rc != 0 {
-            let err = SocketError::Io {
+            let err = TransportError::Io {
                 op: "pipe(wake)",
                 source: io::Error::last_os_error(),
             };
@@ -575,7 +494,7 @@ impl SocketServer {
         let wake_write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
         for fd in [wake_read.as_raw_fd(), wake_write.as_raw_fd()] {
             if let Err(e) = set_cloexec(fd).and_then(|()| set_nonblocking(fd)) {
-                let err = SocketError::Io {
+                let err = TransportError::Io {
                     op: "fcntl(wake pipe)",
                     source: e,
                 };
@@ -616,7 +535,7 @@ impl SocketServer {
             Ok(jh) => jh,
             Err(e) => {
                 unsafe { libc::unlinkat(shared.dir_fd.as_raw_fd(), shared.file_name.as_ptr(), 0) };
-                return Err(SocketError::Io {
+                return Err(TransportError::Io {
                     op: "spawn reaper thread",
                     source: e,
                 });
@@ -635,7 +554,7 @@ impl SocketServer {
                 let _ = shared.reaper_tx.send(ReaperMsg::Shutdown);
                 reaper_jh.join().ok();
                 unsafe { libc::unlinkat(shared.dir_fd.as_raw_fd(), shared.file_name.as_ptr(), 0) };
-                return Err(SocketError::Io {
+                return Err(TransportError::Io {
                     op: "spawn accept thread",
                     source: e,
                 });
@@ -654,12 +573,12 @@ impl SocketServer {
     /// The event stream: `Accepted`/`Bytes`/`Sent`/`Closed`/`AcceptError`,
     /// in the order this transport observed them. Single-consumer by
     /// convention (a `Receiver` is not `Sync`).
-    pub fn events(&self) -> &Receiver<TransportEvent> {
+    pub fn events(&self) -> &Receiver<LaneEvent> {
         &self.events_rx
     }
 
     /// Queue `bytes` for `conn_id`, tagged with `marker` if the caller
-    /// wants a [`TransportEvent::Sent`] once the OS write physically
+    /// wants a [`LaneEvent::Sent`] once the OS write physically
     /// completes. `bytes` must be non-empty. Non-blocking: a full
     /// outbound budget or an unknown/already-closed connection both
     /// return `Err` immediately — backpressure POLICY belongs to
@@ -669,9 +588,9 @@ impl SocketServer {
         conn_id: ConnId,
         bytes: Vec<u8>,
         marker: Option<SendMarker>,
-    ) -> Result<(), SocketError> {
+    ) -> Result<(), TransportError> {
         if bytes.is_empty() {
-            return Err(SocketError::EmptyPayload);
+            return Err(TransportError::EmptyPayload);
         }
         // Parity with `pipe_win::PipeServer::send`'s own near-unreachable
         // representable-size check -- POSIX `write(2)` has no fixed
@@ -681,19 +600,19 @@ impl SocketServer {
         // silently accepted only to blow the (far smaller)
         // `OUTBOUND_BUDGET_BYTES` check that follows.
         if bytes.len() > isize::MAX as usize {
-            return Err(SocketError::PayloadTooLarge(bytes.len()));
+            return Err(TransportError::PayloadTooLarge(bytes.len()));
         }
         let len = bytes.len();
         let map = self.shared.conns.lock().unwrap();
         let conn = map
             .get(&conn_id)
-            .ok_or(SocketError::UnknownConnection(conn_id))?;
+            .ok_or(TransportError::UnknownConnection(conn_id))?;
         if !conn.outbound.try_reserve(len) {
-            return Err(SocketError::QueueFull(conn_id));
+            return Err(TransportError::QueueFull(conn_id));
         }
         if conn.sender.send(WriteCmd { bytes, marker }).is_err() {
             conn.outbound.release(len);
-            return Err(SocketError::UnknownConnection(conn_id));
+            return Err(TransportError::UnknownConnection(conn_id));
         }
         Ok(())
     }
@@ -701,7 +620,7 @@ impl SocketServer {
     /// Request that `conn_id` be torn down: cancelled (`shutdown(2)`),
     /// both threads joined. Fire-and-forget — this enqueues the request
     /// at most once for the reaper thread; completion is observed as
-    /// [`TransportEvent::Closed`]. A no-op if `conn_id` is already gone or
+    /// [`LaneEvent::Closed`]. A no-op if `conn_id` is already gone or
     /// already has a teardown in flight.
     pub fn close(&self, conn_id: ConnId) {
         let map = self.shared.conns.lock().unwrap();
@@ -804,6 +723,37 @@ impl SocketServer {
     }
 }
 
+/// L1-unix LU3a (ADR 0043 decision 19): `SocketServer`'s own `LaneServer`
+/// seam — pure delegation to the inherent methods above, which already
+/// have these exact signatures (modulo the error type, unified by
+/// decision 17). Every existing consumer keeps calling the concrete
+/// `SocketServer` methods directly; nothing is generic yet (LU3c).
+impl LaneServer for SocketServer {
+    fn bind_supervisor(h: &str, max_connections: u32) -> Result<Self, TransportError> {
+        SocketServer::bind_supervisor(h, max_connections)
+    }
+
+    fn events(&self) -> &std::sync::mpsc::Receiver<LaneEvent> {
+        SocketServer::events(self)
+    }
+
+    fn send(&self, conn: ConnId, bytes: Vec<u8>, marker: Option<u64>) -> Result<(), TransportError> {
+        SocketServer::send(self, conn, bytes, marker)
+    }
+
+    fn close(&self, conn: ConnId) {
+        SocketServer::close(self, conn)
+    }
+
+    fn disconnect_listener(&mut self) {
+        SocketServer::disconnect_listener(self)
+    }
+
+    fn join_workers(&mut self, deadline: Instant) -> bool {
+        SocketServer::join_workers(self, deadline)
+    }
+}
+
 /// TEST-SUPPORT ONLY (`#[cfg(any(test, feature = "test-support"))]`,
 /// matching [`Probes`]'s own gate and `pipe_win.rs`'s identical
 /// convention for its own test-only methods): a way for a test to WAIT on
@@ -863,22 +813,22 @@ impl Drop for SocketServer {
 /// (that function lives in a crate `sot-log` cannot depend on, so this is
 /// a small, deliberate, self-contained duplicate rather than a new
 /// dependency edge).
-fn ensure_private_runtime_dir(dir: &Path) -> Result<(), SocketError> {
+fn ensure_private_runtime_dir(dir: &Path) -> Result<(), TransportError> {
     use std::os::unix::fs::DirBuilderExt;
     match std::fs::symlink_metadata(dir) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => std::fs::DirBuilder::new()
             .mode(0o700)
             .create(dir)
-            .map_err(|e| SocketError::Io {
+            .map_err(|e| TransportError::Io {
                 op: "mkdir(runtime dir)",
                 source: e,
             }),
-        Err(e) => Err(SocketError::Io {
+        Err(e) => Err(TransportError::Io {
             op: "stat(runtime dir)",
             source: e,
         }),
         Ok(_) if crate::state_dir::is_private_dir(dir) => Ok(()),
-        Ok(_) => Err(SocketError::Io {
+        Ok(_) => Err(TransportError::Io {
             op: "verify runtime dir",
             source: io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -902,8 +852,8 @@ fn ensure_private_runtime_dir(dir: &Path) -> Result<(), SocketError> {
 /// in [`create_and_bind_listener`] and [`SocketServer::disconnect_listener`]
 /// is anchored to, so the fd is kept open for the whole server's life
 /// rather than closed once this check passes.
-fn open_verified_dir_fd(dir: &Path) -> Result<OwnedFd, SocketError> {
-    let c_dir = CString::new(dir.as_os_str().as_bytes()).map_err(|_| SocketError::Io {
+fn open_verified_dir_fd(dir: &Path) -> Result<OwnedFd, TransportError> {
+    let c_dir = CString::new(dir.as_os_str().as_bytes()).map_err(|_| TransportError::Io {
         op: "open(runtime dir)",
         source: io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -917,7 +867,7 @@ fn open_verified_dir_fd(dir: &Path) -> Result<OwnedFd, SocketError> {
         )
     };
     if raw < 0 {
-        return Err(SocketError::Io {
+        return Err(TransportError::Io {
             op: "open(runtime dir)",
             source: io::Error::last_os_error(),
         });
@@ -927,7 +877,7 @@ fn open_verified_dir_fd(dir: &Path) -> Result<OwnedFd, SocketError> {
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     let rc = unsafe { libc::fstat(fd.as_raw_fd(), &mut st) };
     if rc != 0 {
-        return Err(SocketError::Io {
+        return Err(TransportError::Io {
             op: "fstat(runtime dir fd)",
             source: io::Error::last_os_error(),
         });
@@ -936,7 +886,7 @@ fn open_verified_dir_fd(dir: &Path) -> Result<OwnedFd, SocketError> {
         || st.st_uid != crate::state_dir::current_uid()
         || st.st_mode & 0o077 != 0
     {
-        return Err(SocketError::Io {
+        return Err(TransportError::Io {
             op: "verify runtime dir fd",
             source: io::Error::other(
                 "the opened runtime dir fd is not a real, owner-only directory owned by this uid",
@@ -971,12 +921,12 @@ fn create_and_bind_listener(
     file_name: &CStr,
     path: &Path,
     max_connections: u32,
-) -> Result<UnixListener, SocketError> {
+) -> Result<UnixListener, TransportError> {
     let rc = unsafe { libc::unlinkat(dir_fd, file_name.as_ptr(), 0) };
     if rc != 0 {
         let err = io::Error::last_os_error();
         if err.kind() != io::ErrorKind::NotFound {
-            return Err(SocketError::Io {
+            return Err(TransportError::Io {
                 op: "unlinkat(stale socket)",
                 source: err,
             });
@@ -989,7 +939,7 @@ fn create_and_bind_listener(
     // portable two-call equivalent, same end state on every target.
     let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
     if raw < 0 {
-        return Err(SocketError::Io {
+        return Err(TransportError::Io {
             op: "socket(AF_UNIX)",
             source: io::Error::last_os_error(),
         });
@@ -997,7 +947,7 @@ fn create_and_bind_listener(
     // SAFETY: `raw` is a freshly created, valid, not-otherwise-owned fd.
     // Wrapped immediately so every early return below closes it.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-    set_cloexec(fd.as_raw_fd()).map_err(|e| SocketError::Io {
+    set_cloexec(fd.as_raw_fd()).map_err(|e| TransportError::Io {
         op: "fcntl(FD_CLOEXEC socket)",
         source: e,
     })?;
@@ -1013,7 +963,7 @@ fn create_and_bind_listener(
     // sites; reasserted here since this function is reachable directly (a
     // future in-crate caller, or a test).
     if path.as_os_str().as_bytes().len() > max_sun_path_bytes() {
-        return Err(SocketError::PathTooLong(path.to_path_buf()));
+        return Err(TransportError::PathTooLong(path.to_path_buf()));
     }
 
     #[cfg(target_os = "linux")]
@@ -1030,7 +980,7 @@ fn create_and_bind_listener(
     // shorter string than `path`'s own and will essentially never trip;
     // on other Unix it's the identical check as above).
     if addr_bytes.len() > max_sun_path_bytes() {
-        return Err(SocketError::PathTooLong(path.to_path_buf()));
+        return Err(TransportError::PathTooLong(path.to_path_buf()));
     }
     // SAFETY: a zeroed `sockaddr_un` is a valid value of that type
     // (all-zero bytes for every field, including a NUL-filled
@@ -1054,7 +1004,7 @@ fn create_and_bind_listener(
         // ADR 0043 decision 2: a real error, never a retry -- the caller
         // holds the endpoint's lifetime lock, so nothing legitimate
         // should ever be racing this bind.
-        return Err(SocketError::Io {
+        return Err(TransportError::Io {
             op: "bind(AF_UNIX)",
             source: io::Error::last_os_error(),
         });
@@ -1089,7 +1039,7 @@ fn create_and_bind_listener(
     // here rather than silently accepted.
     let rc = unsafe { libc::fchmodat(dir_fd, file_name.as_ptr(), 0o600, 0) };
     if rc != 0 {
-        return Err(SocketError::Io {
+        return Err(TransportError::Io {
             op: "fchmodat(socket)",
             source: io::Error::last_os_error(),
         });
@@ -1099,7 +1049,7 @@ fn create_and_bind_listener(
         libc::fstatat(dir_fd, file_name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW)
     };
     if rc != 0 {
-        return Err(SocketError::Io {
+        return Err(TransportError::Io {
             op: "fstatat(socket)",
             source: io::Error::last_os_error(),
         });
@@ -1108,7 +1058,7 @@ fn create_and_bind_listener(
         || st.st_uid != crate::state_dir::current_uid()
         || st.st_mode & 0o777 != 0o600
     {
-        return Err(SocketError::Io {
+        return Err(TransportError::Io {
             op: "verify socket permissions",
             source: io::Error::other(
                 "socket file is not an owner-only (0600) socket special file after fchmodat",
@@ -1118,7 +1068,7 @@ fn create_and_bind_listener(
 
     let rc = unsafe { libc::listen(fd.as_raw_fd(), max_connections as libc::c_int) };
     if rc != 0 {
-        return Err(SocketError::Io {
+        return Err(TransportError::Io {
             op: "listen(AF_UNIX)",
             source: io::Error::last_os_error(),
         });
@@ -1234,7 +1184,7 @@ fn classify_terminal_error(e: io::Error) -> ClosedReason {
 /// exactly one escape — [`ServerShared::dropping`] — once true, nothing
 /// could ever call `events()` again. Identical contract to
 /// `pipe_win::send_lifecycle_event`.
-fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: TransportEvent) {
+fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
     let mut item = evt;
     loop {
         match shared.events_tx.try_send(item) {
@@ -1264,7 +1214,7 @@ fn deliver_bytes(
     bytes: Vec<u8>,
     torn_down_requested: &AtomicBool,
 ) -> bool {
-    let mut item = TransportEvent::Bytes(conn_id, bytes);
+    let mut item = LaneEvent::Bytes(conn_id, bytes);
     let deadline = Instant::now() + BYTES_ABANDON_AFTER;
     loop {
         match shared.events_tx.try_send(item) {
@@ -1308,10 +1258,10 @@ fn request_teardown(
 /// Identical contract to `pipe_win::report_registration_failure`.
 fn report_registration_failure(shared: &Arc<ServerShared>, what: &str, e: impl std::fmt::Display) {
     let conn_id = shared.next_id.fetch_add(1, Ordering::Relaxed);
-    send_lifecycle_event(shared, TransportEvent::Accepted(conn_id));
+    send_lifecycle_event(shared, LaneEvent::Accepted(conn_id));
     send_lifecycle_event(
         shared,
-        TransportEvent::Closed(conn_id, ClosedReason::Error(format!("{what}: {e}"))),
+        LaneEvent::Closed(conn_id, ClosedReason::Error(format!("{what}: {e}"))),
     );
 }
 
@@ -1332,7 +1282,7 @@ fn teardown_if_present(shared: &Arc<ServerShared>, conn_id: ConnId, reason: Opti
     conn.reader_jh.join().ok();
     conn.writer_jh.join().ok();
     if let Some(reason) = reason {
-        send_lifecycle_event(shared, TransportEvent::Closed(conn_id, reason));
+        send_lifecycle_event(shared, LaneEvent::Closed(conn_id, reason));
     }
 }
 
@@ -1453,7 +1403,7 @@ fn accept_loop(shared: Arc<ServerShared>, listener: UnixListener, wake_read: Own
 /// silently losing the very `AcceptError` this function emits).
 fn terminalize_accept_loop(shared: &Arc<ServerShared>, message: String) {
     shared.accept_stopping.store(true, Ordering::Release);
-    send_lifecycle_event(shared, TransportEvent::AcceptError(message));
+    send_lifecycle_event(shared, LaneEvent::AcceptError(message));
 }
 
 /// Hand off a just-accepted stream: spawn its reader/writer threads
@@ -1571,7 +1521,7 @@ fn handle_new_connection(shared: &Arc<ServerShared>, stream: UnixStream) {
     // RELIABLE, not best-effort: retries until the consumer actually has
     // room, so the gate below can never open onto a connection the
     // consumer was never told exists.
-    send_lifecycle_event(shared, TransportEvent::Accepted(conn_id));
+    send_lifecycle_event(shared, LaneEvent::Accepted(conn_id));
     gate.open(); // ONLY now may the reader/writer threads touch the stream.
 }
 
@@ -1657,7 +1607,7 @@ fn writer_loop(
         match result {
             Ok(()) => {
                 if let Some(marker) = cmd.marker {
-                    send_lifecycle_event(&shared, TransportEvent::Sent(conn_id, marker));
+                    send_lifecycle_event(&shared, LaneEvent::Sent(conn_id, marker));
                 }
             }
             Err(e) => {
@@ -1747,7 +1697,7 @@ impl SocketClient {
     /// Blocking write of the whole buffer, cancellable from another
     /// thread via [`cancel`](Self::cancel). `bytes` must be non-empty. A
     /// concurrent SECOND `write_all` call from another thread returns
-    /// `Err(SocketError::ConcurrentSubmit)` rather than racing this one's
+    /// `Err(TransportError::ConcurrentSubmit)` rather than racing this one's
     /// own partial-progress loop (property 34's sibling — decided BEFORE
     /// touching the OS). ADR 0043 decisions 5/7: completes on success, an
     /// error may follow partial delivery (the byte-stream-prefix property
@@ -1761,11 +1711,11 @@ impl SocketClient {
     /// call sees `Cancelled` (property 34), while THIS call still returns
     /// its own ORIGINAL error, never `Cancelled` — the caller that
     /// actually observed the failure gets to know what it was.
-    pub fn write_all(&self, bytes: &[u8]) -> Result<(), SocketError> {
+    pub fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
         let _guard = self
             .write_slot
             .try_lock()
-            .map_err(|_| SocketError::ConcurrentSubmit)?;
+            .map_err(|_| TransportError::ConcurrentSubmit)?;
         // TEST-SUPPORT ONLY (review round 2): a PASSIVE record that this
         // call has genuinely entered its critical section -- set once
         // the slot lock has already succeeded, so observing it costs a
@@ -1774,10 +1724,10 @@ impl SocketClient {
         #[cfg(any(test, feature = "test-support"))]
         self.write_slot_entered.store(true, Ordering::SeqCst);
         if bytes.is_empty() {
-            return Err(SocketError::EmptyPayload);
+            return Err(TransportError::EmptyPayload);
         }
         if self.cancelled.load(Ordering::SeqCst) {
-            return Err(SocketError::Cancelled);
+            return Err(TransportError::Cancelled);
         }
         let mut remaining = bytes;
         while !remaining.is_empty() {
@@ -1786,7 +1736,7 @@ impl SocketClient {
             // two partial writes is observed here, not only via the
             // error branch below.
             if self.cancelled.load(Ordering::SeqCst) {
-                return Err(SocketError::Cancelled);
+                return Err(TransportError::Cancelled);
             }
             match (&self.stream).write(remaining) {
                 Ok(0) => {
@@ -1794,7 +1744,7 @@ impl SocketClient {
                     // non-empty buffer -- a terminal failure, latching
                     // the connection exactly like the `Err` branch below.
                     self.cancel();
-                    return Err(SocketError::Io {
+                    return Err(TransportError::Io {
                         op: "write",
                         source: io::Error::new(
                             io::ErrorKind::WriteZero,
@@ -1812,7 +1762,7 @@ impl SocketClient {
                         // failure is simply what a `shutdown(2)` under it
                         // looks like, never surfaced as an ordinary I/O
                         // error once cancellation is already in play.
-                        return Err(SocketError::Cancelled);
+                        return Err(TransportError::Cancelled);
                     }
                     // A genuinely terminal write failure THIS call
                     // discovered (not a racing external cancel): latch
@@ -1821,7 +1771,7 @@ impl SocketClient {
                     // error here -- this caller earned the real
                     // diagnostic, not a generic `Cancelled`.
                     self.cancel();
-                    return Err(SocketError::Io { op: "write", source: e });
+                    return Err(TransportError::Io { op: "write", source: e });
                 }
             }
         }
@@ -1831,33 +1781,33 @@ impl SocketClient {
     /// Blocking read into `buf`, cancellable from another thread via
     /// [`cancel`](Self::cancel). `buf` must be non-empty. A concurrent
     /// SECOND `read` call from another thread returns
-    /// `Err(SocketError::ConcurrentSubmit)`. `Ok(0)` is ordered EOF
+    /// `Err(TransportError::ConcurrentSubmit)`. `Ok(0)` is ordered EOF
     /// (property 13) — UNLESS the cancelled flag is set, in which case a
     /// zero-length or error result is `Cancelled` instead, checked both
     /// BEFORE and AFTER the call (ADR 0043 decision 5): a genuinely
     /// delivered nonzero read is returned as-is even after a cancel —
     /// "queued input may still be returned after a cancel" — only the
     /// EOF/error tail end of a cancelled connection is reclassified.
-    pub fn read(&self, buf: &mut [u8]) -> Result<usize, SocketError> {
+    pub fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
         let _guard = self
             .read_slot
             .try_lock()
-            .map_err(|_| SocketError::ConcurrentSubmit)?;
+            .map_err(|_| TransportError::ConcurrentSubmit)?;
         // TEST-SUPPORT ONLY (review round 2): see `write_all`'s own
         // identical comment on its write twin.
         #[cfg(any(test, feature = "test-support"))]
         self.read_slot_entered.store(true, Ordering::SeqCst);
         if buf.is_empty() {
-            return Err(SocketError::EmptyPayload);
+            return Err(TransportError::EmptyPayload);
         }
         loop {
             if self.cancelled.load(Ordering::SeqCst) {
-                return Err(SocketError::Cancelled);
+                return Err(TransportError::Cancelled);
             }
             match (&self.stream).read(buf) {
                 Ok(0) => {
                     return if self.cancelled.load(Ordering::SeqCst) {
-                        Err(SocketError::Cancelled)
+                        Err(TransportError::Cancelled)
                     } else {
                         Ok(0)
                     };
@@ -1866,9 +1816,9 @@ impl SocketClient {
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
                     return if self.cancelled.load(Ordering::SeqCst) {
-                        Err(SocketError::Cancelled)
+                        Err(TransportError::Cancelled)
                     } else {
-                        Err(SocketError::Io { op: "read", source: e })
+                        Err(TransportError::Io { op: "read", source: e })
                     };
                 }
             }
@@ -1935,17 +1885,21 @@ impl SocketClient {
     }
 }
 
-/// ADR 0041 step 6, unit U0: the voyage socket is one of the pipe/socket
-/// families the same-connection challenge must serve — see `challenge.rs`'s
-/// own doc for why that module depends on this trait rather than on
-/// `SocketClient` by name.
-impl crate::challenge::ChallengeableConnection for SocketClient {
-    fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
-        SocketClient::write_all(self, bytes).map_err(socket_error_to_io)
+/// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
+/// client implements — `write_all`/`read`/`cancel` already have this
+/// exact signature (modulo the error type, unified by decision 17), so
+/// this is pure delegation. The blanket `impl<C: Client>
+/// ChallengeableConnection for C` in `crate::client` is what makes
+/// `SocketClient` challengeable now — the hand-written façade this impl
+/// used to be (`socket_error_to_io`, its own `TransportError -> io::Error`
+/// mapping) is gone; `crate::client`'s ONE mapping replaces it.
+impl Client for SocketClient {
+    fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
+        SocketClient::write_all(self, bytes)
     }
 
-    fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
-        SocketClient::read(self, buf).map_err(socket_error_to_io)
+    fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
+        SocketClient::read(self, buf)
     }
 
     fn cancel(&self) {
@@ -1968,19 +1922,39 @@ impl crate::challenge_unix::SocketChallengeable for SocketClient {
     }
 }
 
-/// Map a [`SocketError`] to a plain `io::Error` for the `challenge`
-/// module's trait boundary, which depends on neither pipe/socket family's
-/// own error type by name — the exact same mapping
-/// `pipe_win::pipe_error_to_io` uses: `Io` unwraps to its underlying
-/// `std::io::Error` (preserving `ErrorKind`); everything else, `Cancelled`
-/// included, wraps opaquely. `exchange_identity`'s own
-/// `map_err(|_| Undetermined)` discards the specific `ErrorKind` either
-/// way, so this needs no finer distinction than `pipe_win`'s own version
-/// already gets away with.
-fn socket_error_to_io(e: SocketError) -> std::io::Error {
-    match e {
-        SocketError::Io { source, .. } => source,
-        other => std::io::Error::other(other),
+/// L1-unix LU3a (ADR 0043 decision 19): the Linux `Endpoint` — a unit
+/// struct (the concrete pipe/socket family is the type itself, not a
+/// value any instance carries) delegating straight to the free functions
+/// this module already exposes. Linux-only: `challenge_unix` (and
+/// therefore `Self::Process`) is Linux-only (ADR 0043 decision 8) — other
+/// Unix has no `Endpoint` implementor for this transport at all, matching
+/// `connect_voyage_socket`'s own Linux-only body.
+#[cfg(target_os = "linux")]
+pub struct SocketEndpoint;
+
+#[cfg(target_os = "linux")]
+impl Endpoint for SocketEndpoint {
+    type Client = SocketClient;
+    type Process = crate::challenge_unix::ChallengedProcess;
+
+    fn connect_voyage_unchallenged(voyage_id: &str) -> Result<Self::Client, TransportError> {
+        connect_voyage_socket_unchallenged(voyage_id)
+    }
+
+    fn connect_supervisor_unchallenged(h: &str) -> Result<Self::Client, TransportError> {
+        connect_supervisor_socket_unchallenged(h)
+    }
+
+    fn challenge(
+        conn: &Self::Client,
+        exchange: &mut dyn crate::exchange::IdentityExchange,
+        reply_deadline: Instant,
+    ) -> crate::challenge::ChallengeOutcome<Self::Process> {
+        crate::challenge_unix::challenge(conn, exchange, reply_deadline)
+    }
+
+    fn authenticate_server(conn: &Self::Client) -> crate::challenge::PeerAuthOutcome {
+        crate::challenge_unix::authenticate_server(conn)
     }
 }
 
@@ -2203,7 +2177,7 @@ fn capture_connect_anchor_boot_ticks() -> u64 {
 /// that attempt, and proven by a later one (or by the caller's own
 /// outer retry, once this whole call returns `Undetermined` up through
 /// `authenticate_server`/`challenge`).
-fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, SocketError> {
+fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, TransportError> {
     let addr_bytes = path.as_os_str().as_bytes();
     let deadline = Instant::now() + CONNECT_BOUND;
     loop {
@@ -2223,14 +2197,14 @@ fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, SocketE
                 });
             }
             Err(ConnectAttempt::Fatal(e)) => {
-                return Err(SocketError::Io {
+                return Err(TransportError::Io {
                     op: "connect",
                     source: e,
                 });
             }
             Err(ConnectAttempt::Retryable(e)) => {
                 if Instant::now() >= deadline {
-                    return Err(SocketError::Io {
+                    return Err(TransportError::Io {
                         op: "connect(bounded retry)",
                         source: e,
                     });
@@ -2253,7 +2227,7 @@ fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, SocketE
 /// the same "hoisted but not yet called on this cfg" device this crate
 /// already uses for `deadline.rs`/`exchange_identity`.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<SocketClient, SocketError> {
+pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<SocketClient, TransportError> {
     let path = voyage_socket_path(voyage_id)?;
     connect_unix_socket_unchallenged(&path)
 }
@@ -2270,7 +2244,7 @@ pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<Sock
 /// and `exchange_identity` (both `#[cfg_attr(not(windows), allow(dead_code))]`
 /// for the identical reason, one lane early).
 #[allow(dead_code)]
-pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketClient, SocketError> {
+pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketClient, TransportError> {
     let path = supervisor_socket_path(h)?;
     connect_unix_socket_unchallenged(&path)
 }
@@ -2285,12 +2259,12 @@ pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketCl
 /// only — NOT the full five-step `challenge()`, which additionally binds
 /// a reply's own pid/creation and needs a lane-specific request this
 /// layer must not consume) before returning `Ok(_)`. A failed
-/// authentication is a loud, typed [`SocketError::Foreign`] or
-/// [`SocketError::Undetermined`] — never a silent retry.
+/// authentication is a loud, typed [`TransportError::Foreign`] or
+/// [`TransportError::Undetermined`] — never a silent retry.
 #[cfg(target_os = "linux")]
-pub fn connect_voyage_socket(voyage_id: &str) -> Result<SocketClient, SocketError> {
+pub fn connect_voyage_socket(voyage_id: &str) -> Result<SocketClient, TransportError> {
     let client = connect_voyage_socket_unchallenged(voyage_id)?;
-    map_sid_auth_outcome(crate::challenge_unix::authenticate_server(&client))?;
+    map_peer_auth_outcome(crate::challenge_unix::authenticate_server(&client))?;
     Ok(client)
 }
 
@@ -2302,22 +2276,22 @@ pub fn connect_voyage_socket(voyage_id: &str) -> Result<SocketClient, SocketErro
 /// the Linux implementation above, so no caller needs its own
 /// `cfg(target_os = "linux")` split merely to reach this function.
 #[cfg(all(unix, not(target_os = "linux")))]
-pub fn connect_voyage_socket(_voyage_id: &str) -> Result<SocketClient, SocketError> {
-    Err(SocketError::Unsupported(
+pub fn connect_voyage_socket(_voyage_id: &str) -> Result<SocketClient, TransportError> {
+    Err(TransportError::Unsupported(
         "connect_voyage_socket: peer identity authentication (SO_PEERCRED/pidfd) is implemented \
          for Linux only; this Unix target fails closed (ADR 0043 decision 8)",
     ))
 }
 
-/// Maps [`crate::challenge::SidAuthOutcome`] to this module's own
+/// Maps [`crate::challenge::PeerAuthOutcome`] to this module's own
 /// `Result` — the exact logic [`connect_voyage_socket`] runs, pulled out
 /// so it is directly unit-testable without a live socket, mirroring
-/// `pipe_win::map_sid_auth_outcome`'s own reasoning.
+/// `pipe_win::map_peer_auth_outcome`'s own reasoning.
 #[cfg(target_os = "linux")]
-fn map_sid_auth_outcome(outcome: crate::challenge::SidAuthOutcome) -> Result<(), SocketError> {
+fn map_peer_auth_outcome(outcome: crate::challenge::PeerAuthOutcome) -> Result<(), TransportError> {
     match outcome {
-        crate::challenge::SidAuthOutcome::Authenticated(_) => Ok(()),
-        crate::challenge::SidAuthOutcome::Foreign => Err(SocketError::Foreign),
-        crate::challenge::SidAuthOutcome::Undetermined => Err(SocketError::Undetermined),
+        crate::challenge::PeerAuthOutcome::Authenticated(_) => Ok(()),
+        crate::challenge::PeerAuthOutcome::Foreign => Err(TransportError::Foreign),
+        crate::challenge::PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined),
     }
 }

@@ -13,7 +13,7 @@
 //! aliases, each independently allocated by its own module (`pipe_win`'s
 //! accept loop hands out its own sequence; `attach_proto` never allocates
 //! one at all — it only ever learns of a `ConnId` through a
-//! `TransportEvent::ConnectionOpened` this module produces). Since
+//! `transport::TransportEvent::ConnectionOpened` this module produces). Since
 //! `PipeServer` already guarantees its own ids are globally unique and
 //! stable for the connection's whole life, this bridge reuses THAT id
 //! verbatim as the capsule's `ConnId` — no translation table, because
@@ -59,7 +59,7 @@
 //!
 //! # `AcceptError` maps to `TransportEvent::TransportFatal`
 //!
-//! `pipe_win::TransportEvent::AcceptError` means no future connection can
+//! `crate::transport::LaneEvent::AcceptError` means no future connection can
 //! ever be accepted while this capsule holds the pipe's name — an
 //! unreachable-forever session if `run` just kept going regardless
 //! (round-2 e2e review, finding 4). This bridge translates it to
@@ -103,8 +103,8 @@
 
 #![cfg(windows)]
 
-use crate::pipe_win::{ConnId, PipeServer, TransportEvent as PipeEvent};
-use crate::transport::{Transport, TransportEvent as CapsuleEvent};
+use crate::pipe_win::{ConnId, PipeServer};
+use crate::transport::{LaneEvent, Transport, TransportEvent as CapsuleEvent};
 use crate::Result;
 use std::collections::HashSet;
 use std::time::Instant;
@@ -149,7 +149,7 @@ impl Transport for PipeTransport {
 
     fn try_recv_event(&mut self) -> Option<CapsuleEvent> {
         let evt = self.server.as_ref()?.events().try_recv().ok()?;
-        if let PipeEvent::Closed(conn, _reason) = &evt {
+        if let LaneEvent::Closed(conn, _reason) = &evt {
             self.closing.remove(conn);
         }
         Some(translate(evt))
@@ -215,12 +215,12 @@ impl Transport for PipeTransport {
 /// a home on the capsule side now; see the module doc's `AcceptError`
 /// section for the one variant that maps to something other than a
 /// per-connection event).
-fn translate(evt: PipeEvent) -> CapsuleEvent {
+fn translate(evt: LaneEvent) -> CapsuleEvent {
     match evt {
-        PipeEvent::Accepted(conn) => CapsuleEvent::ConnectionOpened(conn),
-        PipeEvent::Bytes(conn, bytes) => CapsuleEvent::Bytes(conn, bytes),
-        PipeEvent::Sent(conn, marker) => CapsuleEvent::Sent(conn, marker),
-        PipeEvent::Closed(conn, _reason) => CapsuleEvent::ConnectionClosed(conn),
-        PipeEvent::AcceptError(message) => CapsuleEvent::TransportFatal(message),
+        LaneEvent::Accepted(conn) => CapsuleEvent::ConnectionOpened(conn),
+        LaneEvent::Bytes(conn, bytes) => CapsuleEvent::Bytes(conn, bytes),
+        LaneEvent::Sent(conn, marker) => CapsuleEvent::Sent(conn, marker),
+        LaneEvent::Closed(conn, _reason) => CapsuleEvent::ConnectionClosed(conn),
+        LaneEvent::AcceptError(message) => CapsuleEvent::TransportFatal(message),
     }
 }

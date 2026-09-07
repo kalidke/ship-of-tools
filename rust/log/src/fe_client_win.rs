@@ -82,7 +82,7 @@
 //!   failure (finding 13) is a visible terminal error here, never a
 //!   silent "attached".
 
-use crate::challenge::{ChallengeOutcome, SidAuthOutcome};
+use crate::challenge::{ChallengeOutcome, PeerAuthOutcome};
 use crate::challenge_win::{self, ChallengedProcess};
 use crate::exchange::{SupervisorLaneExchange, VoyageMgmtExchange, SUPERVISOR_LANE_BUILD_ID};
 use crate::fe_client::{
@@ -218,9 +218,9 @@ pub(crate) fn write_bounded(conn: &PipeClient, bytes: &[u8], deadline: Instant) 
     }
 }
 
-pub(crate) fn pipe_err_to_io(e: pipe_win::PipeError) -> std::io::Error {
+pub(crate) fn pipe_err_to_io(e: crate::transport::TransportError) -> std::io::Error {
     match e {
-        pipe_win::PipeError::Io { source, .. } => source,
+        crate::transport::TransportError::Io { source, .. } => source,
         other => std::io::Error::other(other.to_string()),
     }
 }
@@ -1039,12 +1039,12 @@ fn run_worker(
             }
         };
         let attach_identity = match challenge_win::authenticate_server(&voyage_conn) {
-            SidAuthOutcome::Authenticated(a) => (a.pid, a.created),
-            SidAuthOutcome::Foreign => {
+            PeerAuthOutcome::Authenticated(a) => (a.pid, a.created),
+            PeerAuthOutcome::Foreign => {
                 emit(ClientEvent::Terminal("voyage pipe: foreign".to_string()));
                 return;
             }
-            SidAuthOutcome::Undetermined => {
+            PeerAuthOutcome::Undetermined => {
                 match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
                     WaitOutcome::Shutdown => break 'episodes,
                     WaitOutcome::Continue => continue 'episodes,

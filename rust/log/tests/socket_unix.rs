@@ -35,14 +35,11 @@
 
 #[cfg(target_os = "linux")]
 use sot_log::socket_unix::connect_voyage_socket;
-use sot_log::socket_unix::{
-    voyage_socket_path, ClosedReason, ConnId, SocketClient, SocketError, SocketServer,
-    TransportEvent,
-};
+use sot_log::socket_unix::{voyage_socket_path, ConnId, SocketClient, SocketServer};
 use sot_log::state_dir::current_uid;
 #[cfg(target_os = "linux")]
 use sot_log::transport::CONNECT_BOUND;
-use sot_log::transport::TEARDOWN_AGGREGATE_DEADLINE;
+use sot_log::transport::{ClosedReason, LaneEvent, TransportError, TEARDOWN_AGGREGATE_DEADLINE};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(target_os = "linux")]
@@ -136,7 +133,7 @@ fn isolated_runtime_dir() -> RuntimeDirGuard {
 }
 
 /// Bounded wait for the next transport event.
-fn next_event(server: &SocketServer, timeout: Duration) -> TransportEvent {
+fn next_event(server: &SocketServer, timeout: Duration) -> LaneEvent {
     server
         .events()
         .recv_timeout(timeout)
@@ -145,14 +142,14 @@ fn next_event(server: &SocketServer, timeout: Duration) -> TransportEvent {
 
 fn expect_accepted(server: &SocketServer, timeout: Duration) -> ConnId {
     match next_event(server, timeout) {
-        TransportEvent::Accepted(id) => id,
+        LaneEvent::Accepted(id) => id,
         other => panic!("expected Accepted, got {other:?}"),
     }
 }
 
 fn expect_closed(server: &SocketServer, conn_id: ConnId, timeout: Duration) -> ClosedReason {
     match next_event(server, timeout) {
-        TransportEvent::Closed(id, reason) => {
+        LaneEvent::Closed(id, reason) => {
             assert_eq!(id, conn_id, "Closed for the wrong connection");
             reason
         }
@@ -179,7 +176,7 @@ fn accumulate_bytes(
             out.len()
         );
         match next_event(server, remaining) {
-            TransportEvent::Bytes(cid, bytes) => {
+            LaneEvent::Bytes(cid, bytes) => {
                 assert_eq!(cid, conn_id, "Bytes for the wrong connection");
                 out.extend(bytes);
             }
@@ -293,7 +290,7 @@ fn server_and_client_exchange_bytes_and_sent_carries_marker() {
     assert_eq!(buf, inbound);
 
     match next_event(&server, TIMEOUT) {
-        TransportEvent::Sent(cid, marker) => {
+        LaneEvent::Sent(cid, marker) => {
             assert_eq!(cid, conn_id);
             assert_eq!(marker, 42);
         }
@@ -331,8 +328,8 @@ fn two_concurrent_clients_multiplexed_by_conn_id() {
         let remaining = deadline.saturating_duration_since(Instant::now());
         assert!(!remaining.is_zero(), "timed out: a={a_got:?} b={b_got:?}");
         match next_event(&server, remaining) {
-            TransportEvent::Bytes(cid, bytes) if cid == conn_a => a_got.extend(bytes),
-            TransportEvent::Bytes(cid, bytes) if cid == conn_b => b_got.extend(bytes),
+            LaneEvent::Bytes(cid, bytes) if cid == conn_a => a_got.extend(bytes),
+            LaneEvent::Bytes(cid, bytes) if cid == conn_b => b_got.extend(bytes),
             other => panic!("unexpected event: {other:?}"),
         }
     }
@@ -404,7 +401,7 @@ fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
     for _ in 0..128 {
         match server.send(stalled_conn, payload.clone(), None) {
             Ok(()) => {}
-            Err(SocketError::QueueFull(cid)) => {
+            Err(TransportError::QueueFull(cid)) => {
                 assert_eq!(cid, stalled_conn);
                 saw_full = true;
                 break;
@@ -502,7 +499,7 @@ fn flooded_never_reading_client_close_completes_within_bound() {
     for _ in 0..128 {
         match server.send(conn_id, payload.clone(), None) {
             Ok(()) => {}
-            Err(SocketError::QueueFull(cid)) => {
+            Err(TransportError::QueueFull(cid)) => {
                 assert_eq!(cid, conn_id);
                 saw_full = true;
                 break;
@@ -612,12 +609,12 @@ fn invalid_voyage_ids_and_max_connections_are_rejected_loudly() {
     for bad in bad_ids {
         let err = SocketServer::bind(bad, 1).unwrap_err();
         assert!(
-            matches!(err, SocketError::InvalidVoyageId(_)),
+            matches!(err, TransportError::InvalidVoyageId(_)),
             "id {bad:?}: got {err}"
         );
         let path_err = voyage_socket_path(bad).unwrap_err();
         assert!(
-            matches!(path_err, SocketError::InvalidVoyageId(_)),
+            matches!(path_err, TransportError::InvalidVoyageId(_)),
             "id {bad:?}: got {path_err}"
         );
     }
@@ -625,11 +622,11 @@ fn invalid_voyage_ids_and_max_connections_are_rejected_loudly() {
     let id = fresh_voyage_id();
     assert!(matches!(
         SocketServer::bind(&id, 0).unwrap_err(),
-        SocketError::InvalidMaxConnections
+        TransportError::InvalidMaxConnections
     ));
     assert!(matches!(
         SocketServer::bind(&id, 256).unwrap_err(),
-        SocketError::InvalidMaxConnections
+        TransportError::InvalidMaxConnections
     ));
 }
 
@@ -712,7 +709,7 @@ fn eof_before_registration_smoke_test_accepts_either_honest_outcome() {
     drop(client); // no synchronization -- this IS the race under test
 
     match server.events().recv_timeout(Duration::from_secs(2)) {
-        Ok(TransportEvent::Accepted(conn_id)) => {
+        Ok(LaneEvent::Accepted(conn_id)) => {
             assert_eq!(expect_closed(&server, conn_id, TIMEOUT), ClosedReason::Eof);
         }
         Err(_timed_out) => {
@@ -813,7 +810,7 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
     // reader gave up (nothing more is ever sent for it afterward), so in
     // FIFO delivery order Closed is the true tail, not merely "observed
     // at some point".
-    let mut last: Option<TransportEvent> = None;
+    let mut last: Option<LaneEvent> = None;
     let deadline = Instant::now() + TIMEOUT;
     while Instant::now() < deadline {
         match server.events().recv_timeout(Duration::from_secs(1)) {
@@ -822,7 +819,7 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
         }
     }
     match last {
-        Some(TransportEvent::Closed(cid, ClosedReason::Error(msg))) => {
+        Some(LaneEvent::Closed(cid, ClosedReason::Error(msg))) => {
             assert_eq!(cid, conn_id, "Closed for the wrong connection");
             assert!(
                 msg.contains("abandoned"),
@@ -978,7 +975,7 @@ fn capacity_excess_connection_is_closed_immediately() {
 // ---------------------------------------------------------------------
 
 /// A `SocketClient::read` blocked on one thread is unblocked by
-/// `cancel()` called from another, returning `SocketError::Cancelled`.
+/// `cancel()` called from another, returning `TransportError::Cancelled`.
 #[test]
 fn client_read_cancel_unblocks_from_another_thread() {
     if !run_isolated("client_read_cancel_unblocks_from_another_thread") {
@@ -1005,7 +1002,7 @@ fn client_read_cancel_unblocks_from_another_thread() {
 
     let result = reader.join().unwrap();
     assert!(
-        matches!(result, Err(SocketError::Cancelled)),
+        matches!(result, Err(TransportError::Cancelled)),
         "expected Cancelled, got {result:?}"
     );
 
@@ -1050,7 +1047,7 @@ fn client_write_cancel_unblocks_from_another_thread() {
 
     let result = writer.join().unwrap();
     assert!(
-        matches!(result, SocketError::Cancelled),
+        matches!(result, TransportError::Cancelled),
         "expected Cancelled, got {result:?}"
     );
 
@@ -1058,7 +1055,7 @@ fn client_write_cancel_unblocks_from_another_thread() {
 }
 
 /// A SECOND concurrent same-direction `SocketClient::read` returns
-/// `SocketError::ConcurrentSubmit` rather than racing the first caller.
+/// `TransportError::ConcurrentSubmit` rather than racing the first caller.
 #[test]
 fn concurrent_same_direction_client_read_returns_distinct_error() {
     if !run_isolated("concurrent_same_direction_client_read_returns_distinct_error") {
@@ -1097,14 +1094,14 @@ fn concurrent_same_direction_client_read_returns_distinct_error() {
     let mut buf_b = [0u8; 16];
     let result_b = client.read(&mut buf_b);
     assert!(
-        matches!(result_b, Err(SocketError::ConcurrentSubmit)),
+        matches!(result_b, Err(TransportError::ConcurrentSubmit)),
         "expected ConcurrentSubmit, got {result_b:?}"
     );
 
     client.cancel();
     let result_a = reader_a.join().unwrap();
     assert!(
-        matches!(result_a, Err(SocketError::Cancelled)),
+        matches!(result_a, Err(TransportError::Cancelled)),
         "expected Cancelled, got {result_a:?}"
     );
 
@@ -1130,17 +1127,17 @@ fn cancelled_client_rejects_later_submissions() {
 
     let mut buf = [0u8; 16];
     assert!(
-        matches!(client.read(&mut buf), Err(SocketError::Cancelled)),
+        matches!(client.read(&mut buf), Err(TransportError::Cancelled)),
         "a cancelled client must permanently reject a later read"
     );
     assert!(
-        matches!(client.write_all(b"x"), Err(SocketError::Cancelled)),
+        matches!(client.write_all(b"x"), Err(TransportError::Cancelled)),
         "a cancelled client must permanently reject a later write"
     );
 
     // Idempotent: cancelling again must not panic or change the outcome.
     client.cancel();
-    assert!(matches!(client.read(&mut buf), Err(SocketError::Cancelled)));
+    assert!(matches!(client.read(&mut buf), Err(TransportError::Cancelled)));
 
     drop(server);
 }
@@ -1181,7 +1178,7 @@ fn a_terminal_write_failure_latches_the_connection_closed() {
     // delivery, not an instantly-severed connection) -- then sever the
     // connection out from under the still-in-flight write.
     match next_event(&server, TIMEOUT) {
-        TransportEvent::Bytes(cid, bytes) => {
+        LaneEvent::Bytes(cid, bytes) => {
             assert_eq!(cid, conn_id, "Bytes for the wrong connection");
             assert!(!bytes.is_empty());
         }
@@ -1191,18 +1188,18 @@ fn a_terminal_write_failure_latches_the_connection_closed() {
 
     let result = writer.join().unwrap();
     assert!(
-        matches!(result, Err(SocketError::Io { .. })),
+        matches!(result, Err(TransportError::Io { .. })),
         "expected the terminal write failure to surface as its OWN Io error \
          (never Cancelled -- nobody called cancel()), got {result:?}"
     );
 
     let mut buf = [0u8; 16];
     assert!(
-        matches!(client.read(&mut buf), Err(SocketError::Cancelled)),
+        matches!(client.read(&mut buf), Err(TransportError::Cancelled)),
         "a client whose write already failed terminally must reject a later read"
     );
     assert!(
-        matches!(client.write_all(b"x"), Err(SocketError::Cancelled)),
+        matches!(client.write_all(b"x"), Err(TransportError::Cancelled)),
         "a client whose write already failed terminally must reject a later write"
     );
 
@@ -1229,7 +1226,7 @@ fn connect_retries_within_the_bound_then_fails_when_nothing_listens() {
     let elapsed = started.elapsed();
 
     assert!(
-        matches!(err, SocketError::Io { op, .. } if op.contains("connect")),
+        matches!(err, TransportError::Io { op, .. } if op.contains("connect")),
         "expected a connect-family error, got {err}"
     );
     assert!(
@@ -1269,7 +1266,7 @@ fn connect_refused_by_a_stale_socket_file_retries_then_fails() {
     let elapsed = started.elapsed();
 
     assert!(
-        matches!(err, SocketError::Io { op, .. } if op.contains("connect")),
+        matches!(err, TransportError::Io { op, .. } if op.contains("connect")),
         "expected a connect-family error, got {err}"
     );
     assert!(
