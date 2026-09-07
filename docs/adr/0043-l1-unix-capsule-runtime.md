@@ -299,14 +299,19 @@ and sealing — is platform-neutral and moves unchanged.
     `kind()` on the trait: `producer_kind` stays a config string the caller sets.
 12. **EOF before close stays fatal, on every platform, with no knob.** ConPTY keeps its
     output handle open regardless of the child, so a pre-close EOF is an anomaly the
-    Windows loop treats as capsule-fatal; a Unix pty master returns EIO precisely when
-    the child dies. Rather than a trait constant that flips fatal into normal — a state
-    serving no invariant — the Unix producer's output reader HOLDS the EIO/EOF (flag +
-    condvar) until `close_output_side` runs, so the contract "the output side reports
-    EOF only after the loop closed it" is universal. The child's death is still noticed
-    within one main-loop window by `wait(ZERO)`; teardown then runs Phase A (terminate
-    the domain, reap) and Phase B (close, which releases the held EOF; drain) exactly as
-    on Windows. `close_output_side` closes no fd on Unix: the slave was dropped at spawn.
+    Windows loop treats as capsule-fatal. A Unix pty master returns EIO when NO slave is
+    open — which is not "the child died": a producer that closes its stdio and reopens
+    its tty produces a transient EIO mid-run (the LU2b review sealed a verified record with
+    zero producer frames this way). So the Unix producer does not interpret EIO at all: the
+    capsule itself HOLDS ONE slave descriptor (never read or written) from `spawn` until
+    `close_output_side`, which drops it. While the capsule holds a slave the master never
+    sees EIO; when the loop drops it the master reports EOF exactly then — "the output
+    side reports EOF only after the loop closed it" holds by construction, and a reader
+    stranded by an early return is freed by the same drop. The child's death is still
+    noticed within one main-loop window by `wait(ZERO)`; teardown then runs Phase A
+    (terminate the domain) and Phase B (close, then drain) exactly as on Windows. (An
+    earlier draft held the EIO behind a flag-and-condvar gate; it lost post-reopen output
+    and could strand the reader — replaced 2026-09-07.)
 13. **`ExitStatus` is `Code(u32) | Signal(i32)`.** Windows always yields `Code` and keeps
     the unsigned DWORD end-to-end (a high-bit NTSTATUS is never sign-flipped; that test
     stays). Unix yields `Code` for a normal exit and `Signal` for a signal death, which
@@ -316,13 +321,25 @@ and sealing — is platform-neutral and moves unchanged.
     `detail` as free-form today (`verify.rs`; `julia/sotlog` reads neither), and a golden
     fixture for a Unix signal death lands with LU2b. `producer_spawn.detail.
     spawning_process_was_jobbed` becomes Windows-only (absent on Unix).
-14. **The Unix kill domain is the process group.** `spawn` keeps `capsule.rs`'s
-    `pre_exec` verbatim (`setsid`, `TIOCSCTTY`, `dup2`, `close_range`) and adds
-    `PR_SET_PDEATHSIG(SIGKILL)` so a hard-killed capsule never orphans its producer;
-    `terminate_domain` is `killpg(pid, SIGKILL)` (`ESRCH` is success); `domain_is_empty`
-    is "the child is reaped (`try_wait`) and `killpg(pid, 0)` says `ESRCH`". A grandchild
-    that changes its process group escapes the domain — the same documented carve-out as
-    ConPTY's broker. `openpty` takes the geometry; `resize` is `TIOCSWINSZ`.
+14. **The Unix kill domain is the process group, and the leader is reaped LAST.** `spawn`
+    keeps `capsule.rs`'s `pre_exec` (`setsid`, `TIOCSCTTY`, `dup2`, `close_range`) and
+    arms `PR_SET_PDEATHSIG(SIGKILL)` FIRST, then checks `getppid()` against the parent
+    recorded before the fork and exits if the parent already died — the arm-then-verify
+    order closes the fork-to-arm window (the death signal fires on the death of the
+    spawning thread, which is the loop's). Exit is OBSERVED, not reaped: `wait` polls
+    `waitid(WEXITED | WNOHANG | WNOWAIT)` and caches `si_code`/`si_status`, so the exit
+    status is answered without freeing the pid; the leader (alive or zombie) therefore
+    pins the process-group id through `terminate_domain` (`killpg(pgid, SIGKILL)`;
+    `ESRCH` is success) and `domain_is_empty`, which on Linux is "no `/proc` entry in our
+    pgid is in a live (non-`Z`/`X`) state" — zombie descendants are dead and are their
+    reaper's business, matching ConPTY's active-process count; other Unixes fall back
+    to `killpg(pgid, 0) == ESRCH`. The leader is reaped exactly once, in `Drop`, after a
+    final `killpg(SIGKILL)` whether or not it already exited, so an early return kills
+    survivors and never signals a recycled group. A grandchild that changes its process
+    group escapes the domain — the same documented carve-out as ConPTY's broker.
+    `openpty` takes the geometry; `resize` is `TIOCSWINSZ`. (An earlier draft reaped via
+    `try_wait` before `killpg` and skipped the kill when the leader had exited — replaced
+    2026-09-07 after the LU2b review.)
 15. **The parent-death lease becomes an inherited pipe.** Three properties survive from
     the Windows named mutex: the signal is the kernel's, produced by supervisor death by
     ANY means; the capsule observes it with one non-blocking check at one exact point
