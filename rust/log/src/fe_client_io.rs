@@ -575,6 +575,15 @@ pub struct FeAttachClient<E: Endpoint = PlatformEndpoint> {
     quit_message: Option<String>,
     should_exit: bool,
     dead: bool,
+    /// LU6a: `true` once the `Checkpoint` arm of `pump` has applied a
+    /// checkpoint to `parser` (set right after `restore_screen`,
+    /// regardless of whether that restore itself succeeded — the
+    /// checkpoint EVENT still landed either way, and there is only ever
+    /// one per attach episode). The caller (`gpu.rs`'s session pane) uses
+    /// this to know when it may stop holding the pane's previous content
+    /// and paint this client's own screen instead — see
+    /// `pane_screen_choice` there.
+    checkpointed: bool,
     /// Codex review round, finding 7: the SHARED half of the byte-account
     /// (the episode reader thread, spawned inside the worker, holds the
     /// other `Arc` clone and increments this on every `Output`/
@@ -663,6 +672,7 @@ impl<E: Endpoint> FeAttachClient<E> {
             quit_message: None,
             should_exit: false,
             dead: false,
+            checkpointed: false,
             queued_bytes,
             pending_fe_down_markers: VecDeque::new(),
         })
@@ -706,6 +716,11 @@ impl<E: Endpoint> FeAttachClient<E> {
                         let (rows, cols) = self.pane_size;
                         self.parser.screen_mut().set_size(rows, cols);
                     }
+                    // LU6a: right after `restore_screen`, success or not —
+                    // see `checkpointed`'s own doc for why a failed restore
+                    // still counts (the checkpoint EVENT landed either way,
+                    // and there is only ever one per episode).
+                    self.checkpointed = true;
                     changed = true;
                 }
                 Ok(ClientEvent::Output(bytes)) => {
@@ -822,6 +837,12 @@ impl<E: Endpoint> FeAttachClient<E> {
     /// notice rather than a blank pane.
     pub fn is_dead(&mut self) -> bool {
         self.dead
+    }
+
+    /// LU6a: `true` once `pump`'s `Checkpoint` arm has applied a
+    /// checkpoint to this client's screen — see `checkpointed`'s own doc.
+    pub fn is_checkpointed(&self) -> bool {
+        self.checkpointed
     }
 
     /// Ruling (a): the ONE quit dispatcher. Idempotent — a second call
@@ -2007,11 +2028,16 @@ fn handle_attach_frame<E: Endpoint>(
 }
 
 // -----------------------------------------------------------------------
-// Pure-logic unit tests. The rest of this module's behavior needs a real
+// Pure-logic unit tests. Most of this module's behavior needs a real
 // supervisor + capsule process to attach to (`tests/fe_client.rs`'s own
 // real-process harness -- L1-unix LU3c ungated it to run on Linux too,
-// against a real socket lane, exactly like Windows); these two pieces are pure
+// against a real socket lane, exactly like Windows); these pieces are pure
 // enough to test directly on every platform this module now compiles on.
+// LU6a's `checkpointed` test is the one exception: it builds an
+// `FeAttachClient` by hand (a private-field struct literal, legal from
+// this child module) rather than a real worker thread, so it can drive
+// `pump` -- the SAME path a real worker's events go through -- with a
+// synthetic `ClientEvent::Checkpoint` and no process/network dependency.
 // -----------------------------------------------------------------------
 
 #[cfg(test)]
@@ -2042,5 +2068,46 @@ mod tests {
     fn checkpoint_transfer_budget_is_a_real_bound() {
         assert!(CHECKPOINT_TRANSFER_BUDGET >= STATUS_BUDGET);
         assert!(CHECKPOINT_TRANSFER_BUDGET <= Duration::from_secs(300));
+    }
+
+    /// LU6a: a fresh client reports `is_checkpointed() == false`, and
+    /// `true` once a `Checkpoint` event has gone through `pump` -- the
+    /// SAME arm a real worker's checkpoint event drains through. Built by
+    /// hand rather than via `attach` (which spawns a real worker thread
+    /// and needs a real state dir/lane): this module's own child-module
+    /// privacy lets the struct literal reach every private field, and
+    /// `pump` neither knows nor cares whether `events_tx` belongs to a
+    /// worker thread or a test.
+    #[test]
+    fn checkpoint_event_marks_the_client_checkpointed() {
+        let (events_tx, events_rx) = mpsc::channel();
+        let (msg_tx, _msg_rx) = mpsc::channel();
+        let mut client = FeAttachClient::<PlatformEndpoint> {
+            _endpoint: PhantomData,
+            parser: vt100_ctt::Parser::new(24, 80, 100),
+            pane_size: (24, 80),
+            msg_tx,
+            events_rx,
+            status: "connecting\u{2026}".to_string(),
+            notice: None,
+            quit_message: None,
+            should_exit: false,
+            dead: false,
+            checkpointed: false,
+            queued_bytes: Arc::new(AtomicUsize::new(0)),
+            pending_fe_down_markers: VecDeque::new(),
+        };
+        assert!(!client.is_checkpointed(), "a fresh client must not report checkpointed");
+
+        let bytes = vt100_ctt::Parser::new(24, 80, 100)
+            .screen()
+            .checkpoint()
+            .expect("encode a checkpoint of a fresh, in-range screen");
+        events_tx.send(ClientEvent::Checkpoint(bytes)).expect("send a synthetic checkpoint event");
+        client.pump();
+        assert!(
+            client.is_checkpointed(),
+            "pump()'s Checkpoint arm must mark the client checkpointed"
+        );
     }
 }

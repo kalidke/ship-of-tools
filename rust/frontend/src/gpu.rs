@@ -2818,6 +2818,93 @@ enum PaneFeed {
     Pending,
 }
 
+/// LU6a: the pane's last-known screen content, captured the instant a
+/// departing feed (capsule client or tmux) is dropped for an incoming
+/// switch — held until the new attach client's checkpoint lands, so the
+/// pane never repaints an empty parser mid-switch (see
+/// `attach_session_to_bl`'s capture sites and `pane_screen_choice`'s own
+/// doc). An owned clone is the smallest shape that works: both
+/// `pane_attach_term`'s and `pty_terminal`'s `.screen()` already return
+/// `&vt100::Screen`, so holding one is just keeping a copy of whichever
+/// was live a moment ago — no timers, no diffing.
+#[cfg(windows)]
+struct HeldPaneScreen(vt100::Screen);
+
+#[cfg(windows)]
+impl HeldPaneScreen {
+    fn screen(&self) -> &vt100::Screen {
+        &self.0
+    }
+}
+
+/// LU6a: which source paints the session pane — pulled out of the draw
+/// site (`pty_screen`, just above the checkpoint-restore doc) as a pure
+/// function so the branches are unit-tested without a live `State`.
+/// `#[allow(dead_code)]`: like `PaneFeed::Capsule` above, this type and
+/// `pane_screen_choice` are exercised by every platform's tests but have
+/// their only PRODUCTION call site behind `#[cfg(windows)]` — capsule has
+/// nothing to attach to off Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum PaneScreen {
+    /// The capsule attach client's own parser screen.
+    Client,
+    /// `pane_hold`'s captured screen — the pane's last content, held
+    /// until the new attach client's checkpoint lands.
+    Hold,
+    /// `pty_terminal`'s screen — the tmux emulator, today's default.
+    Tmux,
+}
+
+/// LU6a: a capsule switch must not paint the new client's freshly
+/// constructed, still-empty parser before its checkpoint lands (the
+/// visible clear this lane fixes) — so a live, not-yet-checkpointed
+/// client, or a `Pending` feed (it isn't even known yet whether a client
+/// is coming), defers to whatever the pane held from before. Falls back
+/// to today's behavior only once there is nothing held (a first-ever
+/// attach, or a hold already cleared): the client's own screen while one
+/// exists, `pty_terminal` while none does — exactly what the old
+/// unconditional `pane_attach_term.map(...).unwrap_or_else(...)` drew.
+///
+/// Coordinator amendment: a client that reaches a TERMINAL failure
+/// (`is_dead`) before it EVER checkpointed is a dead end, not a stall —
+/// neither a hold (the departed row's screen) nor the dead client's own
+/// (blank) screen is right to keep showing, so this falls all the way
+/// through to `pty_terminal` instead, same as no client existing at all.
+/// A client that checkpointed and only later died keeps painting its own
+/// (now-frozen, but real) last content — the `checkpointed` branch above
+/// still wins regardless of `is_dead`.
+///
+/// `has_client`/`checkpointed`/`is_dead`/`has_hold` mirror
+/// `pane_attach_term.is_some()`/`FeAttachClient::is_checkpointed`/
+/// `FeAttachClient::is_dead`/`pane_hold.is_some()`. `#[allow(dead_code)]`:
+/// see `PaneScreen`'s own doc — the only production caller is
+/// `#[cfg(windows)]`.
+#[allow(dead_code)]
+fn pane_screen_choice(
+    has_client: bool,
+    checkpointed: bool,
+    is_dead: bool,
+    feed: PaneFeed,
+    has_hold: bool,
+) -> PaneScreen {
+    if has_client && checkpointed {
+        PaneScreen::Client
+    } else if has_client && is_dead {
+        PaneScreen::Tmux
+    } else if has_client || feed == PaneFeed::Pending {
+        if has_hold {
+            PaneScreen::Hold
+        } else if has_client {
+            PaneScreen::Client
+        } else {
+            PaneScreen::Tmux
+        }
+    } else {
+        PaneScreen::Tmux
+    }
+}
+
 /// ADR 0042 slice L1b fix 2: how many bytes of an incoming chunk fit in
 /// `queue_pane_pending_input`'s buffer, given it already holds
 /// `buffered_len` bytes and the whole buffer is capped at `cap` — pulled
@@ -4007,6 +4094,55 @@ struct State {
     /// selected row is a tmux workspace.
     #[cfg(windows)]
     pane_attach_term: Option<sot_log::fe_client_io::FeAttachClient>,
+    /// LU6a: the pane's last content, held across a capsule switch until
+    /// the new client's checkpoint lands — see `HeldPaneScreen`'s own doc
+    /// and `pane_screen_choice`. Captured by `attach_session_to_bl` when
+    /// dropping the departing feed; cleared the first time the new
+    /// client reports checkpointed, when the feed resolves to tmux
+    /// (`PtyOpened`), when the attach itself fails
+    /// (`spawn_pane_attach_term` returning false), or — coordinator
+    /// amendment — when the client goes terminal (`is_dead`) before it
+    /// EVER checkpointed (`pump_pane_attach_term`, alongside the episode-
+    /// failure warn line): a dead end is not a stall, and must not keep
+    /// showing the departed row's screen forever. Never left to outlive
+    /// the switch it belongs to.
+    #[cfg(windows)]
+    pane_hold: Option<HeldPaneScreen>,
+    /// LU6a design-review amendment: when the SWITCH or CREATE that led
+    /// to the live `pane_attach_term` was REQUESTED — the one frontend
+    /// clock the attach-outcome log lines (`pump_pane_attach_term`)
+    /// report `since_request_ms` against (the acceptance metric: total
+    /// user-perceived latency, not merely "since the client object was
+    /// constructed"). Stamped at `attach_session_to_bl`'s entry for an
+    /// ordinary switch; for a workspace CREATE, inherited from
+    /// `pending_capsule_create_requested_at` instead, so the daemon round
+    /// trip to actually create the workspace counts too. `None` before
+    /// the very first switch.
+    #[cfg(windows)]
+    pane_attach_requested_at: Option<std::time::Instant>,
+    /// LU6a design-review amendment: stamped by `commit_workspace_create`
+    /// the moment `workspace.create` is SENT, and consumed (taken) by the
+    /// `attach_session_to_bl` that `switch_to_workspace` always calls once
+    /// the `WorkspaceCreated` reply lands — the handoff that makes a
+    /// create's `since_request_ms` start at the create request rather
+    /// than at the later switch. `None` whenever no create is in flight.
+    #[cfg(windows)]
+    pending_capsule_create_requested_at: Option<std::time::Instant>,
+    /// LU6a: when `spawn_pane_attach_term` last installed the live
+    /// `pane_attach_term` — a SECOND, narrower clock the attach-outcome
+    /// log lines report as `since_client_ms` (how long the client itself
+    /// has been running), alongside `since_request_ms` above. `None`
+    /// before the very first spawn.
+    #[cfg(windows)]
+    pane_attach_started_at: Option<std::time::Instant>,
+    /// LU6a: how many non-success status changes `pump_pane_attach_term`
+    /// has observed from the CURRENT `pane_attach_term` since it was
+    /// installed — the "episode count" its warn-level attach-outcome log
+    /// line reports (the observability gap this lane closes: the FE
+    /// otherwise only ever logged "attaching"). Reset to 0 on every new
+    /// spawn.
+    #[cfg(windows)]
+    pane_attach_episode_warnings: u32,
     /// ADR 0042 slice L1b fix 2: which backend the session pane's
     /// input/resize/scroll route to right now — see `PaneFeed`'s own
     /// doc for why this can't just be derived from
@@ -5465,6 +5601,16 @@ impl State {
             attach_term: None,
             #[cfg(windows)]
             pane_attach_term: None,
+            #[cfg(windows)]
+            pane_hold: None,
+            #[cfg(windows)]
+            pane_attach_requested_at: None,
+            #[cfg(windows)]
+            pending_capsule_create_requested_at: None,
+            #[cfg(windows)]
+            pane_attach_started_at: None,
+            #[cfg(windows)]
+            pane_attach_episode_warnings: 0,
             pane_feed: PaneFeed::Tmux,
             pane_pending_input: Vec::new(),
             #[cfg(windows)]
@@ -8418,6 +8564,18 @@ impl State {
             self.status = "create failed · channel closed".to_string();
             return;
         }
+        // LU6a design-review amendment: the "since request" clock the
+        // eventual capsule attach's log lines report starts HERE for a
+        // create — the daemon round trip to actually create the
+        // workspace is part of the user-perceived latency, not just the
+        // attach that follows once `WorkspaceCreated` lands.
+        // `attach_session_to_bl` (always reached via `switch_to_workspace`
+        // from that reply) takes this, not merely reads it, so a stale
+        // value can't leak into a later, unrelated switch.
+        #[cfg(windows)]
+        {
+            self.pending_capsule_create_requested_at = Some(std::time::Instant::now());
+        }
         // Status line reflects which Enter the user pressed (ADR 0031):
         // Enter=claude workspace · Shift+Enter=bare · Ctrl+Enter=codex.
         let kind = match agent {
@@ -8548,9 +8706,36 @@ impl State {
         // doesn't know yet whether the new row is tmux or capsule until
         // the daemon replies (an ordinary `PtyOpened`, or a `pty.open`
         // refusal carrying `PtyAttachDirect`).
+        //
+        // LU6a: before dropping it, capture whatever the DEPARTING feed
+        // was painting into `pane_hold` — a capsule client's own screen,
+        // or (a tmux→capsule switch) `pty_terminal`'s — so the pane keeps
+        // showing that until the new client's checkpoint lands, rather
+        // than the new client's freshly-constructed, still-empty parser
+        // (`pane_screen_choice`'s own doc). A departing `Pending` feed
+        // (no client yet) leaves whatever hold is already there alone —
+        // nothing new was ever painted for it to replace.
         #[cfg(windows)]
         {
-            self.pane_attach_term = None;
+            // LU6a design-review amendment: the "since request" clock
+            // starts HERE for an ordinary switch — or, for a switch that
+            // is really the tail of a workspace CREATE
+            // (`switch_to_workspace` from the `WorkspaceCreated` reply),
+            // inherits the earlier stamp `commit_workspace_create` took
+            // when it sent `workspace.create`, so the daemon's create
+            // round trip counts toward the acceptance metric too. Taken,
+            // not merely read, so it can't leak into a later, unrelated
+            // switch.
+            self.pane_attach_requested_at = Some(
+                self.pending_capsule_create_requested_at
+                    .take()
+                    .unwrap_or_else(std::time::Instant::now),
+            );
+            if let Some(t) = self.pane_attach_term.take() {
+                self.pane_hold = Some(HeldPaneScreen(t.screen().clone()));
+            } else if self.pane_feed == PaneFeed::Tmux {
+                self.pane_hold = Some(HeldPaneScreen(self.pty_terminal.screen().clone()));
+            }
         }
         self.pane_feed = PaneFeed::Pending;
         let (cols, rows) = self.pty_size.unwrap_or((80, 24));
@@ -8632,11 +8817,22 @@ impl State {
             Ok(c) => {
                 tracing::info!("session pane: capsule attach client attaching");
                 self.pane_attach_term = Some(c);
+                // LU6a: the base every attach-outcome log line in
+                // `pump_pane_attach_term` reports `since_client_ms`
+                // against, and a fresh count for this client's own
+                // episode warnings.
+                self.pane_attach_started_at = Some(std::time::Instant::now());
+                self.pane_attach_episode_warnings = 0;
                 true
             }
             Err(e) => {
                 tracing::warn!(error = %e, "session pane: capsule attach client failed to start");
                 self.status = format!("session attach failed: {e}");
+                // LU6a: the attach itself failed — a hold captured for
+                // this switch has nothing left to wait for (see
+                // `pane_hold`'s own doc: "never left to outlive the
+                // switch it belongs to").
+                self.pane_hold = None;
                 false
             }
         }
@@ -8747,14 +8943,81 @@ impl State {
     /// dispatcher; the session pane is not the drawer's fixed tenant), and
     /// `fe_down_last_evidence: None` at construction means
     /// `pending_fe_down_markers` can never receive anything to drain.
+    ///
+    /// LU6a: also the one place the attach-outcome log lines fire, each
+    /// gated on an edge (this pump call's before/after, not the client's
+    /// raw `changed` flag — that also fires on ordinary output, which
+    /// would otherwise re-log every redraw) so each fires exactly once
+    /// per outcome: checkpoint applied (clears `pane_hold` — the pane may
+    /// now safely paint the client's own, now-restored screen), attached,
+    /// and — anything else the status line moves to — a warn carrying how
+    /// many such non-success moves this client has made so far — and, if
+    /// that move is a TERMINAL one (`is_dead`) that arrived before this
+    /// client ever checkpointed, also clears `pane_hold` (coordinator
+    /// amendment: a dead end must not keep showing the departed row's
+    /// screen — see `pane_hold`'s own doc). Design-review amendment:
+    /// every line carries TWO clocks — `since_request_ms` (from
+    /// `pane_attach_requested_at`, the switch or create the user actually
+    /// asked for — the acceptance metric) and `since_client_ms` (from
+    /// `pane_attach_started_at`, narrower: since THIS client object was
+    /// installed).
     #[cfg(windows)]
     fn pump_pane_attach_term(&mut self) {
         let Some(t) = self.pane_attach_term.as_mut() else {
             return;
         };
+        let was_checkpointed = t.is_checkpointed();
+        let status_before = t.status_line().to_string();
         let changed = t.pump();
         t.screen_mut().set_scrollback(self.pty_scroll as usize);
         self.pty_scroll = t.screen().scrollback().min(u16::MAX as usize) as u16;
+        let since_request_ms = self
+            .pane_attach_requested_at
+            .map(|s| s.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+        let since_client_ms = self
+            .pane_attach_started_at
+            .map(|s| s.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+        if !was_checkpointed && t.is_checkpointed() {
+            self.pane_hold = None;
+            let (rows, cols) = t.screen().size();
+            tracing::info!(
+                since_request_ms,
+                since_client_ms,
+                cols,
+                rows,
+                "session pane: capsule attach checkpoint applied"
+            );
+        }
+        let status_after = t.status_line().to_string();
+        if status_after != status_before {
+            if status_after == "attached" {
+                tracing::info!(since_request_ms, since_client_ms, "session pane: capsule attached");
+            } else {
+                self.pane_attach_episode_warnings += 1;
+                tracing::warn!(
+                    since_request_ms,
+                    since_client_ms,
+                    episode = self.pane_attach_episode_warnings,
+                    status = %status_after,
+                    "session pane: capsule attach episode failure"
+                );
+                // Coordinator amendment: a TERMINAL failure that never
+                // checkpointed is a dead end, not a stall — clear
+                // `pane_hold` right here, on the same path as the warn
+                // line above, so a dead new row can never keep showing
+                // the departed row's screen. `pane_screen_choice` also
+                // stops painting this dead client's own (blank) screen
+                // once `is_dead` is set, so the pane falls all the way
+                // through to `pty_terminal` — today's rendering — instead
+                // of either. A client that checkpointed and only later
+                // died is untouched (its own last content keeps showing).
+                if t.is_dead() && !t.is_checkpointed() {
+                    self.pane_hold = None;
+                }
+            }
+        }
         if changed {
             if let Some(notice) = t.notice() {
                 self.status = notice.to_string();
@@ -13142,6 +13405,15 @@ impl State {
                     // already `Tmux` (a routine resize-confirm): the
                     // buffer is empty by construction in that case.
                     self.pane_feed = PaneFeed::Tmux;
+                    // LU6a: the feed just resolved to tmux — any hold from
+                    // the switch this resolves has nothing left to wait
+                    // for (`pane_hold`'s own doc: "never left to outlive
+                    // the switch it belongs to"); `pty_terminal`, the tmux
+                    // screen, paints live from here on regardless.
+                    #[cfg(windows)]
+                    {
+                        self.pane_hold = None;
+                    }
                     self.flush_pane_pending_input_to_tmux();
                     // Contract (b): the pty re-target is now live. If this
                     // open was for a flagged agent workspace, launch claude
@@ -14957,12 +15229,38 @@ impl State {
         // to `unwrap_or_else` (mirrors `copy_llm_selection`'s own split)
         // so a non-Windows build reads `pty_terminal` with no dead
         // indirection.
+        //
+        // LU6a: which of the three sources actually wins is
+        // `pane_screen_choice`'s call, not an unconditional
+        // `pane_attach_term`-if-present — a live but not-yet-checkpointed
+        // client (or a still-`Pending` feed) defers to `pane_hold` so a
+        // capsule switch never paints the new client's empty parser.
+        // Coordinator amendment: a client that went terminal before ever
+        // checkpointing falls all the way through to `pty_terminal`
+        // instead (`pane_screen_choice`'s own doc) — three separate
+        // `let`s (rather than inlining each as a call argument) so the
+        // one `&mut` read (`is_dead`) never overlaps the `&ref` reads
+        // around it.
         #[cfg(windows)]
-        let pty_screen = self
-            .pane_attach_term
-            .as_ref()
-            .map(|t| t.screen())
-            .unwrap_or_else(|| self.pty_terminal.screen());
+        let pane_attach_has_client = self.pane_attach_term.is_some();
+        #[cfg(windows)]
+        let pane_attach_checkpointed =
+            self.pane_attach_term.as_ref().is_some_and(|t| t.is_checkpointed());
+        #[cfg(windows)]
+        let pane_attach_is_dead = self.pane_attach_term.as_mut().is_some_and(|t| t.is_dead());
+        #[cfg(windows)]
+        let pty_screen = match pane_screen_choice(
+            pane_attach_has_client,
+            pane_attach_checkpointed,
+            pane_attach_is_dead,
+            self.pane_feed,
+            self.pane_hold.is_some(),
+        ) {
+            PaneScreen::Client => self.pane_attach_term.as_ref().map(|t| t.screen()),
+            PaneScreen::Hold => self.pane_hold.as_ref().map(|h| h.screen()),
+            PaneScreen::Tmux => None,
+        }
+        .unwrap_or_else(|| self.pty_terminal.screen());
         #[cfg(not(windows))]
         let pty_screen = self.pty_terminal.screen();
         #[cfg(windows)]
@@ -26302,7 +26600,8 @@ mod repl_lifecycle_render_tests {
 }
 
 /// ADR 0042 slice L1b: runtime keying, the attach_direct switch, and
-/// phase → badge mapping. Pure functions, Linux-run.
+/// phase → badge mapping. LU6a adds the session pane's screen-selection
+/// decision (`pane_screen_choice`). Pure functions, Linux-run.
 #[cfg(test)]
 mod capsule_pane_tests {
     use super::*;
@@ -26356,4 +26655,81 @@ mod capsule_pane_tests {
     // here. `WorkspaceRuntime`/`workspace_runtime` itself stays untested
     // beyond `tmux_session_key` above (the map type is `#[cfg(windows)]`,
     // so a HashMap-round-trip test can't run here anyway).
+
+    /// LU6a: `pane_screen_choice`'s branches — deliberately not
+    /// `#[cfg(windows)]` (like `tmux_session_key` above), even though its
+    /// only call site is, so this decision is checked and run on every
+    /// platform. Coordinator amendment added the `is_dead` parameter and
+    /// the cases below that exercise it.
+    #[test]
+    fn pane_screen_choice_covers_every_branch() {
+        // A checkpointed client always wins, hold or no hold, pending or
+        // not, dead or not — this is the case that used to paint an empty
+        // parser. `is_dead` never overrides a client that DID checkpoint
+        // (a client that showed real content and only later died keeps
+        // showing it).
+        assert_eq!(
+            pane_screen_choice(true, true, false, PaneFeed::Capsule, false),
+            PaneScreen::Client
+        );
+        assert_eq!(
+            pane_screen_choice(true, true, false, PaneFeed::Capsule, true),
+            PaneScreen::Client
+        );
+        assert_eq!(
+            pane_screen_choice(true, true, true, PaneFeed::Capsule, false),
+            PaneScreen::Client
+        );
+
+        // A live but not-yet-checkpointed client defers to a hold when
+        // one exists...
+        assert_eq!(
+            pane_screen_choice(true, false, false, PaneFeed::Capsule, true),
+            PaneScreen::Hold
+        );
+        // ...and otherwise paints its own (empty) screen — the first-ever
+        // attach case, where there is nothing to hold.
+        assert_eq!(
+            pane_screen_choice(true, false, false, PaneFeed::Capsule, false),
+            PaneScreen::Client
+        );
+
+        // Coordinator amendment: a client that goes TERMINAL before it
+        // ever checkpointed is a dead end, not a stall — it must not keep
+        // showing a hold (the departed row's screen) OR its own (blank)
+        // screen. Both fall all the way through to `Tmux`.
+        assert_eq!(
+            pane_screen_choice(true, false, true, PaneFeed::Capsule, true),
+            PaneScreen::Tmux
+        );
+        assert_eq!(
+            pane_screen_choice(true, false, true, PaneFeed::Capsule, false),
+            PaneScreen::Tmux
+        );
+
+        // `Pending` (no client yet, backend unknown) also defers to a
+        // hold when one exists...
+        assert_eq!(
+            pane_screen_choice(false, false, false, PaneFeed::Pending, true),
+            PaneScreen::Hold
+        );
+        // ...and otherwise falls back to the tmux emulator, exactly as
+        // before this lane.
+        assert_eq!(
+            pane_screen_choice(false, false, false, PaneFeed::Pending, false),
+            PaneScreen::Tmux
+        );
+
+        // An ordinary tmux feed always paints `pty_terminal`, hold or no
+        // hold — a hold never outlives the switch it belongs to, but even
+        // if one were somehow still set, `Tmux` feed is definitive.
+        assert_eq!(
+            pane_screen_choice(false, false, false, PaneFeed::Tmux, false),
+            PaneScreen::Tmux
+        );
+        assert_eq!(
+            pane_screen_choice(false, false, false, PaneFeed::Tmux, true),
+            PaneScreen::Tmux
+        );
+    }
 }
