@@ -460,9 +460,12 @@ surfaces. So LU3 is three lanes, the first two provably behaviour-preserving on 
     right after `spawn` — safe because the unreaped child pins its pid — and reaps on the exit it
     observes. A leg adopted through its lane is reaped by its OWNER — the supervisor — with an
     explicit `ChallengedProcess::reap` (a non-blocking `waitid` through the pidfd) at the point
-    where its `wait` observed the exit and every read it wanted is done; a handle NEVER reaps
-    implicitly (not on drop, not in the status accessor), because a handle is also what a peer
-    holds to PROVE a process it does not own — the daemon's status query returns one for a
+    where its `wait` observed the exit and every read it wanted is done — and ownership ends
+    ONLY at an observed death: a handle whose leg is still alive when its lifecycle state is
+    left (an end-run that found the lane already gone while the leg was still exiting) is
+    retired, not dropped, and the main loop reaps it on the tick that sees the exit; a handle
+    NEVER reaps implicitly (not on drop, not in the status accessor), because a handle is also
+    what a peer holds to PROVE a process it does not own — the daemon's status query returns one for a
     supervisor the daemon itself spawned and reaps through `Child::wait`, and an implicit reap
     there made every clean exit read as `ECHILD`. `ECHILD` on an explicit reap is the harmless
     answer for a non-owner (a leg inherited from a previous supervisor is its parent's to reap).
