@@ -421,7 +421,11 @@ fi
 mkdir -p "$PREFIX/bin" "$PREFIX/updates" "$PREFIX/repo" "$CONFIG" "$HOME/.local/bin"
 tar -xzf "$WORK/sot-$VER-$TARGET.tar.gz" -C "$WORK"
 BINDIR="$WORK/sot-$VER-$TARGET"
-for b in sot sotd; do
+# sot-capsule is sotd's capsule-runtime pair (ADR 0042 L1a): sotd resolves it
+# next to its own executable, so it must land in the same directory. Archives
+# that predate the capsule runtime lack it, hence the skip for it alone.
+for b in sot sotd sot-capsule; do
+    [ "$b" = sot-capsule ] && [ ! -f "$BINDIR/$b" ] && continue
     [ -f "$PREFIX/bin/$b" ] && cp "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev"
     install -m 0755 "$BINDIR/$b" "$PREFIX/bin/$b"
     # Gatekeeper: strip any quarantine attr (browser downloads carry it).
