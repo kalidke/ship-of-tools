@@ -287,28 +287,32 @@ fn wait_for_exit(mut child: Child, timeout: Duration) -> std::process::ExitStatu
     poll_until(|| child.try_wait().unwrap(), timeout, "the supervisor process to exit")
 }
 
-/// Single-owner reaping (review round): a count of zombie (state `Z`)
-/// processes owned by this test's own uid — `/proc/<pid>/stat`'s field 3
-/// (state), parsed the same way `e2e_socket.rs`'s own `proc_state` does
-/// (fields after the comm's closing paren); ownership via the `/proc/<pid>`
-/// directory's own metadata uid, not a `/proc/<pid>/status` parse. Used
-/// as a before/after bracket around a full supervise-lifecycle test: if
-/// the supervisor's own explicit `reap()` calls (the natural-exit
-/// transition, `finish_end_run_with_process`) ever regress back to an
-/// implicit-Drop or no-reap-at-all shape, a leg's zombie would linger
-/// under this same uid and this count would grow.
+/// Single-owner reaping (review round 2, F7): a count of THIS
+/// SUPERVISOR's own zombie (state `Z`) direct children — never a uid-wide
+/// count (review round 2's own finding: a shared CI runner, or even this
+/// test binary's OWN other tests running concurrently, can have
+/// unrelated zombies under the same uid at any moment, and a uid-wide
+/// count also can't be checked while pinning it to "this one
+/// supervisor's own leg" specifically). Reads `/proc/<pid>/task/<pid>/children`
+/// — the MAIN THREAD's own child list, which for a single-threaded
+/// process like this supervisor is every process it has ever fork()'d
+/// and not yet reaped, Linux's own portable "list my children" mechanism
+/// (no `ptrace`, no `/proc` tree walk) — then each listed child's own
+/// `/proc/<c>/stat` field 3 (state), parsed the same way
+/// `e2e_socket.rs`'s own `proc_state` does (fields after the comm's
+/// closing paren). Meant to be asserted WHILE the supervisor is still
+/// alive (its own `/proc/<pid>` entry, and thus this file, only exists
+/// then) — right after a run has ended, before anything stops the
+/// authority itself.
 #[cfg(target_os = "linux")]
-fn zombie_count_for_current_uid() -> usize {
-    use std::os::unix::fs::MetadataExt;
-    let my_uid = unsafe { libc::getuid() };
-    let Ok(entries) = std::fs::read_dir("/proc") else { return 0 };
-    entries
-        .flatten()
-        .filter(|entry| entry.file_name().to_str().is_some_and(|s| s.chars().all(|c| c.is_ascii_digit())))
-        .filter(|entry| entry.metadata().map(|m| m.uid() == my_uid).unwrap_or(false))
-        .filter(|entry| {
-            let pid = entry.file_name();
-            let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", pid.to_string_lossy())) else {
+fn zombie_children_of(pid: u32) -> usize {
+    let Ok(contents) = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) else {
+        return 0;
+    };
+    contents
+        .split_whitespace()
+        .filter(|child_pid| {
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{child_pid}/stat")) else {
                 return false;
             };
             let Some(close) = stat.rfind(')') else { return false };
@@ -362,16 +366,6 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    // Single-owner reaping (review round): baseline BEFORE spawning
-    // anything, so the assertion after this test's own supervisor and
-    // leg have both exited proves the leg's zombie never lingered under
-    // this uid (the supervisor's own explicit `reap()` — the natural-
-    // exit transition, or `finish_end_run_with_process` here, since
-    // EndRun is what actually ends this leg — must be what closed it,
-    // not this test happening to poll fast enough to miss it).
-    #[cfg(target_os = "linux")]
-    let zombies_before = zombie_count_for_current_uid();
-
     let child = spawn_supervisor(&state_dir, "--start", SHELL); // stays open until EndRun
     let mut guard = KillGuard(Some(child));
 
@@ -389,6 +383,20 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
     let final_state = poll_to_terminal(&conn, op_id, Duration::from_secs(60));
     assert_eq!(final_state, SupervisorOperationState::RecordVerified);
 
+    // Single-owner reaping (review round 2, F7): asserted HERE, WHILE
+    // the supervisor authority is still alive (its own `/proc/<pid>`
+    // entry, hence this check, only exists until it exits) — right
+    // after the run ended, before `Stop` is ever sent. Proves the leg
+    // `finish_end_run_with_process` ended is reaped as PART of ending
+    // the run, not merely "eventually, once the whole supervisor process
+    // itself exits and reparents any leftover zombie to init."
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        zombie_children_of(guard.0.as_ref().expect("supervisor still held").id()),
+        0,
+        "the ended leg must already be reaped while the supervisor is still alive"
+    );
+
     // Resubmitting the SAME operation id with the SAME digest is
     // idempotent -- it must answer with the current state, not
     // re-execute.
@@ -405,21 +413,77 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
     let child = guard.0.take().unwrap();
     let status = wait_for_exit(child, Duration::from_secs(30));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_CLEAN), "a clean EndRun+Stop must exit 0");
+}
 
-    // Single-owner reaping (review round): the supervisor process itself
-    // is reaped above (`wait_for_exit`'s own `child.try_wait()`, this
-    // test's OWN std::process::Child — the same relationship the daemon
-    // has to a spawned supervisor in production); what this proves is
-    // that its LEG never lingered as a zombie under this uid.
+/// F2 (review round), reproduced: `Lifecycle::Ready { process }` →
+/// `Ending { .. }` used to drop the ONLY handle able to reap a leg that
+/// exits on its OWN while `end_run` is in flight — the worker's own
+/// re-challenge over the leg's lane can lose that race (the leg's own
+/// socket having already torn down by the time it runs), leaving
+/// `finish_end_run_without_process`'s path with no proven handle for
+/// this leg at all, and the retained `Ready` handle already silently
+/// dropped at the very transition that admitted `end_run` — the leg was
+/// then a zombie for the rest of the supervisor's life. Constructed with
+/// a producer that exits ON ITS OWN shortly after `Ready` and an
+/// `end_run` sent IMMEDIATELY once `Ready` is observed, racing the leg's
+/// own natural exit against the worker's own processing — not provably
+/// deterministic (which side of the race actually resolves first is a
+/// real timing question), but the ~1s window is generous over the
+/// worker's own near-instant admission, so the race is exercised on
+/// every real run. Whichever path actually reaped it — the worker's own
+/// proven handle, or `Ending`'s retained one via `sot_log::supervisor`'s
+/// own `reap_leg_if_already_exited` at whichever exit this resolves
+/// through — asserts, WHILE the supervisor authority is STILL ALIVE
+/// (before `Stop`/exit), that it has no zombie child
+/// (`zombie_children_of`, F7).
+#[test]
+fn end_run_racing_a_self_exiting_leg_leaves_no_zombie() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    #[cfg(windows)]
+    const SELF_EXITING_SOON: &[&str] = &["cmd.exe", "/d", "/c", "ping -n 2 127.0.0.1 >nul & exit 0"];
     #[cfg(target_os = "linux")]
-    {
-        let zombies_after = zombie_count_for_current_uid();
-        assert!(
-            zombies_after <= zombies_before,
-            "zombie count under this uid grew across the full lifecycle (before={zombies_before}, after={zombies_after}) \
-             -- the leg's exit was observed but never explicitly reaped"
-        );
-    }
+    const SELF_EXITING_SOON: &[&str] = &["/bin/sh", "-c", "sleep 1; exit 0"];
+
+    let child = spawn_supervisor(&state_dir, "--start", SELF_EXITING_SOON);
+    let mut guard = KillGuard(Some(child));
+
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+
+    // Immediately -- racing the leg's own ~1s self-exit against the
+    // worker's own processing (the exact window F2 names).
+    end_run_and_expect_record_closed(&conn, "test-end-run-race", "race test", voyage);
+
+    let final_state = poll_to_terminal(&conn, "test-end-run-race", Duration::from_secs(60));
+    assert!(
+        !matches!(final_state, SupervisorOperationState::UnknownOperation),
+        "end_run must reach a real terminal classification, got {final_state:?}"
+    );
+
+    // Single-owner reaping (review round 2, F2/F7): asserted WHILE the
+    // supervisor authority is still alive (before Stop/exit) -- whether
+    // this race resolved via the worker's own proven handle or the
+    // retained `Ending`/`Ready` handle this fix adds, NEITHER path may
+    // leave the raced leg an unreaped zombie.
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        zombie_children_of(guard.0.as_ref().expect("supervisor still held").id()),
+        0,
+        "the raced leg must not be left an unreaped zombie while the supervisor is still alive"
+    );
+
+    // Stop is admitted regardless of lifecycle (no gate) -- ends the
+    // authority whether this race left it EndedNoRespawn or respawned
+    // into a fresh Ready.
+    let _ = command(&conn, "test-stop-race", SupervisorOp::Stop);
+    let child = guard.0.take().unwrap();
+    let _status = wait_for_exit(child, Duration::from_secs(30));
 }
 
 /// ADR 0041 start-mode table: "`--resume` | sealed, carrying its own

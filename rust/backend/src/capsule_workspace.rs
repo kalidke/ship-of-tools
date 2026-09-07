@@ -143,7 +143,21 @@ fn claude_argv() -> Result<Vec<String>, String> {
 /// real caller, which supplies the process's own `PATH`/`HOME`.
 #[cfg(target_os = "linux")]
 fn resolve_claude(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<String, String> {
-    let mut dirs: Vec<PathBuf> = path_var.map(std::env::split_paths).into_iter().flatten().collect();
+    // Review round, reproduced: a RELATIVE `PATH` entry resolves against
+    // the daemon's own current directory (`execve`'s own rule for a
+    // relative argv[0]/PATH member) — which, for a daemon started as a
+    // service, is essentially arbitrary and almost never the workspace
+    // the eventual capsule producer will actually run in. Skipped
+    // outright, never joined against anything: a relative entry here
+    // would launch relative to whatever directory this DAEMON happens to
+    // be running from, not the workspace the resolved `claude` will
+    // actually be spawned into.
+    let mut dirs: Vec<PathBuf> = path_var
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .filter(|dir| dir.is_absolute())
+        .collect();
     if let Some(home) = home {
         dirs.push(home.join(".local/bin"));
         dirs.push(home.join(".claude/local"));
@@ -162,15 +176,24 @@ fn resolve_claude(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Re
     ))
 }
 
-/// `true` iff `path` resolves to a file `access(2)` reports as executable
+/// `true` iff `path` is a REGULAR file (`metadata` follows symlinks —
+/// review round, reproduced: a DIRECTORY named `claude` also passes
+/// `access(2)`'s own `X_OK` check, since the execute bit on a directory
+/// means "searchable," not "runnable as a program," so checking access
+/// alone let a same-named directory earlier in `PATH` win over a real
+/// executable later in it) that `access(2)` ALSO reports as executable
 /// by THIS process — mirrors `sot_log::producer_pty`'s own
-/// `is_executable_file` exactly (the same check the eventual pty
+/// `is_executable_file`'s `access` check (the same test the eventual pty
 /// producer performs before ever forking), so a path this returns is
-/// never rejected there for a reason this check could have caught first.
-/// A duplicated ~6 lines rather than a cross-crate refactor — not worth
-/// it for this one call site.
+/// never rejected there for a reason this check could have caught
+/// first. A duplicated ~6 lines rather than a cross-crate refactor — not
+/// worth it for this one call site.
 #[cfg(target_os = "linux")]
 fn is_executable_file(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        _ => return false,
+    }
     use std::os::unix::ffi::OsStrExt;
     let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
         return false;
@@ -694,9 +717,7 @@ mod runtime {
         }
     }
 
-    /// Linux: `pre_exec(setsid)` (a failure here means this process is
-    /// ALREADY a session leader — not a real error, the detachment
-    /// property already holds) plus `Stdio::null()` on all three
+    /// Linux: `pre_exec(setsid)` plus `Stdio::null()` on all three
     /// streams — set by [`spawn_detached_supervisor`]'s own `build`
     /// closure already, nothing further needed here. NEVER degraded
     /// (`survival` is always `"normal"`): there are no job objects on
@@ -704,13 +725,26 @@ mod runtime {
     /// detachment (ADR 0043 decision 22/14). `state_dir` is unused here
     /// (only Windows's degraded-retry arm logs it) — kept as a shared
     /// parameter so both platform twins have the same signature.
+    ///
+    /// `setsid`'s failure is PROPAGATED (review round, reproduced): in a
+    /// FRESH fork child, immediately post-fork, pre-exec, it cannot fail
+    /// for the "already a session/process-group leader" reason a plain
+    /// re-run of THIS process might (a fork always starts a brand-new
+    /// process that has never called `setsid` before) — `EPERM` here
+    /// means something else entirely denied it (a seccomp filter, most
+    /// plausibly), a real, reportable failure this must not silently
+    /// swallow: a detached supervisor spawned WITHOUT a new session would
+    /// stay attached to the daemon's own controlling terminal/session,
+    /// silently breaking the whole point of detaching it.
     #[cfg(target_os = "linux")]
     fn spawn_detached(build: impl Fn(&str) -> Command, state_dir: &Path) -> std::io::Result<SpawnedSupervisor> {
         let _ = state_dir;
         let mut cmd = build("normal");
         unsafe {
             cmd.pre_exec(|| {
-                let _ = libc::setsid();
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
                 Ok(())
             });
         }
@@ -1876,6 +1910,38 @@ mod tests {
     fn resolve_claude_names_every_directory_it_searched() {
         let err = resolve_claude(None, None).unwrap_err();
         assert!(err.contains("claude not found"), "{err}");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn resolve_claude_skips_a_same_named_directory_for_a_later_real_file() {
+        // Review round, reproduced: a directory named `claude` passes
+        // `access(X_OK)` (the execute bit on a directory means
+        // "searchable") -- without the regular-file check this would
+        // have wrongly "resolved" to the directory in `dir1`, never
+        // reaching the REAL executable in `dir2`.
+        let dir1 = tempfile_test_dir();
+        std::fs::create_dir(dir1.path().join("claude")).unwrap();
+        let dir2 = tempfile_test_dir();
+        let real = dir2.path().join("claude");
+        std::fs::write(&real, b"#!/bin/sh\nexit 0\n").unwrap();
+        set_executable(&real);
+        let path_var = std::env::join_paths([dir1.path(), dir2.path()]).unwrap();
+        let resolved = resolve_claude(Some(&path_var), None).unwrap();
+        assert_eq!(resolved, real.to_string_lossy());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn resolve_claude_skips_a_relative_path_entry() {
+        // Review round, reproduced: a relative PATH entry resolves
+        // against the daemon's own current directory, not the eventual
+        // workspace -- it must be skipped outright, never joined against
+        // anything, even when (as here) it happens to be the ONLY entry.
+        let path_var = std::ffi::OsString::from("relative/bin");
+        let err = resolve_claude(Some(&path_var), None).unwrap_err();
+        assert!(err.contains("claude not found"), "{err}");
+        assert!(!err.contains("relative/bin"), "a relative entry must never even be searched: {err}");
     }
 
     #[cfg(target_os = "linux")]
