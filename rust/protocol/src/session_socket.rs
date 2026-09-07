@@ -28,6 +28,21 @@
 
 use std::path::PathBuf;
 
+// L1-unix LU1b (ADR 0043 decision 1): `runtime_sot_dir`/`is_private_dir`/
+// `current_uid` moved DOWN into `sot-log`'s `state_dir` module — the Unix
+// domain-socket transport (`sot_log::socket_unix`) needs the identical
+// derivation `session_socket_path`'s own Unix branch already used, and
+// `sot-log` is the lower crate (this crate gains a dependency on it, never
+// the reverse — `sot-log` has none on `sot-protocol`). Re-exported
+// verbatim so every existing `runtime_sot_dir()` / `is_private_dir(...)` /
+// `current_uid()` call site in this module (and every downstream
+// `sot_protocol::{runtime_sot_dir, current_uid}` re-export in
+// `rust/backend/src/paths.rs`) keeps compiling unchanged. See
+// `sot_log::state_dir` for the doc comments, the tests, and the new
+// `SOT_RUNTIME_DIR` propagation seam (`state_dir::runtime_dir`) this move
+// exists to enable.
+pub use sot_log::state_dir::{current_uid, is_private_dir, runtime_sot_dir};
+
 /// Conventional per-user session endpoint for a backend with the given
 /// label: a Unix socket path, or (Windows) a named pipe path. `sotd
 /// --label <name>` uses this to derive `--socket` when the flag is omitted
@@ -87,92 +102,6 @@ pub fn slug(label: &str) -> String {
     } else {
         out
     }
-}
-
-/// Per-user runtime root for Ship of Tools Unix sockets. Unix-only in
-/// effect (Windows's own `session_socket_path` branch above never calls
-/// this), but left uncompiled-out so the non-Unix stub helpers below don't
-/// need a matching `#[cfg]` split of their own.
-pub fn runtime_sot_dir() -> PathBuf {
-    if let Some(dir) = private_xdg_runtime_dir() {
-        return dir.join("sot");
-    }
-    let uid = current_uid();
-    let run_user_dir = PathBuf::from(format!("/run/user/{uid}"));
-    if is_private_dir(&run_user_dir) {
-        return run_user_dir.join("sot");
-    }
-    PathBuf::from(format!("/tmp/sot-{uid}"))
-}
-
-/// `$XDG_RUNTIME_DIR` if it's set, exists, and is owner-only (no group/other
-/// bits). A world/group-accessible or missing runtime dir falls through to
-/// the next resolution tier rather than being trusted. Split into an env
-/// read (this) + a pure path check (`is_private_dir`) so the safety logic is
-/// unit-testable against real temp dirs without mutating `$XDG_RUNTIME_DIR`
-/// — a process-global env var other tests in this crate touch concurrently.
-#[cfg(unix)]
-fn private_xdg_runtime_dir() -> Option<PathBuf> {
-    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
-    if is_private_dir(&dir) {
-        Some(dir)
-    } else {
-        None
-    }
-}
-#[cfg(not(unix))]
-fn private_xdg_runtime_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
-}
-
-/// `true` if `dir` exists, is a REAL directory (not a symlink to one),
-/// owned by THIS process's uid, and owner-only (no group/other bits).
-///
-/// Uses `symlink_metadata` (lstat — does NOT follow a symlink) rather than
-/// `metadata`, and checks ownership, not just mode (security review, F1: a
-/// hostile local user who can write into `$XDG_RUNTIME_DIR`'s parent could
-/// otherwise plant a symlink there, or — if `$XDG_RUNTIME_DIR` itself were
-/// ever attacker-writable, e.g. a misconfigured shared runtime dir — an
-/// attacker-owned 0700 directory, and the old `metadata`-plus-mode-only
-/// check would have followed/trusted either).
-#[cfg(unix)]
-pub fn is_private_dir(dir: &std::path::Path) -> bool {
-    let Ok(meta) = std::fs::symlink_metadata(dir) else {
-        return false;
-    };
-    if meta.file_type().is_symlink() {
-        return false;
-    }
-    if !meta.is_dir() {
-        return false;
-    }
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    if meta.uid() != current_uid() {
-        return false;
-    }
-    meta.permissions().mode() & 0o077 == 0
-}
-#[cfg(not(unix))]
-pub fn is_private_dir(dir: &std::path::Path) -> bool {
-    dir.is_dir()
-}
-
-/// Numeric uid for path derivation (`/run/user/<uid>`, `/tmp/sot-<uid>`) and
-/// the ownership check in `is_private_dir`/`rust/backend`'s
-/// `secure_private_dir`. `0` on non-Unix, where these callers are never
-/// reached in practice (Windows sessions don't run tmux, and
-/// `session_socket_path` takes the named-pipe branch above without calling
-/// any of this) — this function exists so the module compiles everywhere,
-/// not because the value is meaningful there.
-#[cfg(unix)]
-pub fn current_uid() -> u32 {
-    // SAFETY: getuid() takes no arguments, has no preconditions, and cannot
-    // fail.
-    unsafe { libc::getuid() }
-}
-#[cfg(not(unix))]
-pub fn current_uid() -> u32 {
-    0
 }
 
 #[cfg(test)]
@@ -249,90 +178,6 @@ mod tests {
                 .join("mypackage_jl.sock")
         );
         let _ = std::fs::remove_dir_all(&runtime);
-    }
-}
-
-/// `tmux_socket_path`'s (rust/backend) tier-1 safety check, exercised
-/// against real temp dirs with controlled permissions — deliberately NOT
-/// via `$XDG_RUNTIME_DIR` mutation, for the same env-var-race reason noted
-/// on `private_xdg_runtime_dir`'s doc comment.
-#[cfg(all(test, unix))]
-mod is_private_dir_tests {
-    use super::is_private_dir;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn scratch_dir(name: &str) -> PathBuf {
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!(
-            "sot-protocol-session-socket-test-{}-{}-{name}",
-            std::process::id(),
-            n
-        ))
-    }
-
-    #[test]
-    fn owner_only_dir_is_private() {
-        use std::os::unix::fs::PermissionsExt;
-        let d = scratch_dir("owner-only");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(is_private_dir(&d));
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn group_readable_dir_is_not_private() {
-        use std::os::unix::fs::PermissionsExt;
-        let d = scratch_dir("group-readable");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o750)).unwrap();
-        assert!(!is_private_dir(&d));
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn world_readable_dir_is_not_private() {
-        use std::os::unix::fs::PermissionsExt;
-        let d = scratch_dir("world-readable");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(!is_private_dir(&d));
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn missing_dir_is_not_private() {
-        let d = scratch_dir("missing");
-        assert!(!is_private_dir(&d));
-    }
-
-    #[test]
-    fn a_file_is_not_a_private_dir() {
-        let d = scratch_dir("a-file");
-        std::fs::write(&d, b"not a dir").unwrap();
-        assert!(!is_private_dir(&d));
-        let _ = std::fs::remove_file(&d);
-    }
-
-    #[test]
-    fn symlink_to_a_private_dir_is_rejected() {
-        // The hijack case (F1): even a symlink pointing at an otherwise-
-        // valid owner-only dir must be rejected — trusting it would let an
-        // attacker who controls the symlink redirect us anywhere later by
-        // repointing it, and `is_private_dir` must reject based on the
-        // PATH's own type (lstat), not what it resolves to.
-        use std::os::unix::fs::PermissionsExt;
-        let target = scratch_dir("symlink-target");
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let link = scratch_dir("symlink-link");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        assert!(!is_private_dir(&link));
-        let _ = std::fs::remove_file(&link);
-        let _ = std::fs::remove_dir_all(&target);
     }
 }
 

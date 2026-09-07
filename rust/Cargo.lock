@@ -3935,9 +3935,9 @@ name = "sot-protocol"
 version = "0.6.0-rc.6"
 dependencies = [
  "anyhow",
- "libc",
  "serde",
  "serde_json",
+ "sot-log",
  "tokio",
 ]
 
