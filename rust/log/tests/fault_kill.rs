@@ -61,7 +61,11 @@ fn kill9_sweep_recovers_green_every_round() {
     // normally have exported). Sequential rounds, one capsule process
     // alive at a time, so ONE isolated dir for the whole sweep is safe.
     let voyage = uuid::Uuid::now_v7().to_string();
-    let runtime_dir = tempfile::tempdir().unwrap();
+    // `tempdir_in("/tmp")`, never the default (ambient `$TMPDIR`) --
+    // review round: a long ambient `TMPDIR` broke `sun_path`'s 108-byte
+    // limit in the reviewer's own repro. Mirrors `tests/e2e_socket.rs`'s
+    // and `tests/socket_unix.rs`'s identical device.
+    let runtime_dir = tempfile::Builder::new().prefix("sot-fk").tempdir_in("/tmp").unwrap();
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(runtime_dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();

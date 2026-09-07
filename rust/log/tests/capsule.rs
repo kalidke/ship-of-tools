@@ -1998,9 +1998,6 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
 #[cfg(unix)]
 mod unix_only {
     use super::*;
-    use sot_log::producer_pty::{EofGate, HeldEofReader};
-    use std::io::Read;
-    use std::os::fd::FromRawFd;
 
     /// Test: spawn failure (a nonexistent executable) is compensated, not
     /// escaped unsealed (the Linux capsule's own known gap, deliberately
@@ -2031,15 +2028,16 @@ mod unix_only {
     /// Test (ADR 0043 decision 12's own proof): a producer that exits
     /// NATURALLY, on its own, is observed by `wait()` returning `true` on
     /// the very next main-loop poll -- never by the reader thread hitting
-    /// a "fatal early EOF" bail, which `HeldEofReader` exists specifically
-    /// to prevent (it holds the pty's own EIO/EOF behind the gate until
-    /// `close_output_side` runs, well after `wait` has already seen the
-    /// exit and teardown has begun). A bare `/bin/sh -c 'exit 3'` records
-    /// `ExitKind::ProducerExited` and `exit_code == Some(Code(3))`, and
-    /// the record still seals verify-green -- if the held-EOF contract
-    /// were broken (the reader surfacing EOF BEFORE the loop ever calls
-    /// `close_output_side`), this run would instead bail unsealed with a
-    /// capsule-fatal error (see `capsule::run`'s own reader-error handling).
+    /// a "fatal early EOF" bail, which the capsule's own held slave
+    /// descriptor exists specifically to prevent (the master cannot see
+    /// EOF/EIO until `close_output_side` drops that slave, well after
+    /// `wait` has already seen the exit and teardown has begun). A bare
+    /// `/bin/sh -c 'exit 3'` records `ExitKind::ProducerExited` and
+    /// `exit_code == Some(Code(3))`, and the record still seals
+    /// verify-green -- if the held-slave contract were broken (the reader
+    /// surfacing EOF BEFORE the loop ever calls `close_output_side`), this
+    /// run would instead bail unsealed with a capsule-fatal error (see
+    /// `capsule::run`'s own reader-error handling).
     #[test]
     fn producer_exit_is_seen_by_wait_not_by_a_fatal_eof() {
         let _serial = serial();
@@ -2057,6 +2055,45 @@ mod unix_only {
         let frames = sealed_frames(&root, "exitcode3");
         let dead = assert_producer_dead_is_last(&frames);
         assert_eq!(dead["exit_code"], 3);
+    }
+
+    /// Test (ADR 0043 decision 12, review round): a producer that closes
+    /// its OWN stdio and later reopens its controlling tty must not lose
+    /// any output written after the reopen. Before the review round's
+    /// fix, the capsule's own reader treated the first `EIO` the master
+    /// reported (the instant the child's own last slave reference closed)
+    /// as terminal -- even though the CAPSULE's own held slave descriptor
+    /// means the master should never actually observe that at all. The
+    /// script: capture the controlling tty's path, redirect stdio away
+    /// from it (closing the child's OWN slave references), sleep briefly,
+    /// reopen the SAME tty by path and redirect stdout/stderr back, print
+    /// a marker, exit cleanly.
+    #[test]
+    fn output_after_a_slave_reopen_is_recorded() {
+        let _serial = serial();
+        let dir = tempfile::tempdir().unwrap();
+        let script = "tty=$(tty); exec </dev/null >/dev/null 2>&1; sleep 1; exec >\"$tty\" 2>&1; \
+                      printf AFTER_REOPEN; exit 0";
+        let argv = shell_command(script);
+        let cfg = config(dir.path(), "slavereopen1", argv, 80, 25);
+        let root = cfg.voyage_root.clone();
+        let (_tx, rx) = mpsc::channel();
+        let mut transport = no_transport();
+        let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
+        assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
+        assert_eq!(summary.exit_code, Some(ExitStatus::Code(0)));
+        verify_voyage(&root, "slavereopen1").unwrap();
+
+        let frames = sealed_frames(&root, "slavereopen1");
+        let mut all = Vec::new();
+        for f in &frames {
+            if f.class == Class::Producer {
+                let b64 = f.payload.as_ref().unwrap()["bytes_b64"].as_str().unwrap();
+                all.extend(decode_b64(b64));
+            }
+        }
+        let text = String::from_utf8_lossy(&all);
+        assert!(text.contains("AFTER_REOPEN"), "expected output recorded after the slave reopen, got: {text:?}");
     }
 
     /// Test (ADR 0043 decisions 13/14): a requested kill against a `sleep
@@ -2174,46 +2211,5 @@ mod unix_only {
             .expect("run did not return within the teardown bound")
             .unwrap();
         assert_eq!(summary.exit_kind, ExitKind::Requested);
-    }
-
-    /// Unit test on `HeldEofReader` (ADR 0043 decision 12) with a plain
-    /// pipe -- no real pty/child needed for the ONE property this type
-    /// owns: a read that observes the underlying fd's own EOF blocks
-    /// until `EofGate::release` runs, then finally returns `Ok(0)`.
-    #[test]
-    fn held_eof_is_released_by_close() {
-        let mut fds = [0i32; 2];
-        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
-        assert_eq!(rc, 0, "pipe() failed: {:?}", std::io::Error::last_os_error());
-        let (r, w) = (fds[0], fds[1]);
-        // Close the write end immediately: the read end now reports
-        // `Ok(0)` on every read -- exactly the "child already dead" pty
-        // shape this type must HOLD rather than surface early.
-        unsafe {
-            libc::close(w);
-        }
-        let gate = std::sync::Arc::new(EofGate::new());
-        let file = unsafe { std::fs::File::from_raw_fd(r) };
-        let mut reader = HeldEofReader::for_test(file, std::sync::Arc::clone(&gate));
-
-        let (tx, rx) = mpsc::channel();
-        let read_handle = std::thread::spawn(move || {
-            let mut buf = [0u8; 16];
-            let n = reader.read(&mut buf).unwrap();
-            tx.send(n).unwrap();
-        });
-
-        // The read must NOT complete yet -- it is blocked on the gate,
-        // not returned early.
-        assert_eq!(
-            rx.recv_timeout(Duration::from_millis(300)),
-            Err(mpsc::RecvTimeoutError::Timeout),
-            "a held EOF must block until the gate is released"
-        );
-
-        gate.release();
-        let n = rx.recv_timeout(Duration::from_secs(5)).expect("read did not unblock after release");
-        assert_eq!(n, 0, "a released held EOF must finally report Ok(0)");
-        read_handle.join().unwrap();
     }
 }

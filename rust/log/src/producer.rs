@@ -15,16 +15,22 @@
 //! **The EOF contract (decision 12) is universal, with no knob.** The
 //! output side's own OS behavior differs — ConPTY keeps its output
 //! handle open regardless of the child's lifetime until explicitly
-//! closed; a Unix pty master returns EIO/EOF precisely when the child
-//! dies — but the CONTRACT this trait's implementations must uphold is
-//! identical on every platform: `Self::Output` reports EOF (or an I/O
-//! error) ONLY after [`Producer::close_output_side`] has run. A pre-close
-//! EOF/error is capsule-fatal everywhere (`capsule::run` bails unsealed,
-//! ADR 0039's crash shape) — an implementation whose OS reports the end
-//! earlier (a Unix producer) must hold it (flag + condvar) until
-//! `close_output_side` releases it, rather than exposing a
-//! platform-specific "is early EOF an anomaly here" flag that would serve
-//! no invariant.
+//! closed; a Unix pty master returns `EOF`/`EIO` the instant the LAST
+//! slave fd closes (review round: NOT precisely "when the child dies" —
+//! a child that closes its own stdio and reopens its controlling tty
+//! yields `EIO` mid-run too, which is why `producer_pty.rs`'s own
+//! `PtyProducer` keeps a slave descriptor held in the CAPSULE itself for
+//! as long as the run lasts, so the master never sees either shape until
+//! `close_output_side` actually drops it) — but the CONTRACT this
+//! trait's implementations must uphold is identical on every platform:
+//! `Self::Output` reports EOF (or an I/O error) ONLY after
+//! [`Producer::close_output_side`] has run. A pre-close EOF/error is
+//! capsule-fatal everywhere (`capsule::run` bails unsealed, ADR 0039's
+//! crash shape) — an implementation whose OS could otherwise report the
+//! end earlier must make that structurally impossible (holding a
+//! resource the OS-level signal depends on, as `PtyProducer` does),
+//! rather than exposing a platform-specific "is early EOF an anomaly
+//! here" flag that would serve no invariant.
 
 use crate::Result;
 use std::io::{Read, Write};
