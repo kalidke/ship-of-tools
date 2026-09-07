@@ -134,8 +134,8 @@
 #![cfg(unix)]
 
 use crate::transport::{
-    join_within, OutboundBudget, StartGate, BYTES_ABANDON_AFTER, EVENTS_CHANNEL_CAP,
-    EVENTS_RETRY_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
+    join_within, OutboundBudget, StartGate, BYTES_ABANDON_AFTER, CONNECT_BOUND,
+    EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
 };
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -150,7 +150,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Extra capacity on the bounded reaper inbox beyond `max_connections` —
 /// mirrors `pipe_win::REAPER_INBOX_SLACK`: a connection's own
@@ -228,12 +228,6 @@ pub enum TransportEvent {
 /// Errors this transport's own API surface can report synchronously, at
 /// the call site. Background-thread failures surface as
 /// [`TransportEvent::Closed`]/[`TransportEvent::AcceptError`] instead.
-///
-/// `Cancelled` and `ConcurrentSubmit` are declared now, unused by anything
-/// in this file, for the LU1c client (`SocketClient::read`/`write_all`/
-/// `cancel`) that lands on top of this module — so this enum's SHAPE does
-/// not change twice. Same reasoning as `PipeError`'s own identically
-/// unused-by-the-server variants.
 #[derive(Debug, thiserror::Error)]
 pub enum SocketError {
     #[error("invalid voyage id {0:?}: must be the canonical lowercase-hyphenated form of an RFC 4122 UUID")]
@@ -258,13 +252,33 @@ pub enum SocketError {
     #[error("payload of {0} bytes exceeds what a single write/read call can represent")]
     PayloadTooLarge(usize),
     /// LU1c: a client-side blocking call was cancelled from another
-    /// thread.
+    /// thread — [`SocketClient::cancel`].
     #[error("operation cancelled")]
     Cancelled,
     /// LU1c: a second same-direction client call (e.g. two concurrent
     /// `read`s) was rejected before it ever touched the OS.
     #[error("another operation is already pending on this client's same direction")]
     ConcurrentSubmit,
+    /// LU1c: `connect_voyage_socket`'s own peer-identity authentication
+    /// (`challenge_unix::authenticate_server`, ADR 0043 decision 8's
+    /// steps 1-3 — NOT the full five-step `challenge()`) answered with a
+    /// WELL-FORMED WRONG proof — a different account's process is behind
+    /// this socket. A loud, typed failure: never retried as if the peer
+    /// might still turn out legitimate. Mirrors `PipeError::Foreign`.
+    #[error("connect_voyage_socket: the peer failed same-user authentication (a different account's process is behind this socket)")]
+    Foreign,
+    /// LU1c: peer-identity authentication could not be completed at all
+    /// — an OS-call failure anywhere in `challenge_unix`'s steps 1-3.
+    /// Never silently treated as either authenticated or foreign. Mirrors
+    /// `PipeError::Undetermined`.
+    #[error("connect_voyage_socket: peer authentication could not be completed (peer identity undetermined)")]
+    Undetermined,
+    /// LU1c (ADR 0043 decision 8): this Unix target has no kernel-
+    /// provided peer-pid mechanism this crate trusts (`SO_PEERCRED`'s pid
+    /// field and `pidfd_open` are Linux-specific) — `connect_voyage_socket`
+    /// fails closed here rather than skip authentication silently.
+    #[error("{0}")]
+    Unsupported(&'static str),
 }
 
 // ---------------------------------------------------------------------
@@ -1651,5 +1665,514 @@ fn writer_loop(
                 break;
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------
+// L1-unix LU1c: the client side of one voyage's (or the supervisor
+// lane's) socket. Mirrors `pipe_win::PipeClient` in SHAPE — the exact
+// three-method surface (property 26) — with `shutdown(2)` standing in
+// for `CancelIoEx` (ADR 0043 decision 5) and no completion-proof
+// apparatus at all: POSIX `read`/`write` never borrow the caller's
+// buffer past the call, so there is nothing here to leak or abort over
+// (`pipe_win`'s own `CompletionUnproven` has no Unix analogue).
+// ---------------------------------------------------------------------
+
+/// The client side of one voyage's socket: `read`/`write_all` are
+/// blocking from the calling thread's own perspective, but `SocketClient`
+/// is `Sync` — a second thread may call [`SocketClient::cancel`] at any
+/// time to unblock whichever of the two is currently in flight, via
+/// `shutdown(2)` on the shared fd (ADR 0043 decision 5). `read_slot`/
+/// `write_slot` are plain `Mutex<()>`s used only via `try_lock` — the
+/// direct analogue of `pipe_win::IoSlot`'s own same-direction rejection,
+/// simplified because POSIX has no per-op cancel target to protect a
+/// shared `OVERLAPPED`-like structure from: the fd itself is the only
+/// shared state, and `shutdown(2)` is safe to call while a read/write is
+/// concurrently in flight on it.
+pub struct SocketClient {
+    stream: UnixStream,
+    /// Set by [`cancel`](Self::cancel) BEFORE the `shutdown(2)` that
+    /// unblocks a stalled read/write — checked on entry, on every
+    /// partial-progress iteration, and after any error, so a call that
+    /// races a cancel is classified `Cancelled` rather than an ordinary
+    /// I/O failure (ADR 0043 decision 5), and a call made AFTER cancel
+    /// completed is rejected before ever touching the OS again (property
+    /// 34).
+    cancelled: AtomicBool,
+    read_slot: Mutex<()>,
+    write_slot: Mutex<()>,
+    /// `CLOCK_BOOTTIME` at the moment `connect` completed, in the same
+    /// clock ticks as `/proc/<pid>/stat` field 22 (`sysconf(_SC_CLK_TCK)`)
+    /// — `challenge_unix::pin_peer`'s own race-free anchor. `0` on a
+    /// non-Linux Unix target, where nothing ever reads it (the whole
+    /// identity-pinning path is Linux-only; see `connect_voyage_socket`'s
+    /// own two cfg'd bodies) — hence the `cfg_attr`: only the Linux
+    /// `SocketChallengeable` impl below ever reads this field.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    established_boot_ticks: u64,
+}
+
+impl std::fmt::Debug for SocketClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SocketClient").finish_non_exhaustive()
+    }
+}
+
+impl SocketClient {
+    /// Blocking write of the whole buffer, cancellable from another
+    /// thread via [`cancel`](Self::cancel). `bytes` must be non-empty. A
+    /// concurrent SECOND `write_all` call from another thread returns
+    /// `Err(SocketError::ConcurrentSubmit)` rather than racing this one's
+    /// own partial-progress loop (property 34's sibling — decided BEFORE
+    /// touching the OS). ADR 0043 decisions 5/7: completes on success, an
+    /// error may follow partial delivery (the byte-stream-prefix property
+    /// holds either way — nothing here rewinds bytes already written).
+    pub fn write_all(&self, bytes: &[u8]) -> Result<(), SocketError> {
+        let _guard = self
+            .write_slot
+            .try_lock()
+            .map_err(|_| SocketError::ConcurrentSubmit)?;
+        if bytes.is_empty() {
+            return Err(SocketError::EmptyPayload);
+        }
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(SocketError::Cancelled);
+        }
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            // Checked on EVERY iteration (ADR 0043 decision 5), before
+            // ever issuing the next `write` — a cancel that lands between
+            // two partial writes is observed here, not only via the
+            // error branch below.
+            if self.cancelled.load(Ordering::SeqCst) {
+                return Err(SocketError::Cancelled);
+            }
+            match (&self.stream).write(remaining) {
+                Ok(0) => {
+                    return Err(SocketError::Io {
+                        op: "write",
+                        source: io::Error::new(
+                            io::ErrorKind::WriteZero,
+                            "write returned 0 with bytes still to send",
+                        ),
+                    });
+                }
+                Ok(n) => remaining = &remaining[n..],
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => {
+                    // A cancelled flag turns whatever `shutdown(2)`
+                    // provoked (EPIPE/ECONNRESET/anything else) into
+                    // `Cancelled` — never surfaced as an ordinary
+                    // failure once cancellation is in play.
+                    return if self.cancelled.load(Ordering::SeqCst) {
+                        Err(SocketError::Cancelled)
+                    } else {
+                        Err(SocketError::Io { op: "write", source: e })
+                    };
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Blocking read into `buf`, cancellable from another thread via
+    /// [`cancel`](Self::cancel). `buf` must be non-empty. A concurrent
+    /// SECOND `read` call from another thread returns
+    /// `Err(SocketError::ConcurrentSubmit)`. `Ok(0)` is ordered EOF
+    /// (property 13) — UNLESS the cancelled flag is set, in which case a
+    /// zero-length or error result is `Cancelled` instead, checked both
+    /// BEFORE and AFTER the call (ADR 0043 decision 5): a genuinely
+    /// delivered nonzero read is returned as-is even after a cancel —
+    /// "queued input may still be returned after a cancel" — only the
+    /// EOF/error tail end of a cancelled connection is reclassified.
+    pub fn read(&self, buf: &mut [u8]) -> Result<usize, SocketError> {
+        let _guard = self
+            .read_slot
+            .try_lock()
+            .map_err(|_| SocketError::ConcurrentSubmit)?;
+        if buf.is_empty() {
+            return Err(SocketError::EmptyPayload);
+        }
+        loop {
+            if self.cancelled.load(Ordering::SeqCst) {
+                return Err(SocketError::Cancelled);
+            }
+            match (&self.stream).read(buf) {
+                Ok(0) => {
+                    return if self.cancelled.load(Ordering::SeqCst) {
+                        Err(SocketError::Cancelled)
+                    } else {
+                        Ok(0)
+                    };
+                }
+                Ok(n) => return Ok(n),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => {
+                    return if self.cancelled.load(Ordering::SeqCst) {
+                        Err(SocketError::Cancelled)
+                    } else {
+                        Err(SocketError::Io { op: "read", source: e })
+                    };
+                }
+            }
+        }
+    }
+
+    /// Abort whatever is in flight, from any thread: latch `cancelled`
+    /// FIRST (SeqCst), THEN `shutdown(SHUT_RDWR)` — the direct analogue
+    /// of `pipe_win::IoSlot::cancel`'s own "latch, then request" order,
+    /// simplified because POSIX's `shutdown(2)` unblocks a blocked read
+    /// AND a blocked write in one call, from any thread, without needing
+    /// to know which direction (if either) is currently mid-call.
+    /// Idempotent. A cancelled client permanently rejects later
+    /// submissions (property 34) — every later `read`/`write_all` call
+    /// observes `cancelled` already set before it ever reaches the OS.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        unsafe {
+            libc::shutdown(self.stream.as_raw_fd(), libc::SHUT_RDWR);
+        }
+    }
+
+    /// TEST-SUPPORT ONLY: build a client around an already-connected
+    /// stream (a raw `UnixStream::connect`, or one accepted server-side
+    /// and handed to a paired test) with a controllable
+    /// `established_boot_ticks`, so the pin-validation tests can exercise
+    /// both sides of its strict inequality without racing a real clock.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_stream_for_test(stream: UnixStream, established_boot_ticks: u64) -> SocketClient {
+        SocketClient {
+            stream,
+            cancelled: AtomicBool::new(false),
+            read_slot: Mutex::new(()),
+            write_slot: Mutex::new(()),
+            established_boot_ticks,
+        }
+    }
+}
+
+/// ADR 0041 step 6, unit U0: the voyage socket is one of the pipe/socket
+/// families the same-connection challenge must serve — see `challenge.rs`'s
+/// own doc for why that module depends on this trait rather than on
+/// `SocketClient` by name.
+impl crate::challenge::ChallengeableConnection for SocketClient {
+    fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
+        SocketClient::write_all(self, bytes).map_err(socket_error_to_io)
+    }
+
+    fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        SocketClient::read(self, buf).map_err(socket_error_to_io)
+    }
+
+    fn cancel(&self) {
+        SocketClient::cancel(self)
+    }
+}
+
+/// L1-unix LU1c: the Linux-shaped extension every `SocketChallengeable`
+/// this crate actually challenges must also supply — see
+/// `challenge_unix.rs`'s own doc for why this is the Linux twin of
+/// `challenge_win::PipeChallengeable`.
+#[cfg(target_os = "linux")]
+impl crate::challenge_unix::SocketChallengeable for SocketClient {
+    fn raw_fd(&self) -> RawFd {
+        self.stream.as_raw_fd()
+    }
+
+    fn established_boot_ticks(&self) -> u64 {
+        self.established_boot_ticks
+    }
+}
+
+/// Map a [`SocketError`] to a plain `io::Error` for the `challenge`
+/// module's trait boundary, which depends on neither pipe/socket family's
+/// own error type by name — the exact same mapping
+/// `pipe_win::pipe_error_to_io` uses: `Io` unwraps to its underlying
+/// `std::io::Error` (preserving `ErrorKind`); everything else, `Cancelled`
+/// included, wraps opaquely. `exchange_identity`'s own
+/// `map_err(|_| Undetermined)` discards the specific `ErrorKind` either
+/// way, so this needs no finer distinction than `pipe_win`'s own version
+/// already gets away with.
+fn socket_error_to_io(e: SocketError) -> std::io::Error {
+    match e {
+        SocketError::Io { source, .. } => source,
+        other => std::io::Error::other(other),
+    }
+}
+
+// ---------------------------------------------------------------------
+// Connect (ADR 0043 decision 4, property 18): a bounded, non-blocking
+// `connect(2)` retry loop over a FRESH `AF_UNIX` socket per attempt (a
+// failed `connect(2)` leaves the socket itself unusable for a further
+// attempt on most Unix implementations, the same reason
+// `pipe_win::connect_named_pipe_unchallenged` re-issues `CreateFileW`
+// rather than reusing a handle across retries).
+// ---------------------------------------------------------------------
+
+/// Outcome of one raw connect attempt.
+enum ConnectAttempt {
+    /// `ECONNREFUSED`/`ENOENT`/`EAGAIN` (ADR 0043 decision 4: a full
+    /// listen backlog) — an ordinary race in a healthy multi-client
+    /// server, retried within [`CONNECT_BOUND`].
+    Retryable(io::Error),
+    /// Anything else — surfaced immediately, never retried.
+    Fatal(io::Error),
+}
+
+fn poll_writable(fd: RawFd, timeout: Duration) -> io::Result<()> {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    let rc = unsafe { libc::poll(&mut pfd, 1, ms) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if rc == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "poll(POLLOUT) timed out waiting for a non-blocking connect to complete",
+        ));
+    }
+    Ok(())
+}
+
+fn set_blocking(fd: RawFd) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// One `socket`+`connect` attempt against `addr_bytes` (the real path,
+/// never the server's own `/proc/self/fd` bind trick — a client always
+/// dials the real name). A FRESH socket every call: a failed `connect(2)`
+/// on `AF_UNIX` leaves the fd in an unspecified state for a further
+/// attempt, so retrying reuses nothing.
+fn one_connect_attempt(addr_bytes: &[u8]) -> Result<UnixStream, ConnectAttempt> {
+    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if raw < 0 {
+        return Err(ConnectAttempt::Fatal(io::Error::last_os_error()));
+    }
+    // SAFETY: `raw` is a freshly created, valid, not-otherwise-owned fd.
+    // Wrapped immediately so every early return below closes it.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    if let Err(e) = set_cloexec(fd.as_raw_fd()) {
+        return Err(ConnectAttempt::Fatal(e));
+    }
+    if let Err(e) = set_nonblocking(fd.as_raw_fd()) {
+        return Err(ConnectAttempt::Fatal(e));
+    }
+
+    // SAFETY: a zeroed `sockaddr_un` is a valid value of that type.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (dst, &b) in addr.sun_path.iter_mut().zip(addr_bytes) {
+        *dst = b as libc::c_char;
+    }
+    let addr_len =
+        (std::mem::size_of::<libc::sa_family_t>() + addr_bytes.len() + 1) as libc::socklen_t;
+
+    let rc = unsafe {
+        libc::connect(fd.as_raw_fd(), std::ptr::addr_of!(addr).cast(), addr_len)
+    };
+    if rc != 0 {
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(code)
+                if code == libc::ECONNREFUSED
+                    || code == libc::ENOENT
+                    || code == libc::EAGAIN =>
+            {
+                return Err(ConnectAttempt::Retryable(err));
+            }
+            Some(code) if code == libc::EINPROGRESS => {
+                // Cannot occur for AF_UNIX in practice (there is no
+                // three-way handshake to be genuinely pending on) — but
+                // if it ever did, wait for writability then read
+                // SO_ERROR, exactly like a portable non-blocking TCP
+                // connect would.
+                if let Err(e) = poll_writable(fd.as_raw_fd(), CONNECT_BOUND) {
+                    return Err(ConnectAttempt::Fatal(e));
+                }
+                let mut so_err: libc::c_int = 0;
+                let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+                let rc2 = unsafe {
+                    libc::getsockopt(
+                        fd.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_ERROR,
+                        std::ptr::addr_of_mut!(so_err).cast(),
+                        &mut len,
+                    )
+                };
+                if rc2 != 0 {
+                    return Err(ConnectAttempt::Fatal(io::Error::last_os_error()));
+                }
+                if so_err != 0 {
+                    let err = io::Error::from_raw_os_error(so_err);
+                    return if so_err == libc::ECONNREFUSED
+                        || so_err == libc::ENOENT
+                        || so_err == libc::EAGAIN
+                    {
+                        Err(ConnectAttempt::Retryable(err))
+                    } else {
+                        Err(ConnectAttempt::Fatal(err))
+                    };
+                }
+                // Fall through: connected.
+            }
+            _ => return Err(ConnectAttempt::Fatal(err)),
+        }
+    }
+
+    if let Err(e) = set_blocking(fd.as_raw_fd()) {
+        return Err(ConnectAttempt::Fatal(e));
+    }
+    // SAFETY: `fd` was just connected as an `AF_UNIX`/`SOCK_STREAM`
+    // socket; `UnixStream` takes ownership of exactly that fd.
+    Ok(unsafe { UnixStream::from_raw_fd(fd.into_raw_fd()) })
+}
+
+#[cfg(target_os = "linux")]
+fn capture_established_boot_ticks() -> u64 {
+    // A failure here degrades the eventual pin to `Undetermined`, never a
+    // false `Proven` — see `challenge_unix::pin_peer`'s own strict
+    // less-than check, which a `0` timestamp can only ever fail (no
+    // process has a negative start time), so this never needs to fail
+    // the connect outright over it.
+    crate::challenge_unix::boot_ticks_now().unwrap_or(0)
+}
+#[cfg(not(target_os = "linux"))]
+fn capture_established_boot_ticks() -> u64 {
+    0
+}
+
+/// Shared raw connect, given an already-validated path: the bounded,
+/// non-blocking retry loop (ADR 0043 decision 4, property 18) — retries
+/// `ECONNREFUSED`/`ENOENT`/`EAGAIN` until `Instant::now() + CONNECT_BOUND`
+/// (one attempt may overrun the bound by a single 20 ms sleep, exactly
+/// like `pipe_win`'s own loop); any other error is immediate and fatal.
+/// NO authentication of any kind — every caller is responsible for
+/// running the OS-level identity check on top, exactly like
+/// `pipe_win::connect_named_pipe_unchallenged`.
+fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, SocketError> {
+    let addr_bytes = path.as_os_str().as_bytes();
+    let deadline = Instant::now() + CONNECT_BOUND;
+    loop {
+        match one_connect_attempt(addr_bytes) {
+            Ok(stream) => {
+                return Ok(SocketClient {
+                    stream,
+                    cancelled: AtomicBool::new(false),
+                    read_slot: Mutex::new(()),
+                    write_slot: Mutex::new(()),
+                    established_boot_ticks: capture_established_boot_ticks(),
+                });
+            }
+            Err(ConnectAttempt::Fatal(e)) => {
+                return Err(SocketError::Io {
+                    op: "connect",
+                    source: e,
+                });
+            }
+            Err(ConnectAttempt::Retryable(e)) => {
+                if Instant::now() >= deadline {
+                    return Err(SocketError::Io {
+                        op: "connect(bounded retry)",
+                        source: e,
+                    });
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
+/// The raw connect to the voyage socket, with NO authentication — every
+/// step-5 client must go through [`connect_voyage_socket`] instead.
+/// `pub(crate)`, and MUST STAY `pub(crate)` — mirrors
+/// `pipe_win::connect_voyage_pipe_unchallenged`'s own "never widen" doc:
+/// an unchallenged `SocketClient` reachable through a PUBLIC path would
+/// defeat this whole module's enforcement. `#[cfg_attr]`: only
+/// `connect_voyage_socket`'s Linux body calls this — its non-Linux stub
+/// (ADR 0043 decision 8) fails closed before ever reaching a connect, so
+/// a non-Linux Unix build (macOS, experimental) sees this as unused —
+/// the same "hoisted but not yet called on this cfg" device this crate
+/// already uses for `deadline.rs`/`exchange_identity`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<SocketClient, SocketError> {
+    let path = voyage_socket_path(voyage_id)?;
+    connect_unix_socket_unchallenged(&path)
+}
+
+/// The supervisor lane's own raw connect, with NO authentication — see
+/// `pipe_win::connect_supervisor_pipe_unchallenged`'s own doc for why
+/// this intentionally has no `_unchallenged`-free sibling: the supervisor
+/// lane needs the full five-step [`crate::challenge_unix::challenge`],
+/// which the caller composes itself on top of this. No caller exists yet
+/// on Unix (`fe_client_win.rs`/`supervisor.rs` are its Windows-only
+/// analogues; their Unix counterparts are LU3's job, ADR 0043's own lane
+/// list) — `allow(dead_code)` rather than deleting it, the same "hoisted
+/// but not yet called" device this crate already uses for `deadline.rs`
+/// and `exchange_identity` (both `#[cfg_attr(not(windows), allow(dead_code))]`
+/// for the identical reason, one lane early).
+#[allow(dead_code)]
+pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketClient, SocketError> {
+    let path = supervisor_socket_path(h)?;
+    connect_unix_socket_unchallenged(&path)
+}
+
+/// Connect to `<runtime_dir>/voyage-<voyage_id>.sock` AND authenticate
+/// the server behind it (ADR 0043 decision 8, steps 1-3) before handing
+/// the connection back — the shared, step-5-client-facing constructor
+/// every ordinary caller uses, mirroring `pipe_win::connect_voyage_pipe`'s
+/// own doc almost verbatim: a raw successful `connect(2)` proves nothing
+/// about who is listening, so this runs
+/// [`crate::challenge_unix::authenticate_server`] (same-user identity
+/// only — NOT the full five-step `challenge()`, which additionally binds
+/// a reply's own pid/creation and needs a lane-specific request this
+/// layer must not consume) before returning `Ok(_)`. A failed
+/// authentication is a loud, typed [`SocketError::Foreign`] or
+/// [`SocketError::Undetermined`] — never a silent retry.
+#[cfg(target_os = "linux")]
+pub fn connect_voyage_socket(voyage_id: &str) -> Result<SocketClient, SocketError> {
+    let client = connect_voyage_socket_unchallenged(voyage_id)?;
+    map_sid_auth_outcome(crate::challenge_unix::authenticate_server(&client))?;
+    Ok(client)
+}
+
+/// ADR 0043 decision 8: other Unix has no kernel-provided peer-pid
+/// mechanism this crate trusts (`SO_PEERCRED`'s pid field and
+/// `pidfd_open` are Linux-specific — a non-Linux `getpeereid`-style call
+/// has no pid at all). Rather than connect and then silently skip
+/// authentication, this fails closed immediately: same public name as
+/// the Linux implementation above, so no caller needs its own
+/// `cfg(target_os = "linux")` split merely to reach this function.
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn connect_voyage_socket(_voyage_id: &str) -> Result<SocketClient, SocketError> {
+    Err(SocketError::Unsupported(
+        "connect_voyage_socket: peer identity authentication (SO_PEERCRED/pidfd) is implemented \
+         for Linux only; this Unix target fails closed (ADR 0043 decision 8)",
+    ))
+}
+
+/// Maps [`crate::challenge::SidAuthOutcome`] to this module's own
+/// `Result` — the exact logic [`connect_voyage_socket`] runs, pulled out
+/// so it is directly unit-testable without a live socket, mirroring
+/// `pipe_win::map_sid_auth_outcome`'s own reasoning.
+#[cfg(target_os = "linux")]
+fn map_sid_auth_outcome(outcome: crate::challenge::SidAuthOutcome) -> Result<(), SocketError> {
+    match outcome {
+        crate::challenge::SidAuthOutcome::Authenticated(_) => Ok(()),
+        crate::challenge::SidAuthOutcome::Foreign => Err(SocketError::Foreign),
+        crate::challenge::SidAuthOutcome::Undetermined => Err(SocketError::Undetermined),
     }
 }
