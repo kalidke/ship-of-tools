@@ -53,8 +53,15 @@ manager review, one Codex round, CI green, merge (the standing rule).
   (`write_all`/`read`/`cancel`), `connect_voyage_socket`, `SocketError`, and
   the bridge to `Transport`. `Error::Socket(#[from])` under `cfg(unix)`. Also
   hoists `PIPE_CONNECT_BOUND` into `transport.rs` as `CONNECT_BOUND`, the one
-  shared bound LU1a left behind.
-- **LU1c — `challenge_unix.rs` + `tests/challenge_unix.rs`** (Linux).
+  shared bound LU1a left behind. **Landed as the server half only** — the
+  client (`SocketClient`, `connect_voyage_socket`, cancel/`ConcurrentSubmit`)
+  moved to LU1c, because the client's identity proof and the challenge are
+  one design; LU1b's own tests drive the server with raw
+  `std::os::unix::net::UnixStream` clients instead.
+- **LU1c — `challenge_unix.rs` + `tests/challenge_unix.rs`** (Linux). Also
+  where the Unix client (`SocketClient`, `connect_voyage_socket`, cancel/
+  `ConcurrentSubmit`) lands, alongside `challenge_unix.rs` — see LU1b's own
+  note above.
 - **LU2 — one producer.** A `Producer` trait over ConPTY and `openpty`;
   `capsule.rs::run` gains the `commands` receiver and the `Transport`; the
   Windows `run` loop becomes the one loop; `capsule.rs` stops being a second
@@ -136,7 +143,9 @@ submissions.
    disagree. Determinism therefore comes from propagation, not discovery: the
    daemon resolves the runtime dir ONCE and exports it as `SOT_RUNTIME_DIR` to
    every capsule and client it spawns; every derivation prefers a set,
-   validated (`is_private_dir`) `SOT_RUNTIME_DIR` over discovery, and discovery
+   ABSOLUTE, validated (`is_private_dir`) `SOT_RUNTIME_DIR` over discovery (a
+   relative override would resolve differently per working directory and is
+   rejected), and discovery
    is only the fallback for a process started outside the daemon's tree — where
    a mismatch shows up as "endpoint not found", loud, never as a silent second
    endpoint. `sun_path` is 108 bytes on Linux including the NUL: a path longer
@@ -154,16 +163,32 @@ submissions.
    unlinks it and binds; a rival that cannot take the lock fails loudly there
    (property 3 becomes the lock's failure, which already exists), and
    `EADDRINUSE` after unlink-and-bind is a genuine error, not a retry.
-   `disconnect_listener` unlinks only its own path, exactly once, first thing
+   `disconnect_listener` unlinks only its own entry (by `unlinkat` on the
+   verified dir fd), exactly once — the shutdown latch is a compare-exchange
+   and only the winning call unlinks, so a `Drop` after a replacement server
+   has bound the same name can never delete the replacement's endpoint
    (property 5); the inode the listener holds keeps the name across churn
-   (property 4).
-3. **Permissions.** The socket dir is owner-only (0700, owner-checked with
-   `is_private_dir`, never a symlink) — that directory is what isolates the
-   endpoint at creation time. `umask` is process-wide and is NOT touched (a
-   save/set/restore dance races other threads and leaks into children): the
-   socket is `chmod 0600` and verified BEFORE `listen`, which closes the window
-   since no connection can exist before `listen` (property 1). `AF_UNIX` is
-   asserted (property 2).
+   (property 4). Registration is checked against that same latch under the
+   connection-map lock, so no connection can be registered after phase one
+   drained the map.
+3. **Permissions, anchored to the verified directory.** The runtime dir must be
+   owner-only (0700, owned by this uid, not a symlink) — but its ANCESTORS are
+   not trusted: a private leaf under a world-writable non-sticky parent, or
+   reached through a symlink ancestor, could be swapped between a by-path check
+   and a by-path operation. So the server opens the directory once
+   (`O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`), verifies it by `fstat` ON THE FD, and
+   anchors every later step to that fd: `unlinkat` for the stale entry, `bind`
+   through `/proc/self/fd/<dirfd>/<name>` (a Unix socket is bound to the inode
+   the path resolves to at bind time; clients connecting by the real path reach
+   the same inode), `fchmodat(dirfd, name, 0600)` and an `fstatat(…,
+   AT_SYMLINK_NOFOLLOW)` that requires a socket owned by this uid with mode
+   0600 — all BEFORE `listen`, so no connection can exist while the entry is
+   anything else (property 1). `umask` is process-wide and is NOT touched. On
+   non-Linux Unix there is no `/proc/self/fd`, so `bind` itself is by path and
+   ancestors ARE trusted there (macOS stays experimental; documented in the
+   module). A client connecting by path through a redirected ancestor is
+   defended by the same-user challenge (LU1c) — a same-uid attacker is outside
+   the model. `AF_UNIX` is asserted (property 2).
 4. **Ceiling.** An explicit `max_connections` (1..=255, `InvalidMaxConnections`,
    property 7). Unix cannot refuse at connect time — the kernel completes the
    handshake from the backlog — so at capacity the acceptor accepts and closes

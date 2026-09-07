@@ -44,6 +44,17 @@ pub mod pipe_win;
 // -- one bridge, reused by both, rather than duplicated or made
 // unreachable from the test crate.
 pub mod pipe_transport;
+// L1-unix LU1b (ADR 0043): the Unix domain-socket transport server --
+// `SocketServer` (bind/accept, per-connection reader+writer threads, one
+// bounded events channel, byte-budgeted outbound, two-phase teardown).
+// `pub`, matching `pipe_win`: its tests live in `tests/socket_unix.rs`, a
+// separate integration-test crate that can only ever reach `pub` items.
+// Self-gated (`#![cfg(unix)]`), like `pipe_win` is self-gated to Windows.
+pub mod socket_unix;
+// L1-unix LU1b: the thin bridge from `socket_unix`'s real Unix-domain-
+// socket transport to `transport`'s `Transport` trait -- the Unix twin of
+// `pipe_transport`. Self-gated (`#![cfg(unix)]`).
+pub mod socket_transport;
 // ADR 0041 step 6, unit U0: fault-injection scaffolding for the probe
 // classifier's own (later) model test. NO classifier logic lives here —
 // see the module's own doc. Platform-neutral (L1-unix LU1a): the
@@ -203,6 +214,21 @@ pub enum Error {
     #[cfg(windows)]
     #[error("pipe transport: {0}")]
     Pipe(#[from] pipe_win::PipeError),
+    /// A Unix-domain-socket transport OPERATION failed (Unix-only:
+    /// `socket_unix` module) — binding the socket (`SocketServer::bind`,
+    /// inside `SocketTransport::bind`) is the ONLY place
+    /// `socket_transport.rs` converts one of these into this crate's own
+    /// `Error` — mirrors the `Pipe` variant's own rule exactly. A LATER,
+    /// background failure on an already-bound socket (`socket_unix`'s own
+    /// `TransportEvent::AcceptError`) never reaches this type at all —
+    /// `socket_transport.rs` translates it to
+    /// `transport::TransportEvent::TransportFatal` instead, delivered
+    /// through `Transport::try_recv_event` like any other transport
+    /// event, since by then the capsule's run loop is already past `bind`
+    /// and mid-loop, not somewhere a `Result` could propagate to.
+    #[cfg(unix)]
+    #[error("socket transport: {0}")]
+    Socket(#[from] socket_unix::SocketError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

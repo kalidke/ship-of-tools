@@ -191,11 +191,12 @@ use crate::challenge_win::{self, ChallengedProcess};
 use crate::classify::{self, ProbeOutcome};
 use crate::fsutil;
 use crate::journal;
-use crate::pipe_win::{self, ConnId, PipeServer, TransportEvent, PIPE_CONNECT_BOUND};
+use crate::pipe_win::{self, ConnId, PipeServer, TransportEvent};
 use crate::pointer::{self, PointerState};
 use crate::probe_win::RealProbeOps;
 use crate::recovery::{self, LatestLegState};
 use crate::segment::RetentionClass;
+use crate::transport::CONNECT_BOUND;
 use crate::verify;
 use crate::voyage::VoyageStore;
 use crate::wire::{
@@ -260,7 +261,7 @@ const LIVENESS_PROBE_BUDGET: Duration = Duration::from_secs(2);
 /// cite the real constants a delivery attempt is bound by instead of
 /// re-deriving the same numbers as independent, driftable literals. The
 /// challenge and write bounds match every other "2s" per-op budget in
-/// this module (`LIVENESS_PROBE_BUDGET`, `PIPE_CONNECT_BOUND`); the ack
+/// this module (`LIVENESS_PROBE_BUDGET`, `CONNECT_BOUND`); the ack
 /// read gets its own longer allowance because it waits on the CAPSULE's
 /// own reply, not a bare OS call.
 const END_RUN_CHALLENGE_BOUND: Duration = Duration::from_secs(2);
@@ -279,7 +280,7 @@ const WATCHDOG_BUFFER: Duration = Duration::from_secs(10);
 /// delivery attempt entirely, so a genuinely slow-but-legal recovery
 /// could hit this watchdog before its own terminal journal record was
 /// durable), plus [`WATCHDOG_BUFFER`]:
-/// [`PIPE_CONNECT_BOUND`] (connect) + [`END_RUN_CHALLENGE_BOUND`]
+/// [`CONNECT_BOUND`] (connect) + [`END_RUN_CHALLENGE_BOUND`]
 /// (challenge) + [`END_RUN_WRITE_BOUND`] (shutdown write) +
 /// [`END_RUN_ACK_READ_BOUND`] (ack read) — one
 /// [`end_run_over_mgmt_lane`] attempt — + [`SUPPORTED_HISTORY_BOUND`] +
@@ -294,7 +295,7 @@ const WATCHDOG_BUFFER: Duration = Duration::from_secs(10);
 /// loop with — an operation still genuinely undetermined after this
 /// budget stays `.active` for a LATER pass, never silently abandoned.
 const RECOVERY_WATCHDOG: Duration = Duration::from_secs(
-    PIPE_CONNECT_BOUND.as_secs()
+    CONNECT_BOUND.as_secs()
         + END_RUN_CHALLENGE_BOUND.as_secs()
         + END_RUN_WRITE_BOUND.as_secs()
         + END_RUN_ACK_READ_BOUND.as_secs()

@@ -10,11 +10,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-# `session_socket::current_uid` (getuid, for the private-runtime-dir checks
-# `session_socket_path`'s Unix branch relies on) -- already a workspace
-# dependency (rust/backend already pins the same version), so this adds
-# nothing new to the lockfile; confined to Unix the same way sot-log confines
-# its own platform-only deps (see that crate's Cargo.toml).
-libc = { workspace = true }
+# L1-unix LU1b (ADR 0043 decision 1): `session_socket`'s own
+# `runtime_sot_dir`/`is_private_dir`/`current_uid` moved DOWN into
+# `sot-log`'s `state_dir` module (the Unix socket transport needs the
+# identical derivation) and are re-exported from there -- `sot-log` has no
+# dependency on this crate, so this edge is one-directional. This also
+# retires this crate's own direct `libc` dependency (its only call,
+# `getuid()`, moved with `current_uid`).
+sot-log = { path = "../log" }

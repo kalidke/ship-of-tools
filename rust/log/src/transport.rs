@@ -190,6 +190,18 @@ pub trait Transport {
 /// constant, one mechanism.
 pub const TEARDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_secs(20);
 
+/// L1-unix LU1b (ADR 0043 "Bounds are the same numbers on both
+/// platforms"): the total connect retry budget, hoisted here from
+/// `pipe_win.rs`'s own `PIPE_CONNECT_BOUND` — the one bound LU1a left
+/// behind because only one platform's client existed yet. Both
+/// `pipe_win::connect_named_pipe_unchallenged` (Windows, retrying
+/// `ERROR_PIPE_BUSY`/`ERROR_FILE_NOT_FOUND`) and the Unix client's own
+/// connect retry (LU1c, retrying `ECONNREFUSED`/`ENOENT`/`EAGAIN`) share
+/// this SAME constant — ADR 0043 decision 4's "a deliberate, documented
+/// difference from `PIPE_BUSY`" is in which errno family each retries,
+/// never in how long either budget runs.
+pub const CONNECT_BOUND: Duration = Duration::from_secs(2);
+
 /// [`join_within`]'s poll granularity — small enough that a fast, healthy
 /// teardown (the ordinary case) never visibly waits for it, and small
 /// enough that a test proving "loud on expiry" against a short injected
