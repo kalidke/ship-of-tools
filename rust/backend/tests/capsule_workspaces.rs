@@ -185,16 +185,35 @@ struct Env {
 
 impl Env {
     fn new(tag: &str) -> Self {
-        // Short prefix (`tempdir_in("/tmp")`, ADR 0043 decision 1's own
-        // sun_path concern) on every platform — harmless on Windows,
-        // where no such length limit exists.
+        // `_tmp` (project/state/config) has no socket path deriving from
+        // it directly — a real supervisor/voyage socket's own name is a
+        // FIXED-LENGTH hash of the state dir path (`state_dir_hash`),
+        // never that path itself nested under a socket directory — so
+        // `std::env::temp_dir()` (which honours `$TMPDIR`) is fine here
+        // on every platform.
         let tmp = tempfile::Builder::new()
             .prefix("sotcw-")
             .tempdir_in(std::env::temp_dir())
             .expect("tempdir");
+        // `runtime_tmp` (`SOT_RUNTIME_DIR`) is different: every real
+        // supervisor/voyage socket AND this test's own wire socket
+        // (`test_socket_path`) live directly under it, so ITS OWN path
+        // length is exactly the `sun_path` budget (108 bytes including
+        // the NUL, ADR 0043 decision 1's own concern) every one of those
+        // names eats into. `std::env::temp_dir()` would honour an
+        // ambient `$TMPDIR`, which can be arbitrarily long (the LU1b
+        // lesson — every other suite in this crate uses a literal `/tmp`
+        // on Unix for exactly this reason) — a literal `/tmp` here,
+        // short prefix, matches them. Windows has no such bound (named
+        // pipes aren't real filesystem paths), so `temp_dir()` stays fine
+        // there.
+        #[cfg(unix)]
+        let runtime_base = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let runtime_base = std::env::temp_dir();
         let runtime_tmp = tempfile::Builder::new()
             .prefix("sotrt-")
-            .tempdir_in(std::env::temp_dir())
+            .tempdir_in(runtime_base)
             .expect("runtime tempdir");
         // `tempfile` creates directories respecting the process umask
         // (typically 0755, not 0700) — both `SOT_RUNTIME_DIR`'s own
