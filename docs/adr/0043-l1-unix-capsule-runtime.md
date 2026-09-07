@@ -53,8 +53,15 @@ manager review, one Codex round, CI green, merge (the standing rule).
   (`write_all`/`read`/`cancel`), `connect_voyage_socket`, `SocketError`, and
   the bridge to `Transport`. `Error::Socket(#[from])` under `cfg(unix)`. Also
   hoists `PIPE_CONNECT_BOUND` into `transport.rs` as `CONNECT_BOUND`, the one
-  shared bound LU1a left behind.
-- **LU1c — `challenge_unix.rs` + `tests/challenge_unix.rs`** (Linux).
+  shared bound LU1a left behind. **Landed as the server half only** — the
+  client (`SocketClient`, `connect_voyage_socket`, cancel/`ConcurrentSubmit`)
+  moved to LU1c, because the client's identity proof and the challenge are
+  one design; LU1b's own tests drive the server with raw
+  `std::os::unix::net::UnixStream` clients instead.
+- **LU1c — `challenge_unix.rs` + `tests/challenge_unix.rs`** (Linux). Also
+  where the Unix client (`SocketClient`, `connect_voyage_socket`, cancel/
+  `ConcurrentSubmit`) lands, alongside `challenge_unix.rs` — see LU1b's own
+  note above.
 - **LU2 — one producer.** A `Producer` trait over ConPTY and `openpty`;
   `capsule.rs::run` gains the `commands` receiver and the `Transport`; the
   Windows `run` loop becomes the one loop; `capsule.rs` stops being a second
