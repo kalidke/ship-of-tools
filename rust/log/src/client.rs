@@ -53,7 +53,14 @@ pub trait Client: Send + Sync {
 /// pre-existing behavior.
 pub(crate) fn transport_error_to_io(e: TransportError) -> std::io::Error {
     match e {
-        TransportError::Io { source, .. } => source,
+        // Both variants that CARRY an `io::Error` hand it back unwrapped, so
+        // its `ErrorKind` survives for callers that classify on it (the
+        // attach client's access-denied check): `RuntimeDir` is the Linux
+        // shape of "the endpoint's directory refused us" (an invalid or
+        // foreign-owned `SOT_RUNTIME_DIR` -> `PermissionDenied`); wrapping it
+        // as `Other` sent the FE down the 120 s unresponsive path instead
+        // (LU3b review round). Windows never produces `RuntimeDir`.
+        TransportError::Io { source, .. } | TransportError::RuntimeDir(source) => source,
         other => std::io::Error::other(other),
     }
 }
