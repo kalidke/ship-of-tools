@@ -1080,7 +1080,17 @@ fn concurrent_same_direction_client_read_returns_distinct_error() {
         a.read(&mut buf) // blocks -- nobody ever sends
     });
 
-    std::thread::sleep(Duration::from_millis(300)); // let A's read actually become pending
+    // Review round fix: WAIT on the OBSERVED precondition (A's read has
+    // genuinely taken the read slot) rather than a fixed sleep guessing
+    // at how long that takes.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !client.read_slot_held_for_test() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for A's read to genuinely hold the read slot"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     let mut buf_b = [0u8; 16];
     let result_b = client.read(&mut buf_b);
@@ -1129,6 +1139,70 @@ fn cancelled_client_rejects_later_submissions() {
     // Idempotent: cancelling again must not panic or change the outcome.
     client.cancel();
     assert!(matches!(client.read(&mut buf), Err(SocketError::Cancelled)));
+
+    drop(server);
+}
+
+/// ADR 0043 decision 7 (review round): a failed send latches the
+/// connection closed, the same rule the server's own `writer_loop`
+/// already follows — the peer (the server) closes after reading only
+/// PART of a large write, so the client's own in-flight `write_all` fails
+/// terminally partway through; THAT call returns its own real error
+/// (never `Cancelled` — nobody called `cancel()`), but the latch it sets
+/// means every LATER call on the SAME client is rejected with
+/// `Cancelled`, exactly as if `cancel()` had been called.
+#[test]
+fn a_terminal_write_failure_latches_the_connection_closed() {
+    if !run_isolated("a_terminal_write_failure_latches_the_connection_closed") {
+        return;
+    }
+    let _rt = isolated_runtime_dir();
+    let id = fresh_voyage_id();
+    let path = voyage_socket_path(&id).unwrap();
+    let server = SocketServer::bind(&id, 2).unwrap();
+    let client = Arc::new(SocketClient::from_stream_for_test(
+        UnixStream::connect(&path).unwrap(),
+        0,
+    ));
+    let conn_id = expect_accepted(&server, TIMEOUT);
+
+    // A payload the kernel's own socket buffers cannot absorb in one
+    // gulp, so this write genuinely blocks partway through, waiting for
+    // the server side to keep draining it.
+    let writer_client = Arc::clone(&client);
+    let writer = std::thread::spawn(move || {
+        let payload = vec![0xABu8; 8 * 1024 * 1024];
+        writer_client.write_all(&payload)
+    });
+
+    // Read SOME of it -- proving data is genuinely flowing (a partial
+    // delivery, not an instantly-severed connection) -- then sever the
+    // connection out from under the still-in-flight write.
+    match next_event(&server, TIMEOUT) {
+        TransportEvent::Bytes(cid, bytes) => {
+            assert_eq!(cid, conn_id, "Bytes for the wrong connection");
+            assert!(!bytes.is_empty());
+        }
+        other => panic!("expected Bytes, got {other:?}"),
+    }
+    server.close(conn_id);
+
+    let result = writer.join().unwrap();
+    assert!(
+        matches!(result, Err(SocketError::Io { .. })),
+        "expected the terminal write failure to surface as its OWN Io error \
+         (never Cancelled -- nobody called cancel()), got {result:?}"
+    );
+
+    let mut buf = [0u8; 16];
+    assert!(
+        matches!(client.read(&mut buf), Err(SocketError::Cancelled)),
+        "a client whose write already failed terminally must reject a later read"
+    );
+    assert!(
+        matches!(client.write_all(b"x"), Err(SocketError::Cancelled)),
+        "a client whose write already failed terminally must reject a later write"
+    );
 
     drop(server);
 }

@@ -1701,15 +1701,25 @@ pub struct SocketClient {
     cancelled: AtomicBool,
     read_slot: Mutex<()>,
     write_slot: Mutex<()>,
-    /// `CLOCK_BOOTTIME` at the moment `connect` completed, in the same
-    /// clock ticks as `/proc/<pid>/stat` field 22 (`sysconf(_SC_CLK_TCK)`)
-    /// — `challenge_unix::pin_peer`'s own race-free anchor. `0` on a
-    /// non-Linux Unix target, where nothing ever reads it (the whole
-    /// identity-pinning path is Linux-only; see `connect_voyage_socket`'s
-    /// own two cfg'd bodies) — hence the `cfg_attr`: only the Linux
-    /// `SocketChallengeable` impl below ever reads this field.
+    /// `CLOCK_BOOTTIME` sampled immediately BEFORE this connection's own
+    /// `connect(2)` attempt began — NOT after it completed (review round
+    /// fix: a post-connect sample left a pid-reuse window open between
+    /// `connect` returning and the sample running), in the same clock
+    /// ticks as `/proc/<pid>/stat` field 22 (`sysconf(_SC_CLK_TCK)`) —
+    /// `challenge_unix::pin_peer`'s own race-free anchor: a peer that
+    /// `connect()`s successfully was necessarily alive when THIS attempt
+    /// began, so its start time must be strictly earlier, unless it is a
+    /// replacement that started in the anchor-to-connect gap — which the
+    /// pin's own strict `<` then correctly classifies `Undetermined`,
+    /// never a false `Proven`. See
+    /// [`connect_unix_socket_unchallenged`]'s own doc for where this is
+    /// sampled. `0` on a non-Linux Unix target, where nothing ever reads
+    /// it (the whole identity-pinning path is Linux-only; see
+    /// `connect_voyage_socket`'s own two cfg'd bodies) — hence the
+    /// `cfg_attr`: only the Linux `SocketChallengeable` impl below ever
+    /// reads this field.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    established_boot_ticks: u64,
+    connect_anchor_boot_ticks: u64,
 }
 
 impl std::fmt::Debug for SocketClient {
@@ -1726,7 +1736,16 @@ impl SocketClient {
     /// own partial-progress loop (property 34's sibling — decided BEFORE
     /// touching the OS). ADR 0043 decisions 5/7: completes on success, an
     /// error may follow partial delivery (the byte-stream-prefix property
-    /// holds either way — nothing here rewinds bytes already written).
+    /// holds either way — nothing here rewinds bytes already written) —
+    /// AND (review round fix, decision 7's own "a failed send latches the
+    /// connection", the same rule the server's `writer_loop` already
+    /// follows) a TERMINAL failure discovered by THIS call latches the
+    /// connection closed before returning: it calls [`cancel`](Self::cancel)
+    /// itself (reusing the SAME `cancelled` flag/`shutdown(2)` — one
+    /// latch, not two independent ones), so every later `read`/`write_all`
+    /// call sees `Cancelled` (property 34), while THIS call still returns
+    /// its own ORIGINAL error, never `Cancelled` — the caller that
+    /// actually observed the failure gets to know what it was.
     pub fn write_all(&self, bytes: &[u8]) -> Result<(), SocketError> {
         let _guard = self
             .write_slot
@@ -1749,6 +1768,10 @@ impl SocketClient {
             }
             match (&self.stream).write(remaining) {
                 Ok(0) => {
+                    // This write never legitimately returns 0 for a
+                    // non-empty buffer -- a terminal failure, latching
+                    // the connection exactly like the `Err` branch below.
+                    self.cancel();
                     return Err(SocketError::Io {
                         op: "write",
                         source: io::Error::new(
@@ -1760,15 +1783,23 @@ impl SocketClient {
                 Ok(n) => remaining = &remaining[n..],
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
-                    // A cancelled flag turns whatever `shutdown(2)`
-                    // provoked (EPIPE/ECONNRESET/anything else) into
-                    // `Cancelled` — never surfaced as an ordinary
-                    // failure once cancellation is in play.
-                    return if self.cancelled.load(Ordering::SeqCst) {
-                        Err(SocketError::Cancelled)
-                    } else {
-                        Err(SocketError::Io { op: "write", source: e })
-                    };
+                    if self.cancelled.load(Ordering::SeqCst) {
+                        // Already cancelled by a CONCURRENT `cancel()`
+                        // call racing this write -- that external cancel
+                        // wins the classification; this call's own
+                        // failure is simply what a `shutdown(2)` under it
+                        // looks like, never surfaced as an ordinary I/O
+                        // error once cancellation is already in play.
+                        return Err(SocketError::Cancelled);
+                    }
+                    // A genuinely terminal write failure THIS call
+                    // discovered (not a racing external cancel): latch
+                    // the connection closed (decision 7) so every LATER
+                    // call sees it as spent, but return the ORIGINAL
+                    // error here -- this caller earned the real
+                    // diagnostic, not a generic `Cancelled`.
+                    self.cancel();
+                    return Err(SocketError::Io { op: "write", source: e });
                 }
             }
         }
@@ -1834,19 +1865,37 @@ impl SocketClient {
         }
     }
 
+    /// TEST-SUPPORT ONLY (review round): `true` iff a `read` is
+    /// genuinely in flight on this client RIGHT NOW — `try_lock` the same
+    /// `read_slot` a real `read` call holds, exactly like `read`'s own
+    /// `ConcurrentSubmit` check. Lets a test WAIT on an OBSERVED
+    /// precondition ("thread A's read has genuinely reached the blocking
+    /// call") instead of a fixed sleep guessing at how long that takes.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn read_slot_held_for_test(&self) -> bool {
+        self.read_slot.try_lock().is_err()
+    }
+
+    /// TEST-SUPPORT ONLY (review round): the write twin of
+    /// [`read_slot_held_for_test`](Self::read_slot_held_for_test).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn write_slot_held_for_test(&self) -> bool {
+        self.write_slot.try_lock().is_err()
+    }
+
     /// TEST-SUPPORT ONLY: build a client around an already-connected
     /// stream (a raw `UnixStream::connect`, or one accepted server-side
     /// and handed to a paired test) with a controllable
-    /// `established_boot_ticks`, so the pin-validation tests can exercise
+    /// `connect_anchor_boot_ticks`, so the pin-validation tests can exercise
     /// both sides of its strict inequality without racing a real clock.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn from_stream_for_test(stream: UnixStream, established_boot_ticks: u64) -> SocketClient {
+    pub fn from_stream_for_test(stream: UnixStream, connect_anchor_boot_ticks: u64) -> SocketClient {
         SocketClient {
             stream,
             cancelled: AtomicBool::new(false),
             read_slot: Mutex::new(()),
             write_slot: Mutex::new(()),
-            established_boot_ticks,
+            connect_anchor_boot_ticks,
         }
     }
 }
@@ -1879,8 +1928,8 @@ impl crate::challenge_unix::SocketChallengeable for SocketClient {
         self.stream.as_raw_fd()
     }
 
-    fn established_boot_ticks(&self) -> u64 {
-        self.established_boot_ticks
+    fn connect_anchor_boot_ticks(&self) -> u64 {
+        self.connect_anchor_boot_ticks
     }
 }
 
@@ -1989,8 +2038,19 @@ fn one_connect_attempt(addr_bytes: &[u8]) -> Result<UnixStream, ConnectAttempt> 
             Some(code)
                 if code == libc::ECONNREFUSED
                     || code == libc::ENOENT
-                    || code == libc::EAGAIN =>
+                    || code == libc::EAGAIN
+                    || code == libc::EINTR =>
             {
+                // Review round fix: `EINTR` (the call was interrupted by
+                // a caught signal before it could complete) is exactly
+                // as retryable as the other three — it says nothing about
+                // whether the peer is even listening yet, only that this
+                // ATTEMPT didn't finish. Dropping `fd` here (about to go
+                // out of scope) cleanly aborts whatever the kernel had
+                // started; the outer loop's own bounded retry (a fresh
+                // socket, same absolute deadline) is the correct recovery,
+                // not a Fatal surfaced to the caller over a signal that
+                // has nothing to do with this connect's own outcome.
                 return Err(ConnectAttempt::Retryable(err));
             }
             Some(code) if code == libc::EINPROGRESS => {
@@ -2000,7 +2060,15 @@ fn one_connect_attempt(addr_bytes: &[u8]) -> Result<UnixStream, ConnectAttempt> 
                 // SO_ERROR, exactly like a portable non-blocking TCP
                 // connect would.
                 if let Err(e) = poll_writable(fd.as_raw_fd(), CONNECT_BOUND) {
-                    return Err(ConnectAttempt::Fatal(e));
+                    // Review round fix: an interrupted `poll(2)` (EINTR)
+                    // is the SAME "this attempt didn't finish, try again"
+                    // case as `connect`'s own EINTR above -- Retryable
+                    // within the SAME outer deadline, never Fatal.
+                    return if e.kind() == io::ErrorKind::Interrupted {
+                        Err(ConnectAttempt::Retryable(e))
+                    } else {
+                        Err(ConnectAttempt::Fatal(e))
+                    };
                 }
                 let mut so_err: libc::c_int = 0;
                 let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
@@ -2042,7 +2110,7 @@ fn one_connect_attempt(addr_bytes: &[u8]) -> Result<UnixStream, ConnectAttempt> 
 }
 
 #[cfg(target_os = "linux")]
-fn capture_established_boot_ticks() -> u64 {
+fn capture_connect_anchor_boot_ticks() -> u64 {
     // A failure here degrades the eventual pin to `Undetermined`, never a
     // false `Proven` — see `challenge_unix::pin_peer`'s own strict
     // less-than check, which a `0` timestamp can only ever fail (no
@@ -2051,7 +2119,7 @@ fn capture_established_boot_ticks() -> u64 {
     crate::challenge_unix::boot_ticks_now().unwrap_or(0)
 }
 #[cfg(not(target_os = "linux"))]
-fn capture_established_boot_ticks() -> u64 {
+fn capture_connect_anchor_boot_ticks() -> u64 {
     0
 }
 
@@ -2063,10 +2131,24 @@ fn capture_established_boot_ticks() -> u64 {
 /// NO authentication of any kind — every caller is responsible for
 /// running the OS-level identity check on top, exactly like
 /// `pipe_win::connect_named_pipe_unchallenged`.
+///
+/// The anchor `SocketClient::connect_anchor_boot_ticks` carries is sampled
+/// HERE, immediately BEFORE each `one_connect_attempt` call — never after
+/// one succeeds (review round fix, Codex finding: a post-connect sample
+/// left a pid-reuse window open between `connect(2)` returning and the
+/// sample actually running, during which a recycled pid could satisfy the
+/// pin's strict `<` even though it raced this very attempt). Sampling
+/// fresh on every loop iteration — not once before the loop — means a
+/// RETRY re-anchors too: a legitimate peer that happens to start in the
+/// narrow anchor-to-connect gap of one attempt is `Undetermined` for
+/// that attempt, and proven by a later one (or by the caller's own
+/// outer retry, once this whole call returns `Undetermined` up through
+/// `authenticate_server`/`challenge`).
 fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, SocketError> {
     let addr_bytes = path.as_os_str().as_bytes();
     let deadline = Instant::now() + CONNECT_BOUND;
     loop {
+        let connect_anchor_boot_ticks = capture_connect_anchor_boot_ticks();
         match one_connect_attempt(addr_bytes) {
             Ok(stream) => {
                 return Ok(SocketClient {
@@ -2074,7 +2156,7 @@ fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, SocketE
                     cancelled: AtomicBool::new(false),
                     read_slot: Mutex::new(()),
                     write_slot: Mutex::new(()),
-                    established_boot_ticks: capture_established_boot_ticks(),
+                    connect_anchor_boot_ticks,
                 });
             }
             Err(ConnectAttempt::Fatal(e)) => {

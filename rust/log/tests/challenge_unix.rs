@@ -341,11 +341,24 @@ fn cross_process_challenge_server_role() {
     let Ok(voyage_id) = std::env::var("CHALLENGE_UNIX_XPROC_VOYAGE_ID") else {
         return;
     };
+    let pid = std::process::id();
+    let created = self_start_ticks().expect("self_start_ticks");
+    // Review round fix: don't bind (hence don't become connectable) until
+    // this process's OWN clock has advanced strictly past its own start
+    // tick -- the parent's connect anchor is sampled essentially at the
+    // moment its `connect()` succeeds, which can only happen once THIS
+    // bind has already run, so this guarantees that anchor lands strictly
+    // after `created` rather than risking the same tick-quantization tie
+    // the self-connect tests hit (see `ensure_established_gap`'s own
+    // doc). Spinning on the OBSERVED tick, not a fixed sleep, means this
+    // never over- or under-shoots regardless of this kernel's own
+    // `CLK_TCK`.
+    while challenge_unix::boot_ticks_now().expect("boot_ticks_now") <= created {
+        std::thread::sleep(Duration::from_millis(1));
+    }
     let server = SocketServer::bind(&voyage_id, 1).expect("server role: bind");
     let conn_id = expect_accepted(&server, Duration::from_secs(30));
     await_status_request(&server, conn_id, Duration::from_secs(30));
-    let pid = std::process::id();
-    let created = self_start_ticks().expect("self_start_ticks");
     let reply = wire::encode_mgmt_reply(&MgmtReply::StatusOk {
         pid,
         created,
@@ -479,7 +492,7 @@ impl SocketChallengeable for InvalidFdConn {
     fn raw_fd(&self) -> RawFd {
         -1
     }
-    fn established_boot_ticks(&self) -> u64 {
+    fn connect_anchor_boot_ticks(&self) -> u64 {
         0
     }
 }
@@ -491,11 +504,11 @@ fn authenticate_server_is_undetermined_when_step_one_itself_fails() {
 }
 
 /// The race-free pin's own strict inequality (ADR 0043 decision 8): a
-/// peer whose observed start time equals `established` (a self-connected
-/// client, `established` set to OUR OWN process's real start time) is a
-/// TIE, never trusted -- `Undetermined`. One tick later, the SAME peer is
-/// `Proven`. Uses `SocketClient::from_stream_for_test` to control
-/// `established_boot_ticks` directly, driving the real
+/// peer whose observed start time equals the connect anchor (a self-
+/// connected client, the anchor set to OUR OWN process's real start
+/// time) is a TIE, never trusted -- `Undetermined`. One tick later, the
+/// SAME peer is `Proven`. Uses `SocketClient::from_stream_for_test` to
+/// control `connect_anchor_boot_ticks` directly, driving the real
 /// `authenticate_server` path (steps 1-3) rather than reaching into
 /// `pin_peer` itself.
 #[test]

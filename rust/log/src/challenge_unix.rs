@@ -52,8 +52,8 @@ use std::time::{Duration, Instant};
 
 /// The Linux-shaped extension every [`ChallengeableConnection`] this
 /// crate actually challenges must also supply: raw fd access (for
-/// `SO_PEERCRED`/pinning) and the connection's own established-time
-/// anchor the race-free pin below needs -- the Linux twin of
+/// `SO_PEERCRED`/pinning) and the connection's own pre-connect anchor the
+/// race-free pin below needs -- the Linux twin of
 /// `challenge_win::PipeChallengeable`.
 pub trait SocketChallengeable: ChallengeableConnection {
     /// This end's own fd for the connected socket -- `SO_PEERCRED`/
@@ -61,11 +61,19 @@ pub trait SocketChallengeable: ChallengeableConnection {
     /// own doc), so the CLIENT's own fd is exactly what steps 1-3 need.
     fn raw_fd(&self) -> RawFd;
     /// `CLOCK_BOOTTIME`, in the SAME clock ticks as `/proc/<pid>/stat`
-    /// field 22, captured at the moment THIS connection was established
-    /// -- the race-free pin's own anchor (a recycled pid can only belong
-    /// to a process created strictly AFTER this instant, since the
-    /// original peer was still alive when this connection was accepted).
-    fn established_boot_ticks(&self) -> u64;
+    /// field 22, sampled immediately BEFORE this connection's own
+    /// `connect(2)` attempt began -- the race-free pin's own anchor
+    /// (review round fix: a value sampled AFTER `connect` returns leaves
+    /// a window open. A peer that connect()s successfully was
+    /// necessarily alive when the attempt BEGAN, so its start time must
+    /// be strictly earlier than that pre-attempt instant -- UNLESS it is
+    /// a replacement that started in the gap between the anchor sample
+    /// and the connect completing, which the pin's strict `<` then
+    /// correctly classifies `Undetermined`, never a false `Proven`; a
+    /// legitimate peer caught in that narrow a race is proven on a later
+    /// retry, which re-anchors). See `socket_unix::connect_unix_socket_unchallenged`
+    /// for where this is sampled.
+    fn connect_anchor_boot_ticks(&self) -> u64;
 }
 
 /// `SO_PEERCRED`'s own `(pid, uid, gid)` -- the Linux twin of
@@ -288,23 +296,23 @@ fn try_peerpidfd(fd: RawFd, creds: &PeerCredentials) -> Option<ChallengeOutcome<
 }
 
 /// Common to both pin paths: prove `creds.pid`'s process started
-/// STRICTLY before `established` (a tie is `Undetermined` -- a recycled
-/// pid can only belong to a process created AFTER the original peer
-/// died, i.e. after it connected), then re-read its start time once more
-/// to prove the identity hasn't shifted underneath us between the two
-/// reads (defense in depth narrowing the window further; this crate's
-/// threat model already excludes a same-uid attacker, ADR 0043 module
-/// doc "Security").
+/// STRICTLY before `connect_anchor` (a tie is `Undetermined` -- a
+/// recycled pid can only belong to a process created AFTER the original
+/// peer died, i.e. after this connection's own pre-connect anchor was
+/// sampled), then re-read its start time once more to prove the identity
+/// hasn't shifted underneath us between the two reads (defense in depth
+/// narrowing the window further; this crate's threat model already
+/// excludes a same-uid attacker, ADR 0043 module doc "Security").
 fn validate_pin(
     pidfd: OwnedFd,
     creds: &PeerCredentials,
-    established: u64,
+    connect_anchor: u64,
 ) -> ChallengeOutcome<(OwnedFd, u64)> {
     let start = match process_start_ticks(creds.pid) {
         Ok(s) => s,
         Err(_) => return ChallengeOutcome::Undetermined,
     };
-    if start >= established {
+    if start >= connect_anchor {
         return ChallengeOutcome::Undetermined;
     }
     let recheck = match process_start_ticks(creds.pid) {
@@ -327,13 +335,13 @@ fn validate_pin(
 fn pin_peer(
     fd: RawFd,
     creds: &PeerCredentials,
-    established: u64,
+    connect_anchor: u64,
     prefer_peerpidfd: bool,
 ) -> ChallengeOutcome<(OwnedFd, u64)> {
     if prefer_peerpidfd {
         match try_peerpidfd(fd, creds) {
             Some(ChallengeOutcome::Proven(pidfd)) => {
-                return validate_pin(pidfd, creds, established)
+                return validate_pin(pidfd, creds, connect_anchor)
             }
             Some(ChallengeOutcome::Foreign) => return ChallengeOutcome::Foreign,
             Some(ChallengeOutcome::Undetermined) => return ChallengeOutcome::Undetermined,
@@ -344,7 +352,7 @@ fn pin_peer(
         // ESRCH (already gone) and ENOSYS (kernel < 5.3) both fail
         // closed here, like every other OS-call failure in this
         // function -- no numeric-pid signalling fallback exists.
-        Ok(pidfd) => validate_pin(pidfd, creds, established),
+        Ok(pidfd) => validate_pin(pidfd, creds, connect_anchor),
         Err(_) => ChallengeOutcome::Undetermined,
     }
 }
@@ -373,7 +381,7 @@ fn authenticate_steps_1_to_3(
         return ChallengeOutcome::Foreign;
     }
 
-    match pin_peer(conn.raw_fd(), &creds, conn.established_boot_ticks(), true) {
+    match pin_peer(conn.raw_fd(), &creds, conn.connect_anchor_boot_ticks(), true) {
         ChallengeOutcome::Proven((pidfd, created)) => {
             ChallengeOutcome::Proven((pidfd, creds.pid, created))
         }
@@ -598,10 +606,10 @@ pub fn authenticate_server(conn: &dyn SocketChallengeable) -> SidAuthOutcome {
 pub fn pin_peer_for_test(
     fd: RawFd,
     creds: &PeerCredentials,
-    established: u64,
+    connect_anchor: u64,
     prefer_peerpidfd: bool,
 ) -> ChallengeOutcome<(OwnedFd, u64)> {
-    pin_peer(fd, creds, established, prefer_peerpidfd)
+    pin_peer(fd, creds, connect_anchor, prefer_peerpidfd)
 }
 
 #[cfg(test)]
