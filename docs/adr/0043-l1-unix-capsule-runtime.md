@@ -1,8 +1,8 @@
 # ADR 0043: L1-unix — the capsule runtime on Unix hosts
 
-**Status:** Proposed (2026-09-06; amended the same day after one Codex design
+**Status:** LU1–LU4 implemented (#212–#221); LU5 proposed (2026-09-06; amended the same day after one Codex design
 round — twelve findings, every one discharged in the text below; LU1b's landed
-mechanism folded into decisions 1–3; the LU2 decisions 11–16 and the LU3 decisions 17–20 added 2026-09-07). Design pass for the lane series that makes
+mechanism folded into decisions 1–3; the LU2 decisions 11–16 and the LU3 decisions 17–20 added 2026-09-07; the LU5 decisions 23–26 added 2026-09-07 evening after the first backend trial and two Codex rounds — decision 24 reverses decision 16's survival clause and amends decision 21's kill-domain sentence). Design pass for the lane series that makes
 ADR 0042's rule — "the capsule is the default runtime for every NEW session on
 EVERY host" — true on the Linux backend hosts, where today every row is still
 a tmux row and no session leaves a Ship's Log record. Builds on ADR 0037 (P1:
@@ -74,12 +74,20 @@ manager review, one Codex round, CI green, merge (the standing rule).
   `PipeClient`); `PipeError`/`SocketError` unify into one `TransportError`;
   the SID-flavoured names (`SidAuthOutcome`, `SidAuthenticated`) become
   peer-flavoured. `sot-capsule`'s three `main`s collapse to two.
-- **LU4 — the daemon.** `mod unix_runtime` beside `windows_runtime` in
-  `capsule_workspace.rs` (`setsid` detach, `resume_all`); the `cfg(windows)`
-  gates in `server.rs`/`handlers.rs`/`workspaces.rs` open; the
-  `capsule_workspaces` test runs on Linux; a budgeted `ubuntu` CI job mirrors
-  `conpty-windows-2022`. From then on `workspace.create` on a Linux host makes
-  a capsule row, and ADR 0042's rule is true everywhere.
+- **LU4 — DONE (#221).** One `mod runtime` (`cfg(any(windows, target_os = "linux"))`)
+  with three platform siblings — the capsule executable's name, `detach`, the adopted
+  leg's exit-status read; the `cfg(windows)` gates in `server.rs`/`handlers.rs` open;
+  the `capsule_workspaces` suite runs on the existing Linux matrix job (no second job);
+  `workspace.create` gains the explicit `runtime` field and the Linux default stays
+  tmux (decision 22) — ADR 0042's rule is not yet true on Linux.
+- **LU5 — the backend runtime under systemd and a shared home (decisions
+  23–26).** What the first backend trial found. **LU5a** — the qualified
+  state root and the supervisor's stderr (23, 25). **LU5b** — launch ownership
+  in a transient user scope, survival proven by a real user-service stop (24).
+  **LU5c** — a requested stop is never a crash, and the adoption test carried
+  through destroy (26). **LU5d — DONE (6bec1546)** — the host-aware sot-comm
+  registry predicate for list and destroy; **LU5d2** — the strict form everywhere the
+  daemon reads the registry (outside the runtime; the shared-home bug the trial exposed).
 
 ## The properties (what `pipe_win`/`challenge` pin; what LU1 must satisfy)
 
@@ -472,9 +480,10 @@ surfaces. So LU3 is three lanes, the first two provably behaviour-preserving on 
     (A first draft reaped only in the status accessor, which the supervisor never calls — every
     completed leg stayed a zombie — and assumed rather than set `SIGCHLD`; a second reaped on
     drop and collided with the daemon's own `Child::wait`; both corrected 2026-09-07 after the
-    LU3c and LU4 review rounds.) The supervisor and its legs share no kill domain: the
+    LU3c and LU4 review rounds.) The supervisor and its legs share no process-level kill domain — the
     producer's `setsid` (decision 14) is the whole detachment, and `DETACHED_PROCESS` has no Unix
-    analogue. The parent-death lease is `pipe2(O_CLOEXEC)`: the supervisor holds the write end for
+    analogue — but since decision 24 they share a scope, so a scope-wide stop IS a shared kill
+    domain. The parent-death lease is `pipe2(O_CLOEXEC)`: the supervisor holds the write end for
     life; the read end reaches the leg as `--parent-lease-fd 3` through a `pre_exec` `dup2` (which
     clears `CLOEXEC` on the copy; when the read end already IS fd 3 the flag is cleared with `fcntl`
     instead — a `dup2(fd, fd)` would leave it set and the lease would close at `exec`). "The endpoint
@@ -510,12 +519,136 @@ surfaces. So LU3 is three lanes, the first two provably behaviour-preserving on 
     service's `PATH`). `capsule_workspaces` runs on Linux (the matrix job's workspace build already
     places `sot-capsule` next to `sotd`); no second Linux job.
 
+## Decisions for LU5 (the backend runtime under systemd and a shared home) — added 2026-09-07
+
+The facts that size the lane, from the first backend trial (2026-09-07) and one Codex
+design round, every claim verified in the tree or by experiment. The default state root
+`${XDG_STATE_HOME:-~/.local/state}/sot` is on the NFS home the four backend hosts share,
+and the Linux NFS client answers every `renameat2` flag with EINVAL, so the store's
+publication commit (`fsutil::rename_noreplace_raw`) fails and each capsule leg exits
+terminal (69) within seconds — invisibly, because the daemon spawns the supervisor with
+null stdio, and `fsutil::preflight_volume` is a no-op on Unix whose comment names
+renameat2's own refusal as the guard. `setsid` does not leave the daemon's cgroup, and the
+unit's default `KillMode=control-group` kills the supervisor and its leg on
+`systemctl --user stop sotd` (proven with a scratch daemon run as a transient user
+service) — the failure ADR 0038's keeper fixed for tmux rows, repeated. After a daemon
+restart ADOPTS a live supervisor, its clean exit on `end_run` reads back as "exited with
+unknown status" and the watchdog respawns an idle `--resume` authority that holds the
+fence. With a local-disk state root the whole chain works: spawn → ready → the agent's
+own comm bootstrap → adoption across a daemon restart → a verified end.
+
+23. **The state root is a qualified local filesystem; the daemon refuses capsule rows
+    anywhere else.** Two checks, each proving only what it can. The store's
+    `preflight_volume` (Unix arm, no longer a no-op; called where it is today — bootstrap
+    and `open_for_writing`, so the Claude producer and direct store users get it too)
+    checks the primitives the store uses: `statfs` on the resolved store location refuses
+    remote types (NFS, SMB/CIFS, 9p, FUSE not otherwise qualified; overlayfs is left to the
+    probe), then a `RENAME_NOREPLACE` probe of a temp directory pair AND a temp file pair
+    inside that directory — the rename succeeds, the collision refuses with both entries
+    intact — plus the directory fsync the store requires, temp names removed on every path.
+    tmpfs passes it (developer `/tmp` is often tmpfs; the suites keep running there). The
+    daemon's `qualified_state_root()` calls that and additionally refuses volatile types
+    (tmpfs, ramfs) on the RESOLVED destination — the root as the daemon will use it, nested
+    mounts included, never `$HOME` by inference. Preflight checks known exclusions and
+    required filesystem operations; durable, host-exclusive backing and retention remain
+    deployment prerequisites (open item 4). The mechanism is one seam every launch passes —
+    `spawn_detached_supervisor`, beside `check_pair`, refusing with `ErrorKind::Unsupported`
+    — and each path surfaces it its own way: `workspace.create` asks first, before any row
+    persists, and answers `code: "state_root_unqualified"` naming the lever; `pty.open`'s
+    start-on-attach returns the refusal text and the row stays retryable (rule E);
+    `resume_all` logs one warn per row and leaves it for the next attach; the watchdog's
+    restart marks terminal exactly as a pair mismatch does. tmux rows, `workspace.list` and
+    inspection are untouched; nothing auto-redirects. The lever is the existing
+    `XDG_STATE_HOME`: on a shared home ONE drop-in,
+    `~/.config/systemd/user/sotd.service.d/state.conf` with
+    `Environment=XDG_STATE_HOME=/scratch/<user>/state`, serves every host (the same path,
+    each host's own disk), reloaded per host; the daemon's log follows it (a fresh local
+    log, the old one kept as history). Relocation does not migrate rows: a row's pointer and
+    its lane identity derive from the state-dir path, so before changing the root end this
+    host's capsule runs, move complete state directories (ids preserved) if any exist, and
+    verify the effective environment after `.bashrc` and the destination's retention — on
+    the backend host today there are no capsule rows. `SOT_STATE_HOST`, when set, must equal
+    comm's short hostname (case-insensitive): the registry predicate compares them.
+    Documented in `docs/USING.md`. Deleted from the candidate set: a dedicated state-root
+    knob (`SOT_RUNTIME_DIR` is the runtime dir's own validated override, not a precedent for
+    a second), an NFS-tolerant store (ADR 0039's atomicity is the point), installer
+    auto-placement, a compatibility log symlink, diagnostics in the `phase` string, and
+    refusing the whole daemon.
+
+24. **Launch ownership is a transient user scope per supervisor — REVERSES decision 16's
+    survival clause.** The cgroup is the Unix job. `spawn_detached`'s Linux twin runs
+    `systemd-run --user --scope --quiet --collect --description "sot-capsule <workspace_id>"
+    -- <sot-capsule> supervise …` — no `--unit`: the leg lives in the same scope and
+    outlives a restarted supervisor, so a fixed name would collide; systemd names the scope,
+    the description carries the identity, and a resumed authority simply occupies a new
+    scope while the old one lives on with its leg (adoption goes through the lane and the
+    pidfd, `end_run` through the lane, collection waits for each scope to empty — none needs
+    co-location). `systemd-run --scope` registers its own pid in the scope and then execs
+    the command in place (systemd 249, verified on the backend host: the daemon's child pid
+    IS the supervisor, its parent the daemon), so `Child`, the watchdog and `pre_exec(setsid)`
+    — which runs before that exec — are unchanged. Availability is a bounded check per
+    launch (`systemd-run --user --scope --quiet -- /bin/true` under the `check_pair` budget;
+    no cache — a user manager can appear or vanish between launches); when it fails the
+    daemon spawns bare, as today, and passes `--survival degraded`; a launcher that fails
+    after a passing probe is a diagnosed launch failure, never a silent downgrade. The
+    existing wire field's meaning: normal means the supervisor's kill domain is independent
+    of the daemon's unit; degraded means that isolation was not established and survival
+    across a daemon restart is unguaranteed (a bare launch outside any service need not die
+    with the daemon). Adoption preserves the leg's launch-time value; the leg reports it in
+    its management `status_ok` (`capsule.rs`), which is where the test asserts it.
+    `sot-capsule`'s "has no effect on unix" warning and its `Survival::Normal` override are
+    deleted; the Unix supervisor reports the flag it was given. The proof is a real
+    user-service stop: `sotd` as a transient service, a capsule created, the service
+    stopped, the supervisor and leg alive with the lane answering, a relaunched daemon
+    adopting it, and a second scope when that adopted authority is later resumed; a variant
+    with a failing `systemd-run` proves the degraded fallback still reaches `ready` and
+    reports degraded on the wire. On CI the survival test is required (open item 6);
+    developer runs without a user manager may skip it loudly. Killing the daemon pid by hand
+    is not a survival proof.
+
+25. **The supervisor's stderr is the daemon's own log.** `spawn_detached_supervisor` hands
+    the supervisor an append-mode descriptor on the daemon's `sotd.log` as stderr (a fresh
+    `O_APPEND` open per spawn; the daemon need not share its handle); stdout stays null;
+    when the daemon has no log file the supervisor inherits the daemon's own stderr. The leg
+    inherits it, as `sot-capsule run` already inherits its parent's stdio. The supervisor
+    prefixes each line with the state dir's basename (the workspace id) and writes each
+    diagnostic as ONE complete write — `O_APPEND` keeps whole writes intact; nothing
+    serialises fragments across processes. An inherited descriptor keeps its original inode
+    across a daemon restart or a root change, and there is no rotation: a long-lived
+    supervisor keeps writing to the log it was born with, which is honest. No per-capsule
+    log file, no directory the daemon creates on a capsule's behalf (rule C), no
+    `StatusReport` field. Dynamic refusal messages travel as an `io::Error` of kind
+    `Unsupported` (`Error::Unsupported` carries a `&'static str`).
+
+26. **A requested stop is never a crash.** The daemon registers a restart cancellation
+    against the authority `stop` actually challenges — the pid of the connection that sends
+    `Stop` (`supervisor_client::stop` reconnects; the earlier status query's pid is not
+    proof), recorded immediately before the request is written — and the watchdog consumes
+    it only on that pid's confirmed death (a wait error is not death), reporting `Clean` and
+    suppressing restart while a `Terminal` authority keeps its outcome and diagnostics. The
+    record carries the watcher generation: a fresh spawn or adoption replaces it, the check
+    runs again after the watchdog's backoff immediately before any respawn, and it retires
+    with its watcher; a failed `Stop` leaves it pending without claiming teardown succeeded.
+    No exit code is invented; an unknown death with no record stays a crash with the full
+    restart sequence. The leg's end marker and the lane's last phase are rejected as
+    discriminators: the marker says the run ended, not that the authority finished; a phase
+    is stale by construction once the lane is gone. ECHILD: decision 21's explicit reaping
+    removed the double reap at its source (`ChallengedProcess` never reaps implicitly); the
+    lane records the re-verification counts and lands nothing for it. The adoption test is
+    carried through destroy — sustained lane absence, no `supervise` process for the state
+    dir, the fence free, no "treating as a crash" line — with deterministic races for the
+    record against generation replacement and the backoff recheck.
+
 ## What this deletes
 
 On Unix: the completion-proof apparatus, instance recycling, the SDDL builder,
 the `WaitNamedPipe` retry. In the crate: `classify.rs`'s gate, `capsule.rs` as
 a second producer loop (LU2), the drawer-era SID names (LU3), the third
-`main` in `sot-capsule` (LU3).
+`main` in `sot-capsule` (LU3). LU5: decision 16's survival clause and
+the `--survival … has no effect on unix` warning; decision 21's "no shared kill domain"
+claim; the null stderr on a daemon-spawned supervisor; a permanent launcher-availability
+cache; an ECHILD fallback; the state-root knob, NFS-tolerant store, installer
+auto-placement, log symlink and phase-string diagnostics the trial's first plan proposed.
 
 ## Open for the maintainer
 
@@ -526,3 +659,14 @@ a second producer loop (LU2), the drawer-era SID names (LU3), the third
    `Undetermined`, instead of a kernel-level refusal — acceptable?
 3. The dependency edge `sot-protocol → sot-log` (decision 1) — acceptable, or
    should the derivation be duplicated with a cross-crate equality test instead?
+4. `/scratch/<user>` retention on the shared servers: if a purge policy exists there, the
+   sealed-segment record needs an archive tier (ADR 0039 retention) later — not a reason
+   to keep the live store on the NFS home.
+5. Workspace ids (`pid ^ unix_seconds`, `workspaces.rs`) are neither host-qualified nor
+   unique across a shared home, and capsule state dirs carry no host segment. Future rows
+   get uuids; existing ids are retained as they are — no migration. Deferred, noted so it
+   is not rediscovered.
+6. CI gets a user manager: the ubuntu job enables linger for the runner account, starts
+   `user@<uid>.service`, exports `XDG_RUNTIME_DIR=/run/user/<uid>`, and sets an env var that
+   turns decision 24's survival-test skip into a failure — the designated gate RUNS there;
+   developer runs may still skip.
