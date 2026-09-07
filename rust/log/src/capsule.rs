@@ -2275,7 +2275,12 @@ mod base64_engine {
 /// on unchanged code. The flood test keeps the properties that are always
 /// true (no deadlock, verify-green, bookkeeping live); the bound itself is
 /// a plain condvar protocol, provable right at the primitive.
-#[cfg(test)]
+// The voyage store's durability arms exist for Linux and Windows only (`fsutil`
+// fails closed elsewhere with `Error::Unsupported`), so these unit tests —
+// which open a real store — are gated exactly like `voyage`'s and
+// `recovery`'s: they ran only on Windows until LU2a made this module
+// neutral, and the macOS CI leg then hit the fail-closed arm.
+#[cfg(all(test, any(target_os = "linux", windows)))]
 mod tests {
     use super::*;
     use std::thread;
