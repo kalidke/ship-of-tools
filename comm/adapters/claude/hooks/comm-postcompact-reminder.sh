@@ -1,78 +1,42 @@
 #!/usr/bin/env bash
 # comm-postcompact-reminder.sh — Claude Code `SessionStart` hook (matcher:
-# compact): after a context COMPACTION, tell the session to RE-RUN its full
-# session-start skill so its complete sot-comm operating context is restored.
-#
-# Why (2026-07-19, Keith): compaction summarizes the conversation and can strip
-# the operating INSTRUCTIONS themselves — your handle, the send/poll/status
-# verbs, the work-state rules — not just the "trust your Monitor" note. So a bare
-# reminder isn't enough: even a session that trusts its (surviving) Monitor may
-# no longer know HOW to operate comm. Re-running the session-start skill restores
-# all of it. (Earlier this hook only printed a trust reminder; that was
-# insufficient for exactly this reason.)
-#
-# Safe to re-run on every compaction: the session-start skill opens with a
-# "Step 0" that detects survival — it `pgrep`s (end-anchored) for the live
-# watcher that outlives a summary and, when found, STOPS before the bootstrap.
-# So a compaction re-run re-reads the doc (restoring the operating instructions)
-# but does NOT re-arm the Monitor, re-`comm-poll` (which would replay
-# already-handled messages), or re-`comm-join` (whose row-replace would wipe the
-# live work-state). The full bootstrap runs only on a real `--continue` restart,
-# where Step 0 finds no watcher.
-#
-# Output: plain stdout is captured as SessionStart context (docs: "Any text your
-# hook script prints to stdout is added as context for Claude"). Self-gates to
-# joined comm agents so a plain human session gets nothing. Fires only on
-# source=compact — enforced by the settings.json matcher AND, defensively, by an
-# internal guard (so a no-matcher mis-wire can't fire on startup/resume, where
-# the launcher's own session-start run already covers it).
-#
-# Sibling: `comm-postclear-reminder.sh` covers `source=clear` (a /clear, which
-# leaves no summary at all). This hook stays scoped to `compact` and keeps
-# skipping `clear` below, so the two never both fire on one event.
+# compact): print short context after a context COMPACTION, never a
+# re-bootstrap directive. Compaction does not kill the receive path (the
+# watcher/listener are background tasks that outlive a summary) — only
+# `comm-session-start.sh`'s own survival check decides whether to say so or to
+# tell the session to actually rebootstrap, so this hook never repeats logic
+# the script already owns. Prints `--context`'s output verbatim (a few short
+# lines); self-gates to joined comm agents so a plain human session gets
+# nothing. The WHOLE path here is read-only ($SOT_COMM_READONLY, honored by
+# both comm-context.sh calls and by comm-session-start.sh --context: no
+# ensure_home, no legacy self-file self-heal — Codex review finding 16).
 #
 # Source of truth: comm/adapters/claude/hooks/comm-postcompact-reminder.sh in
 # Ship of Tools, deployed to ~/.sot-comm/bin by ShipTools.update_comm().
 set -uo pipefail
 
-# SessionStart delivers a JSON payload on stdin carrying `.source`. Skip the
-# NON-compaction sources explicitly; proceed on `compact` OR an empty/unknown
-# source (trusting the compact-scoped matcher). This makes the hook correct
-# whether or not the settings.json entry carries `"matcher": "compact"`.
 payload="$(cat 2>/dev/null || true)"
 src="$(printf '%s' "$payload" | jq -r '.source // ""' 2>/dev/null || echo "")"
 case "$src" in
     startup|resume|clear) exit 0 ;;
 esac
 
-# Self-gate: only a joined comm agent (a session with a registry row) should be
-# told to re-bootstrap. NAME comes from comm-context (the pane-keyed self file);
-# empty / no row → this isn't a comm session → stay silent.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 REGISTRY="$COMM_HOME/registry.json"
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NAME=""
-[ -x "$SELF_DIR/comm-context.sh" ] && eval "$("$SELF_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
-[ -n "${NAME:-}" ] || exit 0
-[ -f "$REGISTRY" ] || exit 0
-jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || exit 0
 
-# Name exactly ONE skill instead of listing all three for the model to choose
-# from (2026-07-25): a wrong pick sends a backend session through the FRONTEND
-# bootstrap — win-fe handle, tcp tunnel to a local forward port, fe-inbox
-# Monitor — none of which exist on a backend box, and none of which fail loudly
-# enough to catch the mistake. `comm-session-skill.sh` decides in shell, where
-# the handle, platform, tmux context, and repo identity are all knowable.
-skill="$("$SELF_DIR/comm-session-skill.sh" 2>/dev/null || true)"
-[ -n "$skill" ] || skill="/sot-session-start"
+# Self-gate: only a comm-participating session gets a reminder. The FRONTEND
+# is exempt from the registry test (shared with comm-postclear-reminder.sh —
+# Codex review finding 16, this hook used to be stricter than that one for
+# no reason): it doesn't share the backend's registry, and a cold FE that
+# hasn't joined yet is exactly the session that most needs this.
+SKILL="$("$SELF_DIR/comm-session-skill.sh" 2>/dev/null || true)"
+if [ "$SKILL" != "/sot-fe-session-start" ]; then
+    NAME=""
+    [ -x "$SELF_DIR/comm-context.sh" ] && eval "$(SOT_COMM_READONLY=1 "$SELF_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
+    [ -n "${NAME:-}" ] || exit 0
+    [ -f "$REGISTRY" ] || exit 0
+    jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || exit 0
+fi
 
-cat <<EOF
-[sot-comm] ACTION REQUIRED — your context was just COMPACTED (summarized). Compaction can strip the sot-comm operating instructions themselves (your handle, the send/poll/status verbs, the work-state rules), not only the "trust your Monitor" note — so a bare reminder is not enough. You are @${NAME}.
-
-Re-run your session-start skill now, BEFORE other work, to restore your full comm operating context:
-  ${skill}
-
-That is the correct skill for THIS machine (resolved by comm-session-skill.sh from your handle, platform, tmux context, and repo identity — do not substitute another one; the frontend and backend bootstraps are not interchangeable).
-
-Safe to re-run: the skill's Step 0 detects that you SURVIVED this compaction (your Monitor + listener are background tasks that outlive a summary) and STOPS — it does NOT re-arm, re-poll, or re-join, so it can't double-arm your Monitor, replay already-handled messages, or wipe your work-state. On a compaction it simply restores your operating context by being re-read. (Had this been a real --continue restart, Step 0 would find the dead Monitor and run the full bootstrap instead.) Run it once, then continue.
-EOF
+"$SELF_DIR/comm-session-start.sh" --context

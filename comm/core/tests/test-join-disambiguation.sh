@@ -1734,13 +1734,27 @@ FAKEUNAME
     contains "$out" "no relay bridge is started" \
         || { echo "  --status didn't report the no-bridge fact: $out"; return 1; }
 
-    # --selftest must not claim a bridge selftest ran on Windows.
+    # --selftest injects a real frame over $SOT_RELAY_ENDPOINT and polls
+    # fe-inbox.jsonl for it (no bridge to restart there — see comm-listen.sh's
+    # Windows selftest branch). Point it at a closed local port (never a real
+    # daemon — this suite must stay hermetic regardless of whether a real
+    # sotd happens to be running on the box) so the daemon-unreachable path is
+    # deterministic: exit 1, and — the actual invariant this case exists to
+    # protect — still no bridge, ever, on Windows.
     out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" SOT_COMM_HOME="$WORK/winnoop-home" \
-        SOT_TMUX_SOCK="$sock" bash "$LISTEN" --name winnoop-handle --selftest 2>&1)"
+        SOT_TMUX_SOCK="$sock" SOT_RELAY_ENDPOINT="tcp:127.0.0.1:1" \
+        bash "$LISTEN" --name winnoop-handle --selftest 2>&1)"
     rc=$?
-    [ "$rc" -eq 0 ] || { echo "  --selftest exited $rc (want 0): $out"; return 1; }
-    contains "$out" "no bridge selftest on Windows" \
-        || { echo "  --selftest didn't say it skips the bridge selftest: $out"; return 1; }
+    [ "$rc" -eq 1 ] || { echo "  --selftest exited $rc (want 1, daemon unreachable): $out"; return 1; }
+    contains "$out" "daemon unreachable" \
+        || { echo "  --selftest didn't report the daemon as unreachable: $out"; return 1; }
+    if tmux -S "$sock" has-session -t "=commbridge-winnoop-handle" 2>/dev/null; then
+        echo "  a commbridge-winnoop-handle tmux session was started by --selftest on a Windows host (must never start one)"
+        tmux -S "$sock" kill-server >/dev/null 2>&1 || true
+        return 1
+    fi
+    [ -z "$(sot_bridge_pids_for "winnoop-handle")" ] \
+        || { echo "  a bridge process for winnoop-handle is running after --selftest (must never start one on a Windows host)"; return 1; }
 
     rm -rf "$sock" "$WORK/winnoop-home" "$WORK/winnoop.err"
     return 0

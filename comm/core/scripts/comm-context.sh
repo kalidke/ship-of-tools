@@ -6,7 +6,12 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=comm-lib.sh
 source "$SCRIPT_DIR/comm-lib.sh"
-ensure_home
+# $SOT_COMM_READONLY skips ensure_home's mkdir -p AND the legacy self-file
+# self-heal write below — for a caller that must not touch disk at all (e.g.
+# comm-session-start.sh --context, read after a compaction/`/clear`: Codex
+# review finding 16). Every other read/validate/discard decision is
+# unchanged; only the two writes are gated.
+[ -n "${SOT_COMM_READONLY:-}" ] || ensure_home
 
 # SOT_COMM_TEST_HOST lets a caller pin HOST directly, bypassing `hostname -s`
 # — mirrors the $SOT_COMM_SELF_FILE test seam below. A test must be hermetic
@@ -149,7 +154,7 @@ if [ -f "$SELF_FILE" ]; then
             NAME=""
         fi
 
-        if [ "$heal" = 1 ] && [ -n "$NAME" ]; then
+        if [ "$heal" = 1 ] && [ -n "$NAME" ] && [ -z "${SOT_COMM_READONLY:-}" ]; then
             # Atomic write (comm-lib.sh sot_write_self_file); a failed
             # heal is not fatal to THIS call but must never claim success.
             if sot_write_self_file "$SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT"; then

@@ -47,6 +47,9 @@ while [ $# -gt 0 ]; do
         *)          shift ;;
     esac
 done
+# Resolved here — before the Windows short-circuit below, which (for
+# --selftest) now needs NAME too, not just the Linux/tmux path further down.
+[ -n "$WANT_NAME" ] && NAME="$WANT_NAME"
 
 # On a Windows host the frontend already files every inbound relay frame
 # into its own fe-inbox.jsonl (gpu.rs::append_agent_message) and the
@@ -58,23 +61,104 @@ done
 # remove-then-copy replace of it (delete-pending) — the box goes send-deaf
 # to every subsequent converge. So: no bridge, ever, here.
 #
-# Detected the same way comm-session-skill.sh's `_is_windows` is (no
-# shared helper exists in comm-lib.sh for this yet — two call sites don't
-# earn one).
-_sot_comm_listen_is_windows() {
-    case "${OS:-}" in Windows_NT) return 0 ;; esac
-    case "${OSTYPE:-}" in msys*|cygwin*|win32) return 0 ;; esac
-    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
-    return 1
+# Shared _sot_is_windows (comm-lib.sh) — this script already sources it, so
+# it uses the ONE canonical platform test rather than its own copy.
+#
+# _selftest_hello is shared between this branch and the Linux `selftest)`
+# case below (Codex review finding: duplicate hello/TCP builders) — defined
+# once, here, ahead of both call sites.
+_selftest_hello() {
+    local _tok; _tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
+    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":1,"app_version":"comm","token":"%s"}}\n' "$_tok"
 }
-if _sot_comm_listen_is_windows; then
+if _sot_is_windows; then
     # Mirrors comm-session-skill.sh's fe_inbox construction exactly
     # (gpu.rs::sot_state_dir): %LOCALAPPDATA%\sot on Windows. Built from
     # that one resolver, never a bare "/"-rooted guess.
     fe_inbox="${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}/sot/fe-inbox.jsonl"
     echo "comm-listen: this host receives through the FE inbox ($fe_inbox); no relay bridge is started"
     if [ "$MODE" = "selftest" ]; then
-        echo "comm-listen: no bridge selftest on Windows — the receive-path proof is the FE-inbox round trip; see /sot-fe-session-start"
+        # There is no bridge to restart here — the receive path is
+        # daemon -> broadcast -> native FE -> fe_inbox append, so the proof is
+        # a real injected frame surviving that exact path, not a bridge
+        # liveness check. Inject a synthetic `agent.message` addressed to
+        # ourselves over $SOT_RELAY_ENDPOINT (sot_daemon_endpoint defaults
+        # this to the local tunnel on Windows — comm-lib.sh, finding 6) and
+        # poll the inbox for it. Same exit-code contract as the Linux branch
+        # below: 0 receive path OK, 1 daemon unreachable/rejected, 3 daemon
+        # up but no inbox line yet (benign — a cold FE relaunch, or the
+        # tunnel just came up).
+        [ -z "$NAME" ] && { echo "ERROR: no handle — run comm-join.sh first or pass --name" >&2; exit 1; }
+        mkdir -p "$(dirname "$fe_inbox")" 2>/dev/null || true
+        : >> "$fe_inbox"
+        EP="$(sot_daemon_endpoint "${SOT_RELAY_ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}")" \
+            || { echo "selftest @$NAME: no daemon endpoint found (set SOT_RELAY_ENDPOINT=tcp:HOST:PORT — the local tunnel to the remote socket)" >&2; exit 1; }
+        case "$EP" in
+            tcp:*) hp="${EP#tcp:}"; SH="${hp%:*}"; SP="${hp##*:}" ;;
+            *) echo "selftest @$NAME: endpoint '$EP' is not tcp — a Windows FE always relays over its local tunnel" >&2; exit 1 ;;
+        esac
+
+        # _win_probe_once NONCE -- ONE connect+hello+send+read attempt.
+        # Prints exactly one of: ok | rejected | silent | unreachable.
+        # "rejected" means the daemon EXPLICITLY answered hello or
+        # agent.send with ok!=true (bad token, protocol mismatch) — retrying
+        # will NOT fix that, unlike "silent" (no reply within the window,
+        # e.g. a cold bridge) — Codex review finding 14: the old version
+        # discarded the reply entirely (`cat >/dev/null`), so a real
+        # rejection looked identical to a benign cold-start retry.
+        _win_probe_once() {
+            exec 8<>"/dev/tcp/$SH/$SP" 2>/dev/null || { echo unreachable; return 0; }
+            _selftest_hello >&8
+            printf '%s\n' "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"agent.send\",\"payload\":{\"from\":\"__selftest__\",\"to\":\"$NAME\",\"text\":\"$1\"}}" >&8
+            local out; out="$(cat <&8 2>/dev/null)"
+            exec 8<&- 8>&- 2>/dev/null || true
+            [ -n "$out" ] || { echo silent; return 0; }
+            local hello_line send_line
+            hello_line="$(printf '%s' "$out" | grep -m1 '"op":"hello"')"
+            send_line="$(printf '%s' "$out" | grep -m1 '"op":"agent.send"')"
+            if [ -n "$hello_line" ] && ! printf '%s' "$hello_line" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
+                echo rejected; return 0
+            fi
+            if [ -n "$send_line" ]; then
+                printf '%s' "$send_line" | jq -e '.payload.ok == true' >/dev/null 2>&1 && echo ok || echo rejected
+                return 0
+            fi
+            echo silent
+        }
+        # The WHOLE attempt (connect, write, read) is time-bounded, not just
+        # the read half (finding 14: an unbounded /dev/tcp connect to a
+        # black-holed address used to hang this indefinitely). `export -f`
+        # hands the function to a fresh `bash -c` under `timeout` — the
+        # connect is a shell builtin (/dev/tcp), so an external `timeout`
+        # can only bound it by wrapping a whole bash process, not the
+        # builtin directly.
+        export -f _win_probe_once _selftest_hello
+        export SH SP NAME SOT_TOKEN XDG_CONFIG_HOME
+        _win_probe() {
+            local r; r="$(timeout 5 bash -c '_win_probe_once "$1"' _ "$1" 2>/dev/null)"
+            printf '%s' "${r:-unreachable}"
+        }
+
+        NONCE="selftest-$$-$RANDOM"
+        result="$(_win_probe "$NONCE")"
+        if [ "$result" = rejected ]; then
+            echo "selftest @$NAME: daemon rejected the connection (bad token or protocol mismatch) -- check \$SOT_TOKEN / the config token file, not the tunnel" >&2
+            exit 1
+        fi
+        for i in $(seq 1 8); do
+            grep -q "$NONCE" "$fe_inbox" 2>/dev/null && { echo "selftest @$NAME: receive path OK"; exit 0; }
+            if [ "$i" = 4 ]; then
+                result="$(_win_probe "$NONCE")"
+                [ "$result" = rejected ] && { echo "selftest @$NAME: daemon rejected the connection (bad token or protocol mismatch)" >&2; exit 1; }
+            fi
+            sleep 1
+        done
+        if [ "$result" = ok ] || [ "$(_win_probe "selftest-reach-$$-$RANDOM")" != unreachable ]; then
+            echo "selftest @$NAME: daemon reachable but no inbox line yet (FE relaunch, or the tunnel just came up) -- re-run comm-listen.sh --selftest shortly" >&2
+            exit 3
+        fi
+        echo "selftest @$NAME: daemon unreachable at $EP -- check the local tunnel / launcher" >&2
+        exit 1
     fi
     exit 0
 fi
@@ -87,7 +171,6 @@ fi
 SOT_TMUX_SOCK="$(sot_tmux_socket)" \
     || { echo "ERROR: could not resolve/secure the private tmux socket dir — see reason above" >&2; exit 1; }
 
-[ -n "$WANT_NAME" ] && NAME="$WANT_NAME"
 [ -z "$NAME" ] && { echo "ERROR: no handle — run comm-join.sh first or pass --name" >&2; exit 1; }
 
 BIN="$COMM_HOME/bin"
@@ -156,10 +239,8 @@ case "$MODE" in
             unix:*) SU="${EP#unix:}" ;;
             *) echo "selftest @$NAME: bad daemon endpoint '$EP'" >&2; exit 1 ;;
         esac
-        _selftest_hello() {
-            local _tok; _tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
-            printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":1,"app_version":"comm","token":"%s"}}\n' "$_tok"
-        }
+        # _selftest_hello is defined once, near the top of this file, shared
+        # with the Windows branch above.
         _selftest_frames() {
             _selftest_hello
             printf '%s\n' "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"agent.send\",\"payload\":{\"from\":\"__selftest__\",\"to\":\"$NAME\",\"text\":\"receive-path self-test\"}}"

@@ -28,6 +28,35 @@
 #     select naturally. The post-arm wake-proof in sot-session-start RELIES on
 #     this Monitor firing on that frame. (comm-poll.sh does the opposite and
 #     FILTERS __selftest__ — wake here, ignore there; do not conflate.)
+#
+# WINDOWS SOURCE: there is no per-handle inbox there — the native frontend
+# files every inbound relay frame straight into fe-inbox.jsonl (mirrors
+# gpu.rs::sot_state_dir(): `%LOCALAPPDATA%\sot` on Windows, else
+# `${XDG_STATE_HOME:-$HOME/.local/state}/sot`), and that file is shared by
+# every session on the host — including traffic addressed to a SIBLING
+# handle (the `to` field is advisory, not enforced routing; the daemon
+# broadcasts to every connection). So the Windows wake filter checks `to`
+# against OUR exact handle always, and ALSO the bare `win-fe` family label
+# only when THIS handle is itself part of that family (starts with
+# `win-fe`) — Codex review finding 7: a plain non-FE `<repo>-<host>`
+# Windows capsule must wake only on `to:<me>`, never on FE-family
+# broadcasts meant for the frontend driver. The frame carries the message
+# under `.text` (the raw `agent.message` payload), not `.msg`
+# (comm-relay.sh bridge's transformed field, Linux-only).
+#
+# LIVENESS MARKER: comm-session-start.sh's survival check needs to tell a
+# live Monitor from a dead one. Linux does this with `pgrep` against the
+# process table directly — no marker needed there. git-bash on Windows has
+# no reliable pgrep, so this script instead writes ITS OWN pid ($$) to
+# state/<handle>.watch ONCE at startup; the survival check reads that pid
+# back and asks the OS (`kill -0`) whether it's still alive. This is
+# deliberately NOT an age/heartbeat heuristic (Codex review finding 4: a
+# "touched within the last N seconds" test misreads BOTH ways — a killed
+# watcher can still look alive inside the window, and a live one can look
+# dead after a suspend/GC pause or a slow poll cycle) — a stale PID in the
+# marker only misfires in the rare window after that exact PID is reused by
+# an unrelated process, the same accepted-and-documented limitation every
+# PID-based liveness check carries (POSIX has no stronger primitive).
 set -uo pipefail
 
 handle="${1:-}"
@@ -36,7 +65,34 @@ if [ -z "$handle" ]; then
     exit 2
 fi
 
-inbox="$HOME/.sot-comm/inbox/$handle.jsonl"
+_sot_comm_watch_is_windows() {
+    case "${OS:-}" in Windows_NT) return 0 ;; esac
+    case "${OSTYPE:-}" in msys*|cygwin*|win32) return 0 ;; esac
+    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
+    return 1
+}
+
+if _sot_comm_watch_is_windows; then
+    inbox="${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}/sot/fe-inbox.jsonl"
+    case "$handle" in
+        win-fe*) wake_filter='select(.from != $me and ((.to // "") == $me or (.to // "") == "win-fe")) | "[relay] from \(.from): \(.text)"' ;;
+        *)       wake_filter='select(.from != $me and (.to // "") == $me) | "[relay] from \(.from): \(.text)"' ;;
+    esac
+else
+    # Honor $SOT_COMM_HOME (Codex review finding 8): a capsule with a
+    # non-default comm home must watch that home's inbox, not always
+    # $HOME/.sot-comm — comm-lib.sh's own COMM_HOME derives it the same way,
+    # but this script stays dependency-free (no `source comm-lib.sh`) so it
+    # mirrors just that one line rather than pulling the whole library in.
+    inbox="${SOT_COMM_HOME:-$HOME/.sot-comm}/inbox/$handle.jsonl"
+    # `.to // "?"` defaults a legacy line with NO .to key to non-empty -> wakes
+    # (those predate the to-stamp and are treated as directed).
+    wake_filter='select(.from != $me and ((.to // "?") != "")) | "[relay] from \(.from): \(.msg)"'
+fi
+
+marker="${SOT_COMM_HOME:-$HOME/.sot-comm}/state/$handle.watch"
+mkdir -p "$(dirname "$marker")" 2>/dev/null || true
+printf '%s' "$$" > "$marker" 2>/dev/null || true
 
 # Line count that is robust to a missing/unreadable inbox WITHOUT noise: a freshly
 # joined handle may not have a file until its first frame lands. `wc -l < missing`
@@ -54,12 +110,9 @@ while true; do
     # the next poll => c==n => nothing emitted). Reset-to-0 emits them.
     [ "$c" -lt "$n" ] && n=0
     if [ "$c" -gt "$n" ]; then
-        # --arg me passes the handle safely (no string-splice). The `.to // "?"`
-        # default makes a legacy line with NO .to key read as non-empty -> wakes
-        # (those predate the to-stamp and are treated as directed).
+        # --arg me passes the handle safely (no string-splice).
         awk -v s="$n" 'NR>s' "$inbox" | while IFS= read -r l; do
-            printf '%s' "$l" | jq -rc --arg me "$handle" \
-                'select(.from != $me and ((.to // "?") != "")) | "[relay] from \(.from): \(.msg)"' 2>/dev/null
+            printf '%s' "$l" | jq -rc --arg me "$handle" "$wake_filter" 2>/dev/null
         done
         n=$c
     fi

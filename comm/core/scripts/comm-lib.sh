@@ -3,6 +3,22 @@
 # Implements the v1 protocol (see comm/PROTOCOL.md). Runtime data lives under
 # $SOT_COMM_HOME (default ~/.sot-comm).
 
+# _sot_is_windows — the ONE shared platform test (Codex review, PR1 round 2
+# finding 6: Windows-specific defaults/guards must live HERE, not duplicated
+# per-caller — a caller-side workaround dies with that process, so a later,
+# separately-invoked script (e.g. a retried `comm-listen.sh --selftest`) never
+# sees it and falls through to Linux-only logic that has no role on Windows).
+# comm-session-skill.sh and comm-watch.sh keep their own tiny copies (they
+# don't source this file, by design — comm-watch.sh in particular stays
+# dependency-free); every OTHER script that already sources comm-lib.sh should
+# call this one instead of re-deriving it.
+_sot_is_windows() {
+    case "${OS:-}" in Windows_NT) return 0 ;; esac
+    case "${OSTYPE:-}" in msys*|cygwin*|win32) return 0 ;; esac
+    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
+    return 1
+}
+
 PROTOCOL_VERSION=1
 
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
@@ -125,20 +141,6 @@ sot_tmux_socket() {
     printf '%s\n' "$sock"
 }
 
-# _sot_is_windows — true under git-bash/MSYS/Cygwin on a Windows host.
-# comm-listen.sh and comm-session-skill.sh each keep their own copy of this
-# same 3-line check ("two call sites don't earn a shared helper" was the
-# standing call there — see comm-listen.sh's own comment). Both of THIS
-# file's new call sites (the pipe-discovery tier and its pgrep guard,
-# below) live inside comm-lib.sh itself, so a third copy pasted into this
-# file is exactly what a shared helper here avoids, at no cost to those
-# other two scripts (neither sources this one for the check).
-_sot_is_windows() {
-    case "${OS:-}" in Windows_NT) return 0 ;; esac
-    case "${OSTYPE:-}" in msys*|cygwin*|win32) return 0 ;; esac
-    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
-    return 1
-}
 
 # _sot_windows_local_pipe — the LOCAL daemon's named pipe, resolved and
 # proven live (ADR 0042 amendment, decision 5, corrected 2026-09-07): asks
@@ -194,16 +196,19 @@ sot_daemon_endpoint() {
     # ADR 0042 amendment (2026-09-07): on a Windows box the LOCAL daemon
     # only ever listens on its named pipe — the box's loopback port is the
     # SSH tunnel OUT to the backend, never a second local listener — so
-    # discovery asks for the pipe FIRST, before any tier below (all of
-    # which are Unix-socket-shaped and would silently miss a Windows
-    # daemon anyway). Falls through to those tiers on a probe miss (no
-    # local daemon running yet) rather than failing outright.
+    # discovery asks for the pipe FIRST. On a probe miss (no local daemon
+    # running) the tunnel to the backend is the default (Codex review
+    # finding 6 on the session-start rewrite), decided HERE before the
+    # pgrep-based sotd scrape below, which has no role on Windows.
+    # SOT_PORT keeps its EXISTING default (18743) — never a new fixed port.
     if _sot_is_windows; then
         local pipe_path
         if pipe_path="$(_sot_windows_local_pipe)"; then
             printf 'pipe:%s\n' "$pipe_path"
             return 0
         fi
+        printf 'tcp:127.0.0.1:%s\n' "${SOT_PORT:-18743}"
+        return 0
     fi
 
     # Keep compatibility with development daemons launched with explicit
@@ -490,8 +495,16 @@ _sot_bridge_pattern() {
 # bridge for NAME running under THIS uid only. Catches a bridge started
 # EITHER via comm-listen.sh's tmux wrapper OR run directly with no tmux
 # marker at all — this is a process-table check, independent of tmux.
+#
+# Windows GUARD, not just avoidance (Codex review finding 6): there is never
+# a comm-relay.sh bridge on Windows (comm-listen.sh's own no-op branch never
+# starts one), so the correct answer is unconditionally "none" — this also
+# means no caller anywhere in the tree reaches pgrep on a Windows host via
+# this path, cold-capsule disambiguation included. Mirrors pgrep's own
+# not-found convention: empty output, nonzero return.
 sot_bridge_pids_for() {
     local name="$1"
+    _sot_is_windows && return 1
     pgrep -u "$(id -u)" -f "$(_sot_bridge_pattern "$name")" 2>/dev/null
 }
 
@@ -506,6 +519,7 @@ sot_bridge_pids_for() {
 # caller over a purely advisory guard.
 sot_bridge_running_for() {
     local name="$1" sock="${2:-}"
+    _sot_is_windows && return 1
     [ -n "$sock" ] || sock="$(sot_tmux_socket 2>/dev/null || true)"
     if [ -n "$sock" ] && tmux -S "$sock" has-session -t "=commbridge-$name" 2>/dev/null; then
         return 0

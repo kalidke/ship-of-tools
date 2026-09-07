@@ -1,45 +1,13 @@
 ---
-description: Append a note to this side's `.claude-bus/from-<os>.md`, commit, push.
-allowed-tools: Bash, Edit, Read, Write
+description: Append a note to the ops-sidecar git bus (cross-OS Claude-to-Claude durable notes), commit, push.
+allowed-tools: Bash
 ---
 
-The user wants to send a note to the *other-OS* Claude session through the repo-mediated bus. The body is in `$ARGUMENTS`.
+Append `$ARGUMENTS` to this side's claude-bus log, commit, and push:
 
-## Procedure
+```bash
+~/.sot-comm/bin/bus.sh note "$ARGUMENTS"
+```
 
-1. **Detect which side you are on:**
-   - If `uname` works and reports `Linux` / `Darwin` → side is `linux` (Mac counts as Linux-flavoured for this purpose).
-   - Otherwise (Windows / PowerShell) → side is `windows`.
-   - Pick the matching file: `<ops>/claude-bus/from-linux.md` or `<ops>/claude-bus/from-windows.md`.
-
-2. **Find the host name** via `hostname` (or `$env:COMPUTERNAME` on Windows) and the user via `whoami`. Falls back to `unknown` if unavailable.
-
-3. **Compose an entry** with the format from `<ops>/claude-bus/README.md`:
-   ```
-   ## YYYY-MM-DDTHH:MMZ — <host> · <user>
-
-   <body from $ARGUMENTS>
-
-   ---
-   ```
-   Take the timestamp FROM THE SHELL, never by hand: `date -u +%Y-%m-%dT%H:%MZ`
-   (PowerShell: `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH\:mmZ')` — the
-   colon is escaped because `:` is culture-sensitive in .NET format strings).
-   An entry whose timestamp is empty or malformed is invisible to every
-   `/bus-sync` forever — the cursor only collects entries STRICTLY newer than
-   itself (one such entry hid a release note for a day). Append to the bottom
-   of the file. Don't rewrite earlier entries.
-
-4. **Commit and push:**
-   - `git add <ops>/claude-bus/from-<side>.md`
-   - `git commit -m "bus: note from <side> · <one-line summary of body>"` — use a HEREDOC for the message body if it has newlines. Standard commit footer.
-   - `git push` — surface failure (push rejected, network, etc.) to the user verbatim; don't retry blind.
-
-5. **Confirm to the user** with the commit SHA and the body of the note.
-
-## Notes
-
-- Never overwrite or delete previous entries; the log is append-only by convention.
-- Don't write to the *other* side's file — that side owns its own log.
-- If `$ARGUMENTS` is empty, ask the user what they want to say rather than pushing an empty entry.
-- If there are uncommitted changes elsewhere in the worktree, ask the user before bundling them into the bus commit. Better to keep bus commits scoped to the bus.
+Report the printed commit line to the user. If `$ARGUMENTS` is empty, ask
+what to say instead of running this — never push an empty entry.
