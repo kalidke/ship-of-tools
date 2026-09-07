@@ -1206,16 +1206,20 @@ fn a_terminal_write_failure_latches_the_connection_closed() {
     drop(server);
 }
 
-/// ADR 0043 decision 4, property 18: with nothing ever listening at all
-/// (no socket file exists), every `connect(2)` attempt sees `ENOENT`,
-/// retried within [`CONNECT_BOUND`] before failing loudly. Exercised
-/// through the fully public `connect_voyage_socket` -- since connect
-/// never succeeds, the subsequent challenge step is never reached, so
-/// this proves the CONNECT retry loop specifically, not the challenge.
+/// ADR 0043 decision 27: with nothing ever listening at all (no socket
+/// file exists), `connect(2)` sees `ENOENT` and fails on the FIRST
+/// attempt -- no listener at all is the caller's to poll, never this
+/// bound's to retry (an absent endpoint used to cost the full
+/// [`CONNECT_BOUND`] even though no supervisor process existed yet).
+/// Exercised through the fully public `connect_voyage_socket` -- since
+/// connect never succeeds, the subsequent challenge step is never
+/// reached, so this proves the CONNECT classification specifically, not
+/// the challenge. Elapsed time is asserted GENEROUSLY (< 1 s) -- evidence
+/// that the bound was never consumed, not a tight perf gate.
 #[test]
 #[cfg(target_os = "linux")]
-fn connect_retries_within_the_bound_then_fails_when_nothing_listens() {
-    if !run_isolated("connect_retries_within_the_bound_then_fails_when_nothing_listens") {
+fn connect_fails_fast_when_nothing_listens() {
+    if !run_isolated("connect_fails_fast_when_nothing_listens") {
         return;
     }
     let _rt = isolated_runtime_dir();
@@ -1230,26 +1234,19 @@ fn connect_retries_within_the_bound_then_fails_when_nothing_listens() {
         "expected a connect-family error, got {err}"
     );
     assert!(
-        elapsed >= CONNECT_BOUND,
-        "expected the retry loop to actually run out the {CONNECT_BOUND:?} bound, took {elapsed:?}"
-    );
-    // "one attempt may overrun the bound by a single sleep" -- a generous
-    // upper margin, not a tight one, so CI scheduling jitter can't flake
-    // this.
-    assert!(
-        elapsed < CONNECT_BOUND + Duration::from_secs(5),
-        "retry loop ran far longer than the bound plus one overrun sleep: {elapsed:?}"
+        elapsed < Duration::from_secs(1),
+        "an absent endpoint (ENOENT) must fail on the FIRST attempt, never consume {CONNECT_BOUND:?}: took {elapsed:?}"
     );
 }
 
-/// ADR 0043 decision 4, property 18: a socket special file that exists
-/// but has nobody listening behind it (bound, then the listener dropped
-/// without unlinking) makes every `connect(2)` see `ECONNREFUSED`,
-/// retried the same way `ENOENT` is.
+/// ADR 0043 decision 27: a socket special file that exists but has
+/// nobody listening behind it (bound, then the listener dropped without
+/// unlinking) makes `connect(2)` see `ECONNREFUSED` -- no listener at
+/// all, exactly like `ENOENT`, so it fails on the FIRST attempt too.
 #[test]
 #[cfg(target_os = "linux")]
-fn connect_refused_by_a_stale_socket_file_retries_then_fails() {
-    if !run_isolated("connect_refused_by_a_stale_socket_file_retries_then_fails") {
+fn connect_fails_fast_when_refused_by_a_stale_socket_file() {
+    if !run_isolated("connect_fails_fast_when_refused_by_a_stale_socket_file") {
         return;
     }
     let _rt = isolated_runtime_dir();
@@ -1270,9 +1267,68 @@ fn connect_refused_by_a_stale_socket_file_retries_then_fails() {
         "expected a connect-family error, got {err}"
     );
     assert!(
-        elapsed >= CONNECT_BOUND,
-        "expected the retry loop to actually run out the {CONNECT_BOUND:?} bound, took {elapsed:?}"
+        elapsed < Duration::from_secs(1),
+        "ECONNREFUSED (no listener) must fail on the FIRST attempt, never consume {CONNECT_BOUND:?}: took {elapsed:?}"
     );
+}
+
+/// ADR 0043 decision 27: `EAGAIN` (a full listen backlog) is a DIFFERENT
+/// case from `ENOENT`/`ECONNREFUSED` -- it says nothing about whether a
+/// listener exists, only that this attempt didn't finish -- and stays
+/// retried within [`CONNECT_BOUND`]. A real listener with nothing ever
+/// calling `accept` on it leaves the kernel-level backlog as the only
+/// thing standing between a burst of raw connects and `EAGAIN`; this
+/// drives enough concurrent connects to reliably fill it without
+/// asserting a specific backlog size, then proves the retry loop still
+/// succeeds once a slot frees (draining one queued connection via
+/// `accept()`) -- `EAGAIN` alone must never become a fast, permanent
+/// failure the way `ENOENT`/`ECONNREFUSED` now do.
+#[test]
+#[cfg(target_os = "linux")]
+fn connect_retries_within_the_bound_on_a_full_backlog() {
+    if !run_isolated("connect_retries_within_the_bound_on_a_full_backlog") {
+        return;
+    }
+    let _rt = isolated_runtime_dir();
+    let id = fresh_voyage_id();
+    let path = voyage_socket_path(&id).unwrap();
+    // A real listener (not `SocketServer`, which spawns its own accept
+    // loop) with nothing ever calling `accept()` on it -- every raw
+    // connect piles up in the backlog until it's full.
+    let listener = UnixListener::bind(&path).unwrap();
+
+    // Saturate the backlog with raw, un-accepted connections until one
+    // fails (a bounded attempt count so a system with a huge backlog
+    // cannot spin this test forever).
+    let mut saturating = Vec::new();
+    for _ in 0..4096 {
+        match UnixStream::connect(&path) {
+            Ok(s) => saturating.push(s),
+            Err(_) => break,
+        }
+    }
+    assert!(!saturating.is_empty(), "expected at least one connection to queue in the backlog");
+
+    // `connect_voyage_socket` itself now races the saturated backlog: it
+    // must not fail fast (this is EAGAIN, not "no listener"), and it must
+    // eventually succeed once a slot frees -- draining ONE queued
+    // connection via `accept()` frees exactly one backlog slot for it to
+    // land in.
+    let accept_thread = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = listener.accept();
+    });
+    let started = Instant::now();
+    let client = connect_voyage_socket(&id).expect("expected the retry loop to succeed once a backlog slot freed");
+    let elapsed = started.elapsed();
+    accept_thread.join().unwrap();
+
+    assert!(
+        elapsed < CONNECT_BOUND,
+        "expected the retry to succeed comfortably inside {CONNECT_BOUND:?}, took {elapsed:?}"
+    );
+    drop(client);
+    drop(saturating);
 }
 
 /// ADR 0043 decision 4: at capacity the acceptor accepts and closes

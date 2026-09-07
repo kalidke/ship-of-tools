@@ -225,12 +225,21 @@ pub const TEARDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_secs(20);
 /// platforms"): the total connect retry budget, hoisted here from
 /// `pipe_win.rs`'s own `PIPE_CONNECT_BOUND` — the one bound LU1a left
 /// behind because only one platform's client existed yet. Both
-/// `pipe_win::connect_named_pipe_unchallenged` (Windows, retrying
-/// `ERROR_PIPE_BUSY`/`ERROR_FILE_NOT_FOUND`) and the Unix client's own
-/// connect retry (LU1c, retrying `ECONNREFUSED`/`ENOENT`/`EAGAIN`) share
-/// this SAME constant — ADR 0043 decision 4's "a deliberate, documented
-/// difference from `PIPE_BUSY`" is in which errno family each retries,
-/// never in how long either budget runs.
+/// `pipe_win::connect_named_pipe_unchallenged` (Windows) and the Unix
+/// client's own connect retry (LU1c) share this SAME constant, and both
+/// now retry the SAME meaning within it (ADR 0043 decision 27): an
+/// endpoint that is BUSY — a pipe instance already claimed
+/// (`ERROR_PIPE_BUSY`), or a Unix listener whose backlog is momentarily
+/// full or whose accept was merely interrupted (`EAGAIN`/`EINTR`) — is
+/// retried here, because instances are held continuously and recycled
+/// once bound, so "unavailable" past that point can only mean busy. An
+/// ABSENT endpoint — no pipe instance exists yet (`ERROR_FILE_NOT_FOUND`)
+/// or no listener at all (`ECONNREFUSED`/`ENOENT`) — returns on the very
+/// first attempt: this bound is never charged waiting for a server that
+/// has not started yet. Whoever knows a server is coming (a supervisor's
+/// readiness probe, the daemon's post-spawn poll, the attach client's own
+/// episode loop, a test harness) polls for that at its own interval
+/// instead — see each caller's own doc.
 pub const CONNECT_BOUND: Duration = Duration::from_secs(2);
 
 /// [`join_within`]'s poll granularity — small enough that a fast, healthy

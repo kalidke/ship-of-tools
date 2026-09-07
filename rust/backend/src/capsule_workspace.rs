@@ -1165,6 +1165,38 @@ mod runtime {
         if !workspaces.try_begin_capsule_start(workspace_id) {
             return Ok(None);
         }
+        start_supervisor_claimed(state_root, workspace_id, mode, agent_argv, project_root, agent_name, slug, workspaces)
+    }
+
+    /// The BLOCKING half of [`start_supervisor`] (process spawn, `check_pair`'s
+    /// probe underneath [`spawn_and_watch`]), split out for ADR 0043
+    /// decision 29: a caller that itself runs on a Tokio worker (the
+    /// `workspace.create` handler, `resume_all`) must claim the `starting`
+    /// slot SYNCHRONOUSLY — via `workspaces.try_begin_capsule_start`,
+    /// BEFORE its own `spawn_blocking` scheduling yield — and only then
+    /// hand the actual spawn to this function under `spawn_blocking`.
+    /// Taking the claim first, rather than letting the blocking closure
+    /// take it once the pool gets around to running it, closes a real
+    /// window: `pty.open`'s `ensure_started` can reach the SAME
+    /// freshly-created workspace_id within milliseconds of
+    /// `workspace.create`'s own reply (the field latency map's own
+    /// ordering), and would otherwise be free to win the claim itself
+    /// while this caller's spawn is merely QUEUED — which would make
+    /// THIS caller observe `Ok(None)` and roll back a workspace that the
+    /// other caller is legitimately starting. Every failure path here
+    /// still releases the claim, exactly as [`start_supervisor`] always
+    /// did — this function assumes ONLY that the claim is already held,
+    /// never that it still needs taking.
+    pub fn start_supervisor_claimed(
+        state_root: &Path,
+        workspace_id: &str,
+        mode: StartMode,
+        agent_argv: &[String],
+        project_root: &Path,
+        agent_name: &str,
+        slug: &str,
+        workspaces: Workspaces,
+    ) -> Result<Option<bool>, String> {
         let state_dir = super::state_dir_for(state_root, workspace_id);
         let exe = match sot_capsule_exe() {
             Ok(exe) => exe,
@@ -1666,18 +1698,37 @@ mod runtime {
                         );
                         tokio::time::sleep(backoff).await;
                         restart_times.push(Instant::now());
-                        match spawn_detached_supervisor(
-                            &sot_capsule_exe,
-                            &state_dir,
-                            StartMode::Resume,
-                            &argv,
-                            &cwd,
-                            &agent_name,
-                            &workspace_id,
-                            &slug,
-                        ) {
-                            Ok(spawned) => leg_opt = Some(WatchedLeg::Spawned(spawned.child)),
-                            Err(e) if e.kind() == ErrorKind::Unsupported => {
+                        // ADR 0043 decision 29: a process spawn never runs
+                        // on a Tokio worker -- this task already awaits
+                        // `spawn_blocking` for its own contention probe
+                        // above; the restart spawn shares the same
+                        // pattern. Clones are the closure's OWN copies
+                        // (`'static` + `Send`, required across the
+                        // `.await` below) -- the loop's own locals are
+                        // untouched and reused on the NEXT iteration.
+                        let exe = sot_capsule_exe.clone();
+                        let dir = state_dir.clone();
+                        let argv_for_spawn = argv.clone();
+                        let cwd_for_spawn = cwd.clone();
+                        let agent_name_for_spawn = agent_name.clone();
+                        let workspace_id_for_spawn = workspace_id.clone();
+                        let slug_for_spawn = slug.clone();
+                        let spawn_result = tokio::task::spawn_blocking(move || {
+                            spawn_detached_supervisor(
+                                &exe,
+                                &dir,
+                                StartMode::Resume,
+                                &argv_for_spawn,
+                                &cwd_for_spawn,
+                                &agent_name_for_spawn,
+                                &workspace_id_for_spawn,
+                                &slug_for_spawn,
+                            )
+                        })
+                        .await;
+                        match spawn_result {
+                            Ok(Ok(spawned)) => leg_opt = Some(WatchedLeg::Spawned(spawned.child)),
+                            Ok(Err(e)) if e.kind() == ErrorKind::Unsupported => {
                                 // `check_pair` refused (another build next to this
                                 // daemon) OR `qualified_state_root` refused (ADR
                                 // 0043 decision 23: the state root went unqualified
@@ -1689,8 +1740,11 @@ mod runtime {
                                 workspaces.mark_capsule_terminal(&workspace_id);
                                 return;
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: restart spawn failed");
+                            }
+                            Err(join_err) => {
+                                tracing::warn!(workspace_id = %workspace_id, error = %join_err, "capsule supervisor watchdog: restart spawn task panicked");
                             }
                         }
                     }
@@ -1903,15 +1957,31 @@ mod runtime {
                         }
                     }
                     Some(StartMode::Resume) => {
-                        match start_supervisor(&state_root, &workspace_id, StartMode::Resume, &argv, &cwd, &agent_name, &slug, workspaces) {
-                            Ok(Some(degraded)) => {
-                                tracing::info!(workspace_id = %workspace_id, degraded, "capsule workspace supervisor resumed");
+                        // ADR 0043 decision 29: a process spawn never runs
+                        // on a Tokio worker. `start_supervisor`'s own
+                        // atomic claim check moves with it (unlike the
+                        // `workspace.create` handler, nothing here rolls
+                        // back a registry row on `Ok(None)`, so there is
+                        // no race to split the claim out of this call
+                        // for) — `workspace_id` alone is cloned, needed
+                        // for the tracing calls below the `.await`.
+                        let workspace_id_for_log = workspace_id.clone();
+                        let spawn_result = tokio::task::spawn_blocking(move || {
+                            start_supervisor(&state_root, &workspace_id, StartMode::Resume, &argv, &cwd, &agent_name, &slug, workspaces)
+                        })
+                        .await;
+                        match spawn_result {
+                            Ok(Ok(Some(degraded))) => {
+                                tracing::info!(workspace_id = %workspace_id_for_log, degraded, "capsule workspace supervisor resumed");
                             }
-                            Ok(None) => {
-                                tracing::debug!(workspace_id = %workspace_id, "capsule workspace resume-scan: launch already in flight; skipping");
+                            Ok(Ok(None)) => {
+                                tracing::debug!(workspace_id = %workspace_id_for_log, "capsule workspace resume-scan: launch already in flight; skipping");
                             }
-                            Err(e) => {
-                                tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule workspace supervisor resume spawn failed");
+                            Ok(Err(e)) => {
+                                tracing::warn!(workspace_id = %workspace_id_for_log, error = %e, "capsule workspace supervisor resume spawn failed");
+                            }
+                            Err(join_err) => {
+                                tracing::warn!(workspace_id = %workspace_id_for_log, error = %join_err, "capsule workspace resume-scan: resume spawn task panicked");
                             }
                         }
                     }

@@ -246,7 +246,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_NO_DATA,
+    CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA,
     ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
     GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
     WAIT_TIMEOUT,
@@ -2352,11 +2352,13 @@ fn map_peer_auth_outcome(outcome: crate::challenge::PeerAuthOutcome) -> Result<(
 /// `challenge_win::challenge` itself on top of this — see
 /// `probe_win::RealProbeOps` for exactly that composition.
 ///
-/// Retries `CreateFileW` (bounded, 2s total) on `ERROR_PIPE_BUSY` (all
-/// instances currently connected — waits on `WaitNamedPipeW` between
-/// attempts) and `ERROR_FILE_NOT_FOUND` (the server has not called `bind`
-/// yet) — both are ordinary races in a healthy multi-client server, not
-/// failures.
+/// Retries `CreateFileW` (bounded, 2s total) on `ERROR_PIPE_BUSY` ONLY
+/// (all instances currently connected — waits on `WaitNamedPipeW`
+/// between attempts): an ordinary race in a healthy multi-client server,
+/// not a failure. `ERROR_FILE_NOT_FOUND` (no instance exists yet — the
+/// server has not called `bind` yet) returns on the FIRST attempt (ADR
+/// 0043 decision 27) — the caller's own readiness wait owns that race
+/// now, not this bounded retry.
 pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, TransportError> {
     let client = connect_voyage_pipe_unchallenged(voyage_id)?;
     map_peer_auth_outcome(crate::challenge_win::authenticate_server(&client))?;
@@ -2402,12 +2404,16 @@ pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient
 }
 
 /// Shared raw connect, given an already-resolved wide pipe name: retries
-/// `CreateFileW` (bounded, [`CONNECT_BOUND`] total) on
-/// `ERROR_PIPE_BUSY`/`ERROR_FILE_NOT_FOUND`, exactly as
-/// [`connect_voyage_pipe_unchallenged`]'s own doc describes. NO
-/// authentication of any kind — every caller of either wrapper above is
-/// responsible for running the OS-level identity check (and, where the
-/// lane needs it, the full challenge) on top.
+/// `CreateFileW` (bounded, [`CONNECT_BOUND`] total) on `ERROR_PIPE_BUSY`
+/// ONLY — an instance is held continuously and recycled once bound (this
+/// module's "Continuous name hold" doc above), so "unavailable" past that
+/// point means busy, never absent. `ERROR_FILE_NOT_FOUND` — no instance
+/// exists yet — returns [`TransportError::Io`] on the very first attempt:
+/// an absent pipe is the caller's to poll (ADR 0043 decision 27), not a
+/// transient this function retries. NO authentication of any kind —
+/// every caller of either wrapper above is responsible for running the
+/// OS-level identity check (and, where the lane needs it, the full
+/// challenge) on top.
 fn connect_named_pipe_unchallenged(name: Vec<u16>) -> Result<PipeClient, TransportError> {
     let deadline = Instant::now() + CONNECT_BOUND;
     loop {
@@ -2442,19 +2448,14 @@ fn connect_named_pipe_unchallenged(name: Vec<u16>) -> Result<PipeClient, Transpo
         }
         let err = std::io::Error::last_os_error();
         let code = err.raw_os_error();
-        let retryable =
-            code == Some(ERROR_PIPE_BUSY as i32) || code == Some(ERROR_FILE_NOT_FOUND as i32);
+        let retryable = code == Some(ERROR_PIPE_BUSY as i32);
         if !retryable || Instant::now() >= deadline {
             return Err(TransportError::Io {
                 op: "CreateFileW",
                 source: err,
             });
         }
-        if code == Some(ERROR_PIPE_BUSY as i32) {
-            unsafe { WaitNamedPipeW(name.as_ptr(), 200) };
-        } else {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        unsafe { WaitNamedPipeW(name.as_ptr(), 200) };
     }
 }
 

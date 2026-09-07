@@ -1159,3 +1159,35 @@ fn reset_from_ended_no_respawn_mints_a_new_voyage_and_spawns_for_it() {
     let child = guard.0.take().unwrap();
     let _ = wait_for_exit(child, Duration::from_secs(30));
 }
+
+/// ADR 0043 decision 27/30: with the InitialProbe's connect no longer
+/// paying the full [`sot_log::transport::CONNECT_BOUND`] on an absent
+/// voyage pipe (it fails fast on `ENOENT`/`ECONNREFUSED` now, retried
+/// only at [`sot_log::supervisor`]'s own 250ms `ATTEMPT_INTERVAL`), a
+/// fresh `--start` should reach `Ready` in well under a second rather
+/// than the 2+ seconds the old fixed wait alone used to cost. Asserted
+/// against a GENEROUS 30s bound — this proves behaviour (Ready is
+/// reached at all, promptly), not a tight perf gate; the actual measured
+/// time is printed for the report.
+#[test]
+fn start_reaches_ready_promptly() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let started = Instant::now();
+    let child = spawn_supervisor(&state_dir, "--start", SHELL);
+    let mut guard = KillGuard(Some(child));
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (_voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
+    let elapsed = started.elapsed();
+    println!("LU6b start_reaches_ready_promptly: spawn->Ready = {elapsed:?}");
+    assert!(elapsed < Duration::from_secs(30), "expected Ready well within the generous 30s bound, took {elapsed:?}");
+
+    let _ = command(&conn, "start-reaches-ready-stop", SupervisorOp::Stop);
+    let child = guard.0.take().unwrap();
+    let _ = wait_for_exit(child, Duration::from_secs(30));
+}

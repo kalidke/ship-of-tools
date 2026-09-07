@@ -143,6 +143,31 @@ fn wait_for_join<T: Send + 'static>(handle: std::thread::JoinHandle<T>, timeout:
     Some(handle.join().unwrap())
 }
 
+/// ADR 0043 decision 27: the transport's own connect no longer retries an
+/// ABSENT endpoint (only a busy one, within `CONNECT_BOUND`) — a caller
+/// racing a server's own startup (here, `Transport::bind` running on
+/// `capsule::run`'s background thread, a moment after this test spawns
+/// it) now owns that readiness wait itself. Polls `connect` every 50ms
+/// until it succeeds or `deadline` — a GENEROUS bound, evidence of a
+/// genuinely broken startup, never a tight race — expires, at which
+/// point the LAST error fails the test loudly. Identical helper in
+/// `tests/e2e_pipe.rs` and `tests/pipe_win.rs` (no shared test module
+/// spans Windows-only and Linux-only files).
+fn wait_for_endpoint<T, E: std::fmt::Display>(connect: impl Fn() -> Result<T, E>, deadline: Duration) -> T {
+    let started = Instant::now();
+    loop {
+        match connect() {
+            Ok(v) => return v,
+            Err(e) => {
+                if started.elapsed() >= deadline {
+                    panic!("endpoint did not become ready within {deadline:?}: {e}");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 /// Every sealed frame across every `.sotseg` in `root/seg`, in segment
 /// order — identical to `tests/e2e_pipe.rs`'s own helper of the same name.
 fn sealed_frames(root: &std::path::Path, voyage: &str) -> Vec<Envelope> {
@@ -369,10 +394,11 @@ fn full_socket_e2e_two_clients_and_mgmt() {
 
     // The socket is created INSIDE `run` (`Transport::bind` runs right
     // after `open_for_writing` — see `capsule.rs`'s own doc at that call
-    // site); `connect_voyage_socket`'s own bounded retry on
-    // `ENOENT`/`ECONNREFUSED` absorbs the ordinary race of a client trying
-    // to connect before that has happened yet.
-    let watcher_client = Arc::new(connect_voyage_socket(&voyage_id).unwrap());
+    // site). ADR 0043 decision 27: `connect_voyage_socket` no longer
+    // retries an absent endpoint (`ENOENT`/`ECONNREFUSED` now fail on the
+    // first attempt) — this test owns the ordinary race of connecting
+    // before that bind has happened yet via `wait_for_endpoint`.
+    let watcher_client = Arc::new(wait_for_endpoint(|| connect_voyage_socket(&voyage_id), Duration::from_secs(30)));
     let mut watcher = RealFrames::spawn(Arc::clone(&watcher_client));
     watcher_client.write_all(&frame::hello()).unwrap();
     watcher.wait_for("watcher hello_ok", Duration::from_secs(10), |f| {

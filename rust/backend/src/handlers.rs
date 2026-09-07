@@ -4442,18 +4442,26 @@ pub async fn handle_workspace_create(
         // `ws_handle.runtime == "capsule"`, which is exactly when the
         // earlier check ran and would have already returned on failure);
         // the `None` arm stays as a defensive fallback, never actually hit.
+        // ADR 0043 decision 29: a process spawn never runs on a Tokio
+        // worker. The `starting` claim itself, though, is taken RIGHT
+        // HERE — synchronously, before the `spawn_blocking` scheduling
+        // yield below — never inside the blocking closure: `pty.open`'s
+        // `ensure_started` can reach this SAME freshly-minted
+        // workspace_id within milliseconds of this reply going out (the
+        // field latency map's own ordering), and would otherwise be free
+        // to win the claim itself while this spawn is merely QUEUED on
+        // the blocking pool, making THIS call observe `Ok(None)` and roll
+        // back a workspace the other caller is legitimately starting.
         let spawn_result: std::result::Result<bool, String> = match capsule_state_root {
             None => Err(format!(
                 "could not resolve this machine's state root ({} unset)",
                 crate::capsule_workspace::STATE_ROOT_HINT
             )),
-            // Shared with `pty.open`'s start-on-attach path (server.rs) —
-            // see `capsule_workspace::start_supervisor`'s own doc.
-            // Rule D: `Ok(None)` means another launch already held this
-            // workspace's `starting` claim — realistically impossible for
-            // a workspace_id this op just minted, so it collapses to the
-            // same failure/rollback path as a genuine spawn error rather
-            // than growing a third outcome here.
+            // Rule D: losing the claim here is realistically impossible
+            // for a workspace_id this op just minted — kept only as the
+            // same defensive fallback `start_supervisor`'s own doc names,
+            // collapsing into the same failure/rollback path as a
+            // genuine spawn error rather than growing a third outcome.
             // `&req.agent_name` verbatim (Codex round finding 2: no
             // synthesized default — a synthesized `<slug>-<host>` handed
             // to SOT_COMM_NAME would become an explicit pin that
@@ -4462,21 +4470,58 @@ pub async fn handle_workspace_create(
             // `agent_name` is a real, supported case now — comm-join.sh's
             // own #148 auto-disambiguating derivation picks the handle,
             // via the SOT_COMM_SELF_FILE this spawn pins).
-            Some(state_root) => crate::capsule_workspace::start_supervisor(
-                &state_root,
-                &ws_handle.workspace_id,
-                crate::capsule_workspace::StartMode::Start,
-                &capsule_argv,
-                &project_root,
-                &req.agent_name,
-                &ws_handle.slug,
-                workspaces.clone(),
-            )
-            .and_then(|spawned| {
-                spawned.ok_or_else(|| {
-                    "a supervisor launch for this workspace was unexpectedly already in flight".to_string()
+            Some(_) if !workspaces.try_begin_capsule_start(&ws_handle.workspace_id) => {
+                Err("a supervisor launch for this workspace was unexpectedly already in flight".to_string())
+            }
+            Some(state_root) => {
+                let workspace_id = ws_handle.workspace_id.clone();
+                let capsule_argv = capsule_argv.clone();
+                let project_root = project_root.clone();
+                let agent_name = req.agent_name.clone();
+                let slug = ws_handle.slug.clone();
+                let workspaces_for_spawn = workspaces.clone();
+                // BLOCKING (process spawn, `check_pair`'s probe): the
+                // claim above is already held, so this closure only ever
+                // runs the spawn itself — see `start_supervisor_claimed`'s
+                // own doc.
+                match tokio::task::spawn_blocking(move || {
+                    crate::capsule_workspace::start_supervisor_claimed(
+                        &state_root,
+                        &workspace_id,
+                        crate::capsule_workspace::StartMode::Start,
+                        &capsule_argv,
+                        &project_root,
+                        &agent_name,
+                        &slug,
+                        workspaces_for_spawn,
+                    )
                 })
-            }),
+                .await
+                {
+                    // `start_supervisor_claimed` never actually produces
+                    // `Ok(None)` (the claim-losing case it inherited its
+                    // return type from is checked synchronously above,
+                    // before this task is even spawned) — the fallback
+                    // text is kept only so this arm's shape matches
+                    // `start_supervisor`'s own documented contract.
+                    Ok(result) => result.and_then(|spawned| {
+                        spawned.ok_or_else(|| {
+                            "a supervisor launch for this workspace was unexpectedly already in flight".to_string()
+                        })
+                    }),
+                    Err(join_err) => {
+                        // The claim taken above is never released by
+                        // `start_supervisor_claimed` itself when its own
+                        // closure never got to run its cleanup (a panic
+                        // unwinds past every `end_capsule_start` call) —
+                        // released here so this workspace_id (freshly
+                        // minted, about to be rolled back below regardless)
+                        // can never wedge as permanently "starting".
+                        workspaces.end_capsule_start(&ws_handle.workspace_id);
+                        Err(format!("capsule spawn task panicked: {join_err}"))
+                    }
+                }
+            }
         };
         match spawn_result {
             Ok(degraded) => {

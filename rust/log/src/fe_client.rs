@@ -543,6 +543,14 @@ pub enum ReconnectDecision {
     Terminal(TerminalReason),
 }
 
+/// The fixed pre-attach poll interval, AND the first post-attach backoff
+/// (ADR 0043 decision 28): before the episode has ever reached a
+/// successful attach, [`ReconnectState::retry_with_backoff`] returns this
+/// value on every call without advancing — there is nothing to back off
+/// FROM yet, only a supervisor whose word the client is waiting on. Once
+/// [`ReconnectState::attached`] has fired at least once, this becomes the
+/// starting point of the doubling-to-[`RECONNECT_BACKOFF_CAP`] sequence
+/// for a lane that attached and then dropped.
 pub const RECONNECT_BACKOFF_INITIAL: Duration = Duration::from_millis(250);
 pub const RECONNECT_BACKOFF_CAP: Duration = Duration::from_secs(4);
 
@@ -574,6 +582,14 @@ pub fn next_backoff(current: Duration) -> Duration {
 pub struct ReconnectState {
     backoff: Duration,
     unresponsive_since: Option<Instant>,
+    /// ADR 0043 decision 28: whether [`Self::attached`] has EVER fired.
+    /// Gates [`Self::retry_with_backoff`] — false throughout the whole
+    /// pre-attach convergence (an episode may retry many times waiting on
+    /// the supervisor's word before it ever opens the voyage lane), so
+    /// that wait never advances past the fixed pre-attach interval;
+    /// doubling is reserved for episodes that have attached at least once
+    /// and then dropped.
+    ever_attached: bool,
 }
 
 impl Default for ReconnectState {
@@ -584,7 +600,7 @@ impl Default for ReconnectState {
 
 impl ReconnectState {
     pub fn new() -> Self {
-        Self { backoff: RECONNECT_BACKOFF_INITIAL, unresponsive_since: None }
+        Self { backoff: RECONNECT_BACKOFF_INITIAL, unresponsive_since: None, ever_attached: false }
     }
 
     /// Every episode starts by re-reading `drawer.voyage` fresh — this
@@ -644,17 +660,25 @@ impl ReconnectState {
         self.unresponsive_since = None;
     }
 
-    /// Called once an attach succeeds: clears the unresponsive clock and
-    /// resets backoff — the only behavior a "reached Watching" phase
-    /// transition ever carried.
+    /// Called once an attach succeeds: clears the unresponsive clock,
+    /// latches [`Self::ever_attached`] for good, and resets backoff — the
+    /// only behavior a "reached Watching" phase transition ever carried.
     pub fn attached(&mut self) {
         self.unresponsive_since = None;
+        self.ever_attached = true;
         self.reset_backoff();
     }
 
-    /// Everything else retries. Returns the backoff to wait before the
-    /// next attempt and advances it (250ms doubling to 4s).
+    /// Everything else retries. Before the first successful [`Self::attached`]
+    /// call, returns [`RECONNECT_BACKOFF_INITIAL`] on every call WITHOUT
+    /// advancing (ADR 0043 decision 28: the fixed pre-attach poll interval —
+    /// there is no prior attach to be backing off from). After the first
+    /// attach, returns the backoff to wait before the next attempt and
+    /// advances it (250ms doubling to 4s).
     pub fn retry_with_backoff(&mut self) -> Duration {
+        if !self.ever_attached {
+            return RECONNECT_BACKOFF_INITIAL;
+        }
         let wait = self.backoff;
         self.backoff = next_backoff(self.backoff);
         wait
@@ -1200,8 +1224,21 @@ mod tests {
     // ---- (d) ReconnectState ---------------------------------------------
 
     #[test]
-    fn backoff_doubles_and_caps_at_4s() {
+    fn pre_attach_backoff_stays_fixed_across_n_calls() {
+        // ADR 0043 decision 28: before the first `attached()`, every call
+        // returns the fixed pre-attach interval — no doubling. This is
+        // the state a fresh episode is in while it polls the supervisor's
+        // Status for Ready.
         let mut r = ReconnectState::new();
+        for _ in 0..6 {
+            assert_eq!(r.retry_with_backoff(), Duration::from_millis(250));
+        }
+    }
+
+    #[test]
+    fn post_attach_backoff_doubles_and_caps_at_4s() {
+        let mut r = ReconnectState::new();
+        r.attached();
         let mut waits = vec![];
         for _ in 0..6 {
             waits.push(r.retry_with_backoff());
@@ -1222,6 +1259,7 @@ mod tests {
     #[test]
     fn attached_resets_backoff_and_clears_unresponsive() {
         let mut r = ReconnectState::new();
+        r.attached();
         r.retry_with_backoff();
         r.retry_with_backoff();
         let t0 = Instant::now();
@@ -1232,6 +1270,21 @@ mod tests {
         // the old clock.
         let t1 = t0 + HEALTH_WINDOW + Duration::from_secs(1);
         assert_eq!(r.classify_unresponsive(t1), ReconnectDecision::Retry);
+    }
+
+    #[test]
+    fn attached_latches_ever_attached_so_a_later_drop_resumes_doubling() {
+        // A lane that attached, then dropped, resumes the DOUBLING
+        // backoff from its reset starting point — never re-enters the
+        // fixed pre-attach interval, which is reserved for episodes that
+        // have never yet reached Ready.
+        let mut r = ReconnectState::new();
+        r.attached();
+        let waits: Vec<Duration> = (0..3).map(|_| r.retry_with_backoff()).collect();
+        assert_eq!(
+            waits,
+            vec![Duration::from_millis(250), Duration::from_millis(500), Duration::from_secs(1)]
+        );
     }
 
     #[test]

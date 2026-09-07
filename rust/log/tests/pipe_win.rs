@@ -44,7 +44,7 @@ use sot_log::challenge::ChallengeOutcome;
 use sot_log::challenge_win::challenge;
 use sot_log::exchange::VoyageMgmtExchange;
 use sot_log::pipe_win::{connect_voyage_pipe, ConnId, PipeServer};
-use sot_log::transport::{ClosedReason, LaneEvent, TransportError, TEARDOWN_AGGREGATE_DEADLINE};
+use sot_log::transport::{ClosedReason, LaneEvent, TransportError, CONNECT_BOUND, TEARDOWN_AGGREGATE_DEADLINE};
 use sot_log::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -128,6 +128,31 @@ fn expect_closed(server: &PipeServer, conn_id: ConnId, timeout: Duration) -> Clo
             reason
         }
         other => panic!("expected Closed, got {other:?}"),
+    }
+}
+
+/// ADR 0043 decision 27: the transport's own connect no longer retries an
+/// ABSENT pipe (only a busy one, within `CONNECT_BOUND`) — a caller
+/// racing a server's own startup (a spawned child process binding its
+/// pipe a moment after this test spawns it) now owns that readiness wait
+/// itself. Polls `connect` every 50ms until it succeeds or `deadline` —
+/// a GENEROUS bound, evidence of a genuinely broken startup, never a
+/// tight race — expires, at which point the LAST error fails the test
+/// loudly. Identical helper in `tests/e2e_pipe.rs` and
+/// `tests/e2e_socket.rs` (no shared test module spans Windows-only and
+/// Linux-only files).
+fn wait_for_endpoint<T, E: std::fmt::Display>(connect: impl Fn() -> Result<T, E>, deadline: Duration) -> T {
+    let started = Instant::now();
+    loop {
+        match connect() {
+            Ok(v) => return v,
+            Err(e) => {
+                if started.elapsed() >= deadline {
+                    panic!("endpoint did not become ready within {deadline:?}: {e}");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
     }
 }
 
@@ -514,6 +539,90 @@ fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
     drop(server);
     try_create_first_instance(&id, max_instances)
         .unwrap_or_else(|e| panic!("expected the freed name to bind again: {e}"));
+}
+
+/// ADR 0043 decision 27: an ABSENT pipe — no instance has EVER been
+/// created for this voyage id — fails `connect_voyage_pipe` on the FIRST
+/// `CreateFileW` attempt with `ERROR_FILE_NOT_FOUND`, never retried
+/// within [`CONNECT_BOUND`] (this module's own "Continuous name hold"
+/// doc: an instance is held and recycled once bound, so unavailable past
+/// that point can only mean busy — absence is the caller's to poll, not
+/// this bound's to spend). Elapsed time is asserted GENEROUSLY (< 1s) —
+/// evidence the bound was never consumed, not a tight perf gate.
+#[test]
+fn connect_fails_fast_when_pipe_absent() {
+    if !run_isolated("connect_fails_fast_when_pipe_absent") {
+        return;
+    }
+    let id = fresh_voyage_id(); // nothing ever binds this id
+
+    let started = Instant::now();
+    let err = connect_voyage_pipe(&id).unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(err, TransportError::Io { op, .. } if op == "CreateFileW"),
+        "expected a CreateFileW error, got {err}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "an absent pipe (ERROR_FILE_NOT_FOUND) must fail on the FIRST attempt, never consume {CONNECT_BOUND:?}: took {elapsed:?}"
+    );
+}
+
+/// ADR 0043 decision 27: a BUSY pipe — every instance already claimed —
+/// is a DIFFERENT case from an absent one, and stays retried within
+/// [`CONNECT_BOUND`] exactly as before. Proven the same way
+/// `rival_first_instance_create_fails_continuously_then_frees_on_drop`
+/// proves continuous name hold: `max_instances = 1`, hold one client
+/// connected (the only instance is now claimed), start a second connect
+/// on its own thread, assert it is STILL PENDING after 300ms (busy, not
+/// failed), release the first client (the instance recycles per this
+/// module's own "Continuous name hold" doc), then assert the second
+/// connect succeeds once the recycled instance is available again.
+#[test]
+fn connect_retries_within_the_bound_when_busy_then_succeeds_once_freed() {
+    if !run_isolated("connect_retries_within_the_bound_when_busy_then_succeeds_once_freed") {
+        return;
+    }
+    let id = fresh_voyage_id();
+    let max_instances = 1;
+    let server = PipeServer::bind(&id, max_instances).unwrap();
+
+    let first_client = connect_voyage_pipe(&id).unwrap();
+    let first_conn = expect_accepted(&server, TIMEOUT);
+
+    let id_for_thread = id.clone();
+    let second = std::thread::spawn(move || {
+        let started = Instant::now();
+        let client = connect_voyage_pipe(&id_for_thread).expect("expected the busy retry to eventually succeed");
+        (client, started.elapsed())
+    });
+
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !second.is_finished(),
+        "expected the second connect to still be retrying against a busy pipe after 300ms"
+    );
+
+    server.close(first_conn);
+    assert_eq!(expect_closed(&server, first_conn, TIMEOUT), ClosedReason::Closed);
+    drop(first_client);
+
+    let join_deadline = Instant::now() + CONNECT_BOUND + Duration::from_secs(5);
+    while !second.is_finished() {
+        assert!(
+            Instant::now() < join_deadline,
+            "expected the second connect thread to finish once the instance was freed"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (_second_client, elapsed) = second.join().unwrap();
+    assert!(
+        elapsed < CONNECT_BOUND,
+        "expected the busy retry to succeed comfortably inside {CONNECT_BOUND:?}, took {elapsed:?}"
+    );
+    drop(server);
 }
 
 /// ADR 0041 step 6 U1b, Lifecycle "the pipe NAME disappears before any
@@ -1475,10 +1584,11 @@ fn cross_process_challenge_proves_a_real_child_server() {
     }
     let mut guard = KillGuard(Some(child));
 
-    // `connect_voyage_pipe`'s own ~2s internal retry on `FILE_NOT_FOUND`
-    // absorbs the child's own startup race (it hasn't bound yet) -- no
-    // extra synchronization needed.
-    let client = connect_voyage_pipe(&voyage_id).expect("connect to the cross-process server");
+    // ADR 0043 decision 27: `connect_voyage_pipe` no longer retries an
+    // absent pipe (`ERROR_FILE_NOT_FOUND` now fails on the first
+    // attempt) -- this test owns the ordinary race of the child not
+    // having bound yet via `wait_for_endpoint`.
+    let client = wait_for_endpoint(|| connect_voyage_pipe(&voyage_id), Duration::from_secs(30));
     let mut exchange = VoyageMgmtExchange::default();
     let outcome = challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30));
 

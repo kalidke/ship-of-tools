@@ -109,7 +109,7 @@ use crate::wire::{
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::marker::PhantomData;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex};
@@ -333,13 +333,28 @@ fn supervisor_status<E: Endpoint>(
 /// name"). A live voyage pipe means the capsule survives headless
 /// (exactly the scenario ADR 0041 P3 is built to tolerate), so this
 /// clears the clock and asks the caller to retry shortly rather than
-/// attaching blind this round — the caller's own backoff (250 ms
-/// doubling to 4 s) makes that a brief, bounded gap, not a stall.
+/// attaching blind this round — the caller's own backoff (fixed pre-
+/// attach interval, doubling only after a first attach) makes that a
+/// brief, bounded gap, not a stall.
+///
+/// ADR 0043 decision 28: `voyage` is now OPTIONAL — the pointer is no
+/// longer read as authoritative before the supervisor's own word (see
+/// `converge_on_ready`'s pointer check, which runs AFTER `Ready`), so an
+/// episode reaching this path may not have one yet. A missing pointer
+/// starts the health accounting exactly as an absent supervisor does
+/// (there is nothing to probe with, so this cannot distinguish "the
+/// capsule survives headless" from "nothing exists yet" — both retry
+/// under the same clock); an answered `Status` on a later round still
+/// clears the unresponsive count via `ReconnectState::attached` or
+/// `clear_unresponsive`, whichever path reaches it.
 fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
     reconnect: &mut ReconnectState,
-    voyage: &str,
+    voyage: Option<&str>,
     now: Instant,
 ) -> ReconnectDecision {
+    let Some(voyage) = voyage else {
+        return reconnect.classify_unresponsive(now);
+    };
     match E::connect_voyage_unchallenged(voyage) {
         Ok(_probe) => {
             reconnect.clear_unresponsive();
@@ -350,6 +365,158 @@ fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
                 reconnect.classify_access_denied()
             } else {
                 reconnect.classify_unresponsive(now)
+            }
+        }
+    }
+}
+
+/// What [`converge_on_ready`] concluded. `Ready` carries the SAME
+/// connection it was given back (the caller keeps using it, first for
+/// the "voyage changed" reconciliation, then for a latched `Quit` while
+/// waiting on the voyage lane — no second connect+hello) plus the voyage
+/// id [`pointer::validate`] confirmed against the supervisor's own
+/// report.
+enum ReadyOutcome<E: Endpoint> {
+    Ready { conn: E::Client, sup_reader: FrameReader, voyage_id: String },
+    /// The connection stopped answering a `Status` request mid-poll — the
+    /// caller falls back to path (i), presence/health accounting, exactly
+    /// as an outright connect/hello failure would.
+    LaneDown,
+    Terminal(String),
+    ShouldExit,
+    Shutdown,
+}
+
+/// ADR 0043 decision 28: the attach client converges on the supervisor's
+/// OWN word, never on the voyage pipe. Given an already-connected,
+/// already-`hello`'d supervisor lane, polls `Status` on that SAME
+/// connection every [`ReconnectState::retry_with_backoff`] interval (the
+/// FIXED pre-attach interval until this worker has attached at least
+/// once, doubling to a 4 s cap for an episode that attached and then
+/// dropped) until the report says `Ready` with a voyage id AND
+/// `drawer.voyage` on disk validates against it. Two things happen
+/// INSIDE this loop, both because they need only the supervisor lane and
+/// (once known) the voyage id — never the voyage/attach lane itself:
+///
+/// - A latched `Quit` dispatches the instant a voyage id is known,
+///   BEFORE the `Ready` gate (ruling (a) — path (ii)): a quit must never
+///   wait on a supervisor that is still starting. `run_quit` itself
+///   blocks for as long as the ending transaction takes, so the `Status`
+///   this round already read is stale by the time it returns — the loop
+///   re-polls fresh rather than act on it.
+/// - The pointer check (decision 28's own text): absent or naming
+///   another voyage while this is the FIRST round reporting `Ready` (the
+///   pointer may not have propagated yet, even though
+///   `discover_or_mint_voyage` publishes it before `Ready` — a benign
+///   observation race, not a fault) is "not yet", one more poll;
+///   unchanged across TWO consecutive `Ready` rounds is INCONSISTENT — a
+///   typed status, reported and re-polled forever, never `Terminal` for
+///   this case alone. `Corrupt`/`OtherIo` are unrelated malformed-content
+///   or real I/O failures and stay loud, immediate stops, exactly as
+///   before this lane.
+///
+/// There is NO client-side cutoff for "starting" — the supervisor's own
+/// lifecycle deadlines are what eventually surface as `Terminal` (or a
+/// respawned leg the next `Status` reports); this function invents none
+/// of its own.
+fn converge_on_ready<E: Endpoint>(
+    mut conn: E::Client,
+    mut sup_reader: FrameReader,
+    state_dir: &Path,
+    h: &str,
+    cmd_rx: &Receiver<WorkerMsg>,
+    reconnect: &mut ReconnectState,
+    latched_quit_reason: &mut Option<String>,
+    quit: &mut QuitDispatcher,
+    outstanding: &mut OutstandingSlot,
+    emit: &dyn Fn(ClientEvent),
+) -> ReadyOutcome<E> {
+    // Emitted at most once per "still starting" spell — re-armed every
+    // time a latched Quit or an inconsistent-pointer recheck makes the
+    // NEXT status worth announcing again as a fresh wait.
+    let mut emitted_starting = false;
+    // Set once this connection has seen a `Ready` round whose pointer
+    // check came up short — the VERY NEXT such round (this SAME
+    // connection, no reconnect in between) is what decision 28 calls
+    // "an unchanged Ready", the inconsistent case.
+    let mut ready_pointer_gap_seen = false;
+
+    loop {
+        let (sv, _leg, phase) = match supervisor_status::<E>(&conn, &mut sup_reader) {
+            Ok(v) => v,
+            Err(_) => return ReadyOutcome::LaneDown,
+        };
+        if let ReconnectDecision::Terminal(reason) = reconnect.classify_supervisor_phase(phase) {
+            return ReadyOutcome::Terminal(format!("supervisor: {reason:?}"));
+        }
+
+        // Path (ii): a latched Quit needs only the supervisor lane and a
+        // known voyage id -- dispatched here, BEFORE the Ready gate
+        // below, so a quit never waits on a supervisor that is still
+        // starting.
+        if let Some(id) = sv.clone() {
+            if let Some(reason) = latched_quit_reason.take() {
+                run_quit::<E>(&mut conn, &mut sup_reader, h, &id, reason, quit, outstanding, emit);
+                if quit.should_exit() {
+                    return ReadyOutcome::ShouldExit;
+                }
+                emitted_starting = false;
+                ready_pointer_gap_seen = false;
+                continue;
+            }
+        }
+
+        let Some(id) = (phase == SupervisorPhase::Ready).then_some(sv).flatten() else {
+            // Not yet Ready, or Ready with no voyage id yet (should not
+            // normally happen -- `discover_or_mint_voyage` publishes
+            // before `Ready` -- handled the same as "starting" rather
+            // than assumed).
+            ready_pointer_gap_seen = false;
+            if !emitted_starting {
+                emit(ClientEvent::Status("supervisor starting \u{2014} waiting\u{2026}".to_string()));
+                emitted_starting = true;
+            }
+            match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_with_backoff(), latched_quit_reason) {
+                WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
+                WaitOutcome::Continue => continue,
+            }
+        };
+
+        match pointer::validate(state_dir) {
+            PointerState::Valid(pid) if pid == id => {
+                return ReadyOutcome::Ready { conn, sup_reader, voyage_id: id };
+            }
+            PointerState::Corrupt | PointerState::OtherIo(_) => {
+                return ReadyOutcome::Terminal("drawer.voyage is corrupt \u{2014} retry or reset".to_string());
+            }
+            absent_or_mismatched => {
+                if ready_pointer_gap_seen {
+                    // INCONSISTENT: this is the SECOND consecutive Ready
+                    // round (same connection) whose pointer never caught
+                    // up. Recheck once more before reporting it, rather
+                    // than act on a reply that may already be stale.
+                    match supervisor_status::<E>(&conn, &mut sup_reader) {
+                        Ok((sv2, _l2, phase2))
+                            if phase2 == SupervisorPhase::Ready && sv2.as_deref() == Some(id.as_str()) =>
+                        {
+                            let detail = match absent_or_mismatched {
+                                PointerState::NotFound => "absent".to_string(),
+                                PointerState::Valid(other) => format!("names another voyage ({other})"),
+                                PointerState::Corrupt | PointerState::OtherIo(_) => unreachable!("handled above"),
+                            };
+                            emit(ClientEvent::Status(format!(
+                                "supervisor reports Ready but drawer.voyage is {detail}"
+                            )));
+                        }
+                        Ok(_) => {} // no longer reproducing -- fall through to the ordinary wait below
+                        Err(_) => return ReadyOutcome::LaneDown,
+                    }
+                }
+                ready_pointer_gap_seen = true;
+                match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_with_backoff(), latched_quit_reason) {
+                    WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
+                    WaitOutcome::Continue => continue,
+                }
             }
         }
     }
@@ -1206,57 +1373,57 @@ fn run_worker<E: Endpoint>(
     'episodes: while !shutdown {
         emit(ClientEvent::Status("connecting\u{2026}".to_string()));
 
-        // Re-read and re-validate the pointer at the START of every
-        // episode (ruling (d)) — never against a cached UUID.
-        let voyage = match pointer::validate(&state_dir) {
-            PointerState::Valid(id) => id,
-            PointerState::NotFound | PointerState::Corrupt | PointerState::OtherIo(_) => {
+        // ADR 0043 decision 28: the pointer is no longer read as
+        // authoritative before the supervisor's own word — the episode's
+        // real voyage id comes from `converge_on_ready` below, validated
+        // against the supervisor's own `Status` reply AFTER it reports
+        // `Ready`. This read serves ONLY path (i)'s health-window
+        // conjunction (`on_supervisor_absent_or_unresponsive`), which
+        // needs an OPTIONAL id to probe the voyage pipe with if the
+        // supervisor lane itself turns out absent/unresponsive this
+        // round. `Corrupt`/`OtherIo` remain loud, immediate stops —
+        // malformed content or a real I/O failure, never "not yet" —
+        // exactly as before this lane; only `NotFound` degrades to the
+        // missing-pointer case the health check already treats like an
+        // absent supervisor.
+        let health_pointer = match pointer::validate(&state_dir) {
+            PointerState::Valid(id) => Some(id),
+            PointerState::NotFound => None,
+            PointerState::Corrupt | PointerState::OtherIo(_) => {
                 emit(ClientEvent::Terminal(
                     "drawer.voyage is absent or corrupt \u{2014} retry or reset".to_string(),
                 ));
                 return;
             }
         };
-        if voyage_uuid.as_deref() != Some(voyage.as_str()) {
-            // A reset landed underneath us: any outstanding input from
-            // the OLD voyage is canceled, never replayed into the new
-            // one -- and reported, never silently (finding 6).
-            if let fe_client::ReconnectResendDecision::Cancel { canceled } =
-                outstanding.resend_after_reconnect(&voyage, take_epoch)
-            {
-                emit(ClientEvent::Status(format!(
-                    "input canceled \u{2014} the voyage changed ({} byte(s) lost)",
-                    canceled.bytes.len()
-                )));
-            }
-            take.reset_to_watching();
-            preserve_take_on_reconnect = false;
-            take_intent = TakeIntent::Ordinary;
-            voyage_uuid = Some(voyage.clone());
-        }
 
-        // --- supervisor lane: hello (build identity) then status -----
-        let supervisor_connected = match connect_supervisor_lane::<E>(&h) {
+        // --- supervisor lane: hello (build identity) once, then converge
+        // on Ready (ADR 0043 decision 28) -------------------------------
+        let supervisor_ready = match connect_supervisor_lane::<E>(&h) {
             Ok((conn, _proven)) => {
-                let mut sup_reader = FrameReader::new();
-                match supervisor_status::<E>(&conn, &mut sup_reader) {
-                    Ok((sv, _leg, phase)) => {
-                        if let ReconnectDecision::Terminal(reason) = reconnect.classify_supervisor_phase(phase) {
-                            emit(ClientEvent::Terminal(format!("supervisor: {reason:?}")));
-                            return;
-                        }
-                        if sv.as_deref() == Some(voyage.as_str()) || sv.is_none() {
-                            Some((conn, sup_reader))
-                        } else {
-                            // The pointer moved again between our read
-                            // and the authority's own -- treated as
-                            // "not yet usable this round"; the top of
-                            // the NEXT episode re-reads the pointer
-                            // fresh and reconciles.
-                            None
-                        }
+                match converge_on_ready::<E>(
+                    conn,
+                    FrameReader::new(),
+                    &state_dir,
+                    &h,
+                    &cmd_rx,
+                    &mut reconnect,
+                    &mut latched_quit_reason,
+                    &mut quit,
+                    &mut outstanding,
+                    &emit,
+                ) {
+                    ReadyOutcome::Ready { conn, sup_reader, voyage_id } => Some((conn, sup_reader, voyage_id)),
+                    ReadyOutcome::Terminal(msg) => {
+                        emit(ClientEvent::Terminal(msg));
+                        return;
                     }
-                    Err(_) => None,
+                    ReadyOutcome::ShouldExit => {
+                        emit(ClientEvent::ShouldExit);
+                        return;
+                    }
+                    ReadyOutcome::Shutdown => break 'episodes,
+                    ReadyOutcome::LaneDown => None,
                 }
             }
             Err(LaneError::Protocol(p)) if p.contains("foreign") => {
@@ -1279,46 +1446,77 @@ fn run_worker<E: Endpoint>(
         // supervisor lane is ALSO absent/unresponsive this round does the
         // health window even get consulted -- a reachable voyage pipe
         // (the capsule surviving headless) clears it unconditionally.
-        if supervisor_connected.is_none() {
-            match on_supervisor_absent_or_unresponsive::<E>(&mut reconnect, &voyage, Instant::now()) {
-                ReconnectDecision::Terminal(reason) => {
-                    emit(ClientEvent::Terminal(format!("supervisor lane unreachable: {reason:?}")));
-                    return;
-                }
-                ReconnectDecision::Retry => {
-                    emit(ClientEvent::Status("supervisor lane not answering \u{2014} retrying\u{2026}".to_string()));
-                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
-                        WaitOutcome::Shutdown => break 'episodes,
-                        WaitOutcome::Continue => continue 'episodes,
+        let (mut supervisor_conn, mut sup_reader, voyage) = match supervisor_ready {
+            Some(v) => v,
+            None => {
+                match on_supervisor_absent_or_unresponsive::<E>(&mut reconnect, health_pointer.as_deref(), Instant::now()) {
+                    ReconnectDecision::Terminal(reason) => {
+                        emit(ClientEvent::Terminal(format!("supervisor lane unreachable: {reason:?}")));
+                        return;
+                    }
+                    ReconnectDecision::Retry => {
+                        emit(ClientEvent::Status("supervisor lane not answering \u{2014} retrying\u{2026}".to_string()));
+                        match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                            WaitOutcome::Shutdown => break 'episodes,
+                            WaitOutcome::Continue => continue 'episodes,
+                        }
                     }
                 }
             }
-        }
-        let (mut supervisor_conn, mut sup_reader) = supervisor_connected.expect("checked Some above");
+        };
 
-        // A latched quit only needs the supervisor lane -- apply it now,
-        // rather than waiting for a full attach that a quit makes moot.
-        if let Some(reason) = latched_quit_reason.take() {
-            run_quit::<E>(&mut supervisor_conn, &mut sup_reader, &h, &voyage, reason, &mut quit, &mut outstanding, &emit);
-            if quit.should_exit() {
-                emit(ClientEvent::ShouldExit);
-                return;
+        if voyage_uuid.as_deref() != Some(voyage.as_str()) {
+            // A reset landed underneath us: any outstanding input from
+            // the OLD voyage is canceled, never replayed into the new
+            // one -- and reported, never silently (finding 6). Keyed on
+            // the id `converge_on_ready` confirmed against the
+            // supervisor's own `Status` reply, not a locally cached
+            // pointer read.
+            if let fe_client::ReconnectResendDecision::Cancel { canceled } =
+                outstanding.resend_after_reconnect(&voyage, take_epoch)
+            {
+                emit(ClientEvent::Status(format!(
+                    "input canceled \u{2014} the voyage changed ({} byte(s) lost)",
+                    canceled.bytes.len()
+                )));
             }
+            take.reset_to_watching();
+            preserve_take_on_reconnect = false;
+            take_intent = TakeIntent::Ordinary;
+            voyage_uuid = Some(voyage.clone());
         }
 
-        // --- attach lane: identity auth, hello, attach, checkpoint ----
-        let voyage_conn = match E::connect_voyage_unchallenged(&voyage) {
-            Ok(c) => c,
-            Err(e) => {
-                let io = transport_error_to_io(e);
-                if is_access_denied(&io) {
-                    emit(ClientEvent::Terminal("voyage pipe: access denied".to_string()));
+        // --- attach lane: connect the voyage lane, retrying "not yet" on
+        // the SAME supervisor connection (ADR 0043 decision 28 item 4:
+        // the connect now fails fast, so what used to be one dead-pipe
+        // connect eaten by CONNECT_BOUND is this loop's own explicit,
+        // cheap poll — `Ready` already implies the supervisor's own probe
+        // proved this pipe once, so this gap is expected to be brief).
+        // No reconnect of the supervisor lane here: it stays open both to
+        // avoid a redundant hello and so a latched Quit (needing only
+        // that lane and the now-known voyage id) can still be dispatched
+        // while waiting.
+        let voyage_conn = loop {
+            if let Some(reason) = latched_quit_reason.take() {
+                run_quit::<E>(&mut supervisor_conn, &mut sup_reader, &h, &voyage, reason, &mut quit, &mut outstanding, &emit);
+                if quit.should_exit() {
+                    emit(ClientEvent::ShouldExit);
                     return;
                 }
-                emit(ClientEvent::Status(format!("voyage pipe unreachable: {io}")));
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
-                    WaitOutcome::Shutdown => break 'episodes,
-                    WaitOutcome::Continue => continue 'episodes,
+            }
+            match E::connect_voyage_unchallenged(&voyage) {
+                Ok(c) => break c,
+                Err(e) => {
+                    let io = transport_error_to_io(e);
+                    if is_access_denied(&io) {
+                        emit(ClientEvent::Terminal("voyage pipe: access denied".to_string()));
+                        return;
+                    }
+                    emit(ClientEvent::Status(format!("voyage pipe not yet available: {io}")));
+                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                        WaitOutcome::Shutdown => break 'episodes,
+                        WaitOutcome::Continue => continue,
+                    }
                 }
             }
         };

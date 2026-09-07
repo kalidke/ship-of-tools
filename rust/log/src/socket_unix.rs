@@ -2020,11 +2020,15 @@ impl Endpoint for SocketEndpoint {
 
 /// Outcome of one raw connect attempt.
 enum ConnectAttempt {
-    /// `ECONNREFUSED`/`ENOENT`/`EAGAIN` (ADR 0043 decision 4: a full
-    /// listen backlog) — an ordinary race in a healthy multi-client
-    /// server, retried within [`CONNECT_BOUND`].
+    /// `EAGAIN` (ADR 0043 decision 4: a full listen backlog) or `EINTR`
+    /// (the attempt was interrupted before it could complete, saying
+    /// nothing about whether a listener exists) — an ordinary race in a
+    /// healthy multi-client server, retried within [`CONNECT_BOUND`].
     Retryable(io::Error),
-    /// Anything else — surfaced immediately, never retried.
+    /// `ECONNREFUSED`/`ENOENT` (no listener at all — ADR 0043 decision
+    /// 27) or anything else — surfaced immediately, never retried. An
+    /// absent or refused endpoint is the caller's to poll at its own
+    /// interval, not this function's to retry.
     Fatal(io::Error),
 }
 
@@ -2101,22 +2105,24 @@ fn one_connect_attempt(addr_bytes: &[u8], deadline: Instant) -> Result<UnixStrea
     if rc != 0 {
         let err = io::Error::last_os_error();
         match err.raw_os_error() {
-            Some(code)
-                if code == libc::ECONNREFUSED
-                    || code == libc::ENOENT
-                    || code == libc::EAGAIN
-                    || code == libc::EINTR =>
-            {
-                // Review round fix: `EINTR` (the call was interrupted by
-                // a caught signal before it could complete) is exactly
-                // as retryable as the other three — it says nothing about
-                // whether the peer is even listening yet, only that this
+            Some(code) if code == libc::ECONNREFUSED || code == libc::ENOENT => {
+                // ADR 0043 decision 27: no listener at all (the socket
+                // does not exist, or exists but nothing is `accept`ing)
+                // is fatal on the FIRST attempt — the caller's own poll
+                // at its own interval owns waiting for the endpoint to
+                // exist, not this bounded retry loop.
+                return Err(ConnectAttempt::Fatal(err));
+            }
+            Some(code) if code == libc::EAGAIN || code == libc::EINTR => {
+                // `EAGAIN` (ADR 0043 decision 4: a full listen backlog)
+                // and `EINTR` (the call was interrupted by a caught
+                // signal before it could complete) both say nothing
+                // about whether a listener exists — only that this
                 // ATTEMPT didn't finish. Dropping `fd` here (about to go
                 // out of scope) cleanly aborts whatever the kernel had
                 // started; the outer loop's own bounded retry (a fresh
-                // socket, same absolute deadline) is the correct recovery,
-                // not a Fatal surfaced to the caller over a signal that
-                // has nothing to do with this connect's own outcome.
+                // socket, same absolute deadline) is the correct
+                // recovery.
                 return Err(ConnectAttempt::Retryable(err));
             }
             Some(code) if code == libc::EINPROGRESS => {
@@ -2170,12 +2176,11 @@ fn one_connect_attempt(addr_bytes: &[u8], deadline: Instant) -> Result<UnixStrea
                 }
                 if so_err != 0 {
                     let err = io::Error::from_raw_os_error(so_err);
-                    return if so_err == libc::ECONNREFUSED
-                        || so_err == libc::ENOENT
-                        || so_err == libc::EAGAIN
-                    {
+                    return if so_err == libc::EAGAIN {
                         Err(ConnectAttempt::Retryable(err))
                     } else {
+                        // ECONNREFUSED/ENOENT (no listener — decision 27)
+                        // and anything else are fatal here too.
                         Err(ConnectAttempt::Fatal(err))
                     };
                 }
@@ -2208,12 +2213,20 @@ fn capture_connect_anchor_boot_ticks() -> u64 {
 }
 
 /// Shared raw connect, given an already-validated path: the bounded,
-/// non-blocking retry loop (ADR 0043 decision 4, property 18) — retries
-/// `ECONNREFUSED`/`ENOENT`/`EAGAIN` until `Instant::now() + CONNECT_BOUND`
-/// (one attempt may overrun the bound by a single 20 ms sleep, exactly
-/// like `pipe_win`'s own loop); any other error is immediate and fatal.
-/// NO authentication of any kind — every caller is responsible for
-/// running the OS-level identity check on top, exactly like
+/// non-blocking retry loop (ADR 0043 decision 4, property 18; decision 27
+/// for what is retried) — retries `EAGAIN` (a full listen backlog) and
+/// `EINTR` (the attempt itself was interrupted) until
+/// `Instant::now() + CONNECT_BOUND` (one attempt may overrun the bound by
+/// a single 20 ms sleep, exactly like `pipe_win`'s own loop).
+/// `ECONNREFUSED`/`ENOENT` — no listener at all, whether the socket path
+/// does not exist yet or nothing is `accept`ing on it — return on the
+/// FIRST attempt: Linux only (macOS is out of scope and fails closed
+/// today), an absent or refused endpoint is the caller's to poll at its
+/// own interval, never this loop's to retry (an unavailable connect used
+/// to cost the full `CONNECT_BOUND` even when no supervisor process
+/// existed yet). Any other error is immediate and fatal. NO
+/// authentication of any kind — every caller is responsible for running
+/// the OS-level identity check on top, exactly like
 /// `pipe_win::connect_named_pipe_unchallenged`.
 ///
 /// The anchor `SocketClient::connect_anchor_boot_ticks` carries is sampled
