@@ -79,3 +79,25 @@ remote_home = "/home/me"
 # [monitor]
 # myserver = "myserver"
 # otherbox = "otherbox"
+
+# A backend that is NOT ssh-reachable from this frontend, but IS reachable from
+# another backend. No extra key here: `ssh_alias` resolves through
+# ~/.ssh/config, so reachability is ssh's problem, expressed in ssh's own
+# config. Add to ~/.ssh/config ON EACH FRONTEND BOX:
+#
+#   Host hiddenbox
+#     HostName 10.0.0.9
+#     ProxyJump myserver
+#
+# The jump host only forwards TCP -- this frontend still authenticates
+# end-to-end to hiddenbox, so hiddenbox's authorized_keys needs this
+# frontend's pubkey, and the hop never sees a decrypted stream. Topology
+# stays a logical star (each frontend dials each backend; backends still
+# never talk to each other -- ADR 0037). Latency now depends on the hop box,
+# and a slow frontend link reads as a wedged backend, so jump through
+# something always-on and boring.
+#
+# [host.hiddenbox]
+# ssh_alias = "hiddenbox"
+# remote_repo = "/home/me/path/to/project"
+# tcp_port = 18745
