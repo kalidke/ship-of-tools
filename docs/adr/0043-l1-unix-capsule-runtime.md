@@ -479,6 +479,29 @@ surfaces. So LU3 is three lanes, the first two provably behaviour-preserving on 
     `transport::PlatformLaneServer`: the platform is chosen by those two aliases, not by type
     parameters threaded through the state machine.
 
+22. **LU4 — the daemon's capsule runtime on Linux, without flipping the default.** `mod
+    windows_runtime` becomes `mod runtime` (`cfg(any(windows, target_os = "linux"))`) with three
+    platform siblings and nothing else forked: the capsule executable's name; `detach` (creation
+    flags with the breakaway-denied "degraded" retry on Windows; `pre_exec(setsid)` with null stdio
+    and never degraded on Linux); and the adopted leg's exit-status read in `wait_and_classify`
+    (`exit_code_after_confirmed_exit` on Windows; `exit_status_after_confirmed_exit` on Linux,
+    where decision 8's "exited, status unknown" is a `Crash`, never a panic). The daemon's
+    `cfg(windows)` gates on the capsule path — boot `resume_all`, `pty.open` start-on-attach,
+    the spawn on create, destroy, `workspace.list` phases — open to both platforms, and every
+    "%LOCALAPPDATA% unset" text names the Linux state root too. **The default runtime does not
+    flip on Linux**: a capsule row's attach is `attach_direct` — the frontend connects to the
+    supervisor lane itself, which is same-machine only — so a Linux backend's capsule rows have
+    no attach path from a remote frontend until the bridge lands; `Workspace::runtime` keeps its
+    platform default (capsule on Windows, tmux on Linux). Instead `workspace.create` gains an
+    optional `runtime` field (`"capsule" | "tmux"`; absent = the platform default; `"tmux"` is
+    refused on Windows exactly as today's no-knob rule requires) — the honest way for the Linux
+    backend test, a local Linux frontend, and later the bridge to ask for a capsule row. The
+    Linux producer argv: `agent_argv("none")` is the user's shell (`$SHELL`, else `/bin/sh`);
+    `"claude"` resolves the binary to an absolute path through the login `PATH` plus
+    `~/.local/bin` (the tmux launchers' full-path rule: a daemon-spawned process inherits the
+    service's `PATH`). `capsule_workspaces` runs on Linux (the matrix job's workspace build already
+    places `sot-capsule` next to `sotd`); no second Linux job.
+
 ## What this deletes
 
 On Unix: the completion-proof apparatus, instance recycling, the SDDL builder,
