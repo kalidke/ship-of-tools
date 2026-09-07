@@ -490,35 +490,20 @@ impl Env {
         debug_assert!(previous.is_none(), "spawn_sotd_with_prepended_path called while a prior daemon was still tracked");
     }
 
-    /// LU4 review round 2, F4: the anchored `pgrep`/`pkill` pattern for
-    /// every real leg THIS env's own daemon could ever have spawned —
-    /// `argv[0]` ends in `sot-capsule`, then the subcommand
-    /// (`supervise`|`run` — `capsule_workspace.rs`'s own two spawn
-    /// sites), then this env's own `state_root` (every workspace's own
-    /// `state_dir_for` nests under it, `state_root.join("workspaces")
-    /// .join(workspace_id)`, so anchoring on the ROOT alone covers every
-    /// row this `Env` could ever create without having to learn each
-    /// workspace's own state dir as it's discovered). `^\S*` (not
-    /// unanchored `-f <substring>`, the prior bug): a `tail -f` mentioning
-    /// this path cannot match, since its own argv[0] never ends in
-    /// `sot-capsule`.
+    /// LU4 review round 2, F4 (anchor tightened round 3, G2): the
+    /// anchored `pgrep`/`pkill` pattern for every real leg THIS env's own
+    /// daemon could ever have spawned, covering EITHER subcommand
+    /// (`capsule_workspace.rs`'s own two spawn sites) against this env's
+    /// own `state_root` (every workspace's own `state_dir_for` nests
+    /// under it, `state_root.join("workspaces").join(workspace_id)`, so
+    /// anchoring on the ROOT alone covers every row this `Env` could ever
+    /// create without having to learn each workspace's own state dir as
+    /// it's discovered). See [`build_leg_pgrep_pattern`] for why this
+    /// anchors on the ESCAPED, EXACT executable path rather than a
+    /// wildcard.
     #[cfg(target_os = "linux")]
     fn leg_pgrep_pattern(&self) -> String {
-        format!(r"^\S*sot-capsule (supervise|run) {}", regex_escape_path(&self.state_root))
-    }
-
-    /// Linux-only test-verification accessors (F4's own dedicated
-    /// cleanup-contract test) — deliberately NOT used by `Drop` itself
-    /// (which only needs `state_root`/`tmux_sock` to build its own
-    /// patterns), only by the test that proves temp dirs are actually
-    /// gone after it.
-    #[cfg(target_os = "linux")]
-    fn tmp_root(&self) -> &Path {
-        self._tmp.path()
-    }
-    #[cfg(target_os = "linux")]
-    fn runtime_tmp_root(&self) -> &Path {
-        self._runtime_tmp.path()
+        build_leg_pgrep_pattern(&sot_capsule_exe(), "(supervise|run)", &self.state_root)
     }
 }
 
@@ -549,24 +534,42 @@ impl Drop for Env {
 
         #[cfg(target_os = "linux")]
         {
-            // (2) sweep this env's own legs, anchored.
-            let pattern = self.leg_pgrep_pattern();
-            let _ = Command::new("pkill")
-                .arg("-9")
-                .arg("-f")
-                .arg(&pattern)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-            // `pkill` only sends the signal; give the kernel a brief,
-            // bounded moment to actually remove the process before any
-            // caller (F4's own cleanup-contract test) asserts the sweep
-            // left nothing — these are SIGKILLs to already-detached
-            // processes we never wait(2) on, so this is the only way to
-            // observe their actual removal.
+            // (2) sweep this env's own legs, anchored, REPEATED until a
+            // full pass finds nothing (G2/G3, LU4 review round 2): a
+            // single `pkill` SELECTS its targets before signalling them,
+            // so a supervisor process killed just now can still have
+            // spawned a fresh leg a moment earlier that the same
+            // selection pass never saw — the two-second follow-up this
+            // used to be only ever OBSERVED that gap, never closed it.
+            // Killing supervisors FIRST each pass (before their own
+            // legs) means no NEW leg can be spawned after this pass's own
+            // supervisor-kill lands; a leg from a supervisor killed on an
+            // EARLIER pass is still caught by this pass's own `run`-kill.
+            let exe = sot_capsule_exe();
+            let supervise_pattern = build_leg_pgrep_pattern(&exe, "supervise", &self.state_root);
+            let run_pattern = build_leg_pgrep_pattern(&exe, "run", &self.state_root);
+            let combined_pattern = self.leg_pgrep_pattern();
             let deadline = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < deadline && any_process_matches(&pattern) {
+            loop {
+                let _ = Command::new("pkill")
+                    .arg("-9")
+                    .arg("-f")
+                    .arg(&supervise_pattern)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                let _ = Command::new("pkill")
+                    .arg("-9")
+                    .arg("-f")
+                    .arg(&run_pattern)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                if !any_process_matches(&combined_pattern) || Instant::now() >= deadline {
+                    break;
+                }
                 std::thread::sleep(Duration::from_millis(50));
             }
 
@@ -604,6 +607,23 @@ fn regex_escape_path(path: &Path) -> String {
     out
 }
 
+/// The anchored `pgrep`/`pkill` pattern for a `sot-capsule` invocation:
+/// `^<escaped exe path> <subcommand> <escaped state_root>`. G2 (LU4
+/// review round 2): anchoring the OLD way, `^\S*sot-capsule`, silently
+/// requires the character just before `sot-capsule` to be non-whitespace
+/// — `\S*` cannot cross a space — so an executable path containing one
+/// (a legal `CARGO_TARGET_DIR` with a space in it) never matches at all,
+/// and the sweep quietly does nothing. Anchoring on the EXACT, escaped
+/// executable path this suite itself resolved (`sot_capsule_exe()`) has
+/// no such gap: a space in the path is not a regex metacharacter and
+/// needs no escaping to match itself literally, so `regex_escape_path`
+/// leaves it untouched. `subcommand` is a literal ("supervise", "run") or
+/// an alternation ("(supervise|run)") — both are valid ERE on their own.
+#[cfg(target_os = "linux")]
+fn build_leg_pgrep_pattern(exe: &Path, subcommand: &str, state_root: &Path) -> String {
+    format!("^{} {subcommand} {}", regex_escape_path(exe), regex_escape_path(state_root))
+}
+
 /// Whether any live process's command line matches `pattern` — the
 /// read-only half of the anchored sweep, reused by [`Env`]'s own `Drop`
 /// (to poll the sweep to completion) and by the F4 cleanup-contract test
@@ -619,6 +639,69 @@ fn any_process_matches(pattern: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// G3 (LU4 review round 2): the SAME bounded, sweep-until-empty shape
+/// `Env`'s own `Drop` uses for its active pkill loop, but read-only — no
+/// re-signalling, since by the time a caller here needs it `Drop` has
+/// already run its own loop to completion (or its own 2s bound). Exists
+/// so the F4 cleanup-contract test's own "empty after" assertion is not a
+/// single point-in-time check racing the exact moment `Drop`'s loop
+/// itself gave up at its bound: a process that was still one syscall from
+/// actually exiting when `Drop` observed its own deadline is not a real
+/// leak, and re-polling here (rather than asserting instantly) is the
+/// difference between a flaky false failure and a meaningful, still-
+/// bounded proof.
+#[cfg(target_os = "linux")]
+fn poll_until_no_process_matches(pattern: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !any_process_matches(pattern) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[cfg(test)]
+mod leg_pgrep_pattern_tests {
+    use super::*;
+
+    /// G2's own regression case: a space in the executable path (a legal
+    /// `CARGO_TARGET_DIR` with a space in it) must still produce a
+    /// pattern that matches that path LITERALLY — a space is not an ERE
+    /// metacharacter, so it must pass through `regex_escape_path`
+    /// untouched rather than being dropped or mis-escaped.
+    #[test]
+    fn build_leg_pgrep_pattern_keeps_a_literal_space_in_the_exe_path() {
+        let exe = Path::new("/scratch/build target/debug/sot-capsule");
+        let state_root = Path::new("/tmp/sotcw-abc123/state");
+        let pattern = build_leg_pgrep_pattern(&exe, "supervise", &state_root);
+        assert_eq!(
+            pattern,
+            r"^/scratch/build target/debug/sot-capsule supervise /tmp/sotcw-abc123/state"
+        );
+    }
+
+    /// Regex metacharacters in EITHER half (`+`/`.`) must be escaped so
+    /// they match themselves literally rather than being interpreted by
+    /// `pkill`/`pgrep`'s own POSIX ERE engine (a stray `.` would
+    /// otherwise match any single character, widening the match rather
+    /// than narrowing it to this exact path).
+    #[test]
+    fn build_leg_pgrep_pattern_escapes_regex_metacharacters_in_both_halves() {
+        let exe = Path::new("/scratch/target+build/sot-capsule");
+        let state_root = Path::new("/tmp/sotcw-v1.2/state");
+        let pattern = build_leg_pgrep_pattern(&exe, "run", &state_root);
+        assert_eq!(
+            pattern,
+            r"^/scratch/target\+build/sot-capsule run /tmp/sotcw-v1\.2/state"
+        );
+    }
 }
 
 async fn try_connect(socket_path: &Path) -> Option<LocalStream> {
@@ -1899,13 +1982,17 @@ async fn capsule_backend_test_env_drop_cleans_up_legs_daemon_and_tmux() {
     // kills its OWN isolated tmux server (harmless whether or not a
     // session ever landed there), in that order, before its own temp
     // dirs vanish — capture what we need to verify BEFORE `env` (and the
-    // fields these borrow from) are gone.
-    let tmp_root = env.tmp_root().to_path_buf();
-    let runtime_root = env.runtime_tmp_root().to_path_buf();
+    // fields these borrow from) are gone. Deletion (round 2 reviewer
+    // note): no dedicated accessor for this same-module read — `_tmp`/
+    // `_runtime_tmp` are plain private fields, directly readable here.
+    let tmp_root = env._tmp.path().to_path_buf();
+    let runtime_root = env._runtime_tmp.path().to_path_buf();
     drop(env);
 
+    // G3: the same bounded, sweep-until-empty shape `Drop`'s own loop
+    // uses, read-only here (see `poll_until_no_process_matches`'s doc).
     assert!(
-        !any_process_matches(&pattern),
+        poll_until_no_process_matches(&pattern, Duration::from_secs(2)),
         "the cleanup guard must leave no process matching {pattern:?}"
     );
     assert!(
