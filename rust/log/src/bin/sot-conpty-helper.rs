@@ -67,9 +67,20 @@
 //! budget while that connection is still pre-admission. Plain `--script
 //! --linger` (no `--drip`) is unchanged, for tests that want the fixed
 //! block's exact byte content and nothing after it.
+//!
+//! `SCRIPT_BLOCK` and the `--flood` pattern generator (ADR 0043
+//! "Decisions for LU2" LU2b) live in `support/helper_common.rs`,
+//! `#[path]`-included by this file AND its Unix twin
+//! `sot-pty-helper.rs`, so the exact bytes each platform's own attach-
+//! fidelity test drives are one constant, not two independently-drifting
+//! copies.
+
+#[path = "support/helper_common.rs"]
+mod helper_common;
 
 #[cfg(windows)]
 fn main() {
+    use helper_common::{flood_pattern, SCRIPT_BLOCK};
     use std::io::{BufRead, Write};
 
     if let Some(pos) = std::env::args().position(|a| a == "--flood") {
@@ -77,7 +88,7 @@ fn main() {
             .nth(pos + 1)
             .and_then(|s| s.parse().ok())
             .expect("--flood needs a byte count");
-        flood(total);
+        flood(total, &flood_pattern(64 * 1024));
         if std::env::args().any(|a| a == "--linger") {
             // Stay alive after the flood until externally terminated: a
             // test that asserts "the driver stays functional while the
@@ -93,7 +104,7 @@ fn main() {
     if std::env::args().any(|a| a == "--script") {
         let pos = std::env::args().position(|a| a == "--script").unwrap();
         let repeats: usize = std::env::args().nth(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(20);
-        script(repeats);
+        script(repeats, SCRIPT_BLOCK);
         if std::env::args().any(|a| a == "--drip") {
             // Never returns (see `drip`'s own doc and the module doc
             // above) — the process stays alive, actively emitting, until
@@ -146,53 +157,32 @@ fn main() {
     std::thread::sleep(std::time::Duration::from_secs(3600));
 }
 
-/// Write exactly `total` bytes to stdout in fixed-size chunks, flush once
-/// at the end, then return (the caller exits 0 right after). `0..=9`
-/// repeating: cheap to generate at high throughput, and a decoder can
-/// verify total length alone without needing to know a chunk boundary.
+/// Write exactly `total` bytes to stdout in `pattern`-sized chunks, flush
+/// once at the end, then return (the caller exits 0 right after).
 #[cfg(windows)]
-fn flood(total: usize) {
+fn flood(total: usize, pattern: &[u8]) {
     use std::io::Write;
-    const CHUNK: usize = 64 * 1024;
-    let pattern: Vec<u8> = (0..CHUNK).map(|i| b'0' + (i % 10) as u8).collect();
     let mut stdout = std::io::stdout().lock();
     let mut written = 0usize;
     while written < total {
-        let n = CHUNK.min(total - written);
+        let n = pattern.len().min(total - written);
         stdout.write_all(&pattern[..n]).expect("flood write");
         written += n;
     }
     let _ = stdout.flush();
 }
 
-/// The fixed byte sequence `--script` emits, repeated: plain text; a CSI
-/// SGR pair (color on, "red", color off); an OSC title set, BEL-terminated;
-/// a 3-byte UTF-8 codepoint (★ U+2605) immediately followed by a 4-byte one
-/// (😀 U+1F600); a DCS payload, ST-terminated; a trailing newline.
-/// Round-2 review deletion residue: this used to be `pub` with a doc
-/// claiming the integration test imports it to build its own reference
-/// byte stream -- no such consumer exists (a `src/bin/*.rs` binary has no
-/// library target another crate file could `use` regardless), and the
-/// test proves fidelity from what the CAPSULE actually recorded, not from
-/// re-deriving an expected stream out-of-band. Private; this binary is its
-/// only user. `#[cfg(windows)]`, matching `script()` (its only reader):
-/// without it, a non-Windows build (this file's own `#[cfg(not(windows))]`
-/// `main` never calls `script`) sees a private const nothing in that build
-/// ever reads.
+/// Writes `block` (`SCRIPT_BLOCK`, from `helper_common`) `repeats` times,
+/// one byte at a time with a short sleep and an explicit flush between
+/// each (see the module doc), then returns (the caller exits 0 right
+/// after — a natural exit).
 #[cfg(windows)]
-const SCRIPT_BLOCK: &[u8] =
-    b"plain text\x1b[31mred\x1b[0m\x1b]0;title\x07\xe2\x98\x85\xf0\x9f\x98\x80\x1bPdcs-payload\x1b\\done\n";
-
-/// Writes [`SCRIPT_BLOCK`] `repeats` times, one byte at a time with a short
-/// sleep and an explicit flush between each (see the module doc), then
-/// returns (the caller exits 0 right after — a natural exit).
-#[cfg(windows)]
-fn script(repeats: usize) {
+fn script(repeats: usize, block: &[u8]) {
     use std::io::Write;
     use std::time::Duration;
     let mut stdout = std::io::stdout().lock();
     for _ in 0..repeats {
-        for &b in SCRIPT_BLOCK {
+        for &b in block {
             stdout.write_all(&[b]).expect("script write");
             let _ = stdout.flush();
             std::thread::sleep(Duration::from_millis(1));
@@ -202,7 +192,7 @@ fn script(repeats: usize) {
 
 /// See the module doc's `--drip` section. One short, cheap, position-
 /// independent plain-text line every ~200 ms, forever — deliberately not
-/// escape-sequence-heavy like [`SCRIPT_BLOCK`] (this only needs to prove
+/// escape-sequence-heavy like `SCRIPT_BLOCK` (this only needs to prove
 /// "fresh live output keeps arriving", not re-exercise fidelity), and
 /// deliberately a small, steady rate rather than a burst, so it can never
 /// itself be the volume that fills a per-connection queue budget.

@@ -11,15 +11,9 @@ pub mod attach_proto;
 // L1-unix LU2a (ADR 0043 "Decisions for LU2"): the ONE writer loop,
 // generic over `producer::Producer` -- the file that used to be
 // `capsule_win.rs`, renamed here once `ConptyProducer` (`producer_conpty.rs`)
-// took over its nine OS-facing call sites. Ungated: it compiles (though
-// nothing yet instantiates it) on every platform.
+// took over its nine OS-facing call sites. Ungated: it now DRIVES both
+// producers below (LU2b: `producer_pty::PtyProducer` on Linux).
 pub mod capsule;
-// L1-unix LU2a: the Linux-only writer loop `capsule.rs` used to be,
-// renamed aside so the module name `capsule` could move to the unified
-// loop above -- still the Linux `run` arm's own implementation; LU2b
-// deletes it once `producer_pty`/`SocketTransport` land on the unified
-// loop instead.
-pub mod capsule_legacy;
 // ADR 0043 "Decisions for LU2": the `Producer` trait (the writer loop's
 // own nine call sites into whatever OS primitive runs the child) plus
 // `ExitStatus`/`ParentLease` -- platform-neutral, ungated like
@@ -27,9 +21,15 @@ pub mod capsule_legacy;
 pub mod producer;
 // ADR 0043 "Decisions for LU2": `impl Producer for ConptyProducer`, the
 // Windows implementation -- self-gated (`#![cfg(windows)]`), matching
-// `conpty`/`capsule_win` before it. The Unix twin, `producer_pty`, lands
-// in LU2b.
+// `conpty`/`capsule_win` before it. The Unix twin is `producer_pty`,
+// just below.
 pub mod producer_conpty;
+// ADR 0043 "Decisions for LU2" LU2b: `impl Producer for PtyProducer`, the
+// Unix implementation -- a bare `openpty` fd plus a process-group kill
+// domain, self-gated (`#![cfg(unix)]`). Replaces the Linux `run` arm's
+// former, separate second writer loop (deleted with this lane) as the
+// Linux `run` arm's producer.
+pub mod producer_pty;
 // ADR 0041 step 6, unit U0: the same-connection challenge's
 // platform-neutral core (the outcome vocabulary, the connection trait,
 // the wire half). L1-unix LU1a: ungated -- see the module's own doc.

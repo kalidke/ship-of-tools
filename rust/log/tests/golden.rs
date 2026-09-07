@@ -205,3 +205,78 @@ fn golden_run_end_requested_segment_bytes_are_pinned() {
     r.verify_seal().unwrap();
     assert_eq!(r.frames.len(), 4);
 }
+
+/// Fourth golden: a Unix signal death (ADR 0043 "Decisions for LU2" LU2b,
+/// decision 13) — `producer_dead.detail.signal` (never `.exit_code`, its
+/// mutually exclusive sibling), the shape
+/// `tests/capsule.rs`'s own `unix_only::signal_death_records_signal`
+/// exercises against a real killed child; this fixture pins the WIRE
+/// BYTES for that same shape without needing a real process. Both readers
+/// treat `detail` as free-form (`verify.rs`; `julia/sotlog` reads
+/// neither), so this is purely additive — no new required feature is
+/// declared. Regenerate: UPDATE_GOLDEN=1.
+#[test]
+fn golden_signal_death_segment_bytes_are_pinned() {
+    let dir = tempfile::tempdir().unwrap();
+    let header = HeaderBody {
+        version: 1,
+        required_features: vec![],
+        voyage_id: "01900000-0000-7000-8000-0000000000d1".into(),
+        segment_index: 0,
+        epoch: 1,
+        prev_seal_digest: None,
+        created_wall_ms: 1_756_000_000_000,
+        retention_class: Some(RetentionClass::Archive),
+    };
+    let mut w = SegmentWriter::create(dir.path(), header).unwrap();
+    let mut frames = fixture_frames();
+    frames.push(Envelope {
+        seq: Seq { epoch: 1, n: 4 },
+        class: Class::Lifecycle,
+        source: Source {
+            emitter: Emitter::Capsule,
+            actor: Actor {
+                kind: ActorKind::Unknown,
+                controller_id: None,
+                take_epoch: None,
+            },
+            derivation: Derivation::Synthetic,
+        },
+        t_wall_ms: 1_756_000_000_004,
+        t_mono_us: 4_000,
+        stream: None,
+        transformed: None,
+        refs: vec![],
+        payload: Some(serde_json::json!({
+            "kind": "producer_dead",
+            "detail": {"signal": 9, "producer_uptime_ms": 12345}
+        })),
+        payload_ref: None,
+    });
+    for f in frames {
+        w.append(&f, Commit::Buffered).unwrap();
+    }
+    w.commit().unwrap();
+    w.seal(None).unwrap();
+    let generated = std::fs::read(dir.path().join("00000000-00000000000001.sotseg")).unwrap();
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/golden-signal-death-v1.sotseg");
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, &generated).unwrap();
+    }
+    let committed = std::fs::read(&path).expect("fixture missing — run with UPDATE_GOLDEN=1 once");
+    assert_eq!(committed, generated, "wire bytes changed — format event");
+    let r = SegmentReader::read(&path, true).unwrap();
+    r.verify_seal().unwrap();
+    assert_eq!(r.frames.len(), 4);
+
+    // The actual property this fixture exists to pin: `detail.signal`
+    // round-trips through a real read + seal verification exactly as
+    // `verify.rs`/`julia/sotlog` would see it (both treat `detail` as
+    // free-form — ADR 0043 decision 13), and no `exit_code` key ever
+    // appears alongside it.
+    let dead = r.frames.last().unwrap();
+    let detail = &dead.payload.as_ref().unwrap()["detail"];
+    assert_eq!(detail["signal"], 9);
+    assert!(detail.get("exit_code").is_none(), "a signal death must never also carry an exit_code key");
+}
