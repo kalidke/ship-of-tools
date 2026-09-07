@@ -458,13 +458,18 @@ surfaces. So LU3 is three lanes, the first two provably behaviour-preserving on 
     no global `waitpid(-1)` reaper, and no reap ever names a numeric pid: `waitid(P_PIDFD, ..)`
     can only reap the one process the pidfd pins. The spawn probe's `SpawnedChild` opens its pidfd
     right after `spawn` — safe because the unreaped child pins its pid — and reaps on the exit it
-    observes. A leg adopted through its lane is reaped by its `ChallengedProcess` handle: right
-    after `PIDFD_GET_INFO` answered its exit status, and in any case when the handle drops after
-    the exit was observed (a non-blocking `waitid`; a still-live leg is left alone — outliving the
-    supervisor is by design); `ECHILD` is ignored (a leg inherited from a previous supervisor is
-    its parent's to reap). (A first draft reaped adopted legs only in the status accessor, which
-    the supervisor never calls — every completed leg stayed a zombie — and assumed rather than set
-    the `SIGCHLD` disposition; both corrected 2026-09-07 after the LU3c review round.) The supervisor and its legs share no kill domain: the
+    observes. A leg adopted through its lane is reaped by its OWNER — the supervisor — with an
+    explicit `ChallengedProcess::reap` (a non-blocking `waitid` through the pidfd) at the point
+    where its `wait` observed the exit and every read it wanted is done; a handle NEVER reaps
+    implicitly (not on drop, not in the status accessor), because a handle is also what a peer
+    holds to PROVE a process it does not own — the daemon's status query returns one for a
+    supervisor the daemon itself spawned and reaps through `Child::wait`, and an implicit reap
+    there made every clean exit read as `ECHILD`. `ECHILD` on an explicit reap is the harmless
+    answer for a non-owner (a leg inherited from a previous supervisor is its parent's to reap).
+    (A first draft reaped only in the status accessor, which the supervisor never calls — every
+    completed leg stayed a zombie — and assumed rather than set `SIGCHLD`; a second reaped on
+    drop and collided with the daemon's own `Child::wait`; both corrected 2026-09-07 after the
+    LU3c and LU4 review rounds.) The supervisor and its legs share no kill domain: the
     producer's `setsid` (decision 14) is the whole detachment, and `DETACHED_PROCESS` has no Unix
     analogue. The parent-death lease is `pipe2(O_CLOEXEC)`: the supervisor holds the write end for
     life; the read end reaches the leg as `--parent-lease-fd 3` through a `pre_exec` `dup2` (which
