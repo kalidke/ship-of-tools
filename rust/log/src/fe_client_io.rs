@@ -1,13 +1,20 @@
-#![cfg(windows)]
-//! ADR 0041 step 6 U3: the FE attach-only client's Windows-only RUNTIME —
-//! wires `fe_client`'s pure state machines (the six FE rulings) to a real
-//! `PipeClient`, a real supervisor lane, and the drawer's own
-//! `vt100_ctt::Parser`. Windows-only because everything it connects to
-//! (the capsule, the supervisor, `pipe_win`, `challenge`) is Windows-only
-//! — the client code itself is otherwise the SAME kind of thin I/O
-//! wrapper `term::LocalTerminal` already is over its own PTY: a
-//! background reader thread forwards bytes/frames, the caller drains
-//! them non-blockingly via `pump()`.
+#![cfg(any(windows, target_os = "linux"))]
+//! L1-unix LU3b (ADR 0043 decision 20): the FE attach-only client's
+//! RUNTIME — wires `fe_client`'s pure state machines (the six FE
+//! rulings) to a real [`crate::client::Endpoint`], a real supervisor
+//! lane, and the drawer's own `vt100_ctt::Parser`. Generic over `E:
+//! Endpoint` (renamed from `fe_client_win.rs`, which hard-coded
+//! `pipe_win::PipeClient`): every type in this module that used to name
+//! `PipeClient`/`ChallengedProcess` directly now names `E::Client`/
+//! `E::Process`, and every call that used to go straight to
+//! `pipe_win`/`challenge_win` now goes through `E`'s own associated
+//! functions — the concrete platform is chosen exactly once, by
+//! [`crate::client::PlatformEndpoint`], which is what the frontend
+//! instantiates this module's public type with (see [`FeAttachClient`]'s
+//! own doc for its default type parameter). The client code itself is
+//! otherwise the SAME kind of thin I/O wrapper `term::LocalTerminal`
+//! already is over its own PTY: a background reader thread forwards
+//! bytes/frames, the caller drains them non-blockingly via `pump()`.
 //!
 //! **The flag.** Behind `drawer.attach_only` (an FE settings key, off by
 //! default — read in `rust/frontend/src/settings.rs`; this crate has no
@@ -83,21 +90,21 @@
 //!   silent "attached".
 
 use crate::challenge::{ChallengeOutcome, PeerAuthOutcome};
-use crate::challenge_win::{self, ChallengedProcess};
+use crate::client::{transport_error_to_io, Client, Endpoint, PeerProcess, PlatformEndpoint};
 use crate::exchange::{SupervisorLaneExchange, VoyageMgmtExchange, SUPERVISOR_LANE_BUILD_ID};
 use crate::fe_client::{
     self, FeDownBaseline, InputWireOutcome, OutstandingSlot, QuitDispatcher, QuitState,
     ReconnectDecision, ReconnectState, Role, TakeAction, TakeTransaction,
 };
-use crate::pipe_win::{self, PipeClient};
 use crate::pointer::{self, PointerState};
-use crate::supervisor::state_dir_hash;
+use crate::state_dir::state_dir_hash;
 use crate::wire::{
     self, AttachClient, AttachServer, DecodedFrame, ResizeRefusedReason, SupervisorOp,
     SupervisorPhase, SupervisorReply, SupervisorRequest, TakeRefusedReason,
 };
 use std::collections::VecDeque;
 use std::io::ErrorKind;
+use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -175,10 +182,10 @@ const PUMP_DRAIN_CAP_BYTES: usize = 1024 * 1024;
 const SCROLLBACK_ROWS: usize = 5000;
 
 // -----------------------------------------------------------------------
-// Small bounded I/O helpers over PipeClient, shared by every lane this
-// module speaks (mirrors the pattern `challenge_win::challenge` itself uses:
-// `crate::deadline::run_with_deadline` racing the blocking call against a
-// `cancel()`-issuing watchdog).
+// Small bounded I/O helpers over any `Endpoint::Client`, shared by every
+// lane this module speaks (mirrors the pattern each platform's own
+// `challenge()` itself uses: `crate::deadline::run_with_deadline` racing
+// the blocking call against a `cancel()`-issuing watchdog).
 // -----------------------------------------------------------------------
 
 /// `pub(crate)`: shared with [`run_end_run_and_wait`]'s own callers (ADR
@@ -206,22 +213,19 @@ impl std::fmt::Display for LaneError {
 }
 
 fn is_access_denied(e: &std::io::Error) -> bool {
-    // ERROR_ACCESS_DENIED == 5.
-    e.raw_os_error() == Some(5) || e.kind() == ErrorKind::PermissionDenied
+    // ERROR_ACCESS_DENIED == 5 is a Windows GetLastError code -- on Linux
+    // os error 5 is EIO, unrelated, so the raw-code check must not apply
+    // there (L1-unix LU3b: this function is now reachable from a Linux
+    // build too). `ErrorKind::PermissionDenied` (std's own EACCES/EPERM
+    // mapping) alone is both necessary and sufficient on Linux.
+    (cfg!(windows) && e.raw_os_error() == Some(5)) || e.kind() == ErrorKind::PermissionDenied
 }
 
-pub(crate) fn write_bounded(conn: &PipeClient, bytes: &[u8], deadline: Instant) -> Result<(), LaneError> {
+pub(crate) fn write_bounded<E: Endpoint>(conn: &E::Client, bytes: &[u8], deadline: Instant) -> Result<(), LaneError> {
     match crate::deadline::run_with_deadline(deadline, || conn.cancel(), || conn.write_all(bytes)) {
         Some(Ok(())) => Ok(()),
-        Some(Err(e)) => Err(LaneError::Io(pipe_err_to_io(e))),
+        Some(Err(e)) => Err(LaneError::Io(transport_error_to_io(e))),
         None => Err(LaneError::Timeout),
-    }
-}
-
-pub(crate) fn pipe_err_to_io(e: crate::transport::TransportError) -> std::io::Error {
-    match e {
-        crate::transport::TransportError::Io { source, .. } => source,
-        other => std::io::Error::other(other.to_string()),
     }
 }
 
@@ -245,7 +249,7 @@ impl FrameReader {
         Self { splitter: wire::FrameSplitter::new(), pending: VecDeque::new() }
     }
 
-    pub(crate) fn next_frame(&mut self, conn: &PipeClient, deadline: Instant) -> Result<DecodedFrame, LaneError> {
+    pub(crate) fn next_frame<E: Endpoint>(&mut self, conn: &E::Client, deadline: Instant) -> Result<DecodedFrame, LaneError> {
         if let Some(f) = self.pending.pop_front() {
             return Ok(f);
         }
@@ -253,7 +257,7 @@ impl FrameReader {
             let mut buf = [0u8; 8192];
             let n = match crate::deadline::run_with_deadline(deadline, || conn.cancel(), || conn.read(&mut buf)) {
                 Some(Ok(n)) => n,
-                Some(Err(e)) => return Err(LaneError::Io(pipe_err_to_io(e))),
+                Some(Err(e)) => return Err(LaneError::Io(transport_error_to_io(e))),
                 None => return Err(LaneError::Timeout),
             };
             if n == 0 {
@@ -278,36 +282,37 @@ impl FrameReader {
 /// Connect the supervisor lane and run the full same-connection
 /// challenge with this crate's own build identity — the production
 /// analog of `supervisor::connect_and_challenge_for_test` (test-support
-/// only), reusing the SAME primitives (`connect_supervisor_pipe_
-/// unchallenged`, `challenge_win::challenge`, `SupervisorLaneExchange`)
-/// rather than depending on that test-gated helper.
-fn connect_supervisor_lane(h: &str) -> Result<(PipeClient, ChallengedProcess), LaneError> {
-    let conn = pipe_win::connect_supervisor_pipe_unchallenged(h).map_err(|e| LaneError::Io(pipe_err_to_io(e)))?;
+/// only), reusing the SAME primitives (`E::connect_supervisor_unchallenged`,
+/// `E::challenge`, `SupervisorLaneExchange`) rather than depending on
+/// that test-gated helper.
+fn connect_supervisor_lane<E: Endpoint>(h: &str) -> Result<(E::Client, E::Process), LaneError> {
+    let conn = E::connect_supervisor_unchallenged(h).map_err(|e| LaneError::Io(transport_error_to_io(e)))?;
     let mut exchange = SupervisorLaneExchange::new(SUPERVISOR_LANE_BUILD_ID);
     let deadline = Instant::now() + HELLO_BUDGET;
-    match challenge_win::challenge(&conn, &mut exchange, deadline) {
+    match E::challenge(&conn, &mut exchange, deadline) {
         ChallengeOutcome::Proven(process) => Ok((conn, process)),
-        // The shared challenge machinery folds "SID mismatch" and "a
-        // well-formed WRONG reply" (which includes a genuine
-        // `hello_refused{version_skew}` from an otherwise legitimate,
-        // same-account peer) into the SAME `Foreign` outcome — see this
-        // module's own doc and the report's "Deviations" for why
-        // disambiguating them would need new machinery this unit
-        // prefers not to add. Either way it is an unproven server:
-        // never retried as if it might still be legitimate.
+        // The shared challenge machinery folds "SID mismatch" (Windows) /
+        // "not same-uid" (Linux) and "a well-formed WRONG reply" (which
+        // includes a genuine `hello_refused{version_skew}` from an
+        // otherwise legitimate, same-account peer) into the SAME
+        // `Foreign` outcome — see this module's own doc and the report's
+        // "Deviations" for why disambiguating them would need new
+        // machinery this unit prefers not to add. Either way it is an
+        // unproven server: never retried as if it might still be
+        // legitimate.
         ChallengeOutcome::Foreign => Err(LaneError::Protocol("supervisor hello: foreign")),
         ChallengeOutcome::Undetermined => Err(LaneError::Protocol("supervisor hello: undetermined")),
     }
 }
 
-fn supervisor_status(
-    conn: &PipeClient,
+fn supervisor_status<E: Endpoint>(
+    conn: &E::Client,
     reader: &mut FrameReader,
 ) -> Result<(Option<String>, Option<u64>, SupervisorPhase), LaneError> {
     let bytes = wire::encode_supervisor_request(&SupervisorRequest::Status)
         .expect("Status has no fields; encoding cannot fail");
-    write_bounded(conn, &bytes, Instant::now() + WRITE_BUDGET)?;
-    match reader.next_frame(conn, Instant::now() + STATUS_BUDGET)? {
+    write_bounded::<E>(conn, &bytes, Instant::now() + WRITE_BUDGET)?;
+    match reader.next_frame::<E>(conn, Instant::now() + STATUS_BUDGET)? {
         DecodedFrame::SupervisorReply(SupervisorReply::StatusOk { voyage, leg, phase, .. }) => {
             Ok((voyage, leg, phase))
         }
@@ -326,18 +331,18 @@ fn supervisor_status(
 /// clears the clock and asks the caller to retry shortly rather than
 /// attaching blind this round — the caller's own backoff (250 ms
 /// doubling to 4 s) makes that a brief, bounded gap, not a stall.
-fn on_supervisor_absent_or_unresponsive(
+fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
     reconnect: &mut ReconnectState,
     voyage: &str,
     now: Instant,
 ) -> ReconnectDecision {
-    match pipe_win::connect_voyage_pipe_unchallenged(voyage) {
+    match E::connect_voyage_unchallenged(voyage) {
         Ok(_probe) => {
             reconnect.clear_unresponsive();
             ReconnectDecision::Retry
         }
         Err(e) => {
-            if is_access_denied(&pipe_err_to_io(e)) {
+            if is_access_denied(&transport_error_to_io(e)) {
                 reconnect.classify_access_denied()
             } else {
                 reconnect.classify_unresponsive(now)
@@ -355,11 +360,11 @@ fn on_supervisor_absent_or_unresponsive(
 /// own `status_ok.pid`/`.created` report the SUPERVISOR process itself
 /// (`supervisor.rs`'s own doc: "`pid`/`created` are this process's own
 /// identity"), never the leg, so that reply can never stand in for this.
-fn capsule_identity_via_mgmt(voyage: &str) -> Result<ChallengedProcess, LaneError> {
-    let conn = pipe_win::connect_voyage_pipe_unchallenged(voyage).map_err(|e| LaneError::Io(pipe_err_to_io(e)))?;
+fn capsule_identity_via_mgmt<E: Endpoint>(voyage: &str) -> Result<E::Process, LaneError> {
+    let conn = E::connect_voyage_unchallenged(voyage).map_err(|e| LaneError::Io(transport_error_to_io(e)))?;
     let mut exchange = VoyageMgmtExchange::default();
     let deadline = Instant::now() + STATUS_BUDGET;
-    match challenge_win::challenge(&conn, &mut exchange, deadline) {
+    match E::challenge(&conn, &mut exchange, deadline) {
         ChallengeOutcome::Proven(process) => Ok(process),
         ChallengeOutcome::Foreign => Err(LaneError::Protocol("voyage mgmt: foreign")),
         ChallengeOutcome::Undetermined => Err(LaneError::Protocol("voyage mgmt: undetermined")),
@@ -394,15 +399,15 @@ enum HelloOutcome {
 /// #194): a `hello_ok` must echo back EXACTLY the version it negotiated,
 /// never a different one -- silently trusting a mismatch would mean
 /// assuming a checkpoint shape the capsule never actually promised.
-fn attach_lane_hello(
-    conn: &PipeClient,
+fn attach_lane_hello<E: Endpoint>(
+    conn: &E::Client,
     reader: &mut FrameReader,
     proto: u32,
 ) -> Result<HelloOutcome, LaneError> {
     let bytes =
         wire::encode_attach_client(&AttachClient::Hello { proto }).expect("fixed hello shape");
-    write_bounded(conn, &bytes, Instant::now() + WRITE_BUDGET)?;
-    match reader.next_frame(conn, Instant::now() + HELLO_BUDGET)? {
+    write_bounded::<E>(conn, &bytes, Instant::now() + WRITE_BUDGET)?;
+    match reader.next_frame::<E>(conn, Instant::now() + HELLO_BUDGET)? {
         DecodedFrame::AttachServer(AttachServer::HelloOk { proto: negotiated }) => {
             if negotiated != proto {
                 return Err(LaneError::Protocol(
@@ -437,19 +442,19 @@ fn checkpoint_frame_deadline(now: Instant, transfer_deadline: Instant) -> Instan
 /// at [`wire::MAX_CHECKPOINT_LEN`] the same way `tests/e2e_pipe.rs`'s own
 /// `RealFrames::collect_checkpoint` proves the property, and at
 /// [`CHECKPOINT_TRANSFER_BUDGET`] in aggregate (see its own doc).
-fn attach_and_collect_checkpoint(
-    conn: &PipeClient,
+fn attach_and_collect_checkpoint<E: Endpoint>(
+    conn: &E::Client,
     reader: &mut FrameReader,
     controller_id: &str,
 ) -> Result<Vec<u8>, LaneError> {
     let bytes = wire::encode_attach_client(&AttachClient::Attach { controller_id: controller_id.to_string() })
         .map_err(LaneError::Wire)?;
-    write_bounded(conn, &bytes, Instant::now() + WRITE_BUDGET)?;
+    write_bounded::<E>(conn, &bytes, Instant::now() + WRITE_BUDGET)?;
     let mut out = Vec::new();
     let transfer_deadline = Instant::now() + CHECKPOINT_TRANSFER_BUDGET;
     loop {
         let frame_deadline = checkpoint_frame_deadline(Instant::now(), transfer_deadline);
-        match reader.next_frame(conn, frame_deadline)? {
+        match reader.next_frame::<E>(conn, frame_deadline)? {
             DecodedFrame::AttachServer(AttachServer::CheckpointChunk { last, bytes }) => {
                 out.extend_from_slice(&bytes);
                 if out.len() > wire::MAX_CHECKPOINT_LEN {
@@ -527,7 +532,18 @@ impl std::fmt::Display for FeAttachError {
 /// `term::LocalTerminal` (`pump`/`screen`/`send_input`/`resize`/
 /// `is_dead`), plus the quit-dispatcher and fe_down surfaces
 /// `LocalTerminal` has no analog for.
-pub struct FeAttachClient {
+///
+/// L1-unix LU3b: generic over `E: Endpoint`, defaulted to
+/// [`PlatformEndpoint`] — every real caller (the frontend) names this
+/// type unparameterised (`FeAttachClient`) and gets whatever `Endpoint`
+/// this build's own platform speaks; a test naming a different `E`
+/// still compiles the same struct. No field actually stores an
+/// `E::Client`/`E::Process` (the connection lives inside the worker
+/// thread's own stack, moved into its closure at [`attach`](Self::attach)
+/// time) — `E` is carried only as a marker so `attach` knows which
+/// [`run_worker`] to spawn.
+pub struct FeAttachClient<E: Endpoint = PlatformEndpoint> {
+    _endpoint: PhantomData<E>,
     parser: vt100_ctt::Parser,
     /// The pane's current `(rows, cols)` — the CALLER's rect, tracked
     /// independently of whatever size a just-restored checkpoint carries.
@@ -576,7 +592,7 @@ pub struct FeAttachClient {
     pending_fe_down_markers: VecDeque<serde_json::Value>,
 }
 
-impl FeAttachClient {
+impl<E: Endpoint> FeAttachClient<E> {
     /// Reads `drawer.voyage` under `state_dir` and starts the background
     /// worker; the worker itself performs the connect/hello/status/
     /// attach/checkpoint sequence and every reconnect thereafter — this
@@ -602,7 +618,10 @@ impl FeAttachClient {
         fe_down_to_handle: String,
         fe_down_last_evidence: Option<String>,
         wake: Box<dyn Fn() + Send + 'static>,
-    ) -> Result<Self, FeAttachError> {
+    ) -> Result<Self, FeAttachError>
+    where
+        E::Client: 'static,
+    {
         let rows = rows.max(2);
         let cols = cols.max(2);
         let parser = vt100_ctt::Parser::new(rows, cols, SCROLLBACK_ROWS);
@@ -617,7 +636,7 @@ impl FeAttachClient {
         thread::Builder::new()
             .name("sot-fe-attach-worker".to_string())
             .spawn(move || {
-                run_worker(
+                run_worker::<E>(
                     state_dir,
                     controller_id,
                     fe_down_to_handle,
@@ -634,6 +653,7 @@ impl FeAttachClient {
             .map_err(FeAttachError::SpawnWorkerThread)?;
 
         Ok(Self {
+            _endpoint: PhantomData,
             parser,
             pane_size: (rows, cols),
             msg_tx,
@@ -839,7 +859,7 @@ impl FeAttachClient {
     }
 }
 
-impl Drop for FeAttachClient {
+impl<E: Endpoint> Drop for FeAttachClient<E> {
     fn drop(&mut self) {
         let _ = self.msg_tx.send(WorkerMsg::Shutdown);
     }
@@ -869,7 +889,7 @@ enum TakeIntent {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_worker(
+fn run_worker<E: Endpoint>(
     state_dir: PathBuf,
     controller_id: String,
     fe_down_to_handle: String,
@@ -881,7 +901,9 @@ fn run_worker(
     events_tx: Sender<ClientEvent>,
     queued_bytes: Arc<AtomicUsize>,
     wake: Box<dyn Fn() + Send + 'static>,
-) {
+) where
+    E::Client: 'static,
+{
     let h = state_dir_hash(&state_dir);
     let mut reconnect = ReconnectState::new();
     let mut take = TakeTransaction::new();
@@ -952,10 +974,10 @@ fn run_worker(
         }
 
         // --- supervisor lane: hello (build identity) then status -----
-        let supervisor_connected = match connect_supervisor_lane(&h) {
+        let supervisor_connected = match connect_supervisor_lane::<E>(&h) {
             Ok((conn, _proven)) => {
                 let mut sup_reader = FrameReader::new();
-                match supervisor_status(&conn, &mut sup_reader) {
+                match supervisor_status::<E>(&conn, &mut sup_reader) {
                     Ok((sv, _leg, phase)) => {
                         if let ReconnectDecision::Terminal(reason) = reconnect.classify_supervisor_phase(phase) {
                             emit(ClientEvent::Terminal(format!("supervisor: {reason:?}")));
@@ -996,7 +1018,7 @@ fn run_worker(
         // health window even get consulted -- a reachable voyage pipe
         // (the capsule surviving headless) clears it unconditionally.
         if supervisor_connected.is_none() {
-            match on_supervisor_absent_or_unresponsive(&mut reconnect, &voyage, Instant::now()) {
+            match on_supervisor_absent_or_unresponsive::<E>(&mut reconnect, &voyage, Instant::now()) {
                 ReconnectDecision::Terminal(reason) => {
                     emit(ClientEvent::Terminal(format!("supervisor lane unreachable: {reason:?}")));
                     return;
@@ -1015,18 +1037,18 @@ fn run_worker(
         // A latched quit only needs the supervisor lane -- apply it now,
         // rather than waiting for a full attach that a quit makes moot.
         if let Some(reason) = latched_quit_reason.take() {
-            run_quit(&mut supervisor_conn, &mut sup_reader, &h, &voyage, reason, &mut quit, &mut outstanding, &emit);
+            run_quit::<E>(&mut supervisor_conn, &mut sup_reader, &h, &voyage, reason, &mut quit, &mut outstanding, &emit);
             if quit.should_exit() {
                 emit(ClientEvent::ShouldExit);
                 return;
             }
         }
 
-        // --- attach lane: SID auth, hello, attach, checkpoint ---------
-        let voyage_conn = match pipe_win::connect_voyage_pipe_unchallenged(&voyage) {
+        // --- attach lane: identity auth, hello, attach, checkpoint ----
+        let voyage_conn = match E::connect_voyage_unchallenged(&voyage) {
             Ok(c) => c,
             Err(e) => {
-                let io = pipe_err_to_io(e);
+                let io = transport_error_to_io(e);
                 if is_access_denied(&io) {
                     emit(ClientEvent::Terminal("voyage pipe: access denied".to_string()));
                     return;
@@ -1038,7 +1060,7 @@ fn run_worker(
                 }
             }
         };
-        let attach_identity = match challenge_win::authenticate_server(&voyage_conn) {
+        let attach_identity = match E::authenticate_server(&voyage_conn) {
             PeerAuthOutcome::Authenticated(a) => (a.pid, a.created),
             PeerAuthOutcome::Foreign => {
                 emit(ClientEvent::Terminal("voyage pipe: foreign".to_string()));
@@ -1053,7 +1075,7 @@ fn run_worker(
         };
 
         let mut attach_reader = FrameReader::new();
-        match attach_lane_hello(&voyage_conn, &mut attach_reader, preferred_attach_proto) {
+        match attach_lane_hello::<E>(&voyage_conn, &mut attach_reader, preferred_attach_proto) {
             Ok(HelloOutcome::Accepted) => {}
             Ok(HelloOutcome::RetryAt(fallback)) => {
                 // The capsule does not speak `preferred_attach_proto` (an
@@ -1087,7 +1109,7 @@ fn run_worker(
             },
         }
         let checkpoint =
-            match attach_and_collect_checkpoint(&voyage_conn, &mut attach_reader, &controller_id) {
+            match attach_and_collect_checkpoint::<E>(&voyage_conn, &mut attach_reader, &controller_id) {
                 Ok(c) => c,
                 Err(_) => {
                     match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
@@ -1100,13 +1122,14 @@ fn run_worker(
         // Ruling (e), Codex review round finding 9: the attach notice
         // compares the CAPSULE's own identity (a throwaway voyage
         // mgmt-lane challenge) against the attach connection's own
-        // SID-proven identity -- never the supervisor's. On mismatch,
-        // re-read the mgmt identity once and proceed without a notice
+        // challenge-proven identity -- never the supervisor's. On
+        // mismatch, re-read the mgmt identity once and proceed without a
+        // notice
         // rather than looping forever.
-        let mgmt_identity = capsule_identity_via_mgmt(&voyage)
+        let mgmt_identity = capsule_identity_via_mgmt::<E>(&voyage)
             .ok()
             .map(|p| (p.pid(), p.created()))
-            .or_else(|| capsule_identity_via_mgmt(&voyage).ok().map(|p| (p.pid(), p.created())));
+            .or_else(|| capsule_identity_via_mgmt::<E>(&voyage).ok().map(|p| (p.pid(), p.created())));
         if let Some(mgmt_leg) = mgmt_identity {
             if fe_client::legs_match(mgmt_leg, attach_identity) {
                 emit(ClientEvent::Notice(fe_client::attach_notice_text(&format!("{}", mgmt_leg.1))));
@@ -1124,7 +1147,7 @@ fn run_worker(
         if preserve_take_on_reconnect {
             preserve_take_on_reconnect = false;
             for action in take.retry_take() {
-                apply_single_take_action(action, &voyage_conn, &controller_id, &emit);
+                apply_single_take_action::<E>(action, &voyage_conn, &controller_id, &emit);
             }
         } else {
             take.reset_to_watching();
@@ -1147,7 +1170,7 @@ fn run_worker(
                 if take.role() == Role::Watching {
                     let actions = take.on_input_while_watching(&[]);
                     for action in actions {
-                        apply_single_take_action(action, &voyage_conn, &controller_id, &emit);
+                        apply_single_take_action::<E>(action, &voyage_conn, &controller_id, &emit);
                     }
                 }
                 // Else: role is already Taking from the preserved
@@ -1173,7 +1196,7 @@ fn run_worker(
         let reader_queued_bytes = Arc::clone(&queued_bytes);
         let reader_thread = match thread::Builder::new()
             .name("sot-fe-attach-reader".to_string())
-            .spawn(move || run_attach_reader(reader_conn, attach_reader, reader_tx, reader_queued_bytes, reader_stop))
+            .spawn(move || run_attach_reader::<E>(reader_conn, attach_reader, reader_tx, reader_queued_bytes, reader_stop))
         {
             Ok(jh) => jh,
             Err(e) => {
@@ -1189,7 +1212,7 @@ fn run_worker(
         let mut last_liveness_poll = Instant::now();
 
         // --- steady state ------------------------------------------
-        let episode_result = run_steady_state(
+        let episode_result = run_steady_state::<E>(
             &cmd_rx,
             &events_tx,
             &wake,
@@ -1396,10 +1419,10 @@ pub(crate) const QUIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 /// 4), not two: `supervisor_client::end_run` no longer carries its own
 /// state machine or invented budget.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_end_run_and_wait(
-    conn: &mut PipeClient,
+pub(crate) fn run_end_run_and_wait<E: Endpoint>(
+    conn: &mut E::Client,
     reader: &mut FrameReader,
-    mut reconnect: impl FnMut(&mut PipeClient, &mut FrameReader),
+    mut reconnect: impl FnMut(&mut E::Client, &mut FrameReader),
     quit: &mut QuitDispatcher,
     operation_id: String,
     reason: String,
@@ -1415,7 +1438,7 @@ pub(crate) fn run_end_run_and_wait(
     };
     match wire::encode_supervisor_request(&cmd) {
         Ok(bytes) => {
-            if let Err(e) = write_bounded(conn, &bytes, Instant::now() + WRITE_BUDGET) {
+            if let Err(e) = write_bounded::<E>(conn, &bytes, Instant::now() + WRITE_BUDGET) {
                 // Not swallowed (Codex review round): a failed write here
                 // is exactly as recoverable as one later -- the loop
                 // below reconnects and queries the SAME operation_id,
@@ -1449,7 +1472,7 @@ pub(crate) fn run_end_run_and_wait(
             let q = SupervisorRequest::Query { operation_id: operation_id.clone() };
             match wire::encode_supervisor_request(&q) {
                 Ok(bytes) => {
-                    if let Err(e) = write_bounded(conn, &bytes, Instant::now() + WRITE_BUDGET) {
+                    if let Err(e) = write_bounded::<E>(conn, &bytes, Instant::now() + WRITE_BUDGET) {
                         eprintln!("lane end_run: query write failed ({e}); reconnecting");
                         reconnect(conn, reader);
                         continue;
@@ -1459,7 +1482,7 @@ pub(crate) fn run_end_run_and_wait(
             }
         }
 
-        match reader.next_frame(conn, now + QUIT_HEARTBEAT_INTERVAL) {
+        match reader.next_frame::<E>(conn, now + QUIT_HEARTBEAT_INTERVAL) {
             Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(state))) => {
                 eprintln!("lane end_run: operation state {state:?}");
                 quit.on_operation_state(state);
@@ -1491,8 +1514,8 @@ pub(crate) fn run_end_run_and_wait(
 /// steady-state loop that used to poll `query` did) can never be correct
 /// here.
 #[allow(clippy::too_many_arguments)]
-fn run_quit(
-    supervisor_conn: &mut PipeClient,
+fn run_quit<E: Endpoint>(
+    supervisor_conn: &mut E::Client,
     sup_reader: &mut FrameReader,
     h: &str,
     voyage: &str,
@@ -1515,10 +1538,10 @@ fn run_quit(
             )));
         }
     }
-    run_end_run_and_wait(
+    run_end_run_and_wait::<E>(
         supervisor_conn,
         sup_reader,
-        |conn, reader| reconnect_supervisor_lane_for_quit(conn, reader, h),
+        |conn, reader| reconnect_supervisor_lane_for_quit::<E>(conn, reader, h),
         quit,
         operation_id,
         reason,
@@ -1533,8 +1556,8 @@ fn run_quit(
 /// bounded overall by `QuitDispatcher::tick`'s 90 s cutoff -- there is
 /// no separate retry budget to manage here, unlike the reconnect EPISODE
 /// loop the rest of this module drives for the attach lane.
-fn reconnect_supervisor_lane_for_quit(supervisor_conn: &mut PipeClient, sup_reader: &mut FrameReader, h: &str) {
-    match connect_supervisor_lane(h) {
+fn reconnect_supervisor_lane_for_quit<E: Endpoint>(supervisor_conn: &mut E::Client, sup_reader: &mut FrameReader, h: &str) {
+    match connect_supervisor_lane::<E>(h) {
         Ok((conn, _proven)) => {
             *supervisor_conn = conn;
             *sup_reader = FrameReader::new();
@@ -1559,8 +1582,8 @@ fn reconnect_supervisor_lane_for_quit(supervisor_conn: &mut PipeClient, sup_read
 /// loop `cancel()` cannot reach); a normal teardown sets it just before
 /// calling `cancel()`. `Keepalive` is answered directly here (bounced
 /// back byte-identical), never round-tripped through the worker.
-fn run_attach_reader(
-    conn: Arc<PipeClient>,
+fn run_attach_reader<E: Endpoint>(
+    conn: Arc<E::Client>,
     mut reader: FrameReader,
     tx: Sender<WorkerMsg>,
     queued_bytes: Arc<AtomicUsize>,
@@ -1577,7 +1600,7 @@ fn run_attach_reader(
             return;
         }
         let deadline = Instant::now() + Duration::from_secs(3600); // steady-state: no artificial read deadline; EOF/cancel end it
-        let frame = match reader.next_frame(&conn, deadline) {
+        let frame = match reader.next_frame::<E>(&conn, deadline) {
             Ok(f) => f,
             Err(_) => {
                 let _ = tx.send(WorkerMsg::ReaderDone);
@@ -1604,13 +1627,13 @@ fn run_attach_reader(
 // -----------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
-fn run_steady_state(
+fn run_steady_state<E: Endpoint>(
     cmd_rx: &Receiver<WorkerMsg>,
     events_tx: &Sender<ClientEvent>,
     wake: &(dyn Fn() + Send),
     h: &str,
-    attach_conn: &Arc<PipeClient>,
-    supervisor_conn: &mut PipeClient,
+    attach_conn: &Arc<E::Client>,
+    supervisor_conn: &mut E::Client,
     sup_reader: &mut FrameReader,
     take: &mut TakeTransaction,
     take_intent: &mut TakeIntent,
@@ -1635,12 +1658,12 @@ fn run_steady_state(
             Ok(WorkerMsg::Input(bytes)) => match take.role() {
                 Role::Watching => {
                     for action in take.on_input_while_watching(&bytes) {
-                        apply_single_take_action(action, attach_conn, controller_id, &emit);
+                        apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
                     }
                 }
                 Role::Taking | Role::Resizing => {
                     for action in take.on_input_while_pending(&bytes) {
-                        apply_single_take_action(action, attach_conn, controller_id, &emit);
+                        apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
                     }
                 }
                 Role::Driving => {
@@ -1649,10 +1672,10 @@ fn run_steady_state(
                         // input already outstanding queues the next one
                         // rather than dropping it.
                         for action in take.queue_while_driving(&bytes) {
-                            apply_single_take_action(action, attach_conn, controller_id, &emit);
+                            apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
                         }
                     } else {
-                        send_new_input(attach_conn, outstanding, *take_epoch, controller_id, voyage, bytes);
+                        send_new_input::<E>(attach_conn, outstanding, *take_epoch, controller_id, voyage, bytes);
                     }
                 }
             },
@@ -1669,7 +1692,7 @@ fn run_steady_state(
                 if take.role() == Role::Driving {
                     let frame = AttachClient::Resize { cols: c, rows: r };
                     if let Ok(enc) = wire::encode_attach_client(&frame) {
-                        let _ = write_bounded(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
+                        let _ = write_bounded::<E>(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
                     }
                 }
             }
@@ -1679,10 +1702,10 @@ fn run_steady_state(
                 // see its own doc for why verification cannot depend on
                 // this steady-state loop running again (the attach
                 // connection dies with the capsule end_run tears down).
-                run_quit(supervisor_conn, sup_reader, h, voyage, reason, quit, outstanding, &emit);
+                run_quit::<E>(supervisor_conn, sup_reader, h, voyage, reason, quit, outstanding, &emit);
             }
             Ok(WorkerMsg::Frame(frame)) => {
-                match handle_attach_frame(
+                match handle_attach_frame::<E>(
                     frame, attach_conn, take, take_intent, outstanding, take_epoch, controller_id, voyage, *cols,
                     *rows, &emit,
                 ) {
@@ -1703,12 +1726,12 @@ fn run_steady_state(
             return SteadyOutcome::QuitEnded;
         }
         for action in take.tick_checkpoint_retry(now) {
-            apply_single_take_action(action, attach_conn, controller_id, &emit);
+            apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
         }
 
         if now.duration_since(*last_liveness_poll) >= LIVENESS_POLL_INTERVAL {
             *last_liveness_poll = now;
-            match supervisor_status(supervisor_conn, sup_reader) {
+            match supervisor_status::<E>(supervisor_conn, sup_reader) {
                 Ok((_, _, phase)) => {
                     // The supervisor answered -- unambiguously NOT
                     // absent/unresponsive; the voyage pipe question
@@ -1751,18 +1774,18 @@ fn mint_idem_key() -> [u8; 16] {
     buf
 }
 
-fn send_wire_input(attach_conn: &PipeClient, controller_id: &str, take_epoch: u64, idem_key: [u8; 16], payload: Vec<u8>) {
+fn send_wire_input<E: Endpoint>(attach_conn: &E::Client, controller_id: &str, take_epoch: u64, idem_key: [u8; 16], payload: Vec<u8>) {
     let frame = AttachClient::Input { controller_id: controller_id.to_string(), take_epoch, idem_key, payload };
     if let Ok(enc) = wire::encode_attach_client(&frame) {
-        let _ = write_bounded(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
+        let _ = write_bounded::<E>(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
     }
 }
 
 /// Records a FRESH outstanding input (a new idem key) and sends it —
 /// the ordinary path for both a first Driving-idle keystroke and a
 /// flushed queue entry.
-fn send_new_input(
-    attach_conn: &PipeClient,
+fn send_new_input<E: Endpoint>(
+    attach_conn: &E::Client,
     outstanding: &mut OutstandingSlot,
     take_epoch: u64,
     controller_id: &str,
@@ -1770,7 +1793,7 @@ fn send_new_input(
     bytes: Vec<u8>,
 ) {
     let idem_key = outstanding.record(voyage.to_string(), take_epoch, bytes.clone(), mint_idem_key);
-    send_wire_input(attach_conn, controller_id, take_epoch, idem_key, bytes);
+    send_wire_input::<E>(attach_conn, controller_id, take_epoch, idem_key, bytes);
 }
 
 /// Dispatches one `TakeAction`. `SendInput` no longer exists as a
@@ -1779,18 +1802,18 @@ fn send_new_input(
 /// module goes through [`send_new_input`]/[`send_wire_input`] instead,
 /// called from the specific points ruling (b)/(c) pin (after
 /// `resize_ok`, after an outstanding reply resolves while DRIVING).
-fn apply_single_take_action(action: TakeAction, attach_conn: &PipeClient, controller_id: &str, emit: &dyn Fn(ClientEvent)) {
+fn apply_single_take_action<E: Endpoint>(action: TakeAction, attach_conn: &E::Client, controller_id: &str, emit: &dyn Fn(ClientEvent)) {
     match action {
         TakeAction::SendTake => {
             let frame = AttachClient::Take { controller_id: controller_id.to_string() };
             if let Ok(enc) = wire::encode_attach_client(&frame) {
-                let _ = write_bounded(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
+                let _ = write_bounded::<E>(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
             }
         }
         TakeAction::SendResize { cols, rows } => {
             let frame = AttachClient::Resize { cols, rows };
             if let Ok(enc) = wire::encode_attach_client(&frame) {
-                let _ = write_bounded(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
+                let _ = write_bounded::<E>(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
             }
         }
         TakeAction::QueueDiscarded => {
@@ -1817,8 +1840,8 @@ fn apply_single_take_action(action: TakeAction, attach_conn: &PipeClient, contro
 /// `take_intent` — the reconnect resend (SAME key), the stale retry
 /// (NEW key under the now-current epoch), or the ordinary queued flush
 /// (fresh key). Ruling (c), Codex review round finding 6.
-fn flush_after_pen_secured(
-    attach_conn: &PipeClient,
+fn flush_after_pen_secured<E: Endpoint>(
+    attach_conn: &E::Client,
     take: &mut TakeTransaction,
     take_intent: &mut TakeIntent,
     outstanding: &mut OutstandingSlot,
@@ -1829,20 +1852,20 @@ fn flush_after_pen_secured(
     match std::mem::replace(take_intent, TakeIntent::Ordinary) {
         TakeIntent::ReconnectResend => {
             if let Some(o) = outstanding.outstanding() {
-                send_wire_input(attach_conn, controller_id, o.take_epoch, o.idem_key, o.bytes.clone());
+                send_wire_input::<E>(attach_conn, controller_id, o.take_epoch, o.idem_key, o.bytes.clone());
             }
         }
         TakeIntent::StaleRetry => {
             let resolution = outstanding.apply_outcome(InputWireOutcome::RefusedStale, take_epoch, mint_idem_key);
             if let fe_client::OutstandingResolution::RetryNewEpoch { idem_key } = resolution {
                 if let Some(o) = outstanding.outstanding() {
-                    send_wire_input(attach_conn, controller_id, take_epoch, idem_key, o.bytes.clone());
+                    send_wire_input::<E>(attach_conn, controller_id, take_epoch, idem_key, o.bytes.clone());
                 }
             }
         }
         TakeIntent::Ordinary => {
             if let Some(bytes) = take.take_queued() {
-                send_new_input(attach_conn, outstanding, take_epoch, controller_id, voyage, bytes);
+                send_new_input::<E>(attach_conn, outstanding, take_epoch, controller_id, voyage, bytes);
             }
         }
     }
@@ -1852,8 +1875,8 @@ fn flush_after_pen_secured(
 /// `InputDeliveryUnknown`) while still DRIVING: flush whatever the take
 /// transaction queued behind it (ruling (b), Codex review round finding
 /// 5's own "dispatch queued bytes after the outstanding reply").
-fn flush_next_driving_input(
-    attach_conn: &PipeClient,
+fn flush_next_driving_input<E: Endpoint>(
+    attach_conn: &E::Client,
     take: &mut TakeTransaction,
     outstanding: &mut OutstandingSlot,
     take_epoch: u64,
@@ -1864,16 +1887,16 @@ fn flush_next_driving_input(
         return;
     }
     if let Some(bytes) = take.take_queued() {
-        send_new_input(attach_conn, outstanding, take_epoch, controller_id, voyage, bytes);
+        send_new_input::<E>(attach_conn, outstanding, take_epoch, controller_id, voyage, bytes);
     }
 }
 
 /// Dispatches one incoming attach-lane frame (unsolicited `Output` or a
 /// reply to whatever the worker most recently sent).
 #[allow(clippy::too_many_arguments)]
-fn handle_attach_frame(
+fn handle_attach_frame<E: Endpoint>(
     frame: DecodedFrame,
-    attach_conn: &PipeClient,
+    attach_conn: &E::Client,
     take: &mut TakeTransaction,
     take_intent: &mut TakeIntent,
     outstanding: &mut OutstandingSlot,
@@ -1903,7 +1926,7 @@ fn handle_attach_frame(
                 }
             }
             for action in take.on_take_ok(cols, rows) {
-                apply_single_take_action(action, attach_conn, controller_id, emit);
+                apply_single_take_action::<E>(action, attach_conn, controller_id, emit);
             }
             FrameOutcome::Handled
         }
@@ -1913,7 +1936,7 @@ fn handle_attach_frame(
                     let actions = take.on_take_refused_not_attached();
                     let reattach = actions.contains(&TakeAction::Reattach);
                     for action in actions {
-                        apply_single_take_action(action, attach_conn, controller_id, emit);
+                        apply_single_take_action::<E>(action, attach_conn, controller_id, emit);
                     }
                     if reattach {
                         return FrameOutcome::ReattachRequested;
@@ -1921,7 +1944,7 @@ fn handle_attach_frame(
                 }
                 TakeRefusedReason::CheckpointInFlight => {
                     for action in take.on_take_refused_checkpoint_in_flight(Instant::now()) {
-                        apply_single_take_action(action, attach_conn, controller_id, emit);
+                        apply_single_take_action::<E>(action, attach_conn, controller_id, emit);
                     }
                 }
             }
@@ -1929,26 +1952,26 @@ fn handle_attach_frame(
         }
         DecodedFrame::AttachServer(AttachServer::ResizeOk) => {
             take.on_resize_ok();
-            flush_after_pen_secured(attach_conn, take, take_intent, outstanding, *take_epoch, controller_id, voyage);
+            flush_after_pen_secured::<E>(attach_conn, take, take_intent, outstanding, *take_epoch, controller_id, voyage);
             FrameOutcome::Handled
         }
         DecodedFrame::AttachServer(AttachServer::ResizeRefused { reason }) => {
             let was_resizing = take.role() == Role::Resizing;
             for action in take.on_resize_refused(reason) {
-                apply_single_take_action(action, attach_conn, controller_id, emit);
+                apply_single_take_action::<E>(action, attach_conn, controller_id, emit);
             }
             if was_resizing && reason == ResizeRefusedReason::OutOfBudget {
                 // `on_resize_refused` already promoted RESIZING ->
                 // DRIVING for this refusal -- the pen is still held, so
                 // whatever was queued behind the take-ok flushes exactly
                 // as it would after a real `resize_ok`.
-                flush_after_pen_secured(attach_conn, take, take_intent, outstanding, *take_epoch, controller_id, voyage);
+                flush_after_pen_secured::<E>(attach_conn, take, take_intent, outstanding, *take_epoch, controller_id, voyage);
             }
             FrameOutcome::Handled
         }
         DecodedFrame::AttachServer(AttachServer::InputRecorded) => {
             let _ = outstanding.apply_outcome(InputWireOutcome::Recorded, *take_epoch, mint_idem_key);
-            flush_next_driving_input(attach_conn, take, outstanding, *take_epoch, controller_id, voyage);
+            flush_next_driving_input::<E>(attach_conn, take, outstanding, *take_epoch, controller_id, voyage);
             FrameOutcome::Handled
         }
         DecodedFrame::AttachServer(AttachServer::InputRefusedStale) => {
@@ -1958,7 +1981,7 @@ fn handle_attach_frame(
             // own `StaleRetry` handling).
             *take_intent = TakeIntent::StaleRetry;
             for action in take.retake_while_driving() {
-                apply_single_take_action(action, attach_conn, controller_id, emit);
+                apply_single_take_action::<E>(action, attach_conn, controller_id, emit);
             }
             FrameOutcome::Handled
         }
@@ -1967,7 +1990,7 @@ fn handle_attach_frame(
             if matches!(res, fe_client::OutstandingResolution::Unknown) {
                 emit(ClientEvent::Status("input delivery unknown".to_string()));
             }
-            flush_next_driving_input(attach_conn, take, outstanding, *take_epoch, controller_id, voyage);
+            flush_next_driving_input::<E>(attach_conn, take, outstanding, *take_epoch, controller_id, voyage);
             FrameOutcome::Handled
         }
         DecodedFrame::AttachServer(AttachServer::AttachRefused { .. })
@@ -1985,8 +2008,10 @@ fn handle_attach_frame(
 
 // -----------------------------------------------------------------------
 // Pure-logic unit tests. The rest of this module's behavior needs a real
-// Windows named pipe (`tests/fe_client_win.rs`'s own real-process
-// harness); these two pieces are pure enough to test directly.
+// supervisor + capsule process to attach to (`tests/fe_client_win.rs`'s
+// own real-process harness -- Windows-only until LU3c gives Linux a
+// supervisor of its own to test against); these two pieces are pure
+// enough to test directly on every platform this module now compiles on.
 // -----------------------------------------------------------------------
 
 #[cfg(test)]

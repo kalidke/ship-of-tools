@@ -350,7 +350,7 @@ fn set_size_resizes_scrollback_ring_rows_too() {
 /// to: a wrap flag computed for one width is not meaningful at another),
 /// so `Grid::set_size` must call it ONLY when the column count actually
 /// changes (Codex round on #194, finding 2) — a SAME-size `set_size`
-/// call, exactly what `fe_client_win.rs`'s `pump` makes unconditionally
+/// call, exactly what `fe_client_io.rs`'s `pump` makes unconditionally
 /// right after every restore, must be a pure no-op on wrap flags, for
 /// both the visible screen and scrolled-off history.
 ///
@@ -384,7 +384,7 @@ fn restore_then_same_size_set_size_keeps_wrap_flags() {
     let mut restored = Parser::new(rows, cols, 20);
     restored.restore_screen(&bytes).expect("restore");
 
-    // Same-size `set_size` — exactly what `fe_client_win.rs`'s `pump`
+    // Same-size `set_size` — exactly what `fe_client_io.rs`'s `pump`
     // does unconditionally right after every restore.
     restored.screen_mut().set_size(rows, cols);
 
@@ -780,7 +780,7 @@ fn restore_adopts_the_checkpoints_dimensions() {
 /// which need not match the pane the attaching frontend renders into.
 /// `restore_screen` alone leaves the client's screen at the checkpoint's
 /// size (proven above by `restore_adopts_the_checkpoints_dimensions`), so
-/// `sot_log::fe_client_win`'s `pump()` calls `Screen::set_size` to the
+/// `sot_log::fe_client_io`'s `pump()` calls `Screen::set_size` to the
 /// pane's own known rect immediately after every restore. This proves
 /// that step, at the exact crate boundary the fix calls: every cell the
 /// checkpoint described keeps its content and position, and every cell in

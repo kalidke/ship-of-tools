@@ -1,6 +1,6 @@
 #![cfg(windows)]
 //! ADR 0041 step 6 U3: real cross-process integration tests for
-//! `sot_log::fe_client_win::FeAttachClient` — the FE attach-only client,
+//! `sot_log::fe_client_io::FeAttachClient` — the FE attach-only client,
 //! driven exactly the way the real frontend drives it, against a REAL
 //! `sot-capsule supervise` and a REAL capsule leg. `tests/supervisor_win.rs`
 //! already proves the supervisor's OWN lifecycle wiring across a real
@@ -24,10 +24,11 @@
 //! this file does not attempt to inject a clock into a live worker
 //! thread, unlike `fe_client`'s own unit tests.
 
-use sot_log::fe_client_win::FeAttachClient;
+use sot_log::fe_client_io::FeAttachClient;
 use sot_log::pipe_win::{connect_voyage_pipe, PipeClient};
 use sot_log::segment::SegmentReader;
-use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test, state_dir_hash};
+use sot_log::state_dir::state_dir_hash;
+use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
 use sot_log::wire::{
     MgmtReply, MgmtRequest, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
     SupervisorRequest,

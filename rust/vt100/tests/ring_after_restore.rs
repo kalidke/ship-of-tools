@@ -1,12 +1,12 @@
 //! Issue-B split (2026-09-05): after a capsule checkpoint is restored into
 //! the frontend's parser (and reflowed to the pane, exactly as
-//! `sot_log::fe_client_win`'s `pump()` does), does ordinary newline-driven
+//! `sot_log::fe_client_io`'s `pump()` does), does ordinary newline-driven
 //! output still fill the scrollback ring? The field trace could not be
 //! taken (an instrumented FE build trips the build boundary), but this is a
 //! deterministic property of the parser, so it is proven here instead.
 use vt100_ctt::Parser;
 
-const SCROLLBACK_ROWS: usize = 5000; // fe_client_win.rs's own capacity
+const SCROLLBACK_ROWS: usize = 5000; // fe_client_io.rs's own capacity
 
 fn ring_len(p: &mut Parser) -> usize {
     p.screen_mut().set_scrollback(usize::MAX);

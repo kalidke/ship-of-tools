@@ -51,9 +51,16 @@ pub trait Client: Send + Sync {
 /// which way" — so a cancelled challenge behaves identically to any
 /// other read/write failure mid-exchange, matching both platforms'
 /// pre-existing behavior.
-fn transport_error_to_io(e: TransportError) -> std::io::Error {
+pub(crate) fn transport_error_to_io(e: TransportError) -> std::io::Error {
     match e {
-        TransportError::Io { source, .. } => source,
+        // Both variants that CARRY an `io::Error` hand it back unwrapped, so
+        // its `ErrorKind` survives for callers that classify on it (the
+        // attach client's access-denied check): `RuntimeDir` is the Linux
+        // shape of "the endpoint's directory refused us" (an invalid or
+        // foreign-owned `SOT_RUNTIME_DIR` -> `PermissionDenied`); wrapping it
+        // as `Other` sent the FE down the 120 s unresponsive path instead
+        // (LU3b review round). Windows never produces `RuntimeDir`.
+        TransportError::Io { source, .. } | TransportError::RuntimeDir(source) => source,
         other => std::io::Error::other(other),
     }
 }
@@ -139,3 +146,16 @@ pub trait Endpoint {
     /// (see either concrete module's own `authenticate_server` doc).
     fn authenticate_server(conn: &Self::Client) -> PeerAuthOutcome;
 }
+
+/// L1-unix LU3b: the endpoint a process speaks on the platform it runs
+/// on — the frontend (`fe_client_io.rs`) and `supervisor_client` are
+/// generic over [`Endpoint`] and instantiated with this, the ONLY place
+/// the platform is chosen for a client. Windows speaks `PipeEndpoint`,
+/// Linux speaks `SocketEndpoint`; no other platform has one yet (a
+/// generic build for one still needs a concrete `Endpoint` to
+/// monomorphize against, which is exactly what does not exist off these
+/// two today — see `fe_client_io`'s own top-of-module `cfg`).
+#[cfg(windows)]
+pub type PlatformEndpoint = crate::pipe_win::PipeEndpoint;
+#[cfg(target_os = "linux")]
+pub type PlatformEndpoint = crate::socket_unix::SocketEndpoint;

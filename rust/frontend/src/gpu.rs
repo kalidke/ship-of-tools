@@ -3986,14 +3986,14 @@ struct State {
     local_term: Option<crate::term::LocalTerminal>,
     /// ADR 0041 step 6 U3: the attach-only alternative to `local_term`,
     /// live only when `settings.attach_only` is on (Windows only — see
-    /// `sot_log::fe_client_win`). Mutually exclusive with `local_term`:
+    /// `sot_log::fe_client_io`). Mutually exclusive with `local_term`:
     /// the Terminal drawer's lazy-spawn site picks exactly one backend
     /// at creation time and never both. `None` on every non-Windows
     /// build target (the field itself still exists there so the rest of
     /// this struct's layout doesn't fork by platform) since attach-only
     /// has nothing to attach to off Windows.
     #[cfg(windows)]
-    attach_term: Option<sot_log::fe_client_win::FeAttachClient>,
+    attach_term: Option<sot_log::fe_client_io::FeAttachClient>,
     /// ADR 0042 slice L1b: the session (BL) pane's OWN attach client —
     /// live when the selected workspace row's cached `runtime ==
     /// "capsule"`. A SEPARATE client from `attach_term`: the drawer and
@@ -4006,7 +4006,7 @@ struct State {
     /// (capsule has nothing to attach to off Windows) and whenever the
     /// selected row is a tmux workspace.
     #[cfg(windows)]
-    pane_attach_term: Option<sot_log::fe_client_win::FeAttachClient>,
+    pane_attach_term: Option<sot_log::fe_client_io::FeAttachClient>,
     /// ADR 0042 slice L1b fix 2: which backend the session pane's
     /// input/resize/scroll route to right now — see `PaneFeed`'s own
     /// doc for why this can't just be derived from
@@ -8620,7 +8620,7 @@ impl State {
         let controller_id = self_comm_handle();
         let fe_down_to = self_comm_handle();
         let waker = self.window.clone();
-        match sot_log::fe_client_win::FeAttachClient::attach(
+        match sot_log::fe_client_io::FeAttachClient::attach(
             state_dir,
             cols,
             rows,
@@ -14394,7 +14394,7 @@ impl State {
         // this run's own false baseline.
         let fe_down_last_evidence = self.fe_down_baseline_evidence.clone();
         let waker = self.window.clone();
-        match sot_log::fe_client_win::FeAttachClient::attach(
+        match sot_log::fe_client_io::FeAttachClient::attach(
             state_dir,
             80,
             24,

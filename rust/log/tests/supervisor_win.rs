@@ -16,7 +16,8 @@
 //! observation of kernel state.
 
 use sot_log::journal;
-use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test, state_dir_hash};
+use sot_log::state_dir::state_dir_hash;
+use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
 use sot_log::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

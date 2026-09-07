@@ -2236,14 +2236,16 @@ pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<Sock
 /// `pipe_win::connect_supervisor_pipe_unchallenged`'s own doc for why
 /// this intentionally has no `_unchallenged`-free sibling: the supervisor
 /// lane needs the full five-step [`crate::challenge_unix::challenge`],
-/// which the caller composes itself on top of this. No caller exists yet
-/// on Unix (`fe_client_win.rs`/`supervisor.rs` are its Windows-only
-/// analogues; their Unix counterparts are LU3's job, ADR 0043's own lane
-/// list) — `allow(dead_code)` rather than deleting it, the same "hoisted
-/// but not yet called" device this crate already uses for `deadline.rs`
-/// and `exchange_identity` (both `#[cfg_attr(not(windows), allow(dead_code))]`
-/// for the identical reason, one lane early).
-#[allow(dead_code)]
+/// which the caller composes itself on top of this. L1-unix LU3b: now
+/// called on Linux, via `Endpoint for SocketEndpoint`'s own
+/// `connect_supervisor_unchallenged` (`fe_client_io.rs` and
+/// `supervisor_client`, both generic over `Endpoint`, are its callers)
+/// — the same `#[cfg_attr(not(target_os = "linux"), allow(dead_code))]`
+/// device its sibling [`connect_voyage_socket_unchallenged`] already
+/// uses, since this Unix-general module still compiles on a non-Linux
+/// Unix (macOS, experimental) where `SocketEndpoint` itself does not
+/// exist (ADR 0043 decision 8).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketClient, TransportError> {
     let path = supervisor_socket_path(h)?;
     connect_unix_socket_unchallenged(&path)

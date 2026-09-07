@@ -136,12 +136,15 @@ pub mod exchange;
 // ADR 0041 step 6, unit U3: the FE attach-only client's PURE state
 // machines (the six FE rulings from "Step 6 as specified") -- portable,
 // like `pointer`/`exchange`/`rollout`: no OS call, so it is genuinely
-// tested on every CI platform. The Windows-only runtime that wires these
-// to a real `PipeClient` lives in `fe_client_win`, gated by its own
-// `#![cfg(windows)]`.
+// tested on every CI platform. The runtime that wires these to a real
+// `Endpoint` (Windows: `PipeEndpoint`; Linux: `SocketEndpoint`) lives in
+// `fe_client_io`, gated by its own `#![cfg(any(windows, target_os =
+// "linux"))]` (L1-unix LU3b: renamed from `fe_client_win`, generic over
+// `client::Endpoint` -- no platform name in this module's own name
+// anymore).
 pub mod fe_client;
-#[cfg(windows)]
-pub mod fe_client_win;
+#[cfg(any(windows, target_os = "linux"))]
+pub mod fe_client_io;
 // ADR 0041 step 6, unit U2: the supervisor's own durable operation
 // journal (`operation_id`/`.active`/`.terminal`, recovery-first
 // reconciliation) — portable, like `pointer`/`rollout`, since it reuses
@@ -175,9 +178,10 @@ pub mod state_dir;
 pub mod supervisor;
 // ADR 0042 slice L1a: the small PRODUCTION supervisor-lane client for a
 // non-FE, non-test caller (the backend daemon's own capsule workspace
-// runtime) -- `pub`, matching `supervisor`/`challenge_win`/`fe_client_win`:
-// Windows-only, and `sot-backend` (a separate crate) needs to reach it.
-#[cfg(windows)]
+// runtime) -- `pub`, matching `supervisor`/`fe_client_io`: generic over
+// `client::PlatformEndpoint` (L1-unix LU3b), so it now compiles on Linux
+// too, and `sot-backend` (a separate crate) needs to reach it.
+#[cfg(any(windows, target_os = "linux"))]
 pub mod supervisor_client;
 pub mod verify;
 pub mod voyage;

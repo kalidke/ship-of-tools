@@ -62,6 +62,43 @@ pub fn sot_state_dir() -> Option<std::path::PathBuf> {
     Some(dir.join("sot"))
 }
 
+/// L1-unix LU3b: moved here from `supervisor.rs` (a pure hash of a path,
+/// with no OS-facing mechanism of its own) — the supervisor lane's own
+/// per-state-dir pipe/socket name, shared by every caller that connects
+/// to it: `fe_client_io`'s worker, `supervisor_client`'s `connect`, the
+/// authority's own `PipeServer::bind_supervisor`/`SocketServer::
+/// bind_supervisor` call in `supervisor.rs`, and both platforms' real-
+/// process integration tests. Stable for the SAME path (canonicalized
+/// first, so a symlinked or relative `state_dir` still names the same
+/// lane), different for different paths — proven by this module's own
+/// tests below.
+pub fn state_dir_hash(state_dir: &std::path::Path) -> String {
+    use sha2::{Digest as _, Sha256};
+    let canonical = std::fs::canonicalize(state_dir).unwrap_or_else(|_| state_dir.to_path_buf());
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.to_string_lossy().as_bytes());
+    let digest = hasher.finalize();
+    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod state_dir_hash_tests {
+    use super::state_dir_hash;
+
+    #[test]
+    fn state_dir_hash_is_stable_for_the_same_path() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(state_dir_hash(dir.path()), state_dir_hash(dir.path()));
+    }
+
+    #[test]
+    fn state_dir_hash_differs_for_different_paths() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        assert_ne!(state_dir_hash(a.path()), state_dir_hash(b.path()));
+    }
+}
+
 // ---------------------------------------------------------------------
 // L1-unix LU1b (ADR 0043 decision 1): the per-user RUNTIME dir — where
 // live sockets/pipes go, as opposed to `sot_state_dir`'s durable-state

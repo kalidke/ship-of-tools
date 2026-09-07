@@ -196,6 +196,12 @@ use crate::pointer::{self, PointerState};
 use crate::probe_win::RealProbeOps;
 use crate::recovery::{self, LatestLegState};
 use crate::segment::RetentionClass;
+// L1-unix LU3b: the client-side supervisor-lane helpers (and the shared
+// error constructor) now live in `supervisor_client` -- the dependency
+// points server -> client-helpers, the right way round (ADR 0043
+// decision 20). This module's own production code keeps calling
+// `err_state(..)` bare, unchanged at every call site.
+use crate::supervisor_client::err_state;
 use crate::transport::{LaneEvent, CONNECT_BOUND};
 use crate::verify;
 use crate::voyage::VoyageStore;
@@ -442,63 +448,38 @@ pub fn connect_and_challenge_with_build_for_test(
     Ok((conn, outcome))
 }
 
-/// The production analog of [`connect_and_challenge_with_build_for_test`]:
-/// connect the supervisor lane by state-dir hash and run the full
-/// same-connection challenge with THIS build's own identity, folding
-/// `Foreign`/`Undetermined` straight into `Err` — a production caller
-/// (today: [`crate::supervisor_client`], ADR 0042 L1a) has no use for
-/// telling those two apart any further than "not a proven connection to
-/// my own supervisor". `pub(crate)` so that sibling module can reach it
-/// without the `test-support` feature a normal, non-test consumer must
-/// never need to enable (see this crate's own `Cargo.toml`).
-pub(crate) fn connect_and_challenge(
-    h: &str,
-    build: &str,
-    deadline: Instant,
-) -> crate::Result<(pipe_win::PipeClient, ChallengedProcess)> {
-    let conn = pipe_win::connect_supervisor_pipe_unchallenged(h)?;
-    let mut exchange = crate::exchange::SupervisorLaneExchange::new(build.to_string());
-    match challenge_win::challenge(&conn, &mut exchange, deadline) {
-        ChallengeOutcome::Proven(process) => Ok((conn, process)),
-        ChallengeOutcome::Foreign => Err(err_state("supervisor lane challenge: foreign")),
-        ChallengeOutcome::Undetermined => Err(err_state("supervisor lane challenge: undetermined")),
-    }
-}
-
+/// L1-unix LU3b: [`crate::supervisor_client::connect_and_challenge`] is
+/// now the production analog of
+/// [`connect_and_challenge_with_build_for_test`] — connect the supervisor
+/// lane by state-dir hash and run the full same-connection challenge with
+/// THIS build's own identity, generic over `client::Endpoint` since a
+/// production caller off Windows now exists too
+/// ([`crate::supervisor_client`], ADR 0042 L1a / ADR 0043 decision 20).
+/// This test helper instantiates it at [`pipe_win::PipeEndpoint`] — the
+/// only `Endpoint` this Windows-only module ever needs (LU3c is what
+/// makes `supervisor.rs` itself generic).
 #[cfg(any(test, feature = "test-support"))]
 pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(pipe_win::PipeClient, ChallengedProcess)> {
-    connect_and_challenge(
+    crate::supervisor_client::connect_and_challenge::<pipe_win::PipeEndpoint>(
         h,
         crate::exchange::SUPERVISOR_LANE_BUILD_ID,
         Instant::now() + Duration::from_secs(2),
     )
 }
 
-/// Encode `request`, write it, and read back exactly one reply — the one
+/// L1-unix LU3b: [`crate::supervisor_client::send_and_read`] is now the
+/// production analog this test-only wrapper delegates to — one
 /// request/reply round trip every supervisor-lane caller needs after its
-/// own connect+challenge, factored out so [`request_for_test`] (test-only)
-/// and [`crate::supervisor_client`] (the production, non-test-gated
-/// caller) share one implementation rather than two that could drift.
-pub(crate) fn send_and_read(
-    conn: &pipe_win::PipeClient,
-    request: &SupervisorRequest,
-    deadline: Instant,
-) -> crate::Result<SupervisorReply> {
-    let bytes = wire::encode_supervisor_request(request).map_err(|e| err_state(format!("{e}")))?;
-    conn.write_all(&bytes)?;
-    match read_one_frame(conn, deadline)? {
-        DecodedFrame::SupervisorReply(reply) => Ok(reply),
-        other => Err(err_state(format!("expected a SupervisorReply, got {other:?}"))),
-    }
-}
-
+/// own connect+challenge, generic over `client::Client` so both
+/// [`request_for_test`] and [`crate::supervisor_client`]'s own production
+/// callers share one implementation rather than two that could drift.
 #[cfg(any(test, feature = "test-support"))]
 pub fn request_for_test(
     conn: &pipe_win::PipeClient,
     request: &SupervisorRequest,
     deadline: Instant,
 ) -> crate::Result<SupervisorReply> {
-    send_and_read(conn, request, deadline)
+    crate::supervisor_client::send_and_read(conn, request, deadline)
 }
 
 // ---------------------------------------------------------------------
@@ -511,15 +492,6 @@ fn voyages_dir(state_dir: &Path) -> PathBuf {
 
 fn voyage_root_path(state_dir: &Path, voyage_id: &str) -> PathBuf {
     voyages_dir(state_dir).join(voyage_id)
-}
-
-pub fn state_dir_hash(state_dir: &Path) -> String {
-    use sha2::{Digest as _, Sha256};
-    let canonical = std::fs::canonicalize(state_dir).unwrap_or_else(|_| state_dir.to_path_buf());
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.to_string_lossy().as_bytes());
-    let digest = hasher.finalize();
-    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
 fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
@@ -537,13 +509,6 @@ fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
         let created = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
         Ok((pid, created))
     }
-}
-
-/// `pub(crate)`: [`crate::supervisor_client`] (ADR 0042 L1a) reuses this
-/// same "malformed/unexpected protocol shape" error shape rather than
-/// minting a second one.
-pub(crate) fn err_state(msg: impl Into<String>) -> crate::Error {
-    crate::Error::State(msg.into())
 }
 
 /// Truncate `detail` to fit within [`wire::MAX_SUPERVISOR_STRING_LEN`]
@@ -764,31 +729,6 @@ enum EndRunOutcome {
     Ended(ChallengedProcess),
 }
 
-fn read_one_frame(conn: &pipe_win::PipeClient, deadline: Instant) -> crate::Result<DecodedFrame> {
-    let result = crate::deadline::run_with_deadline(
-        deadline,
-        || conn.cancel(),
-        move || -> crate::Result<DecodedFrame> {
-            let mut splitter = wire::FrameSplitter::new();
-            let mut buf = [0u8; 4096];
-            loop {
-                let n = conn.read(&mut buf)?;
-                if n == 0 {
-                    return Err(err_state("connection closed before a reply arrived"));
-                }
-                let (frames, err) = splitter.feed(&buf[..n]);
-                if let Some(e) = err {
-                    return Err(err_state(format!("wire error waiting for a reply: {e}")));
-                }
-                if let Some(frame) = frames.into_iter().next() {
-                    return Ok(frame);
-                }
-            }
-        },
-    );
-    result.unwrap_or_else(|| Err(err_state("timed out waiting for a reply")))
-}
-
 /// ADR 0041 capability matrix's "healthy" row, and EndRun "invoked by the
 /// authority on its own behalf": challenge afresh, retain the handle,
 /// send `shutdown{reason}` on the SAME connection, and wait its ack.
@@ -811,10 +751,10 @@ fn end_run_over_mgmt_lane(voyage_id: &str, reason: &str) -> crate::Result<EndRun
                 .map_err(|e| err_state(format!("encoding shutdown request: {e}")))?;
             // N7 (Codex review round 3): this write was UNBOUNDED --
             // the exchange machinery already has a cancellable deadline
-            // primitive (`read_one_frame`, just below, already uses it
-            // for its own read); reused here rather than a second one,
-            // on the SAME "request write 2s" per-op budget every other
-            // op already uses.
+            // primitive (`crate::supervisor_client::read_one_frame`,
+            // just below, already uses it for its own read); reused
+            // here rather than a second one, on the SAME "request write
+            // 2s" per-op budget every other op already uses.
             let write_deadline = Instant::now() + END_RUN_WRITE_BOUND;
             let write_ok = crate::deadline::run_with_deadline(write_deadline, || conn.cancel(), || conn.write_all(&request))
                 .is_some_and(|r| r.is_ok());
@@ -823,8 +763,13 @@ fn end_run_over_mgmt_lane(voyage_id: &str, reason: &str) -> crate::Result<EndRun
             }
             // The ack itself is read for wire-protocol hygiene (drain
             // what the peer sends), but its outcome no longer branches
-            // anything — see `Ended`'s own doc above.
-            let _ = read_one_frame(&conn, Instant::now() + END_RUN_ACK_READ_BOUND);
+            // anything — see `Ended`'s own doc above. L1-unix LU3b:
+            // `read_one_frame` moved to `supervisor_client` with
+            // `send_and_read`/`err_state` (the dependency now points
+            // server -> client-helpers, the right way round) but stays
+            // reachable here since this mechanism function is not one of
+            // the pieces this lane generalizes (LU3c's job).
+            let _ = crate::supervisor_client::read_one_frame(&conn, Instant::now() + END_RUN_ACK_READ_BOUND);
             Ok(EndRunOutcome::Ended(process))
         }
     }
@@ -2221,7 +2166,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         }
     };
 
-    let h = state_dir_hash(&config.state_dir);
+    let h = crate::state_dir::state_dir_hash(&config.state_dir);
 
     // The lane: bound AFTER the fence, BEFORE any adopt or spawn.
     let lane = match PipeServer::bind_supervisor(&h, MAX_LANE_INSTANCES) {
@@ -2855,19 +2800,6 @@ fn reset_inner(state_dir: &Path, voyage: Option<String>) -> crate::Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn state_dir_hash_is_stable_for_the_same_path() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(state_dir_hash(dir.path()), state_dir_hash(dir.path()));
-    }
-
-    #[test]
-    fn state_dir_hash_differs_for_different_paths() {
-        let a = tempfile::tempdir().unwrap();
-        let b = tempfile::tempdir().unwrap();
-        assert_ne!(state_dir_hash(a.path()), state_dir_hash(b.path()));
-    }
 
     #[test]
     fn voyage_root_path_is_scoped_under_a_voyages_subdir() {
