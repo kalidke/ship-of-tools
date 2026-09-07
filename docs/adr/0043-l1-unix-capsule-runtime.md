@@ -286,9 +286,14 @@ and sealing — is platform-neutral and moves unchanged.
     `input() -> &mut dyn Write` (the WAL already takes `&mut dyn Write`); `resize`;
     `wait(timeout) -> Result<bool>` (non-blocking poll each iteration, bounded confirm at
     teardown); `exit_status_after_confirmed_exit() -> Result<ExitStatus>`;
-    `terminate_domain()`; `domain_is_empty() -> Result<bool>`; `close_output_side(self)`
-    (consumed on the closer thread, which is what keeps "resize is unreachable during
-    teardown" a compile-time fact); and one associated function `pre_spawn_detail() ->
+    `terminate_domain()`; `domain_is_empty() -> Result<bool>`;
+    `close_output_side(&mut self) -> JoinHandle<()>` (the producer spawns the closer
+    thread itself and hands back its join handle — it cannot be consumed, because the
+    drain that follows still answers the host handshake through `input()` and the
+    exit status is read after the close; "resize is unreachable during teardown" is
+    therefore no longer a compile-time fact but the runtime assertion the loop already
+    carries, backed by `AttachProto` never emitting a resize after `begin_teardown`);
+    and one associated function `pre_spawn_detail() ->
     serde_json::Value` merged into `producer_spawn.detail` BEFORE spawn is attempted
     (Windows contributes `spawning_process_was_jobbed`; Unix contributes nothing). No
     `kind()` on the trait: `producer_kind` stays a config string the caller sets.
@@ -337,6 +342,9 @@ and sealing — is platform-neutral and moves unchanged.
     was removed on review); `--no-echo` leaves the Linux `run` arm; `run_claude` (ADR
     0040) is untouched, it drives a different producer. `host_handshake` stays in the
     shared loop and is inert on Unix (a pty child never emits the conhost DA1 query).
+
+The terminal parser (`vt100-ctt`) becomes an unconditional dependency of `sot-log`: it has no
+Windows code and was gated only because its sole caller was.
 
 Layout after LU2: `capsule.rs` is the unified loop (the Windows file renamed; the config
 is `CapsuleConfig`), `producer_conpty.rs` (Windows) and `producer_pty.rs` (Unix) are the
