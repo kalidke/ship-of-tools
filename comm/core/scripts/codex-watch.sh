@@ -127,6 +127,11 @@ while :; do
         # -l: literal keystrokes (no key-name interpretation); Enter sent
         # separately so codex submits the injected line as a turn.
         tmux -S "$SOT_TMUX_SOCK" send-keys -t "$PANE" -l "[relay] from $from: $text" 2>/dev/null
+        # The Codex TUI treats a keystroke burst as a paste and swallows an
+        # Enter that arrives in the same burst as a newline, leaving the frame
+        # unsubmitted at the prompt (field report 2026-09-07: immediate Enter
+        # hung every frame; a 0.5 s pause submitted every one).
+        sleep 0.5
         tmux -S "$SOT_TMUX_SOCK" send-keys -t "$PANE" Enter 2>/dev/null
     done
     pos="$total"
