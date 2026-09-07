@@ -600,7 +600,7 @@ impl<E: Endpoint> FeAttachClient<E> {
     /// `LocalTerminal::spawn`'s own "returns once the reader thread is
     /// running" contract. `state_dir` is the CALLER's resolved value
     /// (`state_dir::sot_state_dir()` for the real frontend; an isolated
-    /// tempdir for `tests/fe_client_win.rs`) — this constructor takes it
+    /// tempdir for `tests/fe_client.rs`) — this constructor takes it
     /// rather than resolving it itself, the same way `sot-capsule
     /// supervise <state_dir>` takes it as an explicit argument rather
     /// than an internal env-var lookup, so a real client and a test can
@@ -2008,9 +2008,9 @@ fn handle_attach_frame<E: Endpoint>(
 
 // -----------------------------------------------------------------------
 // Pure-logic unit tests. The rest of this module's behavior needs a real
-// supervisor + capsule process to attach to (`tests/fe_client_win.rs`'s
-// own real-process harness -- Windows-only until LU3c gives Linux a
-// supervisor of its own to test against); these two pieces are pure
+// supervisor + capsule process to attach to (`tests/fe_client.rs`'s own
+// real-process harness -- L1-unix LU3c ungated it to run on Linux too,
+// against a real socket lane, exactly like Windows); these two pieces are pure
 // enough to test directly on every platform this module now compiles on.
 // -----------------------------------------------------------------------
 

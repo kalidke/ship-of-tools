@@ -150,7 +150,7 @@ pub trait ProbeOps {
 // "test-support"` additionally covers a SEPARATE integration-test crate
 // in `tests/` within this same package, which can enable it via a
 // self-referential `[dev-dependencies]` entry (see Cargo.toml) — the
-// mechanism a later unit's own model test (`tests/supervisor_win.rs` or
+// mechanism a later unit's own model test (`tests/supervisor.rs` or
 // similar) is expected to use.
 // ---------------------------------------------------------------------
 

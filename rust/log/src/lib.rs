@@ -99,6 +99,10 @@ pub mod probe;
 // `SpawnedChild`. `pub`, matching `probe`/`challenge_win`: Windows-only,
 // self-gated (see the module's own `#![cfg(windows)]`).
 pub mod probe_win;
+// L1-unix LU3c: the Linux half of the probe seam -- `RealProbeOps` and
+// `SpawnedChild`, over pidfds. `pub`, matching `probe_win`: self-gated
+// (see the module's own `#![cfg(target_os = "linux")]`).
+pub mod probe_unix;
 // Crate-private (Codex review finding, capsule_win.rs round): ADR 0041's
 // "one private machine" ruling means this module's items are not part of
 // the crate's public API — `capsule_win.rs` is the only real caller and
@@ -152,8 +156,10 @@ pub mod fe_client_io;
 pub mod journal;
 // ADR 0041 step 6, unit U2: the parent-death lease a spawned capsule
 // checks as its first act after acquiring the writer fence — a named,
-// kernel-brokered mutex, Windows-only. `pub`, matching `challenge_win`/
-// `probe_win`: `tests/supervisor_win.rs` needs to reach it.
+// kernel-brokered mutex, Windows-only (L1-unix LU3c: the Linux
+// equivalent is an inherited `pipe2`, owned by `supervisor.rs` itself —
+// see that module's own doc; nothing here is ported). `pub`, matching
+// `challenge_win`/`probe_win`: `tests/supervisor.rs` needs to reach it.
 pub mod lease;
 // ADR 0041 step 6, unit U0: `drawer.voyage` publication + validation.
 // Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
@@ -172,9 +178,12 @@ pub mod segment;
 // drifting copies.
 pub mod state_dir;
 // ADR 0041 step 6, unit U2: the authority -- `sot-capsule supervise`,
-// and `endrun`/`reset` as fence-acquiring in-process callers. `pub`,
-// matching `challenge_win`/`lease`/`probe_win`: Windows-only, and
-// `tests/supervisor_win.rs` needs to reach it.
+// and `endrun`/`reset` as fence-acquiring in-process callers. L1-unix
+// LU3c: ungated to `#![cfg(any(windows, target_os = "linux"))]`, generic
+// over `client::PlatformEndpoint`/`transport::PlatformLaneServer` (the
+// platform chosen once, by those two aliases) rather than Windows-only —
+// `pub`, matching `probe_win`/`supervisor_client`, and
+// `tests/supervisor.rs` needs to reach it.
 pub mod supervisor;
 // ADR 0042 slice L1a: the small PRODUCTION supervisor-lane client for a
 // non-FE, non-test caller (the backend daemon's own capsule workspace

@@ -847,12 +847,13 @@ mod parent_lease_tests {
     fn broken_for_a_missing_or_closed_fd() {
         assert!(parent_lease_fd_broken(-1), "a negative fd must read as broken");
         // A definitely-closed fd number -- EBADF, not a real descriptor.
-        let (r, w) = make_pipe();
-        unsafe {
-            libc::close(r);
-            libc::close(w);
-        }
-        assert!(parent_lease_fd_broken(r), "a closed fd number must read as broken");
+        // An fd number nothing in this test binary holds: descriptors are
+        // allocated lowest-free-first, so the top of the table is never
+        // reached. (Closing a fresh pipe and probing ITS number raced the
+        // other test threads, which can reopen that number in between --
+        // seen once as a flake in the lib suite.)
+        let top = unsafe { libc::getdtablesize() } - 1;
+        assert!(parent_lease_fd_broken(top), "an fd number that is not open must read as broken");
     }
 }
 

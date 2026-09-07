@@ -184,16 +184,86 @@
 //! quota and a sweep to drain leftovers — deleted once it became clear
 //! that bought nothing this one cap did not already cover.
 
-#![cfg(windows)]
+//! # Linux (L1-unix LU3c, ADR 0043 decision 21)
+//!
+//! On Linux the supervisor's legs are its OWN CHILDREN, so someone must
+//! reap them — a role Windows' job-object/handle model has no analogue
+//! for. Rule: **`SIGCHLD` is SET to `SIG_DFL` here, at the very start of
+//! [`supervise_inner`] (never merely assumed — whatever launched this
+//! process may have inherited `SIG_IGN` across `exec`, which auto-reaps
+//! every child immediately and silently breaks the pid pin below; never
+//! `SIG_IGN` ourselves either, for the identical reason: an ignored
+//! `SIGCHLD` re-opens the pid-reuse window `pidfd_open` right after
+//! `Command::spawn` depends on staying closed, and would be inherited by
+//! the leg across `exec`), and a leg is reaped exactly once per handle
+//! that observes its exit, after this process has read everything it
+//! needs from the dead process — never eagerly, never via a global
+//! `waitpid(-1, ..)` reaper.** `probe_unix::SpawnedChild::wait` reaps the
+//! moment it observes the exit (nothing further Stage A needs to read
+//! off it); a leg identified by a [`challenge_unix::ChallengedProcess`]
+//! (adopted, or promoted from a `SpawnedChild` once its own pipe
+//! answers) instead reaps inside `exit_status_after_confirmed_exit`,
+//! right after that call's own `PIDFD_GET_INFO` read — deferred that far
+//! because reaping any earlier would destroy the exit-status information
+//! the read needs — and, as the reaper of LAST RESORT for a leg that
+//! reached `Ready` and was never asked for its exit status at all (the
+//! supervisor's own main loop only ever calls `wait`, never the exit-
+//! status accessor, once a leg simply ends on its own), the
+//! `ChallengedProcess`'s own `Drop` impl reaps it too, non-blocking,
+//! never a kill. `ECHILD` at every one of these is ignored: a leg inherited from a
+//! DIFFERENT, earlier supervisor is not this process's child at all —
+//! its own parent reaps it, not us.
+//!
+//! The parent-death lease (`LegLease`/[`SpawnLease`], replacing the
+//! Windows-only `lease` module here) is a `pipe2(O_CLOEXEC)`: this
+//! process holds the WRITE end for its whole life and never writes to
+//! it; the read end reaches the leg as `--parent-lease-fd 3`, installed
+//! by [`build_run_command`]'s own `pre_exec` (a `dup2` onto the fixed fd,
+//! which clears `CLOEXEC` on the COPY — the wanted effect; when the read
+//! end already IS fd 3, `dup2(fd, fd)` would be a no-op that leaves the
+//! flag SET, so that one case clears it with `fcntl` instead). The leg
+//! itself is detached from this process's own kill domain entirely by
+//! the producer's `setsid` (ADR 0043 decision 14) — no Unix analogue of
+//! `DETACHED_PROCESS` is needed, or exists.
+//!
+//! The platform is chosen exactly ONCE, by three local type aliases
+//! (`Client`/`Process`/`Lane`, just below the imports) over
+//! [`crate::client::PlatformEndpoint`] and
+//! [`crate::transport::PlatformLaneServer`] — never by threading a type
+//! parameter through the state machine above. `Lane`/`Client`/`Process`
+//! resolve to concrete platform types (`PipeServer`/`PipeClient`/
+//! `challenge_win::ChallengedProcess` on Windows,
+//! `SocketServer`/`SocketClient`/`challenge_unix::ChallengedProcess` on
+//! Linux) whose own inherent methods already implement
+//! [`crate::transport::LaneServer`]/[`crate::client::Client`]/
+//! [`crate::client::PeerProcess`] purely by delegation (see `client.rs`
+//! and each concrete module's own `impl LaneServer`/`impl Client` block)
+//! — this file calls those inherent methods directly, exactly as it did
+//! against the concrete Windows types before this lane, so the seam
+//! traits stay the CONTRACT the two concrete types are already proven
+//! to satisfy identically, without this state machine itself needing to
+//! be generic in the type-parameter sense. Every `pipe_win::connect_*`/
+//! `challenge_win::challenge` call this file used to make instead goes
+//! through `PlatformEndpoint::..` (an actual trait method call, since
+//! `PipeEndpoint`/`SocketEndpoint` have no inherent methods of their
+//! own). [`crate::transport::TransportError::is_endpoint_absent`] is the
+//! ONE absence predicate [`end_run_over_mgmt_lane`]/
+//! [`probe_writer_liveness`] use on both platforms now, instead of a
+//! Windows-shaped inline `NotFound` guard.
 
+#![cfg(any(windows, target_os = "linux"))]
+
+use crate::attach_proto::ConnId;
 use crate::challenge::ChallengeOutcome;
-use crate::challenge_win::{self, ChallengedProcess};
 use crate::classify::{self, ProbeOutcome};
+use crate::client::{Endpoint, PlatformEndpoint};
 use crate::fsutil;
 use crate::journal;
-use crate::pipe_win::{self, ConnId, PipeServer};
 use crate::pointer::{self, PointerState};
+#[cfg(windows)]
 use crate::probe_win::RealProbeOps;
+#[cfg(target_os = "linux")]
+use crate::probe_unix::RealProbeOps;
 use crate::recovery::{self, LatestLegState};
 use crate::segment::RetentionClass;
 // L1-unix LU3b: the client-side supervisor-lane helpers (and the shared
@@ -202,7 +272,7 @@ use crate::segment::RetentionClass;
 // decision 20). This module's own production code keeps calling
 // `err_state(..)` bare, unchanged at every call site.
 use crate::supervisor_client::err_state;
-use crate::transport::{LaneEvent, CONNECT_BOUND};
+use crate::transport::{LaneEvent, PlatformLaneServer, CONNECT_BOUND};
 use crate::verify;
 use crate::voyage::VoyageStore;
 use crate::wire::{
@@ -210,11 +280,39 @@ use crate::wire::{
     SupervisorRequest,
 };
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+// ---------------------------------------------------------------------
+// L1-unix LU3c (ADR 0043 decisions 20/21): the platform, chosen ONCE.
+// Every former `PipeClient`/`ChallengedProcess`/`PipeServer` name in this
+// file now names one of these three aliases instead — "generic over
+// LaneServer + Endpoint" without ever threading a type parameter through
+// the state machine below. Named `Client`, not `Conn` (the brief's own
+// suggestion): this file already has an unrelated `struct Conn` — the
+// per-connection LANE bookkeeping `service_lane`/`handle_lane_bytes` key
+// their `HashMap` by (splitter, hello_ok, pending_close) — predating this
+// lane; reusing that name for the challenge/client type would collide
+// with it, so this is named for what it actually is instead.
+// ---------------------------------------------------------------------
+
+// `Client` is named only by this module's own `#[cfg(any(test,
+// feature = "test-support"))]` helpers below (every non-test caller
+// gets a `Conn`/`Process` pair back from a function whose own return
+// type already names it, never a bare local of this exact alias) — a
+// plain `cargo build` therefore never mentions it by name, same
+// "hoisted but not yet called on this cfg" shape `deadline.rs`/
+// `host_handshake.rs` already use.
+#[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+type Client = <PlatformEndpoint as Endpoint>::Client;
+type Process = <PlatformEndpoint as Endpoint>::Process;
+type Lane = PlatformLaneServer;
 
 // ---------------------------------------------------------------------
 // The numbers (ADR 0041 "The numbers, pinned here so no implementation
@@ -441,10 +539,10 @@ pub fn reset(state_dir: &Path, voyage: Option<String>) -> i32 {
 pub fn connect_and_challenge_with_build_for_test(
     h: &str,
     build: &str,
-) -> crate::Result<(pipe_win::PipeClient, ChallengeOutcome<ChallengedProcess>)> {
-    let conn = pipe_win::connect_supervisor_pipe_unchallenged(h)?;
+) -> crate::Result<(Client, ChallengeOutcome<Process>)> {
+    let conn = PlatformEndpoint::connect_supervisor_unchallenged(h)?;
     let mut exchange = crate::exchange::SupervisorLaneExchange::new(build.to_string());
-    let outcome = challenge_win::challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
+    let outcome = PlatformEndpoint::challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
     Ok((conn, outcome))
 }
 
@@ -455,12 +553,13 @@ pub fn connect_and_challenge_with_build_for_test(
 /// THIS build's own identity, generic over `client::Endpoint` since a
 /// production caller off Windows now exists too
 /// ([`crate::supervisor_client`], ADR 0042 L1a / ADR 0043 decision 20).
-/// This test helper instantiates it at [`pipe_win::PipeEndpoint`] — the
-/// only `Endpoint` this Windows-only module ever needs (LU3c is what
-/// makes `supervisor.rs` itself generic).
+/// L1-unix LU3c: this test helper instantiates it at [`PlatformEndpoint`]
+/// now too — the SAME alias `supervisor.rs`'s own production code is
+/// generic over, rather than hard-coding `pipe_win::PipeEndpoint` the way
+/// it did while this module was still Windows-only.
 #[cfg(any(test, feature = "test-support"))]
-pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(pipe_win::PipeClient, ChallengedProcess)> {
-    crate::supervisor_client::connect_and_challenge::<pipe_win::PipeEndpoint>(
+pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(Client, Process)> {
+    crate::supervisor_client::connect_and_challenge::<PlatformEndpoint>(
         h,
         crate::exchange::SUPERVISOR_LANE_BUILD_ID,
         Instant::now() + Duration::from_secs(2),
@@ -475,7 +574,7 @@ pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(pipe_win::PipeC
 /// callers share one implementation rather than two that could drift.
 #[cfg(any(test, feature = "test-support"))]
 pub fn request_for_test(
-    conn: &pipe_win::PipeClient,
+    conn: &Client,
     request: &SupervisorRequest,
     deadline: Instant,
 ) -> crate::Result<SupervisorReply> {
@@ -494,6 +593,7 @@ fn voyage_root_path(state_dir: &Path, voyage_id: &str) -> PathBuf {
     voyages_dir(state_dir).join(voyage_id)
 }
 
+#[cfg(windows)]
 fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
@@ -509,6 +609,16 @@ fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
         let created = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
         Ok((pid, created))
     }
+}
+
+/// ADR 0043 decision 21: the same `(pid, start-time ticks)` pair
+/// `capsule.rs`'s own `self_status` uses for the identical adoption-
+/// challenge identity (decision 16) — Linux has no `GetProcessTimes`
+/// analogue, so this reads `/proc/self/stat` via the same helper
+/// `challenge_unix` already exposes for reading a PEER's start time.
+#[cfg(target_os = "linux")]
+fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
+    Ok((std::process::id(), crate::challenge_unix::self_start_ticks()?))
 }
 
 /// Truncate `detail` to fit within [`wire::MAX_SUPERVISOR_STRING_LEN`]
@@ -665,7 +775,95 @@ fn leg_was_stable(state_dir: &Path, voyage_id: &str) -> bool {
 // child of a console-less parent otherwise gets a brand-new console, which
 // the user's default terminal adopts as a stray window. `run`'s ConPTY is a
 // separate OS object for the agent child; its own stdio stays inherited.
+// Windows only: no Unix analogue exists, or is needed — the producer's own
+// `setsid` (ADR 0043 decision 14) is the whole detachment there.
+#[cfg(windows)]
 const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+/// ADR 0043 decision 21: the fixed fd number `--parent-lease-fd` names —
+/// `build_run_command`'s own `pre_exec` installs the lease's read end
+/// here, in the CHILD, via `dup2` (or, in the one case where the read end
+/// already IS this fd, by clearing `CLOEXEC` on it directly with
+/// `fcntl`, since `dup2(fd, fd)` is specified as a no-op that would leave
+/// the flag set and the lease would close at `exec`). Matches
+/// `bin/sot-capsule.rs`'s own `run` arm parser.
+#[cfg(target_os = "linux")]
+const PARENT_LEASE_FD: std::os::fd::RawFd = 3;
+
+/// The parent-death lease handed to ONE freshly spawned leg (ADR 0043
+/// decisions 15/21) — per platform, since the mechanism differs: Windows
+/// passes the lease's own kernel-object NAME as a CLI argument (cheap to
+/// clone per spawn); Linux passes an owned, dup'd read-end fd that
+/// [`build_run_command`]'s own `pre_exec` installs at a fixed number in
+/// the child. Produced fresh for EACH spawn by [`LegLease::for_spawn`] —
+/// the supervisor's own [`LegLease`] is held once, for this process's
+/// whole life; this is what it hands to every leg spawned from it.
+#[cfg(windows)]
+struct SpawnLease(String);
+#[cfg(target_os = "linux")]
+struct SpawnLease(std::os::fd::OwnedFd);
+
+/// The supervisor's own held parent-death lease — created ONCE, at
+/// startup, and kept for this process's whole life (ADR 0043 decisions
+/// 15/21). Windows: exactly today's named, owned mutex. Linux: a
+/// `pipe2(O_CLOEXEC)` — this process holds the WRITE end for its whole
+/// life and NEVER writes to it (the read end going broken/closed, from
+/// this end's own perspective, is never observed by this process at all;
+/// it is the LEG's own signal, read once, non-blocking, right after it
+/// acquires the writer fence — decision 15).
+#[cfg(windows)]
+struct LegLease {
+    name: String,
+    _lease: crate::lease::Lease,
+}
+#[cfg(target_os = "linux")]
+struct LegLease {
+    read: std::os::fd::OwnedFd,
+    _write: std::os::fd::OwnedFd,
+}
+
+impl LegLease {
+    #[cfg(windows)]
+    fn create(h: &str) -> std::io::Result<Self> {
+        let name = crate::lease::lease_name(h, std::process::id());
+        let _lease = crate::lease::create(&name)?;
+        Ok(Self { name, _lease })
+    }
+
+    /// `_h` is unused on Linux — the pipe is anonymous, unlike Windows'
+    /// named mutex, so there is nothing here for a state-dir hash to
+    /// scope; kept as a parameter so both platforms share one call site
+    /// in `supervise_inner`.
+    #[cfg(target_os = "linux")]
+    fn create(_h: &str) -> std::io::Result<Self> {
+        use std::os::fd::FromRawFd;
+        let mut fds = [0i32; 2];
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `pipe2` just returned two freshly opened, valid,
+        // uniquely-owned fds on success.
+        let read = unsafe { std::os::fd::OwnedFd::from_raw_fd(fds[0]) };
+        let write = unsafe { std::os::fd::OwnedFd::from_raw_fd(fds[1]) };
+        Ok(Self { read, _write: write })
+    }
+
+    /// A fresh handle for ONE spawn attempt — Windows clones the (cheap)
+    /// name string; Linux dups the read end, since the fd
+    /// `build_run_command`'s own `pre_exec` installs into the child is
+    /// consumed by THAT leg's own fd table, independent of every other
+    /// leg this same lease will ever be handed to.
+    fn for_spawn(&self) -> std::io::Result<SpawnLease> {
+        #[cfg(windows)]
+        {
+            Ok(SpawnLease(self.name.clone()))
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Ok(SpawnLease(self.read.try_clone()?))
+        }
+    }
+}
 
 // ADR 0042 slice L1a added `survival` as an 8th parameter (Codex review
 // finding 7) — matching this file's own existing precedent
@@ -679,7 +877,7 @@ fn build_run_command(
     voyage_id: &str,
     cols: u16,
     rows: u16,
-    lease_name: &str,
+    lease: &SpawnLease,
     survival: Survival,
     producer_argv: &[String],
 ) -> std::process::Command {
@@ -695,15 +893,51 @@ fn build_run_command(
         .arg("--cols")
         .arg(cols.to_string())
         .arg("--rows")
-        .arg(rows.to_string())
-        .arg("--parent-lease-name")
-        .arg(lease_name)
+        .arg(rows.to_string());
+    #[cfg(windows)]
+    {
+        command.arg("--parent-lease-name").arg(&lease.0);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // ADR 0043 decision 21: the read end reaches the leg as the
+        // FIXED fd `PARENT_LEASE_FD`, installed by this `pre_exec` --
+        // `Command` opens everything else `CLOEXEC` by default, so
+        // nothing but this one fd leaks into the child. Async-signal-
+        // safe only (this closure runs between `fork` and `exec`): every
+        // call below is.
+        use std::os::fd::AsRawFd;
+        let read_fd = lease.0.as_raw_fd();
+        command.arg("--parent-lease-fd").arg(PARENT_LEASE_FD.to_string());
+        unsafe {
+            command.pre_exec(move || {
+                if read_fd == PARENT_LEASE_FD {
+                    // `dup2(fd, fd)` is specified as a no-op that leaves
+                    // `FD_CLOEXEC` untouched -- exactly the one case
+                    // `dup2` below does NOT clear the flag for us, so it
+                    // is cleared directly here instead.
+                    let flags = libc::fcntl(read_fd, libc::F_GETFD);
+                    if flags < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::fcntl(read_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                } else if libc::dup2(read_fd, PARENT_LEASE_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    command
         .arg("--survival")
         .arg(survival_flag)
         .arg("--assume-no-rollback-target")
         .arg("--")
-        .args(producer_argv)
-        .creation_flags(DETACHED_PROCESS);
+        .args(producer_argv);
+    #[cfg(windows)]
+    command.creation_flags(DETACHED_PROCESS);
     command
 }
 
@@ -726,24 +960,24 @@ enum EndRunOutcome {
     /// acknowledged or merely PROBABLY delivered — it proves the
     /// leg's actual outcome independently either way), so a distinct
     /// variant carried no decision either site ever made differently.
-    Ended(ChallengedProcess),
+    Ended(Process),
 }
 
 /// ADR 0041 capability matrix's "healthy" row, and EndRun "invoked by the
 /// authority on its own behalf": challenge afresh, retain the handle,
 /// send `shutdown{reason}` on the SAME connection, and wait its ack.
 fn end_run_over_mgmt_lane(voyage_id: &str, reason: &str) -> crate::Result<EndRunOutcome> {
-    let conn = match pipe_win::connect_voyage_pipe_unchallenged(voyage_id) {
+    let conn = match PlatformEndpoint::connect_voyage_unchallenged(voyage_id) {
         Ok(c) => c,
-        Err(crate::transport::TransportError::Io { source, .. })
-            if source.kind() == std::io::ErrorKind::NotFound =>
-        {
+        // ADR 0043 decision 21: the ONE absence predicate, shared with
+        // Windows -- see `TransportError::is_endpoint_absent`'s own doc.
+        Err(e) if e.is_endpoint_absent() => {
             return Ok(EndRunOutcome::Absent);
         }
         Err(e) => return Err(e.into()),
     };
     let mut exchange = crate::exchange::VoyageMgmtExchange::default();
-    match challenge_win::challenge(&conn, &mut exchange, Instant::now() + END_RUN_CHALLENGE_BOUND) {
+    match PlatformEndpoint::challenge(&conn, &mut exchange, Instant::now() + END_RUN_CHALLENGE_BOUND) {
         ChallengeOutcome::Foreign => Ok(EndRunOutcome::Foreign),
         ChallengeOutcome::Undetermined => Ok(EndRunOutcome::Pending),
         ChallengeOutcome::Proven(process) => {
@@ -804,9 +1038,11 @@ enum WriterLiveness {
 /// (`Ambiguous`, fail-closed, exactly like every other undetermined
 /// case here); only a genuinely free fence reaches `Absent`.
 fn probe_writer_liveness(state_dir: &Path, voyage_id: &str) -> WriterLiveness {
-    let conn = match pipe_win::connect_voyage_pipe_unchallenged(voyage_id) {
+    let conn = match PlatformEndpoint::connect_voyage_unchallenged(voyage_id) {
         Ok(c) => c,
-        Err(crate::transport::TransportError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+        // ADR 0043 decision 21: the ONE absence predicate, shared with
+        // Windows -- see `TransportError::is_endpoint_absent`'s own doc.
+        Err(e) if e.is_endpoint_absent() => {
             let root = voyage_root_path(state_dir, voyage_id);
             return match fsutil::lock_writer(&root.join("writer.lock")) {
                 Ok(lock) => {
@@ -819,7 +1055,7 @@ fn probe_writer_liveness(state_dir: &Path, voyage_id: &str) -> WriterLiveness {
         Err(_) => return WriterLiveness::Ambiguous,
     };
     let mut exchange = crate::exchange::VoyageMgmtExchange::default();
-    match challenge_win::challenge(&conn, &mut exchange, Instant::now() + LIVENESS_PROBE_BUDGET) {
+    match PlatformEndpoint::challenge(&conn, &mut exchange, Instant::now() + LIVENESS_PROBE_BUDGET) {
         ChallengeOutcome::Proven(_) => WriterLiveness::Alive,
         ChallengeOutcome::Foreign | ChallengeOutcome::Undetermined => WriterLiveness::Ambiguous,
     }
@@ -875,7 +1111,7 @@ fn finish_end_run_with_process(
     op_id: Option<&str>,
     voyage_id: &str,
     epoch: Option<u64>,
-    process: ChallengedProcess,
+    process: Process,
     on_closed: Option<&mpsc::Sender<EndingProgress>>,
 ) -> crate::Result<EndRunReconciliation> {
     let confirmed_exit = match process.wait(SUPPORTED_HISTORY_BOUND + KILL_WAIT_BOUND) {
@@ -1170,10 +1406,10 @@ enum Lifecycle {
     Recovering { rx: mpsc::Receiver<RecoveryOutcome>, handle: JoinHandle<()>, started_at: Instant },
     /// The ONE initial placement decision (adopt if live, else consult
     /// the start-mode table).
-    InitialProbe { rx: mpsc::Receiver<ProbeOutcome<ChallengedProcess>>, handle: JoinHandle<()>, started_at: Instant },
+    InitialProbe { rx: mpsc::Receiver<ProbeOutcome<Process>>, handle: JoinHandle<()>, started_at: Instant },
     /// A fresh owned-spawn attempt in flight — every respawn reaches
     /// this, never `InitialProbe` again.
-    Spawning { rx: mpsc::Receiver<ProbeOutcome<ChallengedProcess>>, handle: JoinHandle<()>, started_at: Instant },
+    Spawning { rx: mpsc::Receiver<ProbeOutcome<Process>>, handle: JoinHandle<()>, started_at: Instant },
     /// A live leg. Stability is judged by [`leg_was_stable`] reading the
     /// leg's OWN recorded `producer_uptime_ms` (N1), never by a
     /// wall-clock `ready_at` this variant no longer carries — an
@@ -1181,7 +1417,7 @@ enum Lifecycle {
     /// own observation window, which a slow capsule teardown could
     /// inflate past the stability interval with nothing to do with how
     /// long the producer itself actually ran.
-    Ready { process: ChallengedProcess },
+    Ready { process: Process },
     /// An `end_run` is in flight. `pending_reply` is the connection
     /// awaiting the DEFERRED reply at `record_closed` (B3) — `None` once
     /// delivered, or if that connection disconnected first (fine: the
@@ -1295,7 +1531,7 @@ fn spawn_recovery(state_dir: PathBuf, mode: StartMode) -> (mpsc::Receiver<Recove
 fn spawn_initial_probe(
     voyage_id: String,
     voyage_root: PathBuf,
-) -> (mpsc::Receiver<ProbeOutcome<ChallengedProcess>>, JoinHandle<()>) {
+) -> (mpsc::Receiver<ProbeOutcome<Process>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
         let episode_deadline = Instant::now() + PROBE_EPISODE;
@@ -1315,15 +1551,19 @@ fn spawn_owned_spawn_attempt(
     voyage_id: String,
     cols: u16,
     rows: u16,
-    lease_name: String,
+    // ADR 0043 decision 21: owned, not borrowed -- moved into this
+    // thread (`OwnedFd: Send`) so the Linux lease's own fd stays open in
+    // THIS process for the whole `build_run_command`+`spawn` sequence
+    // the child's `pre_exec` needs it for.
+    lease: SpawnLease,
     survival: Survival,
     producer_argv: Vec<String>,
-) -> (mpsc::Receiver<ProbeOutcome<ChallengedProcess>>, JoinHandle<()>) {
+) -> (mpsc::Receiver<ProbeOutcome<Process>>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
         let readiness_cutoff = Instant::now() + READINESS_CUTOFF;
         let mut command =
-            build_run_command(&capsule_exe, &voyage_root, &voyage_id, cols, rows, &lease_name, survival, &producer_argv);
+            build_run_command(&capsule_exe, &voyage_root, &voyage_id, cols, rows, &lease, survival, &producer_argv);
         let outcome = classify::probe_owned_spawn(
             &RealProbeOps,
             &mut command,
@@ -1868,7 +2108,7 @@ struct Conn {
 /// rename/bootstrap/publish, needing nothing about the NEXT leg to
 /// spawn) — respawning after it completes happens later, in the main
 /// loop's own `Resetting -> Spawning` transition, which already has
-/// `capsule_exe`/`lease_name`/`config` in scope directly.
+/// `capsule_exe`/`lease`/`config` in scope directly.
 struct LaneCtx<'a> {
     authority: &'a mut AuthorityState,
     lifecycle: &'a mut Lifecycle,
@@ -1878,7 +2118,7 @@ struct LaneCtx<'a> {
 /// loop has died PERMANENTLY (`LaneEvent::AcceptError` — the
 /// transport's own doc: "stopped accepting new connections FOR GOOD"),
 /// which the caller treats as terminal.
-fn service_lane(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, ctx: &mut LaneCtx, now: Instant) -> bool {
+fn service_lane(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, ctx: &mut LaneCtx, now: Instant) -> bool {
     let mut accept_loop_dead = false;
     // N10 (Codex review round 3): bounded to LANE_EVENT_QUOTA per tick —
     // an earlier version drained the WHOLE channel unconditionally, so
@@ -1962,7 +2202,7 @@ fn service_lane(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, ctx: &mut 
 /// the event quota already stay queued, for free, in the transport's
 /// own bounded channel (backpressured, never dropped) — there was
 /// nothing left for a second, hand-rolled queue to do.
-fn handle_lane_bytes(lane: &PipeServer, conns: &mut HashMap<ConnId, Conn>, id: ConnId, bytes: &[u8], ctx: &mut LaneCtx, now: Instant) {
+fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId, bytes: &[u8], ctx: &mut LaneCtx, now: Instant) {
     let mut close_after = false;
     let mut pending: Option<PendingClose> = None;
     {
@@ -2120,7 +2360,7 @@ fn respawn_or_terminal(
     consecutive_unstable_legs: &mut u32,
     capsule_exe: &Path,
     config: &SuperviseConfig,
-    lease_name: &str,
+    lease: &LegLease,
     authority: &AuthorityState,
 ) -> Lifecycle {
     if *consecutive_unstable_legs >= FLAP_THRESHOLD {
@@ -2129,6 +2369,20 @@ fn respawn_or_terminal(
         );
         return Lifecycle::Terminal { detail: "the anti-flap bound was reached".into(), entered_at: Instant::now() };
     }
+    // ADR 0043 decision 21: a fresh handle for THIS spawn attempt --
+    // Windows clones the lease's own name (infallible); Linux dups the
+    // read end (an OS call, so genuinely fallible -- e.g. `EMFILE`),
+    // which this treats as Terminal rather than silently spawning a leg
+    // with no parent-death lease at all.
+    let spawn_lease = match lease.for_spawn() {
+        Ok(l) => l,
+        Err(e) => {
+            return Lifecycle::Terminal {
+                detail: bounded_detail(format!("could not prepare the parent-death lease for a fresh spawn: {e}")),
+                entered_at: Instant::now(),
+            };
+        }
+    };
     let voyage_id = authority.voyage_id.clone().expect("respawn is only reachable once voyage_id is Some");
     let voyage_root = voyage_root_path(&authority.state_dir, &voyage_id);
     let (rx, handle) = spawn_owned_spawn_attempt(
@@ -2137,7 +2391,7 @@ fn respawn_or_terminal(
         voyage_id,
         config.cols,
         config.rows,
-        lease_name.to_string(),
+        spawn_lease,
         config.survival,
         config.producer_argv.clone(),
     );
@@ -2145,6 +2399,22 @@ fn respawn_or_terminal(
 }
 
 fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
+    // ADR 0043 decision 21 (Codex review round, F2): SIGCHLD is SET to
+    // SIG_DFL here, as the very first thing this function does -- never
+    // merely assumed. Whatever launched this process (a daemon, a shell)
+    // may have inherited `SIG_IGN` across `exec`, which auto-reaps every
+    // child immediately and silently breaks the pid pin
+    // `SpawnedChild::from_child`'s own `pidfd_open` relies on (a reaped
+    // pid can be recycled before `pidfd_open` ever runs) -- reproduced.
+    // This process OWNS the disposition it depends on, the same line
+    // `producer_pty`'s own `spawn` already draws for its forked child.
+    #[cfg(target_os = "linux")]
+    {
+        if unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) } == libc::SIG_ERR {
+            return Err(crate::Error::Io(std::io::Error::last_os_error()));
+        }
+    }
+
     std::fs::create_dir_all(voyages_dir(&config.state_dir))?;
 
     // ONE AUTHORITY.
@@ -2169,7 +2439,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     let h = crate::state_dir::state_dir_hash(&config.state_dir);
 
     // The lane: bound AFTER the fence, BEFORE any adopt or spawn.
-    let lane = match PipeServer::bind_supervisor(&h, MAX_LANE_INSTANCES) {
+    let lane = match Lane::bind_supervisor(&h, MAX_LANE_INSTANCES) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("sot-capsule supervise: could not bind the supervisor lane: {e}");
@@ -2179,8 +2449,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
 
     // The parent-death lease: created ONCE, held for this process's
     // whole life.
-    let lease_name = crate::lease::lease_name(&h, std::process::id());
-    let _lease = match crate::lease::create(&lease_name) {
+    let lease = match LegLease::create(&h) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("sot-capsule supervise: could not create the parent-death lease: {e}");
@@ -2262,20 +2531,28 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     join_and_warn(handle, "initial probe");
                     let voyage_id = authority.voyage_id.clone().expect("set once Recovering completes");
                     match should_spawn_after_absent(&config.state_dir, &voyage_id, config.mode) {
-                        Ok(true) => {
-                            let voyage_root = voyage_root_path(&config.state_dir, &voyage_id);
-                            let (rx, handle) = spawn_owned_spawn_attempt(
-                                capsule_exe.clone(),
-                                voyage_root,
-                                voyage_id,
-                                config.cols,
-                                config.rows,
-                                lease_name.clone(),
-                                config.survival,
-                                config.producer_argv.clone(),
-                            );
-                            Lifecycle::Spawning { rx, handle, started_at: now }
-                        }
+                        Ok(true) => match lease.for_spawn() {
+                            Ok(spawn_lease) => {
+                                let voyage_root = voyage_root_path(&config.state_dir, &voyage_id);
+                                let (rx, handle) = spawn_owned_spawn_attempt(
+                                    capsule_exe.clone(),
+                                    voyage_root,
+                                    voyage_id,
+                                    config.cols,
+                                    config.rows,
+                                    spawn_lease,
+                                    config.survival,
+                                    config.producer_argv.clone(),
+                                );
+                                Lifecycle::Spawning { rx, handle, started_at: now }
+                            }
+                            Err(e) => Lifecycle::Terminal {
+                                detail: bounded_detail(format!(
+                                    "could not prepare the parent-death lease for a fresh spawn: {e}"
+                                )),
+                                entered_at: now,
+                            },
+                        },
                         Ok(false) => Lifecycle::EndedNoRespawn,
                         Err(e) => Lifecycle::Terminal {
                             detail: bounded_detail(format!("should_spawn_after_absent: {e}")),
@@ -2332,7 +2609,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     eprintln!(
                         "sot-capsule supervise: leg failed to spawn: {e} (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}"
                     );
-                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease_name, &authority)
+                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
                 }
                 Ok(ProbeOutcome::KilledAfterTimeout | ProbeOutcome::LegEnded) => {
                     join_and_warn(handle, "spawn");
@@ -2340,7 +2617,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     eprintln!(
                         "sot-capsule supervise: leg ended before reaching Ready (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}"
                     );
-                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease_name, &authority)
+                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
                 }
                 Ok(ProbeOutcome::Foreign) => {
                     // Codex review round 2, finding M8: identity-
@@ -2397,7 +2674,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     eprintln!(
                         "sot-capsule supervise: leg ended (unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
                     );
-                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease_name, &authority)
+                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
                 }
                 Ok(false) => Lifecycle::Ready { process },
                 Err(e) => Lifecycle::Terminal {
@@ -2440,7 +2717,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     eprintln!(
                         "sot-capsule supervise: leg ended (end_run not durably accepted; unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
                     );
-                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease_name, &authority)
+                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
                 }
                 Ok(EndingProgress::Final(EndRunWorkerResult::Fatal(detail))) => {
                     join_and_warn(handle, "end_run");
@@ -2472,18 +2749,28 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     // Spawn IMMEDIATELY for the new voyage, never an
                     // adopt-only probe first: the freshly-minted voyage
                     // is definitely empty.
-                    let voyage_root = voyage_root_path(&config.state_dir, &new_voyage);
-                    let (rx, handle) = spawn_owned_spawn_attempt(
-                        capsule_exe.clone(),
-                        voyage_root,
-                        new_voyage,
-                        config.cols,
-                        config.rows,
-                        lease_name.clone(),
-                        config.survival,
-                        config.producer_argv.clone(),
-                    );
-                    Lifecycle::Spawning { rx, handle, started_at: now }
+                    match lease.for_spawn() {
+                        Ok(spawn_lease) => {
+                            let voyage_root = voyage_root_path(&config.state_dir, &new_voyage);
+                            let (rx, handle) = spawn_owned_spawn_attempt(
+                                capsule_exe.clone(),
+                                voyage_root,
+                                new_voyage,
+                                config.cols,
+                                config.rows,
+                                spawn_lease,
+                                config.survival,
+                                config.producer_argv.clone(),
+                            );
+                            Lifecycle::Spawning { rx, handle, started_at: now }
+                        }
+                        Err(e) => Lifecycle::Terminal {
+                            detail: bounded_detail(format!(
+                                "could not prepare the parent-death lease for a fresh spawn: {e}"
+                            )),
+                            entered_at: now,
+                        },
+                    }
                 }
                 Ok(ResetWorkerResult::Fatal(detail)) => {
                     join_and_warn(handle, "reset");
@@ -3005,8 +3292,8 @@ mod tests {
     /// the worker while jumping straight to Terminal" (N4, Codex review
     /// round 3: `stop` no longer uses this at all — only `force_terminal`
     /// does now). Constructing a real `Ready` variant needs a live,
-    /// OS-proven `ChallengedProcess` this unit test has no safe way to
-    /// fabricate (see `tests/supervisor_win.rs` for that half, exercised
+    /// OS-proven `Process` this unit test has no safe way to
+    /// fabricate (see `tests/supervisor.rs` for that half, exercised
     /// end-to-end against a real process); the worker-bearing states are
     /// what this function actually exists for and are fully exercisable
     /// here.

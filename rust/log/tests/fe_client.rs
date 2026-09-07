@@ -1,13 +1,14 @@
-#![cfg(windows)]
-//! ADR 0041 step 6 U3: real cross-process integration tests for
+#![cfg(any(windows, target_os = "linux"))]
+//! ADR 0041 step 6 U3 (ADR 0043 decisions 20/21 for the Linux half):
+//! real cross-process integration tests for
 //! `sot_log::fe_client_io::FeAttachClient` — the FE attach-only client,
 //! driven exactly the way the real frontend drives it, against a REAL
-//! `sot-capsule supervise` and a REAL capsule leg. `tests/supervisor_win.rs`
+//! `sot-capsule supervise` and a REAL capsule leg. `tests/supervisor.rs`
 //! already proves the supervisor's OWN lifecycle wiring across a real
 //! process boundary; what THIS file adds is proof the CLIENT's own six
 //! rulings (`fe_client`'s pure state machines) hold when driven by a real
-//! reconnect-classified episode loop against real named pipes, not merely
-//! scripted inputs.
+//! reconnect-classified episode loop against real named pipes/Unix
+//! domain sockets, not merely scripted inputs.
 //!
 //! One case per acceptance-matrix row named in the U3 unit: attach as a
 //! watcher and receive the checkpoint; first input takes the pen and the
@@ -24,8 +25,8 @@
 //! this file does not attempt to inject a clock into a live worker
 //! thread, unlike `fe_client`'s own unit tests.
 
+use sot_log::client::{Endpoint, PlatformEndpoint};
 use sot_log::fe_client_io::FeAttachClient;
-use sot_log::pipe_win::{connect_voyage_pipe, PipeClient};
 use sot_log::segment::SegmentReader;
 use sot_log::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
@@ -39,8 +40,59 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// L1-unix LU3c: the lane's own client type, chosen once — see
+/// `tests/supervisor.rs`'s identical alias for why this replaces
+/// `sot_log::pipe_win::PipeClient` (Windows-only, as this whole file used
+/// to be).
+type Client = <PlatformEndpoint as Endpoint>::Client;
+
+/// An interactive shell on its pty stays open until EndRun, on both
+/// platforms — mirrors `tests/supervisor.rs`'s identical `SHELL` const.
+#[cfg(windows)]
+const SHELL: &[&str] = &["cmd.exe"];
+#[cfg(target_os = "linux")]
+const SHELL: &[&str] = &["/bin/sh"];
+
+/// Points `SOT_RUNTIME_DIR` at a fresh, mode-0700 tempdir under `/tmp`
+/// for the lifetime of the returned guard — mirrors `tests/supervisor.rs`
+/// identical helper (see its own doc). A no-op on Windows.
+#[cfg(target_os = "linux")]
+struct RuntimeDirGuard {
+    _tmp: tempfile::TempDir,
+}
+#[cfg(target_os = "linux")]
+fn isolated_runtime_dir() -> RuntimeDirGuard {
+    let tmp = tempfile::Builder::new()
+        .prefix("sot-t")
+        .tempdir_in("/tmp")
+        .expect("tempdir under /tmp");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::env::set_var("SOT_RUNTIME_DIR", tmp.path());
+    RuntimeDirGuard { _tmp: tmp }
+}
+#[cfg(windows)]
+struct RuntimeDirGuard;
+#[cfg(windows)]
+fn isolated_runtime_dir() -> RuntimeDirGuard {
+    RuntimeDirGuard
+}
+
+/// The voyage mgmt lane's own unchallenged connect, per platform —
+/// mirrors `tests/supervisor.rs`'s identical helper.
+#[cfg(windows)]
+fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::transport::TransportError> {
+    sot_log::pipe_win::connect_voyage_pipe(voyage_id)
+}
+#[cfg(target_os = "linux")]
+fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::transport::TransportError> {
+    sot_log::socket_unix::connect_voyage_socket(voyage_id)
+}
+
 /// Real-process tests are SERIALIZED (same reason and mechanism as
-/// `supervisor_win`'s `SERIAL`): each spawns a supervisor, a capsule and a
+/// `tests/supervisor.rs`'s `SERIAL`): each spawns a supervisor, a capsule and a
 /// shell, and a two-core runner is the shared resource.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -52,7 +104,7 @@ fn capsule_exe() -> PathBuf {
 }
 
 /// Reaps a spawned child on every exit path (a panicking assertion
-/// included) — identical shape to `tests/supervisor_win.rs`'s own guard.
+/// included) — identical shape to `tests/supervisor.rs`'s own guard.
 /// Codex review round, finding 14: the wait after `kill()` is bounded by
 /// the SAME `poll_until` every other wait in this file uses, rather than
 /// an unbounded `Child::wait()` — a `Drop` that could itself hang would
@@ -103,8 +155,8 @@ fn wait_for_exit(mut child: Child, timeout: Duration) -> std::process::ExitStatu
 }
 
 /// Bounded poll for the lane to accept a connection AND answer the
-/// challenge — `tests/supervisor_win.rs`'s own helper of the same name.
-fn wait_for_lane(h: &str, timeout: Duration) -> PipeClient {
+/// challenge — `tests/supervisor.rs`'s own helper of the same name.
+fn wait_for_lane(h: &str, timeout: Duration) -> Client {
     poll_until(
         || connect_and_challenge_for_test(h).ok().map(|(conn, _process)| conn),
         timeout,
@@ -112,7 +164,7 @@ fn wait_for_lane(h: &str, timeout: Duration) -> PipeClient {
     )
 }
 
-fn status(conn: &PipeClient) -> (Option<String>, Option<u64>, SupervisorPhase) {
+fn status(conn: &Client) -> (Option<String>, Option<u64>, SupervisorPhase) {
     match request_for_test(conn, &SupervisorRequest::Status, Instant::now() + Duration::from_secs(5)).expect("status") {
         SupervisorReply::StatusOk { voyage, leg, phase, .. } => (voyage, leg, phase),
         other => panic!("expected StatusOk, got {other:?}"),
@@ -120,11 +172,11 @@ fn status(conn: &PipeClient) -> (Option<String>, Option<u64>, SupervisorPhase) {
 }
 
 /// As [`status`], but never panics — `Err`'s own text names what went
-/// wrong. Mirrors `tests/supervisor_win.rs`'s own helper of the same
+/// wrong. Mirrors `tests/supervisor.rs`'s own helper of the same
 /// name (this crate's leaf-helper-duplication convention). Used only
 /// where a connection MAY legitimately be gone (a diagnostic path that
 /// must not itself panic and hide the real failure).
-fn try_status(conn: &PipeClient) -> Result<(Option<String>, Option<u64>, SupervisorPhase), String> {
+fn try_status(conn: &Client) -> Result<(Option<String>, Option<u64>, SupervisorPhase), String> {
     match request_for_test(conn, &SupervisorRequest::Status, Instant::now() + Duration::from_secs(5)) {
         Ok(SupervisorReply::StatusOk { voyage, leg, phase, .. }) => Ok((voyage, leg, phase)),
         Ok(other) => Err(format!("expected StatusOk, got {other:?}")),
@@ -132,7 +184,7 @@ fn try_status(conn: &PipeClient) -> Result<(Option<String>, Option<u64>, Supervi
     }
 }
 
-fn wait_for_ready(conn: &PipeClient, timeout: Duration) -> (String, u64) {
+fn wait_for_ready(conn: &Client, timeout: Duration) -> (String, u64) {
     poll_until(
         || match status(conn) {
             (Some(voyage), Some(leg), SupervisorPhase::Ready) => Some((voyage, leg)),
@@ -143,7 +195,7 @@ fn wait_for_ready(conn: &PipeClient, timeout: Duration) -> (String, u64) {
     )
 }
 
-fn command(conn: &PipeClient, operation_id: &str, op: SupervisorOp) -> SupervisorOperationState {
+fn command(conn: &Client, operation_id: &str, op: SupervisorOp) -> SupervisorOperationState {
     match request_for_test(
         conn,
         &SupervisorRequest::Command { operation_id: operation_id.to_string(), op },
@@ -156,14 +208,14 @@ fn command(conn: &PipeClient, operation_id: &str, op: SupervisorOp) -> Superviso
     }
 }
 
-/// One bounded, cancellable `PipeClient::read` — Codex review round,
+/// One bounded, cancellable `Client::read` — Codex review round,
 /// finding 14: mirrors `tests/e2e_pipe.rs`'s own `read_bounded` (the
 /// `sot_log::deadline` module this pattern is built on is crate-private,
 /// unreachable from an external `tests/*.rs` binary, so this file keeps
 /// its own copy of the idiom rather than the machinery). Spawns a worker
-/// thread that owns the actual blocking read; `PipeClient::cancel`,
+/// thread that owns the actual blocking read; `Client::cancel`,
 /// called from THIS thread, unblocks it from another thread.
-fn read_bounded(conn: &Arc<PipeClient>, label: &'static str, timeout: Duration) -> Vec<u8> {
+fn read_bounded(conn: &Arc<Client>, label: &'static str, timeout: Duration) -> Vec<u8> {
     let (tx, rx) = std::sync::mpsc::channel();
     let worker_conn = Arc::clone(conn);
     let jh = std::thread::spawn(move || {
@@ -190,7 +242,7 @@ fn read_bounded(conn: &Arc<PipeClient>, label: &'static str, timeout: Duration) 
 /// unrelated probe/status connections freely alongside an already-attached
 /// watcher (this test's own `FeAttachClient`), per step 5's design.
 fn capsule_pid(voyage: &str) -> u32 {
-    let conn = Arc::new(connect_voyage_pipe(voyage).expect("connect voyage pipe for mgmt status"));
+    let conn = Arc::new(connect_voyage_mgmt(voyage).expect("connect voyage mgmt lane for status"));
     let bytes = sot_log::wire::encode_mgmt_request(&MgmtRequest::Status).unwrap();
     conn.write_all(&bytes).unwrap();
     let mut splitter = sot_log::wire::FrameSplitter::new();
@@ -209,16 +261,26 @@ fn capsule_pid(voyage: &str) -> u32 {
 
 /// Forcefully terminates a process by pid — the honest hard-termination
 /// fallback this test uses to simulate "the capsule is killed" (ADR 0041:
-/// "the honest fallback is hard termination"), via the same OS tool a real
-/// operator would reach for. `/T` also kills any child tree, matching the
-/// capsule's own containment job semantics (nothing should be left
-/// dangling for the test's own cleanup to trip over).
+/// "the honest fallback is hard termination"), via the same OS tool/call
+/// a real operator would reach for. Windows: `taskkill.exe /T` also kills
+/// any child tree, matching the capsule's own containment job semantics
+/// (nothing should be left dangling for the test's own cleanup to trip
+/// over) -- Linux has no job object to mirror that with here (the
+/// capsule's own kill DOMAIN is the process group, `killpg`, which this
+/// test does not need: `SIGKILL` on the leader alone is exactly "the
+/// capsule is killed", the scenario this simulates).
+#[cfg(windows)]
 fn taskkill(pid: u32) {
     let out = Command::new("taskkill.exe")
         .args(["/PID", &pid.to_string(), "/F", "/T"])
         .output()
         .expect("run taskkill.exe");
     assert!(out.status.success(), "taskkill failed for pid {pid}: {out:?}");
+}
+#[cfg(target_os = "linux")]
+fn taskkill(pid: u32) {
+    let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    assert_eq!(rc, 0, "kill(SIGKILL) failed for pid {pid}: {}", std::io::Error::last_os_error());
 }
 
 fn screen_text(screen: &vt100_ctt::Screen) -> String {
@@ -283,7 +345,7 @@ fn sealed_frames(state_dir: &Path, voyage: &str) -> Vec<sot_log::envelope::Envel
     out
 }
 
-fn query(conn: &PipeClient, operation_id: &str) -> SupervisorOperationState {
+fn query(conn: &Client, operation_id: &str) -> SupervisorOperationState {
     match request_for_test(
         conn,
         &SupervisorRequest::Query { operation_id: operation_id.to_string() },
@@ -296,13 +358,13 @@ fn query(conn: &PipeClient, operation_id: &str) -> SupervisorOperationState {
     }
 }
 
-/// Ends the run cleanly (mirrors `tests/supervisor_win.rs`'s own
+/// Ends the run cleanly (mirrors `tests/supervisor.rs`'s own
 /// `end_run_and_expect_record_closed` + `poll_to_terminal` composition)
 /// so the voyage is durably SEALED before `sealed_frames` reads it — an
 /// in-progress segment's frames are written with `Commit::Immediate` but
 /// this file only ever reads the same way every other test in this crate
 /// does: after a clean shutdown.
-fn end_run_and_wait_verified(conn: &PipeClient, voyage: &str) {
+fn end_run_and_wait_verified(conn: &Client, voyage: &str) {
     let op_id = "test-teardown-end-run";
     let reply = command(conn, op_id, SupervisorOp::EndRun { reason: "test teardown".into(), voyage: voyage.to_string() });
     assert_eq!(reply, SupervisorOperationState::RecordClosed);
@@ -324,12 +386,13 @@ fn end_run_and_wait_verified(conn: &PipeClient, voyage: &str) {
 #[test]
 fn attach_as_watcher_receives_the_checkpoint() {
     let _serial = serial();
+    let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", &["cmd.exe"]);
+    let child = spawn_supervisor(&state_dir, "--start", SHELL);
     let mut guard = KillGuard(Some(child));
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
@@ -364,12 +427,13 @@ fn attach_as_watcher_receives_the_checkpoint() {
 #[test]
 fn first_input_takes_the_pen_and_resize_precedes_the_flush() {
     let _serial = serial();
+    let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", &["cmd.exe"]);
+    let child = spawn_supervisor(&state_dir, "--start", SHELL);
     let mut guard = KillGuard(Some(child));
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
@@ -460,12 +524,13 @@ fn first_input_takes_the_pen_and_resize_precedes_the_flush() {
 #[test]
 fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
     let _serial = serial();
+    let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", &["cmd.exe"]);
+    let child = spawn_supervisor(&state_dir, "--start", SHELL);
     let mut guard = KillGuard(Some(child));
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (_voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
@@ -567,12 +632,13 @@ fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
 #[test]
 fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkpoint() {
     let _serial = serial();
+    let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", &["cmd.exe"]);
+    let child = spawn_supervisor(&state_dir, "--start", SHELL);
     let mut guard1 = KillGuard(Some(child));
     let conn1 = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn1, Duration::from_secs(90));
@@ -618,7 +684,7 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkp
     // A fresh supervisor, `--resume` against the SAME state dir: no live
     // capsule survives to adopt, so it spawns a fresh leg under the SAME
     // (already-published, unchanged) voyage pointer.
-    let child2 = spawn_supervisor(&state_dir, "--resume", &["cmd.exe"]);
+    let child2 = spawn_supervisor(&state_dir, "--resume", SHELL);
     let mut guard2 = KillGuard(Some(child2));
     let conn2 = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage2, _leg2) = wait_for_ready(&conn2, Duration::from_secs(90));
