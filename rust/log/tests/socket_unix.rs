@@ -110,7 +110,17 @@ struct RuntimeDirGuard {
 }
 
 fn isolated_runtime_dir() -> RuntimeDirGuard {
-    let tmp = tempfile::tempdir().expect("tempdir");
+    // `tempdir_in("/tmp")`, never the default `$TMPDIR`: on the macOS CI
+    // runner `$TMPDIR` is `/var/folders/<xx>/<28 chars>/T/` (~56 bytes) and
+    // `sun_path` is only 104 there, so `<tmp>/.tmpXXXXXX/voyage-<uuid>.sock`
+    // overflowed and every isolated child died at `bind` with `PathTooLong`
+    // (PR #214's first CI run). Production runtime dirs are short
+    // (`/run/user/<uid>/sot`, `/tmp/sot-<uid>`); this keeps the TEST's
+    // socket paths inside the tightest platform bound.
+    let tmp = tempfile::Builder::new()
+        .prefix("sot-t")
+        .tempdir_in("/tmp")
+        .expect("tempdir under /tmp");
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
