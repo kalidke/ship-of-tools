@@ -25,11 +25,19 @@ use std::time::Duration;
 /// identical reason [`take_output`](Producer::take_output) requires: a
 /// value taken exactly once.
 pub struct ConptyProducer {
-    job: AnonymousJob,
-    process: PrimaryProcess,
-    pty: Option<Pseudoconsole>,
-    reader: Option<File>,
+    // FIELD ORDER IS LOAD-BEARING. Struct fields drop in declaration order,
+    // and this order reproduces what the loop's destructured locals did
+    // before LU2a (locals drop in reverse declaration order: writer, reader,
+    // pty, process, job): on an early-error unwind the input handle closes
+    // first, then the pseudoconsole, then the process handle, and the job —
+    // whose KILL_ON_JOB_CLOSE terminates the tree — goes LAST. Declaring
+    // `job` first would kill the producer before its input closed, changing
+    // the EOF-versus-forced-termination ordering on every error path.
     writer: File,
+    reader: Option<File>,
+    pty: Option<Pseudoconsole>,
+    process: PrimaryProcess,
+    job: AnonymousJob,
 }
 
 impl Producer for ConptyProducer {
@@ -54,11 +62,11 @@ impl Producer for ConptyProducer {
             detail: _,
         } = ConptySpawn::spawn(argv, cols, rows)?;
         Ok(Self {
-            job,
-            process,
-            pty: Some(pty),
-            reader: Some(reader),
             writer,
+            reader: Some(reader),
+            pty: Some(pty),
+            process,
+            job,
         })
     }
 

@@ -892,6 +892,14 @@ pub fn run<P: Producer>(
     commands: mpsc::Receiver<Command>,
     transport: &mut dyn Transport,
 ) -> Result<ExitSummary> {
+    // Until LU2b supplies a real `self_status` for this platform, refuse
+    // BEFORE any durable side effect: without this, a non-Windows call would
+    // bind the transport, open a segment and commit `take_state`, and only
+    // then fail on `Unsupported` — an unsupported call must not change
+    // history. On Windows this is a no-op (the real `self_status` succeeds)
+    // and nothing about the Windows path moves.
+    #[cfg(not(windows))]
+    let _ = self_status(config.survival)?;
     // Resolve ONCE — see capsule_legacy.rs's identical comment on the same
     // call.
     let voyage_root = crate::fsutil::ensure_container(&config.voyage_root)?;
