@@ -156,7 +156,13 @@ _sot_windows_local_pipe() {
     command -v powershell.exe >/dev/null 2>&1 || return 1
     local daemon_exe="${SOTD_BIN:-}"
     if [ -z "$daemon_exe" ] || [ ! -f "$daemon_exe" ]; then
-        daemon_exe="${LOCALAPPDATA:-}/sot/bin/sotd.exe"
+        # The RUNNING daemon's own executable, wherever it lives (an
+        # installed %LOCALAPPDATA%\sot\bin\sotd.exe or a dev build under a
+        # checkout's target dir): ask the OS, not a fixed install path.
+        daemon_exe="$(powershell.exe -NoProfile -NonInteractive -Command \
+            "(Get-Process -Name sotd -ErrorAction SilentlyContinue | Select-Object -First 1).Path" 2>/dev/null \
+            | tr -d '\r' | head -n1)"
+        [ -n "$daemon_exe" ] || daemon_exe="${LOCALAPPDATA:-}/sot/bin/sotd.exe"
     fi
     [ -f "$daemon_exe" ] || return 1
     local raw
