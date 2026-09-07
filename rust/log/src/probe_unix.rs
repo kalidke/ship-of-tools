@@ -38,6 +38,12 @@ use std::time::{Duration, Instant};
 pub struct SpawnedChild {
     pid: libc::pid_t,
     pidfd: OwnedFd,
+    /// The child's start time on `CLOCK_BOOTTIME` ticks, read from `/proc`
+    /// ONCE, right after `spawn` — while the child is certainly still
+    /// there (alive, or an unreaped zombie whose `/proc` entry persists) —
+    /// so `identity()` never depends on the process still existing later,
+    /// the way the Windows twin reads creation time from the handle.
+    start_ticks: u64,
     reaped: Cell<bool>,
 }
 
@@ -50,10 +56,12 @@ impl SpawnedChild {
     /// was ever requested).
     fn from_child(child: std::process::Child) -> std::io::Result<Self> {
         let pid = child.id() as libc::pid_t;
-        match challenge_unix::pidfd_open(pid as u32) {
-            Ok(pidfd) => {
+        match challenge_unix::pidfd_open(pid as u32).and_then(|pidfd| {
+            challenge_unix::process_start_ticks(pid as u32).map(|start_ticks| (pidfd, start_ticks))
+        }) {
+            Ok((pidfd, start_ticks)) => {
                 drop(child);
-                Ok(Self { pid, pidfd, reaped: Cell::new(false) })
+                Ok(Self { pid, pidfd, start_ticks, reaped: Cell::new(false) })
             }
             Err(e) => {
                 // Could not get a pidfd to track this child at all — an
@@ -109,8 +117,7 @@ impl SpawnedChild {
     /// SpawnedChild::identity`'s own doc): the same start-time identity
     /// `challenge_unix` reports for a PEER.
     pub fn identity(&self) -> std::io::Result<(u32, u64)> {
-        let created = challenge_unix::process_start_ticks(self.pid as u32)?;
-        Ok((self.pid as u32, created))
+        Ok((self.pid as u32, self.start_ticks))
     }
 
     /// Reap exactly once (`reaped` guards a second call from re-reaping

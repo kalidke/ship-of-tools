@@ -555,9 +555,19 @@ impl ChallengedProcess {
         // child at all: `ECHILD` there is expected and ignored, exactly
         // like every other "not ours to reap" case this crate already
         // treats as success (`killpg`'s own `ESRCH`).
+        // Through the PIDFD, never the numeric pid: `waitid(P_PIDFD)` can
+        // only ever reap THIS process, whereas `waitpid(pid)` would reap
+        // whichever child of ours currently holds that number (a
+        // not-our-child peer reaped by its own parent, its pid recycled
+        // onto a child of ours, is the hazard).
+        let mut reap_info: libc::siginfo_t = unsafe { std::mem::zeroed() };
         unsafe {
-            let mut status: libc::c_int = 0;
-            libc::waitpid(self.pid as libc::pid_t, &mut status, libc::WNOHANG);
+            libc::waitid(
+                libc::P_PIDFD,
+                self.pidfd.as_raw_fd() as libc::id_t,
+                &mut reap_info,
+                libc::WEXITED | libc::WNOHANG,
+            );
         }
         result
     }
