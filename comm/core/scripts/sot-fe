@@ -695,7 +695,11 @@ send_pty_input() {
         origin_for_use="$( (eval "$("$SCRIPT_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null; printf '%s' "${NAME:-}") 2>/dev/null || true)"
         [ -n "$origin_for_use" ] || origin_for_use="sot-fe"
     fi
-    payload="$(jq -nc --arg w "$ws_id" --arg d "$data_b64" --argjson e "$enter" \
+    # MSYS2 argv-conversion guard: base64 can BEGIN with '/', which git-bash
+    # would rewrite into a Windows path under --arg — so the payload goes
+    # through sot_jq_rawfile like origin below.
+    local _data_file; _data_file="$(sot_jq_rawfile "$data_b64")" || exit 1
+    payload="$(jq -nc --arg w "$ws_id" --rawfile d "$_data_file" --argjson e "$enter" \
         '{workspace_id:$w, data_b64:$d, enter:$e}')"
     # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): origin is
     # free text (a comm handle or a user-set --origin) and must never reach
