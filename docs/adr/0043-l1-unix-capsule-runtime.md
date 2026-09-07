@@ -2,7 +2,7 @@
 
 **Status:** Proposed (2026-09-06; amended the same day after one Codex design
 round — twelve findings, every one discharged in the text below; LU1b's landed
-mechanism folded into decisions 1–3; the LU2 decisions 11–16 added 2026-09-07). Design pass for the lane series that makes
+mechanism folded into decisions 1–3; the LU2 decisions 11–16 and the LU3 decisions 17–20 added 2026-09-07). Design pass for the lane series that makes
 ADR 0042's rule — "the capsule is the default runtime for every NEW session on
 EVERY host" — true on the Linux backend hosts, where today every row is still
 a tmux row and no session leaves a Ship's Log record. Builds on ADR 0037 (P1:
@@ -394,6 +394,62 @@ Linux compiles the neutral loop for the first time, the legacy Linux file is ren
 `sot-pty-helper`, the inherited-fd lease, the Linux `self_status`, the Linux `run` arm on
 the unified loop with a `SocketTransport`, `e2e_socket.rs`, the portable tests ungated,
 the signal-death golden fixture, and the legacy file deleted.
+
+## Decisions for LU3 (the supervisor, the clients, `sot-capsule` on Unix) — added 2026-09-07
+
+The facts that size the lane: `supervisor.rs` is a portable state machine with about 280
+lines of Windows mechanism in eight functions; the neutral `ChallengeableConnection` is
+already the three-method client surface both `PipeClient` and `SocketClient` implement;
+production code matches on exactly one transport-error variant shape (`Io { source, .. }`
+with `NotFound` meaning "absent"); and `PipeServer`/`SocketServer` have identical public
+surfaces. So LU3 is three lanes, the first two provably behaviour-preserving on Windows.
+
+17. **One `TransportError`, one `Error::Transport`.** `PipeError` and `SocketError` merge
+    into `transport::TransportError`: the union of their variants with `Io { op, source }`
+    kept verbatim (the shape production matches on), `InvalidMaxInstances` folded into
+    `InvalidMaxConnections`, and the Unix-only `PathTooLong`/`RuntimeDir`/`Unsupported`
+    carried unconditionally (an enum variant costs nothing where it is never produced).
+    `Error::Pipe` and `Error::Socket` collapse into one ungated `Error::Transport(#[from])`.
+    Correction to decision 9: the landed `SocketError` has no `AlreadyBound` — decision 2
+    made endpoint ownership the lifetime lock's, so a stale entry is unlinked, never
+    refused; the union has none either.
+18. **Peer-flavoured names.** `SidAuthOutcome`/`SidAuthenticated`/`map_sid_auth_outcome`
+    become `PeerAuthOutcome`/`PeerAuthenticated`/`map_peer_auth_outcome` (on Linux the
+    check is `SO_PEERCRED.uid == geteuid()`, not a SID). Same shapes, eleven sites, all
+    inside `sot-log`.
+19. **Three seam traits, landed before any consumer uses them.**
+    `client::Client: Send + Sync { write_all, read, cancel }` over `TransportError` — the
+    exact six call sites in the crate; a blanket `impl<C: Client> ChallengeableConnection
+    for C` replaces the two hand-written `io::Result` façades (one mapping, not two).
+    `client::Endpoint { type Client: Client; type Process: PeerProcess;
+    connect_voyage_unchallenged(id); connect_supervisor_unchallenged(h);
+    challenge(&Client, &mut dyn IdentityExchange, Instant) -> ChallengeOutcome<Process>;
+    authenticate_server(&Client) -> PeerAuthOutcome }` with `PipeEndpoint` (Windows) and
+    `SocketEndpoint` (Linux), and `PeerProcess { pid, created, reverify, wait, terminate }`
+    — the methods both `ChallengedProcess` types share; the exit-status accessor stays
+    OUT of the trait because the platforms disagree on its type (decision 8), and the one
+    consumer that reads it is the daemon's `wait_and_classify` (LU4), which is where the
+    "exited, status unknown" tolerance lands — not in the supervisor.
+    `transport::LaneServer { bind_supervisor(h, max) -> Result<Self, TransportError>;
+    events; send; close; disconnect_listener; join_workers }` implemented by both servers
+    (identical surfaces today), so the supervisor's lane service takes a type parameter.
+20. **The lanes.** **LU3a** — decisions 17–19 with every consumer still on the concrete
+    types; Windows CI proves no behaviour change. **LU3b** — `fe_client_win.rs` →
+    `fe_client_io.rs` generic over `E: Endpoint` (twenty signatures, six method call
+    sites) with a per-platform alias so the frontend's single consumer changes one
+    path; `supervisor_client.rs` follows (it needs four things, three of them from
+    `fe_client_io` and `supervisor`). **LU3c** — `supervisor.rs` ungated and generic over
+    `LaneServer` + `Endpoint`; the eight mechanism functions ported (`self_pid_and_created`
+    → `(getpid, self_start_ticks)`; `build_run_command` → `--parent-lease-fd` with a
+    `pre_exec` `dup2` onto a fixed fd — `dup2` clears `CLOEXEC` on the copy, which is the
+    wanted effect — and no creation flags; the supervisor's `lease::create` →
+    `pipe2(O_CLOEXEC)` holding the write end for life; connect/challenge/end-run/liveness
+    via the `Endpoint`); `probe_unix::RealProbeOps` (the one genuinely new file — the
+    `ProbeOps` trait and `classify` are already neutral); `sot-capsule` collapses to two
+    `main`s with `claude` the only Linux-only subcommand; `supervisor_win.rs` and
+    `fe_client_win.rs` tests ungated with one `SHELL` constant and `kill(2)` in place of
+    `taskkill`. LU3c lands AFTER LU2b, whose `--parent-lease-fd` parser and `PtyProducer`
+    the spawned leg needs. `lease.rs` stays Windows-only; nothing in it is ported.
 
 ## What this deletes
 
