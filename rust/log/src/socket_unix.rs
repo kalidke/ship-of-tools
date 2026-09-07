@@ -95,6 +95,36 @@
 //! including the in-flight item, released only once the write physically
 //! completes.
 //!
+//! # Security: the runtime dir's ancestors are not trusted
+//!
+//! A private LEAF directory reached through a world-writable, non-sticky
+//! parent, or through a symlinked ancestor, would pass a by-PATH check
+//! (`is_private_dir`, `chmod`, `stat`) and still let a same-instant
+//! ancestor swap redirect every later by-path operation to an attacker's
+//! own directory. So after [`ensure_private_runtime_dir`]'s by-path
+//! pre-check (create-if-absent, or a first-pass verify), [`bind_named`]
+//! [`open`](libc::open)s the directory itself with `O_NOFOLLOW` and
+//! `fstat`s the resulting FD (real directory, owned by this uid,
+//! owner-only) — the check that actually counts. EVERY later filesystem
+//! step (the stale-unlink, the `bind`, the `chmod`+verify, and
+//! [`SocketServer::disconnect_listener`]'s own eventual unlink) is then
+//! anchored to THAT VERIFIED FD via `*at()` calls (`unlinkat`/`fchmodat`/
+//! `fstatat`), never a fresh by-path lookup that could re-walk a since-
+//! swapped ancestor. On Linux, even `bind(2)` itself goes through the
+//! anchored `/proc/self/fd/<dirfd>/<name>` path rather than the ordinary
+//! path string, for the identical reason; other Unix targets keep an
+//! ordinary by-path `bind` (macOS/BSD support here is experimental — see
+//! ADR 0043's own "Open for the maintainer" — so this document the
+//! narrower guarantee there rather than adding more platform-specific
+//! code to close it). What this does NOT defend: an attacker sharing this
+//! process's OWN uid (out of scope — the `is_private_dir`/`fstat`
+//! ownership check is exactly the boundary this crate draws), and a
+//! CLIENT that connects by the real path through an ancestor swapped
+//! AFTER `bind` returns — that client reaches whatever the swapped
+//! ancestor now resolves to, which is why LU1c's same-user challenge (not
+//! this module) is what a connecting client ultimately trusts, never a
+//! bare successful `connect()`.
+//!
 //! # Visibility
 //!
 //! Every type below is `pub`, not `pub(crate)` — `tests/socket_unix.rs` is
@@ -108,6 +138,7 @@ use crate::transport::{
     EVENTS_RETRY_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
 };
 use std::collections::HashMap;
+use std::ffi::{CStr, CString};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -323,20 +354,33 @@ struct ServerShared {
     reaper_tx: SyncSender<ReaperMsg>,
     events_tx: SyncSender<TransportEvent>,
     max_connections: u32,
-    /// Set exactly once, by [`SocketServer::disconnect_listener`] (which
-    /// `Drop::drop` always calls first) — the one escape for
-    /// [`send_lifecycle_event`]'s otherwise-indefinite retry loop. See
-    /// the module doc's "Two distinct 'stop' signals" section for why
-    /// this is a SEPARATE flag from `accept_stopping`.
+    /// TWO jobs, both won via `compare_exchange` (Codex review finding 1):
+    /// (a) the ONE escape for [`send_lifecycle_event`]'s otherwise-
+    /// indefinite retry loop once true (nothing could ever drain
+    /// `events()` again), and (b) the exactly-once latch on
+    /// [`SocketServer::disconnect_listener`]'s own unlink — a repeat call
+    /// (an explicit one, then `Drop`'s own; or two racing threads) must
+    /// unlink at most once, since a second unconditional unlink could
+    /// delete a REPLACEMENT server's endpoint bound at the same path
+    /// after this one tore down. See the module doc's "Two distinct
+    /// 'stop' signals" section for why this stays a SEPARATE flag from
+    /// `accept_stopping`.
     dropping: AtomicBool,
     /// The accept loop should stop (and, once observed, HAS stopped)
     /// accepting new connections — set by `disconnect_listener` OR by a
     /// persistent accept failure (`terminalize_accept_loop`). See the
     /// module doc.
     accept_stopping: AtomicBool,
-    /// This server's own socket path — unlinked exactly once, by
-    /// `disconnect_listener` (property 5).
-    path: PathBuf,
+    /// The verified runtime directory's own fd (module doc "Security"):
+    /// opened `O_NOFOLLOW`+`O_DIRECTORY`, `fstat`-verified, and kept open
+    /// for this server's whole life so every later `*at()` call (the
+    /// stale-unlink at bind time, and `disconnect_listener`'s own eventual
+    /// unlink) is anchored to THIS inode, never a fresh by-path lookup.
+    dir_fd: OwnedFd,
+    /// The socket's own file name (`voyage-<id>.sock` /
+    /// `supervisor-<h>.sock`) inside `dir_fd` — paired with it for every
+    /// `*at()` call. NUL-terminated once, up front, for reuse.
+    file_name: CString,
     /// Write end of the self-pipe the acceptor's `poll(2)` also watches;
     /// writing one byte wakes it without ever dialing the socket itself
     /// (no connect-to-self). Closed when `ServerShared` finally drops
@@ -398,11 +442,22 @@ impl SocketServer {
             .parent()
             .expect("a socket path built by socket_path() always has a parent (the runtime dir)");
         ensure_private_runtime_dir(dir)?;
+        // Module doc "Security": the by-path pre-check above is not the
+        // authoritative one. Open the directory itself `O_NOFOLLOW` and
+        // `fstat` the resulting fd -- keeping it open for this server's
+        // whole life so every later `*at()` call is anchored to THIS
+        // verified inode, never a fresh path lookup that could re-walk a
+        // since-swapped ancestor.
+        let dir_fd = open_verified_dir_fd(dir)?;
+        let file_name = path
+            .file_name()
+            .expect("a socket path built by socket_path() always has a file name");
+        let file_name = CString::new(file_name.as_bytes()).map_err(|_| SocketError::Io {
+            op: "CString::new(socket file name)",
+            source: io::Error::new(io::ErrorKind::InvalidInput, "socket file name contains a NUL byte"),
+        })?;
 
-        let listener = match create_and_bind_listener(&path, max_connections) {
-            Ok(l) => l,
-            Err(e) => return Err(e),
-        };
+        let listener = create_and_bind_listener(dir_fd.as_raw_fd(), &file_name, &path, max_connections)?;
 
         // The wake self-pipe (module doc: "the accept loop wakes via
         // poll(2) over a self-pipe"). O_NONBLOCK on both ends: the
@@ -425,7 +480,7 @@ impl SocketServer {
                 op: "pipe(wake)",
                 source: io::Error::last_os_error(),
             };
-            let _ = std::fs::remove_file(&path);
+            unsafe { libc::unlinkat(dir_fd.as_raw_fd(), file_name.as_ptr(), 0) };
             return Err(err);
         }
         // SAFETY: `pipe` just returned these two fds; each is valid,
@@ -438,7 +493,7 @@ impl SocketServer {
                     op: "fcntl(wake pipe)",
                     source: e,
                 };
-                let _ = std::fs::remove_file(&path);
+                unsafe { libc::unlinkat(dir_fd.as_raw_fd(), file_name.as_ptr(), 0) };
                 return Err(err);
             }
         }
@@ -455,7 +510,8 @@ impl SocketServer {
             max_connections,
             dropping: AtomicBool::new(false),
             accept_stopping: AtomicBool::new(false),
-            path: path.clone(),
+            dir_fd,
+            file_name,
             wake_write,
         });
 
@@ -472,7 +528,7 @@ impl SocketServer {
             }) {
             Ok(jh) => jh,
             Err(e) => {
-                let _ = std::fs::remove_file(&path);
+                unsafe { libc::unlinkat(shared.dir_fd.as_raw_fd(), shared.file_name.as_ptr(), 0) };
                 return Err(SocketError::Io {
                     op: "spawn reaper thread",
                     source: e,
@@ -491,7 +547,7 @@ impl SocketServer {
             Err(e) => {
                 let _ = shared.reaper_tx.send(ReaperMsg::Shutdown);
                 reaper_jh.join().ok();
-                let _ = std::fs::remove_file(&path);
+                unsafe { libc::unlinkat(shared.dir_fd.as_raw_fd(), shared.file_name.as_ptr(), 0) };
                 return Err(SocketError::Io {
                     op: "spawn accept thread",
                     source: e,
@@ -574,18 +630,38 @@ impl SocketServer {
 
     /// Phase one of teardown: make the socket NAME disappear AND issue
     /// cancellation to every worker — synchronous, no blocking join.
-    /// Latches [`ServerShared::dropping`] and
-    /// [`ServerShared::accept_stopping`] FIRST, unlinks this server's own
-    /// path (property 5, exactly once, first thing), wakes the accept
-    /// loop out of `poll(2)`, then `shutdown(SHUT_RDWR)`s every
-    /// currently-live connection's stream (property 12) and moves its
-    /// reader/writer threads into `detached_workers` for
-    /// [`Self::join_workers`] to join later. Idempotent — a second call
-    /// finds `conns` already empty and the path already unlinked.
+    /// [`ServerShared::dropping`]'s `compare_exchange` is the unlink's
+    /// EXACTLY-ONCE latch (Codex review finding 1, property 5): a second
+    /// call to this method — or `Drop`'s own call, always made after an
+    /// explicit one — must NOT unlink again, because by then a caller
+    /// could legitimately have bound a REPLACEMENT `SocketServer` at the
+    /// identical path (the same voyage's next leg, say), and a second
+    /// unconditional unlink would delete THAT server's endpoint instead
+    /// of this (already torn-down) one's. Unlinking is therefore anchored
+    /// via `unlinkat` to `dir_fd`/`file_name` (module doc "Security"),
+    /// never a fresh by-path lookup, and gated on actually WINNING the
+    /// `dropping` transition — every other step below stays unconditional
+    /// and idempotent, matching before: wake the accept loop out of
+    /// `poll(2)`, then `shutdown(SHUT_RDWR)` every currently-live
+    /// connection's stream (property 12) and move its reader/writer
+    /// threads into `detached_workers` for [`Self::join_workers`] to join
+    /// later.
     pub fn disconnect_listener(&mut self) {
-        self.shared.dropping.store(true, Ordering::Release);
+        let unlink_once = self
+            .shared
+            .dropping
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok();
         self.shared.accept_stopping.store(true, Ordering::Release);
-        let _ = std::fs::remove_file(&self.shared.path);
+        if unlink_once {
+            // SAFETY: `dir_fd` was opened, `O_NOFOLLOW`+`fstat`-verified,
+            // and kept open for this server's whole life; `unlinkat`
+            // removes only the entry named `file_name` inside THAT
+            // directory, never re-resolving any path.
+            unsafe {
+                libc::unlinkat(self.shared.dir_fd.as_raw_fd(), self.shared.file_name.as_ptr(), 0);
+            }
+        }
         let wake_byte = [0u8; 1];
         // A failed/short write here just means the acceptor will notice
         // `accept_stopping` on its NEXT ordinary wakeup instead of this
@@ -663,8 +739,12 @@ impl Drop for SocketServer {
 /// missing directory is created EXCLUSIVELY at mode `0700` (plain,
 /// non-`_all` `create` + `DirBuilderExt::mode` maps to one `mkdir(2)` —
 /// atomic, no window for a racing attacker to land a symlink in); a
-/// present one is verified via [`crate::state_dir::is_private_dir`]
-/// (lstat-based: real directory, owned by this uid, owner-only). Mirrors
+/// present one gets a by-PATH PRE-check via
+/// [`crate::state_dir::is_private_dir`] (lstat-based: real directory,
+/// owned by this uid, owner-only) — NOT the authoritative check (module
+/// doc "Security"): [`open_verified_dir_fd`], called immediately
+/// afterward, re-verifies the SAME properties against the actually-opened
+/// fd, which is what every later filesystem step is anchored to. Mirrors
 /// `rust/backend/src/paths.rs::secure_private_dir`'s own contract exactly
 /// (that function lives in a crate `sot-log` cannot depend on, so this is
 /// a small, deliberate, self-contained duplicate rather than a new
@@ -698,24 +778,94 @@ fn ensure_private_runtime_dir(dir: &Path) -> Result<(), SocketError> {
     }
 }
 
+/// Module doc "Security", the AUTHORITATIVE check: open `dir` with
+/// `O_NOFOLLOW`+`O_DIRECTORY` (a symlink leaf is rejected outright by the
+/// OS itself, `ELOOP`, before this function's own check ever runs) and
+/// `fstat` the resulting fd — real directory, owned by this uid,
+/// owner-only. `ensure_private_runtime_dir`'s own by-path check only
+/// APPROXIMATES this (a TOCTOU window exists between any by-path stat and
+/// a later by-path operation); this one is what every later `*at()` call
+/// in [`create_and_bind_listener`] and [`SocketServer::disconnect_listener`]
+/// is anchored to, so the fd is kept open for the whole server's life
+/// rather than closed once this check passes.
+fn open_verified_dir_fd(dir: &Path) -> Result<OwnedFd, SocketError> {
+    let c_dir = CString::new(dir.as_os_str().as_bytes()).map_err(|_| SocketError::Io {
+        op: "open(runtime dir)",
+        source: io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "runtime dir path contains a NUL byte",
+        ),
+    })?;
+    let raw = unsafe {
+        libc::open(
+            c_dir.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if raw < 0 {
+        return Err(SocketError::Io {
+            op: "open(runtime dir)",
+            source: io::Error::last_os_error(),
+        });
+    }
+    // SAFETY: `raw` is a freshly opened, valid, not-otherwise-owned fd.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::fstat(fd.as_raw_fd(), &mut st) };
+    if rc != 0 {
+        return Err(SocketError::Io {
+            op: "fstat(runtime dir fd)",
+            source: io::Error::last_os_error(),
+        });
+    }
+    if st.st_mode & libc::S_IFMT != libc::S_IFDIR
+        || st.st_uid != crate::state_dir::current_uid()
+        || st.st_mode & 0o077 != 0
+    {
+        return Err(SocketError::Io {
+            op: "verify runtime dir fd",
+            source: io::Error::other(
+                "the opened runtime dir fd is not a real, owner-only directory owned by this uid",
+            ),
+        });
+    }
+    Ok(fd)
+}
+
 /// ADR 0043 decision 2: the caller HOLDS the endpoint's lifetime lock, so
-/// a pre-existing socket file at `path` is stale by construction —
-/// unlinked, never probed. `libc::socket`/`bind`/`fchmod`+verify/`listen`
-/// in that exact order (ADR 0043 decision 3): `UnixListener::bind` alone
-/// would `bind` AND `listen` together, leaving a window where the socket
-/// exists (and, once `listen`ed, is connectable) before this transport
-/// has verified its own permissions — so the listener is built by hand
-/// from raw `libc` calls instead, and wrapped in a `UnixListener` only
-/// once `listen` has already run.
-fn create_and_bind_listener(path: &Path, max_connections: u32) -> Result<UnixListener, SocketError> {
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => {
+/// a pre-existing socket file named `file_name` inside `dir_fd` is stale
+/// by construction — unlinked via `unlinkat`, never probed. Module doc
+/// "Security": every filesystem step below is anchored to `dir_fd` — the
+/// ALREADY-VERIFIED directory fd [`open_verified_dir_fd`] returned, kept
+/// open for the server's whole life — via `unlinkat`/`fchmodat`/`fstatat`,
+/// never a fresh by-path lookup that could land in a since-swapped
+/// ancestor. On Linux, even `bind` itself goes through the anchored
+/// `/proc/self/fd/<dir_fd>/<file_name>` path (a magic symlink that always
+/// resolves against the FD's own identity, never re-walking `path`'s own
+/// ancestors) for the identical reason; other Unix targets bind by the
+/// ordinary `path` (a narrower, documented guarantee there — macOS/BSD
+/// support is experimental, ADR 0043's own "Open for the maintainer").
+/// `libc::socket`/`bind`/`fchmodat`+verify/`listen` in that exact order
+/// (ADR 0043 decision 3): `UnixListener::bind` alone would `bind` AND
+/// `listen` together, leaving a window where the socket exists (and,
+/// once `listen`ed, is connectable) before this transport has verified
+/// its own permissions — so the listener is built by hand from raw
+/// `libc` calls instead, and wrapped in a `UnixListener` only once
+/// `listen` has already run.
+fn create_and_bind_listener(
+    dir_fd: RawFd,
+    file_name: &CStr,
+    path: &Path,
+    max_connections: u32,
+) -> Result<UnixListener, SocketError> {
+    let rc = unsafe { libc::unlinkat(dir_fd, file_name.as_ptr(), 0) };
+    if rc != 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::NotFound {
             return Err(SocketError::Io {
-                op: "unlink(stale socket)",
-                source: e,
-            })
+                op: "unlinkat(stale socket)",
+                source: err,
+            });
         }
     }
 
@@ -741,12 +891,30 @@ fn create_and_bind_listener(path: &Path, max_connections: u32) -> Result<UnixLis
     #[cfg(target_os = "linux")]
     assert_domain_is_unix(fd.as_raw_fd());
 
-    let addr_bytes = path.as_os_str().as_bytes();
-    // `socket_path()` already enforced this same bound, but this function
-    // is reachable with any path a caller constructs directly (a future
-    // in-crate caller, or a test) -- so the property this module actually
-    // needs (a `sockaddr_un` that fits) is reasserted here rather than
-    // trusted from the one production call site.
+    // Whichever bind mechanism is used below, every future CLIENT's own
+    // `connect()` must still address this socket by the REAL path -- so
+    // ITS length is what must fit `sun_path`, independent of the (usually
+    // much shorter) `/proc/self/fd` bind trick's own length.
+    // `socket_path()` already enforces this for the production call
+    // sites; reasserted here since this function is reachable directly (a
+    // future in-crate caller, or a test).
+    if path.as_os_str().as_bytes().len() > max_sun_path_bytes() {
+        return Err(SocketError::PathTooLong(path.to_path_buf()));
+    }
+
+    #[cfg(target_os = "linux")]
+    let addr_bytes_owned = {
+        let mut v = format!("/proc/self/fd/{dir_fd}/").into_bytes();
+        v.extend_from_slice(file_name.to_bytes());
+        v
+    };
+    #[cfg(not(target_os = "linux"))]
+    let addr_bytes_owned = path.as_os_str().as_bytes().to_vec();
+    let addr_bytes = &addr_bytes_owned[..];
+    // Belt and braces: the mechanism-specific bytes actually handed to
+    // `bind` get their OWN reassertion too (on Linux this is a much
+    // shorter string than `path`'s own and will essentially never trip;
+    // on other Unix it's the identical check as above).
     if addr_bytes.len() > max_sun_path_bytes() {
         return Err(SocketError::PathTooLong(path.to_path_buf()));
     }
@@ -778,49 +946,48 @@ fn create_and_bind_listener(path: &Path, max_connections: u32) -> Result<UnixLis
         });
     }
 
-    // chmod 0600 and VERIFY before `listen` (ADR 0043 decision 3): no
-    // connection can exist before `listen` runs, so this closes the
-    // window completely rather than merely narrowing it.
-    //
-    // `fchmod` on the SOCKET FD itself, tried first, is a documented-as-
-    // unspecified operation for socket descriptors and was observed (this
-    // module's own test suite, real Linux) to be a silent no-op against a
-    // just-bound `AF_UNIX` socket -- the bound path's inode kept whatever
-    // mode `bind`'s own `mkdir`-equivalent gave it (umask-derived, e.g.
-    // 0755), never 0600. `chmod`-BY-PATH is the operation Linux actually
-    // documents as applying to a bound socket's special file, so that is
-    // what this uses; the window between `bind` (which creates the path
-    // at the umask-derived mode) and this call is still safe because the
-    // socket's PARENT directory is already owner-only 0700
-    // (`ensure_private_runtime_dir`, above) — no other user can even
-    // traverse into the directory to reach the path, file mode aside, and
-    // no connection can exist yet regardless since `listen` has not run.
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
-            SocketError::Io {
-                op: "chmod(socket)",
-                source: e,
-            }
-        })?;
+    // fchmodat 0600, then VERIFY via fstatat, BEFORE `listen` (ADR 0043
+    // decision 3): no connection can exist before `listen` runs, so this
+    // closes the window completely rather than merely narrowing it. Both
+    // anchored to `dir_fd`/`file_name` (module doc "Security"), never a
+    // fresh by-path lookup -- `fchmod` on the SOCKET FD ITSELF was tried
+    // first and observed (this module's own test suite, real Linux) to
+    // be a silent no-op against a just-bound `AF_UNIX` socket, which is
+    // why this goes through the `*at()` pair instead. Neither call passes
+    // `AT_SYMLINK_NOFOLLOW`: Linux's `fchmodat` does not implement that
+    // flag at all (`ENOTSUP`), and it is not load-bearing here regardless
+    // — the entry named `file_name` was JUST created by the `bind` call
+    // immediately above, inside a directory this module already verified
+    // is owner-only 0700, so nothing outside this same uid (out of scope,
+    // module doc "Security") could have replaced it with a symlink in the
+    // instant since.
+    let rc = unsafe { libc::fchmodat(dir_fd, file_name.as_ptr(), 0o600, 0) };
+    if rc != 0 {
+        return Err(SocketError::Io {
+            op: "fchmodat(socket)",
+            source: io::Error::last_os_error(),
+        });
     }
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        libc::fstatat(dir_fd, file_name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW)
+    };
+    if rc != 0 {
+        return Err(SocketError::Io {
+            op: "fstatat(socket)",
+            source: io::Error::last_os_error(),
+        });
+    }
+    if st.st_mode & libc::S_IFMT != libc::S_IFSOCK
+        || st.st_uid != crate::state_dir::current_uid()
+        || st.st_mode & 0o777 != 0o600
     {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let meta = std::fs::symlink_metadata(path).map_err(|e| SocketError::Io {
-            op: "stat(socket)",
-            source: e,
-        })?;
-        if meta.file_type().is_symlink()
-            || meta.uid() != crate::state_dir::current_uid()
-            || meta.permissions().mode() & 0o777 != 0o600
-        {
-            return Err(SocketError::Io {
-                op: "verify socket permissions",
-                source: io::Error::other(
-                    "socket file is not an owner-only (0600), non-symlink file after chmod",
-                ),
-            });
-        }
+        return Err(SocketError::Io {
+            op: "verify socket permissions",
+            source: io::Error::other(
+                "socket file is not an owner-only (0600) socket special file after fchmodat",
+            ),
+        });
     }
 
     let rc = unsafe { libc::listen(fd.as_raw_fd(), max_connections as libc::c_int) };
@@ -1226,15 +1393,52 @@ fn handle_new_connection(shared: &Arc<ServerShared>, stream: UnixStream) {
         }
     };
 
-    let conn = ConnHandle {
-        stream,
-        outbound,
-        sender: tx,
-        reader_jh,
-        writer_jh,
-        torn_down_requested,
-    };
-    shared.conns.lock().unwrap().insert(conn_id, conn);
+    // Codex review finding 2 (P2): registration must not be able to
+    // escape phase one of `disconnect_listener`. That method's own drain
+    // and this insert take the SAME `conns` lock, so whichever of the two
+    // threads acquires it first establishes a real happens-before order
+    // for `dropping` that a bare atomic load, on its own, cannot promise:
+    // if `disconnect_listener` locked first, its own `dropping` write is
+    // now certainly visible here (the lock's release-then-acquire is what
+    // provides that, not `dropping`'s own ordering in isolation) — refuse
+    // to register at all. If this insert locks FIRST instead,
+    // `disconnect_listener` — however soon after it next acquires the
+    // SAME lock — will find this connection already in `conns` and hand
+    // it a normal, correct teardown through `detached_workers`. There is
+    // no window where a connection is registered AFTER
+    // `disconnect_listener`'s own drain has already run and will never
+    // see it again — which is exactly the leak this check closes (an
+    // orphaned reader/writer pair neither joined by the reaper, since it
+    // was never registered, NOR by `join_workers`, since it never reached
+    // `detached_workers` either).
+    let mut conns = shared.conns.lock().unwrap();
+    if shared.dropping.load(Ordering::Acquire) {
+        drop(conns);
+        // Never touched the stream (still gated) -- `abort` makes both
+        // threads' own `wait_for_start` return `false` immediately, so
+        // joining them here (NOT through the reaper: neither was ever
+        // registered) is bounded and legal, the same as the writer-spawn-
+        // failure path above. `shutdown` first anyway, defensively, in
+        // case either thread is somehow already past the gate (it is
+        // not, by construction) -- costs nothing, removes any doubt.
+        unsafe { libc::shutdown(stream.as_raw_fd(), libc::SHUT_RDWR) };
+        gate.abort();
+        reader_jh.join().ok();
+        writer_jh.join().ok();
+        return; // no event: this connection was never told to exist.
+    }
+    conns.insert(
+        conn_id,
+        ConnHandle {
+            stream,
+            outbound,
+            sender: tx,
+            reader_jh,
+            writer_jh,
+            torn_down_requested,
+        },
+    );
+    drop(conns); // never hold this lock while sending on the events channel
     // RELIABLE, not best-effort: retries until the consumer actually has
     // room, so the gate below can never open onto a connection the
     // consumer was never told exists.

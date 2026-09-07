@@ -107,17 +107,27 @@ pub fn runtime_sot_dir() -> PathBuf {
 /// `SOT_RUNTIME_DIR` to every capsule and client it spawns, so they can
 /// never disagree with the daemon (or each other) about `$XDG_RUNTIME_DIR`
 /// the way two independently-launched processes' own [`runtime_sot_dir`]
-/// discovery could. A set `SOT_RUNTIME_DIR` is trusted only after it
-/// passes the SAME [`is_private_dir`] check `runtime_sot_dir`'s own
-/// discovery applies to its candidates — a stale or maliciously-set var
-/// pointing at a group/world-accessible or symlinked directory is a loud,
-/// named `PermissionDenied`, never a silent fallback to discovery (which
-/// would let a mismatched env var produce a silent SECOND endpoint no
-/// caller intended). Discovery ([`runtime_sot_dir`]) is only the fallback
-/// for a process started outside the daemon's tree.
+/// discovery could. A set `SOT_RUNTIME_DIR` is trusted only after it is
+/// ABSOLUTE (a relative one would resolve against whatever the CALLER's
+/// own current directory happens to be at the moment — a second, silent
+/// source of disagreement this propagation seam exists to remove, since
+/// `chdir` is per-process state the daemon cannot pin for everything it
+/// spawns) and passes the SAME [`is_private_dir`] check `runtime_sot_dir`'s
+/// own discovery applies to its candidates — a stale or maliciously-set
+/// var pointing at a group/world-accessible or symlinked directory is a
+/// loud, named error, never a silent fallback to discovery (which would
+/// let a mismatched env var produce a silent SECOND endpoint no caller
+/// intended). Discovery ([`runtime_sot_dir`]) is only the fallback for a
+/// process started outside the daemon's tree.
 pub fn runtime_dir() -> std::io::Result<PathBuf> {
     if let Some(dir) = std::env::var_os("SOT_RUNTIME_DIR") {
         let dir = PathBuf::from(dir);
+        if !dir.is_absolute() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "SOT_RUNTIME_DIR must be an absolute path",
+            ));
+        }
         return if is_private_dir(&dir) {
             Ok(dir)
         } else {
@@ -503,5 +513,23 @@ mod runtime_dir_tests {
         let _guard = guarded();
         std::env::remove_var("SOT_RUNTIME_DIR");
         assert_eq!(runtime_dir().unwrap(), super::runtime_sot_dir());
+    }
+
+    #[test]
+    fn a_relative_sot_runtime_dir_is_a_loud_invalid_input() {
+        // Codex round finding 4: a relative override resolves against
+        // whatever the CALLER's own current directory happens to be at
+        // the moment -- a second, silent source of disagreement this
+        // propagation seam exists to remove. Rejected before the
+        // private-dir check even runs (never a partial pass on some
+        // accidentally-private relative path).
+        let _guard = guarded();
+        std::env::set_var("SOT_RUNTIME_DIR", "relative/sot/dir");
+        let err = runtime_dir().unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("SOT_RUNTIME_DIR"),
+            "error should name the offending var: {err}"
+        );
     }
 }

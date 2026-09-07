@@ -188,6 +188,44 @@ fn accumulate_bytes(
     out
 }
 
+/// Floods `client` (already connected) with fixed-size chunks until its
+/// own kernel send buffer is full AND the SERVER's own reader has
+/// genuinely stopped draining it (because the events channel it feeds is
+/// itself full) — Codex review finding 6: OBSERVED, never assumed from a
+/// fixed sleep or a fixed connection count. `client` is set non-blocking;
+/// "`WouldBlock` for 500ms continuously (polled every 10ms)" is the
+/// criterion for "the reader is genuinely blocked on a full channel".
+/// Bounded by an overall 10s timeout so a genuine regression fails the
+/// test loudly rather than hanging it. `65_536` matches
+/// `socket_unix.rs`'s own (crate-private) `READ_BUF_LEN` — not
+/// importable from this integration-test crate, so duplicated as a
+/// literal, the same way this file's other tests already hardcode it
+/// (e.g. the `QueueFull`-flooding tests above).
+fn saturate_via_stalled_writer(client: &UnixStream) {
+    client.set_nonblocking(true).expect("set_nonblocking");
+    let payload = vec![0xEFu8; 65_536];
+    let overall_deadline = Instant::now() + Duration::from_secs(10);
+    let mut would_block_since: Option<Instant> = None;
+    loop {
+        assert!(
+            Instant::now() < overall_deadline,
+            "saturation (the events channel genuinely full, observed via a persistently \
+             WouldBlock-ing write) was not reached within 10s"
+        );
+        match (&*client).write(&payload) {
+            Ok(_) => would_block_since = None,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                let since = *would_block_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_millis(500) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("unexpected write error while saturating: {e}"),
+        }
+    }
+}
+
 /// One connect -> accept -> server-close -> confirmed-closed -> client
 /// drop cycle, used by the churn/leak test. `#[cfg(target_os = "linux")]`:
 /// its one caller is the `/proc/self/fd`-based leak test, itself gated
@@ -489,36 +527,19 @@ fn drop_returns_even_with_a_saturated_events_channel() {
     let _rt = isolated_runtime_dir();
     let id = fresh_voyage_id();
     let path = voyage_socket_path(&id).unwrap();
-    // `max_connections` doubles as this transport's `listen(2)` backlog
-    // (ADR 0043 decision 4's own wiring), UNLIKE a Windows named pipe's
-    // per-instance `ERROR_PIPE_BUSY`: a raw blocking `UnixStream::connect`
-    // to an `AF_UNIX` stream socket returns successfully the instant the
-    // kernel queues the completed handshake in the ACCEPT QUEUE, whether
-    // or not the server has called `accept()` yet, and only BLOCKS (with
-    // no std timeout available on this raw client) once that queue is
-    // full. Deliberately generous here (not the small `max_instances`
-    // pipe_win's own version of this test used) so all 200 churns queue
-    // and return without ever blocking this test's own thread, regardless
-    // of how few the accept loop's thread actually gets to register
-    // before its own `Accepted` delivery genuinely stalls against the
-    // never-drained channel -- which is the ONE thing under test here.
-    let server = SocketServer::bind(&id, 200).unwrap();
+    let server = SocketServer::bind(&id, 2).unwrap();
+    let client = UnixStream::connect(&path).unwrap();
+    let _conn_id = expect_accepted(&server, TIMEOUT);
 
-    // Churn connections without ever draining events() -- each one the
-    // accept loop actually registers queues at least Accepted +
-    // Closed(Eof), so a generous number of attempts guarantees the
-    // channel fills well past its capacity and the accept loop's own
-    // `send_lifecycle_event` retry is genuinely stuck by the time this
-    // loop ends.
-    for _ in 0..200 {
-        match UnixStream::connect(&path) {
-            Ok(client) => drop(client),
-            Err(_) => break, // tolerated, but not expected at this backlog size
-        }
-    }
+    // Never drain events() -- flood until the reader's own delivery
+    // retry loop is OBSERVED stalled (the events channel is genuinely
+    // full), not assumed from a fixed sleep or connection count (Codex
+    // review finding 6).
+    saturate_via_stalled_writer(&client);
 
     // Must return even though nobody ever drained events().
     drop(server);
+    drop(client);
 }
 
 /// Invalid voyage ids and out-of-range connection ceilings are rejected
@@ -710,42 +731,49 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
     let id = fresh_voyage_id();
     let path = voyage_socket_path(&id).unwrap();
     let server = SocketServer::bind(&id, 2).unwrap();
-    let mut client = UnixStream::connect(&path).unwrap();
+    let client = UnixStream::connect(&path).unwrap();
     let conn_id = expect_accepted(&server, TIMEOUT);
 
-    let flooder = std::thread::spawn(move || {
-        let payload = vec![0xEFu8; 65_536];
-        loop {
-            if client.write_all(&payload).is_err() {
-                return; // expected once the connection is torn down under it
-            }
-        }
-    });
+    // OBSERVE the stall (Codex review finding 6), rather than assuming it
+    // from a fixed sleep: flood until the reader's own delivery retry is
+    // genuinely stuck against the never-drained events channel.
+    saturate_via_stalled_writer(&client);
 
-    // Let the reader saturate the events channel and hit its abandon
-    // bound WITHOUT this test draining anything -- that stall is exactly
-    // what proves the guarantee (`socket_unix.rs`'s own
-    // `BYTES_ABANDON_AFTER` is 5s; wait well past it).
-    std::thread::sleep(Duration::from_secs(8));
+    // `BYTES_ABANDON_AFTER` (crate-private, 5s — not importable from this
+    // integration-test crate) + 1s AFTER the stall was OBSERVED above:
+    // long enough for the reader's own retry loop to have genuinely given
+    // up and force-closed the connection.
+    std::thread::sleep(Duration::from_secs(6));
 
-    let mut saw_closed = false;
+    // Drain everything queued; the LAST event must be the guaranteed
+    // Closed this abandonment produces -- every Bytes event this
+    // connection will ever produce was necessarily enqueued BEFORE the
+    // reader gave up (nothing more is ever sent for it afterward), so in
+    // FIFO delivery order Closed is the true tail, not merely "observed
+    // at some point".
+    let mut last: Option<TransportEvent> = None;
     let deadline = Instant::now() + TIMEOUT;
     while Instant::now() < deadline {
         match server.events().recv_timeout(Duration::from_secs(1)) {
-            Ok(TransportEvent::Closed(cid, _)) if cid == conn_id => {
-                saw_closed = true;
-                break;
-            }
-            Ok(_) => {}
+            Ok(evt) => last = Some(evt),
             Err(_) => break,
         }
     }
-    assert!(
-        saw_closed,
-        "expected a guaranteed Closed after Bytes abandonment"
-    );
+    match last {
+        Some(TransportEvent::Closed(cid, ClosedReason::Error(msg))) => {
+            assert_eq!(cid, conn_id, "Closed for the wrong connection");
+            assert!(
+                msg.contains("abandoned"),
+                "expected an abandonment message, got {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected the drained tail to be Closed(_, Error(msg containing \"abandoned\")), \
+             got {other:?}"
+        ),
+    }
 
-    let _ = flooder.join();
+    drop(client);
     drop(server);
 }
 
@@ -812,6 +840,28 @@ fn rival_bind_fails_while_held_and_succeeds_after_disconnect_listener() {
     server.disconnect_listener();
     UnixListener::bind(&path)
         .unwrap_or_else(|e| panic!("expected the freed name to bind again: {e}"));
+
+    // Codex review finding 1 (P1): `disconnect_listener` must unlink its
+    // OWN endpoint EXACTLY ONCE. Bind a REPLACEMENT `SocketServer` at the
+    // identical voyage id (as a real caller's next leg would), then drop
+    // the OLD (already torn-down) server — its `Drop` calls
+    // `disconnect_listener` again. If that second call unlinked
+    // unconditionally, it would delete the REPLACEMENT's endpoint out
+    // from under it: prove it did not by connecting a fresh client to the
+    // replacement and observing `Accepted`, and by confirming its socket
+    // file still exists.
+    let mut replacement = SocketServer::bind(&id, 2).unwrap();
+    drop(server);
+
+    let _client = UnixStream::connect(&path)
+        .unwrap_or_else(|e| panic!("replacement server should still accept connections: {e}"));
+    expect_accepted(&replacement, TIMEOUT);
+    assert!(
+        path.exists(),
+        "the replacement's own socket file must still exist after the old server's Drop"
+    );
+
+    replacement.disconnect_listener();
 }
 
 /// ADR 0043 decision 4: Unix cannot refuse a connection at connect time —
