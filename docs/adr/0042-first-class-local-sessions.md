@@ -425,12 +425,16 @@ semantics to a second kind of client. Six decisions:
 5. **Reach is the daemon's reach.** A session reaches the rows of every daemon it can
    connect to: the backend's rows from any frontend box (over that box's own tunnel; ADR 0028
    and `hosts.toml.example` forward toward the backend) and from backend sessions (the local
-   socket); a Windows box's LOCAL rows from sessions on that box, because its daemon listens
-   on loopback TCP (the launcher's `SOT_TCP_PORT`, 18743 by default — seen listening by a
-   capsule session there) and comm-lib's sender speaks tcp; the named-pipe transport is the
-   frontend's, not the CLI's. Nothing forwards a Windows box's loopback port outward, so its
-   local rows stay unreachable from the backend; L3 proxies over an existing connection and
-   creates no reverse route, so this is not the bridge's to fix and is not designed here.
+   socket); a Windows box's LOCAL rows from sessions on that box over the local daemon's
+   named pipe (`\\.\pipe\sot-<user>-local`, the ONLY endpoint `sot-local-daemon.ps1`
+   starts it on — the box's loopback `SOT_TCP_PORT` is the SSH tunnel to the backend, not a
+   local listener; corrected 2026-09-07 from a field report), which the comm scripts reach
+   through a `pipe:` endpoint kind driven by PowerShell's `NamedPipeClientStream` (git-bash
+   cannot open a named pipe itself) and discover the same way the launcher does, by asking
+   `sotd session-socket-path local`. No second listener and no port. Nothing forwards a
+   Windows box's pipe outward, so its local rows stay unreachable from the backend; L3
+   proxies over an existing connection and creates no reverse route, so this is not the
+   bridge's to fix and is not designed here.
 
 6. **Identity is attribution, not authentication.** The controller id is the caller's CLAIMED
    handle; hello's `client_id` is caller-supplied too (`server.rs`, `clients.register`), so
