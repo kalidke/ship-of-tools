@@ -21,6 +21,8 @@
 #   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>] [--origin <who>]
 #   sot-fe repl interrupt <workspace>              [--timeout <s>]
 #   sot-fe repl status [<workspace>]               [--timeout <s>]
+#   sot-fe type   <workspace> [<text>] [--stdin] [--enter] [--origin <who>] [--timeout <s>]
+#   sot-fe screen <workspace>                      [--timeout <s>]
 #
 #   preview  — switch the FE to <workspace>, Files mode, and preview <path>.
 #   reveal   — switch + reveal <path> in the file tree (cursor it, no preview).
@@ -75,6 +77,40 @@
 #              ps/ss archaeology — and note it distinguishes "cannot reach
 #              the daemon" from "the REPL is dead", which look identical from
 #              the outside and mislead in opposite directions.
+#   type     — a session types into a SIBLING row's pane, by workspace
+#              id/label/slug (ADR 0042 amendment, 2026-09-07): request/
+#              response (op pty.input), unlike pty.write (this connection's
+#              OWN pty, fire-and-forget — the LLM-pane drawer's keystroke
+#              path). Bytes are delivered LITERALLY to the row's own input
+#              path — a tmux row's `send-keys -l` (no key-name
+#              interpretation, ever) or a headless attach that takes a
+#              capsule row's pen ONLY long enough to type it, never resizing
+#              the pane. Text comes from the positional argument OR --stdin
+#              (a leading `/` in --stdin text survives git-bash's argv
+#              conversion this way); --enter appends the byte a terminal
+#              itself sends for Enter, applied by the DAEMON in a
+#              runtime-appropriate way (a literal CR on a capsule row, a
+#              separate send-keys Enter on a tmux row) — the text itself is
+#              NEVER altered to carry it. --origin <who> names the
+#              controller for the record's own controller-actor frames —
+#              ATTRIBUTION, not authentication (the caller's CLAIMED
+#              handle, same trust level as any hello client_id): default is
+#              the caller's comm handle when comm-context.sh can derive
+#              one, else the literal "sot-fe". READ BEFORE YOU WRITE: never send
+#              a bare Enter (or anything) to a pane you have not read with
+#              `screen` first — claude's own trust prompt defaults to "No,
+#              exit", so a blind Enter can end a session instead of
+#              advancing it. Prints `ok bytes=<n> runtime=<r>` on success;
+#              exit 2 on a daemon-reported error (unknown workspace,
+#              non-UTF8 text on a tmux row, a not-ready or wedged capsule
+#              row, ...).
+#   screen   — the CURRENT screen of a named row — no scrollback, no
+#              history (op pty.screen). A tmux row's own visible pane; a
+#              capsule row is read by a WATCHER attach that never takes the
+#              pen. Prints the screen's lines verbatim to stdout (one per
+#              line, blank rows kept) and `cols=.. rows=.. cursor=r,c
+#              runtime=..` to stderr; exit 2 on a daemon-reported error.
+#              This is the READ half of the read-before-write policy above.
 #
 #   --fe <handle>  scope delivery to one FE by its sot-comm handle (sets the
 #                  wire `target`); absent = every FE acts (the badge floor).
@@ -136,11 +172,12 @@ NOTIFY_WS=""
 TIMEOUT=""     # repl: wall-clock budget in seconds
 CODE=""        # repl eval: code (else read stdin)
 READ_STDIN=false
-ORIGIN=""      # repl: label shown in the user's drawer (default "session")
+ORIGIN=""      # repl: label shown in the user's drawer (default "session"); type: the controller id (default: the caller's comm handle, else "sot-fe")
 ROI=""         # preview: source-px rect "x,y,w,h" to frame the image at (ADR-0022 vocab)
 CAPTION=""     # preview/reveal: figure caption rendered under the image
 CAPTION_SET=false  # distinguishes "--caption ''" (explicit clear) from "no --caption"
 FRESH=false    # repl run: restart the persistent REPL into the file's project
+ENTER=false    # type: append Enter after the literal text (runtime-appropriate — CR on a capsule row, a separate send-keys Enter on tmux)
 POS=()         # positional args for the subcommand
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -165,6 +202,7 @@ while [ $# -gt 0 ]; do
         --code)     CODE="$2"; shift 2 ;;
         --stdin)    READ_STDIN=true; shift ;;
         --origin)   ORIGIN="$2"; shift 2 ;;
+        --enter)    ENTER=true; shift ;;
         --roi)      ROI="$2"; shift 2 ;;
         --caption)  CAPTION="$2"; CAPTION_SET=true; shift 2 ;;
         -h|--help)  usage 0 ;;
@@ -623,6 +661,93 @@ send_repl_status() {
     '
 }
 
+# Portable base64 encode with NO embedded newlines. GNU coreutils' `base64`
+# has `-w0` (also what git-bash on Windows ships); BSD/macOS `base64` (and
+# some minimal/busybox builds) lack it and wrap at 76 columns by default —
+# `tr -d '\n'` strips that wrap uniformly instead of maintaining a second
+# encode path.
+sot_base64_encode() {
+    if base64 --help 2>&1 | grep -q -- ' -w'; then
+        base64 -w0
+    else
+        base64 | tr -d '\n'
+    fi
+}
+
+# ADR 0042 amendment (2026-09-07): a session types into a SIBLING row.
+# $1=workspace (id/label/slug), $2=text (may be empty — a bare --enter is
+# legal), $3=enter ("true"|"false"). Answered (op pty.input) — unlike
+# pty.write (this connection's own pty, fire-and-forget), a caller with no
+# pane to look at needs the outcome. Exits 2 on a daemon-reported error.
+send_pty_input() {
+    local ws="$1" text="$2" enter="$3" ws_id data_b64 origin_for_use payload req resp
+    _need_endpoint
+    ws_id="$(_ws_id_or_passthrough "$ws")"
+    export SEND_TIMEOUT="${TIMEOUT:-10}"
+    data_b64="$(printf '%s' "$text" | sot_base64_encode)"
+    origin_for_use="$ORIGIN"
+    if [ -z "$origin_for_use" ]; then
+        # Default: the caller's own comm handle, when derivable — else the
+        # literal "sot-fe". Isolated in its own subshell (never `eval`d
+        # into THIS shell) so a comm-context.sh failure can't clobber any
+        # variable here; `2>/dev/null || true` means "no handle" is exactly
+        # as safe as "comm-context.sh doesn't exist at all."
+        origin_for_use="$( (eval "$("$SCRIPT_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null; printf '%s' "${NAME:-}") 2>/dev/null || true)"
+        [ -n "$origin_for_use" ] || origin_for_use="sot-fe"
+    fi
+    payload="$(jq -nc --arg w "$ws_id" --arg d "$data_b64" --argjson e "$enter" \
+        '{workspace_id:$w, data_b64:$d, enter:$e}')"
+    # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): origin is
+    # free text (a comm handle or a user-set --origin) and must never reach
+    # jq via --arg.
+    local _origin_file; _origin_file="$(sot_jq_rawfile "$origin_for_use")" || exit 1
+    payload="$(printf '%s' "$payload" | jq -c --rawfile o "$_origin_file" '. + {origin:$o}')"
+    rm -f "$_origin_file"
+    req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"pty.input", payload:$p}')"
+    resp="$(sot_send "$req" pty.input || true)"
+    if [ -z "$resp" ]; then
+        echo "ERROR: no response from pty.input within ${SEND_TIMEOUT}s via $ENDPOINT." >&2
+        exit 2
+    fi
+    local err code
+    err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
+    if [ -n "$err" ]; then
+        code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
+        echo "ERROR: $err [$code]" >&2
+        exit 2
+    fi
+    printf '%s' "$resp" | jq -r '.payload | "ok bytes=\(.bytes) runtime=\(.runtime)"'
+}
+
+# ADR 0042 amendment (2026-09-07): the CURRENT screen of a named row — no
+# scrollback, no history (op pty.screen). $1=workspace (id/label/slug).
+# Exits 2 on a daemon-reported error.
+send_pty_screen() {
+    local ws="$1" ws_id payload req resp
+    _need_endpoint
+    ws_id="$(_ws_id_or_passthrough "$ws")"
+    export SEND_TIMEOUT="${TIMEOUT:-10}"
+    payload="$(jq -nc --arg w "$ws_id" '{workspace_id:$w}')"
+    req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"pty.screen", payload:$p}')"
+    resp="$(sot_send "$req" pty.screen || true)"
+    if [ -z "$resp" ]; then
+        echo "ERROR: no response from pty.screen within ${SEND_TIMEOUT}s via $ENDPOINT." >&2
+        exit 2
+    fi
+    local err code
+    err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
+    if [ -n "$err" ]; then
+        code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
+        echo "ERROR: $err [$code]" >&2
+        exit 2
+    fi
+    printf '%s' "$resp" | jq -r '.payload.lines[]'
+    printf '%s' "$resp" | jq -r '.payload |
+        "cols=\(.cols) rows=\(.rows) cursor=" +
+        (if .cursor then "\(.cursor.row),\(.cursor.col)" else "none" end) +
+        " runtime=\(.runtime)"' >&2
+}
+
 case "$CMD" in
     preview|reveal)
         WS="${POS[0]:-}"; PATH_ARG="${POS[1]:-}"
@@ -820,6 +945,22 @@ case "$CMD" in
                 ;;
             *) echo "usage: sot-fe repl run <workspace> <path> | sot-fe repl eval <workspace> (--code <c> | --stdin) | sot-fe repl interrupt <workspace> | sot-fe repl status [<workspace>]" >&2; exit 1 ;;
         esac
+        ;;
+    type)
+        WS="${POS[0]:-}"
+        [ -n "$WS" ] || { echo "usage: sot-fe type <workspace> [<text>] [--stdin] [--enter] [--origin <who>] [--timeout <s>]" >&2; exit 1; }
+        if [ "$READ_STDIN" = true ]; then
+            TEXT="$(cat)"
+        else
+            TEXT="${POS[1]:-}"
+        fi
+        [ -n "$TEXT" ] || [ "$ENTER" = true ] || { echo "usage: sot-fe type <workspace> [<text>] [--stdin] [--enter]  — nothing to send (no text and no --enter)" >&2; exit 1; }
+        send_pty_input "$WS" "$TEXT" "$([ "$ENTER" = true ] && echo true || echo false)"
+        ;;
+    screen)
+        WS="${POS[0]:-}"
+        [ -n "$WS" ] || { echo "usage: sot-fe screen <workspace> [--timeout <s>]" >&2; exit 1; }
+        send_pty_screen "$WS"
         ;;
     -h|--help|help) usage 0 ;;
     *) echo "ERROR: unknown subcommand '$CMD'" >&2; usage 1 ;;

@@ -1813,6 +1813,25 @@ where
                 }
                 continue; // no response for write
             }
+            op::PTY_INPUT => {
+                // ADR 0042 amendment (2026-09-07): answered, unlike
+                // `PTY_WRITE` above (this connection's own pty, fire-and-
+                // forget) — `PtyInputReq` is untouched by that arm, and
+                // vice versa. `origin`, when present, is the handler's own
+                // job to validate/prefer; this connection's `hello`
+                // `client_id` is only the FALLBACK controller id.
+                let default_controller_id = client_guard
+                    .as_ref()
+                    .map(|g| g.client_id().to_string())
+                    .unwrap_or_default();
+                handlers::handle_pty_input(frame.id, frame.payload, &workspaces, &default_controller_id)
+                    .await
+            }
+            op::PTY_SCREEN => {
+                // ADR 0042 amendment (2026-09-07): a watcher-only read —
+                // no controller id needed, it never takes the pen.
+                handlers::handle_pty_screen(frame.id, frame.payload, &workspaces).await
+            }
             op::MONITOR_SUBSCRIBE => {
                 // Open this connection's live tick delivery (sampling is
                 // already running). Reply with the host roster + base cadence

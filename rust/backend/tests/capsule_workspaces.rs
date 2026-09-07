@@ -1151,6 +1151,188 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     env.kill_daemon_bounded().await;
 }
 
+/// ADR 0042 amendment (2026-09-07), "a session types into and reads a
+/// sibling row": the daemon-side proof that `pty.input`/`pty.screen`
+/// actually reach a real capsule row over the wire, end to end — the
+/// `sot_log::fe_client_io` mechanics themselves are proven directly in
+/// `rust/log/tests/fe_client.rs`'s own `headless_*` tests; this test's
+/// job is only "does the WIRE OP reach that machinery and answer
+/// correctly for a real daemon."
+#[tokio::test]
+async fn capsule_pty_input_and_screen_reach_a_real_row_and_leave_the_lane_clean() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("pis");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "pis-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+
+    let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
+    loop {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        if let Some(row) = find_row(&payload, &workspace_id) {
+            if row["phase"].as_str() == Some("ready") {
+                break;
+            }
+        }
+        assert!(Instant::now() < list_deadline, "timed out waiting for the new capsule workspace to reach \"ready\"");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // `pty.screen` BEFORE any write: must succeed (a watcher attach, not
+    // a refusal) and must NOT take the pen — proven below once a real
+    // driving client's first input succeeds without contention.
+    let pre_screen_req = serde_json::json!({ "workspace_id": workspace_id });
+    let pre_screen_res = call(&mut conn, next_id, op::PTY_SCREEN, pre_screen_req).await;
+    next_id += 1;
+    assert!(
+        pre_screen_res.payload.get("error").is_none(),
+        "pty.screen before any write failed: {:?}",
+        pre_screen_res.payload
+    );
+    assert_eq!(pre_screen_res.payload["runtime"], "capsule");
+
+    // `pty.input`, base64("echo sot-lu6c-marker") + a separate Enter.
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    let text = "echo sot-lu6c-marker";
+    let input_req = serde_json::json!({
+        "workspace_id": workspace_id,
+        "data_b64": STANDARD.encode(text.as_bytes()),
+        "enter": true,
+        "origin": "lu6c-test",
+    });
+    let input_res = call(&mut conn, next_id, op::PTY_INPUT, input_req).await;
+    next_id += 1;
+    assert!(input_res.payload.get("error").is_none(), "pty.input failed: {:?}", input_res.payload);
+    assert_eq!(input_res.payload["ok"], true);
+    assert_eq!(input_res.payload["runtime"], "capsule");
+    assert_eq!(input_res.payload["bytes"].as_u64(), Some(text.len() as u64));
+
+    // Poll `pty.screen` until the echoed marker shows up.
+    let screen_deadline = Instant::now() + Duration::from_secs(10);
+    let final_screen = loop {
+        let id = next_id;
+        next_id += 1;
+        let screen_req = serde_json::json!({ "workspace_id": workspace_id });
+        let res = call(&mut conn, id, op::PTY_SCREEN, screen_req).await;
+        assert!(res.payload.get("error").is_none(), "pty.screen failed: {:?}", res.payload);
+        let lines: Vec<String> = res.payload["lines"]
+            .as_array()
+            .expect("lines array")
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect();
+        if lines.iter().any(|l| l.contains("sot-lu6c-marker")) {
+            break res.payload;
+        }
+        assert!(
+            Instant::now() < screen_deadline,
+            "timed out waiting for the echoed marker to appear on screen; last lines: {lines:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert!(final_screen["cols"].as_u64().unwrap_or(0) > 0, "cols must be the capsule's real geometry");
+    assert!(final_screen["rows"].as_u64().unwrap_or(0) > 0, "rows must be the capsule's real geometry");
+    assert!(final_screen["cursor"].is_object(), "cursor must be Some for a healthy row: {final_screen:?}");
+
+    // The daemon's own headless client must have left the lane CLEAN:
+    // a fresh `FeAttachClient` from the test itself reaches its own
+    // checkpoint (proving the row is not wedged), and a real keystroke
+    // from it is accepted WITHOUT any contention artifact left behind —
+    // proving the earlier `pty.screen` (a watcher) never took the pen
+    // either.
+    let state_dir = crate::state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
+    let (_woke, wake) = wake_flag_for_test();
+    let mut test_client = sot_log::fe_client_io::FeAttachClient::<sot_log::client::PlatformEndpoint>::attach(
+        state_dir,
+        80,
+        24,
+        "lu6c-test-post-check".to_string(),
+        "lu6c-test-post-check".to_string(),
+        None,
+        wake,
+    )
+    .expect("attach a fresh FeAttachClient after the daemon's own headless ops");
+    let checkpoint_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        test_client.pump();
+        if test_client.is_checkpointed() {
+            break;
+        }
+        assert!(!test_client.is_dead(), "post-check client died before a checkpoint: {}", test_client.status_line());
+        assert!(Instant::now() < checkpoint_deadline, "post-check client never reached a checkpoint — the lane may be wedged");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    test_client.send_input(b"echo sot-lu6c-postcheck-marker\r\n");
+    let took_pen_deadline = Instant::now() + Duration::from_secs(30);
+    let got_marker = loop {
+        test_client.pump();
+        let (rows, cols) = test_client.screen().size();
+        let mut text = String::new();
+        for r in 0..rows {
+            for c in 0..cols {
+                if let Some(cell) = test_client.screen().cell(r, c) {
+                    text.push_str(cell.contents());
+                }
+            }
+        }
+        if text.contains("sot-lu6c-postcheck-marker") {
+            break true;
+        }
+        if Instant::now() >= took_pen_deadline {
+            break false;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        got_marker,
+        "the pen was not free for a fresh client after the daemon's own pty.input/pty.screen ops (dead={}, status={})",
+        test_client.is_dead(),
+        test_client.status_line()
+    );
+    drop(test_client);
+
+    env.kill_daemon_bounded().await;
+}
+
+/// One `workspace.list` round trip's `state_dir` for `workspace_id` —
+/// factored out of the big test above so its own long body reads as one
+/// story rather than three inlined polls of the same shape.
+async fn state_dir_from_list(conn: &mut Conn, next_id: &mut u64, workspace_id: &str) -> PathBuf {
+    let id = *next_id;
+    *next_id += 1;
+    let payload = call(conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    let row = find_row(&payload, workspace_id).expect("workspace.list row for this workspace_id");
+    PathBuf::from(row["state_dir"].as_str().expect("state_dir"))
+}
+
+/// Local copy of `fe_client.rs`'s own `wake_flag` helper (a separate test
+/// binary; not worth a shared dependency for four lines).
+fn wake_flag_for_test() -> (std::sync::Arc<std::sync::atomic::AtomicBool>, Box<dyn Fn() + Send + 'static>) {
+    let woke = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let woke2 = std::sync::Arc::clone(&woke);
+    (woke, Box::new(move || woke2.store(true, std::sync::atomic::Ordering::Relaxed)))
+}
+
 /// 2026-09-04 amendment (owner ruling): the daemon's own default/home
 /// row is now an INERT ANCHOR when it carries no agent (`agent ==
 /// "none"`) — the workspace it falls back to and the way to browse this

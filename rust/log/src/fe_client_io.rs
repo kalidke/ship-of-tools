@@ -106,9 +106,9 @@ use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::marker::PhantomData;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -599,6 +599,60 @@ pub struct FeAttachClient<E: Endpoint = PlatformEndpoint> {
     /// silently ate whatever non-marker event happened to be next in
     /// line). `drain_fe_down_markers` drains ONLY this queue.
     pending_fe_down_markers: VecDeque<serde_json::Value>,
+    /// ADR 0042 amendment (2026-09-07): `true` for [`Self::attach_headless`]
+    /// — a client with no viewport. Read only by [`Self::pump`]'s
+    /// `Checkpoint` arm: a headless client adopts the checkpoint's own
+    /// geometry as [`Self::pane_size`] instead of reflowing the restored
+    /// screen TO `pane_size` (there is no real viewport size to reflow to).
+    /// The take transaction's own headless behavior (never sending
+    /// `Resize`) is a separate, independent flag on [`fe_client::
+    /// TakeTransaction`] itself, chosen by [`run_worker`] at construction —
+    /// this field never reaches that decision directly.
+    headless: bool,
+    /// Sum of the byte lengths of every `input` this client has seen
+    /// `InputRecorded` for (ADR 0042 amendment: "success requires
+    /// `InputRecorded` covering the WHOLE payload, not a bare ack
+    /// counter" — a caller compares this against the length it sent,
+    /// rather than trusting a single increment-only tick). Shared with the
+    /// worker thread, which is the only writer.
+    recorded_bytes: Arc<AtomicU64>,
+    /// The wire's terminal answer to the MOST RECENT `input` this client
+    /// sent (`Recorded` / `RefusedStale` / `DeliveryUnknown` — ADR 0041's
+    /// own "three terminal answers," restated as [`InputOutcome`]). `None`
+    /// until the first outcome arrives. Shared with the worker thread
+    /// (the only writer); a `Mutex` rather than an atomic encoding because
+    /// this is written and read at most a few times per client lifetime
+    /// (never a hot path) and a 3-variant enum has no natural atomic
+    /// representation worth inventing one for.
+    last_input_outcome: Arc<Mutex<Option<InputOutcome>>>,
+    /// ADR 0042 amendment: the worker thread's own handle, for
+    /// [`Self::shutdown`]'s bounded join — the ONLY reason this is stored
+    /// (a previous Codex review round correctly deleted it as dead weight
+    /// when nothing ever joined it; `shutdown` is that first real caller).
+    /// `Option` so `shutdown` can `.take()` it out of a `&mut self` without
+    /// needing `self` by value merely to move a field.
+    worker_handle: Option<thread::JoinHandle<()>>,
+}
+
+/// The wire's terminal answer to ONE `input` frame this client sent (ADR
+/// 0041: "the wire defines three terminal answers"), exposed as an
+/// observable a caller (the headless daemon client) can poll — "the
+/// smallest honest observable," not a new [`ClientEvent`] (ADR 0042
+/// amendment review: "no bare ack counter... success requires
+/// `InputRecorded` covering the whole payload").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputOutcome {
+    /// `input_recorded`: the record has it.
+    Recorded,
+    /// `input_refused_stale`: the epoch changed; THIS client's own worker
+    /// re-takes automatically (ADR 0041 ruling (c)), but a headless caller
+    /// treats the ORIGINAL send as failed and does not wait for that retry
+    /// (ADR 0042 amendment: "the daemon NEVER retries an input on its
+    /// own").
+    RefusedStale,
+    /// `input_delivery_unknown`: "never auto-retried... dropped and marked
+    /// visibly unknown" — the record's own verdict is unknowable from here.
+    DeliveryUnknown,
 }
 
 impl<E: Endpoint> FeAttachClient<E> {
@@ -631,6 +685,68 @@ impl<E: Endpoint> FeAttachClient<E> {
     where
         E::Client: 'static,
     {
+        Self::attach_inner(
+            state_dir,
+            cols,
+            rows,
+            controller_id,
+            fe_down_to_handle,
+            fe_down_last_evidence,
+            wake,
+            false,
+        )
+    }
+
+    /// ADR 0042 amendment (2026-09-07): a HEADLESS attach — the daemon's
+    /// own `pty.input`/`pty.screen` client on a capsule row
+    /// (`capsule_workspace::headless`), never the frontend. No viewport
+    /// (`cols`/`rows` are a placeholder until the checkpoint lands — see
+    /// [`Self::pump`]'s `Checkpoint` arm), no `fe_down` marker (this client
+    /// makes exactly one attach in its short lifetime, and
+    /// [`FeDownBaseline::marker_for_attach`]'s own "skipped on a first
+    /// attach" rule means `fe_down_last_evidence: None` here is never
+    /// observed to matter), no real wake (the caller pumps on its own
+    /// clock, not an event loop). The take transaction this spawns is
+    /// [`fe_client::TakeTransaction::new_headless`] — it sends no `Resize`,
+    /// ever.
+    pub fn attach_headless(
+        state_dir: PathBuf,
+        controller_id: String,
+    ) -> Result<Self, FeAttachError>
+    where
+        E::Client: 'static,
+    {
+        // Placeholder viewport: wholesale-replaced by the first checkpoint
+        // restore regardless (`pump`'s `Checkpoint` arm), and this client
+        // adopts the checkpoint's OWN size into `pane_size` rather than
+        // reflowing to this one (`headless: true` below) — the exact
+        // number here is never rendered or reported.
+        const PLACEHOLDER_SIZE: u16 = 24;
+        Self::attach_inner(
+            state_dir,
+            PLACEHOLDER_SIZE,
+            PLACEHOLDER_SIZE,
+            controller_id.clone(),
+            controller_id,
+            None,
+            Box::new(|| {}),
+            true,
+        )
+    }
+
+    fn attach_inner(
+        state_dir: PathBuf,
+        cols: u16,
+        rows: u16,
+        controller_id: String,
+        fe_down_to_handle: String,
+        fe_down_last_evidence: Option<String>,
+        wake: Box<dyn Fn() + Send + 'static>,
+        headless: bool,
+    ) -> Result<Self, FeAttachError>
+    where
+        E::Client: 'static,
+    {
         let rows = rows.max(2);
         let cols = cols.max(2);
         let parser = vt100_ctt::Parser::new(rows, cols, SCROLLBACK_ROWS);
@@ -641,8 +757,12 @@ impl<E: Endpoint> FeAttachClient<E> {
         let fe_down = FeDownBaseline::capture(fe_down_last_evidence);
         let queued_bytes = Arc::new(AtomicUsize::new(0));
         let worker_queued_bytes = Arc::clone(&queued_bytes);
+        let recorded_bytes = Arc::new(AtomicU64::new(0));
+        let worker_recorded_bytes = Arc::clone(&recorded_bytes);
+        let last_input_outcome = Arc::new(Mutex::new(None));
+        let worker_last_input_outcome = Arc::clone(&last_input_outcome);
 
-        thread::Builder::new()
+        let worker_handle = thread::Builder::new()
             .name("sot-fe-attach-worker".to_string())
             .spawn(move || {
                 run_worker::<E>(
@@ -656,6 +776,9 @@ impl<E: Endpoint> FeAttachClient<E> {
                     worker_msg_tx,
                     events_tx,
                     worker_queued_bytes,
+                    worker_recorded_bytes,
+                    worker_last_input_outcome,
+                    headless,
                     wake,
                 );
             })
@@ -675,6 +798,10 @@ impl<E: Endpoint> FeAttachClient<E> {
             checkpointed: false,
             queued_bytes,
             pending_fe_down_markers: VecDeque::new(),
+            headless,
+            recorded_bytes,
+            last_input_outcome,
+            worker_handle: Some(worker_handle),
         })
     }
 
@@ -698,6 +825,17 @@ impl<E: Endpoint> FeAttachClient<E> {
                 Ok(ClientEvent::Checkpoint(bytes)) => {
                     if let Err(e) = self.parser.restore_screen(&bytes) {
                         self.status = format!("{CHECKPOINT_RESTORE_FAILED_PREFIX}: {e:?}");
+                    } else if self.headless {
+                        // ADR 0042 amendment: a headless client has no
+                        // viewport to reflow TO — adopt the checkpoint's
+                        // OWN dimensions as `pane_size` instead (never
+                        // `set_size`, which would pad/clip it to whatever
+                        // placeholder `attach_headless` was constructed
+                        // with). This is also what keeps the take
+                        // transaction's own `Resize` a true no-op honest:
+                        // there is no local geometry disagreement to
+                        // correct in the first place.
+                        self.pane_size = self.parser.screen().size();
                     } else {
                         // `restore_screen` REPLACES the parser's screen
                         // wholesale with one sized to the checkpoint's own
@@ -839,12 +977,6 @@ impl<E: Endpoint> FeAttachClient<E> {
         self.dead
     }
 
-    /// LU6a: `true` once `pump`'s `Checkpoint` arm has applied a
-    /// checkpoint to this client's screen — see `checkpointed`'s own doc.
-    pub fn is_checkpointed(&self) -> bool {
-        self.checkpointed
-    }
-
     /// Ruling (a): the ONE quit dispatcher. Idempotent — a second call
     /// while already ending does nothing (the worker's own
     /// `QuitDispatcher` enforces this). Never lost across a reconnect in
@@ -877,6 +1009,63 @@ impl<E: Endpoint> FeAttachClient<E> {
 
     pub fn status_line(&self) -> &str {
         &self.status
+    }
+
+    /// `true` once the FIRST `ClientEvent::Checkpoint` has been applied —
+    /// restore ATTEMPTED, whether or not it succeeded (a failed restore
+    /// still sets [`Self::status`] to the `CHECKPOINT_RESTORE_FAILED_PREFIX`
+    /// text, which a caller polling this should also check). ADR 0042
+    /// amendment: the headless client's own "pump until attached" loop
+    /// condition — a watcher's checkpoint arrives exactly once per attach,
+    /// so this never resets after the first `true`.
+    pub fn is_checkpointed(&self) -> bool {
+        self.checkpointed
+    }
+
+    /// Sum of the byte lengths of every `input` `InputRecorded` for so
+    /// far. ADR 0042 amendment's own observable: a caller compares this
+    /// (before vs. after sending) against the length it sent, rather than
+    /// trusting a bare increment-only ack counter.
+    pub fn recorded_bytes(&self) -> u64 {
+        self.recorded_bytes.load(Ordering::Acquire)
+    }
+
+    /// The wire's terminal answer to the most recent `input` this client
+    /// sent — see [`InputOutcome`]'s own doc. A poisoned lock (a prior
+    /// panic while holding it) reads as `None` rather than panicking here
+    /// too: a caller polling this in a loop must never itself become the
+    /// second panic.
+    pub fn last_input_outcome(&self) -> Option<InputOutcome> {
+        self.last_input_outcome.lock().ok().and_then(|g| *g)
+    }
+
+    /// Sends `Shutdown` (same as [`Drop`] does) and waits UP TO `wait` for
+    /// the worker thread to actually exit, polling [`thread::JoinHandle::
+    /// is_finished`] rather than an unbounded `join()` — ADR 0042
+    /// amendment: "on EVERY exit path: drop the client, then observe the
+    /// worker's closure." Returns `true` iff the worker exited within the
+    /// bound; `false` logs a `warn` and leaves the handle for `Drop` to
+    /// forget about (a `JoinHandle` that is never joined does not leak the
+    /// thread — it simply runs to completion on its own, same as today).
+    /// Callable at most meaningfully once — a second call after the first
+    /// already took the handle returns `true` (nothing left to wait for).
+    pub fn shutdown(&mut self, wait: Duration) -> bool {
+        let _ = self.msg_tx.send(WorkerMsg::Shutdown);
+        let Some(handle) = self.worker_handle.take() else {
+            return true;
+        };
+        let deadline = Instant::now() + wait;
+        while !handle.is_finished() {
+            if Instant::now() >= deadline {
+                eprintln!(
+                    "fe_client_io: worker thread still alive {wait:?} after Shutdown was sent"
+                );
+                return false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _ = handle.join();
+        true
     }
 }
 
@@ -921,13 +1110,16 @@ fn run_worker<E: Endpoint>(
     msg_tx: Sender<WorkerMsg>,
     events_tx: Sender<ClientEvent>,
     queued_bytes: Arc<AtomicUsize>,
+    recorded_bytes: Arc<AtomicU64>,
+    last_input_outcome: Arc<Mutex<Option<InputOutcome>>>,
+    headless: bool,
     wake: Box<dyn Fn() + Send + 'static>,
 ) where
     E::Client: 'static,
 {
     let h = state_dir_hash(&state_dir);
     let mut reconnect = ReconnectState::new();
-    let mut take = TakeTransaction::new();
+    let mut take = if headless { TakeTransaction::new_headless() } else { TakeTransaction::new() };
     let mut outstanding = OutstandingSlot::new();
     let mut quit = QuitDispatcher::new();
     let mut take_intent = TakeIntent::Ordinary;
@@ -1252,6 +1444,8 @@ fn run_worker<E: Endpoint>(
             &controller_id,
             &voyage,
             &mut last_liveness_poll,
+            &recorded_bytes,
+            &last_input_outcome,
         );
 
         // Tear down this episode's connections before deciding what's
@@ -1667,6 +1861,8 @@ fn run_steady_state<E: Endpoint>(
     controller_id: &str,
     voyage: &str,
     last_liveness_poll: &mut Instant,
+    recorded_bytes: &Arc<AtomicU64>,
+    last_input_outcome: &Arc<Mutex<Option<InputOutcome>>>,
 ) -> SteadyOutcome {
     let emit = |e: ClientEvent| {
         let _ = events_tx.send(e);
@@ -1728,7 +1924,7 @@ fn run_steady_state<E: Endpoint>(
             Ok(WorkerMsg::Frame(frame)) => {
                 match handle_attach_frame::<E>(
                     frame, attach_conn, take, take_intent, outstanding, take_epoch, controller_id, voyage, *cols,
-                    *rows, &emit,
+                    *rows, &emit, recorded_bytes, last_input_outcome,
                 ) {
                     FrameOutcome::ReattachRequested => return SteadyOutcome::ReconnectPreserveTake,
                     FrameOutcome::Handled | FrameOutcome::Ignored => {}
@@ -1927,6 +2123,8 @@ fn handle_attach_frame<E: Endpoint>(
     cols: u16,
     rows: u16,
     emit: &dyn Fn(ClientEvent),
+    recorded_bytes: &Arc<AtomicU64>,
+    last_input_outcome: &Arc<Mutex<Option<InputOutcome>>>,
 ) -> FrameOutcome {
     match frame {
         DecodedFrame::AttachServer(AttachServer::Output { bytes }) => {
@@ -1948,6 +2146,17 @@ fn handle_attach_frame<E: Endpoint>(
             }
             for action in take.on_take_ok(cols, rows) {
                 apply_single_take_action::<E>(action, attach_conn, controller_id, emit);
+            }
+            // A HEADLESS take's own `on_take_ok` (above) skips RESIZING
+            // entirely and promotes straight to DRIVING, returning no
+            // actions — the ordinary `ResizeOk` frame that would normally
+            // trigger the queue flush never arrives for it, so flush right
+            // here whenever `on_take_ok` already landed in DRIVING. A
+            // NON-headless transaction never reaches DRIVING from this
+            // call (it always lands in RESIZING), so this is a no-op for
+            // the frontend's own client.
+            if take.role() == Role::Driving {
+                flush_after_pen_secured::<E>(attach_conn, take, take_intent, outstanding, *take_epoch, controller_id, voyage);
             }
             FrameOutcome::Handled
         }
@@ -1991,7 +2200,18 @@ fn handle_attach_frame<E: Endpoint>(
             FrameOutcome::Handled
         }
         DecodedFrame::AttachServer(AttachServer::InputRecorded) => {
+            // Capture the length BEFORE `apply_outcome` clears it — ADR
+            // 0042 amendment's own observable: "success requires
+            // `InputRecorded` covering the WHOLE payload," which a caller
+            // verifies by summing recorded lengths, not by counting acks.
+            let recorded_len = outstanding.outstanding().map(|o| o.bytes.len());
             let _ = outstanding.apply_outcome(InputWireOutcome::Recorded, *take_epoch, mint_idem_key);
+            if let Some(len) = recorded_len {
+                recorded_bytes.fetch_add(len as u64, Ordering::AcqRel);
+            }
+            if let Ok(mut g) = last_input_outcome.lock() {
+                *g = Some(InputOutcome::Recorded);
+            }
             flush_next_driving_input::<E>(attach_conn, take, outstanding, *take_epoch, controller_id, voyage);
             FrameOutcome::Handled
         }
@@ -1999,7 +2219,15 @@ fn handle_attach_frame<E: Endpoint>(
             // Ruling (c), Codex review round finding 6: re-take FIRST;
             // the new key is minted once the fresh `take_ok` arrives
             // (see the `TakeOk` arm above and `flush_after_pen_secured`'s
-            // own `StaleRetry` handling).
+            // own `StaleRetry` handling). ADR 0042 amendment: a headless
+            // caller treats THIS send as failed and does not wait for that
+            // retry (the daemon never retries an input on its own) — the
+            // retry below is this client's own ordinary wire-protocol
+            // behavior, unrelated to whatever the headless caller does
+            // once it observes the outcome recorded here.
+            if let Ok(mut g) = last_input_outcome.lock() {
+                *g = Some(InputOutcome::RefusedStale);
+            }
             *take_intent = TakeIntent::StaleRetry;
             for action in take.retake_while_driving() {
                 apply_single_take_action::<E>(action, attach_conn, controller_id, emit);
@@ -2010,6 +2238,9 @@ fn handle_attach_frame<E: Endpoint>(
             let res = outstanding.apply_outcome(InputWireOutcome::DeliveryUnknown, *take_epoch, mint_idem_key);
             if matches!(res, fe_client::OutstandingResolution::Unknown) {
                 emit(ClientEvent::Status("input delivery unknown".to_string()));
+                if let Ok(mut g) = last_input_outcome.lock() {
+                    *g = Some(InputOutcome::DeliveryUnknown);
+                }
             }
             flush_next_driving_input::<E>(attach_conn, take, outstanding, *take_epoch, controller_id, voyage);
             FrameOutcome::Handled
@@ -2096,6 +2327,10 @@ mod tests {
             checkpointed: false,
             queued_bytes: Arc::new(AtomicUsize::new(0)),
             pending_fe_down_markers: VecDeque::new(),
+            headless: false,
+            recorded_bytes: Arc::new(AtomicU64::new(0)),
+            last_input_outcome: Arc::new(Mutex::new(None)),
+            worker_handle: None,
         };
         assert!(!client.is_checkpointed(), "a fresh client must not report checkpointed");
 

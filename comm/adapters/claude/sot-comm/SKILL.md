@@ -295,6 +295,24 @@ way — broadcast by default (the badge floor), `--fe <handle>` to target one FE
   and point at opposite fixes (a stale `tcp:` endpoint fails exactly like a
   dead kernel).
 
+- **`type <ws> [<text>] [--stdin] [--enter] [--origin <who>]`** — a session TYPES
+  INTO a sibling row's pane, by workspace id/label/slug (ADR 0042 amendment,
+  2026-09-07). A real request/response op (`pty.input`), unlike a keystroke
+  the FE's own drawer sends (`pty.write`, this connection's own pty,
+  fire-and-forget): bytes are delivered LITERALLY, no key-name
+  interpretation, ever. `--enter` appends the byte a terminal itself sends
+  for Enter (the daemon applies it in a runtime-appropriate way — never a
+  converted newline inside the text). Prints `ok bytes=<n> runtime=<r>` or
+  exits 2 on error.
+- **`screen <ws>`** — the CURRENT screen of a sibling row — no scrollback, no
+  history (`pty.screen`). Prints the lines to stdout, geometry/cursor to
+  stderr.
+  **READ BEFORE YOU WRITE — a hard rule, not a suggestion: never send a bare
+  Enter (or anything) to a pane you have not just read with `screen`.**
+  claude's own trust prompt defaults to "No, exit" — a blind Enter into an
+  unread pane can END a session instead of advancing it. `screen` first,
+  every time, no exceptions for "it's probably fine."
+
 **Discipline: every new BE->FE command lands in THIS section, in lockstep with the
 `sot-fe` verb that ships it.** A capability no session can discover is dead weight —
 this list sat without `open-url` and `repl` for a while and sessions never reached

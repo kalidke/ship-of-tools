@@ -16,8 +16,8 @@ use sot_protocol::{
     FeCommandSendRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq,
     FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
     HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
-    PlutoOpenReq, PlutoOpenRes, PreviewGetReq, PreviewGetRes, PreviewSetScaleReq, QuartoOpenReq,
-    QuartoOpenRes,
+    PlutoOpenReq, PlutoOpenRes, PreviewGetReq, PreviewGetRes, PreviewSetScaleReq, PtyCursor,
+    PtyInputReq, PtyInputRes, PtyScreenReq, PtyScreenRes, QuartoOpenReq, QuartoOpenRes,
     ReplErrorOut, ReplExecuteInput, ReplExecuteReq, ReplExecuteRes, ReplValueOut, StackFrame,
     TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxCreateSessionReq, TmuxKillSessionReq,
     TmuxListPanesReq, TmuxListPanesRes, TmuxListSessionsRes, TmuxPane, TmuxSession,
@@ -3733,6 +3733,427 @@ pub async fn handle_tmux_capture_pane(
             tmux_error_frame(req_id, op::TMUX_CAPTURE_PANE, e),
             None,
         )]),
+    }
+}
+
+/// `PtyInputReq::origin` / `PtyScreenReq` share no size limit of their own
+/// — this one is `origin`'s: ADR 0042 amendment §1, "≤128 bytes, else
+/// `bad_origin`."
+const MAX_PTY_INPUT_ORIGIN_LEN: usize = 128;
+
+/// One capsule-lane op's absolute deadline (ADR 0042 amendment: "the whole
+/// operation runs under ONE deadline (5 s): attach, checkpoint, take,
+/// input, ack, detach"). Shared by both `pty.input` and `pty.screen`'s
+/// capsule arms — gated like `capsule_workspace::headless` itself, since
+/// only those arms ever read it.
+#[cfg(any(windows, target_os = "linux"))]
+const CAPSULE_OP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What a capsule-runtime `pty.input`/`pty.screen` op's `spawn_blocking`
+/// closure reports — computed OFF the async runtime (the phase probe and
+/// the headless client both make blocking IPC calls), then translated to a
+/// response frame back on the async side. Gated like `capsule_workspace::
+/// headless` itself (windows/linux only — that module simply does not
+/// exist on any other host, so neither can a variant naming its error
+/// type); the `#[cfg(not(...))]` arms in `handle_pty_input`/
+/// `handle_pty_screen` never construct this enum at all on those hosts.
+#[cfg(any(windows, target_os = "linux"))]
+enum CapsuleOpOutcome<T> {
+    Ok(T),
+    NotReady(&'static str),
+    Headless(crate::capsule_workspace::headless::HeadlessError),
+}
+
+/// Translates a [`CapsuleOpOutcome::Headless`] error into the typed error
+/// payload ADR 0042 amendment §2 pins. `fail_code` is `capsule_input_failed`
+/// or `capsule_screen_failed` depending on the caller; a `phase` of
+/// `"record"` — the daemon could not learn the record's own verdict,
+/// whether because the wire said `input_delivery_unknown` or because the
+/// deadline expired after the input had already been handed to the lane —
+/// overrides it to `capsule_input_unknown` regardless (ADR 0042 amendment
+/// §2's "capsule_input_unknown when the deadline expired AFTER the input
+/// was submitted", generalized to the wire's own explicit "unknown" answer
+/// too: both cases mean the same thing, "we do not know if this landed in
+/// the record," and the daemon never retries either one on its own).
+#[cfg(any(windows, target_os = "linux"))]
+fn headless_error_payload(
+    e: crate::capsule_workspace::headless::HeadlessError,
+    fail_code: &'static str,
+) -> serde_json::Value {
+    let code = if e.phase == "record" { "capsule_input_unknown" } else { fail_code };
+    json!({
+        "error": e.detail,
+        "code": code,
+        "phase": e.phase,
+        "submitted": e.submitted,
+    })
+}
+
+/// Resolves `req.origin` into a controller id, or an early error frame for
+/// `bad_origin` (ADR 0042 amendment §1/§2: `origin` is caller-supplied
+/// ATTRIBUTION, never authentication — exactly `HelloReq::client_id`'s own
+/// trust level, just named explicitly instead of read off the connection).
+fn resolve_pty_input_controller_id(
+    req_id: u64,
+    op_str: &str,
+    origin: Option<&str>,
+    connection_client_id: &str,
+) -> std::result::Result<String, Frame> {
+    match origin {
+        Some(o) if o.len() > MAX_PTY_INPUT_ORIGIN_LEN => {
+            let payload = json!({
+                "error": format!("origin exceeds {MAX_PTY_INPUT_ORIGIN_LEN} bytes"),
+                "code": "bad_origin",
+            });
+            Err(Frame::res(req_id, op_str, payload))
+        }
+        Some(o) => Ok(o.to_string()),
+        None => Ok(connection_client_id.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod pty_input_controller_id_tests {
+    use super::*;
+
+    #[test]
+    fn absent_origin_falls_back_to_the_connection_client_id() {
+        let id = resolve_pty_input_controller_id(1, op::PTY_INPUT, None, "conn-client").unwrap();
+        assert_eq!(id, "conn-client");
+    }
+
+    #[test]
+    fn present_origin_wins_over_the_connection_client_id() {
+        let id = resolve_pty_input_controller_id(1, op::PTY_INPUT, Some("kitt-dev"), "conn-client").unwrap();
+        assert_eq!(id, "kitt-dev");
+    }
+
+    #[test]
+    fn origin_at_exactly_the_bound_is_accepted() {
+        let origin = "x".repeat(MAX_PTY_INPUT_ORIGIN_LEN);
+        let id = resolve_pty_input_controller_id(1, op::PTY_INPUT, Some(&origin), "conn-client").unwrap();
+        assert_eq!(id, origin);
+    }
+
+    #[test]
+    fn origin_one_over_the_bound_is_bad_origin() {
+        let origin = "x".repeat(MAX_PTY_INPUT_ORIGIN_LEN + 1);
+        let frame = resolve_pty_input_controller_id(1, op::PTY_INPUT, Some(&origin), "conn-client")
+            .expect_err("an over-length origin must be refused");
+        assert_eq!(frame.payload["code"], "bad_origin");
+    }
+}
+
+/// ADR 0042 amendment (2026-09-07), decision 1: a session types into
+/// ANOTHER row's pane by `workspace_id`. Unlike `pty.write` (this
+/// connection's own pty, fire-and-forget), this is ANSWERED — a caller
+/// with no pane to look at needs the outcome. `controller_id` is the
+/// connection's own `hello` `client_id`, used only when `req.origin` is
+/// absent; both are attribution, never authentication (the record stores
+/// who typed, how many bytes, and when — never the content, which is
+/// redacted in the WAL — and this op grants no privilege either name alone
+/// could forge).
+pub async fn handle_pty_input(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    workspaces: &Workspaces,
+    connection_client_id: &str,
+) -> Result<HandlerOutput> {
+    let req: PtyInputReq = serde_json::from_value(payload_json).context("pty.input payload")?;
+
+    let controller_id = match resolve_pty_input_controller_id(
+        req_id,
+        op::PTY_INPUT,
+        req.origin.as_deref(),
+        connection_client_id,
+    ) {
+        Ok(id) => id,
+        Err(frame) => return Ok(vec![(frame, None)]),
+    };
+
+    let Some(ws) = workspaces.resolve(Some(&req.workspace_id)) else {
+        let payload = json!({
+            "error": format!("unknown workspace: {}", req.workspace_id),
+            "code": "unknown_workspace",
+        });
+        return Ok(vec![(Frame::res(req_id, op::PTY_INPUT, payload), None)]);
+    };
+
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    let bytes = match STANDARD.decode(req.data_b64.as_bytes()) {
+        Ok(b) => b,
+        Err(e) => {
+            let payload = json!({ "error": format!("data_b64: {e}"), "code": "bad_request" });
+            return Ok(vec![(Frame::res(req_id, op::PTY_INPUT, payload), None)]);
+        }
+    };
+
+    match ws.runtime.as_str() {
+        "tmux" => {
+            let text = match String::from_utf8(bytes.clone()) {
+                Ok(t) => t,
+                Err(_) => {
+                    let payload = json!({
+                        "error": "pty.input payload is not valid UTF-8 text on a tmux row",
+                        "code": "input_not_text",
+                    });
+                    return Ok(vec![(Frame::res(req_id, op::PTY_INPUT, payload), None)]);
+                }
+            };
+            let session = ws.tmux_session.clone();
+            let enter = req.enter;
+            let byte_len = bytes.len();
+            let result = tokio::task::spawn_blocking(move || {
+                let c = TmuxClient::new();
+                c.send_keys_literal(&session, &text)?;
+                if enter {
+                    // CLI/ADR-level `--enter`: a SEPARATE `send-keys Enter`,
+                    // never a byte appended to the literal text (`ops.rs`'s
+                    // own `PtyInputReq::enter` doc — tmux's `-l` would
+                    // deliver an embedded newline as a literal byte, not a
+                    // submitted line).
+                    c.send_enter(&session)?;
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await
+            .context("spawn_blocking pty.input tmux")?;
+            match result {
+                Ok(()) => {
+                    let res = PtyInputRes { ok: true, runtime: "tmux".into(), bytes: byte_len };
+                    Ok(vec![(
+                        Frame::res(req_id, op::PTY_INPUT, serde_json::to_value(res)?),
+                        None,
+                    )])
+                }
+                Err(e) => Ok(vec![(tmux_error_frame(req_id, op::PTY_INPUT, e), None)]),
+            }
+        }
+        "capsule" => {
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
+                    let payload = json!({
+                        "error": format!(
+                            "could not resolve this machine's state root ({} unset)",
+                            crate::capsule_workspace::STATE_ROOT_HINT
+                        ),
+                        "code": "capsule_input_failed",
+                        "phase": "attach",
+                    });
+                    return Ok(vec![(Frame::res(req_id, op::PTY_INPUT, payload), None)]);
+                };
+                let state_dir =
+                    crate::capsule_workspace::state_dir_for(&state_root, &ws.workspace_id);
+                let enter = req.enter;
+                // The ORIGINAL payload length — `PtyInputRes::bytes`'s own
+                // doc ("the enter byte, if requested, is not counted"), so
+                // this is captured BEFORE the CR (if any) is appended below.
+                let byte_len = bytes.len();
+                let outcome = tokio::task::spawn_blocking(move || {
+                    let phase = crate::capsule_workspace::phase_of(&state_dir);
+                    let ready_phase =
+                        crate::capsule_workspace::phase_str(sot_log::wire::SupervisorPhase::Ready);
+                    if phase != ready_phase {
+                        return CapsuleOpOutcome::NotReady(phase);
+                    }
+                    // `--enter` on a capsule row: a literal CR (0x0d)
+                    // appended to the payload — the byte a terminal itself
+                    // sends for Enter — never a converted trailing newline
+                    // inside the caller's own text (`ops.rs`'s own doc).
+                    let mut payload_bytes = bytes;
+                    if enter {
+                        payload_bytes.push(0x0d);
+                    }
+                    let deadline = std::time::Instant::now() + CAPSULE_OP_DEADLINE;
+                    match crate::capsule_workspace::headless::type_into(
+                        &state_dir,
+                        &controller_id,
+                        &payload_bytes,
+                        deadline,
+                    ) {
+                        Ok(n) => CapsuleOpOutcome::Ok(n),
+                        Err(e) => CapsuleOpOutcome::Headless(e),
+                    }
+                })
+                .await
+                .context("spawn_blocking pty.input capsule")?;
+                match outcome {
+                    CapsuleOpOutcome::Ok(_) => {
+                        let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: byte_len };
+                        Ok(vec![(
+                            Frame::res(req_id, op::PTY_INPUT, serde_json::to_value(res)?),
+                            None,
+                        )])
+                    }
+                    CapsuleOpOutcome::NotReady(phase) => {
+                        let payload = json!({
+                            "error": format!("capsule row not ready (phase: {phase})"),
+                            "code": "capsule_not_ready",
+                            "phase": phase,
+                        });
+                        Ok(vec![(Frame::res(req_id, op::PTY_INPUT, payload), None)])
+                    }
+                    CapsuleOpOutcome::Headless(e) => {
+                        let payload = headless_error_payload(e, "capsule_input_failed");
+                        Ok(vec![(Frame::res(req_id, op::PTY_INPUT, payload), None)])
+                    }
+                }
+            }
+            #[cfg(not(any(windows, target_os = "linux")))]
+            {
+                // `controller_id` is only ever consumed by the
+                // windows/linux arm above; on any other host it is
+                // resolved (for `bad_origin` validation) but never used.
+                let _ = &controller_id;
+                let payload = json!({
+                    "error": "capsule runtime not available on this host",
+                    "code": "capsule_input_failed",
+                    "phase": "attach",
+                });
+                Ok(vec![(Frame::res(req_id, op::PTY_INPUT, payload), None)])
+            }
+        }
+        other => {
+            let payload = json!({
+                "error": format!("workspace runtime {other:?} has no pty.input path"),
+                "code": "runtime_not_available",
+            });
+            Ok(vec![(Frame::res(req_id, op::PTY_INPUT, payload), None)])
+        }
+    }
+}
+
+/// ADR 0042 amendment (2026-09-07), decision 2: the CURRENT screen of a
+/// named row — no scrollback, no history. Never takes the pen on a capsule
+/// row (a WATCHER attach); never touches `tmux.capture_pane` (that op's
+/// scrollback-including read stays exactly what it is, for its own
+/// pane-id callers).
+pub async fn handle_pty_screen(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    workspaces: &Workspaces,
+) -> Result<HandlerOutput> {
+    let req: PtyScreenReq = serde_json::from_value(payload_json).context("pty.screen payload")?;
+
+    let Some(ws) = workspaces.resolve(Some(&req.workspace_id)) else {
+        let payload = json!({
+            "error": format!("unknown workspace: {}", req.workspace_id),
+            "code": "unknown_workspace",
+        });
+        return Ok(vec![(Frame::res(req_id, op::PTY_SCREEN, payload), None)]);
+    };
+
+    match ws.runtime.as_str() {
+        "tmux" => {
+            let session = ws.tmux_session.clone();
+            let result = tokio::task::spawn_blocking(move || TmuxClient::new().visible_pane(&session))
+                .await
+                .context("spawn_blocking pty.screen tmux")?;
+            match result {
+                Ok((cols, rows, cursor_x, cursor_y, lines)) => {
+                    let res = PtyScreenRes {
+                        runtime: "tmux".into(),
+                        cols,
+                        rows,
+                        lines,
+                        cursor: Some(PtyCursor { row: cursor_y, col: cursor_x }),
+                    };
+                    Ok(vec![(
+                        Frame::res(req_id, op::PTY_SCREEN, serde_json::to_value(res)?),
+                        None,
+                    )])
+                }
+                Err(e) => Ok(vec![(tmux_error_frame(req_id, op::PTY_SCREEN, e), None)]),
+            }
+        }
+        "capsule" => {
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
+                    let payload = json!({
+                        "error": format!(
+                            "could not resolve this machine's state root ({} unset)",
+                            crate::capsule_workspace::STATE_ROOT_HINT
+                        ),
+                        "code": "capsule_screen_failed",
+                        "phase": "attach",
+                    });
+                    return Ok(vec![(Frame::res(req_id, op::PTY_SCREEN, payload), None)]);
+                };
+                let state_dir =
+                    crate::capsule_workspace::state_dir_for(&state_root, &ws.workspace_id);
+                // A pure watcher never takes, so this id never lands in any
+                // input record — it exists only because `FeAttachClient::
+                // attach`'s signature takes one; a fixed, self-describing
+                // constant is honester than fabricating an identity this
+                // read has no caller-supplied handle for.
+                let controller_id = "sot-fe-screen".to_string();
+                let outcome = tokio::task::spawn_blocking(move || {
+                    let phase = crate::capsule_workspace::phase_of(&state_dir);
+                    let ready_phase =
+                        crate::capsule_workspace::phase_str(sot_log::wire::SupervisorPhase::Ready);
+                    if phase != ready_phase {
+                        return CapsuleOpOutcome::NotReady(phase);
+                    }
+                    let deadline = std::time::Instant::now() + CAPSULE_OP_DEADLINE;
+                    match crate::capsule_workspace::headless::screen_of(
+                        &state_dir,
+                        &controller_id,
+                        deadline,
+                    ) {
+                        Ok(shot) => CapsuleOpOutcome::Ok(shot),
+                        Err(e) => CapsuleOpOutcome::Headless(e),
+                    }
+                })
+                .await
+                .context("spawn_blocking pty.screen capsule")?;
+                match outcome {
+                    CapsuleOpOutcome::Ok(shot) => {
+                        let res = PtyScreenRes {
+                            runtime: "capsule".into(),
+                            cols: shot.cols,
+                            rows: shot.rows,
+                            lines: shot.lines,
+                            cursor: shot.cursor.map(|(row, col)| PtyCursor { row, col }),
+                        };
+                        Ok(vec![(
+                            Frame::res(req_id, op::PTY_SCREEN, serde_json::to_value(res)?),
+                            None,
+                        )])
+                    }
+                    CapsuleOpOutcome::NotReady(phase) => {
+                        let payload = json!({
+                            "error": format!("capsule row not ready (phase: {phase})"),
+                            "code": "capsule_not_ready",
+                            "phase": phase,
+                        });
+                        Ok(vec![(Frame::res(req_id, op::PTY_SCREEN, payload), None)])
+                    }
+                    CapsuleOpOutcome::Headless(e) => {
+                        let payload = headless_error_payload(e, "capsule_screen_failed");
+                        Ok(vec![(Frame::res(req_id, op::PTY_SCREEN, payload), None)])
+                    }
+                }
+            }
+            #[cfg(not(any(windows, target_os = "linux")))]
+            {
+                let payload = json!({
+                    "error": "capsule runtime not available on this host",
+                    "code": "capsule_screen_failed",
+                    "phase": "attach",
+                });
+                Ok(vec![(Frame::res(req_id, op::PTY_SCREEN, payload), None)])
+            }
+        }
+        other => {
+            let payload = json!({
+                "error": format!("workspace runtime {other:?} has no pty.screen path"),
+                "code": "runtime_not_available",
+            });
+            Ok(vec![(Frame::res(req_id, op::PTY_SCREEN, payload), None)])
+        }
     }
 }
 

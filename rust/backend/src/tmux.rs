@@ -294,6 +294,58 @@ impl TmuxClient {
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
+    /// ADR 0042 amendment (2026-09-07), `op::PTY_INPUT`'s tmux arm: deliver
+    /// `text` to `session`'s active pane LITERALLY — `-l` means tmux never
+    /// interprets it as key names, ever. `--` ends option parsing so text
+    /// that itself starts with `-` is never mistaken for a flag. Enter, if
+    /// the caller asked for one, is a SEPARATE `send_enter` call — a
+    /// trailing newline inside `text` is delivered as a literal byte, never
+    /// converted (that conversion is the CLI's own `--enter` flag's job,
+    /// not this method's).
+    pub fn send_keys_literal(&self, session: &str, text: &str) -> Result<()> {
+        self.run(&["send-keys", "-t", session, "-l", "--", text])?;
+        Ok(())
+    }
+
+    /// The bare `Enter` key (tmux's own key-name form) — submits whatever
+    /// `send_keys_literal` just typed. Kept as its own call (mirrors
+    /// `codex-watch.sh`'s own "-l literal, Enter sent separately" idiom)
+    /// rather than folding into `send_keys_literal`, so a caller that only
+    /// wants the literal bytes never pays for an Enter it didn't ask for.
+    pub fn send_enter(&self, session: &str) -> Result<()> {
+        self.run(&["send-keys", "-t", session, "Enter"])?;
+        Ok(())
+    }
+
+    /// `op::PTY_SCREEN`'s tmux arm: the VISIBLE screen of `session`'s
+    /// active pane only — geometry, cursor, and exactly `pane_height`
+    /// lines of content, never scrollback. Deliberately NOT
+    /// [`Self::capture_pane`] (that method's `-S -<lines>` always reaches
+    /// into scrollback; `pty.screen`'s own contract is "current screen
+    /// only, no history"). Returns `(cols, rows, cursor_col, cursor_row,
+    /// lines)`; `lines.len() == rows as usize` always — short capture
+    /// output (some tmux versions stop at the last non-empty trailing
+    /// line rather than always emitting the full pane height) is padded
+    /// with empty lines, never truncated, so this never silently drops
+    /// real content a newer tmux might over-report.
+    pub fn visible_pane(&self, session: &str) -> Result<(u16, u16, u16, u16, Vec<String>)> {
+        let geom = self.run(&[
+            "display-message",
+            "-p",
+            "-t",
+            session,
+            "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y}",
+        ])?;
+        let (cols, rows, cursor_x, cursor_y) =
+            parse_pane_geometry(&String::from_utf8_lossy(&geom))?;
+
+        // No `-S`/`-E`: tmux's own default range IS the visible pane —
+        // deliberately not `capture_pane`'s scrollback-including form.
+        let out = self.run(&["capture-pane", "-p", "-t", session])?;
+        let lines = pad_visible_lines(&String::from_utf8_lossy(&out), rows);
+        Ok((cols, rows, cursor_x, cursor_y, lines))
+    }
+
     fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
         // tmux never runs on Windows (no `tmux.exe`) — gated off here, the
         // one place every TmuxClient operation funnels through, so the
@@ -502,6 +554,41 @@ fn parse_pane_line(line: &str) -> Result<PaneInfo> {
     })
 }
 
+/// Pure parse half of [`TmuxClient::visible_pane`]'s geometry probe —
+/// `display-message -p "#{pane_width} #{pane_height} #{cursor_x}
+/// #{cursor_y}"`'s output, unit-testable with no tmux process involved.
+/// Returns `(cols, rows, cursor_x, cursor_y)`.
+fn parse_pane_geometry(text: &str) -> Result<(u16, u16, u16, u16)> {
+    let mut parts = text.split_whitespace();
+    let mut next_field = || -> Result<u16> {
+        parts
+            .next()
+            .context("display-message geometry: missing field")?
+            .parse::<u16>()
+            .context("display-message geometry: non-numeric field")
+    };
+    let cols = next_field()?;
+    let rows = next_field()?;
+    let cursor_x = next_field()?;
+    let cursor_y = next_field()?;
+    Ok((cols, rows, cursor_x, cursor_y))
+}
+
+/// Pure parse half of [`TmuxClient::visible_pane`]'s content read —
+/// `capture-pane -p` output split into lines, padded to exactly `rows`
+/// entries (never truncated: a tmux version that over-reports real content
+/// must never have it silently dropped). Blank rows inside the captured
+/// text are kept as empty strings — `str::lines` already does this for an
+/// interior blank line; only a SHORT capture (fewer than `rows` lines
+/// overall) needs padding, always appended at the end.
+fn pad_visible_lines(text: &str, rows: u16) -> Vec<String> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    while lines.len() < rows as usize {
+        lines.push(String::new());
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,6 +681,46 @@ mod tests {
     #[test]
     fn parse_pane_line_rejects_short() {
         assert!(parse_pane_line("a|b|c|d").is_err());
+    }
+
+    #[test]
+    fn parse_pane_geometry_basic() {
+        let (cols, rows, cx, cy) = parse_pane_geometry("80 24 3 7").unwrap();
+        assert_eq!((cols, rows, cx, cy), (80, 24, 3, 7));
+    }
+
+    #[test]
+    fn parse_pane_geometry_rejects_missing_field() {
+        assert!(parse_pane_geometry("80 24 3").is_err());
+    }
+
+    #[test]
+    fn parse_pane_geometry_rejects_non_numeric() {
+        assert!(parse_pane_geometry("80 24 x 7").is_err());
+    }
+
+    #[test]
+    fn pad_visible_lines_keeps_exactly_rows_and_preserves_blank_rows() {
+        // `pty.screen`'s own contract: exactly `rows` lines, blank rows
+        // (interior AND trailing) kept as empty strings, never trimmed away.
+        let text = "hello\n\nworld\n";
+        let lines = pad_visible_lines(text, 5);
+        assert_eq!(lines, vec!["hello", "", "world", "", ""]);
+    }
+
+    #[test]
+    fn pad_visible_lines_never_truncates_a_longer_capture() {
+        // A tmux version that over-reports must never be silently clipped.
+        let text = "a\nb\nc\n";
+        let lines = pad_visible_lines(text, 2);
+        assert_eq!(lines, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn pad_visible_lines_exact_count_is_a_no_op() {
+        let text = "a\nb\n";
+        let lines = pad_visible_lines(text, 2);
+        assert_eq!(lines, vec!["a", "b"]);
     }
 
     /// Round-trips a real tmux session through the client. Gated on

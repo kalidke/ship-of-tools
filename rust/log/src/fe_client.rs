@@ -132,6 +132,17 @@ pub struct TakeTransaction {
     /// original `tick` fired on EVERY call, including immediately after
     /// each fast refusal).
     next_retry_at: Option<Instant>,
+    /// ADR 0042 amendment (2026-09-07): a HEADLESS client (the daemon's own
+    /// `pty.input` attach) has no viewport and must never resize the pane
+    /// — "the take's resize is the identity" is not good enough, because
+    /// even sending an identity resize is a wire round trip a watcher-with-
+    /// no-screen has no business making. `true` turns [`Self::on_take_ok`]'s
+    /// own `SendResize` step into a no-op: take_ok promotes straight to
+    /// [`Role::Driving`] (skipping [`Role::Resizing`] entirely) and returns
+    /// no actions, so the wire `take{controller_id}` frame — already the
+    /// ONLY thing `SendTake` ever encodes — is genuinely the last thing a
+    /// headless take ever sends.
+    headless: bool,
 }
 
 impl Default for TakeTransaction {
@@ -142,7 +153,19 @@ impl Default for TakeTransaction {
 
 impl TakeTransaction {
     pub fn new() -> Self {
-        Self { role: Role::Watching, queue: Vec::new(), checkpoint_retry_started_at: None, next_retry_at: None }
+        Self {
+            role: Role::Watching,
+            queue: Vec::new(),
+            checkpoint_retry_started_at: None,
+            next_retry_at: None,
+            headless: false,
+        }
+    }
+
+    /// A transaction for a headless client — see [`Self::headless`]'s own
+    /// doc. Otherwise identical to [`Self::new`].
+    pub fn new_headless() -> Self {
+        Self { headless: true, ..Self::new() }
     }
 
     pub fn role(&self) -> Role {
@@ -202,11 +225,21 @@ impl TakeTransaction {
     }
 
     /// `take_ok{take_epoch}`: RESIZING, and send `resize` ALONE — the
-    /// queue is released only once [`Self::on_resize_ok`] runs.
+    /// queue is released only once [`Self::on_resize_ok`] runs. A
+    /// [`Self::headless`] transaction skips RESIZING entirely: it promotes
+    /// straight to DRIVING and sends no resize (`cols`/`rows` are simply
+    /// unused in that case) — the caller must flush the queue itself once
+    /// it sees [`Self::role`] already `Driving` after this call, since the
+    /// ordinary `resize_ok` frame that would normally trigger that flush
+    /// never arrives.
     pub fn on_take_ok(&mut self, cols: u16, rows: u16) -> Vec<TakeAction> {
-        self.role = Role::Resizing;
         self.checkpoint_retry_started_at = None;
         self.next_retry_at = None;
+        if self.headless {
+            self.role = Role::Driving;
+            return vec![];
+        }
+        self.role = Role::Resizing;
         vec![TakeAction::SendResize { cols, rows }]
     }
 
@@ -925,6 +958,31 @@ mod tests {
         assert_eq!(t.role(), Role::Resizing);
         // The queue is untouched -- take_queued is not callable yet
         // (still RESIZING), proving the bytes were not silently flushed.
+    }
+
+    /// ADR 0042 amendment (2026-09-07): a headless client's take sends NO
+    /// resize, ever — `take_ok` promotes straight to DRIVING (skipping
+    /// RESIZING) and returns no actions at all, so the wire `take` frame
+    /// really is the last thing this transaction ever sends.
+    #[test]
+    fn headless_take_ok_sends_no_resize_and_promotes_straight_to_driving() {
+        let mut t = TakeTransaction::new_headless();
+        t.on_input_while_watching(b"ab");
+        let actions = t.on_take_ok(80, 24);
+        assert_eq!(actions, Vec::<TakeAction>::new());
+        assert_eq!(t.role(), Role::Driving);
+        // The queue is immediately drainable — no `resize_ok` needed.
+        assert_eq!(t.take_queued(), Some(b"ab".to_vec()));
+    }
+
+    #[test]
+    fn ordinary_take_ok_is_unaffected_by_the_headless_constructor_existing() {
+        // Guards against the headless flag leaking into `new()`'s default.
+        let mut t = TakeTransaction::new();
+        t.on_input_while_watching(b"ab");
+        let actions = t.on_take_ok(80, 24);
+        assert_eq!(actions, vec![TakeAction::SendResize { cols: 80, rows: 24 }]);
+        assert_eq!(t.role(), Role::Resizing);
     }
 
     #[test]

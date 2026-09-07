@@ -134,6 +134,14 @@ impl ClientGuard {
     pub fn serial(&self) -> u64 {
         self.serial
     }
+
+    /// This connection's own `hello` `client_id` — ADR 0042 amendment
+    /// (2026-09-07): `pty.input`'s default `controller_id` when the request
+    /// carries no explicit `origin`. Attribution, not authentication — the
+    /// same trust level `client_id` has always carried.
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
 }
 
 impl Drop for ClientGuard {

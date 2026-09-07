@@ -99,6 +99,31 @@ pub mod op {
     /// paging keeps working. `-e` exits copy-mode when a page-down reaches
     /// the live bottom — keyboard-symmetric with the mouse-wheel SGR path.
     pub const PTY_SCROLL: &str = "pty.scroll";
+    /// ADR 0042 amendment (2026-09-07), "a session types into and reads a
+    /// sibling row": a session types into ANOTHER row's pane by
+    /// `workspace_id`, unlike `PTY_WRITE` (which always means THIS
+    /// connection's own pty, fire-and-forget). Answered — a caller with no
+    /// pane to look at needs the outcome. Request `PtyInputReq`, response
+    /// `PtyInputRes` or a typed error (`unknown_workspace`,
+    /// `capsule_not_ready`, `capsule_input_failed`, `capsule_input_unknown`,
+    /// `input_not_text`, `runtime_not_available`, `bad_origin`). A tmux row
+    /// delivers the bytes literally (`send-keys -l`, no key-name
+    /// interpretation, ever); a capsule row is served by a HEADLESS ATTACH
+    /// CLIENT that takes the pen only long enough to type and never resizes
+    /// it (`capsule_workspace::headless`) — ADR 0041's take-on-first-input
+    /// semantics, applied to a second kind of client. `PtyWriteReq`/
+    /// `PTY_WRITE` are UNCHANGED by this: an old daemon simply answers
+    /// unknown-op for `pty.input`, the safe failure.
+    pub const PTY_INPUT: &str = "pty.input";
+    /// ADR 0042 amendment (2026-09-07): the CURRENT screen of a row named by
+    /// `workspace_id` — no scrollback, no history (the record and a future
+    /// Issue-B own those). Request `PtyScreenReq`, response `PtyScreenRes`
+    /// or a typed error (same vocabulary as `PTY_INPUT`, minus the
+    /// input-only codes, plus `capsule_screen_failed`). A tmux row reads its
+    /// pane's VISIBLE rows (never `tmux.capture_pane`'s scrollback) plus
+    /// geometry/cursor; a capsule row attaches as a WATCHER (never takes the
+    /// pen) and reads the same checkpoint the frontend's own client would.
+    pub const PTY_SCREEN: &str = "pty.screen";
     /// Server-pushed evt: a file under the project root changed on disk.
     /// Carries `{path, node_id?, kind}` (kind ∈ "modified" | "created" |
     /// "removed"). Frontend re-fetches preview if the path matches a
@@ -972,6 +997,73 @@ pub struct PtyEvt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtyScrollReq {
     pub direction: String,
+}
+
+/// `op::PTY_INPUT` — a session types into a NAMED row, answered (unlike
+/// `PtyWriteReq`, which is always THIS connection's own pty and
+/// fire-and-forget). `data_b64` is the same base64-encoded byte string
+/// `PtyWriteReq` carries. `enter`: append the byte a terminal sends for
+/// Enter, applied by the DAEMON in a runtime-appropriate way — a literal
+/// CR (`0x0d`) on a capsule row, a separate `send-keys Enter` after the
+/// literal text on a tmux row (`send-keys -l` mangles a trailing newline
+/// inside the literal text itself, so the text is never altered to carry
+/// it). `origin` names the controller for the record's own controller-actor
+/// frames; `#[serde(default)]` so an old client that omits it still parses.
+/// **`origin` is ATTRIBUTION, not authentication** — the caller's CLAIMED
+/// handle, exactly like `HelloReq::client_id`. The record stores who typed,
+/// how many bytes, and when; it never stores the content (redacted in the
+/// WAL) and this op grants no privilege `origin` alone could forge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtyInputReq {
+    pub workspace_id: String,
+    /// Base64-encoded byte string — see `PtyWriteReq::data_b64`.
+    pub data_b64: String,
+    #[serde(default)]
+    pub enter: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
+
+/// `op::PTY_INPUT` response: `ok` is `true` iff the daemon delivered the
+/// bytes to the row's own input path (tmux `send-keys`, or a capsule's
+/// `InputRecorded`); `bytes` is the payload length delivered (the `enter`
+/// byte, if requested, is not counted — it rides the runtime's own
+/// separate mechanism, not the payload).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtyInputRes {
+    pub ok: bool,
+    pub runtime: String,
+    pub bytes: usize,
+}
+
+/// `op::PTY_SCREEN` request: the row to read, by workspace_id (accepted as
+/// either a workspace_id or a slug — see `TreeRootReq::workspace_id`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtyScreenReq {
+    pub workspace_id: String,
+}
+
+/// A cursor position within `PtyScreenRes::lines`. 0-based, matching the
+/// vt100 parser's own indexing (row 0 = the top visible line).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PtyCursor {
+    pub row: u16,
+    pub col: u16,
+}
+
+/// `op::PTY_SCREEN` response: the row's CURRENT screen only — no
+/// scrollback, no history. `lines.len() == rows as usize`, one entry per
+/// visible row, trailing spaces trimmed, blank rows kept as empty strings.
+/// `cursor` is `None` only when the runtime could not report one (never
+/// for a healthy row of either kind).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtyScreenRes {
+    pub runtime: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub lines: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<PtyCursor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1887,5 +1979,117 @@ mod repl_lifecycle_tests {
         });
         let e: WorkspaceListEntry = serde_json::from_value(json).unwrap();
         assert_eq!(e.repl_state, "starting");
+    }
+}
+
+#[cfg(test)]
+mod pty_input_screen_tests {
+    use super::{PtyCursor, PtyInputReq, PtyInputRes, PtyScreenReq, PtyScreenRes};
+
+    #[test]
+    fn pty_write_req_wire_shape_is_untouched() {
+        // ADR 0042 amendment: `PtyWriteReq`/`PTY_WRITE` are NOT touched by
+        // this change — pin the old wire shape byte-for-byte so a future
+        // edit to this file cannot silently widen it.
+        let req = super::PtyWriteReq { data_b64: "aGVsbG8=".to_string() };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json, serde_json::json!({ "data_b64": "aGVsbG8=" }));
+    }
+
+    #[test]
+    fn pty_input_req_origin_absent_serializes_to_nothing() {
+        let req = PtyInputReq {
+            workspace_id: "ws-1".into(),
+            data_b64: "aGk=".into(),
+            enter: false,
+            origin: None,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "workspace_id": "ws-1", "data_b64": "aGk=", "enter": false })
+        );
+    }
+
+    #[test]
+    fn pty_input_req_enter_absent_defaults_false() {
+        // A pre-this-change caller (there is none on the wire yet, but a
+        // minimal payload) must still parse with `enter: false`.
+        let json = serde_json::json!({ "workspace_id": "ws-1", "data_b64": "aGk=" });
+        let req: PtyInputReq = serde_json::from_value(json).expect("minimal PtyInputReq parses");
+        assert!(!req.enter);
+        assert!(req.origin.is_none());
+    }
+
+    #[test]
+    fn pty_input_req_round_trips_with_origin_and_enter() {
+        let req = PtyInputReq {
+            workspace_id: "ws-2".into(),
+            data_b64: "Zm9v".into(),
+            enter: true,
+            origin: Some("kitt-dev".into()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: PtyInputReq = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.workspace_id, "ws-2");
+        assert_eq!(back.data_b64, "Zm9v");
+        assert!(back.enter);
+        assert_eq!(back.origin.as_deref(), Some("kitt-dev"));
+    }
+
+    #[test]
+    fn pty_input_res_round_trips() {
+        let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: 5 };
+        let json = serde_json::to_value(&res).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "ok": true, "runtime": "capsule", "bytes": 5 })
+        );
+    }
+
+    #[test]
+    fn pty_screen_req_round_trips() {
+        let req = PtyScreenReq { workspace_id: "ws-3".into() };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: PtyScreenReq = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.workspace_id, "ws-3");
+    }
+
+    #[test]
+    fn pty_screen_res_cursor_absent_serializes_to_nothing_and_round_trips() {
+        let res = PtyScreenRes {
+            runtime: "tmux".into(),
+            cols: 80,
+            rows: 24,
+            lines: vec!["hello".into(), "".into()],
+            cursor: None,
+        };
+        let json = serde_json::to_value(&res).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "runtime": "tmux",
+                "cols": 80,
+                "rows": 24,
+                "lines": ["hello", ""],
+            })
+        );
+        let back: PtyScreenRes = serde_json::from_value(json).unwrap();
+        assert!(back.cursor.is_none());
+    }
+
+    #[test]
+    fn pty_screen_res_cursor_present_round_trips() {
+        let res = PtyScreenRes {
+            runtime: "capsule".into(),
+            cols: 120,
+            rows: 40,
+            lines: vec!["x".into()],
+            cursor: Some(PtyCursor { row: 3, col: 7 }),
+        };
+        let json = serde_json::to_string(&res).unwrap();
+        let back: PtyScreenRes = serde_json::from_str(&json).unwrap();
+        let cursor = back.cursor.expect("cursor present");
+        assert_eq!((cursor.row, cursor.col), (3, 7));
     }
 }
