@@ -451,6 +451,28 @@ surfaces. So LU3 is three lanes, the first two provably behaviour-preserving on 
     `taskkill`. LU3c lands AFTER LU2b, whose `--parent-lease-fd` parser and `PtyProducer`
     the spawned leg needs. `lease.rs` stays Windows-only; nothing in it is ported.
 
+21. **The Linux supervisor reaps a leg once, after it has read the leg's status.** A Linux leg is
+    the supervisor's child, so someone must reap it. `SIGCHLD` stays `SIG_DFL` (an ignored
+    `SIGCHLD` auto-reaps, which re-opens the pid-reuse window and would be inherited by the leg);
+    there is no global `waitpid(-1)` reaper. The spawn probe's `SpawnedChild` holds a `pidfd` opened
+    right after `spawn` — safe because the unreaped child pins its pid — and reaps on the exit it
+    observes; a leg adopted through its lane is reaped with `waitpid(pid, WNOHANG)` right after
+    `PIDFD_GET_INFO` answered its exit status, `ECHILD` ignored (a leg inherited from a previous
+    supervisor is its parent's to reap). The supervisor and its legs share no kill domain: the
+    producer's `setsid` (decision 14) is the whole detachment, and `DETACHED_PROCESS` has no Unix
+    analogue. The parent-death lease is `pipe2(O_CLOEXEC)`: the supervisor holds the write end for
+    life; the read end reaches the leg as `--parent-lease-fd 3` through a `pre_exec` `dup2` (which
+    clears `CLOEXEC` on the copy; when the read end already IS fd 3 the flag is cleared with `fcntl`
+    instead — a `dup2(fd, fd)` would leave it set and the lease would close at `exec`). "The endpoint
+    is absent" is one predicate, `TransportError::is_endpoint_absent` — `NotFound` or
+    `ConnectionRefused` under `Io` — because a socket path with no listener refuses where a pipe
+    name that does not exist is simply not found; the supervisor's end-run and writer-liveness
+    probes use it on both platforms. `probe_unix::RealProbeOps` maps a refused connect to the A/B
+    table's `FileNotFound` (the leg is not there yet) and has no `PipeBusy` (the kernel queues
+    connects). The supervisor is written once against `client::PlatformEndpoint` and
+    `transport::PlatformLaneServer`: the platform is chosen by those two aliases, not by type
+    parameters threaded through the state machine.
+
 ## What this deletes
 
 On Unix: the completion-proof apparatus, instance recycling, the SDDL builder,
