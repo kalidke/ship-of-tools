@@ -2,7 +2,7 @@
 
 **Status:** LU1–LU4 implemented (#212–#221); LU5 proposed (2026-09-06; amended the same day after one Codex design
 round — twelve findings, every one discharged in the text below; LU1b's landed
-mechanism folded into decisions 1–3; the LU2 decisions 11–16 and the LU3 decisions 17–20 added 2026-09-07; the LU5 decisions 23–26 added 2026-09-07 evening after the first backend trial and two Codex rounds — decision 24 reverses decision 16's survival clause and amends decision 21's kill-domain sentence). Design pass for the lane series that makes
+mechanism folded into decisions 1–3; the LU2 decisions 11–16 and the LU3 decisions 17–20 added 2026-09-07; the LU5 decisions 23–26 added 2026-09-07 evening after the first backend trial and two Codex rounds; the LU6b decisions 27–30 (attach convergence) added 2026-09-07 late, from the measured local-session create latency — decision 24 reverses decision 16's survival clause and amends decision 21's kill-domain sentence). Design pass for the lane series that makes
 ADR 0042's rule — "the capsule is the default runtime for every NEW session on
 EVERY host" — true on the Linux backend hosts, where today every row is still
 a tmux row and no session leaves a Ship's Log record. Builds on ADR 0037 (P1:
@@ -88,6 +88,11 @@ manager review, one Codex round, CI green, merge (the standing rule).
   through destroy (26). **LU5d — DONE (6bec1546)** — the host-aware sot-comm
   registry predicate for list and destroy; **LU5d2** — the strict form everywhere the
   daemon reads the registry (outside the runtime; the shared-home bug the trial exposed).
+- **LU6b — attach convergence (decisions 27–30).** The owner's 10–30 s to open a new
+  local session, measured on the reporting box as ~180 ms of create and the rest attach
+  convergence: an absent endpoint fails fast at the transport, the attach client waits on
+  the supervisor's word instead of the voyage pipe, process spawns leave the Tokio
+  workers, and convergence is measured on one frontend clock (LU6a's log lines).
 
 ## The properties (what `pipe_win`/`challenge` pin; what LU1 must satisfy)
 
@@ -639,6 +644,88 @@ own comm bootstrap → adoption across a daemon restart → a verified end.
     dir, the fence free, no "treating as a crash" line — with deterministic races for the
     record against generation replacement and the backoff recheck.
 
+## Decisions for LU6b (attach convergence) — added 2026-09-07
+
+The evidence (`latency-map.md`; the reporting box's logs): `workspace.create` took ~180 ms
+end to end (supervisor spawned 71 ms after the request — an observation with no cold pair
+probe in it; no warn line), the frontend started its attach client 82 ms after the request
+while the supervisor was still bootstrapping, and nothing logs when that client first
+paints. The hypothesis decision 30's field lines will confirm: the delay is bounded waits
+paid on endpoints that do not exist yet, overlapping rather than adding. `CONNECT_BOUND`
+(2 s) is charged in full on an ABSENT pipe or socket (`pipe_win::
+connect_named_pipe_unchallenged` retries `ERROR_FILE_NOT_FOUND`; `socket_unix::
+connect_unix_socket_unchallenged` retries `ENOENT`/`ECONNREFUSED`) — by the supervisor's
+InitialProbe on a fresh voyage, by each readiness round, and by each frontend episode
+before its 250 ms → 4 s doubling backoff; `check_pair`'s 5 s process probe runs on a Tokio
+worker inside the connection's serial dispatch; and a frontend that reads `drawer.voyage`
+before the supervisor publishes it is terminal, not slow.
+
+27. **An absent endpoint fails fast; only a busy one is retried, within `CONNECT_BOUND`.**
+    Startup callers own readiness synchronization: the transport keeps no absent-retry,
+    and whoever knows a server is coming polls at its own interval — the daemon's post-
+    spawn `starting`-claim poll, the supervisor's readiness and adopt-only probes at
+    `ATTEMPT_INTERVAL`, the attach client's episodes, and the harnesses' bounded readiness
+    waits (the three tests that leaned on the transport's absent-retry — the cross-process
+    test in `tests/pipe_win.rs`, `tests/e2e_pipe.rs`, `tests/e2e_socket.rs` — convert to
+    such waits). Linux: `ENOENT` and `ECONNREFUSED` mean no listener and return on the
+    first attempt; `EAGAIN` means a full backlog and is retried within the bound; `EINTR`
+    stays retried; macOS is out of scope (it fails closed today). Windows: `ERROR_FILE_
+    NOT_FOUND` before the first instance exists is a transient the caller's poll owns; once
+    bound, instances are held and recycled, never re-created, so an unavailable instance
+    means busy — `ERROR_PIPE_BUSY` alone is retried (`WaitNamedPipe` 200 ms and the 20 ms
+    sleep unchanged) and the absent-retry sleep branch is deleted. No signature changes,
+    no wait parameter. `ATTEMPT_INTERVAL` drops from 500 ms to 250 ms; the 60 s cutoff is
+    untouched.
+
+28. **The attach client converges on the supervisor's word, never on the voyage pipe.** An
+    episode connects the supervisor lane and runs hello once, then polls `Status` on that
+    SAME connection every 250 ms — the lane is built for it (eight slots, hello once per
+    connection, activity refreshed per request) — until the report says `Ready` with a
+    voyage id; only then does it open the voyage lane ONCE (fail-fast; absent at that
+    instant is "not yet"). The supervisor publishes `drawer.voyage` at bootstrap, before
+    `Ready` (`discover_or_mint_voyage`): a pointer absent or mismatched while the lane
+    reports `Starting` is "not yet"; absent or mismatched under an unchanged `Ready` is
+    INCONSISTENT — the client rechecks `Status` once, then reports it as a typed client
+    status (never silent waiting, never `Terminal` by default). The client invents no
+    cutoff of its own: supervisor-owned lifecycle deadlines stay (a killed readiness
+    attempt counts toward the anti-flap and respawns; recovery has its own budget) and
+    `HEALTH_WINDOW` (120 s) keeps covering an absent or unresponsive supervisor. Two paths
+    survive the reordering: presence/health accounting resolves an OPTIONAL pointer for the
+    absent-supervisor check (a missing pointer starts the accounting; an answered `Status`
+    clears the unresponsive count), and a latched `Quit` is dispatched as soon as the
+    supervisor lane and the required voyage are available, BEFORE the `Ready` gate. The
+    doubling backoff (250 ms → 4 s) is reserved for a lane that had attached and then
+    dropped; before the first attach the wait is the fixed 250 ms. The frontend's own start
+    is unchanged — it still spawns the client on the `attach_direct` reply — and the first
+    paint waits for the checkpoint (LU6a).
+
+29. **A process spawn never runs on a Tokio worker.** `start_supervisor` (the create
+    handler and `resume_all`) and the watchdog's restart spawn run under `spawn_blocking`.
+    What that buys is stated honestly: blocking process work leaves the async workers;
+    same-connection ordering stays serial (create is awaited within serial dispatch, so its
+    reply still waits for the spawn result and the frames behind it still wait for the
+    reply). The `starting` claim is acquired BEFORE the scheduling yield, so another
+    connection cannot win it and trigger create's rollback; toml-before-spawn and
+    broadcast-and-reply-after are unchanged; `check_pair`'s 5 s bound is unchanged.
+
+30. **Convergence is measured on one clock; the targets are field targets.** The metric is
+    the frontend's own clock from the create or switch REQUEST to the first checkpoint-
+    bearing presentation (LU6a's outcome lines take that origin). 3 s for a fresh capsule
+    row with agent `none` and 300 ms for a switch to a `Ready` row are provisional field
+    targets on the reporting box, not code-derived bounds (bootstrap flushes are disk-
+    bound; the two management identity checks alone permit 14 s). The suites prove
+    behaviour, not timing: observable connection reuse, controlled delayed pointer
+    publication, terminal, unresponsive, and Quit-before-Ready on the Linux socket half;
+    the pipe half's busy retry via the one-instance saturation/release fixture on Windows
+    CI; timings reported, never gated.
+
+Deleted here: the transport's absent-endpoint retry on both platforms and Windows's absent-
+retry sleep branch; the InitialProbe's 2 s wait on a fresh voyage; the attach client's
+per-episode dead-pipe connects and its pre-attach backoff; the terminal
+`PointerAbsentOrCorrupt` while the supervisor is still starting; any wait parameter or
+knob; the first draft's additive latency arithmetic and its "the interval is the readiness
+latency" claim.
+
 ## What this deletes
 
 On Unix: the completion-proof apparatus, instance recycling, the SDDL builder,
@@ -648,7 +735,9 @@ a second producer loop (LU2), the drawer-era SID names (LU3), the third
 the `--survival … has no effect on unix` warning; decision 21's "no shared kill domain"
 claim; the null stderr on a daemon-spawned supervisor; a permanent launcher-availability
 cache; an ECHILD fallback; the state-root knob, NFS-tolerant store, installer
-auto-placement, log symlink and phase-string diagnostics the trial's first plan proposed.
+auto-placement, log symlink and phase-string diagnostics the trial's first plan proposed. LU6b: the absent-endpoint connect retry on both
+transports; the InitialProbe's fixed wait; the attach client's dead-pipe connects and
+pre-attach backoff; a terminal pointer-absent while the supervisor is starting.
 
 ## Open for the maintainer
 

@@ -352,6 +352,100 @@ retiring `-Local` (it keeps its "no tunnels, no freshness" meaning).
   frontend; the tunnel dropping and returning re-attaches from the
   checkpoint; take-on-first-input and exactly-once input hold across it.
 
+## Amendment — a session types into and reads a sibling row (added 2026-09-07; one Codex text round folded in)
+
+The owner's rule: a session typing into, and reading, another session's pane is a
+fundamental capability of the new system — not a later nicety. Today it is refused by
+construction: `pty.write` is a fire-and-forget write to the CONNECTION's own pty (the pane a
+`pty.open` attached; `server.rs` never answers it), so a headless caller has nothing to
+write to; a capsule row's `pty.open` is refused with `attach_direct` and its input rides the
+binary attach lane whose only client is the frontend's; and the only read is
+`tmux.capture_pane`, tmux-specific by pane id and including scrollback. The ops TODO carried
+this as "the two-clients-one-pane semantics must be decided first". They were decided in ADR
+0041: every client attaches as a WATCHER, the pen is a capability installed by an explicit
+`take`, take-on-first-input is a transaction, `take` demotes the previous driver silently,
+input is exactly-once under `(controller_id, take_epoch, idem_key)`, and the record's
+controller-actor frames carry the `controller_id`. This amendment only applies those
+semantics to a second kind of client. Six decisions:
+
+1. **One NEW answered op, `pty.input {workspace_id, data_b64, enter?, origin?}` → `{ok,
+   runtime, bytes}`.** `pty.write` stays byte-identical on the wire and unanswered — overloading it
+   with an optional target would make a new caller against an old daemon write silently into
+   whatever pty that connection had attached; a new op fails the safe way (unknown op) and
+   needs no negotiation. The invariant is one RUNTIME input path per row, whoever types — not
+   one wire verb. tmux rows: the bytes go literally to the row's `tmux_session` (`send-keys
+   -l`; no key-name interpretation, ever). Capsule rows: the daemon is a HEADLESS ATTACH
+   CLIENT on the row's lane, `fe_client_io<E: Endpoint>` (L1-unix LU3b; the same code on
+   Windows pipes and Unix sockets): attach with `controller_id` = the caller's claimed
+   handle, pump to the checkpoint, `take`, `send_input`, wait for `InputRecorded`, drop. A
+   headless client has no viewport: it keeps the checkpoint's own geometry locally and sends
+   NO `Resize` — the wire `Take` carries only the controller id; resizing is the frontend
+   transaction's choice (`capsule.rs` runs the OS resize even for equal dimensions, so
+   "adopt the size and resize to it" would still touch the pane). Bounds and outcomes: ONE
+   absolute deadline (5 s) propagated through every phase (attach, checkpoint, take, input,
+   record, detach) with the worker cancelled and its closure observed — `Drop` alone only
+   queues `Shutdown`; a payload larger than the take queue (`TAKE_QUEUE_CAP`) is refused
+   BEFORE taking, an empty payload succeeds without taking, and success means `InputRecorded`
+   for the entire payload; a timeout after submission answers `code: "capsule_input_unknown"`
+   (delivery may have happened) and the daemon never retries on its own; every other failure
+   answers `code: "capsule_input_failed"` naming the phase. Known limit, stated not promised:
+   `take` is preemptive with no reservation — the frontend's client is demoted silently,
+   learns it through `InputRefusedStale` and retakes on the user's next keystroke; a take
+   that lands between the frontend's `TakeOk` and its `Resize` clears its queued bytes
+   (`fe_client.rs`, `NotDriver`), so concurrent typing during the window may be refused or
+   discarded VISIBLY; lossless concurrent typing is not designed here.
+
+2. **One read op, `pty.screen {workspace_id}` → `{runtime, cols, rows, lines, cursor}`.**
+   The current screen only — no scrollback, no history (the record and Issue-B own those).
+   tmux rows: the VISIBLE rows only (blank rows preserved; `capture_pane`'s `-S -<n>`
+   history form is not this read) plus the same pane's geometry and cursor from
+   `display-message`; neither needs an attached terminal. Capsule rows: the daemon attaches
+   as a WATCHER and never takes: a watcher attach neither takes nor resizes nor writes any
+   artefact into the producer's pane (`attach_proto.rs`, `take_committed` is the only
+   demotion; `capsule.rs` resizes only on a driver's request), the lane builds a checkpoint
+   for every attach (ground-gated at a single watermark, ADR 0041; parser-restorable on both
+   platforms, `capsule.rs` ~:1381), the daemon restores it into the same vt100 parser the
+   frontend uses at the checkpoint's own dimensions, reads its rows and cursor, then drops.
+   Bounded like the write; `code: "capsule_screen_failed"` with the phase. `tmux.capture_pane`
+   stays for its pane-id callers (Sessions-mode live tail); it is not the session-facing read.
+
+3. **`sot-fe type <workspace> <text> [--enter] [--stdin] [--origin <handle>]` and `sot-fe
+   screen <workspace>`** wrap the two ops — verb first, then the workspace, then options, as
+   every sot-fe verb. Bytes are literal, never interpreted; `--enter` sends one CR (`0x0d`)
+   after the text on a capsule row and a separate `send-keys Enter` on a tmux row; no
+   trailing-newline conversion of the text itself. Text may come on stdin (`--stdin`) so a
+   leading `/` survives git-bash's argv conversion. `--origin` is attribution (decision 6),
+   default the caller's comm handle when the script can derive it, else `sot-fe`.
+
+4. **Read before write is policy, now checkable.** A session never sends a bare Enter to a
+   pane it has not read (`sot-fe screen` first; claude's trust prompt defaults to "No,
+   exit"). One line in the sot-comm skill's BE→FE section — these are request/response verbs
+   against a daemon, not broadcasts.
+
+5. **Reach is the daemon's reach.** A session reaches the rows of every daemon it can
+   connect to: the backend's rows from any frontend box (over that box's own tunnel; ADR 0028
+   and `hosts.toml.example` forward toward the backend) and from backend sessions (the local
+   socket); a Windows box's LOCAL rows from sessions on that box, because its daemon listens
+   on loopback TCP (the launcher's `SOT_TCP_PORT`, 18743 by default — seen listening by a
+   capsule session there) and comm-lib's sender speaks tcp; the named-pipe transport is the
+   frontend's, not the CLI's. Nothing forwards a Windows box's loopback port outward, so its
+   local rows stay unreachable from the backend; L3 proxies over an existing connection and
+   creates no reverse route, so this is not the bridge's to fix and is not designed here.
+
+6. **Identity is attribution, not authentication.** The controller id is the caller's CLAIMED
+   handle; hello's `client_id` is caller-supplied too (`server.rs`, `clients.register`), so
+   substituting it would authenticate nothing. The record's input frames (`capsule.rs`
+   `run_input_wal`) carry `(controller_id, take_epoch)`, the byte length and the time, with
+   the content redacted — so the record shows who claimed to type, how much, and when. No
+   new field, no verification claim.
+
+Deleted from the candidate set: an overloaded `pty.write` (the rollout hazard above); any
+frontend-side relay of input (the daemon is the one headless client; the frontend's client
+is a peer, not a proxy); a `sot-capsule input` CLI (a second writer path outside the
+daemon's deadline and identity); a trailing-newline-to-Enter conversion; a 5 s reservation
+or any lossless-contention promise; and the TODO's "decide the semantics first" blocker,
+which ADR 0041 had already discharged.
+
 ## What is deliberately NOT built
 
 - No session registry, catalog, or second source of truth: the daemon's
