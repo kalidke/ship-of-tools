@@ -241,4 +241,18 @@ end
         @test rec.kind == SL.HEADER_KIND
         @test_throws SL.SchemaError SL.parse_header_body(rec.body)
     end
+
+    @testset "9. signal-death golden (ADR 0043 \"Decisions for LU2\" LU2b): detail.signal round-trips, free-form detail" begin
+        sig_path = joinpath(REPO_ROOT, "rust", "log", "tests", "fixtures", "golden-signal-death-v1.sotseg")
+        @assert isfile(sig_path)
+        seg = read_segment(sig_path)
+        @test seg.header.required_features == String[]
+        @test verify_seal(sig_path) === true
+        @test length(seg.frames) == 4
+        dead = seg.frames[4]
+        @test String(dead.class) == "lifecycle"
+        @test String(dead.payload.kind) == "producer_dead"
+        @test Int(dead.payload.detail.signal) == 9
+        @test !haskey(dead.payload.detail, :exit_code)
+    end
 end

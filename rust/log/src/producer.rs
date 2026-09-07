@@ -15,16 +15,22 @@
 //! **The EOF contract (decision 12) is universal, with no knob.** The
 //! output side's own OS behavior differs — ConPTY keeps its output
 //! handle open regardless of the child's lifetime until explicitly
-//! closed; a Unix pty master returns EIO/EOF precisely when the child
-//! dies — but the CONTRACT this trait's implementations must uphold is
-//! identical on every platform: `Self::Output` reports EOF (or an I/O
-//! error) ONLY after [`Producer::close_output_side`] has run. A pre-close
-//! EOF/error is capsule-fatal everywhere (`capsule::run` bails unsealed,
-//! ADR 0039's crash shape) — an implementation whose OS reports the end
-//! earlier (a Unix producer) must hold it (flag + condvar) until
-//! `close_output_side` releases it, rather than exposing a
-//! platform-specific "is early EOF an anomaly here" flag that would serve
-//! no invariant.
+//! closed; a Unix pty master returns `EOF`/`EIO` the instant the LAST
+//! slave fd closes (review round: NOT precisely "when the child dies" —
+//! a child that closes its own stdio and reopens its controlling tty
+//! yields `EIO` mid-run too, which is why `producer_pty.rs`'s own
+//! `PtyProducer` keeps a slave descriptor held in the CAPSULE itself for
+//! as long as the run lasts, so the master never sees either shape until
+//! `close_output_side` actually drops it) — but the CONTRACT this
+//! trait's implementations must uphold is identical on every platform:
+//! `Self::Output` reports EOF (or an I/O error) ONLY after
+//! [`Producer::close_output_side`] has run. A pre-close EOF/error is
+//! capsule-fatal everywhere (`capsule::run` bails unsealed, ADR 0039's
+//! crash shape) — an implementation whose OS could otherwise report the
+//! end earlier must make that structurally impossible (holding a
+//! resource the OS-level signal depends on, as `PtyProducer` does),
+//! rather than exposing a platform-specific "is early EOF an anomaly
+//! here" flag that would serve no invariant.
 
 use crate::Result;
 use std::io::{Read, Write};
@@ -46,9 +52,9 @@ pub enum ExitStatus {
 
 /// The parent-death lease's own per-platform shape (ADR 0043 decision
 /// 15): a named, kernel-brokered mutex on Windows (`crate::lease`),
-/// checked by name; an inherited pipe read-end file descriptor on Unix
-/// (declared now, LU2b wires the actual check — a real descendant is the
-/// only thing that can hold the fd). `capsule::CapsuleConfig`'s
+/// checked by name; an inherited pipe read-end file descriptor on Unix,
+/// checked by `producer_pty::parent_lease_fd_broken` — a real descendant
+/// is the only thing that can hold the fd. `capsule::CapsuleConfig`'s
 /// `parent_lease` field is `Option<ParentLease>` — `None` is this
 /// crate's own manual-testing harness and every capsule test, unchanged
 /// from before this type existed.
@@ -116,7 +122,11 @@ pub trait Producer: Send + Sized {
     fn terminate_domain(&self) -> Result<()>;
 
     /// Whether the containment domain is empty — every process in it
-    /// reaped.
+    /// dead (exited or killed). Review round 2: NOT "reaped" — a Unix
+    /// leader may stay an unreaped zombie for as long as this producer
+    /// lives (its exit is observed, deliberately, without consuming it;
+    /// see `producer_pty.rs`'s own module doc), and only dropping the
+    /// producer frees its pid.
     fn domain_is_empty(&self) -> Result<bool>;
 
     /// Closes the producer's output side — teardown Phase B. This is the

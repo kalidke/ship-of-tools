@@ -1,67 +1,48 @@
-//! `sot-capsule run <voyage_root> <voyage_id> [--no-echo] -- <cmd> [args...]`
+//! `sot-capsule run <voyage_root> <voyage_id> [--cols <n>] [--rows <n>]
+//! [--parent-lease-name <name> | --parent-lease-fd <n>] [--survival
+//! <normal|degraded>] [--assume-no-rollback-target] -- <cmd> [args...]`
 //!
-//! Runs one producer on a PTY under a capsule, recording its voyage
-//! (ADR 0037/0039). Like `script(1)`, but the record is a Ship's Log voyage:
-//! output you see on stdout has already been fsynced (the visibility
-//! watermark), input is recorded redacted by default, and the voyage
-//! verifies with `sot-log verify` afterward.
+//! Runs one producer on a real terminal under a capsule, recording its
+//! voyage (ADR 0037/0039/0041; ADR 0043 "Decisions for LU2": ONE `cmd_run`
+//! drives both platforms' own producer + transport, below). Like
+//! `script(1)`, but the record is a Ship's Log voyage: output you see on
+//! stdout has already been fsynced (the visibility watermark), input is
+//! recorded redacted by default, and the voyage verifies with
+//! `sot-log verify` afterward.
 
+/// `sot-capsule run <voyage_root> <voyage_id> [--claude ...]` (Linux):
+/// `run` on a real pty (`producer_pty::PtyProducer`) over a real Unix
+/// socket transport; `claude` is ADR 0040's own, unrelated producer,
+/// untouched by LU2b (see `run_claude`'s own doc).
 #[cfg(target_os = "linux")]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--no-echo] -- <cmd> [args...]\n       sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-version>";
+    let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--cols <n>] [--rows <n>] \
+[--parent-lease-fd <n>] [--assume-no-rollback-target] -- <cmd> [args...]\n       \
+sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-version>";
     if args.first().map(String::as_str) == Some("claude") {
         return run_claude(&args[1..], usage);
     }
-    if args.len() < 5 || args[0] != "run" {
+    if args.first().map(String::as_str) != Some("run") {
         eprintln!("{usage}");
         std::process::exit(2);
     }
-    let voyage_root = std::path::PathBuf::from(&args[1]);
-    let voyage_id = args[2].clone();
-    let mut rest = &args[3..];
-    let mut echo = true;
-    if rest.first().map(String::as_str) == Some("--no-echo") {
-        echo = false;
-        rest = &rest[1..];
-    }
-    if rest.first().map(String::as_str) != Some("--") || rest.len() < 2 {
-        eprintln!("{usage}");
-        std::process::exit(2);
-    }
-    let argv: Vec<String> = rest[1..].to_vec();
-
-    let config = sot_log::capsule_legacy::CapsuleConfig {
-        voyage_root,
-        voyage_id,
-        retention: sot_log::segment::RetentionClass::Archive,
-        producer_kind: "raw-terminal".into(),
-        argv,
-        echo,
-    };
-    match sot_log::capsule_legacy::run(config) {
-        Ok(s) => {
-            eprintln!(
-                "sot-capsule: producer exited {:?}; {} frames, {} segments sealed",
-                s.exit_code, s.frames_written, s.segments_sealed
-            );
-            std::process::exit(s.exit_code.unwrap_or(1));
-        }
-        Err(e) => {
-            eprintln!("sot-capsule: {e}");
-            std::process::exit(1);
-        }
-    }
+    cmd_run::<sot_log::producer_pty::PtyProducer, _, _>(&args[1..], |n| {
+        sot_log::socket_transport::SocketTransport::new(n)
+    });
 }
 
-/// The RAW total simultaneous pipe-instance ceiling this harness passes to
-/// `PipeTransport::new` (ADR 0041: subscribers plus separately bounded
-/// pre-hello/mgmt connections — the exact combined figure is a real
-/// budget-table computation step 6/7's supervisor owns; this bin is a
-/// manual-testing harness with no supervisor yet, so it states a single
-/// generous constant rather than inventing that computation here).
-#[cfg(windows)]
-const MAX_PIPE_INSTANCES: u32 = 8;
+/// The RAW total simultaneous connection ceiling this harness passes to
+/// each platform's own transport constructor (ADR 0041: subscribers plus
+/// separately bounded pre-hello/mgmt connections — the exact combined
+/// figure is a real budget-table computation a real supervisor owns; this
+/// bin is a manual-testing harness with no supervisor yet, so it states a
+/// single generous constant rather than inventing that computation here).
+/// Neutral (ADR 0043 "Decisions for LU2" LU2b: renamed from the
+/// Windows-only `MAX_PIPE_INSTANCES` now that ONE `cmd_run` drives both
+/// platforms' own transport constructor with it).
+#[cfg(any(windows, target_os = "linux"))]
+const MAX_TRANSPORT_CONNECTIONS: u32 = 8;
 
 /// `run`, plus (ADR 0041 step 6 U2) `supervise`/`endrun`/`reset` — see
 /// each subcommand's own function for its usage line.
@@ -75,7 +56,9 @@ fn main() {
         // `check_pair`) so a sotd/sot-capsule pair from two builds is
         // refused up front instead of failing every attach as `Foreign`.
         Some("build-id") => println!("{}", sot_log::exchange::SUPERVISOR_LANE_BUILD_ID),
-        Some("run") => cmd_run(&args[1..]),
+        Some("run") => cmd_run::<sot_log::producer_conpty::ConptyProducer, _, _>(&args[1..], |n| {
+            sot_log::pipe_transport::PipeTransport::new(n)
+        }),
         Some("supervise") => cmd_supervise(&args[1..]),
         Some("endrun") => cmd_endrun(&args[1..]),
         Some("reset") => cmd_reset(&args[1..]),
@@ -86,17 +69,30 @@ fn main() {
     }
 }
 
-/// Temporary harness for the Windows capsule runtime (ADR 0041 steps 4-5;
-/// U2 adds `--parent-lease-name`, the flag ONLY a supervisor passes). No
-/// stdin-forwarding thread (the wire lane replaces it — real input/resize
-/// now arrive over the pipe, from whatever attaches to it) and no
-/// `--echo` (pipe fan-out is the real subscriber path). Ctrl+C still
-/// simply kills this whole process when run bare (no supervisor) — FE-loss,
-/// not EndRun (ADR 0041 Lifecycle).
-#[cfg(windows)]
-fn cmd_run(args: &[String]) {
+/// One `run` arm over both platforms' own producer and transport (ADR
+/// 0043 "Decisions for LU2" LU2b): `P` is the platform's own
+/// [`sot_log::producer::Producer`] (`ConptyProducer` on Windows,
+/// `PtyProducer` on Linux), `make_transport` builds its
+/// [`sot_log::transport::Transport`] from the connection ceiling above
+/// (`PipeTransport::new`/`SocketTransport::new`). Everything else — the
+/// flag grammar, the rollout-evidence gate, the exit-code mapping — is
+/// genuinely one shared implementation now; only the lease flag's own
+/// name and `--survival`'s own meaning still differ per platform, both
+/// enforced right here. No stdin-forwarding thread (the wire lane
+/// replaces it — real input/resize now arrive over the transport, from
+/// whatever attaches to it) and no `--echo` (fan-out is the real
+/// subscriber path). Ctrl+C still simply kills this whole process when
+/// run bare (no supervisor) — FE-loss, not EndRun (ADR 0041 Lifecycle).
+#[cfg(any(windows, target_os = "linux"))]
+fn cmd_run<P, T, F>(args: &[String], make_transport: F)
+where
+    P: sot_log::producer::Producer,
+    T: sot_log::transport::Transport,
+    F: FnOnce(u32) -> T,
+{
     let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--cols <n>] [--rows <n>] \
-[--parent-lease-name <name>] [--survival <normal|degraded>] [--assume-no-rollback-target] -- <cmd> [args...]";
+[--parent-lease-name <name> | --parent-lease-fd <n>] [--survival <normal|degraded>] \
+[--assume-no-rollback-target] -- <cmd> [args...]";
     if args.len() < 3 {
         eprintln!("{usage}");
         std::process::exit(2);
@@ -113,17 +109,25 @@ fn cmd_run(args: &[String]) {
     // U4's release-apply transaction exists — see the refusal message
     // below for what it actually asserts.
     let mut assume_no_rollback_target = false;
-    // ADR 0041 step 6 U2: `Some(name)` only when a supervisor spawned
-    // this process — see `capsule::CapsuleConfig::parent_lease`'s own doc.
-    // Held here as the raw CLI string; wrapped into the per-platform
-    // `ParentLease::NamedMutex` variant (ADR 0043 decision 15) below.
-    let mut parent_lease_mutex_name: Option<String> = None;
+    // ADR 0041 step 6 U2 / ADR 0043 decision 15: `Some(_)` only when a
+    // supervisor spawned this process — see
+    // `capsule::CapsuleConfig::parent_lease`'s own doc. Held here as the
+    // raw CLI value; wrapped into the per-platform `ParentLease` variant
+    // below. Exactly one of the two is ever meaningful on a given
+    // platform (checked below) — the OTHER flag is a loud refusal, never
+    // silently ignored.
+    #[cfg(windows)]
+    let mut parent_lease_name: Option<String> = None;
+    #[cfg(unix)]
+    let mut parent_lease_fd: Option<std::os::fd::RawFd> = None;
     // ADR 0042 slice L1a (Codex review finding 7): supplied by the
     // spawner (`--start`/`--resume`'s own supervisor, via
     // `build_run_command`'s `--survival`), never inferred — defaults to
     // `Normal` for a bare manual invocation, matching every existing
-    // caller of this harness that predates the flag.
-    let mut survival = sot_log::wire::Survival::Normal;
+    // caller of this harness that predates the flag. ADR 0043 decision
+    // 16: Unix has no job-breakaway concept at all, so survival is always
+    // `Normal` there regardless of what (if anything) `--survival` named.
+    let mut survival_flag: Option<sot_log::wire::Survival> = None;
     loop {
         match rest.first().map(String::as_str) {
             Some("--cols") if rest.len() > 1 => {
@@ -141,18 +145,54 @@ fn cmd_run(args: &[String]) {
                 rest = &rest[2..];
             }
             Some("--parent-lease-name") if rest.len() > 1 => {
-                parent_lease_mutex_name = Some(rest[1].clone());
-                rest = &rest[2..];
+                // The two inner blocks are individually exhaustive per
+                // platform (never both present at once): the diverging
+                // "wrong platform" arm ends in `process::exit`, so
+                // nothing follows it in the SAME match arm on that
+                // build -- the one that DOES continue advances `rest`
+                // itself, rather than a shared trailing statement no
+                // platform's own diverging branch could ever reach.
+                #[cfg(windows)]
+                {
+                    parent_lease_name = Some(rest[1].clone());
+                    rest = &rest[2..];
+                }
+                #[cfg(unix)]
+                {
+                    eprintln!(
+                        "sot-capsule: --parent-lease-name is Windows-only; this platform's \
+                         supervisor passes --parent-lease-fd <n> instead (ADR 0043 decision 15)"
+                    );
+                    std::process::exit(2);
+                }
+            }
+            Some("--parent-lease-fd") if rest.len() > 1 => {
+                #[cfg(unix)]
+                {
+                    parent_lease_fd = Some(rest[1].parse().unwrap_or_else(|_| {
+                        eprintln!("{usage}");
+                        std::process::exit(2);
+                    }));
+                    rest = &rest[2..];
+                }
+                #[cfg(windows)]
+                {
+                    eprintln!(
+                        "sot-capsule: --parent-lease-fd is Unix-only; this platform's supervisor \
+                         passes --parent-lease-name <name> instead (ADR 0043 decision 15)"
+                    );
+                    std::process::exit(2);
+                }
             }
             Some("--survival") if rest.len() > 1 => {
-                survival = match rest[1].as_str() {
+                survival_flag = Some(match rest[1].as_str() {
                     "normal" => sot_log::wire::Survival::Normal,
                     "degraded" => sot_log::wire::Survival::Degraded,
                     _ => {
                         eprintln!("{usage}");
                         std::process::exit(2);
                     }
-                };
+                });
                 rest = &rest[2..];
             }
             Some("--assume-no-rollback-target") => {
@@ -177,9 +217,10 @@ fn cmd_run(args: &[String]) {
     // recreated exactly the "missing means first install" default-through
     // Major 9 was supposed to remove, only under a typed name. Absent the
     // explicit override, this binary refuses before ever constructing a
-    // config or opening a segment. `sot-capsule supervise` (U2) is in the
-    // exact same "no real evidence" position and passes the SAME flag
-    // down to every leg it spawns — see that subcommand's own doc.
+    // config or opening a segment. `sot-capsule supervise` (U2, Windows;
+    // LU3 on Unix) is in the exact same "no real evidence" position and
+    // passes the SAME flag down to every leg it spawns — see that
+    // subcommand's own doc.
     if !assume_no_rollback_target {
         eprintln!(
             "sot-capsule: no rollout evidence available -- this binary cannot open a \
@@ -194,29 +235,59 @@ fn cmd_run(args: &[String]) {
     }
     let rollout_evidence = sot_log::rollout::RolloutEvidence::NoRollbackTarget;
 
+    #[cfg(windows)]
+    let producer_kind = "raw-terminal-windows";
+    #[cfg(unix)]
+    let producer_kind = "raw-terminal";
+
+    #[cfg(windows)]
+    let survival = survival_flag.unwrap_or(sot_log::wire::Survival::Normal);
+    // ADR 0043 decision 16: no per-platform knob -- Unix survival is
+    // ALWAYS `Normal` (no job breakaway exists to report). `--survival` is
+    // still accepted by the flag loop above (one shared grammar), but an
+    // explicit value is honestly reported as inert rather than silently
+    // dropped.
+    #[cfg(unix)]
+    let survival = {
+        if let Some(v) = survival_flag {
+            eprintln!(
+                "sot-capsule: --survival {v:?} has no effect on unix -- survival is always Normal \
+                 there (ADR 0043 decision 16: no job-breakaway concept exists to report)"
+            );
+        }
+        sot_log::wire::Survival::Normal
+    };
+
+    #[cfg(windows)]
+    let parent_lease = parent_lease_name.map(sot_log::producer::ParentLease::NamedMutex);
+    #[cfg(unix)]
+    let parent_lease = parent_lease_fd.map(sot_log::producer::ParentLease::InheritedFd);
+
     let config = sot_log::capsule::CapsuleConfig {
         voyage_root,
         voyage_id,
         retention: sot_log::segment::RetentionClass::Archive,
-        producer_kind: "raw-terminal-windows".into(),
+        producer_kind: producer_kind.into(),
         argv,
         cols,
         rows,
-        // ADR 0042 slice L1a: supplied by `--survival` (a real spawner —
-        // `build_run_command` — now sets it); a bare manual invocation
-        // still defaults to the honest `Normal`.
+        // ADR 0042 slice L1a: supplied by `--survival` on Windows (a real
+        // spawner -- `build_run_command` -- now sets it); a bare manual
+        // invocation still defaults to the honest `Normal`. Always
+        // `Normal` on Unix (decision 16).
         survival,
         rollout_evidence,
-        parent_lease: parent_lease_mutex_name.map(sot_log::producer::ParentLease::NamedMutex),
+        parent_lease,
     };
     // No command source yet (Ctrl+C kills the process instead — see the
-    // doc above). The pipe IS real now (U3 round 2): `PipeTransport::bind`
-    // (called by `run` itself, at the pipe-lifetime invariant's exact
-    // point) creates `\\.\pipe\sot-voyage-<voyage_id>` for real
-    // attach/mgmt clients to connect to.
+    // doc above). The transport IS real now: `Transport::bind` (called by
+    // `run` itself, at the transport-lifetime invariant's exact point)
+    // creates `\\.\pipe\sot-voyage-<voyage_id>` (Windows) or
+    // `<runtime_dir>/voyage-<voyage_id>.sock` (Unix) for real attach/mgmt
+    // clients to connect to.
     let (_cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let mut transport = sot_log::pipe_transport::PipeTransport::new(MAX_PIPE_INSTANCES);
-    match sot_log::capsule::run::<sot_log::producer_conpty::ConptyProducer>(config, cmd_rx, &mut transport) {
+    let mut transport = make_transport(MAX_TRANSPORT_CONNECTIONS);
+    match sot_log::capsule::run::<P>(config, cmd_rx, &mut transport) {
         Ok(s) => {
             eprintln!(
                 "sot-capsule: producer exited {:?} ({:?}); {} frames, {} segments sealed \
@@ -231,13 +302,13 @@ fn cmd_run(args: &[String]) {
             );
             // Reinterpretation to a process exit code happens ONLY here,
             // at the actual OS process-exit boundary — everywhere else in
-            // this crate the value stays a raw, unsigned DWORD (review
-            // finding: an earlier version cast it to i32 well before this
-            // point, which would have turned a high-bit NTSTATUS-shaped
-            // code negative for no reason). ADR 0043 decision 13:
-            // `Signal` is unreachable on Windows but mapped honestly
-            // (`128 + n`, the POSIX shell convention) for the day this
-            // binary's exit-mapping is shared with a Unix caller.
+            // this crate the value stays a raw, unsigned DWORD on Windows
+            // (review finding: an earlier version cast it to i32 well
+            // before this point, which would have turned a high-bit
+            // NTSTATUS-shaped code negative for no reason). ADR 0043
+            // decision 13: `Signal` is the real Unix shape for a signal
+            // death, mapped `128 + n` (the POSIX shell convention); on
+            // Windows it stays unreachable but mapped the same honest way.
             std::process::exit(match s.exit_code {
                 Some(sot_log::producer::ExitStatus::Code(c)) => c as i32,
                 Some(sot_log::producer::ExitStatus::Signal(n)) => 128 + n,

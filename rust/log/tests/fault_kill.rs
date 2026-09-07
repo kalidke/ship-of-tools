@@ -21,7 +21,6 @@ use std::path::Path;
 use std::time::Duration;
 
 const ROUNDS: usize = 12;
-const VOYAGE: &str = "fault-sweep-voyage";
 
 /// Deterministic-per-run pseudo-random delays without Date/rand deps:
 /// mix the round index with the process id.
@@ -51,26 +50,54 @@ fn count_sealed_frames(root: &Path) -> u64 {
 
 #[test]
 fn kill9_sweep_recovers_green_every_round() {
+    // ADR 0043 "Decisions for LU2" LU2b: the Linux `run` arm now binds a
+    // real Unix socket transport unconditionally (`capsule.rs`'s one
+    // unified writer loop, formerly a separate, wire-less Linux-only
+    // loop) -- `bind` canonically validates the voyage id BEFORE any OS
+    // call (ADR 0043 property 33), so it must be a real UUID now, not the
+    // old mnemonic string; and `SOT_RUNTIME_DIR` must point at a private,
+    // isolated dir the socket can actually bind under (never the default
+    // discovery path, which a real supervisor -- absent here -- would
+    // normally have exported). Sequential rounds, one capsule process
+    // alive at a time, so ONE isolated dir for the whole sweep is safe.
+    let voyage = uuid::Uuid::now_v7().to_string();
+    // `tempdir_in("/tmp")`, never the default (ambient `$TMPDIR`) --
+    // review round: a long ambient `TMPDIR` broke `sun_path`'s 108-byte
+    // limit in the reviewer's own repro. Mirrors `tests/e2e_socket.rs`'s
+    // and `tests/socket_unix.rs`'s identical device.
+    let runtime_dir = tempfile::Builder::new().prefix("sot-fk").tempdir_in("/tmp").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(runtime_dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join(VOYAGE);
-    VoyageStore::bootstrap(&root, VOYAGE, RetentionClass::Discard).unwrap();
+    let root = dir.path().join(&voyage);
+    VoyageStore::bootstrap(&root, &voyage, RetentionClass::Discard).unwrap();
 
     let capsule_bin = env!("CARGO_BIN_EXE_sot-capsule");
     let mut sealed_frames_before: u64 = 0;
 
     for round in 0..ROUNDS {
         // A chatty producer that would run ~forever; the kill is what ends it.
+        // `--assume-no-rollback-target`: this harness has no supervisor
+        // and therefore no real rollout evidence to construct -- see
+        // `sot-capsule run`'s own refusal message for what the flag
+        // actually asserts. The old stdout-echo flag is gone entirely
+        // (LU2b): wire fan-out replaced it, and this harness attaches no
+        // wire client at all.
         let mut capsule = std::process::Command::new(capsule_bin)
             .args([
                 "run",
                 root.to_str().unwrap(),
-                VOYAGE,
-                "--no-echo",
+                &voyage,
+                "--assume-no-rollback-target",
                 "--",
                 "/bin/sh",
                 "-c",
                 "i=0; while [ $i -lt 200000 ]; do echo payload-line-$i; i=$((i+1)); done",
             ])
+            .env("SOT_RUNTIME_DIR", runtime_dir.path())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -95,14 +122,14 @@ fn kill9_sweep_recovers_green_every_round() {
         // Reopen = reconcile + recover under the writer lock. The next
         // incarnation must (a) come up, (b) seal the previous run's tip,
         // (c) leave the voyage verify-green with nothing sealed lost.
-        let mut store = VoyageStore::open_for_writing(&root, VOYAGE)
+        let mut store = VoyageStore::open_for_writing(&root, &voyage)
             .unwrap_or_else(|e| panic!("round {round}: reopen after kill failed: {e}"));
         store.seal_survivor().unwrap_or_else(|e| {
             panic!("round {round}: survivor seal failed: {e}");
         });
         drop(store); // release the lock before verify + the next capsule
 
-        verify_voyage(&root, VOYAGE)
+        verify_voyage(&root, &voyage)
             .unwrap_or_else(|e| panic!("round {round}: verify failed after recovery: {e}"));
 
         let sealed_now = count_sealed_frames(&root);

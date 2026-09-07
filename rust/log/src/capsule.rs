@@ -1,22 +1,23 @@
 //! The capsule: one process babysitting one producer, writing its voyage
 //! (ADR 0041 step 4 — the capsule runtime; ADR 0039 is the format it
 //! writes). Generic over [`crate::producer::Producer`] (ADR 0043
-//! "Decisions for LU2", L1-unix LU2a): the writer loop below — the frame
-//! factory, the output budget, the input WAL, the run-end marker, the
-//! `AttachProto` service path, `ShutdownGuard`, rotation and sealing — is
+//! "Decisions for LU2"): the writer loop below — the frame factory, the
+//! output budget, the input WAL, the run-end marker, the `AttachProto`
+//! service path, `ShutdownGuard`, rotation and sealing — is
 //! platform-neutral and drives whatever producer the caller names through
-//! exactly nine trait calls; only `producer_conpty.rs`'s `ConptyProducer`
-//! (Windows) exists today, wrapping `conpty.rs`'s owned-ConPTY primitives.
-//! `producer_pty` (Unix, a bare PTY fd) lands in LU2b.
+//! exactly nine trait calls: `producer_conpty.rs`'s `ConptyProducer`
+//! (Windows), wrapping `conpty.rs`'s owned-ConPTY primitives, and (LU2b)
+//! `producer_pty.rs`'s `PtyProducer` (Unix), a bare `openpty` fd plus a
+//! process group.
 //!
 //! This module was `capsule_win.rs` before LU2a — Windows-only, alongside
-//! a SEPARATE, independently maintained Linux loop (`capsule_legacy.rs`,
-//! `#![cfg(target_os = "linux")]`, still the Linux `run` arm's own
-//! implementation until LU2b). Even the parts that read identically
-//! between the two (the base64 encoder, the frame-context helper) stay
-//! duplicated, not shared: unifying THOSE is no longer this unit's
-//! problem now that the writer loop itself is unified, and LU2b deletes
-//! the legacy file outright rather than reconciling it.
+//! a SEPARATE, independently maintained Linux loop (its own file,
+//! `#![cfg(target_os = "linux")]`, the Linux `run` arm's own
+//! implementation through LU2a). LU2b deletes that file outright rather
+//! than reconciling it — even the parts that read identically between the
+//! two (the base64 encoder, the frame-context helper) stayed duplicated,
+//! not shared, since unifying THOSE was no longer this unit's problem
+//! once the writer loop itself was unified.
 //!
 //! Three properties this module adds over the legacy Linux capsule, all
 //! pinned by ADR 0041 "Step 4 as specified":
@@ -426,9 +427,10 @@ fn wall_ms() -> i64 {
 /// -plausible value here is worse than an explicit failure the caller can
 /// act on.
 ///
-/// Windows-only for now (ADR 0043 decision 16: "per-platform siblings,
-/// not knobs") — the Linux sibling just below returns `Unsupported` until
-/// LU2b wires `(getpid, challenge_unix::self_start_ticks())`.
+/// Per-platform sibling (ADR 0043 decision 16: "per-platform siblings,
+/// not knobs") — the Linux sibling just below is
+/// `(getpid, challenge_unix::self_start_ticks())`; any other Unix fails
+/// closed (no start-time identity exists there yet).
 #[cfg(windows)]
 fn self_status(survival: Survival) -> Result<MgmtStatus> {
     use windows_sys::Win32::Foundation::FILETIME;
@@ -454,14 +456,28 @@ fn self_status(survival: Survival) -> Result<MgmtStatus> {
     Ok(MgmtStatus { pid, created, survival })
 }
 
-/// ADR 0043 decision 16: the non-Windows arm — LU2b fills this in
-/// (`(getpid, challenge_unix::self_start_ticks())` on Linux; `Unsupported`
-/// on any other Unix). Until then, every non-Windows caller of `run`
-/// fails closed here rather than fabricating a status this platform has
-/// no real answer for yet.
-#[cfg(not(windows))]
+/// ADR 0043 decision 16: the Linux arm — `getpid()` plus
+/// `challenge_unix::self_start_ticks()`, the SAME start-time identity the
+/// Linux socket challenge (`challenge_unix.rs`) reports for a supervisor's
+/// own adoption proof, so a capsule's `status` reply and its later
+/// adoption challenge, if any, describe the identical process the
+/// identical way.
+#[cfg(target_os = "linux")]
+fn self_status(survival: Survival) -> Result<MgmtStatus> {
+    let pid = std::process::id();
+    let created = crate::challenge_unix::self_start_ticks()
+        .map_err(|e| Error::State(format!("capsule: self_start_ticks failed: {e}")))?;
+    Ok(MgmtStatus { pid, created, survival })
+}
+
+/// Any OTHER Unix (ADR 0043 decision 16): no portable start-time identity
+/// exists there (macOS has no pid in `getpeereid` either — see
+/// `challenge_unix.rs`'s own doc) — every caller of `run` fails closed
+/// here rather than fabricating a status this platform has no real
+/// answer for.
+#[cfg(not(any(windows, target_os = "linux")))]
 fn self_status(_survival: Survival) -> Result<MgmtStatus> {
-    Err(Error::Unsupported("self_status: LU2b"))
+    Err(Error::Unsupported("self_status: this unix has no start-time identity"))
 }
 
 struct BudgetState {
@@ -884,24 +900,25 @@ fn run_input_wal(
 /// polled every iteration via [`Transport::try_recv_event`] — see
 /// `attach_proto`'s module doc for the protocol this loop executes.
 // unused_assignments: `flush_output!`'s state reset is dead only at its
-// FINAL expansion (after the loop) — load-bearing at every other site,
-// same allow capsule_legacy.rs carries for the identical reason.
+// FINAL expansion (after the loop) — load-bearing at every other site.
 #[allow(unused_assignments)]
 pub fn run<P: Producer>(
     config: CapsuleConfig,
     commands: mpsc::Receiver<Command>,
     transport: &mut dyn Transport,
 ) -> Result<ExitSummary> {
-    // Until LU2b supplies a real `self_status` for this platform, refuse
-    // BEFORE any durable side effect: without this, a non-Windows call would
-    // bind the transport, open a segment and commit `take_state`, and only
-    // then fail on `Unsupported` — an unsupported call must not change
-    // history. On Windows this is a no-op (the real `self_status` succeeds)
-    // and nothing about the Windows path moves.
+    // A platform this build has no real `self_status` for (any non-Linux
+    // Unix) must refuse BEFORE any durable side effect: without this, such
+    // a call would bind the transport, open a segment and commit
+    // `take_state`, and only then fail on `Unsupported` — an unsupported
+    // call must not change history. On Windows and Linux this is a no-op
+    // (the real `self_status` succeeds) and nothing about either path
+    // moves.
     #[cfg(not(windows))]
     let _ = self_status(config.survival)?;
-    // Resolve ONCE — see capsule_legacy.rs's identical comment on the same
-    // call.
+    // Resolve ONCE — the fresh `producer_pty`/`socket_transport` pair on
+    // Linux and `producer_conpty`/`pipe_transport` on Windows share this
+    // exact ordering (voyage root, then the lease, then the writer fence).
     let voyage_root = crate::fsutil::ensure_container(&config.voyage_root)?;
     if !voyage_root.exists() {
         VoyageStore::bootstrap(&voyage_root, &config.voyage_id, config.retention)?;
@@ -915,9 +932,10 @@ pub fn run<P: Producer>(
     // `crate::lease::open`'s own documented contract: an unopenable lease
     // name is reported identically to an opened-but-broken one, never
     // treated as "no lease was ever passed" (that is `None` below).
-    // `InheritedFd` (Unix) is declared but not yet wired — LU2b's real
-    // check lands there; until then it fails closed (`true`), never
-    // silently treated as "no lease".
+    // `InheritedFd` (Unix): `producer_pty::parent_lease_fd_broken` does one
+    // non-blocking read on the inherited fd — `EAGAIN` means alive,
+    // anything else (including a missing fd) means broken, never silently
+    // treated as "no lease".
     let lease_broken_fn = {
         let lease = config.parent_lease.clone();
         move || match &lease {
@@ -927,7 +945,7 @@ pub fn run<P: Producer>(
                 crate::lease::open(name).map(|c| c.is_broken()).unwrap_or(true)
             }
             #[cfg(unix)]
-            Some(ParentLease::InheritedFd(_fd)) => true, // LU2b wires the real check
+            Some(ParentLease::InheritedFd(fd)) => crate::producer_pty::parent_lease_fd_broken(*fd),
         }
     };
     let lease_broken: Option<&dyn Fn() -> bool> =
@@ -1205,6 +1223,23 @@ pub fn run<P: Producer>(
                         budget.release(READ_CHUNK as u64);
                         let _ = tx.send(ReaderEvent::Done(Ok(())));
                         return;
+                    }
+                    // Review round 2 (R4): a signal-interrupted read is not
+                    // an end of stream on ANY platform -- the ConPTY
+                    // producer never actually produces this (Windows has
+                    // no equivalent signal-delivery-during-read
+                    // interruption for a named pipe read), but the Unix
+                    // pty producer's plain `File` can, any time the
+                    // reading thread receives a signal (this crate's own
+                    // `Drop`-time `killpg`/`waitpid` and the reap-bound
+                    // polling elsewhere don't target this thread, but an
+                    // operator/OS signal targeting the whole process
+                    // would). Release the reservation and retry the SAME
+                    // read rather than treating it as terminal -- the loop
+                    // re-reserves at its own top.
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                        budget.release(READ_CHUNK as u64);
+                        continue;
                     }
                     Err(e) => {
                         budget.release(READ_CHUNK as u64);
