@@ -697,12 +697,18 @@ mod parent_lease_tests {
 /// trait's own methods directly, without a whole `capsule::run` loop
 /// around them; `tests/capsule.rs`'s own `unix_only` module covers the
 /// full-loop-level property (`output_after_a_slave_reopen_is_recorded`).
+/// The two process-tree tests read `/proc` and are Linux-only (they ran on
+/// the macOS CI leg once and failed for want of `/proc`); the reader-strand
+/// test needs no `/proc` and runs on every Unix.
 #[cfg(test)]
 mod drop_and_domain_tests {
     use super::{Producer, PtyProducer};
     use std::io::Read;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    #[cfg(target_os = "linux")]
+    use std::time::Instant;
 
+    #[cfg(target_os = "linux")]
     fn direct_children(pid: libc::pid_t) -> Vec<libc::pid_t> {
         std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
             .unwrap_or_default()
@@ -711,16 +717,19 @@ mod drop_and_domain_tests {
             .collect()
     }
 
+    #[cfg(target_os = "linux")]
     fn proc_state(pid: libc::pid_t) -> Option<String> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let close = stat.rfind(')')?;
         stat[close + 1..].split_whitespace().next().map(str::to_string)
     }
 
+    #[cfg(target_os = "linux")]
     fn proc_exists(pid: libc::pid_t) -> bool {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
     }
 
+    #[cfg(target_os = "linux")]
     fn wait_for_direct_child(pid: libc::pid_t, timeout: Duration) -> Option<libc::pid_t> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -734,6 +743,7 @@ mod drop_and_domain_tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn wait_for_zombie(pid: libc::pid_t, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
@@ -747,6 +757,7 @@ mod drop_and_domain_tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn wait_until_gone(pid: libc::pid_t, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
@@ -807,6 +818,7 @@ mod drop_and_domain_tests {
     /// `Drop` specifically (mirrors `tests/e2e_socket.rs`'s identical
     /// finding, F7).
     #[test]
+    #[cfg(target_os = "linux")]
     fn drop_kills_surviving_descendants_when_the_leader_already_exited() {
         // The `sleep 0.3` between backgrounding and exiting is load-
         // bearing, not padding: a child is reparented to a subreaper the
@@ -846,6 +858,7 @@ mod drop_and_domain_tests {
     /// and persists deterministically until this test (or `Drop`) reaps
     /// the leader.
     #[test]
+    #[cfg(target_os = "linux")]
     fn domain_is_empty_ignores_zombie_descendants() {
         let argv = vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 0.05 & exec sleep 600".to_string()];
         let producer = PtyProducer::spawn(&argv, 80, 24).unwrap();
