@@ -145,6 +145,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -348,6 +350,73 @@ enum ReaperMsg {
     Shutdown,
 }
 
+/// TEST-SUPPORT ONLY counters proving the events channel actually
+/// saturated and the `Bytes` abandon bound actually fired — Codex review
+/// round 2's own critique of the FIRST fix pass's client-side stall
+/// heuristic (a 500 ms client `WouldBlock` does not PROVE the events
+/// channel is full: the reader thread may simply be unscheduled for that
+/// long, then wake, drain the kernel's own backlog in one go, and never
+/// once observe `TrySendError::Full` — kernel socket buffer sizes also
+/// differ across Unix targets). Gated `#[cfg(any(test, feature =
+/// "test-support"))]` — the SAME combined gate `pipe_win.rs`'s own
+/// equivalent test-only methods use (see `Cargo.toml`'s doc on that
+/// feature) — so a normal build carries a ZERO-SIZE unit struct whose
+/// `note_*` methods are empty `#[inline]` fns: no atomic, no counter, no
+/// cost outside a test build. `note_*` methods exist in BOTH builds
+/// (called unconditionally from production code paths in
+/// [`deliver_bytes`]/[`send_lifecycle_event`]); the getters exist ONLY
+/// under the test-support cfg, since nothing outside a test ever needs
+/// to read them.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+struct Probes {
+    events_full_bytes: AtomicUsize,
+    events_full_lifecycle: AtomicUsize,
+    bytes_abandoned: AtomicUsize,
+}
+#[cfg(not(any(test, feature = "test-support")))]
+#[derive(Default)]
+struct Probes;
+
+impl Probes {
+    #[cfg(any(test, feature = "test-support"))]
+    fn note_events_full_bytes(&self) {
+        self.events_full_bytes.fetch_add(1, Ordering::Relaxed);
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    #[inline]
+    fn note_events_full_bytes(&self) {}
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn note_events_full_lifecycle(&self) {
+        self.events_full_lifecycle.fetch_add(1, Ordering::Relaxed);
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    #[inline]
+    fn note_events_full_lifecycle(&self) {}
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn note_bytes_abandoned(&self) {
+        self.bytes_abandoned.fetch_add(1, Ordering::Relaxed);
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    #[inline]
+    fn note_bytes_abandoned(&self) {}
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn events_full_bytes(&self) -> usize {
+        self.events_full_bytes.load(Ordering::Relaxed)
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    fn events_full_lifecycle(&self) -> usize {
+        self.events_full_lifecycle.load(Ordering::Relaxed)
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    fn bytes_abandoned(&self) -> usize {
+        self.bytes_abandoned.load(Ordering::Relaxed)
+    }
+}
+
 struct ServerShared {
     conns: Mutex<HashMap<ConnId, ConnHandle>>,
     next_id: AtomicU64,
@@ -386,6 +455,9 @@ struct ServerShared {
     /// (no connect-to-self). Closed when `ServerShared` finally drops
     /// (every `Arc` clone gone, so no concurrent access is possible).
     wake_write: OwnedFd,
+    /// TEST-SUPPORT ONLY (see [`Probes`]'s own doc) — zero-size, zero-cost
+    /// outside a test build.
+    probes: Probes,
 }
 
 /// The server side of one voyage's (or the supervisor lane's) socket:
@@ -513,6 +585,7 @@ impl SocketServer {
             dir_fd,
             file_name,
             wake_write,
+            probes: Probes::default(),
         });
 
         // Spawn the reaper FIRST -- if the accept thread then fails to
@@ -714,6 +787,33 @@ impl SocketServer {
             ok = join_within(jh, deadline) && ok;
         }
         ok
+    }
+}
+
+/// TEST-SUPPORT ONLY (`#[cfg(any(test, feature = "test-support"))]`,
+/// matching [`Probes`]'s own gate and `pipe_win.rs`'s identical
+/// convention for its own test-only methods): a way for a test to WAIT on
+/// an OBSERVED precondition (the events channel genuinely full; a
+/// `Bytes` delivery genuinely abandoned) instead of assuming either from
+/// a fixed sleep, a client-side stall heuristic, or a fixed connection
+/// count — Codex review round 2's own critique of the first fix pass.
+#[cfg(any(test, feature = "test-support"))]
+impl SocketServer {
+    /// How many times a `Bytes` delivery attempt has observed the events
+    /// channel full (`TrySendError::Full`) since this server was bound.
+    pub fn probe_events_full_bytes(&self) -> usize {
+        self.shared.probes.events_full_bytes()
+    }
+    /// Same, for a lifecycle event (`Accepted`/`Sent`/`Closed`/
+    /// `AcceptError`) delivery attempt.
+    pub fn probe_events_full_lifecycle(&self) -> usize {
+        self.shared.probes.events_full_lifecycle()
+    }
+    /// How many times [`deliver_bytes`] has genuinely given up (torn-down
+    /// or [`BYTES_ABANDON_AFTER`] elapsed) — never merely found the
+    /// consumer gone (channel disconnected), which is a different case.
+    pub fn probe_bytes_abandoned(&self) -> usize {
+        self.shared.probes.bytes_abandoned()
     }
 }
 
@@ -953,14 +1053,26 @@ fn create_and_bind_listener(
     // fresh by-path lookup -- `fchmod` on the SOCKET FD ITSELF was tried
     // first and observed (this module's own test suite, real Linux) to
     // be a silent no-op against a just-bound `AF_UNIX` socket, which is
-    // why this goes through the `*at()` pair instead. Neither call passes
-    // `AT_SYMLINK_NOFOLLOW`: Linux's `fchmodat` does not implement that
-    // flag at all (`ENOTSUP`), and it is not load-bearing here regardless
-    // — the entry named `file_name` was JUST created by the `bind` call
-    // immediately above, inside a directory this module already verified
-    // is owner-only 0700, so nothing outside this same uid (out of scope,
-    // module doc "Security") could have replaced it with a symlink in the
-    // instant since.
+    // why this goes through the `*at()` pair instead.
+    //
+    // `fchmodat` passes flags `0`, NOT `AT_SYMLINK_NOFOLLOW` (Codex review
+    // round 2, finding 3) -- this is a COMPATIBILITY choice, not a claim
+    // that the flag is universally unusable: whether Linux's `fchmodat`
+    // honours `AT_SYMLINK_NOFOLLOW` at all varies by kernel/glibc version
+    // (it happens to work on this host's 5.15 kernel / glibc 2.35, but
+    // that is not a property this crate can assume of every Linux target
+    // it ships to), so `0` is the one value guaranteed to work everywhere.
+    // It is also SAFE here regardless of that variance: the entry named
+    // `file_name` was JUST created by the `bind` call immediately above,
+    // inside a directory this module already verified is owner-only 0700
+    // (`open_verified_dir_fd`), so nothing outside this same uid (out of
+    // scope, module doc "Security") could have replaced it with a symlink
+    // in the instant since -- and the very next call, `fstatat` with
+    // `AT_SYMLINK_NOFOLLOW` (that flag IS passed there, well-supported
+    // everywhere, no such variance), verifies the result is a real 0600
+    // socket special file owned by this uid BEFORE `listen` ever runs, so
+    // a symlink slipped in by this `fchmodat` call would still be caught
+    // here rather than silently accepted.
     let rc = unsafe { libc::fchmodat(dir_fd, file_name.as_ptr(), 0o600, 0) };
     if rc != 0 {
         return Err(SocketError::Io {
@@ -1115,6 +1227,7 @@ fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: TransportEvent) {
             Ok(()) => return,
             Err(TrySendError::Disconnected(_)) => return,
             Err(TrySendError::Full(v)) => {
+                shared.probes.note_events_full_lifecycle();
                 item = v;
                 if shared.dropping.load(Ordering::Acquire) {
                     return;
@@ -1144,8 +1257,10 @@ fn deliver_bytes(
             Ok(()) => return true,
             Err(TrySendError::Disconnected(_)) => return false,
             Err(TrySendError::Full(v)) => {
+                shared.probes.note_events_full_bytes();
                 item = v;
                 if torn_down_requested.load(Ordering::Acquire) || Instant::now() >= deadline {
+                    shared.probes.note_bytes_abandoned();
                     return false;
                 }
                 thread::sleep(EVENTS_RETRY_INTERVAL);

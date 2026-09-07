@@ -226,6 +226,23 @@ fn saturate_via_stalled_writer(client: &UnixStream) {
     }
 }
 
+/// Poll `probe` every 10ms until it reports a nonzero count, or panic
+/// loudly after `timeout` — Codex review round 2: WAIT on an OBSERVED
+/// precondition (a real `TrySendError::Full`/abandonment the production
+/// code itself counted, via `SocketServer::probe_*`) rather than assuming
+/// one from a fixed sleep, a client-side stall heuristic, or a fixed
+/// connection count.
+fn wait_for_probe(mut probe: impl FnMut() -> usize, timeout: Duration, what: &str) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if probe() > 0 {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// One connect -> accept -> server-close -> confirmed-closed -> client
 /// drop cycle, used by the churn/leak test. `#[cfg(target_os = "linux")]`:
 /// its one caller is the `/proc/self/fd`-based leak test, itself gated
@@ -518,7 +535,11 @@ fn pending_accept_with_no_client_drops_promptly() {
 /// Drop-vs-lifecycle-delivery regression: saturate the events channel and
 /// never drain it, then drop the server. `Drop` must still return -- it
 /// must not deadlock behind its own `send_lifecycle_event` escape by
-/// joining the accept thread before setting `dropping`.
+/// joining the accept thread before setting `dropping`. Codex review
+/// round 2, finding 2: this must exercise a LIFECYCLE send blocked behind
+/// the full channel -- `send_lifecycle_event`'s own `dropping` escape
+/// hatch is the regression this test names, not merely `deliver_bytes`'s
+/// separate (and separately tested) abandon path.
 #[test]
 fn drop_returns_even_with_a_saturated_events_channel() {
     if !run_isolated("drop_returns_even_with_a_saturated_events_channel") {
@@ -531,15 +552,40 @@ fn drop_returns_even_with_a_saturated_events_channel() {
     let client = UnixStream::connect(&path).unwrap();
     let _conn_id = expect_accepted(&server, TIMEOUT);
 
-    // Never drain events() -- flood until the reader's own delivery
-    // retry loop is OBSERVED stalled (the events channel is genuinely
-    // full), not assumed from a fixed sleep or connection count (Codex
-    // review finding 6).
+    // Never drain events() -- flood until the events channel is OBSERVED
+    // genuinely full (a real `TrySendError::Full` the production code
+    // itself counted), not assumed from a client-side stall heuristic.
     saturate_via_stalled_writer(&client);
+    wait_for_probe(
+        || server.probe_events_full_bytes(),
+        Duration::from_secs(10),
+        "the events channel to genuinely report Full for a Bytes delivery",
+    );
 
-    // Must return even though nobody ever drained events().
+    // Connect a SECOND client so the acceptor's own `Accepted` for it
+    // blocks in `send_lifecycle_event`'s retry loop against the SAME full
+    // channel -- proving the actual regression under test, not merely
+    // that the reader's own (separate) `deliver_bytes` retry stalled.
+    let second_client = UnixStream::connect(&path).unwrap();
+    wait_for_probe(
+        || server.probe_events_full_lifecycle(),
+        Duration::from_secs(10),
+        "a lifecycle event (this second connection's own Accepted) to genuinely block \
+         against the full channel",
+    );
+
+    // Must return even though nobody ever drained events(), and within
+    // the SAME aggregate teardown bound every other test in this suite is
+    // held to.
+    let started = Instant::now();
     drop(server);
+    assert!(
+        started.elapsed() < TEARDOWN_AGGREGATE_DEADLINE,
+        "Drop did not return within the teardown aggregate deadline (took {:?})",
+        started.elapsed()
+    );
     drop(client);
+    drop(second_client);
 }
 
 /// Invalid voyage ids and out-of-range connection ceilings are rejected
@@ -734,16 +780,26 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
     let client = UnixStream::connect(&path).unwrap();
     let conn_id = expect_accepted(&server, TIMEOUT);
 
-    // OBSERVE the stall (Codex review finding 6), rather than assuming it
+    // OBSERVE the stall (Codex review round 2), rather than assuming it
     // from a fixed sleep: flood until the reader's own delivery retry is
     // genuinely stuck against the never-drained events channel.
     saturate_via_stalled_writer(&client);
+    wait_for_probe(
+        || server.probe_events_full_bytes(),
+        Duration::from_secs(10),
+        "the events channel to genuinely report Full for a Bytes delivery",
+    );
 
-    // `BYTES_ABANDON_AFTER` (crate-private, 5s — not importable from this
-    // integration-test crate) + 1s AFTER the stall was OBSERVED above:
-    // long enough for the reader's own retry loop to have genuinely given
-    // up and force-closed the connection.
-    std::thread::sleep(Duration::from_secs(6));
+    // WAIT for the reader's own retry loop to have genuinely given up and
+    // force-closed the connection -- `probe_bytes_abandoned` is the
+    // production code's own count of that, never a fixed sleep guessing
+    // at `BYTES_ABANDON_AFTER` (crate-private, 5s -- not importable from
+    // this integration-test crate) plus a margin.
+    wait_for_probe(
+        || server.probe_bytes_abandoned(),
+        Duration::from_secs(10),
+        "deliver_bytes to genuinely abandon this connection's Bytes delivery",
+    );
 
     // Drain everything queued; the LAST event must be the guaranteed
     // Closed this abandonment produces -- every Bytes event this
