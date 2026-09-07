@@ -1010,6 +1010,12 @@ const STRIP_TAU: f32 = 0.05;
 /// bottom strip so it's distinguishable by POSITION, not just colour — it sits
 /// raised above its peers like a selected tab. Subtle; tune to taste.
 const STRIP_ACTIVE_LIFT_CELLS: f32 = 0.4;
+/// Size of the host-divider wheel (`StripItem::HostDivider`) relative to the
+/// bookend logos flanking the whole strip — smaller so a mid-strip divider
+/// reads as a separator between two host groups, not a second pair of
+/// bookends. Applied to both width and height so the PNG's aspect ratio
+/// (and the bookends' own spin gimmick, `wheel_angle`) stay unchanged.
+const DIVIDER_SIZE_FACTOR: f32 = 0.8;
 
 /// Wheel-spin gimmick: cycling workspaces (`Shift+←/→` → `cycle_workspace`)
 /// flicks the brand wheels that bookend the bottom session strip — forward
@@ -1038,21 +1044,133 @@ fn strip_truncate(label: &str) -> String {
     }
 }
 
+/// One entry in the bottom session strip's layout: a session badge (its
+/// `WsKey`, carried for symmetry with `workspace_slugs` even though today's
+/// only consumer just needs the slot) or a `HostDivider` — the brand-wheel
+/// miniature the strip draws between two adjacent HOST GROUPS, mirroring
+/// how the Sessions TREE already separates hosts with `HOST_DIVIDER_GLYPH`
+/// (owner ask 2026-09-07, ADR 0042 L2a: "local is just another host" — the
+/// strip has no reason to treat the boundary before/after `local`
+/// differently from the boundary between two remotes). Dividers are NEVER
+/// selectable and never the active item — `cycle_workspace` (Shift+←/→)
+/// keeps walking `workspace_slugs` only, never `StripItem`.
+#[derive(Debug, Clone, PartialEq)]
+enum StripItem {
+    Session(WsKey),
+    HostDivider,
+}
+
+/// Lay `slugs` (== `State::workspace_slugs`, already in strip/display order
+/// — ADR 0042 L2a union-of-hosts order) out as strip items, inserting one
+/// `HostDivider` wherever the host changes between two consecutive entries.
+/// Pure and asset-oblivious: it has no opinion on whether a divider quad
+/// actually decoded (that's the caller's call — see the draw site's
+/// `logo_quad` branch, which falls back to an all-`Session` list when
+/// there's nothing to draw a divider WITH, so a missing asset changes
+/// nothing about the layout, matching the bookend logos' existing
+/// fail-soft contract). A single host produces zero dividers, and a host
+/// with no visible rows never appears in `slugs` to begin with
+/// (`fresh_workspace_caches` already filters the inert anchor out), so it
+/// can't produce a spurious back-to-back divider pair either.
+fn strip_items(slugs: &[WsKey]) -> Vec<StripItem> {
+    let mut out = Vec::with_capacity(slugs.len());
+    for (i, key) in slugs.iter().enumerate() {
+        if i > 0 && slugs[i - 1].0 != key.0 {
+            out.push(StripItem::HostDivider);
+        }
+        out.push(StripItem::Session(key.clone()));
+    }
+    out
+}
+
+/// Left-edge cursor position (pixels, strip-local — before the `win_w/2 +
+/// (center - scroll)` screen-centering every strip element applies) of
+/// each entry in `widths`, laid out left→right with `gap` between
+/// neighbours. The one cursor-walk primitive `session_strip_target`,
+/// `session_strip_lines`, and `strip_divider_offsets` all build on, so
+/// inserting an item — a `HostDivider`, or hypothetically another session —
+/// shifts everything after it by exactly that item's own `width + gap`;
+/// there's only one place that arithmetic lives.
+fn strip_cursor_positions(widths: &[f32], gap: f32) -> Vec<f32> {
+    let mut out = Vec::with_capacity(widths.len());
+    let mut cursor = 0.0;
+    for &w in widths {
+        out.push(cursor);
+        cursor += w + gap;
+    }
+    out
+}
+
+/// Pixel width for every entry in `items`: a `Session` gets its matching
+/// entry from `label_widths` (same order — `items`'s `Session` entries are
+/// built, via `strip_items`, from the very slug list `label_widths` is
+/// keyed off, so the i-th `Session` in `items` IS `label_widths[i]`); a
+/// `HostDivider` gets the shared `divider_w`.
+fn strip_item_widths(items: &[StripItem], label_widths: &[f32], divider_w: f32) -> Vec<f32> {
+    let mut li = 0usize;
+    items
+        .iter()
+        .map(|it| match it {
+            StripItem::Session(_) => {
+                let w = label_widths.get(li).copied().unwrap_or(0.0);
+                li += 1;
+                w
+            }
+            StripItem::HostDivider => divider_w,
+        })
+        .collect()
+}
+
+/// Per-SESSION cumulative pixel offset injected by preceding
+/// `StripItem::HostDivider`s: the difference between where a session sits
+/// in the FULL layout (sessions interleaved with dividers, `item_widths`)
+/// and where it would sit among sessions alone (`label_widths`). Parallel
+/// to `label_widths` (one entry per `Session` item, in `items` order), so
+/// `session_strip_target`/`session_strip_lines` — which already do their
+/// own dividers-oblivious cursor walk over `labels` — can just add
+/// `offsets[i]` to session i's position instead of learning about
+/// `StripItem` at all. A caller with no dividers (or no divider asset to
+/// draw) can pass an empty slice; both callers already treat a short
+/// `divider_offsets` as "0.0 past the end".
+fn strip_divider_offsets(items: &[StripItem], item_widths: &[f32], label_widths: &[f32], gap: f32) -> Vec<f32> {
+    let item_positions = strip_cursor_positions(item_widths, gap);
+    let label_positions = strip_cursor_positions(label_widths, gap);
+    let mut out = Vec::with_capacity(label_widths.len());
+    let mut li = 0usize;
+    for (item, &pos) in items.iter().zip(item_positions.iter()) {
+        if matches!(item, StripItem::Session(_)) {
+            out.push(pos - label_positions.get(li).copied().unwrap_or(0.0));
+            li += 1;
+        }
+    }
+    out
+}
+
 /// Strip-local center-x (pixels) of the active item — the value
 /// `strip_scroll_px` eases toward so the active session sits at screen
 /// center. Items lay out left→right, each `len*cell_w` wide with
-/// `STRIP_GAP_CELLS*cell_w` between them.
-fn session_strip_target(labels: &[String], active: usize, cell_w: f32) -> f32 {
+/// `STRIP_GAP_CELLS*cell_w` between them; `divider_offsets[active]` (0.0
+/// when absent — `&[]` from a caller with no `HostDivider`s to place)
+/// shifts the target over by however much strip space precedes it
+/// (`strip_divider_offsets`).
+fn session_strip_target(
+    labels: &[String],
+    active: usize,
+    cell_w: f32,
+    divider_offsets: &[f32],
+) -> f32 {
     let gap = STRIP_GAP_CELLS * cell_w;
-    let mut cursor = 0.0;
-    for (i, lab) in labels.iter().enumerate() {
-        let w = lab.chars().count() as f32 * cell_w;
-        if i == active {
-            return cursor + w / 2.0;
+    let widths: Vec<f32> = labels
+        .iter()
+        .map(|l| l.chars().count() as f32 * cell_w)
+        .collect();
+    let positions = strip_cursor_positions(&widths, gap);
+    match (positions.get(active), widths.get(active)) {
+        (Some(&pos), Some(&w)) => {
+            pos + w / 2.0 + divider_offsets.get(active).copied().unwrap_or(0.0)
         }
-        cursor += w + gap;
+        _ => 0.0,
     }
-    0.0
 }
 
 /// Build the pixel-positioned `Line`s for the bottom session strip. The
@@ -1086,6 +1204,13 @@ fn session_strip_target(labels: &[String], active: usize, cell_w: f32) -> f32 {
 /// (overriding the tone/contrast colour) so it reads as "a result is
 /// waiting here", distinct from the work-state colours. Non-disruptive — it
 /// only changes how the name renders, never the view.
+///
+/// `divider_offsets[i]` (parallel to `labels`, `0.0` past its end — `&[]`
+/// from a caller with no `HostDivider`s to place) shifts session i's cursor
+/// position over by however much strip space the `HostDivider`s before it
+/// occupy (`strip_divider_offsets`); the offscreen cull below is applied
+/// AFTER the shift so a session pushed off-window by a preceding divider is
+/// culled correctly, not by its pre-shift position.
 fn session_strip_lines(
     labels: &[String],
     active: usize,
@@ -1097,29 +1222,42 @@ fn session_strip_lines(
     contrast_dim: bool,
     flashes: &[f32],
     pendings: &[bool],
+    divider_offsets: &[f32],
 ) -> Vec<crate::text::Line> {
     let gap = STRIP_GAP_CELLS * cell_w;
+    // Badge floor (ADR 0025 §1): prefix a `●` sigil to a name whose
+    // workspace has a pending nav.preview result, BEFORE the width math so
+    // the layout (and the divider-offset lookup below, keyed by the same
+    // index) accounts for the extra glyph and names don't overlap. The
+    // bright-white accent is applied to the colour further down.
+    let padded: Vec<String> = labels
+        .iter()
+        .enumerate()
+        .map(|(i, lab)| {
+            if pendings.get(i).copied().unwrap_or(false) {
+                format!("●{lab}")
+            } else {
+                lab.clone()
+            }
+        })
+        .collect();
+    let widths: Vec<f32> = padded
+        .iter()
+        .map(|l| l.chars().count() as f32 * cell_w)
+        .collect();
+    // Same dividers-oblivious cursor walk `session_strip_target` uses;
+    // `divider_offsets` (see the doc above) folds the `HostDivider`s back in.
+    let positions = strip_cursor_positions(&widths, gap);
     let mut out = Vec::new();
-    let mut cursor = 0.0;
-    for (i, lab) in labels.iter().enumerate() {
-        // Badge floor (ADR 0025 §1): prefix a `●` sigil to a name whose
-        // workspace has a pending nav.preview result. Done before the width
-        // math so the strip layout accounts for the extra glyph and names
-        // don't overlap. The bright-white accent is applied to the colour below.
-        let pending = pendings.get(i).copied().unwrap_or(false);
-        let lab: String = if pending {
-            format!("●{lab}")
-        } else {
-            lab.clone()
-        };
-        let lab = &lab;
-        let w = lab.chars().count() as f32 * cell_w;
+    for (i, lab) in padded.iter().enumerate() {
+        let w = widths[i];
+        let cursor = positions[i] + divider_offsets.get(i).copied().unwrap_or(0.0);
         let center = cursor + w / 2.0;
         let left = win_w / 2.0 + (center - scroll_px) - w / 2.0;
-        cursor += w + gap;
         if left + w < 0.0 || left > win_w {
             continue; // fully off-screen
         }
+        let pending = pendings.get(i).copied().unwrap_or(false);
         let is_active = i == active;
         let flash = flashes.get(i).copied().unwrap_or(0.0);
         // Working/waiting/blocked/done override the colour so they're visible
@@ -16412,7 +16550,44 @@ impl State {
                 .and_then(|k| self.workspace_slugs.iter().position(|x| x == k))
                 .unwrap_or(0)
                 .min(labels.len().saturating_sub(1));
-            let target = session_strip_target(&labels, active, self.cell_w);
+            // Host-divider layout (owner ask 2026-09-07, ADR 0042 L2a): one
+            // brand wheel between adjacent HOST GROUPS, mirroring the
+            // Sessions TREE's own `HOST_DIVIDER_GLYPH` separator ("local is
+            // just another host" — no special-casing the boundary next to
+            // it). `logo_dims` doubles as both "is there an asset to draw a
+            // divider with" and the geometry the bookends below reuse (one
+            // source for the logo's on-screen size, not two). When there's
+            // no decoded logo, `items` falls back to an all-`Session` list
+            // so the layout is byte-for-byte what it was before this
+            // feature — matching the bookends' own fail-soft contract (a
+            // decode failure changes nothing, per `LOGO_DARK_PNG`'s doc).
+            let logo_dims: Option<(f32, f32)> = self.logo_quad.as_ref().map(|(_, nw, nh)| {
+                let logo_h = (self.cell_h - 2.0).max(1.0);
+                let logo_w = logo_h * (*nw as f32 / (*nh).max(1) as f32);
+                (logo_w, logo_h)
+            });
+            let items: Vec<StripItem> = if logo_dims.is_some() {
+                strip_items(&self.workspace_slugs)
+            } else {
+                self.workspace_slugs
+                    .iter()
+                    .cloned()
+                    .map(StripItem::Session)
+                    .collect()
+            };
+            let strip_gap = STRIP_GAP_CELLS * self.cell_w;
+            let divider_w = logo_dims
+                .map(|(logo_w, _)| logo_w * DIVIDER_SIZE_FACTOR)
+                .unwrap_or(0.0);
+            let label_widths: Vec<f32> = labels
+                .iter()
+                .map(|l| l.chars().count() as f32 * self.cell_w)
+                .collect();
+            let item_widths = strip_item_widths(&items, &label_widths, divider_w);
+            let item_positions = strip_cursor_positions(&item_widths, strip_gap);
+            let divider_offsets =
+                strip_divider_offsets(&items, &item_widths, &label_widths, strip_gap);
+            let target = session_strip_target(&labels, active, self.cell_w, &divider_offsets);
             let scroll = self.strip_scroll_px.unwrap_or(target);
             let baseline_y = (self.config.height as f32 - self.cell_h - 2.0).max(0.0);
             // Per-name work-state tone, parallel to `labels` (built from
@@ -16455,6 +16630,7 @@ impl State {
                 self.contrast_dim,
                 &flashes,
                 &pendings,
+                &divider_offsets,
             );
             // Bookend the whole row of session names with the dark logo: one
             // mini logo just left of the leftmost visible badge, one just right
@@ -16465,11 +16641,9 @@ impl State {
             // session_strip_lines' own layout math. Rects are drawn from
             // `self.logo_quad` via render_many in the pass below. A bookend that
             // would spill off its window edge is skipped.
-            if let Some((_, nw, nh)) = self.logo_quad.as_ref() {
+            if let Some((logo_w, logo_h)) = logo_dims {
                 if !strip_lines.is_empty() {
                     let win_w = self.config.width as f32;
-                    let logo_h = (self.cell_h - 2.0).max(1.0);
-                    let logo_w = logo_h * (*nw as f32 / (*nh).max(1) as f32);
                     let pad = 2.0 * self.cell_w; // breathing room between logo and names (2 cells)
                     let mut min_left = f32::MAX;
                     let mut max_right = f32::MIN;
@@ -16494,6 +16668,35 @@ impl State {
                             y: baseline_y,
                             w: logo_w,
                             h: logo_h,
+                        });
+                    }
+                    // Host-divider wheels: one per `StripItem::HostDivider` in
+                    // `items`, at its own slot in `item_positions` (computed
+                    // above in lock-step with `items`), centred the same way
+                    // session names are (`win_w/2 + (center - scroll) -
+                    // w/2`) and vertically centred against the bookends'
+                    // taller logo band so a smaller wheel doesn't look
+                    // mis-aligned against the row. Culled the same way
+                    // session names are — fully hidden is simply skipped —
+                    // unlike the bookends' "must fit inside the window"
+                    // rule above, which only makes sense at the two ends of
+                    // the whole strip.
+                    let divider_h = logo_h * DIVIDER_SIZE_FACTOR;
+                    let divider_y = baseline_y + (logo_h - divider_h) / 2.0;
+                    for (item, &pos) in items.iter().zip(item_positions.iter()) {
+                        if !matches!(item, StripItem::HostDivider) {
+                            continue;
+                        }
+                        let center = pos + divider_w / 2.0;
+                        let left = win_w / 2.0 + (center - scroll) - divider_w / 2.0;
+                        if left + divider_w < 0.0 || left > win_w {
+                            continue; // fully off-screen
+                        }
+                        strip_logo_rects.push(ScreenRect {
+                            x: left,
+                            y: divider_y,
+                            w: divider_w,
+                            h: divider_h,
                         });
                     }
                 }
@@ -23476,9 +23679,105 @@ mod tests {
         let gap = STRIP_GAP_CELLS * cell_w;
         // item0: w=20 center=10; gap=30 → cursor=50
         // item1: w=40 center=70
-        assert!((session_strip_target(&labels, 0, cell_w) - 10.0).abs() < 1e-3);
-        assert!((session_strip_target(&labels, 1, cell_w) - (50.0 + 20.0)).abs() < 1e-3);
+        assert!((session_strip_target(&labels, 0, cell_w, &[]) - 10.0).abs() < 1e-3);
+        assert!((session_strip_target(&labels, 1, cell_w, &[]) - (50.0 + 20.0)).abs() < 1e-3);
         let _ = gap;
+    }
+
+    #[test]
+    fn strip_items_one_host_has_no_dividers() {
+        let slugs: Vec<WsKey> = vec![
+            ("alpha".to_string(), "one".to_string()),
+            ("alpha".to_string(), "two".to_string()),
+            ("alpha".to_string(), "three".to_string()),
+        ];
+        let items = strip_items(&slugs);
+        assert!(
+            items.iter().all(|it| matches!(it, StripItem::Session(_))),
+            "a single host must produce zero dividers: {items:?}"
+        );
+        assert_eq!(items.len(), slugs.len());
+    }
+
+    #[test]
+    fn strip_items_two_hosts_get_exactly_one_divider_between_them() {
+        let slugs: Vec<WsKey> = vec![
+            ("alpha".to_string(), "one".to_string()),
+            ("alpha".to_string(), "two".to_string()),
+            ("beta".to_string(), "three".to_string()),
+        ];
+        let items = strip_items(&slugs);
+        assert_eq!(
+            items,
+            vec![
+                StripItem::Session(slugs[0].clone()),
+                StripItem::Session(slugs[1].clone()),
+                StripItem::HostDivider,
+                StripItem::Session(slugs[2].clone()),
+            ],
+            "one divider, exactly at the host boundary, none at the ends"
+        );
+        assert_eq!(
+            items.iter().filter(|it| matches!(it, StripItem::HostDivider)).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn strip_items_three_hosts_middle_host_already_filtered_out_of_slugs() {
+        // A host with zero visible rows never appears in `slugs` to begin
+        // with (`fresh_workspace_caches` already excludes it) — so from
+        // `strip_items`'s point of view this is just a two-host boundary,
+        // one divider, order preserved, no back-to-back dividers.
+        let slugs: Vec<WsKey> = vec![
+            ("alpha".to_string(), "one".to_string()),
+            ("gamma".to_string(), "two".to_string()),
+        ];
+        let items = strip_items(&slugs);
+        assert_eq!(
+            items,
+            vec![
+                StripItem::Session(slugs[0].clone()),
+                StripItem::HostDivider,
+                StripItem::Session(slugs[1].clone()),
+            ]
+        );
+    }
+
+    #[test]
+    fn strip_target_active_centring_accounts_for_a_preceding_divider() {
+        // Same three labels as `strip_target_centers_active`, but with a
+        // `HostDivider` sitting between item0 and item1 (as `strip_items`
+        // would place it for a two-host slug list). The active item (item1)
+        // must be pushed over by exactly the divider's own `width + gap` —
+        // its centring relative to item0 is otherwise unaffected.
+        let labels = vec!["aa".to_string(), "bbbb".to_string(), "cc".to_string()];
+        let cell_w = 10.0;
+        let gap = STRIP_GAP_CELLS * cell_w;
+        let divider_w = 25.0;
+        let slugs: Vec<WsKey> = vec![
+            ("alpha".to_string(), "aa".to_string()),
+            ("beta".to_string(), "bbbb".to_string()),
+            ("beta".to_string(), "cc".to_string()),
+        ];
+        let items = strip_items(&slugs);
+        let label_widths: Vec<f32> = labels
+            .iter()
+            .map(|l| l.chars().count() as f32 * cell_w)
+            .collect();
+        let item_widths = strip_item_widths(&items, &label_widths, divider_w);
+        let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, gap);
+        // No divider precedes item0.
+        assert!((offsets[0]).abs() < 1e-3);
+        // One divider (width `divider_w`, plus its own `gap`) precedes item1/2.
+        assert!((offsets[1] - (divider_w + gap)).abs() < 1e-3);
+        assert!((offsets[2] - (divider_w + gap)).abs() < 1e-3);
+        let no_divider_target = session_strip_target(&labels, 1, cell_w, &[]);
+        let with_divider_target = session_strip_target(&labels, 1, cell_w, &offsets);
+        assert!(
+            (with_divider_target - (no_divider_target + divider_w + gap)).abs() < 1e-3,
+            "the active session's centring must shift by exactly the divider's width + gap"
+        );
     }
 
     #[test]
@@ -23517,7 +23816,7 @@ mod tests {
         let win_w = 800.0;
         let active = 1;
         // Scroll exactly at the active center → active is screen-centered.
-        let scroll = session_strip_target(&labels, active, cell_w);
+        let scroll = session_strip_target(&labels, active, cell_w, &[]);
         let lines = session_strip_lines(
             &labels,
             active,
@@ -23527,6 +23826,7 @@ mod tests {
             500.0,
             &[],
             false,
+            &[],
             &[],
             &[],
         );
@@ -23551,7 +23851,7 @@ mod tests {
         let cell_w = 10.0;
         let win_w = 300.0;
         let active = 25;
-        let scroll = session_strip_target(&labels, active, cell_w);
+        let scroll = session_strip_target(&labels, active, cell_w, &[]);
         let lines = session_strip_lines(
             &labels,
             active,
@@ -23561,6 +23861,7 @@ mod tests {
             500.0,
             &[],
             false,
+            &[],
             &[],
             &[],
         );
@@ -23579,7 +23880,7 @@ mod tests {
         let cell_w = 10.0;
         let win_w = 800.0;
         let active = 0;
-        let scroll = session_strip_target(&labels, active, cell_w);
+        let scroll = session_strip_target(&labels, active, cell_w, &[]);
         let tones = vec![
             Some((AgentTone::Idle, false)),
             Some((AgentTone::Working, false)),
@@ -23594,6 +23895,7 @@ mod tests {
             500.0,
             &tones,
             false,
+            &[],
             &[],
             &[],
         );
@@ -23621,7 +23923,7 @@ mod tests {
         let labels = vec!["aa".to_string(), "bb".to_string()];
         let cell_w = 10.0;
         let win_w = 800.0;
-        let scroll = session_strip_target(&labels, 0, cell_w);
+        let scroll = session_strip_target(&labels, 0, cell_w, &[]);
         let tones = vec![
             Some((AgentTone::Working, false)),
             Some((AgentTone::Working, false)),
@@ -23637,6 +23939,7 @@ mod tests {
             500.0,
             &tones,
             false,
+            &[],
             &[],
             &[],
         );
@@ -23661,6 +23964,7 @@ mod tests {
             true,
             &[],
             &[],
+            &[],
         );
         assert_eq!(dim[0].color, base);
         assert_eq!(
@@ -23675,7 +23979,7 @@ mod tests {
         // A stale "working" still colours green but dims (the strip wilt).
         let labels = vec!["aa".to_string()];
         let cell_w = 10.0;
-        let scroll = session_strip_target(&labels, 0, cell_w);
+        let scroll = session_strip_target(&labels, 0, cell_w, &[]);
         let tones = vec![Some((AgentTone::Working, true))];
         let lines = session_strip_lines(
             &labels,
@@ -23686,6 +23990,7 @@ mod tests {
             500.0,
             &tones,
             false,
+            &[],
             &[],
             &[],
         );
@@ -23736,7 +24041,7 @@ mod tests {
         // explicitly-dimmed colour (not the default DIM flag).
         let labels = vec!["aa".to_string(), "bb".to_string()];
         let cell_w = 10.0;
-        let scroll = session_strip_target(&labels, 0, cell_w);
+        let scroll = session_strip_target(&labels, 0, cell_w, &[]);
         let tones: Vec<Option<(AgentTone, bool)>> = vec![None, None];
         let lines = session_strip_lines(
             &labels,
@@ -23747,6 +24052,7 @@ mod tests {
             500.0,
             &tones,
             true,
+            &[],
             &[],
             &[],
         );
@@ -23782,7 +24088,7 @@ mod tests {
         // scale it — isolating the flash.
         let labels = vec!["aa".to_string(), "bb".to_string()];
         let cell_w = 10.0;
-        let scroll = session_strip_target(&labels, 1, cell_w);
+        let scroll = session_strip_target(&labels, 1, cell_w, &[]);
         let tones = vec![
             Some((AgentTone::Working, false)),
             Some((AgentTone::Idle, false)),
@@ -23798,6 +24104,7 @@ mod tests {
             false,
             &[1.0, 0.0],
             &[],
+            &[],
         );
         assert_eq!(lit[0].color, Some((255, 255, 255)));
         let cold = session_strip_lines(
@@ -23810,6 +24117,7 @@ mod tests {
             &tones,
             false,
             &[0.0, 0.0],
+            &[],
             &[],
         );
         assert_eq!(cold[0].color, AgentTone::Working.rgb());
@@ -24514,7 +24822,7 @@ mod tests {
         let labels = vec!["aa".to_string(), "bb".to_string()];
         let cell_w = 10.0;
         let win_w = 800.0;
-        let scroll = session_strip_target(&labels, 0, cell_w);
+        let scroll = session_strip_target(&labels, 0, cell_w, &[]);
         // bb is "working" (green) but ALSO pending — pending must win.
         let tones = vec![None, Some((AgentTone::Working, false))];
         let pendings = vec![false, true];
@@ -24529,6 +24837,7 @@ mod tests {
             false,
             &[],
             &pendings,
+            &[],
         );
         assert_eq!(lines.len(), 2);
         // Non-pending name keeps its plain text, no sigil.
