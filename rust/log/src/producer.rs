@@ -122,7 +122,11 @@ pub trait Producer: Send + Sized {
     fn terminate_domain(&self) -> Result<()>;
 
     /// Whether the containment domain is empty — every process in it
-    /// reaped.
+    /// dead (exited or killed). Review round 2: NOT "reaped" — a Unix
+    /// leader may stay an unreaped zombie for as long as this producer
+    /// lives (its exit is observed, deliberately, without consuming it;
+    /// see `producer_pty.rs`'s own module doc), and only dropping the
+    /// producer frees its pid.
     fn domain_is_empty(&self) -> Result<bool>;
 
     /// Closes the producer's output side — teardown Phase B. This is the

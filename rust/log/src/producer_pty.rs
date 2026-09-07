@@ -41,10 +41,19 @@
 //!   `pre_exec` does, closing that window; immediately after, it checks
 //!   `getppid() == expected_ppid` (`expected_ppid` is `std::process::id()`,
 //!   captured before `Command::spawn` and moved into the closure) and
-//!   exits immediately if it differs — the parent died in the fork-to-arm
-//!   gap and this process was already reparented (to a subreaper) before
-//!   arming could even run, so proceeding would leave an unsupervised
-//!   producer running undetected. Everything else in `pre_exec` keeps its
+//!   exits immediately if it differs. Review round 2 (R6): PDEATHSIG is
+//!   documented (`prctl(2)`) as tracking the death of the SPAWNING
+//!   THREAD specifically, not the whole process — in THIS binary the
+//!   spawner is always the process's own MAIN thread (`spawn` is never
+//!   called from any other thread), so "the spawning thread dies" and
+//!   "the process exits" are the same event here, and the `getppid`
+//!   check is what covers the fork-to-arm race for THAT event (the
+//!   parent process having already exited, reparenting this one, before
+//!   arming could take effect). A spawning THREAD dying alone, with the
+//!   process itself surviving on another thread, is a real state
+//!   `prctl(2)` distinguishes in general — it is simply not a state this
+//!   binary's own architecture can ever produce, so it is not one this
+//!   check needs to detect. Everything else in `pre_exec` keeps its
 //!   original order, unchanged, after this new leading step.
 //! - **Exit is OBSERVED without reaping; the leader is reaped EXACTLY ONCE,
 //!   LAST, in `Drop`; domain emptiness is judged by LIVE members, never by
@@ -74,11 +83,23 @@
 //!   `killpg(pgid, 0) == ESRCH` probe — a real, accepted gap documented at
 //!   that arm's own doc (a zombie LEADER this producer has deliberately not
 //!   yet reaped still answers that probe as "exists", unlike the precise
-//!   Linux scan). The leader is reaped EXACTLY ONCE, LAST: `Drop`
-//!   (`killpg(SIGKILL)`, harmless if already dead, then a blocking,
-//!   consuming `waitpid`) is the ONLY place that ever reaps — safe in
-//!   every state, because until that reap runs the pgid stays pinned by
-//!   the unreaped leader, alive or zombie.
+//!   Linux scan). Review round 2 refined the Linux scan further (see
+//!   `domain_is_empty`'s own doc): a per-PROCESS state field alone can lie
+//!   (a process whose main thread alone has exited still shows `Z` while
+//!   its worker threads run; a non-UTF-8 `comm` byte used to make the
+//!   whole entry unreadable and get silently skipped) — the scan now
+//!   reads `/proc/*/stat` as raw bytes and judges each member's liveness
+//!   by its OWN TASKS, not its own single state field. The leader is
+//!   reaped in `Drop`, and ONLY there: `killpg(SIGKILL)` (harmless if
+//!   already dead), then a BOUNDED, `EINTR`-retrying, non-blocking
+//!   (`WNOHANG`) poll of `waitpid` — never the original version's raw
+//!   blocking call, which review round 2 found discarded `EINTR`
+//!   entirely (a non-restarting signal handler anywhere in the process
+//!   made the child NEVER get reaped, reproduced on every run) and could
+//!   hang the whole capsule's own exit indefinitely on a leader stuck in
+//!   an uninterruptible kernel wait. `Drop` is safe to run in every
+//!   state, because until its own reap succeeds (or its bound expires)
+//!   the pgid stays pinned by the unreaped leader, alive or zombie.
 //!
 //! The kill domain is still the PROCESS GROUP: `setsid()` in `pre_exec`
 //! makes the child both a session AND process-group leader whose pgid
@@ -109,6 +130,16 @@ use std::time::{Duration, Instant};
 /// architecture.
 #[cfg(target_os = "linux")]
 const PR_SET_PDEATHSIG: libc::c_int = 1;
+
+/// `Drop`'s own reap bound (review round 2, R3): after `killpg(SIGKILL)`,
+/// only a task stuck in an uninterruptible kernel wait (`D` state — a
+/// stuck NFS mount, say) can outlive a bounded, `WNOHANG`-polled reap
+/// attempt. Leaving that one unreaped past this bound is safe: nothing
+/// addresses this pgid again after `Drop` returns, and the exiting
+/// capsule process hands the still-zombie-eventually child to its own
+/// reaper (`init`/a subreaper) the same way any other unreaped child
+/// would be.
+const REAP_BOUND: Duration = Duration::from_secs(2);
 
 /// `PtyProducer::spawn`'s own pre-flight check (see that call site's own
 /// doc for WHY this exists — the `close_range` in `pre_exec` closes
@@ -256,6 +287,24 @@ impl Producer for PtyProducer {
         // portable non-Linux-unix equivalent exists.
         #[cfg(target_os = "linux")]
         let expected_ppid = std::process::id() as libc::pid_t;
+        // R2 (review round 2): establish the disposition the pid PIN
+        // depends on, rather than assuming it. `wait`'s own
+        // `waitid(.., WNOWAIT)` (see the module doc's third point) needs
+        // a RETAINED zombie to observe; if `SIGCHLD` is `SIG_IGN` (or
+        // `SA_NOCLDWAIT` is set) the kernel auto-reaps a terminated child
+        // itself, with no zombie ever left to find (`waitid` then reports
+        // `ECHILD`) — and the pgid this producer's own `Drop` later
+        // signals could already have been recycled to something
+        // unrelated. `SIG_IGN` is inherited across `exec` from ANY
+        // supervisor this process happens to run under, so establishing
+        // `SIG_DFL` here, ourselves, before the fork, is the only way to
+        // be sure. `ECHILD` from `waitid` after this stays a real error
+        // (`observe_exit_without_reaping`'s own doc): it would now mean a
+        // FOREIGN reaper raced us, a genuine invariant violation, never
+        // routine.
+        if unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) } == libc::SIG_ERR {
+            return Err(Error::Io(io::Error::last_os_error()));
+        }
         let mut master_fd: libc::c_int = -1;
         let mut slave_fd: libc::c_int = -1;
         // Geometry at spawn (the loop already validated it, 2x2..512x256 —
@@ -448,10 +497,21 @@ impl Producer for PtyProducer {
     }
 
     fn exit_status_after_confirmed_exit(&self) -> Result<ExitStatus> {
-        Ok(self.exit.lock().unwrap().expect(
-            "PtyProducer::exit_status_after_confirmed_exit: precondition violated -- wait() must \
-             have already confirmed exit",
-        ))
+        // Review round 2 (R5): the trait's own doc allows confirmation
+        // via EITHER `wait` or `domain_is_empty` -- a caller that
+        // confirmed only through the latter would never have populated
+        // this cache at all, and the first version of this method
+        // panicked in that case. FIX: observe once, on demand, exactly
+        // like `wait` itself does (`waitid(.., WNOWAIT)`, never
+        // reaping); if that ALSO finds nothing (a genuine precondition
+        // violation by the caller), return a loud `Err`, never panic.
+        let mut guard = self.exit.lock().unwrap();
+        if guard.is_none() {
+            *guard = self.observe_exit_without_reaping()?;
+        }
+        guard.ok_or_else(|| {
+            Error::State("PtyProducer: exit status requested before the leader's exit was confirmed".into())
+        })
     }
 
     fn terminate_domain(&self) -> Result<()> {
@@ -467,15 +527,32 @@ impl Producer for PtyProducer {
     }
 
     #[cfg(target_os = "linux")]
+    /// Live-member scan (decision 13/14; refined in review round 2, R1):
+    /// a zombie leader (deliberately unreaped until `Drop`, per the
+    /// module doc) or a zombie descendant must NOT count against
+    /// emptiness — only `/proc`'s own per-TASK state field reliably
+    /// distinguishes "exited, awaiting reap" (`Z`) and the rarer
+    /// post-exit "dead" (`X`) from anything that could still run.
+    /// Round 2 found two real false-empties in the first version (which
+    /// used `read_to_string` and judged each MEMBER by its own single
+    /// state field): (i) a process whose MAIN thread alone has exited
+    /// (`pthread_exit`) shows `Z` in its own `/proc/<pid>/stat` while its
+    /// worker threads keep running — judged live here iff ANY of its
+    /// tasks (`/proc/<pid>/task/*/stat`) has a state that is not `Z`/`X`;
+    /// (ii) a `comm` containing a non-UTF-8 byte made `read_to_string`
+    /// fail outright, silently skipping the whole entry — fixed by
+    /// reading every stat file as raw BYTES (`std::fs::read`) and only
+    /// ever decoding the small numeric/single-byte fields this method
+    /// actually needs, never `comm` itself. A stat file or task directory
+    /// that vanishes mid-scan is simply one fewer member/task to find,
+    /// not a failure. ASSUMPTION this method relies on: the capsule and
+    /// its producer share ONE pid namespace and ONE `/proc` — true here
+    /// because the producer is this process's own direct fork child, and
+    /// `hidepid` (where configured) never hides a uid's own processes
+    /// from itself. Non-Linux Unix has no portable equivalent scan; see
+    /// this method's own sibling arm below for the documented, coarser
+    /// fallback there.
     fn domain_is_empty(&self) -> Result<bool> {
-        // Live-member scan (decision 13/14, review round): a zombie
-        // leader (deliberately unreaped until `Drop`, per the module
-        // doc) or a zombie descendant must NOT count against emptiness
-        // -- only `/proc`'s own per-process state field distinguishes
-        // "exited, awaiting reap" (`Z`) and the rarer post-exit "dead"
-        // (`X`) from anything that could still run. Non-Linux Unix has
-        // no portable equivalent scan; see this method's own sibling arm
-        // below for the documented, coarser fallback there.
         for entry in std::fs::read_dir("/proc").map_err(Error::Io)? {
             let Ok(entry) = entry else { continue };
             let name = entry.file_name();
@@ -486,18 +563,18 @@ impl Producer for PtyProducer {
             // A process may have exited between `read_dir`'s own listing
             // and this read -- that is simply one fewer member to find,
             // not a failure.
-            let Ok(stat) = std::fs::read_to_string(format!("/proc/{name}/stat")) else { continue };
-            // `comm` (field 2) is parenthesized and may itself contain
-            // spaces/parens -- find the LAST `)` first (same device
-            // `challenge_unix.rs`'s own `/proc/pid/stat` parser uses),
-            // then fields 3.. are single-space-separated from there.
-            let Some(close) = stat.rfind(')') else { continue };
-            let mut fields = stat[close + 1..].split_whitespace();
-            let Some(state) = fields.next() else { continue }; // field 3
-            // field 4 (ppid) is skipped by `.nth(1)`'s own counting;
-            // field 5 (pgrp) is what we actually compare.
-            let Some(pgrp) = fields.nth(1).and_then(|s| s.parse::<libc::pid_t>().ok()) else { continue };
-            if pgrp == self.pid && state != "Z" && state != "X" {
+            let Ok(stat) = std::fs::read(format!("/proc/{name}/stat")) else { continue };
+            let Some(mut fields) = stat_fields_from_field_3(&stat) else { continue };
+            let Some(_state) = fields.next() else { continue }; // field 3 -- NOT trusted alone, see below
+            let Some(_ppid) = fields.next() else { continue }; // field 4
+            let Some(pgrp) = fields.next().and_then(parse_pid_field) else { continue }; // field 5
+            if pgrp != self.pid {
+                continue;
+            }
+            // This IS a member of our pgid -- its own (possibly
+            // main-thread-only) state is not the last word; a live task
+            // anywhere in the process counts.
+            if any_task_is_live(name) {
                 return Ok(false);
             }
         }
@@ -539,6 +616,57 @@ impl Producer for PtyProducer {
         self.slave = None;
         std::thread::spawn(|| {})
     }
+}
+
+/// Splits a `/proc/<pid>/stat`-shaped byte buffer (identical format for
+/// `/proc/<pid>/task/<tid>/stat`) into its whitespace-separated fields,
+/// STARTING AT FIELD 3 (state) — `comm` (field 2) is parenthesized and
+/// may itself contain spaces or parens, so this finds the LAST `)` first
+/// (same device `challenge_unix.rs`'s own `/proc/pid/stat` parser uses)
+/// and treats everything after it as field 3 onward. Operates on raw
+/// BYTES throughout (review round 2, R1): `comm` itself is never
+/// decoded, so a non-UTF-8 byte inside it can never make this fail.
+/// `None` only if the buffer contains no `)` at all (a stat file that
+/// vanished mid-read, or genuinely malformed).
+#[cfg(target_os = "linux")]
+fn stat_fields_from_field_3(stat: &[u8]) -> Option<impl Iterator<Item = &[u8]>> {
+    let close = stat.iter().rposition(|&b| b == b')')?;
+    Some(stat[close + 1..].split(|&b| b == b' ').filter(|f| !f.is_empty()))
+}
+
+/// Parses one `/proc/.../stat` numeric field (pid/ppid/pgrp are all the
+/// same shape) from its raw bytes.
+#[cfg(target_os = "linux")]
+fn parse_pid_field(field: &[u8]) -> Option<libc::pid_t> {
+    std::str::from_utf8(field).ok()?.parse().ok()
+}
+
+/// A member of our process group is live iff ANY of its tasks (kernel
+/// threads) has a state that is neither `Z` (zombie) nor `X` (dead) —
+/// see `domain_is_empty`'s own doc for why the process-level state field
+/// alone is not trustworthy (a process whose MAIN thread alone has
+/// exited still shows `Z` there while other tasks keep running). A task
+/// directory or its `stat` file disappearing mid-scan (the whole process
+/// exiting concurrently, say) is simply one fewer task to find, not a
+/// failure — `pid_str`'s own task directory vanishing entirely reads as
+/// "no live task", the same as "not found".
+#[cfg(target_os = "linux")]
+fn any_task_is_live(pid_str: &str) -> bool {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid_str}/task")) else {
+        return false;
+    };
+    for task in tasks {
+        let Ok(task) = task else { continue };
+        let tid = task.file_name();
+        let Some(tid) = tid.to_str() else { continue };
+        let Ok(stat) = std::fs::read(format!("/proc/{pid_str}/task/{tid}/stat")) else { continue };
+        let Some(mut fields) = stat_fields_from_field_3(&stat) else { continue };
+        let Some(state) = fields.next() else { continue };
+        if state != b"Z" && state != b"X" {
+            return true;
+        }
+    }
+    false
 }
 
 impl PtyProducer {
@@ -583,18 +711,55 @@ impl PtyProducer {
 
 impl Drop for PtyProducer {
     fn drop(&mut self) {
-        // The ONE place that ever reaps the leader (decision 13/14,
-        // review round) -- safe in every state, because until this runs
-        // the pgid stays PINNED by the unreaped leader, whether it is
-        // still alive or already a zombie: `killpg` is a harmless no-op
-        // (`ESRCH` is impossible here, since the pgid cannot yet have
-        // vanished) if it is already a zombie, a real kill if any member
-        // is still alive, and the blocking `waitpid` that follows is
-        // what finally frees the pid for reuse.
+        // The ONE place that ever reaps the leader (decision 13/14) --
+        // safe to run in every state, because until this succeeds (or
+        // its own bound expires) the pgid stays PINNED by the unreaped
+        // leader, whether it is still alive or already a zombie:
+        // `killpg` is a harmless no-op if it is already a zombie (it
+        // cannot be signalled, but `ESRCH` is impossible here since the
+        // pgid cannot yet have vanished), a real kill if any member is
+        // still alive.
         unsafe {
             libc::killpg(self.pid, libc::SIGKILL);
+        }
+        // Review round 2 (R3): the FIRST version called a raw, blocking
+        // `waitpid(.., 0)` and discarded its result -- a non-restarting
+        // signal handler anywhere in this process turns that call into
+        // `EINTR`, and a discarded `EINTR` means the child is NEVER
+        // reaped (reproduced on every run of the reviewer's own repro).
+        // Separately, a leader stuck in an uninterruptible kernel wait
+        // (state `D`) can outlive `SIGKILL` entirely, which would block
+        // this destructor -- and therefore the whole capsule's own exit
+        // -- indefinitely. FIX: poll `waitpid(pid, WNOHANG)` every 10ms,
+        // retrying `EINTR` immediately (no fresh delay needed -- the
+        // signal was already handled by the time the syscall returned)
+        // and treating `ECHILD` as "already reaped" (harmless: something
+        // else — this same call, on a rare double-drop-adjacent race, or
+        // a genuinely foreign reaper after R2's own `SIGCHLD` fix rules
+        // out routine auto-reaping — already collected it), bounded by
+        // `REAP_BOUND`. Past that bound, this destructor simply returns:
+        // nothing ever addresses this pgid again after `Drop`, and the
+        // exiting capsule process hands its own still-unreaped child to
+        // ITS reaper the same way any other orphan would be.
+        let deadline = Instant::now() + REAP_BOUND;
+        loop {
             let mut status: libc::c_int = 0;
-            libc::waitpid(self.pid, &mut status, 0);
+            let rc = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) };
+            if rc == self.pid {
+                return; // reaped
+            }
+            if rc < 0 {
+                match io::Error::last_os_error().raw_os_error() {
+                    Some(libc::EINTR) => continue, // retry immediately
+                    Some(libc::ECHILD) => return,  // already reaped
+                    _ => return,                   // Drop cannot propagate an error; give up quietly
+                }
+            }
+            // rc == 0: not yet reapable -- keep polling until the bound.
+            if Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }
@@ -700,6 +865,22 @@ mod parent_lease_tests {
 /// The two process-tree tests read `/proc` and are Linux-only (they ran on
 /// the macOS CI leg once and failed for want of `/proc`); the reader-strand
 /// test needs no `/proc` and runs on every Unix.
+///
+/// Review round 2 (R7): the descendant-finding helper no longer reads the
+/// LEADER's own `/proc/<pid>/task/<pid>/children` — that file empties out
+/// the INSTANT the leader exits (a live child is reparented away right
+/// then, not merely once the leader is later reaped), so it raced the
+/// leader's own exit in the first version of these tests. Finding a
+/// descendant by scanning ALL of `/proc` for a process whose OWN pgrp
+/// equals the leader's pid works identically whether the leader is still
+/// alive, already a zombie, or already reaped — a process's pgrp does not
+/// change when its parent exits, only its ppid does — so no delay
+/// between backgrounding a descendant and the leader's own exit is
+/// needed anywhere below. Success for "the descendant is now dead" is
+/// ALWAYS "state `Z`, or its `/proc` entry is gone" (`wait_until_dead`) —
+/// never "gone" alone, which would depend on how fast an external
+/// subreaper happens to reap it, not on anything this producer's own
+/// `Drop` actually did.
 #[cfg(test)]
 mod drop_and_domain_tests {
     use super::{Producer, PtyProducer};
@@ -709,38 +890,10 @@ mod drop_and_domain_tests {
     use std::time::Instant;
 
     #[cfg(target_os = "linux")]
-    fn direct_children(pid: libc::pid_t) -> Vec<libc::pid_t> {
-        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-            .unwrap_or_default()
-            .split_whitespace()
-            .filter_map(|s| s.parse().ok())
-            .collect()
-    }
-
-    #[cfg(target_os = "linux")]
     fn proc_state(pid: libc::pid_t) -> Option<String> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let close = stat.rfind(')')?;
         stat[close + 1..].split_whitespace().next().map(str::to_string)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn proc_exists(pid: libc::pid_t) -> bool {
-        std::path::Path::new(&format!("/proc/{pid}")).exists()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn wait_for_direct_child(pid: libc::pid_t, timeout: Duration) -> Option<libc::pid_t> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(&child) = direct_children(pid).first() {
-                return Some(child);
-            }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
     }
 
     #[cfg(target_os = "linux")]
@@ -757,15 +910,63 @@ mod drop_and_domain_tests {
         }
     }
 
+    /// "Dead" here means EITHER a zombie (`Z`, awaiting reap by whoever
+    /// its current parent is) OR fully gone (`/proc` entry absent) --
+    /// never "gone" alone, which would depend on how fast some external
+    /// subreaper happens to reap an orphan, not on what this producer's
+    /// own `Drop` did.
     #[cfg(target_os = "linux")]
-    fn wait_until_gone(pid: libc::pid_t, timeout: Duration) -> bool {
+    fn wait_until_dead(pid: libc::pid_t, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            if !proc_exists(pid) {
-                return true;
+            match proc_state(pid) {
+                Some(s) if s == "Z" => return true,
+                None => return true, // /proc entry gone -- also dead
+                Some(_) => {}        // still alive in some other state
             }
             if Instant::now() >= deadline {
                 return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// One scan of `/proc` for a LIVE process whose OWN pgrp (field 5)
+    /// equals `leader_pid` and whose pid is NOT `leader_pid` itself —
+    /// see this module's own doc for why this replaces reading the
+    /// leader's own `children` file.
+    #[cfg(target_os = "linux")]
+    fn find_descendant_by_pgrp(leader_pid: libc::pid_t) -> Option<libc::pid_t> {
+        for entry in std::fs::read_dir("/proc").ok()? {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Ok(pid) = name.parse::<libc::pid_t>() else { continue };
+            if pid == leader_pid {
+                continue;
+            }
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{name}/stat")) else { continue };
+            let Some(close) = stat.rfind(')') else { continue };
+            let mut fields = stat[close + 1..].split_whitespace();
+            let Some(_state) = fields.next() else { continue };
+            let Some(_ppid) = fields.next() else { continue };
+            let Some(pgrp) = fields.next().and_then(|s| s.parse::<libc::pid_t>().ok()) else { continue };
+            if pgrp == leader_pid {
+                return Some(pid);
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_descendant_by_pgrp(leader_pid: libc::pid_t, timeout: Duration) -> Option<libc::pid_t> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(pid) = find_descendant_by_pgrp(leader_pid) {
+                return Some(pid);
+            }
+            if Instant::now() >= deadline {
+                return None;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -805,75 +1006,56 @@ mod drop_and_domain_tests {
         reader.join().unwrap();
     }
 
-    /// Review round, F3/F5/F6's own repro shape: after the LEADER has
-    /// already exited (and this producer has deliberately NOT reaped it
-    /// — see the module doc's third point), a surviving DESCENDANT in
-    /// the same process group must still be killed by `Drop` alone, with
-    /// no `terminate_domain`/`close_output_side` call ever made. `trap ''
-    /// HUP` on the backgrounded `sleep` (inherited across its own exec,
-    /// since `SIG_IGN` survives `exec` unlike a caught handler) is what
-    /// lets it survive the leader's own exit at all — the leader, as a
-    /// session leader with a controlling tty, would otherwise send it a
-    /// real `SIGHUP` on exit, and the test would prove nothing about
-    /// `Drop` specifically (mirrors `tests/e2e_socket.rs`'s identical
-    /// finding, F7).
+    /// Review round, F3/F5/F6's own repro shape (refined by round 2, R7):
+    /// after the LEADER has already exited (and this producer has
+    /// deliberately NOT reaped it — see the module doc's third point), a
+    /// surviving DESCENDANT in the same process group must still be
+    /// killed by `Drop` alone, with no `terminate_domain`/
+    /// `close_output_side` call ever made. `trap '' HUP` on the
+    /// backgrounded `sleep` (inherited across its own exec, since
+    /// `SIG_IGN` survives `exec` unlike a caught handler) is what lets it
+    /// survive the leader's own exit at all — the leader, as a session
+    /// leader with a controlling tty, would otherwise send it a real
+    /// `SIGHUP` on exit, and the test would prove nothing about `Drop`
+    /// specifically (mirrors `tests/e2e_socket.rs`'s identical finding,
+    /// F7). No delay between backgrounding and the shell's own `exit 0`
+    /// is needed: `find_descendant_by_pgrp` finds the descendant by its
+    /// OWN pgrp, which survives the leader's exit/reparenting untouched.
     #[test]
     #[cfg(target_os = "linux")]
     fn drop_kills_surviving_descendants_when_the_leader_already_exited() {
-        // The `sleep 0.3` between backgrounding and exiting is load-
-        // bearing, not padding: a child is reparented to a subreaper the
-        // INSTANT its parent exits (not merely once the parent is later
-        // reaped), so `wait_for_direct_child` below would otherwise race
-        // the shell's own near-instant `exit 0` and could observe an
-        // already-empty children list.
-        let argv = vec![
-            "/bin/sh".to_string(),
-            "-c".to_string(),
-            "trap '' HUP; sleep 600 & sleep 0.3; exit 0".to_string(),
-        ];
+        let argv = vec!["/bin/sh".to_string(), "-c".to_string(), "trap '' HUP; sleep 600 & exit 0".to_string()];
         let producer = PtyProducer::spawn(&argv, 80, 24).unwrap();
 
-        let descendant_pid = wait_for_direct_child(producer.pid, Duration::from_secs(5))
-            .expect("the shell never forked its backgrounded sleep within 5s");
         assert!(wait_for_zombie(producer.pid, Duration::from_secs(5)), "the leader never exited within 5s");
-        assert!(
-            proc_exists(descendant_pid),
-            "the backgrounded sleep must survive the leader's own exit (SIGHUP is ignored)"
-        );
+        let descendant_pid = wait_for_descendant_by_pgrp(producer.pid, Duration::from_secs(5))
+            .expect("the backgrounded sleep must survive the leader's own exit (SIGHUP is ignored)");
 
         drop(producer); // no terminate_domain/close_output_side call -- Drop alone must do this
 
         assert!(
-            wait_until_gone(descendant_pid, Duration::from_secs(5)),
+            wait_until_dead(descendant_pid, Duration::from_secs(5)),
             "the surviving descendant was still alive 5s after Drop"
         );
     }
 
-    /// Review round, F6's own repro shape: `domain_is_empty` must ignore
-    /// BOTH a zombie leader and a zombie descendant. Backgrounds a
-    /// short-lived `sleep 0.05`, then EXEC-replaces the leader itself
-    /// (SAME pid, so its role as the descendant's real OS parent is
-    /// unaffected) into a long-lived `sleep 600` that never calls `wait`
-    /// on anything -- the short sleep's zombie therefore has NO reaper
-    /// and persists deterministically until this test (or `Drop`) reaps
-    /// the leader.
+    /// Review round 2 (R7): replaces the first round's
+    /// `domain_is_empty_ignores_zombie_descendants`, which relied on an
+    /// inherently transient state (a zombie descendant with no live
+    /// members left at all — its own parent's eventual death reparents
+    /// it to a reaper that may collect it at any time, so the window in
+    /// which `domain_is_empty` could even be asked about it is not
+    /// deterministic). The UNREAPED ZOMBIE LEADER is the deterministic
+    /// case of the identical property this producer's own `domain_is_empty`
+    /// must get right: a live leader means "not empty"; the SAME leader,
+    /// killed and left an unreaped zombie (this producer's own contract
+    /// -- see the module doc's third point), must read as "empty".
     #[test]
     #[cfg(target_os = "linux")]
-    fn domain_is_empty_ignores_zombie_descendants() {
-        let argv = vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 0.05 & exec sleep 600".to_string()];
-        let producer = PtyProducer::spawn(&argv, 80, 24).unwrap();
+    fn domain_is_empty_ignores_a_zombie_leader() {
+        let producer = PtyProducer::spawn(&["sleep".to_string(), "600".to_string()], 80, 24).unwrap();
 
-        let descendant_pid = wait_for_direct_child(producer.pid, Duration::from_secs(5))
-            .expect("the shell never forked its backgrounded sleep within 5s");
-        assert!(
-            wait_for_zombie(descendant_pid, Duration::from_secs(5)),
-            "the short-lived descendant never became a zombie within 5s"
-        );
-
-        // The leader is still alive (now running as `sleep 600`) --
-        // domain_is_empty must say so, DESPITE the zombie descendant
-        // already present.
-        assert!(!producer.domain_is_empty().unwrap(), "the leader is still alive; the domain is not empty");
+        assert!(!producer.domain_is_empty().unwrap(), "a live leader means the domain is not empty");
 
         producer.terminate_domain().unwrap();
         assert!(
@@ -883,9 +1065,7 @@ mod drop_and_domain_tests {
 
         assert!(
             producer.domain_is_empty().unwrap(),
-            "a domain with only zombie members (leader AND descendant) must read as empty"
+            "a domain containing only an unreaped zombie leader must read as empty"
         );
-
-        drop(producer); // reaps the leader; the orphaned zombie descendant is reparented and reaped by the ambient subreaper on its own time, outside this test's own concern
     }
 }

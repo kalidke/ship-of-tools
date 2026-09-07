@@ -1224,6 +1224,23 @@ pub fn run<P: Producer>(
                         let _ = tx.send(ReaderEvent::Done(Ok(())));
                         return;
                     }
+                    // Review round 2 (R4): a signal-interrupted read is not
+                    // an end of stream on ANY platform -- the ConPTY
+                    // producer never actually produces this (Windows has
+                    // no equivalent signal-delivery-during-read
+                    // interruption for a named pipe read), but the Unix
+                    // pty producer's plain `File` can, any time the
+                    // reading thread receives a signal (this crate's own
+                    // `Drop`-time `killpg`/`waitpid` and the reap-bound
+                    // polling elsewhere don't target this thread, but an
+                    // operator/OS signal targeting the whole process
+                    // would). Release the reservation and retry the SAME
+                    // read rather than treating it as terminal -- the loop
+                    // re-reserves at its own top.
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                        budget.release(READ_CHUNK as u64);
+                        continue;
+                    }
                     Err(e) => {
                         budget.release(READ_CHUNK as u64);
                         let _ = tx.send(ReaderEvent::Done(Err(e)));

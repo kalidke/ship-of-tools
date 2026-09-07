@@ -535,6 +535,19 @@ fn proc_session_id(pid: u32) -> Option<i32> {
     stat[close + 1..].split_whitespace().nth(3)?.parse().ok()
 }
 
+/// `/proc/<pid>/stat` field 3 (state) — review round 2 (R7): a zombie
+/// still answers `kill(pid, 0)` as "exists" (its pid stays valid until
+/// reaped), so that alone cannot prove PDEATHSIG actually did anything.
+/// The real proof is state `Z`, or the `/proc` entry being gone entirely
+/// (this producer reparents to a subreaper once the capsule dies and is
+/// typically reaped quickly) — reuses `proc_session_id`'s own parser
+/// shape for the state field instead.
+fn proc_state(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let close = stat.rfind(')')?;
+    stat[close + 1..].split_whitespace().next().map(str::to_string)
+}
+
 /// ADR 0043 decision 14: `PR_SET_PDEATHSIG(SIGKILL)` must fire on the
 /// death of the SPAWNING THREAD by ANY means, including a hard `SIGKILL`
 /// of the whole capsule process — not merely an orderly exit. Spawns a
@@ -628,14 +641,19 @@ fn pdeathsig_kills_the_producer_when_the_capsule_dies_hard() {
 
     // `PR_SET_PDEATHSIG(SIGKILL)` fires on the death of the SPAWNING
     // THREAD (the capsule's own main thread, just killed above) -- the
-    // producer itself must be gone within a bounded wait, with SIGHUP
+    // producer itself must be DEAD within a bounded wait, with SIGHUP
     // ignored and no supervisor or teardown code involved at all.
+    // Review round 2 (R7): "dead" means state `Z` or the `/proc` entry
+    // gone entirely -- NOT `kill(pid, 0) == ESRCH` alone, which a zombie
+    // still answers as "exists" (its pid stays valid until reaped), so
+    // that check alone could not distinguish "PDEATHSIG fired, awaiting
+    // reap" from "PDEATHSIG never fired at all".
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if unsafe { libc::kill(producer_pid as libc::pid_t, 0) } != 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-        {
-            break;
+        match proc_state(producer_pid) {
+            Some(s) if s == "Z" => break,
+            None => break, // /proc entry gone -- also dead
+            Some(_) => {}  // still alive in some other state
         }
         assert!(
             Instant::now() < deadline,
