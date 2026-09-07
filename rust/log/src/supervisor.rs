@@ -1121,6 +1121,17 @@ fn finish_end_run_with_process(
             matches!(process.wait(KILL_WAIT_BOUND), Ok(true))
         }
     };
+    // Single-owner reaping (review round), Linux only: whichever `wait`
+    // call above actually confirmed the exit (the graceful one, or the
+    // terminate-then-wait fallback), `process` is never read again past
+    // this point — reap it now, explicitly (see `ChallengedProcess::reap`'s
+    // own doc). A Windows process HANDLE has no zombie/reap concept at
+    // all — `Drop`'s own `CloseHandle` is the whole cleanup there, so the
+    // Windows `Process` type gains nothing from a call here.
+    #[cfg(target_os = "linux")]
+    if confirmed_exit {
+        process.reap();
+    }
     if !confirmed_exit {
         let detail = bounded_detail("the leg's process did not exit even after a hard stop");
         if let Some(op_id) = op_id {
@@ -1422,12 +1433,41 @@ enum Lifecycle {
     /// awaiting the DEFERRED reply at `record_closed` (B3) — `None` once
     /// delivered, or if that connection disconnected first (fine: the
     /// journal carries the result for a later `query`).
+    ///
+    /// `process` (review round, reproduced): the SAME retained handle
+    /// `Ready` carried, kept through the transition rather than dropped
+    /// at it. `EndRun` is only ever admitted from `Ready` (`handle_command`'s
+    /// own admission check), so the leg this handle identifies may exit
+    /// on its own between authority ticks WHILE `end_run` is still en
+    /// route to it — a race the worker's own re-challenge over the lane
+    /// cannot always win. Before this field existed, that race left the
+    /// leg an unreaped zombie for the rest of the supervisor's life:
+    /// dropping `Ready`'s `process` at this exact transition was the
+    /// ONLY reference to it, single-owner reaping (an earlier review
+    /// round) having already removed the implicit `Drop`-triggered reap
+    /// that used to paper over exactly this. Every place `Ending`
+    /// resolves — into `EndedNoRespawn`, `Terminal`, or a respawn via
+    /// [`respawn_or_terminal`] — retires this handle via [`retire_leg`]
+    /// first, before it is ever dropped: reaped immediately (Linux) if
+    /// [`Process::wait`] with a zero timeout confirms it already exited,
+    /// a no-op check on Windows (which has no reap concept at all); if it
+    /// has NOT exited yet — round 2's own G1 finding, e.g. `Ending`
+    /// resolving `PreBarrierFailed`, where the writer's lock release
+    /// (proving the marker check can proceed) can precede the process's
+    /// own actual exit — ownership MOVES into `AuthorityState::retired_legs`
+    /// instead, polled to completion by [`reap_retired_legs`] once per
+    /// main-loop tick. If the worker instead produced its OWN
+    /// freshly-proven handle for the SAME leg (`EndRunWorkerResult::Ended`'s
+    /// path through `finish_end_run_with_process`), that one is reaped
+    /// there as always — a second `waitid` here, on an already-reaped
+    /// pidfd, is `ECHILD`, harmless.
     Ending {
         operation_id: String,
         rx: mpsc::Receiver<EndingProgress>,
         handle: JoinHandle<()>,
         started_at: Instant,
         pending_reply: Option<ConnId>,
+        process: Process,
     },
     /// A `reset` is in flight — admissible ONLY from `EndedNoRespawn`
     /// (B2).
@@ -1495,15 +1535,74 @@ impl Lifecycle {
 /// Lifecycle at all — see [`AuthorityState::stop_requested`] — so this
 /// is no longer also `Stop`'s own "carry the worker forward" mechanism;
 /// it exists for `force_terminal` alone now.
-fn take_worker_handle(lifecycle: &mut Lifecycle) -> Option<JoinHandle<()>> {
+///
+/// Also retires a retained leg `process` (review round, reproduced;
+/// widened round 2, G1): `Ready` and `Ending` both carry one, and
+/// `force_terminal` can jump straight to `Terminal` from EITHER of them
+/// (the SAME "outside that state's own transition arm" cases named
+/// above) — without this, that `process` would be silently dropped here
+/// via `..`, exactly the zombie-leaking gap single-owner reaping (an
+/// earlier review round) removed the implicit `Drop`-triggered reap that
+/// used to paper over. [`retire_leg`] reaps it immediately if already
+/// exited, otherwise moves it into `retired_legs` rather than dropping it
+/// — see `AuthorityState::retired_legs`'s own doc.
+fn take_worker_handle(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>) -> Option<JoinHandle<()>> {
     match std::mem::replace(lifecycle, Lifecycle::EndedNoRespawn) {
         Lifecycle::Recovering { handle, .. }
         | Lifecycle::InitialProbe { handle, .. }
         | Lifecycle::Spawning { handle, .. }
-        | Lifecycle::Ending { handle, .. }
         | Lifecycle::Resetting { handle, .. } => Some(handle),
-        Lifecycle::Ready { .. } | Lifecycle::EndedNoRespawn | Lifecycle::Terminal { .. } => None,
+        Lifecycle::Ending { handle, process, .. } => {
+            retire_leg(retired_legs, process);
+            Some(handle)
+        }
+        Lifecycle::Ready { process } => {
+            retire_leg(retired_legs, process);
+            None
+        }
+        Lifecycle::EndedNoRespawn | Lifecycle::Terminal { .. } => None,
     }
+}
+
+/// Single-owner reaping (review round), extended (LU4 review round 2,
+/// G1): the retained leg `process` handle a [`Lifecycle::Ready`]/
+/// [`Lifecycle::Ending`] state carries, at the moment that state is being
+/// LEFT for something else. Reaps immediately (Linux) if a `wait` with a
+/// ZERO timeout (never blocking the authority's own tick) confirms it
+/// already exited — the common case. Otherwise the leg is still alive
+/// RIGHT NOW: ownership MOVES into `retired_legs` rather than being
+/// dropped (the bug this closes — a leg that exits a moment after its
+/// state is left used to have no owner left at all). See
+/// `AuthorityState::retired_legs`'s own doc for the full rationale and
+/// [`reap_retired_legs`] for the other half (the main loop's own poll).
+fn retire_leg(retired_legs: &mut Vec<Process>, process: Process) {
+    #[cfg(target_os = "linux")]
+    if matches!(process.wait(Duration::ZERO), Ok(true)) {
+        process.reap();
+        return;
+    }
+    #[cfg(windows)]
+    if matches!(process.wait(Duration::ZERO), Ok(true)) {
+        return;
+    }
+    retired_legs.push(process);
+}
+
+/// The other half of [`retire_leg`]: called once per main-loop tick
+/// (`supervise_inner`'s own `MAIN_LOOP_POLL` cadence — no new timer) to
+/// give every leg that outlived its own Lifecycle state a chance to be
+/// observed dead and reaped. A non-blocking `wait` per entry; a confirmed
+/// exit reaps it (Linux) and removes it from the vector, everything else
+/// stays for the next tick.
+fn reap_retired_legs(retired_legs: &mut Vec<Process>) {
+    retired_legs.retain(|process| {
+        let exited = matches!(process.wait(Duration::ZERO), Ok(true));
+        if exited {
+            #[cfg(target_os = "linux")]
+            process.reap();
+        }
+        !exited
+    });
 }
 
 // ---------------------------------------------------------------------
@@ -1823,6 +1922,33 @@ struct AuthorityState {
     self_pid: u32,
     self_created: u64,
     stop_requested: Option<StopRequested>,
+    /// LU4 review round 2, G1: legs whose `Lifecycle` state was left
+    /// (`Ready`/`Ending` resolving to something else) while STILL ALIVE —
+    /// [`reap_leg_if_already_exited`]'s old design only ever handled
+    /// "already exited by the time its state is left"; a leg that exits a
+    /// MOMENT LATER (e.g. `Ending` resolving `PreBarrierFailed`: the
+    /// writer released its lock, proving the marker check can proceed,
+    /// before the process itself has actually exited) had no owner left
+    /// at all once its retained handle was silently dropped — a zombie
+    /// for the supervisor's whole remaining lifetime. The owner reaps;
+    /// ownership ends only at an OBSERVED death, never merely at the
+    /// Lifecycle transition that happens to coincide with it. Every site
+    /// that used to call `reap_leg_if_already_exited` now calls
+    /// [`retire_leg`] instead: reap immediately if `wait(Duration::ZERO)`
+    /// already confirms the exit, otherwise the handle MOVES here rather
+    /// than being dropped. [`reap_retired_legs`] polls this once per main-
+    /// loop tick (the existing `MAIN_LOOP_POLL` cadence — no new timer).
+    /// A leg that never dies stays here for the supervisor's own
+    /// lifetime — outliving it (ADR 0043 decision 14's detached kill
+    /// domain) is by design; the vector is bounded by the number of legs
+    /// this authority ever spawned, never unbounded. One shape on both
+    /// platforms (not `cfg(target_os = "linux")`-gated): a Windows
+    /// `Process` handle has no reap concept, so an entry there just sits
+    /// until its own `wait` confirms exit (near-immediate — Windows has
+    /// no zombie/reap delay at all) and is then dropped by
+    /// `reap_retired_legs`'s own `retain`, its `Drop` (`CloseHandle`)
+    /// doing the only cleanup that platform needs.
+    retired_legs: Vec<Process>,
 }
 
 /// What `handle_command` decided to do — the CALLER (`handle_lane_bytes`)
@@ -2068,8 +2194,11 @@ fn encode_reply_or_fallback(reply: &SupervisorReply) -> Vec<u8> {
 /// downstream ever depends on its result once a FORCED Terminal has
 /// already been decided by something else entirely (a dead accept loop,
 /// an unreadable journal) — there is no result left to wait for.
-fn force_terminal(lifecycle: &mut Lifecycle, detail: String) {
-    if let Some(handle) = take_worker_handle(lifecycle) {
+/// [`take_worker_handle`] also reaps a retained leg `process` (`Ready`/
+/// `Ending`) the SAME jump would otherwise silently drop unreaped — see
+/// its own doc.
+fn force_terminal(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>, detail: String) {
+    if let Some(handle) = take_worker_handle(lifecycle, retired_legs) {
         eprintln!(
             "sot-capsule supervise: abandoning an in-flight worker thread while forcing a terminal \
              state ({detail}) — its thread will exit on its own or be torn down with the process"
@@ -2246,7 +2375,7 @@ fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId,
                     let reply = ctx.authority.handle_status_or_query(ctx.lifecycle, req);
                     if let SupervisorReply::Operation(state) = &reply {
                         if is_journal_unreadable(state) {
-                            force_terminal(ctx.lifecycle, "the operation journal became unreadable".into());
+                            force_terminal(ctx.lifecycle, &mut ctx.authority.retired_legs, "the operation journal became unreadable".into());
                         }
                     }
                     let bytes = encode_reply_or_fallback(&reply);
@@ -2260,12 +2389,25 @@ fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId,
                                     ctx.authority.voyage_id.clone().expect("EndRun was admitted, so voyage_id is Some");
                                 let (rx, handle) =
                                     spawn_end_run(ctx.authority.state_dir.clone(), operation_id.clone(), voyage_id, epoch, reason);
+                                // EndRun is only ever admitted from `Ready`
+                                // (`handle_command`'s own check, just above)
+                                // -- extract its retained `process` so
+                                // `Ending` can carry it forward, rather
+                                // than dropping it in the same assignment
+                                // that replaces `*ctx.lifecycle` (review
+                                // round, reproduced — see `Lifecycle::Ending`'s
+                                // own doc for why).
+                                let process = match std::mem::replace(ctx.lifecycle, Lifecycle::EndedNoRespawn) {
+                                    Lifecycle::Ready { process } => process,
+                                    _ => unreachable!("EndRun is only ever admitted from Ready"),
+                                };
                                 *ctx.lifecycle = Lifecycle::Ending {
                                     operation_id,
                                     rx,
                                     handle,
                                     started_at: now,
                                     pending_reply: Some(id),
+                                    process,
                                 };
                                 // B3: the reply is DEFERRED to record_closed — never sent here.
                                 None
@@ -2317,7 +2459,7 @@ fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId,
                         };
                     if let Some(state) = outcome {
                         if is_journal_unreadable(&state) {
-                            force_terminal(ctx.lifecycle, "the operation journal became unreadable".into());
+                            force_terminal(ctx.lifecycle, &mut ctx.authority.retired_legs, "the operation journal became unreadable".into());
                         }
                         let reply = SupervisorReply::Operation(state);
                         let bytes = encode_reply_or_fallback(&reply);
@@ -2464,6 +2606,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         self_pid: self_ids.0,
         self_created: self_ids.1,
         stop_requested: None,
+        retired_legs: Vec::new(),
     };
     let mut conns: HashMap<ConnId, Conn> = HashMap::new();
     let capsule_exe = std::env::current_exe().map_err(crate::Error::Io)?;
@@ -2481,7 +2624,11 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         {
             let mut lane_ctx = LaneCtx { authority: &mut authority, lifecycle: &mut lifecycle };
             if service_lane(&lane, &mut conns, &mut lane_ctx, now) {
-                force_terminal(&mut lifecycle, "supervisor lane accept loop failed permanently".into());
+                force_terminal(
+                    &mut lifecycle,
+                    &mut authority.retired_legs,
+                    "supervisor lane accept loop failed permanently".into(),
+                );
             }
         }
 
@@ -2656,6 +2803,17 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             },
             Lifecycle::Ready { process } => match process.wait(Duration::ZERO) {
                 Ok(true) => {
+                    // Single-owner reaping (review round), Linux only:
+                    // `wait` just confirmed this leg's exit and nothing
+                    // below reads `process` again — reap it now,
+                    // explicitly, here rather than relying on an implicit
+                    // `Drop` (see `ChallengedProcess::reap`'s own doc).
+                    // This is the natural-exit transition F1's own doc
+                    // used to describe. A Windows process HANDLE has no
+                    // zombie/reap concept — `Drop`'s own `CloseHandle` is
+                    // the whole cleanup there.
+                    #[cfg(target_os = "linux")]
+                    process.reap();
                     // N1 (Codex review round 3): stability is judged on
                     // the PRODUCER's own recorded lifetime
                     // (`leg_was_stable`), never on a wall-clock interval
@@ -2682,7 +2840,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     entered_at: now,
                 },
             },
-            Lifecycle::Ending { operation_id, rx, handle, started_at, mut pending_reply } => match rx.try_recv() {
+            Lifecycle::Ending { operation_id, rx, handle, started_at, mut pending_reply, process } => match rx.try_recv() {
                 Ok(EndingProgress::RecordClosed) => {
                     if let Some(conn_id) = pending_reply.take() {
                         if conns.contains_key(&conn_id) {
@@ -2691,14 +2849,30 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                             let _ = lane.send(conn_id, bytes, None);
                         } // else: client disconnected meanwhile -- fine (B3).
                     }
-                    Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply }
+                    // Still in flight -- carry `process` forward untouched.
+                    Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply, process }
                 }
                 Ok(EndingProgress::Final(EndRunWorkerResult::Ended)) => {
                     join_and_warn(handle, "end_run");
+                    // Review round, reproduced; widened round 2 (G1): the
+                    // worker's own proven handle for this SAME leg is
+                    // reaped inside `finish_end_run_with_process` as
+                    // always; THIS retained handle needs its own
+                    // retire/reap here too, in case the leg exited on its
+                    // own (naturally, or via this end_run's own
+                    // terminate) before the worker's re-challenge ever
+                    // observed it -- a second `waitid` on an
+                    // already-reaped pidfd is `ECHILD`, harmless. If it
+                    // has NOT exited yet (the worker's own re-challenge
+                    // proved the writer gone by a marker, not by watching
+                    // this exact process die), `retire_leg` moves it into
+                    // `retired_legs` instead of dropping it here.
+                    retire_leg(&mut authority.retired_legs, process);
                     Lifecycle::EndedNoRespawn
                 }
                 Ok(EndingProgress::Final(EndRunWorkerResult::PreBarrierFailed)) => {
                     join_and_warn(handle, "end_run");
+                    retire_leg(&mut authority.retired_legs, process);
                     // N1 (Codex review round 3): the SAME producer-
                     // recorded stability check the natural-death Ready
                     // arm uses — a pre-barrier failure still means the
@@ -2721,21 +2895,25 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                 }
                 Ok(EndingProgress::Final(EndRunWorkerResult::Fatal(detail))) => {
                     join_and_warn(handle, "end_run");
+                    retire_leg(&mut authority.retired_legs, process);
                     Lifecycle::Terminal { detail: format!("end_run {operation_id}: {detail}"), entered_at: now }
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     if watchdog_expired(started_at, ENDING_WATCHDOG, now) {
                         abandon_worker(handle, "end_run");
+                        retire_leg(&mut authority.retired_legs, process);
                         Lifecycle::Terminal {
                             detail: format!("end_run {operation_id}: operation watchdog expired"),
                             entered_at: now,
                         }
                     } else {
-                        Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply }
+                        // Still in flight -- carry `process` forward untouched.
+                        Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply, process }
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     join_and_warn(handle, "end_run");
+                    retire_leg(&mut authority.retired_legs, process);
                     Lifecycle::Terminal {
                         detail: format!("the end_run thread for {operation_id} ended without a result (possible panic)"),
                         entered_at: now,
@@ -2797,6 +2975,15 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             },
             other @ (Lifecycle::EndedNoRespawn | Lifecycle::Terminal { .. }) => other,
         };
+
+        // G1 (Codex review round 2): a leg retired while still alive
+        // (`retire_leg`, above) has no other owner watching it — poll it
+        // here, once per tick, the SAME `MAIN_LOOP_POLL` cadence every
+        // other wait in this loop already uses (no new timer). Runs
+        // regardless of `exit_now` below: a leg's own death is exactly as
+        // worth observing (and reaping, Linux) on the loop's very last
+        // iteration as any other.
+        reap_retired_legs(&mut authority.retired_legs);
 
         // N4 (Codex review round 3): `stop`'s own exit condition — the
         // underlying Lifecycle is NEVER touched by Stop's acceptance
@@ -3299,12 +3486,14 @@ mod tests {
     /// here.
     #[test]
     fn take_worker_handle_extracts_the_handle_from_a_worker_bearing_state() {
+        let mut retired_legs = Vec::new();
         let (_tx, rx) = mpsc::channel::<RecoveryOutcome>();
         let mut recovering = Lifecycle::Recovering { rx, handle: std::thread::spawn(|| {}), started_at: Instant::now() };
-        assert!(take_worker_handle(&mut recovering).is_some());
+        assert!(take_worker_handle(&mut recovering, &mut retired_legs).is_some());
 
         let mut ended = Lifecycle::EndedNoRespawn;
-        assert!(take_worker_handle(&mut ended).is_none());
+        assert!(take_worker_handle(&mut ended, &mut retired_legs).is_none());
+        assert!(retired_legs.is_empty(), "neither state above carries a leg process to retire");
     }
 
     fn test_authority(state_dir: &Path) -> AuthorityState {
@@ -3314,6 +3503,7 @@ mod tests {
             self_pid: 0,
             self_created: 0,
             stop_requested: None,
+            retired_legs: Vec::new(),
         }
     }
 

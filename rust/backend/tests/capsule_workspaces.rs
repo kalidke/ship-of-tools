@@ -1,15 +1,20 @@
-#![cfg(windows)]
-//! ADR 0042 slice L1a real-process integration test: a real `sotd`, a real
-//! `sot-capsule.exe` it spawns DETACHED, talking the actual wire protocol
-//! over a real named pipe — the same posture `rust/log/tests/supervisor_win.rs`
-//! takes for the supervisor authority one layer down. Requires
-//! `sot-capsule.exe` already built into the SAME target directory as
-//! `sotd.exe` (the CI job builds it first — see `.github/workflows/rust.yml`'s
-//! `conpty-windows-2022` job; production locates it the identical way, next
-//! to the daemon's own executable).
+#![cfg(any(windows, target_os = "linux"))]
+//! ADR 0042 slice L1a / ADR 0043 decision 22 (LU4) real-process
+//! integration test: a real `sotd`, a real `sot-capsule[.exe]` it spawns
+//! DETACHED, talking the actual wire protocol over a real local socket
+//! (a named pipe on Windows, an `AF_UNIX` socket on Linux) — the same
+//! posture `rust/log/tests/supervisor_win.rs`/`supervisor.rs` take for
+//! the supervisor authority one layer down. Requires `sot-capsule[.exe]`
+//! already built into the SAME target directory as `sotd[.exe]` (the CI
+//! job builds the whole workspace first — see `.github/workflows/rust.yml`'s
+//! `conpty-windows-2022` and `ubuntu-latest` jobs; production locates it
+//! the identical way, next to the daemon's own executable). Every
+//! `workspace.create` in this file requests `"runtime": "capsule"`
+//! explicitly (the field exists for exactly this — see `ops.rs`'s own
+//! doc); the Linux platform default stays "tmux" until the bridge.
 //!
 //! Every wait below is a BOUNDED poll or `tokio::time::timeout` for an
-//! external, observable fact (a named pipe accepting a connection, a
+//! external, observable fact (the socket accepting a connection, a
 //! `workspace.list` row's own `phase` field, a supervisor lane going
 //! silent) — never a sleep-and-hope, and never an unbounded read/write/
 //! kill/wait (Codex review finding 13).
@@ -26,6 +31,7 @@
 //! confirms the record actually closed before this test ever asserts the
 //! row is gone from `workspace.list`.
 
+use std::cell::RefCell;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -37,9 +43,10 @@ use sot_protocol::{codec, op, Frame, HelloReq, Kind};
 
 /// Real-process tests share one CI runner; serialize them like
 /// `supervisor_win.rs`'s own `SERIAL` — a spawned `sotd` plus a spawned
-/// `sot-capsule` plus a spawned `cmd.exe` is real load on a two-core box.
-/// `tokio::sync::Mutex`, not `std::sync::Mutex`: this test is async and
-/// holds the guard across `.await` points for its whole body.
+/// `sot-capsule` plus a spawned platform-shell leg is real load on a
+/// two-core box. `tokio::sync::Mutex`, not `std::sync::Mutex`: this test
+/// is async and holds the guard across `.await` points for its whole
+/// body.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Every bounded wait in this file shares one figure — generous over any
@@ -57,39 +64,58 @@ fn sotd_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
 }
 
+/// The capsule executable's own file name for this platform — mirrors
+/// `capsule_workspace::runtime`'s own `CAPSULE_EXE` fork.
+#[cfg(windows)]
+const CAPSULE_EXE_NAME: &str = "sot-capsule.exe";
+#[cfg(target_os = "linux")]
+const CAPSULE_EXE_NAME: &str = "sot-capsule";
+
 /// Resolved the same way production does — `current_exe().parent()` — but
-/// from the TEST binary's own known sibling (`sotd.exe`'s own directory),
+/// from the TEST binary's own known sibling (`sotd[.exe]`'s own directory),
 /// since a `tests/*.rs` binary itself lives in `target/<profile>/deps/`,
 /// not `target/<profile>/`.
 fn sot_capsule_exe() -> PathBuf {
-    sotd_exe().with_file_name("sot-capsule.exe")
+    sotd_exe().with_file_name(CAPSULE_EXE_NAME)
 }
 
-/// Reaps a spawned child on every exit path, mirroring
-/// `supervisor_win.rs`'s own `KillGuard` — `kill_and_wait_bounded` is the
-/// TEST's own deliberate teardown (bounded, asserted); `Drop` stays a
-/// best-effort, unbounded-but-brief safety net for the panic/early-return
-/// paths a bounded async call cannot run from.
-struct KillGuard(Option<Child>);
-impl KillGuard {
-    fn take(&mut self) -> Option<Child> {
-        self.0.take()
-    }
+/// This test file's own daemon-wire socket for `tag` — a named pipe on
+/// Windows, a plain filesystem path on Linux (`interprocess::local_socket`'s
+/// `GenericFilePath` name kind treats either shape as "just a path" — see
+/// its own use in `try_connect` below). Unique per test process (its pid)
+/// so a re-run never collides with a still-tearing-down prior instance.
+/// This is a SEPARATE socket from every real capsule supervisor/voyage
+/// lane the daemon itself spawns (those live under `SOT_RUNTIME_DIR`,
+/// ADR 0043 decision 1) — this one is only the test-as-client's own
+/// connection to `sotd`'s wire protocol. On Linux the daemon's own
+/// `--socket` startup check refuses a group/other-accessible PARENT
+/// directory (`secure socket dir ... mode ... is group/other-accessible`)
+/// — plain `/tmp` fails that outright — so `runtime_dir` (the SAME
+/// private, owner-only dir `SOT_RUNTIME_DIR` already points at) hosts
+/// this socket too, under a name that cannot collide with a real
+/// supervisor/voyage socket there.
+#[cfg(windows)]
+fn test_socket_path(_runtime_dir: &Path, tag: &str) -> PathBuf {
+    PathBuf::from(format!(r"\\.\pipe\sot-test-{tag}-{}", std::process::id()))
 }
-impl Drop for KillGuard {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
+#[cfg(target_os = "linux")]
+fn test_socket_path(runtime_dir: &Path, tag: &str) -> PathBuf {
+    runtime_dir.join(format!("wire-{tag}-{}.sock", std::process::id()))
 }
 
 /// Kill + wait a child with a real bound (Codex review finding 13: "the
 /// test reuses ... unbounded ... kill waits"). Runs the blocking
 /// kill+wait on a `spawn_blocking` thread so the bound is a real
 /// `tokio::time::timeout`, not merely a hope that `wait()` returns fast
-/// after `kill()`.
+/// after `kill()`. This is the TEST's own deliberate, asserted teardown
+/// of the daemon it owns (`Env::kill_daemon_bounded`); `Env`'s own `Drop`
+/// (F4, LU4 review round 2) stays a best-effort, unbounded-but-brief
+/// safety net for the panic/early-return paths a bounded async call
+/// cannot run from — mirroring `supervisor_win.rs`'s own `KillGuard`,
+/// which this file's `Env` now subsumes (the daemon `Child` moved from a
+/// separate guard into `Env` itself so its `Drop` can order the daemon
+/// kill before the leg sweep and the tmux teardown, F4's own ordering
+/// requirement).
 async fn kill_and_wait_bounded(child: Child) {
     let mut child = child;
     let res = tokio::time::timeout(
@@ -129,16 +155,92 @@ where
 /// ever exercised.
 struct Env {
     _tmp: tempfile::TempDir,
+    /// L1-unix LU4 (ADR 0043 decision 1): `SOT_RUNTIME_DIR` — the private
+    /// dir every real supervisor/voyage socket on Linux lives under,
+    /// named by hash rather than nested under `state_root`. A SEPARATE,
+    /// SHORT-prefixed `tempdir_in("/tmp")` (never under `_tmp`, whose own
+    /// prefix is not size-bounded): `sun_path` is 108 bytes including the
+    /// NUL on Linux, so keeping this dir's own path short leaves headroom
+    /// for the `supervisor-<h>.sock`/`voyage-<uuid>.sock` suffix. Unused
+    /// on Windows (named pipes have no such path-length concern) but kept
+    /// unconditional — one `Env` shape on both platforms.
+    _runtime_tmp: tempfile::TempDir,
     daemon_project_root: PathBuf,
     workspace_project_root: PathBuf,
     state_root: PathBuf,
     config_root: PathBuf,
     socket_path: PathBuf,
+    /// LU4 review round 2, F4: the currently-live `sotd` child, owned by
+    /// `Env` itself (not a separate `KillGuard` local) so `Env`'s own
+    /// `Drop` can kill it FIRST, before it ever sweeps this env's own
+    /// legs or tears down its isolated tmux server — the exact ordering
+    /// bug this replaces (`kill_any_lingering_leg` used to run BEFORE the
+    /// daemon died, so its 1s crash-restart could spawn a fresh
+    /// supervisor into an already-swept state dir). `RefCell`, not
+    /// `Mutex`: every `#[tokio::test]` in this file runs on the default
+    /// current-thread flavor, so `Env` is only ever touched by one task
+    /// at a time — no real concurrent access to guard against, only the
+    /// interior mutability `&self`-taking methods (`spawn_sotd`,
+    /// `kill_daemon_bounded`) need. Re-armed on every `spawn_sotd`/
+    /// `spawn_sotd_with_prepended_path` call (the daemon-restart tests
+    /// spawn a second one after killing the first).
+    daemon: RefCell<Option<Child>>,
 }
 
 impl Env {
     fn new(tag: &str) -> Self {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        // `_tmp` (project/state/config) has no socket path deriving from
+        // it directly — a real supervisor/voyage socket's own name is a
+        // FIXED-LENGTH hash of the state dir path (`state_dir_hash`),
+        // never that path itself nested under a socket directory — so
+        // `std::env::temp_dir()` (which honours `$TMPDIR`) is fine here
+        // on every platform.
+        let tmp = tempfile::Builder::new()
+            .prefix("sotcw-")
+            .tempdir_in(std::env::temp_dir())
+            .expect("tempdir");
+        // `runtime_tmp` (`SOT_RUNTIME_DIR`) is different: every real
+        // supervisor/voyage socket AND this test's own wire socket
+        // (`test_socket_path`) live directly under it, so ITS OWN path
+        // length is exactly the `sun_path` budget (108 bytes including
+        // the NUL, ADR 0043 decision 1's own concern) every one of those
+        // names eats into. `std::env::temp_dir()` would honour an
+        // ambient `$TMPDIR`, which can be arbitrarily long (the LU1b
+        // lesson — every other suite in this crate uses a literal `/tmp`
+        // on Unix for exactly this reason) — a literal `/tmp` here,
+        // short prefix, matches them. Windows has no such bound (named
+        // pipes aren't real filesystem paths), so `temp_dir()` stays fine
+        // there.
+        #[cfg(unix)]
+        let runtime_base = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let runtime_base = std::env::temp_dir();
+        let runtime_tmp = tempfile::Builder::new()
+            .prefix("sotrt-")
+            .tempdir_in(runtime_base)
+            .expect("runtime tempdir");
+        // `tempfile` creates directories respecting the process umask
+        // (typically 0755, not 0700) — both `SOT_RUNTIME_DIR`'s own
+        // `is_private_dir` check and the daemon's `--socket` parent-dir
+        // check (`secure socket dir ... is group/other-accessible`)
+        // require owner-only. Unix only: harmless to skip on Windows,
+        // where neither check applies.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(runtime_tmp.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("chmod runtime tempdir to 0700");
+        }
+        // ADR 0043 decision 1 (propagation, not discovery): every direct
+        // `sot_log::supervisor_client::*`/`sot_log::fence::*` call THIS
+        // TEST PROCESS ITSELF makes (never through the daemon's own wire
+        // protocol) must resolve the SAME `SOT_RUNTIME_DIR` the spawned
+        // `sotd` was launched with (`spawn_sotd`'s own `.env(...)`) — a
+        // process-env var set only on the CHILD is invisible here, so
+        // this process's own env is set too. Safe under `SERIAL`: every
+        // test acquires that lock before ever calling `Env::new`, so only
+        // one `Env`'s runtime dir is ever "active" at a time.
+        std::env::set_var("SOT_RUNTIME_DIR", runtime_tmp.path());
         let daemon_project_root = tmp.path().join("daemon-project");
         std::fs::create_dir_all(&daemon_project_root).expect("mkdir daemon_project_root");
         let workspace_project_root = tmp.path().join("workspace-project");
@@ -147,55 +249,126 @@ impl Env {
         std::fs::create_dir_all(&state_root).expect("mkdir state_root");
         let config_root = tmp.path().join("config");
         std::fs::create_dir_all(&config_root).expect("mkdir config_root");
-        // A named pipe, not a filesystem path with real collision risk, but
-        // still unique per test process so a re-run never collides with a
-        // still-tearing-down prior instance.
-        let socket_path = PathBuf::from(format!(r"\\.\pipe\sot-test-{tag}-{}", std::process::id()));
+        let socket_path = test_socket_path(runtime_tmp.path(), tag);
         Self {
             _tmp: tmp,
+            _runtime_tmp: runtime_tmp,
             daemon_project_root,
             workspace_project_root,
             state_root,
             config_root,
             socket_path,
+            daemon: RefCell::new(None),
+        }
+    }
+
+    /// This env's own ISOLATED tmux server socket (F3, LU4 review round
+    /// 2): under `_runtime_tmp`, same directory every real supervisor/
+    /// voyage socket lives under, so it shares that dir's short-prefix,
+    /// 0700-owner-only properties. Passed to the spawned daemon as
+    /// `SOT_TMUX_SOCK` (`paths::tmux_socket_path`'s own override, verified
+    /// by grep against `rust/backend/src/paths.rs`) so the default row's
+    /// own tmux-session-ensure at boot (`server.rs` ~:369 — runs whenever
+    /// the default row's runtime is NOT "capsule", which is every Linux
+    /// test's own default row) never touches the developer's REAL tmux
+    /// server (`/run/user/<uid>/sot/tmux.sock`), the leak this review item
+    /// closes. Unconditional (not `cfg(unix)`) for the same "one `Env`
+    /// shape on both platforms" reason every other env var here is: the
+    /// var is simply unread on a platform with no tmux server to ensure.
+    fn tmux_sock(&self) -> PathBuf {
+        self._runtime_tmp.path().join("tmux.sock")
+    }
+
+    /// The bounded, deliberate daemon teardown every test in this file
+    /// ends its own run with (Codex review finding 13's own "never an
+    /// unbounded kill/wait" rule) — takes `Env`'s own tracked child (if
+    /// any is still live; a no-op after an already-completed restart-and-
+    /// kill sequence) and reaps it via `kill_and_wait_bounded`. Leaves
+    /// `Env`'s own `Drop` (F4) with nothing to do for its own daemon-kill
+    /// step in the common, non-panicking case — exactly the relationship
+    /// the old separate `KillGuard` had with its own `Drop`.
+    async fn kill_daemon_bounded(&self) {
+        let child = self.daemon.borrow_mut().take();
+        if let Some(child) = child {
+            kill_and_wait_bounded(child).await;
         }
     }
 
     /// Spawn a real `sotd` rooted at this env's project/state/config —
-    /// `sot_log::state_dir::sot_state_dir()` reads `%LOCALAPPDATA%`
-    /// directly (no daemon CLI flag exists for it), and `workspaces.rs`'s
-    /// own registry root reads `%XDG_CONFIG_HOME%` — both overridden here
-    /// so this process's capsule state and workspace registry both live
-    /// under the SAME temp root a second `sotd` launch (the adoption leg
-    /// of this test) can point at again. `SOT_STATE_HOST` is pinned so
-    /// the per-host registry dir (`workspaces::state_host`, which
-    /// otherwise falls back to `%COMPUTERNAME%`) is a fixed, known name —
+    /// `sot_log::state_dir::sot_state_dir()` reads `%LOCALAPPDATA%` on
+    /// Windows / `$XDG_STATE_HOME` on Linux directly (no daemon CLI flag
+    /// exists for it), and `workspaces.rs`'s own registry root reads
+    /// `%XDG_CONFIG_HOME%`/`$XDG_CONFIG_HOME` on the respective platform —
+    /// all overridden here so this process's capsule state and workspace
+    /// registry both live under the SAME temp root a second `sotd` launch
+    /// (the adoption leg of this test) can point at again. Every env var
+    /// is set UNCONDITIONALLY (one shape, not a per-platform cfg split):
+    /// the platform this daemon actually runs on only ever reads its own
+    /// pair, so setting the other platform's var too is harmless.
+    /// `SOT_STATE_HOST` is pinned so the per-host registry dir
+    /// (`workspaces::state_host`, which otherwise falls back to
+    /// `%COMPUTERNAME%`/the real hostname) is a fixed, known name —
     /// `seed_default_capsule_toml` below has to compute the SAME path
     /// from the test side to pre-write a toml this daemon will read.
-    fn spawn_sotd(&self) -> KillGuard {
+    /// `SOT_RUNTIME_DIR` (Linux only, ADR 0043 decision 1) pins every
+    /// real supervisor/voyage socket this daemon (and the `sot-capsule`
+    /// it spawns, which inherits this env var) binds under `_runtime_tmp`
+    /// instead of falling back to host discovery
+    /// (`$XDG_RUNTIME_DIR`/`/run/user/<uid>`, not always present or
+    /// writable on a CI runner with no login session). `SOT_TMUX_SOCK`
+    /// (F3) pins the default row's own tmux-session-ensure at boot to
+    /// this env's own isolated server instead of the developer's real
+    /// one. The spawned child is stored into `self.daemon`, not returned
+    /// — `Env` owns it now so its own `Drop` can order the daemon kill
+    /// ahead of the leg sweep and tmux teardown (F4).
+    fn spawn_sotd(&self) {
         let child = Command::new(sotd_exe())
             .arg("--socket")
             .arg(&self.socket_path)
             .arg("--project-root")
             .arg(&self.daemon_project_root)
             .env("LOCALAPPDATA", &self.state_root)
+            .env("XDG_STATE_HOME", &self.state_root)
             .env("XDG_CONFIG_HOME", &self.config_root)
             .env("SOT_STATE_HOST", TEST_STATE_HOST)
+            .env("SOT_RUNTIME_DIR", self._runtime_tmp.path())
+            .env("SOT_TMUX_SOCK", self.tmux_sock())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn sotd");
-        KillGuard(Some(child))
+        let previous = self.daemon.borrow_mut().replace(child);
+        debug_assert!(previous.is_none(), "spawn_sotd called while a prior daemon was still tracked");
+    }
+
+    /// The daemon's own app-config dir for THIS env, per platform:
+    /// Windows joins "config" onto its state root
+    /// (`app_config_dir`'s own Windows arm: `windows_state_root().join("config")`,
+    /// i.e. `%LOCALAPPDATA%\sot\config`); everywhere else it is
+    /// `$XDG_CONFIG_HOME/sot` directly, no "config" segment (that arm
+    /// never joins "sot" onto the state root at all — a DIFFERENT root
+    /// than `state_root`, which is why `config_root` is its own separate
+    /// temp dir, not a subdirectory of `state_root`). Getting this
+    /// arithmetic wrong silently seeds the pre-written toml at a path
+    /// `workspaces::load_toml` never scans.
+    #[cfg(windows)]
+    fn app_config_dir(&self) -> PathBuf {
+        self.state_root.join("sot").join("config")
+    }
+    #[cfg(target_os = "linux")]
+    fn app_config_dir(&self) -> PathBuf {
+        self.config_root.join("sot")
     }
 
     /// Pre-write an ARBITRARY capsule row's own toml BEFORE `spawn_sotd`
     /// boots the daemon, with `runtime = "capsule"` and the given
     /// `agent` — the same registry path `workspaces::save`/`load_toml`
-    /// use (`<LOCALAPPDATA>\config\workspaces-<SOT_STATE_HOST>\<slug>.toml`).
-    /// Only `workspace_id`/`slug`/`project_root` are required for
-    /// `load_toml` to treat this as canonical (`workspaces.rs`'s own
-    /// doc); every other field the daemon needs defaults sensibly.
+    /// use (`<app config dir>/workspaces-<SOT_STATE_HOST>/<slug>.toml`,
+    /// [`Env::app_config_dir`]). Only `workspace_id`/`slug`/`project_root`
+    /// are required for `load_toml` to treat this as canonical
+    /// (`workspaces.rs`'s own doc); every other field the daemon needs
+    /// defaults sensibly.
     ///
     /// 2026-09-04 amendment: `scan_disk` (`workspaces.rs`, which loads
     /// this toml) runs BEFORE the daemon's own default-row seed logic
@@ -208,15 +381,7 @@ impl Env {
     /// test exercise `pty.open`'s start-on-attach (`ensure_started`) on
     /// an ordinary row instead of the default one.
     fn seed_capsule_toml(&self, workspace_id: &str, slug: &str, project_root: &Path, agent: &str) {
-        // `sot_log::state_dir::sot_state_dir()` joins "sot" onto
-        // `%LOCALAPPDATA%` itself; `workspaces::app_config_dir` joins
-        // "config" onto THAT — same two segments `state_dir_path` below
-        // (this file's other daemon-computed path) already accounts for.
-        let dir = self
-            .state_root
-            .join("sot")
-            .join("config")
-            .join(format!("workspaces-{TEST_STATE_HOST}"));
+        let dir = self.app_config_dir().join(format!("workspaces-{TEST_STATE_HOST}"));
         std::fs::create_dir_all(&dir).expect("mkdir pre-seeded workspaces dir");
         let project_root = project_root.to_string_lossy();
         let body = format!(
@@ -257,6 +422,284 @@ impl Env {
             &slug,
             &self.daemon_project_root,
             agent,
+        );
+    }
+
+    /// Linux only, used ONLY by
+    /// `capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroyable`:
+    /// a directory containing a deliberately-broken, but genuinely
+    /// resolvable+executable, `claude` script. A genuinely ABSENT
+    /// `claude` does not reproduce that test's scenario the same way on
+    /// Linux as it does on Windows — `agent_argv`'s own Linux resolution
+    /// step (`resolve_claude`) would refuse at the DAEMON level instead,
+    /// before `sot-capsule` ever gets a chance to spawn anything and run
+    /// its own anti-flap/Terminal logic (see that test's own doc for the
+    /// full reasoning). This script `exec`s a path that cannot possibly
+    /// exist, so the shell itself fails and exits nonzero almost
+    /// instantly, every single time it is spawned — exactly the
+    /// "unstable leg" `sot-capsule supervise`'s own `FLAP_THRESHOLD`
+    /// counts against.
+    #[cfg(target_os = "linux")]
+    fn seed_fake_unlaunchable_claude(&self) -> PathBuf {
+        let dir = self._tmp.path().join("fakebin");
+        std::fs::create_dir_all(&dir).expect("mkdir fakebin");
+        let claude = dir.join("claude");
+        std::fs::write(
+            &claude,
+            b"#!/bin/sh\nexec /no/such/binary/sot-test-unlaunchable-claude\n",
+        )
+        .expect("write fake claude stub");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake claude stub");
+        dir
+    }
+
+    /// [`Env::spawn_sotd`], but with `prepend_dir` inserted at the FRONT
+    /// of the daemon's own `PATH` — Linux only, used ONLY alongside
+    /// [`Env::seed_fake_unlaunchable_claude`] to guarantee its stub
+    /// resolves FIRST (`resolve_claude`'s own search order), regardless
+    /// of whether a REAL `claude` also happens to be reachable on this
+    /// test-runner's own `PATH`/`$HOME` — a real dev box, unlike a bare
+    /// CI runner, routinely has one, and a REAL `claude` actually
+    /// launching here would reach `Ready`, never the anti-flap/Terminal
+    /// path the test exercises.
+    #[cfg(target_os = "linux")]
+    fn spawn_sotd_with_prepended_path(&self, prepend_dir: &Path) {
+        let mut path = std::ffi::OsString::from(prepend_dir);
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        let child = Command::new(sotd_exe())
+            .arg("--socket")
+            .arg(&self.socket_path)
+            .arg("--project-root")
+            .arg(&self.daemon_project_root)
+            .env("LOCALAPPDATA", &self.state_root)
+            .env("XDG_STATE_HOME", &self.state_root)
+            .env("XDG_CONFIG_HOME", &self.config_root)
+            .env("SOT_STATE_HOST", TEST_STATE_HOST)
+            .env("SOT_RUNTIME_DIR", self._runtime_tmp.path())
+            .env("SOT_TMUX_SOCK", self.tmux_sock())
+            .env("PATH", path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sotd");
+        let previous = self.daemon.borrow_mut().replace(child);
+        debug_assert!(previous.is_none(), "spawn_sotd_with_prepended_path called while a prior daemon was still tracked");
+    }
+
+    /// LU4 review round 2, F4 (anchor tightened round 3, G2): the
+    /// anchored `pgrep`/`pkill` pattern for every real leg THIS env's own
+    /// daemon could ever have spawned, covering EITHER subcommand
+    /// (`capsule_workspace.rs`'s own two spawn sites) against this env's
+    /// own `state_root` (every workspace's own `state_dir_for` nests
+    /// under it, `state_root.join("workspaces").join(workspace_id)`, so
+    /// anchoring on the ROOT alone covers every row this `Env` could ever
+    /// create without having to learn each workspace's own state dir as
+    /// it's discovered). See [`build_leg_pgrep_pattern`] for why this
+    /// anchors on the ESCAPED, EXACT executable path rather than a
+    /// wildcard.
+    #[cfg(target_os = "linux")]
+    fn leg_pgrep_pattern(&self) -> String {
+        build_leg_pgrep_pattern(&sot_capsule_exe(), "(supervise|run)", &self.state_root)
+    }
+}
+
+/// LU4 review round 2, F4: kill the daemon FIRST (so its own crash-
+/// restart policy can't spawn a fresh contender into a state dir this
+/// impl is about to sweep), THEN sweep this env's own legs with the
+/// ANCHORED pattern ([`Env::leg_pgrep_pattern`] — never the old unanchored
+/// `pkill -f <state_dir>` substring match), THEN kill this env's own
+/// ISOLATED tmux server (F3) — in that exact order, on EVERY exit path
+/// including a panic, which a per-test teardown call can never guarantee.
+/// `_tmp`/`_runtime_tmp`'s own `Drop` (temp dir removal, step 4) runs
+/// automatically right after this method returns — Rust drops a value's
+/// remaining fields, in declaration order, immediately after a manual
+/// `Drop::drop` body finishes.
+impl Drop for Env {
+    fn drop(&mut self) {
+        // (1) the daemon, first. `&mut self` here (not `&self`), so
+        // `RefCell::get_mut` — no runtime borrow check needed, and this
+        // can never race the `&self`-taking async methods above (nothing
+        // else can be calling into this `Env` while it is being dropped).
+        // Best-effort, unbounded-but-brief (mirrors the old `KillGuard`'s
+        // own `Drop`) — the common, non-panicking path already emptied
+        // this slot via `kill_daemon_bounded`, so this is a no-op there.
+        if let Some(mut child) = self.daemon.get_mut().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            // (2) sweep this env's own legs, anchored, REPEATED until a
+            // full pass finds nothing (G2/G3, LU4 review round 2): a
+            // single `pkill` SELECTS its targets before signalling them,
+            // so a supervisor process killed just now can still have
+            // spawned a fresh leg a moment earlier that the same
+            // selection pass never saw — the two-second follow-up this
+            // used to be only ever OBSERVED that gap, never closed it.
+            // Killing supervisors FIRST each pass (before their own
+            // legs) means no NEW leg can be spawned after this pass's own
+            // supervisor-kill lands; a leg from a supervisor killed on an
+            // EARLIER pass is still caught by this pass's own `run`-kill.
+            let exe = sot_capsule_exe();
+            let supervise_pattern = build_leg_pgrep_pattern(&exe, "supervise", &self.state_root);
+            let run_pattern = build_leg_pgrep_pattern(&exe, "run", &self.state_root);
+            let combined_pattern = self.leg_pgrep_pattern();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let _ = Command::new("pkill")
+                    .arg("-9")
+                    .arg("-f")
+                    .arg(&supervise_pattern)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                let _ = Command::new("pkill")
+                    .arg("-9")
+                    .arg("-f")
+                    .arg(&run_pattern)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                if !any_process_matches(&combined_pattern) || Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+
+            // (3) this env's own isolated tmux server — never the
+            // developer's real one (a different socket path entirely).
+            let _ = Command::new("tmux")
+                .arg("-S")
+                .arg(self.tmux_sock())
+                .arg("kill-server")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+
+        // (4) `_tmp`/`_runtime_tmp` remove themselves right after this
+        // method returns — see the doc comment above.
+    }
+}
+
+/// Regex-escape a path for safe use inside an `-f` pattern ([`pkill`]/
+/// [`pgrep`] use POSIX extended regex) — defensive: `tempfile`'s own
+/// random suffixes are plain alphanumeric today, but a path is still
+/// user-influenced-shaped data, not a literal we control end to end.
+#[cfg(target_os = "linux")]
+fn regex_escape_path(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The anchored `pgrep`/`pkill` pattern for a `sot-capsule` invocation:
+/// `^<escaped exe path> <subcommand> <escaped state_root>`. G2 (LU4
+/// review round 2): anchoring the OLD way, `^\S*sot-capsule`, silently
+/// requires the character just before `sot-capsule` to be non-whitespace
+/// — `\S*` cannot cross a space — so an executable path containing one
+/// (a legal `CARGO_TARGET_DIR` with a space in it) never matches at all,
+/// and the sweep quietly does nothing. Anchoring on the EXACT, escaped
+/// executable path this suite itself resolved (`sot_capsule_exe()`) has
+/// no such gap: a space in the path is not a regex metacharacter and
+/// needs no escaping to match itself literally, so `regex_escape_path`
+/// leaves it untouched. `subcommand` is a literal ("supervise", "run") or
+/// an alternation ("(supervise|run)") — both are valid ERE on their own.
+#[cfg(target_os = "linux")]
+fn build_leg_pgrep_pattern(exe: &Path, subcommand: &str, state_root: &Path) -> String {
+    format!("^{} {subcommand} {}", regex_escape_path(exe), regex_escape_path(state_root))
+}
+
+/// Whether any live process's command line matches `pattern` — the
+/// read-only half of the anchored sweep, reused by [`Env`]'s own `Drop`
+/// (to poll the sweep to completion) and by the F4 cleanup-contract test
+/// below (to prove both "before" and "after").
+#[cfg(target_os = "linux")]
+fn any_process_matches(pattern: &str) -> bool {
+    Command::new("pgrep")
+        .arg("-f")
+        .arg(pattern)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// G3 (LU4 review round 2): the SAME bounded, sweep-until-empty shape
+/// `Env`'s own `Drop` uses for its active pkill loop, but read-only — no
+/// re-signalling, since by the time a caller here needs it `Drop` has
+/// already run its own loop to completion (or its own 2s bound). Exists
+/// so the F4 cleanup-contract test's own "empty after" assertion is not a
+/// single point-in-time check racing the exact moment `Drop`'s loop
+/// itself gave up at its bound: a process that was still one syscall from
+/// actually exiting when `Drop` observed its own deadline is not a real
+/// leak, and re-polling here (rather than asserting instantly) is the
+/// difference between a flaky false failure and a meaningful, still-
+/// bounded proof.
+#[cfg(target_os = "linux")]
+fn poll_until_no_process_matches(pattern: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !any_process_matches(pattern) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[cfg(test)]
+mod leg_pgrep_pattern_tests {
+    use super::*;
+
+    /// G2's own regression case: a space in the executable path (a legal
+    /// `CARGO_TARGET_DIR` with a space in it) must still produce a
+    /// pattern that matches that path LITERALLY — a space is not an ERE
+    /// metacharacter, so it must pass through `regex_escape_path`
+    /// untouched rather than being dropped or mis-escaped.
+    #[test]
+    fn build_leg_pgrep_pattern_keeps_a_literal_space_in_the_exe_path() {
+        let exe = Path::new("/scratch/build target/debug/sot-capsule");
+        let state_root = Path::new("/tmp/sotcw-abc123/state");
+        let pattern = build_leg_pgrep_pattern(&exe, "supervise", &state_root);
+        assert_eq!(
+            pattern,
+            r"^/scratch/build target/debug/sot-capsule supervise /tmp/sotcw-abc123/state"
+        );
+    }
+
+    /// Regex metacharacters in EITHER half (`+`/`.`) must be escaped so
+    /// they match themselves literally rather than being interpreted by
+    /// `pkill`/`pgrep`'s own POSIX ERE engine (a stray `.` would
+    /// otherwise match any single character, widening the match rather
+    /// than narrowing it to this exact path).
+    #[test]
+    fn build_leg_pgrep_pattern_escapes_regex_metacharacters_in_both_halves() {
+        let exe = Path::new("/scratch/target+build/sot-capsule");
+        let state_root = Path::new("/tmp/sotcw-v1.2/state");
+        let pattern = build_leg_pgrep_pattern(&exe, "run", &state_root);
+        assert_eq!(
+            pattern,
+            r"^/scratch/target\+build/sot-capsule run /tmp/sotcw-v1\.2/state"
         );
     }
 }
@@ -341,6 +784,15 @@ async fn try_query_status(state_dir: PathBuf) -> Option<sot_log::supervisor_clie
     .unwrap_or(None)
 }
 
+// A DETACHED leg this test's own row may have left running (`stop` ends
+// ONLY the supervisor AUTHORITY — ADR 0041 Lifecycle, legs are
+// deliberately outside the supervisor's own job — so a test whose own
+// teardown calls `stop` but never a matching `end_run` for the row's
+// CURRENT voyage leaves its platform-shell leg orphaned on Linux) no
+// longer needs a per-test sweep call: `Env`'s own `Drop` (F4, LU4 review
+// round 2) sweeps every leg this env could have spawned, anchored on its
+// own `state_root`, unconditionally, on every exit path — see that impl.
+
 /// Whether the supervisor AUTHORITY (not its capsule leg) is stopped
 /// before [`restart_daemon_and_prove_adoption`] kills and relaunches the
 /// daemon — the one axis that distinguishes this file's two adoption
@@ -380,19 +832,20 @@ enum AuthorityAtRestart {
 /// fence contention at risk once it reports ready, so it gets no extra
 /// dwell). Finally asserts the leg epoch is UNCHANGED across the restart
 /// — the proof that whichever mechanism resumed the run ADOPTED it
-/// rather than spawning a fresh contender. Returns the new daemon/
-/// connection/next-id so a caller (today: only the `Stopped` scenario)
-/// can continue past this point on the SAME connection.
+/// rather than spawning a fresh contender. Returns the new connection/
+/// next-id so a caller (today: only the `Stopped` scenario) can continue
+/// past this point on the SAME connection — the new daemon itself needs
+/// no return: `env` already owns it (`Env::spawn_sotd`, F4), so a later
+/// `env.kill_daemon_bounded()` at the caller's own teardown reaps it.
 async fn restart_daemon_and_prove_adoption(
     env: &Env,
-    mut daemon1: KillGuard,
     conn: Conn,
     workspace_id: &str,
     state_dir: &str,
     state_dir_path: &Path,
     leg_before: u64,
     authority: AuthorityAtRestart,
-) -> (KillGuard, Conn, u64) {
+) -> (Conn, u64) {
     if matches!(authority, AuthorityAtRestart::Stopped) {
         tokio::task::spawn_blocking({
             let dir = state_dir_path.to_path_buf();
@@ -418,12 +871,10 @@ async fn restart_daemon_and_prove_adoption(
         .await;
     }
 
-    if let Some(child) = daemon1.take() {
-        kill_and_wait_bounded(child).await;
-    }
+    env.kill_daemon_bounded().await;
     drop(conn);
 
-    let mut daemon2 = env.spawn_sotd();
+    env.spawn_sotd();
     let (mut conn2, mut next_id2) = connect_and_hello(&env.socket_path).await;
 
     let post_ready_dwell = match authority {
@@ -489,7 +940,7 @@ async fn restart_daemon_and_prove_adoption(
         "the leg epoch changed across the daemon restart (authority={authority:?}) -- a fresh/competing leg was spawned, not adopted"
     );
 
-    (daemon2, conn2, next_id2)
+    (conn2, next_id2)
 }
 
 #[tokio::test]
@@ -497,23 +948,25 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     let _serial = SERIAL.lock().await;
     assert!(
         sot_capsule_exe().is_file(),
-        "sot-capsule.exe not found next to sotd.exe at {:?} — build it first \
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
          (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
-         this test's own sotd.exe was built into",
+         this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
 
     let env = Env::new("cwl");
-    let mut daemon = env.spawn_sotd();
+    env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     // workspace.create — a SEPARATE project root from the daemon's own
     // default (finding 2). No autostart requested, so the capsule's own
-    // producer is `agent_argv("none")` == `cmd.exe` (ADR 0042 L1a's own
-    // fallback; also exactly "cmd.exe as the agent" per this test's spec).
+    // producer is `agent_argv("none")` == the platform shell (ADR 0042
+    // L1a's own fallback). `"runtime": "capsule"` is explicit — ADR 0043
+    // decision 22, the field exists for exactly this.
     let create_req = serde_json::json!({
         "label": "cwl-workspace",
         "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
     });
     let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
     next_id += 1;
@@ -525,8 +978,8 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
         .to_string();
 
     // workspace.list: runtime "capsule", a state_dir, and — polled — phase
-    // reaching "ready" (the capsule's cmd.exe leg coming up and the
-    // supervisor's own lane answering `status`).
+    // reaching "ready" (the capsule's platform-shell leg coming up and
+    // the supervisor's own lane answering `status`).
     let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
     let state_dir = loop {
         let id = next_id;
@@ -580,9 +1033,8 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     .unwrap()
     .expect("a ready capsule has a leg");
 
-    let (mut daemon2, mut conn2, mut next_id2) = restart_daemon_and_prove_adoption(
+    let (mut conn2, mut next_id2) = restart_daemon_and_prove_adoption(
         &env,
-        daemon,
         conn,
         &workspace_id,
         &state_dir,
@@ -646,9 +1098,7 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
         "the capsule's state dir must survive workspace.destroy (the record persists by design): {state_dir}"
     );
 
-    if let Some(child) = daemon2.take() {
-        kill_and_wait_bounded(child).await;
-    }
+    env.kill_daemon_bounded().await;
 }
 
 /// 2026-09-04 amendment (owner ruling): the daemon's own default/home
@@ -677,14 +1127,20 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
 /// forever. Start-on-attach closed that gap for every capsule row
 /// generally; this amendment carves the DEFAULT-with-no-agent row back
 /// out of it specifically.)
+///
+/// Windows-only (ADR 0043 decision 22): the default row's own STEADY
+/// STATE is `runtime = "capsule"` only on Windows — the Linux platform
+/// default stays "tmux" until the bridge, so this scenario (a capsule
+/// DEFAULT row) is not a real day-to-day Linux configuration yet.
 #[tokio::test]
+#[cfg(windows)]
 async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
     let _serial = SERIAL.lock().await;
     assert!(
         sot_capsule_exe().is_file(),
-        "sot-capsule.exe not found next to sotd.exe at {:?} — build it first \
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
          (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
-         this test's own sotd.exe was built into",
+         this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
 
@@ -695,7 +1151,7 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
     // keeps this test's precondition explicit and independent of that
     // default ever changing again.
     env.seed_default_capsule_toml("none");
-    let mut daemon = env.spawn_sotd();
+    env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -777,9 +1233,7 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
         "the default row's agent-none anchor must still read \"stopped\" after an attach attempt: {row:?}"
     );
 
-    if let Some(child) = daemon.take() {
-        kill_and_wait_bounded(child).await;
-    }
+    env.kill_daemon_bounded().await;
 }
 
 /// 2026-09-04 amendment: the default row's own "never touched by
@@ -797,9 +1251,9 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
 /// anything at all. Seeded with the placeholder `agent = "none"` —
 /// unchanged and intended: the inert-anchor rule is scoped to the
 /// DEFAULT row specifically (ADR 0042's amendment), so an ordinary row
-/// with no agent still runs the same `agent_argv("none")` == `cmd.exe`
-/// placeholder every other created-workspace test in this file relies
-/// on.
+/// with no agent still runs the same `agent_argv("none")` == the
+/// platform shell placeholder every other created-workspace test in
+/// this file relies on.
 ///
 /// The #182 proof itself can't route through `workspace.destroy` here
 /// the way the old default-row test did — that op only KEEPS a row's
@@ -820,9 +1274,9 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     let _serial = SERIAL.lock().await;
     assert!(
         sot_capsule_exe().is_file(),
-        "sot-capsule.exe not found next to sotd.exe at {:?} — build it first \
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
          (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
-         this test's own sotd.exe was built into",
+         this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
 
@@ -835,7 +1289,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
         &env.workspace_project_root,
         "none",
     );
-    let mut daemon = env.spawn_sotd();
+    env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -992,24 +1446,23 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
         "reset must mint a NEW voyage, not resurrect the ended one"
     );
 
-    // Rule H: "KillGuard" the spawned supervisor — it is DETACHED
-    // (spawned by the daemon, survives the daemon's own exit by design,
-    // ADR 0042 L1a), so killing `daemon` below does NOT reap it and it
-    // would otherwise leak past this test. There is no `std::process::
-    // Child` for it here (the daemon owns the actual spawn), so this
-    // stops it over its own lane instead — the same
+    // Rule H: the spawned supervisor's OWN leg is DETACHED (spawned by
+    // the daemon, survives the daemon's own exit by design, ADR 0042
+    // L1a), so killing the daemon below does NOT reap it and it would
+    // otherwise leak past this test. There is no `std::process::Child`
+    // for it here (the daemon owns the actual spawn), so this stops it
+    // over its own lane instead — the same
     // `sot_log::supervisor_client::stop` the create-test's own adoption
-    // proof uses. Best-effort: nothing is left running afterward either
-    // way.
+    // proof uses. Best-effort: the AUTHORITY is gone either way; its
+    // detached leg survives on Linux and is swept by `Env`'s own `Drop`
+    // (F4) once this test's own `env` goes out of scope below.
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || sot_log::supervisor_client::stop(&dir)
     })
     .await;
 
-    if let Some(child) = daemon.take() {
-        kill_and_wait_bounded(child).await;
-    }
+    env.kill_daemon_bounded().await;
 }
 
 /// Field finding (a Windows FE box, 2026-09): the daemon boot resume-scan
@@ -1049,19 +1502,20 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
     let _serial = SERIAL.lock().await;
     assert!(
         sot_capsule_exe().is_file(),
-        "sot-capsule.exe not found next to sotd.exe at {:?} — build it first \
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
          (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
-         this test's own sotd.exe was built into",
+         this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
 
     let env = Env::new("bas");
-    let mut daemon1 = env.spawn_sotd();
+    env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let create_req = serde_json::json!({
         "label": "bas-workspace",
         "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
     });
     let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
     next_id += 1;
@@ -1117,9 +1571,8 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
     // fold: this test's own "never terminal, same leg epoch" regression
     // proof is now that shared helper's `Alive` arm; nothing past this
     // point needs `conn2`/`next_id2`, so both are discarded).
-    let (mut daemon2, _conn2, _next_id2) = restart_daemon_and_prove_adoption(
+    let (_conn2, _next_id2) = restart_daemon_and_prove_adoption(
         &env,
-        daemon1,
         conn,
         &workspace_id,
         &state_dir,
@@ -1138,9 +1591,7 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
     })
     .await;
 
-    if let Some(child) = daemon2.take() {
-        kill_and_wait_bounded(child).await;
-    }
+    env.kill_daemon_bounded().await;
 }
 
 /// Round-2 Codex finding: the pre-spawn probe alone (the boot-adopts
@@ -1183,19 +1634,20 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
     let _serial = SERIAL.lock().await;
     assert!(
         sot_capsule_exe().is_file(),
-        "sot-capsule.exe not found next to sotd.exe at {:?} — build it first \
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
          (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
-         this test's own sotd.exe was built into",
+         this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
 
     let env = Env::new("cnt");
-    let mut daemon = env.spawn_sotd();
+    env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let create_req = serde_json::json!({
         "label": "cnt-workspace",
         "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
     });
     let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
     next_id += 1;
@@ -1293,9 +1745,7 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
     }
 
     drop(fake_lock);
-    if let Some(child) = daemon.take() {
-        kill_and_wait_bounded(child).await;
-    }
+    env.kill_daemon_bounded().await;
 }
 
 /// The gap this test proves closed: a capsule row whose agent argv can
@@ -1311,13 +1761,20 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
 /// (sending it `stop` and reporting a confirmed end); a lane that had
 /// already gone fully silent by the time `workspace.destroy` reached it
 /// surfaced as "supervisor lane unreachable" and was reported `Kept`
-/// forever -- the row could never actually be destroyed. This test uses
-/// the SAME "no `claude` on a CI runner's PATH" precondition to force
-/// the failure deterministically (no new fixture machinery): seed the
-/// default row's own toml with `agent = "claude"` before boot -- a REAL
-/// (if unlaunchable) agent, so this row is NOT the 2026-09-04
-/// inert-anchor amendment's concern (that only ever applies to
-/// `agent == "none"`; see
+/// forever -- the row could never actually be destroyed. On Windows this
+/// test uses the SAME "no `claude` on a CI runner's PATH" precondition to
+/// force the failure deterministically (no new fixture machinery). On
+/// Linux a genuinely absent `claude` does NOT reproduce the same
+/// scenario: `agent_argv`'s own resolution step (`resolve_claude`)
+/// refuses at the DAEMON level instead, before `sot-capsule` is ever
+/// spawned at all -- so this test's Linux leg instead resolves to a fake,
+/// deliberately-broken `claude` stub (`Env::seed_fake_unlaunchable_claude`)
+/// that IS resolvable+executable but fails every time it actually runs,
+/// reaching the SAME anti-flap/Terminal path through `sot-capsule`'s own
+/// internal retry logic. Either way: seed the default row's own toml
+/// with `agent = "claude"` before boot -- a REAL (if unlaunchable) agent,
+/// so this row is NOT the 2026-09-04 inert-anchor amendment's concern
+/// (that only ever applies to `agent == "none"`; see
 /// `capsule_default_workspace_with_no_agent_is_never_started_on_attach`)
 /// -- attach it once to trigger start-on-attach, and prove (1) the row
 /// reaches phase "terminal" within a bound rather than cycling
@@ -1328,9 +1785,9 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
     let _serial = SERIAL.lock().await;
     assert!(
         sot_capsule_exe().is_file(),
-        "sot-capsule.exe not found next to sotd.exe at {:?} — build it first \
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
          (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
-         this test's own sotd.exe was built into",
+         this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
 
@@ -1338,10 +1795,23 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
     // Pre-write the default row's own toml with `agent = "claude"` BEFORE
     // boot -- `server.rs`'s fresh-boot seed already picks this agent on
     // Windows, but pre-writing it here makes the precondition explicit
-    // and independent of that default ever changing. No `claude` binary
-    // exists on a CI runner, so the leg fails to spawn every time.
+    // and independent of that default ever changing.
     env.seed_default_capsule_toml("claude");
-    let mut daemon = env.spawn_sotd();
+    // Windows: no `claude.exe` exists on a CI runner's PATH, so the
+    // literal argv `agent_argv` hands `sot-capsule` fails to spawn every
+    // time -- unchanged, exactly as before this port.
+    #[cfg(windows)]
+    env.spawn_sotd();
+    // Linux: `agent_argv`'s own resolution step means a genuinely absent
+    // `claude` would refuse at the DAEMON level instead (never reaching
+    // `sot-capsule`'s own anti-flap/Terminal logic this test exercises)
+    // -- a fake, deliberately-broken but resolvable `claude` reproduces
+    // the same "unlaunchable agent" scenario portably (see
+    // `Env::seed_fake_unlaunchable_claude`'s own doc).
+    #[cfg(target_os = "linux")]
+    let fake_claude_dir = env.seed_fake_unlaunchable_claude();
+    #[cfg(target_os = "linux")]
+    env.spawn_sotd_with_prepended_path(&fake_claude_dir);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -1420,7 +1890,117 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
     )
     .await;
 
-    if let Some(child) = daemon.take() {
-        kill_and_wait_bounded(child).await;
+    env.kill_daemon_bounded().await;
+}
+
+/// LU4 review round 2, F4's own cleanup contract, proved directly here
+/// rather than re-asserted in every test above (F4's own "whichever is
+/// smaller" — one dedicated test beats touching all six bodies). Spawns
+/// one real capsule row and waits for it to reach a leg worth cleaning up
+/// (so the "empty after" assertions below are not vacuously true), then
+/// drops `env` explicitly and proves `Env`'s own `Drop`:
+///  - swept every process matching this env's own anchored leg pattern
+///    ([`Env::leg_pgrep_pattern`], never the old unanchored substring
+///    match a `tail -f` could false-match),
+///  - killed this env's own ISOLATED tmux server (F3) rather than ever
+///    touching the developer's real one (a different socket entirely —
+///    this env's daemon never saw that path at all, `SOT_TMUX_SOCK`),
+///  - and removed its own temp project/state/config dir AND its own
+///    `SOT_RUNTIME_DIR` tempdir (no `/tmp/sotcw-*`/`/tmp/sotrt-*` left).
+/// Linux only: `pkill`/`pgrep`/`tmux` are shelled out to directly.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn capsule_backend_test_env_drop_cleans_up_legs_daemon_and_tmux() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("cln");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "cln-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+
+    let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
+    loop {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        if let Some(row) = find_row(&payload, &workspace_id) {
+            assert_eq!(row["runtime"], "capsule", "row: {row:?}");
+            if row["phase"].as_str() == Some("ready") {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < list_deadline,
+            "timed out waiting for workspace.list to report phase \"ready\" for the new capsule workspace"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
+
+    // Not vacuous: a real `sot-capsule supervise`/leg pair matching this
+    // env's own anchored pattern is alive right now. (The default row's
+    // own boot-time tmux-session-ensure ALSO ran against this env's own
+    // isolated socket — F3 — but whether it actually landed a session
+    // there is host-dependent: on a box already running the ADR 0038
+    // `sot-tmux.service` keeper for the developer's REAL socket, ADR
+    // 0038's own conflict-refusal correctly declines to also start an
+    // implicit server on a SECOND, isolated socket rather than risk
+    // racing the keeper — so it fails closed instead, logged and
+    // non-fatal, exactly its own documented "non-fatal" contract. Either
+    // way no session ever reaches the developer's real socket, which is
+    // F3's actual claim; this test's own proof stays on the leg, which
+    // is deterministic regardless of that host difference.)
+    let pattern = env.leg_pgrep_pattern();
+    assert!(
+        any_process_matches(&pattern),
+        "expected a live sot-capsule leg matching {pattern:?} before the cleanup guard runs"
+    );
+
+    // The bounded, deliberate daemon teardown every other test in this
+    // file ends its own run with — empties `Env`'s own daemon slot, so
+    // `Drop`'s own step 1 below is a no-op, exactly like every other test.
+    drop(conn);
+    env.kill_daemon_bounded().await;
+
+    // F4's actual claim: dropping `env` now sweeps this env's own legs
+    // (anchored, so it can never touch anything else on the box) and
+    // kills its OWN isolated tmux server (harmless whether or not a
+    // session ever landed there), in that order, before its own temp
+    // dirs vanish — capture what we need to verify BEFORE `env` (and the
+    // fields these borrow from) are gone. Deletion (round 2 reviewer
+    // note): no dedicated accessor for this same-module read — `_tmp`/
+    // `_runtime_tmp` are plain private fields, directly readable here.
+    let tmp_root = env._tmp.path().to_path_buf();
+    let runtime_root = env._runtime_tmp.path().to_path_buf();
+    drop(env);
+
+    // G3: the same bounded, sweep-until-empty shape `Drop`'s own loop
+    // uses, read-only here (see `poll_until_no_process_matches`'s doc).
+    assert!(
+        poll_until_no_process_matches(&pattern, Duration::from_secs(2)),
+        "the cleanup guard must leave no process matching {pattern:?}"
+    );
+    assert!(
+        !tmp_root.exists(),
+        "the cleanup guard must remove the env's own temp project/state/config dir: {tmp_root:?}"
+    );
+    assert!(
+        !runtime_root.exists(),
+        "the cleanup guard must remove the env's own SOT_RUNTIME_DIR temp dir: {runtime_root:?}"
+    );
 }

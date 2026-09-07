@@ -230,6 +230,18 @@ const PIDFD_GET_INFO: libc::Ioctl = {
     (((3u32) << 30) | (size << 16) | (PIDFS_IOCTL_MAGIC << 8) | 11) as libc::Ioctl
 };
 
+/// Decode a kernel wait-status encoding (the same `int status`
+/// `waitpid(2)`/`PIDFD_GET_INFO`'s own `exit_code` field fill in — NOT
+/// already a plain exit code) into the exit code a normal exit reports,
+/// or `None` for a signal death (there is no exit code to report).
+/// Factored out for its own unit tests: `std::process::ExitStatus` has no
+/// public constructor other than `ExitStatusExt::from_raw`, so this is
+/// the one place that raw integer shape is named at all.
+fn decode_wait_status(raw: i32) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    std::process::ExitStatus::from_raw(raw).code()
+}
+
 /// `pidfd_open(2)`: no safe wrapper function exists in `libc` (only the
 /// syscall NUMBER is exported), so this goes through the raw `syscall(2)`
 /// the ADR names. `pub(crate)` (ADR 0043 decision 21): `probe_unix.rs`'s
@@ -510,15 +522,31 @@ impl ChallengedProcess {
         Ok(())
     }
 
-    /// `PIDFD_GET_INFO` with `PIDFD_INFO_EXIT` (kernel 6.15+), mirroring
+    /// `PIDFD_GET_INFO` with `PIDFD_INFO_EXIT` (kernel 6.15+ — reproduced
+    /// review round: 6.13 does not carry the exit status past a reap
+    /// either, per the UAPI headers), mirroring
     /// `ChallengedProcess::exit_code_after_confirmed_exit`'s own
     /// precondition: the caller must have already observed
-    /// [`wait`](Self::wait) return `true`. `Ok(None)` -- "exited, status
-    /// unknown" -- covers BOTH a kernel too old for the ioctl at all
-    /// (`ENOTTY`/`EINVAL`/`ENOSYS`) and a kernel that answers but did not
-    /// actually set `PIDFD_INFO_EXIT` in the returned mask; `Ok(Some(_))`
-    /// is only ever returned once the kernel has affirmatively reported
-    /// the exit code.
+    /// [`wait`](Self::wait) return `true`. Returns the EXIT CODE, decoded
+    /// from the kernel's own wait-status encoding via
+    /// [`decode_wait_status`] — `info.exit_code` is NOT already a plain
+    /// exit code (review round, reproduced): it is the raw `int status`
+    /// shape `waitpid(2)` fills in (exit 69 encodes as `17664`, 70 as
+    /// `17920`), so handing it through unmodified made the daemon's own
+    /// watchdog classify EVERY terminal/contended exit of an adopted
+    /// Linux supervisor as a crash and restart it. `Ok(None)` -- "exited,
+    /// status unknown" -- covers a kernel too old for the ioctl at all
+    /// (`ENOTTY`/`EINVAL`/`ENOSYS`), a kernel that answers but did not
+    /// actually set `PIDFD_INFO_EXIT` in the returned mask, AND a signal
+    /// death (no exit code exists to report); `Ok(Some(_))` is only ever
+    /// returned once the kernel has affirmatively reported a real exit
+    /// code. Read-only: this accessor READS, it does not reap — see
+    /// [`Self::reap`] for the explicit, owner-called reap this used to
+    /// perform implicitly here (single-owner reaping, an earlier review
+    /// round: two independent owners — this daemon-side handle's own
+    /// `Drop` and a separately held `tokio::process::Child` — could both
+    /// reap the SAME pid, and whichever won first silently stole the
+    /// OTHER's real exit code).
     pub fn exit_status_after_confirmed_exit(&self) -> io::Result<Option<i32>> {
         let mut info = PidfdInfo {
             mask: PIDFD_INFO_EXIT,
@@ -531,7 +559,7 @@ impl ChallengedProcess {
                 std::ptr::addr_of_mut!(info),
             )
         };
-        let result = if rc != 0 {
+        if rc != 0 {
             let err = io::Error::last_os_error();
             match err.raw_os_error() {
                 Some(libc::ENOTTY) | Some(libc::EINVAL) | Some(libc::ENOSYS) => Ok(None),
@@ -540,61 +568,35 @@ impl ChallengedProcess {
         } else if info.mask & PIDFD_INFO_EXIT == 0 {
             Ok(None)
         } else {
-            Ok(Some(info.exit_code))
-        };
-        // ADR 0043 decision 21: THIS is the one place a leg identified by
-        // this `ChallengedProcess` gets reaped — always right here,
-        // after the read above, regardless of that read's own outcome
-        // (a pre-6.15 kernel's ENOTTY/EINVAL/ENOSYS fallback still means
-        // the process is a confirmed-exited zombie this call must still
-        // reap, exactly like a successful `PIDFD_GET_INFO` read does).
-        // `self.pid` is either this supervisor's OWN child — a retained
-        // zombie because `SIGCHLD` stays `SIG_DFL` for this process's
-        // whole life, never auto-reaped out from under us — or a leg
-        // ADOPTED from a different, earlier supervisor, which is not our
-        // child at all: `ECHILD` there is expected and ignored, exactly
-        // like every other "not ours to reap" case this crate already
-        // treats as success (`killpg`'s own `ESRCH`).
-        // Through the PIDFD, never the numeric pid: `waitid(P_PIDFD)` can
-        // only ever reap THIS process, whereas `waitpid(pid)` would reap
-        // whichever child of ours currently holds that number (a
-        // not-our-child peer reaped by its own parent, its pid recycled
-        // onto a child of ours, is the hazard).
-        let mut reap_info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        unsafe {
-            libc::waitid(
-                libc::P_PIDFD,
-                self.pidfd.as_raw_fd() as libc::id_t,
-                &mut reap_info,
-                libc::WEXITED | libc::WNOHANG,
-            );
+            Ok(decode_wait_status(info.exit_code))
         }
-        result
     }
-}
 
-/// F1 (Codex review round): the reaper of LAST RESORT. A leg that reaches
-/// `Ready` has its `wait` called (which deliberately does NOT reap — see
-/// that method's own doc) and then its handle simply dropped: nothing in
-/// the supervisor ever calls [`ChallengedProcess::exit_status_after_confirmed_exit`]
-/// for a leg that exited cleanly on its own, so without this every such
-/// leg left a zombie behind for the rest of THIS process's life
-/// (reproduced). Whoever is dropping this handle has, by construction,
-/// already read everything about this process it ever intended to — a
-/// caller that still wanted the exit status would still be holding the
-/// handle — so reaping unconditionally here is safe by the exact same
-/// rule `exit_status_after_confirmed_exit`'s own reap already follows.
-/// Non-blocking (`WNOHANG`) and never a kill: a caller that drops a
-/// handle to a STILL-LIVE process (an ordinary "I decided not to wait
-/// after all") leaves it alone — the leg outliving this handle, or this
-/// whole process, is by design (ADR 0043 decision 14's detached kill
-/// domain); this only ever reaps what has ALREADY exited. `ECHILD` (an
-/// ADOPTED leg, not our own child) is ignored, exactly like the
-/// accessor's own reap — and a second `waitid` after an already-reaped
-/// exit (this Drop running after that accessor already reaped it) is
-/// equally harmless.
-impl Drop for ChallengedProcess {
-    fn drop(&mut self) {
+    /// The single, explicit reap point (review round, replacing decision
+    /// 21's implicit reaps): `waitid(P_PIDFD, WEXITED | WNOHANG)`, result
+    /// ignored. Through the PIDFD, never the numeric pid: `waitid(P_PIDFD)`
+    /// can only ever reap THIS process, whereas `waitpid(pid)` would reap
+    /// whichever child of ours currently holds that number (a
+    /// not-our-child peer reaped by its own parent, its pid recycled onto
+    /// a child of ours, is the hazard).
+    ///
+    /// The single-owner rule: a handle never reaps implicitly (no `Drop`
+    /// impl exists on this type at all — dropping just closes the pidfd,
+    /// via `OwnedFd`'s own `Drop`) — the OWNER reaps, explicitly, only
+    /// after it has observed the exit (`wait` returned `true`) and read
+    /// everything it wanted from the process. The supervisor owns its own
+    /// legs (spawned via `probe_unix`/`producer_pty`) and calls this once
+    /// it is done reading a leg's exit; the daemon owns the supervisors
+    /// IT spawned, through `tokio::process::Child::wait` — never through
+    /// this method, since a `ChallengedProcess` the daemon holds only
+    /// ever PROVES a peer's identity (`query_status`/`stop`/`end_run`),
+    /// it never confers ownership. `self.pid` not being ours to reap
+    /// (an adopted leg belonging to a DIFFERENT, earlier supervisor, or a
+    /// peer this handle merely challenged) reports `ECHILD` from the
+    /// kernel — the harmless, expected answer for a non-owner, exactly
+    /// like every other "not ours to reap" case this crate already
+    /// treats as success (`killpg`'s own `ESRCH`).
+    pub fn reap(&self) {
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
         unsafe {
             libc::waitid(
@@ -724,7 +726,7 @@ pub fn pin_peer_for_test(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_start_ticks, ChallengedProcess};
+    use super::{decode_wait_status, parse_start_ticks, ChallengedProcess};
     use std::io;
     use std::time::Duration;
 
@@ -753,17 +755,39 @@ mod tests {
         assert_eq!(parse_start_ticks("1234 (comm) S 1 1"), None);
     }
 
-    /// F1 (Codex review round): `ChallengedProcess::drop` reaps an
-    /// already-exited child through its pidfd. Spawns `/bin/sh -c "exit
-    /// 0"` directly (never through `std::process::Child::wait`/
-    /// `try_wait`, which would reap it themselves and defeat the very
-    /// thing this test proves) so the child is still an unreaped zombie
-    /// when the freshly built `ChallengedProcess` observes its exit via
-    /// `wait`, then drops it: a further `waitpid(pid, WNOHANG)` must now
-    /// report `ECHILD` (already reaped by THIS process), never `0`
-    /// (still a live zombie) or a real block.
+    /// Review round, reproduced: `PIDFD_GET_INFO`'s own `exit_code` is the
+    /// kernel's WAIT-STATUS encoding, not a plain exit code — 69 and 70
+    /// (`EXIT_TERMINAL`/`EXIT_CONTENDED`, `capsule_workspace.rs`) encode
+    /// as `69 << 8` and `70 << 8` respectively (`WIFEXITED`'s own shape:
+    /// low byte 0, high byte the exit code).
     #[test]
-    fn drop_reaps_an_already_exited_child_through_the_pidfd() {
+    fn decode_wait_status_handles_normal_exit_codes() {
+        assert_eq!(decode_wait_status(0), Some(0));
+        assert_eq!(decode_wait_status(17664), Some(69), "69 << 8 == 17664 (EXIT_TERMINAL)");
+        assert_eq!(decode_wait_status(17920), Some(70), "70 << 8 == 17920 (EXIT_CONTENDED)");
+    }
+
+    /// A raw status whose low 7 bits are non-zero and not `0x7f` is
+    /// `WIFSIGNALED`, not `WIFEXITED` — there is no exit code to decode,
+    /// so this must be `None` (decision 8's "unknown" bucket), never
+    /// misread as "exit code 9".
+    #[test]
+    fn decode_wait_status_returns_none_for_a_signal_death() {
+        assert_eq!(decode_wait_status(9), None, "raw 9 encodes \"terminated by signal 9\" (SIGKILL)");
+    }
+
+    /// Single-owner reaping (review round): `ChallengedProcess::reap` is
+    /// the OWNER's explicit call, made after `wait` has already observed
+    /// the exit. Spawns `/bin/sh -c "exit 0"` directly (never through
+    /// `std::process::Child::wait`/`try_wait`, which would reap it
+    /// themselves and defeat the very thing this test proves) so the
+    /// child is still an unreaped zombie when the freshly built
+    /// `ChallengedProcess` observes its exit via `wait`; `reap()` then
+    /// frees the pid — a further `waitpid(pid, WNOHANG)` must now report
+    /// `ECHILD` (already reaped by THIS call), never `0` (still a live
+    /// zombie) or a real block.
+    #[test]
+    fn reap_after_wait_frees_the_pid() {
         let child = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg("exit 0")
@@ -783,7 +807,7 @@ mod tests {
             proof.wait(Duration::from_secs(5)).expect("wait"),
             "expected the child to exit within 5s"
         );
-        drop(proof);
+        proof.reap();
         let mut status: libc::c_int = 0;
         let rc = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) };
         let err = io::Error::last_os_error();
@@ -791,34 +815,25 @@ mod tests {
         assert_eq!(
             err.raw_os_error(),
             Some(libc::ECHILD),
-            "expected ECHILD (already reaped by Drop), got {err:?}"
+            "expected ECHILD (already reaped by reap()), got {err:?}"
         );
     }
 
-    /// F1's sibling: dropping the handle of a STILL-LIVE child must never
-    /// reap (or kill) it — only an already-exited process is ever reaped
-    /// by `Drop` (`WNOHANG`, non-blocking, checked here via a `kill(pid,
-    /// 0)` existence probe immediately after the drop). Cleans up by
-    /// killing and reaping the child directly, never through
-    /// `std::process::Child`, mirroring the sibling test above.
-    ///
-    /// Spawns `sleep` DIRECTLY, never via `/bin/sh -c "sleep 600"`
-    /// (review round, reproduced): `/bin/sh` on this host does NOT
-    /// exec-optimize a lone simple command -- it forks `sleep` as a
-    /// GRANDCHILD and stays around itself as an intermediary, so
-    /// `child.id()` would name the SHELL, not the sleeper, and killing
-    /// the shell leaves the actual `sleep` orphaned and running for its
-    /// full 600s (confirmed live: a bare `sleep 600`, ppid reparented to
-    /// the init/subreaper, survived exactly this test's own kill). One
-    /// process, one pid, no intermediary.
+    /// The other half of single-owner reaping: `Drop` never reaps, full
+    /// stop — not just "never a still-live process" (the old test's own
+    /// scope) but not even an already-exited one, which is exactly the
+    /// scenario a daemon holding BOTH a `tokio::process::Child` and a
+    /// `ChallengedProcess` for the same pid depends on (only `Child::wait`
+    /// may ever reap that pid). Spawns `/bin/sh -c "exit 0"` directly
+    /// (same reasoning as the sibling test above), observes its exit via
+    /// `wait`, then DROPS the handle: a subsequent `waitpid(pid,
+    /// WNOHANG)` from THIS test must itself successfully reap the still-
+    /// zombie child (`rc == pid`), proving `Drop` left it untouched.
     #[test]
-    fn drop_leaves_a_still_live_child_alive() {
-        let child = std::process::Command::new("sleep")
-            .arg("600")
-            // Same reasoning as the sibling test above -- this one lives
-            // far longer, so an inherited stdout/stderr fd here is a real
-            // hang risk for anything downstream reading this process's
-            // own output, not merely a theoretical one.
+    fn drop_never_reaps() {
+        let child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -828,14 +843,17 @@ mod tests {
         let start = super::process_start_ticks(pid).expect("process_start_ticks");
         let proof = ChallengedProcess::from_pinned_for_test(pidfd, pid, start);
         assert!(
-            !proof.wait(Duration::from_millis(100)).expect("wait"),
-            "expected the child to still be alive"
+            proof.wait(Duration::from_secs(5)).expect("wait"),
+            "expected the child to exit within 5s"
         );
         drop(proof);
-        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
-        assert_eq!(rc, 0, "Drop must never kill (or otherwise disturb) a still-live process");
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        // The test itself now owns the reap -- proving Drop left the
+        // zombie fully intact for whoever the real owner is.
         let mut status: libc::c_int = 0;
-        unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
+        let rc = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) };
+        assert_eq!(
+            rc, pid as libc::pid_t,
+            "expected this test's own waitpid to reap the child (Drop must not have already done so)"
+        );
     }
 }

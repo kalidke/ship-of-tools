@@ -2513,6 +2513,11 @@ where
                                     agent,
                                     agent_name: String::new(),
                                     task: String::new(),
+                                    // ADR 0043 decision 22: "" asks for this
+                                    // host's own platform default — the FE
+                                    // sends nothing new here, unchanged
+                                    // behavior on every host.
+                                    runtime: String::new(),
                                 })?,
                             ),
                             None,

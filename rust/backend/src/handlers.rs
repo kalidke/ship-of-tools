@@ -3863,26 +3863,64 @@ pub async fn handle_workspace_create(
         "none".to_string()
     };
     let autostart = agent_kind != "none";
-    // ADR 0042 slice L1a, Codex review finding 9: validated BEFORE any
-    // state mutation, on Windows only (every new workspace is a capsule
-    // there — the tmux path below accepts every agent kind unchanged on
-    // every other host). `agent_argv` is the same function the spawn
-    // itself uses, so this is the real check, not a second guess at it —
-    // "codex" (no known Windows launcher yet) is refused here rather
-    // than silently launching a bare shell nobody asked for.
-    #[cfg(windows)]
-    let capsule_argv = match crate::capsule_workspace::agent_argv(&agent_kind) {
-        Ok(argv) => argv,
-        Err(detail) => {
+
+    // ADR 0043 decision 22: the runtime is now an explicit VALUE, not a
+    // platform cfg — `""` (absent on the wire) means this host's own
+    // platform default, `"capsule"` asks for one explicitly on either
+    // platform, `"tmux"` is refused on Windows (the no-knob rule: no
+    // tmux runtime exists there at all). The Linux platform default
+    // stays "tmux" (a capsule row's attach is same-machine only until
+    // the bridge — see `ops.rs`'s own doc on this field).
+    let runtime: String = match req.runtime.as_str() {
+        "" => if cfg!(windows) { "capsule" } else { "tmux" }.to_string(),
+        "capsule" => "capsule".to_string(),
+        "tmux" if !cfg!(windows) => "tmux".to_string(),
+        "tmux" => {
             let payload = json!({
-                "error": detail,
-                "code": "unsupported_agent_on_windows",
+                "error": "no tmux runtime on Windows".to_string(),
+                "code": "runtime_not_available",
             });
             return Ok(vec![(
                 Frame::res(req_id, op::WORKSPACE_CREATE, payload),
                 None,
             )]);
         }
+        other => {
+            let payload = json!({
+                "error": format!("unknown runtime {other:?} (want \"capsule\", \"tmux\", or \"\" for this host's default)"),
+                "code": "bad_runtime",
+            });
+            return Ok(vec![(
+                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                None,
+            )]);
+        }
+    };
+    // ADR 0042 slice L1a, Codex review finding 9: validated BEFORE any
+    // state mutation, whenever the resolved runtime is "capsule" (every
+    // NEW workspace on Windows, or an explicitly requested one anywhere
+    // `capsule_workspace::runtime` compiles — ADR 0043 decision 22). The
+    // tmux path below accepts every agent kind unchanged. `agent_argv` is
+    // the same function the spawn itself uses, so this is the real
+    // check, not a second guess at it — "codex" (no known launcher on
+    // either platform) is refused here rather than silently launching a
+    // bare shell nobody asked for.
+    let capsule_argv: Vec<String> = if runtime == "capsule" {
+        match crate::capsule_workspace::agent_argv(&agent_kind) {
+            Ok(argv) => argv,
+            Err(detail) => {
+                let payload = json!({
+                    "error": detail,
+                    "code": "unsupported_agent_on_this_host",
+                });
+                return Ok(vec![(
+                    Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                    None,
+                )]);
+            }
+        }
+    } else {
+        Vec::new()
     };
     let mut ws_seed = crate::workspaces::Workspace::from_label(
         &req.label,
@@ -3892,104 +3930,44 @@ pub async fn handle_workspace_create(
         req.agent_name.clone(),
         req.task.clone(),
     );
-    // ADR 0042 slice L1a: every NEW workspace is a capsule workspace on
-    // every host from L1 on — "runtime: tmux is never chosen for a new
-    // session (no knob)". Windows-only in THIS unit (the Unix supervisor/
-    // lane port is a later slice): on any other host `runtime` stays the
-    // `Workspace::from_label` default of "tmux" and nothing below in this
-    // function changes.
-    #[cfg(windows)]
-    {
-        ws_seed.runtime = "capsule".to_string();
-    }
+    ws_seed.runtime = runtime;
     let ws_handle = workspaces.insert(ws_seed);
     if let Err(e) = crate::workspaces::save(&ws_handle) {
         tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
     }
 
-    // Create the per-workspace tmux session so BL-pane attach works.
-    // UNIFIED SPAWN (ADR 0023): EVERY `autostart_claude` workspace — a background
-    // comm-spawn (`boot:true`) AND an FE nav-pane create — gets the wait-for-attach
-    // wrapper (`boot_wrapper_command`) as its pane START COMMAND. The wrapper
-    // `exec`s `ccb` the moment a client attaches (the boot-pty for a background
-    // spawn, or the FE's own attach on switch), so claude is the pane's process —
-    // never typed into a shell, which raced the prompt. This retires the FE
-    // autostart-on-attach typing: one race-free boot path for both cases.
-    //
-    // ADR 0042 slice L1a: this whole tmux + boot-pty path is the "tmux" runtime
-    // only — `ws_handle.runtime` is unconditionally "capsule" on Windows (set
-    // above), so this `#[cfg(not(windows))]` and the `#[cfg(windows)]` capsule
-    // spawn below are exhaustive over the two runtimes this daemon can ever
-    // create today (see `Workspace::runtime`'s own doc).
-    #[cfg(not(windows))]
-    {
-        let tmux_session = ws_handle.tmux_session.clone();
-        let cwd = project_root.clone();
-        let ws_slug = ws_handle.slug.clone();
-        let boot_cmd: Option<String> = if autostart || boot {
-            Some(crate::pty::boot_wrapper_command(
-                &tmux_session,
-                &req.agent_name,
-                &agent_kind,
-            ))
-        } else {
-            None
-        };
-        let tmux_result = tokio::task::spawn_blocking(move || {
-            crate::tmux::TmuxClient::new().create_session(
-                &tmux_session,
-                boot_cmd.as_deref(),
-                Some(&cwd),
-                Some(&ws_slug),
-            )
-        })
-        .await
-        .context("spawn_blocking workspace tmux create")?;
-        let tmux_ok = tmux_result.is_ok();
-        if let Err(e) = tmux_result {
-            tracing::warn!(error = %e, "workspace tmux session create failed; workspace registered without one");
-        }
-
-        // ADR 0023 §3 (UNIFIED): daemon-side claude boot via a throwaway boot-pty —
-        // open a real pty client to the new session so the wrapper's wait-for-attach
-        // is satisfied, poll until claude is foreground, then detach (claude survives;
-        // the FE client takes over). Runs for EVERY `autostart_claude` create, not
-        // just comm-spawn `boot=true`. WHY nav-pane needs it too: the ADR-0014 single
-        // foreground pty re-target is NOT a stable init client, so without the boot-pty
-        // a nav-pane claude dies during init and the daemon falls back to home (the
-        // "sitting in home" bug). The boot-pty is the SAME stable client that makes
-        // comm-spawn boot reliably — confirmed the missing-client delta is the cause.
-        // Detached `tokio::spawn` (polls up to ~45s, must not block the response);
-        // skipped when the tmux session failed to create.
-        if (autostart || boot) && tmux_ok {
-            let boot_session = ws_handle.tmux_session.clone();
-            let boot_agent = req.agent_name.clone();
-            let boot_cwd = project_root.clone();
-            let boot_slug = ws_handle.slug.clone();
-            tracing::info!(session = %boot_session, agent = %boot_agent, boot,
-                "workspace.create autostart — spawning daemon boot-pty for claude (stable init client)");
-            tokio::spawn(async move {
-                crate::pty::boot_workspace_claude(boot_session, boot_agent, boot_cwd, boot_slug).await;
-            });
-        }
-    }
-
-    // ADR 0042 slice L1a, Codex review finding 1: the capsule spawn — and,
-    // unlike the tmux path above, a SYNCHRONOUS failure here FAILS the
-    // whole op: "a capsule workspace with no supervisor is not a
-    // workspace." Rule C (shrink round): this daemon no longer creates
-    // the state directory itself — `sot-capsule supervise` creates its
-    // OWN, as its first act after it actually runs — so a synchronous
-    // failure below leaves nothing on disk at all, not even an empty
-    // directory. The DETACHED spawn-and-watch is what survives this
-    // daemon's own exit, with its own exit handled going forward
-    // (finding 6). On ANY failure to reach a running supervisor, roll
-    // back the registry row and its persisted toml and refuse the op
-    // with the real error text.
-    #[cfg(windows)]
-    {
+    // ADR 0043 decision 22: branch on the resolved runtime VALUE, not a
+    // platform cfg — `ws_handle.runtime` is exhaustive over the two
+    // runtimes this daemon can ever create (see `Workspace::runtime`'s
+    // own doc); both arms compile on every platform this daemon builds
+    // for (on Windows the tmux arm is simply unreachable — "tmux" is
+    // refused above before either arm is ever entered).
+    if ws_handle.runtime == "capsule" {
+        // ADR 0043 decision 22: the capsule runtime itself only compiles
+        // on Windows and Linux (`capsule_workspace::runtime`'s own
+        // gate) — on any other host (macOS stays experimental) an
+        // explicit `"runtime":"capsule"` request is refused gracefully,
+        // the same "not available" shape `destroy_capsule_workspace`
+        // reports for a row that somehow already has one.
+        #[cfg(any(windows, target_os = "linux"))]
+        {
+        // ADR 0042 slice L1a, Codex review finding 1: the capsule spawn —
+        // and, unlike the tmux path below, a SYNCHRONOUS failure here
+        // FAILS the whole op: "a capsule workspace with no supervisor is
+        // not a workspace." Rule C (shrink round): this daemon no longer
+        // creates the state directory itself — `sot-capsule supervise`
+        // creates its OWN, as its first act after it actually runs — so
+        // a synchronous failure below leaves nothing on disk at all, not
+        // even an empty directory. The DETACHED spawn-and-watch is what
+        // survives this daemon's own exit, with its own exit handled
+        // going forward (finding 6). On ANY failure to reach a running
+        // supervisor, roll back the registry row and its persisted toml
+        // and refuse the op with the real error text.
         let spawn_result: std::result::Result<bool, String> = match sot_log::state_dir::sot_state_dir() {
-            None => Err("could not resolve this machine's state root (%LOCALAPPDATA% unset)".to_string()),
+            None => Err(format!(
+                "could not resolve this machine's state root ({} unset)",
+                crate::capsule_workspace::STATE_ROOT_HINT
+            )),
             // Shared with `pty.open`'s start-on-attach path (server.rs) —
             // see `capsule_workspace::start_supervisor`'s own doc.
             // Rule D: `Ok(None)` means another launch already held this
@@ -4047,6 +4025,89 @@ pub async fn handle_workspace_create(
                     None,
                 )]);
             }
+        }
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        {
+            let _ = &capsule_argv;
+            tracing::warn!(workspace_id = %ws_handle.workspace_id, "workspace.create: capsule runtime requested but not available on this host; rolling back");
+            let _ = workspaces.remove_by_id(&ws_handle.workspace_id);
+            for toml_path in [
+                crate::workspaces::toml_path_for(&ws_handle.slug),
+                crate::workspaces::legacy_toml_path_for(&ws_handle.slug),
+            ] {
+                match std::fs::remove_file(&toml_path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => tracing::warn!(error = %e, path = ?toml_path, "workspace.create rollback: toml remove failed"),
+                }
+            }
+            let payload = json!({
+                "error": "the capsule runtime is not available on this host",
+                "code": "runtime_not_available",
+            });
+            return Ok(vec![(
+                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                None,
+            )]);
+        }
+    } else {
+        // Create the per-workspace tmux session so BL-pane attach works.
+        // UNIFIED SPAWN (ADR 0023): EVERY `autostart_claude` workspace — a background
+        // comm-spawn (`boot:true`) AND an FE nav-pane create — gets the wait-for-attach
+        // wrapper (`boot_wrapper_command`) as its pane START COMMAND. The wrapper
+        // `exec`s `ccb` the moment a client attaches (the boot-pty for a background
+        // spawn, or the FE's own attach on switch), so claude is the pane's process —
+        // never typed into a shell, which raced the prompt. This retires the FE
+        // autostart-on-attach typing: one race-free boot path for both cases.
+        let tmux_session = ws_handle.tmux_session.clone();
+        let cwd = project_root.clone();
+        let ws_slug = ws_handle.slug.clone();
+        let boot_cmd: Option<String> = if autostart || boot {
+            Some(crate::pty::boot_wrapper_command(
+                &tmux_session,
+                &req.agent_name,
+                &agent_kind,
+            ))
+        } else {
+            None
+        };
+        let tmux_result = tokio::task::spawn_blocking(move || {
+            crate::tmux::TmuxClient::new().create_session(
+                &tmux_session,
+                boot_cmd.as_deref(),
+                Some(&cwd),
+                Some(&ws_slug),
+            )
+        })
+        .await
+        .context("spawn_blocking workspace tmux create")?;
+        let tmux_ok = tmux_result.is_ok();
+        if let Err(e) = tmux_result {
+            tracing::warn!(error = %e, "workspace tmux session create failed; workspace registered without one");
+        }
+
+        // ADR 0023 §3 (UNIFIED): daemon-side claude boot via a throwaway boot-pty —
+        // open a real pty client to the new session so the wrapper's wait-for-attach
+        // is satisfied, poll until claude is foreground, then detach (claude survives;
+        // the FE client takes over). Runs for EVERY `autostart_claude` create, not
+        // just comm-spawn `boot=true`. WHY nav-pane needs it too: the ADR-0014 single
+        // foreground pty re-target is NOT a stable init client, so without the boot-pty
+        // a nav-pane claude dies during init and the daemon falls back to home (the
+        // "sitting in home" bug). The boot-pty is the SAME stable client that makes
+        // comm-spawn boot reliably — confirmed the missing-client delta is the cause.
+        // Detached `tokio::spawn` (polls up to ~45s, must not block the response);
+        // skipped when the tmux session failed to create.
+        if (autostart || boot) && tmux_ok {
+            let boot_session = ws_handle.tmux_session.clone();
+            let boot_agent = req.agent_name.clone();
+            let boot_cwd = project_root.clone();
+            let boot_slug = ws_handle.slug.clone();
+            tracing::info!(session = %boot_session, agent = %boot_agent, boot,
+                "workspace.create autostart — spawning daemon boot-pty for claude (stable init client)");
+            tokio::spawn(async move {
+                crate::pty::boot_workspace_claude(boot_session, boot_agent, boot_cwd, boot_slug).await;
+            });
         }
     }
 
@@ -4149,12 +4210,14 @@ async fn destroy_capsule_workspace(
             "the run was terminal; the supervisor authority had already exited".to_string(),
         );
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
             return CapsuleDestroyOutcome::Kept {
-                detail: "could not resolve this machine's state root (%LOCALAPPDATA% unset)"
-                    .to_string(),
+                detail: format!(
+                    "could not resolve this machine's state root ({} unset)",
+                    crate::capsule_workspace::STATE_ROOT_HINT
+                ),
             };
         };
         let state_dir = crate::capsule_workspace::state_dir_for(&state_root, workspace_id);
@@ -4173,14 +4236,15 @@ async fn destroy_capsule_workspace(
             },
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (workspace_id, reason);
         // Unreachable in practice: no workspace has `runtime == "capsule"`
-        // off Windows (see `Workspace::runtime`'s own doc); the default
-        // row's own branch above already gates on `cfg!(windows)` too.
+        // off Windows/Linux (see `Workspace::runtime`'s own doc) — a host
+        // this crate compiles for but the capsule runtime does not
+        // (ADR 0043: macOS stays experimental).
         CapsuleDestroyOutcome::Kept {
-            detail: "capsule runtime is Windows-only".to_string(),
+            detail: "the capsule runtime is not available on this host".to_string(),
         }
     }
 }
@@ -4250,17 +4314,20 @@ pub async fn handle_workspace_destroy(
     // daemon's anchor, with no fallback target to swap ops to. A default
     // TMUX row has no run to end, so it keeps the flat refusal. A
     // default CAPSULE row (ADR 0042: the default `local` row on a
-    // Windows FE box) instead ends its run and keeps the row, reusing
-    // the non-default delete's own path below — a `Kept` (unconfirmed)
-    // outcome still returns the SAME typed error, never a fabricated
-    // success.
+    // Windows FE box, ADR 0043 decision 22: on Linux only ever reached
+    // via a hand-edited toml, since the Linux platform default stays
+    // "tmux" until the bridge) instead ends its run and keeps the row,
+    // reusing the non-default delete's own path below — a `Kept`
+    // (unconfirmed) outcome still returns the SAME typed error, never a
+    // fabricated success.
     if workspaces.default_id().as_deref() == Some(ws.workspace_id.as_str()) {
-        // Gate on the BUILD target, not just the toml's own `runtime`
-        // string — a Linux toml can carry `runtime = "capsule"`
-        // (`workspaces.rs`'s `load_toml` reads it verbatim), and capsule
-        // support is Windows-only regardless. Linux keeps the same flat
-        // refusal a tmux default row gets.
-        if ws.runtime != "capsule" || !cfg!(windows) {
+        // Gate on the toml's own `runtime` string alone now (ADR 0043
+        // decision 22): capsule support is no longer Windows-only, so a
+        // Linux default row that genuinely carries `runtime = "capsule"`
+        // gets the same real end-run path a Windows one does. Every
+        // OTHER default row (the ordinary "tmux" case on every host)
+        // keeps the same flat refusal it always had.
+        if ws.runtime != "capsule" {
             // Otherwise invisible in the daemon log — a refused destroy on
             // a dead-end default row (e.g. one stuck with a runtime the
             // daemon also refuses to start) previously left no trace at
@@ -4772,12 +4839,11 @@ pub async fn handle_workspace_list(
     // reached). A workspace already marked `capsule_terminal` (finding 6
     // — its watchdog gave up) is never queried at all; its phase is
     // "terminal", not a fresh "unreachable" that would misleadingly
-    // imply the next probe might succeed. Kept unconditional (not itself
-    // `#[cfg(windows)]`) so both platforms share one code shape; only
-    // `capsule_workspace::phase_of` is windows-only, and no workspace has
-    // `runtime == "capsule"` on any other host in this unit, so the
-    // query set is always empty there.
-    #[cfg(windows)]
+    // imply the next probe might succeed. `capsule_workspace::phase_of`
+    // is gated to Windows and Linux only (ADR 0043 decision 22); on any
+    // other host no workspace ever has `runtime == "capsule"`, so the
+    // query set there is always empty.
+    #[cfg(any(windows, target_os = "linux"))]
     let phases: std::collections::HashMap<String, String> = {
         let candidates: Vec<(String, std::path::PathBuf)> = match sot_log::state_dir::sot_state_dir() {
             Some(root) => ws_list
@@ -4810,7 +4876,7 @@ pub async fn handle_workspace_list(
         let _ = tokio::time::timeout(crate::capsule_workspace::LIST_LANE_DEADLINE, gather).await;
         out
     };
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     let phases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut entries: Vec<WorkspaceListEntry> = ws_list
         .into_iter()
@@ -5922,12 +5988,12 @@ mod capsule_comm_handle_tests {
 #[cfg(test)]
 mod workspace_destroy_default_row_tests {
     // Default-row end-run: a default TMUX row keeps the flat refusal
-    // (no run to end). A default CAPSULE row on Windows ends its run and
-    // keeps the row, reporting the outcome in `WorkspaceDestroyRes::kept`
-    // — but only when CONFIRMED (`Removable`); `Kept` still returns the
-    // typed `capsule_end_not_reached` error. A default CAPSULE row off
-    // Windows keeps the flat refusal too (a synced/hand-edited toml can
-    // claim `runtime = "capsule"`, but capsule support is Windows-only).
+    // (no run to end). A default CAPSULE row (ADR 0043 decision 22: on
+    // any host the capsule runtime compiles for, not just Windows) ends
+    // its run and keeps the row, reporting the outcome in
+    // `WorkspaceDestroyRes::kept` — but only when CONFIRMED
+    // (`Removable`); `Kept` still returns the typed
+    // `capsule_end_not_reached` error, never the flat tmux-style refusal.
     use super::*;
 
     fn seed_default(runtime: &str) -> (Workspaces, String) {
@@ -5980,15 +6046,32 @@ mod workspace_destroy_default_row_tests {
         assert!(reg.resolve(Some(&id)).is_some());
     }
 
-    // A non-Windows default row claiming `runtime = "capsule"` (a Linux
-    // toml can carry this verbatim) gets the same flat refusal as tmux.
+    // ADR 0043 decision 22: capsule support is no longer Windows-only, so
+    // a default row explicitly marked "capsule" (a hand-edited toml, or
+    // later the bridge) now takes the SAME real end-run path a Windows
+    // one always did — never the flat tmux-style refusal
+    // (`default_workspace_not_destroyable`). Nothing is actually running
+    // behind this row in-process, so the real attempt cannot reach a
+    // live lane and the row is KEPT (unconfirmed) with the capsule-
+    // specific typed error instead — deterministic on every platform:
+    // where the capsule runtime doesn't compile at all (e.g. macOS),
+    // `destroy_capsule_workspace`'s own portable fallback arm reports the
+    // SAME `Kept` shape for a different reason.
     #[tokio::test]
-    #[cfg(not(windows))]
-    async fn default_capsule_workspace_is_refused_off_windows() {
+    async fn default_capsule_workspace_takes_the_real_end_run_path_not_the_flat_refusal() {
         let (reg, id) = seed_default("capsule");
         let payload = destroy(&reg, &id).await;
-        assert_refused(&payload);
-        assert!(reg.resolve(Some(&id)).is_some());
+        assert_ne!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("default_workspace_not_destroyable"),
+            "a capsule default row must not get the flat tmux-style refusal: {payload:?}"
+        );
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("capsule_end_not_reached"),
+            "payload: {payload:?}"
+        );
+        assert!(reg.resolve(Some(&id)).is_some(), "the default row is never removed either way");
     }
 
     // `destroy_capsule_workspace` checks `is_capsule_terminal` BEFORE any

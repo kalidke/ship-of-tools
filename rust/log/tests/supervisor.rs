@@ -287,6 +287,40 @@ fn wait_for_exit(mut child: Child, timeout: Duration) -> std::process::ExitStatu
     poll_until(|| child.try_wait().unwrap(), timeout, "the supervisor process to exit")
 }
 
+/// Single-owner reaping (review round 2, F7): a count of THIS
+/// SUPERVISOR's own zombie (state `Z`) direct children — never a uid-wide
+/// count (review round 2's own finding: a shared CI runner, or even this
+/// test binary's OWN other tests running concurrently, can have
+/// unrelated zombies under the same uid at any moment, and a uid-wide
+/// count also can't be checked while pinning it to "this one
+/// supervisor's own leg" specifically). Reads `/proc/<pid>/task/<pid>/children`
+/// — the MAIN THREAD's own child list, which for a single-threaded
+/// process like this supervisor is every process it has ever fork()'d
+/// and not yet reaped, Linux's own portable "list my children" mechanism
+/// (no `ptrace`, no `/proc` tree walk) — then each listed child's own
+/// `/proc/<c>/stat` field 3 (state), parsed the same way
+/// `e2e_socket.rs`'s own `proc_state` does (fields after the comm's
+/// closing paren). Meant to be asserted WHILE the supervisor is still
+/// alive (its own `/proc/<pid>` entry, and thus this file, only exists
+/// then) — right after a run has ended, before anything stops the
+/// authority itself.
+#[cfg(target_os = "linux")]
+fn zombie_children_of(pid: u32) -> usize {
+    let Ok(contents) = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) else {
+        return 0;
+    };
+    contents
+        .split_whitespace()
+        .filter(|child_pid| {
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{child_pid}/stat")) else {
+                return false;
+            };
+            let Some(close) = stat.rfind(')') else { return false };
+            stat[close + 1..].split_whitespace().next() == Some("Z")
+        })
+        .count()
+}
+
 /// As [`wait_for_exit`], but on timeout makes ONE best-effort attempt to
 /// reconnect and report whatever `status` still claims, so a future CI
 /// failure NAMES the stuck lifecycle state instead of just timing out
@@ -349,6 +383,20 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
     let final_state = poll_to_terminal(&conn, op_id, Duration::from_secs(60));
     assert_eq!(final_state, SupervisorOperationState::RecordVerified);
 
+    // Single-owner reaping (review round 2, F7): asserted HERE, WHILE
+    // the supervisor authority is still alive (its own `/proc/<pid>`
+    // entry, hence this check, only exists until it exits) — right
+    // after the run ended, before `Stop` is ever sent. Proves the leg
+    // `finish_end_run_with_process` ended is reaped as PART of ending
+    // the run, not merely "eventually, once the whole supervisor process
+    // itself exits and reparents any leftover zombie to init."
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        zombie_children_of(guard.0.as_ref().expect("supervisor still held").id()),
+        0,
+        "the ended leg must already be reaped while the supervisor is still alive"
+    );
+
     // Resubmitting the SAME operation id with the SAME digest is
     // idempotent -- it must answer with the current state, not
     // re-execute.
@@ -365,6 +413,141 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
     let child = guard.0.take().unwrap();
     let status = wait_for_exit(child, Duration::from_secs(30));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_CLEAN), "a clean EndRun+Stop must exit 0");
+}
+
+/// F2 (review round), reproduced: `Lifecycle::Ready { process }` →
+/// `Ending { .. }` used to drop the ONLY handle able to reap a leg that
+/// exits on its OWN while `end_run` is in flight — the worker's own
+/// re-challenge over the leg's lane can lose that race (the leg's own
+/// socket having already torn down by the time it runs), leaving
+/// `finish_end_run_without_process`'s path with no proven handle for
+/// this leg at all, and the retained `Ready` handle already silently
+/// dropped at the very transition that admitted `end_run` — the leg was
+/// then a zombie for the rest of the supervisor's life. Constructed with
+/// a producer that exits ON ITS OWN shortly after `Ready` and an
+/// `end_run` sent IMMEDIATELY once `Ready` is observed, racing the leg's
+/// own natural exit against the worker's own processing — not provably
+/// deterministic (which side of the race actually resolves first is a
+/// real timing question), but the ~1s window is generous over the
+/// worker's own near-instant admission, so the race is exercised on
+/// every real run.
+///
+/// G4 (Codex review round 2): this race has more than one legitimate
+/// resolution, and asserting a single one of them made the test flaky —
+/// (1) the main loop's own `Ready` tick can observe the leg's natural
+/// exit BEFORE `end_run`'s admission check ever runs, refusing it
+/// SYNCHRONOUSLY with "no leg is currently running" (never journaled at
+/// all — a later `query` for this id reads `UnknownOperation` forever,
+/// correctly, since the operation never began); (2) admission wins the
+/// race (Lifecycle is still `Ready`), but the worker's own re-challenge
+/// still finds the leg already gone with no end-of-run marker to verify
+/// — `PreBarrierFailed`, journaled as a terminal `Failed` record via
+/// `journal::finish` REGARDLESS of whether this exact connection is ever
+/// notified (`Ending`'s own resolution arms only ever signal
+/// `pending_reply` on the `RecordClosed` path — see that variant's own
+/// doc); (3) the ordinary deterministic path, `RecordClosed` then
+/// `RecordVerified`. Only (3) has a further `record_closed -> terminal`
+/// step left to observe over the wire; both (1) and (2) are already this
+/// operation's own final word (an immediate synchronous reply for (1), a
+/// journaled-but-unnotified terminal record for (2), read back via
+/// `query` instead of waited for over this connection). FIX: send the
+/// command with a bounded, NON-panicking read (a bare `command()` would
+/// panic on the exact timeout (2) produces), branch on what actually came
+/// back, and assert the PROPERTY every schedule shares — no zombie child
+/// while the supervisor is still alive — rather than one specific path.
+/// Logs which schedule was observed, useful for anyone debugging a CI
+/// flake later. The ORDINARY (non-racing) end-run test keeps its
+/// deterministic `RecordClosed` assertion unchanged — this loosening is
+/// scoped to the race this test alone constructs.
+// Linux-only: the property is single-owner REAPING (a zombie is a Unix
+// notion); the Windows twin has nothing to assert, and the windows-latest
+// runner once lost the race's fallback query to a lane the supervisor had
+// already closed.
+#[cfg(target_os = "linux")]
+#[test]
+fn end_run_racing_a_self_exiting_leg_leaves_no_zombie() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    const SELF_EXITING_SOON: &[&str] = &["/bin/sh", "-c", "sleep 1; exit 0"];
+
+    let child = spawn_supervisor(&state_dir, "--start", SELF_EXITING_SOON);
+    let mut guard = KillGuard(Some(child));
+
+    let mut conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+
+    // Immediately -- racing the leg's own ~1s self-exit against the
+    // worker's own processing (the exact window F2 names). The SAME
+    // 30s deadline `command`'s own bound uses (B3's own per-op budget
+    // reasoning) -- but read directly, not through `command`, so
+    // schedule (2)'s genuine "no wire reply at all" never panics this
+    // test; it falls through to the journal-backed `query` poll below
+    // instead.
+    let op_id = "test-end-run-race";
+    let request = SupervisorRequest::Command {
+        operation_id: op_id.to_string(),
+        op: SupervisorOp::EndRun { reason: "race test".into(), voyage },
+    };
+    let immediate_reply = match request_for_test(&conn, &request, Instant::now() + Duration::from_secs(30)) {
+        Ok(SupervisorReply::Operation(state)) => Some(state),
+        Ok(other) => panic!("expected Operation, got {other:?}"),
+        Err(e) => {
+            eprintln!(
+                "end_run_racing_a_self_exiting_leg_leaves_no_zombie: no wire reply within the bound ({e}) \
+                 -- falling through to a query poll (schedule (2): admitted, PreBarrierFailed, never notified)"
+            );
+            None
+        }
+    };
+
+    let final_state = match immediate_reply {
+        Some(SupervisorOperationState::RecordClosed) => poll_to_terminal(&conn, op_id, Duration::from_secs(60)),
+        Some(other) => other,
+        None => poll_until(
+            // The supervisor may close this lane connection once the run has
+            // ended (idle eviction): a closed lane is not a verdict -- reconnect
+            // and ask the journal-backed operation state again.
+            || match request_for_test(
+                &conn,
+                &SupervisorRequest::Query { operation_id: op_id.to_string() },
+                Instant::now() + Duration::from_secs(5),
+            ) {
+                Ok(SupervisorReply::Operation(SupervisorOperationState::Accepted)) => None,
+                Ok(SupervisorReply::Operation(other)) => Some(other),
+                Ok(other) => panic!("expected Operation, got {other:?}"),
+                Err(_) => {
+                    conn = wait_for_lane(&h, Duration::from_secs(10));
+                    None
+                }
+            },
+            Duration::from_secs(60),
+            "the operation to settle (journal-backed, since no wire reply ever arrived)",
+        ),
+    };
+    eprintln!("end_run_racing_a_self_exiting_leg_leaves_no_zombie: observed schedule -> {final_state:?}");
+
+    // Single-owner reaping (review round 2, F2/F7): asserted WHILE the
+    // supervisor authority is still alive (before Stop/exit) -- the ONE
+    // property every legitimate schedule above shares, regardless of
+    // which one actually resolved this run (G4).
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        zombie_children_of(guard.0.as_ref().expect("supervisor still held").id()),
+        0,
+        "the raced leg must not be left an unreaped zombie while the supervisor is still alive (schedule: {final_state:?})"
+    );
+
+    // Stop is admitted regardless of lifecycle (no gate) -- ends the
+    // authority whether this race left it EndedNoRespawn, Terminal, or
+    // respawned into a fresh Ready.
+    let _ = command(&conn, "test-stop-race", SupervisorOp::Stop);
+    let child = guard.0.take().unwrap();
+    let _status = wait_for_exit(child, Duration::from_secs(30));
 }
 
 /// ADR 0041 start-mode table: "`--resume` | sealed, carrying its own
