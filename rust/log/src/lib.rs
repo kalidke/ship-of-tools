@@ -19,6 +19,13 @@ pub mod challenge;
 // extension trait. `pub`, matching `pipe_win`/`capsule_win`: Windows-only,
 // self-gated (see the module's own `#![cfg(windows)]`).
 pub mod challenge_win;
+// L1-unix LU1c (ADR 0043 decision 8): the Linux half of the same-
+// connection challenge -- SO_PEERCRED same-user check, race-free pidfd
+// pinning, and the retained-pidfd process handle. `pub`, matching
+// `challenge_win`: Linux-only, self-gated (see the module's own
+// `#![cfg(target_os = "linux")]`); other Unix fails closed at
+// `socket_unix::connect_voyage_socket`'s own stub instead.
+pub mod challenge_unix;
 // ADR 0041 step 6, unit U2: the probe classifier (Stage A/B transition
 // table) `probe.rs` deliberately ships without — see that module's own
 // doc. Portable (L1-unix LU1a): makes no OS call of its own, so its unit
