@@ -1655,7 +1655,7 @@ impl PipeServer {
     /// `deadline` (ADR 0041 "the joins share ONE 20 s absolute deadline,
     /// each wait taking the remaining budget"; Codex round-1 Blocker 3:
     /// an externally supplied absolute `Instant`, not a budget this
-    /// method computes itself, so `capsule_win::run` can fold its OWN
+    /// method computes itself, so `capsule::run` can fold its OWN
     /// closer/reader threads into the identical deadline). `true` iff
     /// every one finished within budget; `false` (LOUD — the caller MUST
     /// treat this as terminal, never seal-and-succeed past it) on
@@ -1686,7 +1686,7 @@ impl Drop for PipeServer {
     /// [`PipeServer::join_workers`]. This is the SAFETY-NET path (a bare
     /// `drop(server)`, or an early-return `?` before the explicit
     /// `Transport::shutdown_all` call ever runs) — the designed path
-    /// computes ONE deadline in `capsule_win::run` and calls both methods
+    /// computes ONE deadline in `capsule::run` and calls both methods
     /// explicitly with it, folding the capsule's own closer/reader
     /// threads into the SAME budget; this `Drop` still works standalone
     /// for every caller that never does that. Every thread this module

@@ -221,12 +221,14 @@ jobs:
       - name: Test conpty (owned ConPTY + job containment)
         timeout-minutes: 5
         run: cargo test -p sot-log --test conpty -- --nocapture
-      # --test capsule_win: same reasoning, one test BINARY
-      # (tests/capsule_win.rs) — the DSR-presence finding in the e2e test
-      # is likewise logged, not asserted (host/build-version-dependent).
-      - name: Test capsule_win (Windows capsule runtime)
+      # --test capsule: same reasoning, one test BINARY (tests/capsule.rs,
+      # L1-unix LU2a: renamed from tests/capsule_win.rs when the writer
+      # loop became generic over `Producer`) — the DSR-presence finding in
+      # the e2e test is likewise logged, not asserted
+      # (host/build-version-dependent).
+      - name: Test capsule (capsule runtime, ConPTY producer)
         timeout-minutes: 10
-        run: cargo test -p sot-log --test capsule_win -- --nocapture
+        run: cargo test -p sot-log --test capsule -- --nocapture
       # --test pipe_win: the named-pipe transport plus the same-connection
       # challenge's real-pipe and real-cross-process tests (ADR 0041 U0
       # round-1).

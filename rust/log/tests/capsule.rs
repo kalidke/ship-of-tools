@@ -1,10 +1,12 @@
 #![cfg(windows)]
-//! Integration tests for the Windows capsule runtime (`src/capsule_win.rs`,
-//! ADR 0041 step 4). Lives in `tests/` for the same reason `tests/conpty.rs`
+//! Integration tests for the capsule runtime (`src/capsule.rs`, ADR 0041
+//! step 4; ADR 0043 "Decisions for LU2" L1-unix LU2a: renamed from
+//! `tests/capsule_win.rs` when the writer loop became generic over
+//! `Producer`). Lives in `tests/` for the same reason `tests/conpty.rs`
 //! does: one of these (the flood test) needs `env!("CARGO_BIN_EXE_...")` to
 //! find its helper binary, which Cargo only wires up for integration test
 //! binaries, and the rest are kept here too for one home and one
-//! `cargo test -p sot-log --test capsule_win` filter.
+//! `cargo test -p sot-log --test capsule` filter.
 //!
 //! The host-handshake byte state machine's own unit tests
 //! (`host_handshake.rs`) are pure and run everywhere already; what these
@@ -24,15 +26,36 @@
 //! even if every outcome targeted the same request or `ResizePseudoConsole`
 //! were never actually gated. All four are fixed below.
 
+#[path = "support/transports.rs"]
+mod transports;
+
 use sot_log::attach_proto::ConnId;
-use sot_log::capsule_win::{self, CapsuleWinConfig, Command, ExitKind};
-use sot_log::transport::{Transport, TransportEvent};
+use sot_log::capsule::{self, CapsuleConfig, Command, ExitKind};
+use sot_log::producer::ExitStatus;
 use sot_log::segment::{RetentionClass, SegmentReader};
 use sot_log::verify::{leg_carries_run_end_marker, verify_voyage};
 use sot_log::wire::{self, Survival};
 use sot_log::{Class, Envelope, RefKind};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
+use transports::{no_transport, TestTransport};
+
+/// The producer under test, selected in ONE place (ADR 0043 "Decisions for
+/// LU2"): every `capsule::run` call in this file names `P`, never
+/// `ConptyProducer` directly, so LU2b's Unix pass can ungate the portable
+/// tests below by flipping `type P` (and `SHELL_ARGV`) to a Unix
+/// producer's own shell rather than touching every call site.
+mod producer_under_test {
+    pub type P = sot_log::producer_conpty::ConptyProducer;
+    /// argv[0] every test in this file spawns as its shell.
+    pub const SHELL_ARGV: &str = "cmd.exe";
+    /// The sot-conpty-helper binary the flood/fidelity tests need —
+    /// `env!("CARGO_BIN_EXE_...")` only resolves inside an integration
+    /// test binary, which is why this lives here rather than in
+    /// `src/bin/sot-conpty-helper.rs` itself.
+    pub const HELPER_EXE: &str = env!("CARGO_BIN_EXE_sot-conpty-helper");
+}
+use producer_under_test::{HELPER_EXE, SHELL_ARGV, P};
 
 /// Every test in this binary spawns a real ConPTY producer plus a capsule
 /// writer loop and reader thread. Run CONCURRENTLY (cargo's default) on a
@@ -49,8 +72,8 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 }
 
 
-fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows: u16) -> CapsuleWinConfig {
-    CapsuleWinConfig {
+fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows: u16) -> CapsuleConfig {
+    CapsuleConfig {
         voyage_root: dir.join(name),
         voyage_id: name.to_string(),
         retention: RetentionClass::Discard,
@@ -64,203 +87,8 @@ fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows:
         // transaction would (see `rollout::RolloutEvidence`'s own doc).
         rollout_evidence: sot_log::rollout::RolloutEvidence::NoRollbackTarget,
         // No supervisor in this harness -- see
-        // `CapsuleWinConfig::parent_lease_name`'s own doc.
-        parent_lease_name: None,
-    }
-}
-
-/// A `Transport` with no connections at all — for every test that only
-/// needs `run` to work with the wire lane sitting idle (nothing in
-/// `transport_events`, nothing ever calls `send`/`close`).
-struct NoopTransport;
-impl Transport for NoopTransport {
-    fn bind(&mut self, _voyage_id: &str) -> sot_log::Result<()> {
-        Ok(())
-    }
-    fn try_recv_event(&mut self) -> Option<TransportEvent> {
-        None
-    }
-    fn send(&mut self, _conn: ConnId, _bytes: Vec<u8>) -> u64 {
-        0
-    }
-    fn close(&mut self, _conn: ConnId) {}
-    fn shutdown_all(&mut self, _deadline: Instant) -> bool {
-        true
-    }
-}
-
-/// A `NoopTransport` in one call, for the common "just run it, the wire
-/// lane is irrelevant to this test" case.
-fn no_transport() -> NoopTransport {
-    NoopTransport
-}
-
-/// A synthetic transport driving the SAME `TransportEvent`/`Transport` seam
-/// U3's real named pipe will (ADR 0041 step 5). `send` reports its
-/// completion back through the event channel immediately by default — an
-/// ordinary channel send picked up on the loop's next poll, not a
-/// same-stack callback into it (`Transport::send`'s own doc) — except while
-/// `hold` is set, when completions queue in `held` for the test to release
-/// on its own schedule (needed to prove send-before-teardown ordering).
-///
-/// Transport contract (finding 3): both `sent`/`held` are plain per-
-/// connection FIFO queues — `send` always appends, `release_held` always
-/// drains front-to-back — because U3's real named pipe delivers everything
-/// written to one connection in write order with no reordering. Any test
-/// that depends on ordering (a checkpoint transfer followed by queued
-/// post-watermark output, in particular) relies on that guarantee holding
-/// here exactly as it holds for the real transport.
-#[derive(Clone)]
-struct TestTransport {
-    events_tx: mpsc::Sender<TransportEvent>,
-    events_rx: Arc<Mutex<mpsc::Receiver<TransportEvent>>>,
-    inner: Arc<Mutex<TestInner>>,
-}
-
-#[derive(Default)]
-struct TestInner {
-    next_id: u64,
-    sent: Vec<(ConnId, Vec<u8>)>,
-    /// Connections whose sends currently queue in `held` instead of
-    /// completing immediately -- per-connection, so holding one watcher's
-    /// output does not also starve an unrelated driver's own replies.
-    hold_for: std::collections::HashSet<ConnId>,
-    held: Vec<(ConnId, u64)>,
-    closed: Vec<ConnId>,
-    /// U1a Codex round-1, minor cluster: a COUNT, not a bool -- proves
-    /// `run`'s explicit call (once the ack grace resolves) AND
-    /// `ShutdownGuard::drop`'s own unconditional call both actually
-    /// happen, rather than merely "at least once".
-    shutdown_all_call_count: u32,
-    /// Codex round-1 Blocker 3 discharge: when set, `shutdown_all`
-    /// reports EXPIRY (`false`) instead of success -- simulates a real
-    /// transport's own aggregate join failing, so `capsule_win::run`'s
-    /// "expiry is terminal" contract is testable without needing to
-    /// genuinely wedge a real OS thread.
-    force_shutdown_expiry: bool,
-}
-
-impl TestTransport {
-    fn new() -> Self {
-        let (tx, rx) = mpsc::channel();
-        Self {
-            events_tx: tx,
-            events_rx: Arc::new(Mutex::new(rx)),
-            inner: Arc::new(Mutex::new(TestInner::default())),
-        }
-    }
-    fn open(&self, conn: ConnId) {
-        let _ = self.events_tx.send(TransportEvent::ConnectionOpened(conn));
-    }
-    fn feed(&self, conn: ConnId, bytes: Vec<u8>) {
-        let _ = self.events_tx.send(TransportEvent::Bytes(conn, bytes));
-    }
-    #[allow(dead_code)] // exercised by tests that simulate a peer-initiated EOF
-    fn close_conn(&self, conn: ConnId) {
-        let _ = self.events_tx.send(TransportEvent::ConnectionClosed(conn));
-    }
-    fn set_hold_for(&self, conn: ConnId, on: bool) {
-        let mut inner = self.inner.lock().unwrap();
-        if on {
-            inner.hold_for.insert(conn);
-        } else {
-            inner.hold_for.remove(&conn);
-        }
-    }
-    /// Releases every send that queued while held, for every connection, in
-    /// order.
-    fn release_held(&self) {
-        let held = std::mem::take(&mut self.inner.lock().unwrap().held);
-        for (conn, id) in held {
-            let _ = self.events_tx.send(TransportEvent::Sent(conn, id));
-        }
-    }
-    fn sent_frames(&self) -> Vec<(ConnId, Vec<u8>)> {
-        self.inner.lock().unwrap().sent.clone()
-    }
-    /// PR #139 discharge round (second CI failure, `slow_watcher_overflow_
-    /// closes_while_driver_stays_live`): once the driver is correctly
-    /// exempt from the per-watcher queue-overflow eviction (the fix for
-    /// the FIRST failure), it stays subscribed for the entire flood
-    /// instead of being evicted early alongside the watcher, so `sent`
-    /// grows to the flood's full size (here, several MiB across dozens of
-    /// entries). `FrameWatcher::wait_for` polls every 10ms; cloning the
-    /// WHOLE vector on every single poll -- most of which is already-seen
-    /// history the caller is about to skip via its own cursor -- turns an
-    /// O(1)-per-poll wait into an O(total accumulated bytes)-per-poll one,
-    /// for every poll across the whole wait. Slicing from `start` (the
-    /// caller's own cursor) makes each poll's cost track only what is
-    /// actually NEW since the last one, which is what made the driver's
-    /// post-flood `resize` reply wait (the exact one that timed out in CI)
-    /// newly expensive purely as a side effect of the driver eviction fix
-    /// being correct -- a WIRING/harness bug, not an `AttachProto` one
-    /// (confirmed by `attach_proto::tests::
-    /// replay_slow_watcher_flood_the_driver_still_answers_a_resize`, which
-    /// replays the identical sequence at the state-machine level with no
-    /// wall-clock cost and proves the machine's own action stream is
-    /// already correct).
-    fn sent_frames_from(&self, start: usize) -> Vec<(ConnId, Vec<u8>)> {
-        let inner = self.inner.lock().unwrap();
-        if start >= inner.sent.len() {
-            Vec::new()
-        } else {
-            inner.sent[start..].to_vec()
-        }
-    }
-    fn closed_conns(&self) -> Vec<ConnId> {
-        self.inner.lock().unwrap().closed.clone()
-    }
-    fn shutdown_all_was_called(&self) -> bool {
-        self.inner.lock().unwrap().shutdown_all_call_count > 0
-    }
-    /// U1a Codex round-1, minor cluster: the exact call count, so a test
-    /// can prove BOTH the explicit ack-grace call and `ShutdownGuard::
-    /// drop`'s own later call happened (`== 2`), not merely that
-    /// `shutdown_all` ran at least once.
-    fn shutdown_all_call_count(&self) -> u32 {
-        self.inner.lock().unwrap().shutdown_all_call_count
-    }
-    /// Codex round-1 Blocker 3 discharge: make every future `shutdown_all`
-    /// call on this transport report expiry (`false`), simulating a real
-    /// transport whose own aggregate join could not prove every worker
-    /// stopped in time.
-    fn force_shutdown_expiry(&self) {
-        self.inner.lock().unwrap().force_shutdown_expiry = true;
-    }
-}
-
-impl Transport for TestTransport {
-    fn bind(&mut self, _voyage_id: &str) -> sot_log::Result<()> {
-        // The synthetic transport under test here has nothing to bind --
-        // `open`/`feed`/`close_conn` already drive its event channel
-        // directly, standing in for what a real `PipeTransport::bind`
-        // would have wired up.
-        Ok(())
-    }
-    fn try_recv_event(&mut self) -> Option<TransportEvent> {
-        self.events_rx.lock().unwrap().try_recv().ok()
-    }
-    fn send(&mut self, conn: ConnId, bytes: Vec<u8>) -> u64 {
-        let mut inner = self.inner.lock().unwrap();
-        inner.next_id += 1;
-        let id = inner.next_id;
-        inner.sent.push((conn, bytes));
-        if inner.hold_for.contains(&conn) {
-            inner.held.push((conn, id));
-            id
-        } else {
-            drop(inner);
-            let _ = self.events_tx.send(TransportEvent::Sent(conn, id));
-            id
-        }
-    }
-    fn close(&mut self, conn: ConnId) {
-        self.inner.lock().unwrap().closed.push(conn);
-    }
-    fn shutdown_all(&mut self, _deadline: Instant) -> bool {
-        let mut inner = self.inner.lock().unwrap();
-        inner.shutdown_all_call_count += 1;
-        !inner.force_shutdown_expiry
+        // `CapsuleConfig::parent_lease`'s own doc.
+        parent_lease: None,
     }
 }
 
@@ -505,14 +333,14 @@ fn e2e_records_and_verifies() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let marker = "SOT_CAPSULE_WIN_E2E_9f31";
-    let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), format!("echo {marker}")];
+    let argv = vec![SHELL_ARGV.to_string(), "/d".to_string(), "/c".to_string(), format!("echo {marker}")];
     let cfg = config(dir.path(), "e2e1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
     let mut transport = no_transport();
-    let summary = capsule_win::run(cfg, rx, &mut transport).unwrap();
+    let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
-    assert_eq!(summary.exit_code, Some(0));
+    assert_eq!(summary.exit_code, Some(ExitStatus::Code(0)));
     assert_eq!(summary.segments_sealed, 1);
     verify_voyage(&root, "e2e1").unwrap();
 
@@ -567,42 +395,18 @@ fn e2e_records_and_verifies() {
     }
 }
 
-/// Test 2: spawn failure (a nonexistent executable) is compensated, not
-/// escaped unsealed (the Linux capsule's own known gap, deliberately not
-/// inherited here), and `producer_dead` is still the last frame recorded.
-#[test]
-fn spawn_failure_is_compensated() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["Z:\\sot_capsule_win_test_no_such_exe_9f31.exe".to_string()];
-    let cfg = config(dir.path(), "fail1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
-    let (_tx, rx) = mpsc::channel();
-    let mut transport = no_transport();
-    let summary = capsule_win::run(cfg, rx, &mut transport).unwrap();
-    assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
-    assert_eq!(summary.exit_code, None);
-    assert_eq!(summary.segments_sealed, 1);
-    verify_voyage(&root, "fail1").unwrap();
-
-    let frames = sealed_frames(&root, "fail1");
-    let dead = assert_producer_dead_is_last(&frames);
-    assert_eq!(dead["spawn_failed"], true);
-    assert!(dead["exit_code"].is_null());
-}
-
 /// Test 2b: an out-of-budget INITIAL geometry is treated the same way —
 /// "Initial geometry is validated by the same rule" a resize is (ADR 0041).
 #[test]
 fn spawn_failure_from_out_of_budget_initial_geometry() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
+    let argv = vec![SHELL_ARGV.to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
     let cfg = config(dir.path(), "fail2", argv, 1, 25); // cols=1 < the 2-column floor
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
     let mut transport = no_transport();
-    let summary = capsule_win::run(cfg, rx, &mut transport).unwrap();
+    let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
     verify_voyage(&root, "fail2").unwrap();
     let frames = sealed_frames(&root, "fail2");
@@ -620,7 +424,7 @@ fn spawn_failure_from_out_of_budget_initial_geometry() {
 fn refuses_when_the_installed_rollback_target_cannot_read_the_marker() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
+    let argv = vec![SHELL_ARGV.to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
     let mut cfg = config(dir.path(), "rolloutgate1", argv, 80, 25);
     cfg.rollout_evidence = sot_log::rollout::RolloutEvidence::Installed {
         release: "0.5.9".to_string(),
@@ -629,7 +433,7 @@ fn refuses_when_the_installed_rollback_target_cannot_read_the_marker() {
     };
     let (_tx, rx) = mpsc::channel();
     let mut transport = no_transport();
-    let err = capsule_win::run(cfg, rx, &mut transport).unwrap_err();
+    let err = capsule::run::<P>(cfg, rx, &mut transport).unwrap_err();
     assert!(format!("{err}").contains("cannot decode"), "got: {err}");
 }
 
@@ -640,13 +444,13 @@ fn refuses_when_the_installed_rollback_target_cannot_read_the_marker() {
 fn requested_kill_tears_down_and_seals() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string()]; // bare interactive shell — stays open until killed
+    let argv = vec![SHELL_ARGV.to_string()]; // bare interactive shell — stays open until killed
     let cfg = config(dir.path(), "kill1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
         let mut transport = no_transport();
-        capsule_win::run(cfg, rx, &mut transport)
+        capsule::run::<P>(cfg, rx, &mut transport)
     });
     std::thread::sleep(Duration::from_millis(500));
     tx.send(Command::Kill).unwrap();
@@ -654,13 +458,1012 @@ fn requested_kill_tears_down_and_seals() {
         .expect("run did not return within the teardown bound")
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
-    assert!(summary.exit_code.is_some());
+    let ExitStatus::Code(code) = summary.exit_code.expect("a real exit code") else {
+        panic!("expected Code on Windows, got {:?}", summary.exit_code);
+    };
     verify_voyage(&root, "kill1").unwrap();
 
     let frames = sealed_frames(&root, "kill1");
     let dead = assert_producer_dead_is_last(&frames);
-    assert_eq!(dead["exit_code"], summary.exit_code.unwrap());
+    assert_eq!(dead["exit_code"], code);
 }
+
+// ---------------------------------------------------------------------
+// ADR 0041 step 5 (U2): the pipe protocol.
+// ---------------------------------------------------------------------
+
+/// ADR 0041 "attach proto v2 bound to checkpoint v2" (Codex round on
+/// #194, finding 1): a connection that negotiates attach proto v1 -- an
+/// OLD client's own default, predating the scrollback ring -- must get a
+/// checkpoint format v1 payload: no scrollback ring, even though the
+/// capsule's own live parser keeps one (`CAPSULE_SCROLLBACK_ROWS`).
+/// Proves the version-gated encode path in `capsule::run`'s
+/// `BeginCheckpoint` handling, independent of the ring-arrival test above
+/// (which hellos at v2, the modern client's own default).
+#[test]
+fn hello_v1_gets_a_checkpoint_with_no_scrollback_ring() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let helper = HELPER_EXE.to_string();
+    let argv = vec![
+        helper,
+        "--script".to_string(),
+        "50".to_string(),
+        "--linger".to_string(),
+    ];
+    let (rows, cols) = (4u16, 20u16);
+    let cfg = config(dir.path(), "hellov1", argv, cols, rows);
+    let root = cfg.voyage_root.clone();
+    let transport = TestTransport::new();
+    let (tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule::run::<P>(cfg, rx, &mut t)
+    });
+
+    // Enough real elapsed time that a v2 hello would find a nonempty
+    // ring here too -- proving this test's negative result is the
+    // version gate, not merely an empty ring to begin with (same pacing
+    // rationale as the ring-arrival test above: `SCRIPT_BLOCK` writes
+    // one line roughly every 59 ms).
+    std::thread::sleep(Duration::from_millis(4000));
+
+    const CONN: ConnId = 1;
+    transport.open(CONN);
+    transport.feed(CONN, frame::hello_at(wire::ATTACH_PROTO_V1));
+    let mut watcher = FrameWatcher::new(&transport);
+    let negotiated = watcher.wait_for("v1 hello_ok", CONN, Duration::from_secs(10), |f| {
+        if let wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { proto }) = f {
+            Some(*proto)
+        } else {
+            None
+        }
+    });
+    assert_eq!(
+        negotiated,
+        wire::ATTACH_PROTO_V1,
+        "the capsule must echo back exactly the negotiated version"
+    );
+
+    transport.feed(CONN, frame::attach("watcher"));
+    let checkpoint_bytes =
+        watcher.collect_checkpoint("v1 checkpoint", CONN, Duration::from_secs(10));
+
+    tx.send(Command::Kill).unwrap();
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return within the teardown bound")
+        .unwrap();
+    verify_voyage(&root, "hellov1").unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+
+    let mut restored = vt100_ctt::Parser::new(rows, cols, 100);
+    restored
+        .restore_screen(&checkpoint_bytes)
+        .expect("a v1 checkpoint must decode");
+    restored.screen_mut().set_scrollback(usize::MAX);
+    assert_eq!(
+        restored.screen().scrollback(),
+        0,
+        "a v1-negotiated connection must receive a checkpoint with no ring"
+    );
+}
+
+/// Test 8: the wire input WAL folds every legal `idem_key` chain exactly,
+/// including a stale refusal (a demoted connection's replay) and a
+/// duplicate `idem_key` answered deterministically WITHOUT appending any
+/// new frame — and the SAME determinism holds across a capsule restart
+/// (reopen the voyage; the dedupe index is rebuilt from the retained
+/// segments, not started empty — ADR 0041 decision 5's whole point).
+#[test]
+fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_restart() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let name = "inputwal1";
+    let root = dir.path().join(name);
+    let k1 = [0x11u8; 16];
+    let k2 = [0x22u8; 16];
+
+    // --- Incarnation 1 -------------------------------------------------
+    {
+        let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
+        let cfg = config(dir.path(), name, argv, 80, 25);
+        let transport = TestTransport::new();
+        let (tx, rx) = mpsc::channel();
+        let run_transport = transport.clone();
+        let handle = std::thread::spawn(move || {
+            let mut t = run_transport;
+            capsule::run::<P>(cfg, rx, &mut t)
+        });
+
+        // conn A attaches and takes -- the first driver ever, a pipe take.
+        const A: ConnId = 1;
+        transport.open(A);
+        transport.feed(A, frame::hello());
+        let mut watcher = FrameWatcher::new(&transport);
+        watcher.wait_for("A hello_ok", A, Duration::from_secs(10), |f| {
+            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+        });
+        transport.feed(A, frame::attach("alice"));
+        watcher.collect_checkpoint("A checkpoint", A, Duration::from_secs(10));
+        transport.feed(A, frame::take("alice"));
+        let epoch = watcher.wait_for("A take_ok", A, Duration::from_secs(10), |f| match f {
+            wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => Some(*take_epoch),
+            _ => None,
+        });
+
+        // K1: fresh input while authorized -- recorded.
+        transport.feed(A, frame::input("alice", epoch, k1, b"echo one\r\n"));
+        let outcome1 = watcher.wait_for("A input K1 fresh outcome", A, Duration::from_secs(10), |f| match f {
+            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
+            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
+            _ => None,
+        });
+        assert!(outcome1, "expected the fresh K1 input to be recorded");
+
+        // K1 AGAIN, same idem_key: chain is already {input,intent,forwarded}
+        // -- must replay the SAME recorded outcome, appending nothing new
+        // (checked after this incarnation seals, via the sealed frame count
+        // for K1's idem_key, below).
+        transport.feed(A, frame::input("alice", epoch, k1, b"echo one\r\n"));
+        let outcome1_replay = watcher.wait_for("A input K1 replay outcome", A, Duration::from_secs(10), |f| match f {
+            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
+            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
+            _ => None,
+        });
+        assert!(outcome1_replay, "duplicate K1 must replay input_recorded");
+
+        // conn B attaches and takes, demoting A.
+        const B: ConnId = 2;
+        transport.open(B);
+        transport.feed(B, frame::hello());
+        watcher.wait_for("B hello_ok", B, Duration::from_secs(10), |f| {
+            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+        });
+        transport.feed(B, frame::attach("bob"));
+        watcher.collect_checkpoint("B checkpoint", B, Duration::from_secs(10));
+        transport.feed(B, frame::take("bob"));
+        watcher.wait_for("B take_ok", B, Duration::from_secs(10), |f| {
+            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { .. })).then_some(())
+        });
+
+        // A tries a NEW key (K2) with its now-stale claim: demoted, so this
+        // is refused -- folded into the SAME "stale" wire reply the ADR
+        // defines for a durable epoch mismatch (a demoted connection is
+        // indistinguishable from one on the wire).
+        transport.feed(A, frame::input("alice", epoch, k2, b"echo two\r\n"));
+        let outcome2 = watcher.wait_for("A input K2 stale outcome", A, Duration::from_secs(10), |f| match f {
+            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
+            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
+            _ => None,
+        });
+        assert!(!outcome2, "a demoted connection's input must be refused stale");
+
+        tx.send(Command::Kill).unwrap();
+        wait_for_join(handle, Duration::from_secs(30))
+            .expect("run did not return within the teardown bound")
+            .unwrap();
+        verify_voyage(&root, name).unwrap();
+    }
+
+    let frames = sealed_frames(&root, name);
+    let input_frames_for = |key: [u8; 16]| -> Vec<&Envelope> {
+        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        frames
+            .iter()
+            .filter(|f| f.class == Class::Input && f.payload.as_ref().unwrap()["idem_key"] == hex)
+            .collect()
+    };
+    assert_eq!(input_frames_for(k1).len(), 1, "K1's retry must not append a second `input` frame");
+    let k2_facts: Vec<&Envelope> = frames
+        .iter()
+        .filter(|f| {
+            f.class == Class::Lifecycle
+                && f.payload.as_ref().unwrap()["kind"] == "input_fact"
+                && f.payload.as_ref().unwrap()["fact"]["fact"] == "refused_stale_epoch"
+        })
+        .collect();
+    assert_eq!(k2_facts.len(), 1, "K2 must have exactly one refused_stale_epoch fact");
+
+    // --- Incarnation 2 (a "successor capsule") --------------------------
+    {
+        let argv = vec![SHELL_ARGV.to_string()];
+        let cfg = config(dir.path(), name, argv, 80, 25);
+        let transport = TestTransport::new();
+        let (tx, rx) = mpsc::channel();
+        let run_transport = transport.clone();
+        let handle = std::thread::spawn(move || {
+            let mut t = run_transport;
+            capsule::run::<P>(cfg, rx, &mut t)
+        });
+
+        const C: ConnId = 1;
+        transport.open(C);
+        transport.feed(C, frame::hello());
+        let mut watcher = FrameWatcher::new(&transport);
+        watcher.wait_for("C hello_ok", C, Duration::from_secs(10), |f| {
+            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+        });
+        transport.feed(C, frame::attach("carol"));
+        watcher.collect_checkpoint("C checkpoint", C, Duration::from_secs(10));
+        transport.feed(C, frame::take("carol"));
+        let epoch2 = watcher.wait_for("C take_ok", C, Duration::from_secs(10), |f| match f {
+            wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => Some(*take_epoch),
+            _ => None,
+        });
+
+        // K1 again, from a BRAND NEW capsule incarnation, a brand new
+        // connection, and a brand new controller identity: the dedupe
+        // index was rebuilt from the RETAINED voyage at open, so this must
+        // still replay deterministically -- exactly decision 5's point ("a
+        // successor capsule starting with an empty index would let a
+        // pre-crash forwarded key re-forward").
+        transport.feed(C, frame::input("carol", epoch2, k1, b"echo one\r\n"));
+        let replay_after_restart = watcher.wait_for("C input K1 replay-after-restart outcome", C, Duration::from_secs(10), |f| match f {
+            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
+            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
+            _ => None,
+        });
+        assert!(replay_after_restart, "K1 must still replay input_recorded after a capsule restart");
+
+        tx.send(Command::Kill).unwrap();
+        wait_for_join(handle, Duration::from_secs(30))
+            .expect("run did not return within the teardown bound")
+            .unwrap();
+        verify_voyage(&root, name).unwrap();
+    }
+
+    // K1 must STILL have exactly one `input` frame across BOTH incarnations
+    // -- the restart never re-forwarded it.
+    let frames = sealed_frames(&root, name);
+    let input_frames_for = |key: [u8; 16]| -> Vec<Envelope> {
+        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        frames
+            .iter()
+            .filter(|f| f.class == Class::Input && f.payload.as_ref().unwrap()["idem_key"] == hex)
+            .cloned()
+            .collect()
+    };
+    assert_eq!(input_frames_for(k1).len(), 1, "K1 must never gain a second `input` frame across a restart");
+}
+
+/// Test 9: a slow (never-draining) watcher's queued live-output bytes
+/// overflow the 4 MiB per-subscriber budget and it is closed -- no wire
+/// frame exists for that eviction, by design -- while the DRIVER, a
+/// separate connection under the SAME flood, stays live and fully
+/// functional throughout.
+#[test]
+fn slow_watcher_overflow_closes_while_driver_stays_live() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let helper = HELPER_EXE.to_string();
+    let total: usize = 6 * 1024 * 1024; // > the 4 MiB per-watcher budget
+    // --linger: the producer must OUTLIVE the post-eviction assertions.
+    // Without it, the flood's completion races the eviction wait: the
+    // producer can exit first, the run enters teardown, and the resize
+    // below is then (correctly) not served — observed as a deterministic
+    // 10 s timeout on the real windows legs while every protocol-level
+    // replay of this sequence passed.
+    let argv = vec![helper, "--flood".to_string(), total.to_string(), "--linger".to_string()];
+    let cfg = config(dir.path(), "slowwatcher1", argv, 80, 25);
+    let root = cfg.voyage_root.clone();
+    let transport = TestTransport::new();
+    let (tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule::run::<P>(cfg, rx, &mut t)
+    });
+
+    const DRIVER: ConnId = 1;
+    const WATCHER: ConnId = 2;
+    let mut watcher = FrameWatcher::new(&transport);
+
+    transport.open(DRIVER);
+    transport.feed(DRIVER, frame::hello());
+    watcher.wait_for("driver hello_ok", DRIVER, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+    });
+    transport.feed(DRIVER, frame::attach("driver"));
+    watcher.collect_checkpoint("driver checkpoint", DRIVER, Duration::from_secs(10));
+    transport.feed(DRIVER, frame::take("driver"));
+    watcher.wait_for("driver take_ok", DRIVER, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { .. })).then_some(())
+    });
+
+    transport.open(WATCHER);
+    transport.feed(WATCHER, frame::hello());
+    watcher.wait_for("watcher hello_ok", WATCHER, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+    });
+    transport.feed(WATCHER, frame::attach("watcher"));
+    watcher.collect_checkpoint("watcher checkpoint", WATCHER, Duration::from_secs(10));
+    // Never drains from here on: every future send to WATCHER queues
+    // forever, simulating a client that stopped reading its pipe.
+    transport.set_hold_for(WATCHER, true);
+
+    // Bounded poll for the watcher's own close -- the flood alone drives
+    // this; no fixed sleep assumes when the budget actually trips.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if transport.closed_conns().contains(&WATCHER) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "watcher was never closed under a 6 MiB flood");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!transport.closed_conns().contains(&DRIVER), "the driver must stay live");
+
+    // The driver is still fully functional: a resize still completes.
+    transport.feed(DRIVER, frame::resize(100, 40));
+    let resize_ok = watcher.wait_for("driver post-eviction resize outcome", DRIVER, Duration::from_secs(10), |f| match f {
+        wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeOk) => Some(true),
+        wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeRefused { .. }) => Some(false),
+        _ => None,
+    });
+    assert!(resize_ok, "the driver must still be able to resize after the watcher's eviction");
+
+    // The lingering producer is ended BY REQUEST — which is also the
+    // honest exit_kind for this scenario.
+    tx.send(Command::Kill).unwrap();
+    let summary = wait_for_join(handle, Duration::from_secs(60))
+        .expect("run did not return within the local deadline")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+    verify_voyage(&root, "slowwatcher1").unwrap();
+}
+
+/// Test 10: a refused `hello` (unsupported proto) closes only that
+/// connection -- mgmt stays available (a fresh mgmt connection, per the
+/// ADR: "the ADR's 'mgmt remains available' is satisfied by a fresh mgmt
+/// connection"), and a LATER, protocol-compatible attach on a separate
+/// connection still succeeds normally.
+#[test]
+fn hello_refusal_leaves_mgmt_and_later_attach_working() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec![SHELL_ARGV.to_string()];
+    let cfg = config(dir.path(), "hellorefuse1", argv, 80, 25);
+    let transport = TestTransport::new();
+    let (tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule::run::<P>(cfg, rx, &mut t)
+    });
+    let mut watcher = FrameWatcher::new(&transport);
+
+    const MGMT: ConnId = 1;
+    const BAD_HELLO: ConnId = 2;
+    const GOOD: ConnId = 3;
+
+    transport.open(MGMT);
+    transport.feed(MGMT, frame::mgmt_probe());
+    watcher.wait_for("mgmt probe_ok (initial)", MGMT, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ProbeOk)).then_some(())
+    });
+
+    transport.open(BAD_HELLO);
+    transport.feed(
+        BAD_HELLO,
+        wire::encode_attach_client(&wire::AttachClient::Hello { proto: 999 }).unwrap(),
+    );
+    watcher.wait_for("bad_hello hello_refused", BAD_HELLO, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloRefused { .. })).then_some(())
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if transport.closed_conns().contains(&BAD_HELLO) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the refused hello connection was never closed");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // Mgmt still works on its own connection -- probe AND status, the
+    // latter carrying this process's own pid/creation-time/survival.
+    transport.feed(MGMT, frame::mgmt_probe());
+    watcher.wait_for("mgmt probe_ok (after bad hello)", MGMT, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ProbeOk)).then_some(())
+    });
+    transport.feed(MGMT, frame::mgmt_status());
+    let (pid, survival) = watcher.wait_for("mgmt status_ok", MGMT, Duration::from_secs(10), |f| match f {
+        wire::DecodedFrame::MgmtReply(wire::MgmtReply::StatusOk { pid, survival, .. }) => Some((*pid, *survival)),
+        _ => None,
+    });
+    assert_eq!(pid, std::process::id(), "status.pid must be the capsule's OWN process id");
+    assert_eq!(survival, wire::Survival::Normal);
+
+    // A fresh, compatible attach still succeeds.
+    transport.open(GOOD);
+    transport.feed(GOOD, frame::hello());
+    watcher.wait_for("good hello_ok", GOOD, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+    });
+    transport.feed(GOOD, frame::attach("late"));
+    watcher.collect_checkpoint("good checkpoint", GOOD, Duration::from_secs(10));
+
+    tx.send(Command::Kill).unwrap();
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return within the teardown bound")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+}
+
+/// Test 11 (REWRITTEN, Codex round-1 Blocker 1 discharge): the durable
+/// MARKER — not the ack — drives teardown. "Ack completion only
+/// ACCELERATES teardown" (ADR 0041 EndRun step 2): a stalled ack, a
+/// client that stops reading, a progress-deadline close, or a lost
+/// connection cannot unlatch it. Proven by holding the `shutdown_ok`
+/// ack's physical-send completion and NEVER RELEASING IT — confirming
+/// the marker is already durable on the still-open leg while the ack is
+/// held, then confirming `run` still completes and seals within a
+/// bounded time regardless (the ack-grace window still expires
+/// normally, exactly as `shutdown_ack_grace_expires_and_teardown_still_
+/// completes` proves for a Kill-driven teardown; this is the SAME
+/// mechanism with the wire request itself as the ONLY driver, no
+/// separate cause). The reason string still lands in `producer_dead`'s
+/// detail — recorded from the marker's own commit (see
+/// `commit_run_end_marker`'s call sites), never from the ack's
+/// completion, which here never happens at all.
+///
+/// The ORIGINAL version of this test asserted the opposite
+/// (`!handle.is_finished()` while the ack was held, released later) —
+/// that encoded the design Blocker 1 identifies as wrong: a stalled ack
+/// must never be able to leave a durable marker coexisting with a shell
+/// running on.
+#[test]
+fn teardown_completes_even_when_the_shutdown_ack_is_never_delivered() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec![SHELL_ARGV.to_string()]; // stays open until EndRun
+    let cfg = config(dir.path(), "neverack1", argv, 80, 25);
+    let root = cfg.voyage_root.clone();
+    let transport = TestTransport::new();
+    let (_tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule::run::<P>(cfg, rx, &mut t)
+    });
+
+    const MGMT: ConnId = 1;
+    transport.open(MGMT);
+    transport.set_hold_for(MGMT, true); // held FOREVER -- never released below
+    transport.feed(MGMT, frame::mgmt_shutdown("never-delivered-ack"));
+
+    // The ack's bytes are constructed and queued...
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("mgmt shutdown_ok queued", MGMT, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+
+    // ...and the marker is ALREADY durable on the still-open leg, even
+    // though that ack's physical completion will NEVER be reported.
+    let seg_dir = root.join("seg");
+    let marker_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if leg_carries_run_end_marker(&seg_dir, "neverack1", 1).unwrap_or(false) {
+            break;
+        }
+        assert!(Instant::now() < marker_deadline, "marker never became visible on the still-open leg");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // `transport.release_held()` is deliberately NEVER called -- the
+    // whole point is that teardown does not need it.
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect(
+            "run did not complete even though the durable marker should drive teardown \
+             regardless of the never-delivered ack",
+        )
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+    verify_voyage(&root, "neverack1").unwrap();
+    assert!(leg_carries_run_end_marker(&seg_dir, "neverack1", 1).unwrap());
+
+    let frames = sealed_frames(&root, "neverack1");
+    let dead = assert_producer_dead_is_last(&frames);
+    assert_eq!(dead["reason"], "never-delivered-ack");
+}
+
+/// ADR 0041 step 6 U1b, acceptance matrix "the marker is the acceptance
+/// barrier": the marker is durable on the STILL-OPEN leg (before `run`
+/// has sealed anything) essentially as soon as the request is processed
+/// — and, distinctly from `teardown_completes_even_when_the_shutdown_
+/// ack_is_never_delivered` above (which proves teardown does NOT need
+/// the ack), this test proves the ack is still a working COURTESY when
+/// nothing prevents it: released promptly, its bytes still show up as a
+/// well-formed `ShutdownOk` reply on the same connection. "Ack completion
+/// only accelerates teardown" cuts both ways — it must never be
+/// REQUIRED, but it must still WORK.
+#[test]
+fn marker_is_durable_before_the_ack_completes_and_the_ack_still_works() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec![SHELL_ARGV.to_string()]; // stays open until EndRun
+    let cfg = config(dir.path(), "markerstall1", argv, 80, 25);
+    let root = cfg.voyage_root.clone();
+    let transport = TestTransport::new();
+    let (_tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule::run::<P>(cfg, rx, &mut t)
+    });
+
+    const MGMT: ConnId = 1;
+    transport.open(MGMT);
+    transport.set_hold_for(MGMT, true); // held BEFORE the request that matters
+    transport.feed(MGMT, frame::mgmt_shutdown("marker-before-ack"));
+
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("mgmt shutdown_ok queued", MGMT, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+
+    // The ack is QUEUED but its physical-write completion is HELD -- the
+    // marker must already be durable regardless. Nothing is sealed yet
+    // (teardown may already be under way), so poll the STILL-OPEN leg
+    // directly.
+    let seg_dir = root.join("seg");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if leg_carries_run_end_marker(&seg_dir, "markerstall1", 1).unwrap_or(false) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "marker never became visible on the still-open leg");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    transport.release_held();
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return after the ack was released")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+    verify_voyage(&root, "markerstall1").unwrap();
+    assert!(leg_carries_run_end_marker(&seg_dir, "markerstall1", 1).unwrap());
+    // The courtesy still worked: the EARLIER `wait_for` already decoded a
+    // well-formed `ShutdownOk` reply queued for this connection, and
+    // `release_held` + the successful `wait_for_join` above prove its
+    // physical-send completion was processed normally through teardown --
+    // the ack is not required, but it is not broken either.
+}
+
+/// ADR 0041 step 6 U1b, acceptance matrix "the marker is the acceptance
+/// barrier", step 4: two concurrent callers get ONE marker and TWO acks.
+/// Real concurrency at the wire level (two mgmt connections, both
+/// requesting before either's ack physically completes) — the end-to-end
+/// proof that the WIRING (`attach_proto`'s `Action::RunEndRequested`
+/// ordering, `execute_actions!`'s dispatch) actually delivers the
+/// guarantee `commit_run_end_marker`'s own unit tests already prove in
+/// isolation against the pure function.
+#[test]
+fn two_concurrent_shutdown_requests_write_one_marker_and_ack_both() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec![SHELL_ARGV.to_string()];
+    let cfg = config(dir.path(), "concurrentshutdown1", argv, 80, 25);
+    let root = cfg.voyage_root.clone();
+    let transport = TestTransport::new();
+    let (_tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule::run::<P>(cfg, rx, &mut t)
+    });
+
+    const MGMT_A: ConnId = 1;
+    const MGMT_B: ConnId = 2;
+    transport.open(MGMT_A);
+    transport.open(MGMT_B);
+    // Hold BOTH acks until both requests are already queued -- a genuine
+    // race between the two callers, not two sequential round trips.
+    transport.set_hold_for(MGMT_A, true);
+    transport.set_hold_for(MGMT_B, true);
+    transport.feed(MGMT_A, frame::mgmt_shutdown("caller-a"));
+    transport.feed(MGMT_B, frame::mgmt_shutdown("caller-b"));
+
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("A shutdown_ok queued", MGMT_A, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+    watcher.wait_for("B shutdown_ok queued", MGMT_B, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+
+    transport.release_held();
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return after both acks were released")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+    verify_voyage(&root, "concurrentshutdown1").unwrap();
+
+    let frames = sealed_frames(&root, "concurrentshutdown1");
+    let marker_count = frames
+        .iter()
+        .filter(|f| {
+            f.class == Class::Lifecycle
+                && f.payload.as_ref().and_then(|p| p.get("kind")).and_then(|k| k.as_str())
+                    == Some("run_end_requested")
+        })
+        .count();
+    assert_eq!(marker_count, 1, "two concurrent callers must write exactly one marker");
+}
+
+/// Test 12 (finding 7, Codex review rework): `Transport::shutdown_all` is
+/// actually invoked before `run` returns, on every exit path -- the one
+/// piece of the teardown rework that is new wiring, not a restatement of
+/// something the pure-logic `AttachProto` tests already cover. The reduced
+/// legal action set teardown enforces (mgmt served, producer-bound
+/// admission revoked, no lockstep leak from an ignored request) is proven
+/// exhaustively and race-free at that level already
+/// (`attach_proto::teardown_ignores_producer_bound_requests_but_not_mgmt_or_attach`)
+/// — reproving it here against a real ConPTY would only buy a race between
+/// the test thread's writes and whichever loop iteration observes them
+/// first, without adding coverage `execute_teardown_actions!`'s own
+/// `unreachable!` arms don't already give at compile time.
+///
+/// U1a Codex round-1, minor cluster: asserts the exact count (2), not
+/// merely "at least once" -- `run` now calls `shutdown_all` explicitly
+/// once the (zero-iteration, on these paths) ack grace resolves, AND
+/// `ShutdownGuard::drop` calls it again unconditionally afterward. Proving
+/// the count is exactly 2 is what actually exercises `Transport::
+/// shutdown_all`'s documented idempotent contract, rather than merely
+/// trusting it.
+#[test]
+fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+
+    // Path 1: a natural producer exit.
+    {
+        let argv = vec![SHELL_ARGV.to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
+        let cfg = config(dir.path(), "shutdownall1", argv, 80, 25);
+        let transport = TestTransport::new();
+        let (_tx, rx) = mpsc::channel();
+        let mut run_transport = transport.clone();
+        let summary = capsule::run::<P>(cfg, rx, &mut run_transport).unwrap();
+        assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
+        assert_eq!(
+            transport.shutdown_all_call_count(),
+            2,
+            "shutdown_all must be called exactly twice (the explicit ack-grace call, then ShutdownGuard::drop) even on a natural producer exit"
+        );
+    }
+
+    // Path 2: a requested kill, with an attached connection still open --
+    // proving `shutdown_all` runs even when the pipe has real state on it,
+    // not only in the no-connections-ever-opened case above.
+    {
+        let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
+        let cfg = config(dir.path(), "shutdownall2", argv, 80, 25);
+        let transport = TestTransport::new();
+        let (tx, rx) = mpsc::channel();
+        let run_transport = transport.clone();
+        let handle = std::thread::spawn(move || {
+            let mut t = run_transport;
+            capsule::run::<P>(cfg, rx, &mut t)
+        });
+
+        const CONN: ConnId = 1;
+        transport.open(CONN);
+        transport.feed(CONN, frame::hello());
+        let mut watcher = FrameWatcher::new(&transport);
+        watcher.wait_for("conn hello_ok", CONN, Duration::from_secs(10), |f| {
+            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+        });
+        transport.feed(CONN, frame::attach("watcher"));
+        watcher.collect_checkpoint("conn checkpoint", CONN, Duration::from_secs(10));
+
+        tx.send(Command::Kill).unwrap();
+        let summary = wait_for_join(handle, Duration::from_secs(30))
+            .expect("run did not return within the teardown bound")
+            .unwrap();
+        assert_eq!(summary.exit_kind, ExitKind::Requested);
+        assert_eq!(
+            transport.shutdown_all_call_count(),
+            2,
+            "shutdown_all must be called exactly twice on a requested kill too"
+        );
+    }
+}
+
+/// Codex round-1 Blocker 3 discharge: aggregate-teardown expiry is
+/// TERMINAL, not a "loud but successful" return. `run` must not seal the
+/// voyage or report `Ok(ExitSummary)` past a teardown whose transport
+/// could not prove every worker stopped within the shared deadline — the
+/// writer fence (`store`, dropped via this same early return) is the
+/// only thing that may release past it. Simulated via `TestTransport::
+/// force_shutdown_expiry` (a real Windows stalled-worker scenario is
+/// proven separately, at the transport level, by `pipe_win.rs`'s own
+/// `stalled_worker_does_not_block_teardown_of_healthy_connections` and
+/// the pure `join_within` expiry tests) — this test's job is specifically
+/// `capsule::run`'s OWN reaction to that report.
+#[test]
+fn aggregate_teardown_expiry_is_terminal_not_a_silent_seal() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec![SHELL_ARGV.to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
+    let cfg = config(dir.path(), "expiryterminal1", argv, 80, 25);
+    let root = cfg.voyage_root.clone();
+    let transport = TestTransport::new();
+    transport.force_shutdown_expiry();
+    let (_tx, rx) = mpsc::channel();
+    let mut run_transport = transport.clone();
+    let err = capsule::run::<P>(cfg, rx, &mut run_transport).unwrap_err();
+    assert!(
+        format!("{err}").contains("aggregate teardown"),
+        "expected a named aggregate-teardown failure, got: {err}"
+    );
+    // No seal, ever: the segment stays `.open`, never `.sotseg`, and the
+    // final `producer_dead` frame this path would otherwise have written
+    // never lands.
+    let seg_dir = root.join("seg");
+    let names: Vec<String> = std::fs::read_dir(&seg_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names.iter().all(|n| !n.ends_with(".sotseg")),
+        "a terminal teardown failure must never seal a segment: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n.ends_with(".open")),
+        "the survivor segment must remain unsealed: {names:?}"
+    );
+}
+
+/// Test 13 (U1a, ADR 0041 EndRun state machine item 4 / "ack grace"): a
+/// mgmt `shutdown` accepted during teardown (mirroring "a request accepted
+/// in the final service poll") must have its `ShutdownAck` physically
+/// written before this capsule's own transport disappears — proven by
+/// holding that ack's completion and observing `run` genuinely blocks
+/// rather than tearing the pipe down out from under it, then releasing it
+/// and observing `run` completes promptly.
+///
+/// U1a Codex round-1, Blocker 3 discharge: an EARLIER version of this test
+/// held the ack while running a persistent `cmd.exe` but never sent
+/// `Command::Kill` -- since `AttachAction::Shutdown` (which sets
+/// `shutdown_requested`) is only emitted once THIS SAME held ack is
+/// reported physically written, `run` never reached teardown AT ALL, let
+/// alone the grace loop, and the test could only time out. A SEPARATE
+/// cause (here, `Command::Kill`) must drive the primary into teardown
+/// independently of the held connection.
+///
+/// U1a Codex round-1, minor cluster: the "still blocked" observation is a
+/// CONTINUOUS poll against `shutdown_all_call_count` (the actual
+/// mechanism-relevant signal), not one sleep-then-check at an arbitrary
+/// point -- a single check at, say, 500ms can pass merely because
+/// ordinary Phase A/B teardown itself hadn't finished yet, proving
+/// nothing about the grace specifically. Polling continuously up to a
+/// GENEROUS floor (1.5s, safely under the 2s grace and safely over the
+/// sub-second teardown a trivial killed `cmd.exe` takes) means ANY early
+/// firing is caught the instant it happens, regardless of how long
+/// ordinary teardown took to get there.
+#[test]
+fn shutdown_ack_grace_defers_transport_shutdown_until_the_late_ack_completes() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
+    let cfg = config(dir.path(), "ackgrace1", argv, 80, 25);
+    let transport = TestTransport::new();
+    let (tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule::run::<P>(cfg, rx, &mut t)
+    });
+
+    // A SEPARATE cause drives the primary into teardown (an operator kill,
+    // mirroring a natural producer exit just as well) -- the late mgmt
+    // connection below is a RACING request, not what ends the run.
+    const LATE_MGMT: ConnId = 1;
+    transport.open(LATE_MGMT);
+    transport.set_hold_for(LATE_MGMT, true); // never completes on its own
+    transport.feed(LATE_MGMT, frame::mgmt_shutdown("late-in-teardown"));
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+    tx.send(Command::Kill).unwrap();
+
+    // The ack's bytes are already QUEUED (proven above via `wait_for`, which
+    // watches queued bytes, not completions) but its physical-write
+    // completion is HELD -- `run` must not let its transport disappear
+    // while that is true. Continuous poll, not one snapshot: an ORDER
+    // assertion that holds regardless of how long ordinary teardown itself
+    // happens to take.
+    let floor = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < floor {
+        assert!(!transport.shutdown_all_was_called(), "shutdown_all must not run before the grace resolves");
+        assert!(!handle.is_finished(), "the ack grace must hold the transport open until the late ack completes");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    transport.release_held();
+    let summary = wait_for_join(handle, Duration::from_secs(10))
+        .expect("run did not return after the late ack was released")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+    assert_eq!(
+        transport.shutdown_all_call_count(),
+        2,
+        "shutdown_all must run exactly twice: the explicit ack-grace call, then ShutdownGuard::drop"
+    );
+
+    let frames = sealed_frames(&dir.path().join("ackgrace1"), "ackgrace1");
+    let dead = assert_producer_dead_is_last(&frames);
+    assert_eq!(dead["reason"], "late-in-teardown");
+}
+
+/// Test 14 (U1a): the grace is a DEADLINE, not an indefinite wait — if the
+/// late ack's completion never arrives, `run` still completes once
+/// `SHUTDOWN_ACK_GRACE` (2s) elapses, and `shutdown_all` still runs
+/// afterward.
+///
+/// U1a Codex round-1, Blocker 3 discharge: as in the test above, a
+/// SEPARATE `Command::Kill` drives teardown -- the held connection's own
+/// `shutdown` request never completes its ack, so it can never itself
+/// trigger `AttachAction::Shutdown`/`shutdown_requested`.
+///
+/// U1a Codex round-1, minor cluster: no clock-injection seam exists for
+/// `SHUTDOWN_ACK_GRACE` inside `run` (it is a real integration test
+/// against a real ConPTY producer, so real time is unavoidable at this
+/// level regardless) — the continuous pre-deadline poll below is the
+/// ORDER assertion the review asked for, layered ON TOP of (not instead
+/// of) confirming the pinned 2s bound itself: the lower-bound duration
+/// check only fires if the deadline expired too early, which real-clock
+/// scheduler jitter can only ever make LARGER, never smaller, so it is
+/// not a source of flake in this direction.
+#[test]
+fn shutdown_ack_grace_expires_and_teardown_still_completes() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
+    let cfg = config(dir.path(), "ackgrace2", argv, 80, 25);
+    let transport = TestTransport::new();
+    let (tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule::run::<P>(cfg, rx, &mut t)
+    });
+
+    const LATE_MGMT: ConnId = 1;
+    transport.open(LATE_MGMT);
+    transport.set_hold_for(LATE_MGMT, true); // NEVER released -- proves the deadline, not the release
+    transport.feed(LATE_MGMT, frame::mgmt_shutdown("never-acked"));
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+    tx.send(Command::Kill).unwrap();
+
+    let started = Instant::now();
+    // ORDER assertion: continuously poll a floor safely under the 2s
+    // grace, asserting it has NOT expired early.
+    let floor = started + Duration::from_millis(1500);
+    while Instant::now() < floor {
+        assert!(!transport.shutdown_all_was_called(), "must not expire the grace early");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let summary = wait_for_join(handle, Duration::from_secs(15))
+        .expect("run did not return even after the ack grace should have expired")
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(elapsed >= Duration::from_secs(2), "must honor the full grace before giving up: {elapsed:?}");
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+    assert_eq!(
+        transport.shutdown_all_call_count(),
+        2,
+        "shutdown_all must run exactly twice even when the grace expires unattended"
+    );
+}
+
+/// Test 15 (U1a Codex round-1, Major 6 discharge): the grace drains only
+/// what is ALREADY pending — a brand new connection arriving squarely
+/// inside the grace window must be closed outright, with NO reply ever
+/// sent for its request, rather than admitted and given almost none of
+/// the 2s the "final service poll" guarantee actually promises.
+#[test]
+fn shutdown_ack_grace_admits_no_new_connections_or_bytes() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
+    let cfg = config(dir.path(), "ackgrace3", argv, 80, 25);
+    let transport = TestTransport::new();
+    let (tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule::run::<P>(cfg, rx, &mut t)
+    });
+
+    const LATE_MGMT: ConnId = 1;
+    transport.open(LATE_MGMT);
+    transport.set_hold_for(LATE_MGMT, true); // held throughout -- keeps the grace open for this whole test
+    transport.feed(LATE_MGMT, frame::mgmt_shutdown("late-in-teardown"));
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
+    });
+    tx.send(Command::Kill).unwrap();
+
+    // Confirm we are GENUINELY mid-grace (not merely "still doing ordinary
+    // Phase A/B teardown") before probing the new-admission behavior --
+    // the same continuous-poll proof the other ack-grace tests use.
+    let floor = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < floor {
+        assert!(!handle.is_finished(), "the ack grace must still be holding at this point");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // A brand NEW connection, opened squarely inside the confirmed-active
+    // grace window: it must be closed outright, and no reply may ever be
+    // sent to it.
+    const NEW_CONN: ConnId = 2;
+    transport.open(NEW_CONN);
+    transport.feed(NEW_CONN, frame::mgmt_probe());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && !transport.closed_conns().contains(&NEW_CONN) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        transport.closed_conns().contains(&NEW_CONN),
+        "a connection opened during the ack grace must be closed, never left admitted"
+    );
+    assert!(
+        transport.sent_frames().iter().all(|(c, _)| *c != NEW_CONN),
+        "no reply may ever be sent to a connection admitted during the ack grace"
+    );
+
+    transport.release_held();
+    let summary = wait_for_join(handle, Duration::from_secs(10))
+        .expect("run did not return after the late ack was released")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+}
+
+// ---------------------------------------------------------------------
+// ADR 0043 "Decisions for LU2": the five tests that exercise real
+// Windows-only mechanism (ConPTY spawn failure/geometry, ResizePseudoConsole,
+// the output budget's own blocking bound under a real flood, and a
+// reader-chunk-boundary replay) rather than the portable
+// writer-loop/AttachProto contract every other test in this file proves.
+// Grouped under ONE module so LU2b can ungate the rest of this file for a
+// Unix producer by flipping a SINGLE attribute here (this module gains
+// #[cfg(windows)] then, in place of the file-level #![cfg(windows)] this
+// file drops).
+// ---------------------------------------------------------------------
+mod windows_only {
+    use super::*;
+
+/// Test 2: spawn failure (a nonexistent executable) is compensated, not
+/// escaped unsealed (the Linux capsule's own known gap, deliberately not
+/// inherited here), and `producer_dead` is still the last frame recorded.
+#[test]
+fn spawn_failure_is_compensated() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec!["Z:\\sot_capsule_win_test_no_such_exe_9f31.exe".to_string()];
+    let cfg = config(dir.path(), "fail1", argv, 80, 25);
+    let root = cfg.voyage_root.clone();
+    let (_tx, rx) = mpsc::channel();
+    let mut transport = no_transport();
+    let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
+    assert_eq!(summary.exit_code, None);
+    assert_eq!(summary.segments_sealed, 1);
+    verify_voyage(&root, "fail1").unwrap();
+
+    let frames = sealed_frames(&root, "fail1");
+    let dead = assert_producer_dead_is_last(&frames);
+    assert_eq!(dead["spawn_failed"], true);
+    assert!(dead["exit_code"].is_null());
+}
+
 
 /// Test 4: resize is an ordered request+outcome exchange (no response
 /// phase — ADR 0041), rejecting out-of-budget requests rather than
@@ -676,7 +1479,7 @@ fn requested_kill_tears_down_and_seals() {
 fn resize_ordered_exchange_commits_and_rejects() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string()];
+    let argv = vec![SHELL_ARGV.to_string()];
     let cfg = config(dir.path(), "resize1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let transport = TestTransport::new();
@@ -684,7 +1487,7 @@ fn resize_ordered_exchange_commits_and_rejects() {
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
-        capsule_win::run(cfg, rx, &mut t)
+        capsule::run::<P>(cfg, rx, &mut t)
     });
 
     const CONN: ConnId = 1;
@@ -761,7 +1564,7 @@ fn resize_ordered_exchange_commits_and_rejects() {
 /// burst pacing on the runner, which nothing here controls (a runner-image
 /// change turned exactly that assertion red on unchanged code); the
 /// blocking property is proven deterministically by OutputBudget's own
-/// unit tests in capsule_win.rs. Run on a background thread with a LOCAL
+/// unit tests in capsule.rs. Run on a background thread with a LOCAL
 /// bounded wait: a teardown regression here is exactly a deadlock, and
 /// this test must fail loud within its own bound rather than consume the
 /// whole CI job's timeout.
@@ -769,7 +1572,7 @@ fn resize_ordered_exchange_commits_and_rejects() {
 fn flood_drains_to_a_sealed_voyage_without_deadlock() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
+    let helper = HELPER_EXE.to_string();
     let total: usize = 20 * 1024 * 1024; // > the 8 MiB producer-channel budget
     let argv = vec![helper, "--flood".to_string(), total.to_string()];
     let cfg = config(dir.path(), "flood1", argv, 80, 25);
@@ -778,14 +1581,14 @@ fn flood_drains_to_a_sealed_voyage_without_deadlock() {
     let start = Instant::now();
     let handle = std::thread::spawn(move || {
         let mut transport = no_transport();
-        capsule_win::run(cfg, rx, &mut transport)
+        capsule::run::<P>(cfg, rx, &mut transport)
     });
     let summary = wait_for_join(handle, Duration::from_secs(60))
         .expect("run did not return within the local deadline (deadlock?)")
         .unwrap();
     eprintln!("capsule_win flood finding: {total} bytes in {:?}", start.elapsed());
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
-    assert_eq!(summary.exit_code, Some(0));
+    assert_eq!(summary.exit_code, Some(ExitStatus::Code(0)));
     verify_voyage(&root, "flood1").unwrap();
 
     // The right side of the transform boundary (review finding): hOutput
@@ -820,22 +1623,19 @@ fn exit_code_high_bit_status_preserved_through_producer_dead() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv =
-        vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit -1073741819".to_string()];
+        vec![SHELL_ARGV.to_string(), "/d".to_string(), "/c".to_string(), "exit -1073741819".to_string()];
     let cfg = config(dir.path(), "exitcode1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
     let mut transport = no_transport();
-    let summary = capsule_win::run(cfg, rx, &mut transport).unwrap();
-    assert_eq!(summary.exit_code, Some(0xC000_0005));
+    let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
+    assert_eq!(summary.exit_code, Some(ExitStatus::Code(0xC000_0005)));
     verify_voyage(&root, "exitcode1").unwrap();
     let frames = sealed_frames(&root, "exitcode1");
     let dead = assert_producer_dead_is_last(&frames);
     assert_eq!(dead["exit_code"], 0xC000_0005u32);
 }
 
-// ---------------------------------------------------------------------
-// ADR 0041 step 5 (U2): the pipe protocol.
-// ---------------------------------------------------------------------
 
 /// Test 7: attach mid-stream, on a producer emitting escape sequences and
 /// multibyte UTF-8 continuously, reproduces a from-scratch replay
@@ -892,7 +1692,7 @@ fn exit_code_high_bit_status_preserved_through_producer_dead() {
 fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
+    let helper = HELPER_EXE.to_string();
     // --linger: the producer must be ALIVE for every step below (this test
     // ends the run with an explicit `Kill`, never by producer exit). The
     // previous version relied on 1000 repeats taking long enough — false
@@ -910,7 +1710,7 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
-        capsule_win::run(cfg, rx, &mut t)
+        capsule::run::<P>(cfg, rx, &mut t)
     });
 
     // Attach WHILE the producer is still actively emitting -- no attempt to
@@ -1078,7 +1878,7 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     // disagree about how much of it survives, independent of any real
     // divergence in what was actually recorded.
     let mut reference_at_watermark =
-        vt100_ctt::Parser::new(rows, cols, capsule_win::CAPSULE_SCROLLBACK_ROWS);
+        vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
     reference_at_watermark.process(prefix);
     let reference_checkpoint = reference_at_watermark
         .screen()
@@ -1096,7 +1896,7 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     // how many lines the producer got through before this checkpoint's cut
     // (see the sleep above), so this asserts only that SOME history rode
     // along, which is what the defect actually broke.
-    let mut ring_check = vt100_ctt::Parser::new(rows, cols, capsule_win::CAPSULE_SCROLLBACK_ROWS);
+    let mut ring_check = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
     ring_check
         .restore_screen(&checkpoint_bytes)
         .expect("checkpoint must decode");
@@ -1112,13 +1912,13 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     // byte-identical to a from-scratch parser's, fed the entire voyage --
     // both at the SAME scrollback capacity as the capsule's own parser,
     // for the same reason as above.
-    let mut restored = vt100_ctt::Parser::new(rows, cols, capsule_win::CAPSULE_SCROLLBACK_ROWS);
+    let mut restored = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
     restored
         .restore_screen(&checkpoint_bytes)
         .expect("checkpoint must decode");
     restored.process(&suffix);
 
-    let mut reference = vt100_ctt::Parser::new(rows, cols, capsule_win::CAPSULE_SCROLLBACK_ROWS);
+    let mut reference = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
     reference.process(&total);
 
     assert_eq!(
@@ -1129,956 +1929,4 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     assert_eq!(summary.exit_kind, ExitKind::Requested);
 }
 
-/// ADR 0041 "attach proto v2 bound to checkpoint v2" (Codex round on
-/// #194, finding 1): a connection that negotiates attach proto v1 -- an
-/// OLD client's own default, predating the scrollback ring -- must get a
-/// checkpoint format v1 payload: no scrollback ring, even though the
-/// capsule's own live parser keeps one (`CAPSULE_SCROLLBACK_ROWS`).
-/// Proves the version-gated encode path in `capsule_win::run`'s
-/// `BeginCheckpoint` handling, independent of the ring-arrival test above
-/// (which hellos at v2, the modern client's own default).
-#[test]
-fn hello_v1_gets_a_checkpoint_with_no_scrollback_ring() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
-    let argv = vec![
-        helper,
-        "--script".to_string(),
-        "50".to_string(),
-        "--linger".to_string(),
-    ];
-    let (rows, cols) = (4u16, 20u16);
-    let cfg = config(dir.path(), "hellov1", argv, cols, rows);
-    let root = cfg.voyage_root.clone();
-    let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
-    let run_transport = transport.clone();
-    let handle = std::thread::spawn(move || {
-        let mut t = run_transport;
-        capsule_win::run(cfg, rx, &mut t)
-    });
-
-    // Enough real elapsed time that a v2 hello would find a nonempty
-    // ring here too -- proving this test's negative result is the
-    // version gate, not merely an empty ring to begin with (same pacing
-    // rationale as the ring-arrival test above: `SCRIPT_BLOCK` writes
-    // one line roughly every 59 ms).
-    std::thread::sleep(Duration::from_millis(4000));
-
-    const CONN: ConnId = 1;
-    transport.open(CONN);
-    transport.feed(CONN, frame::hello_at(wire::ATTACH_PROTO_V1));
-    let mut watcher = FrameWatcher::new(&transport);
-    let negotiated = watcher.wait_for("v1 hello_ok", CONN, Duration::from_secs(10), |f| {
-        if let wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { proto }) = f {
-            Some(*proto)
-        } else {
-            None
-        }
-    });
-    assert_eq!(
-        negotiated,
-        wire::ATTACH_PROTO_V1,
-        "the capsule must echo back exactly the negotiated version"
-    );
-
-    transport.feed(CONN, frame::attach("watcher"));
-    let checkpoint_bytes =
-        watcher.collect_checkpoint("v1 checkpoint", CONN, Duration::from_secs(10));
-
-    tx.send(Command::Kill).unwrap();
-    let summary = wait_for_join(handle, Duration::from_secs(30))
-        .expect("run did not return within the teardown bound")
-        .unwrap();
-    verify_voyage(&root, "hellov1").unwrap();
-    assert_eq!(summary.exit_kind, ExitKind::Requested);
-
-    let mut restored = vt100_ctt::Parser::new(rows, cols, 100);
-    restored
-        .restore_screen(&checkpoint_bytes)
-        .expect("a v1 checkpoint must decode");
-    restored.screen_mut().set_scrollback(usize::MAX);
-    assert_eq!(
-        restored.screen().scrollback(),
-        0,
-        "a v1-negotiated connection must receive a checkpoint with no ring"
-    );
-}
-
-/// Test 8: the wire input WAL folds every legal `idem_key` chain exactly,
-/// including a stale refusal (a demoted connection's replay) and a
-/// duplicate `idem_key` answered deterministically WITHOUT appending any
-/// new frame — and the SAME determinism holds across a capsule restart
-/// (reopen the voyage; the dedupe index is rebuilt from the retained
-/// segments, not started empty — ADR 0041 decision 5's whole point).
-#[test]
-fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_restart() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let name = "inputwal1";
-    let root = dir.path().join(name);
-    let k1 = [0x11u8; 16];
-    let k2 = [0x22u8; 16];
-
-    // --- Incarnation 1 -------------------------------------------------
-    {
-        let argv = vec!["cmd.exe".to_string()]; // stays open until killed
-        let cfg = config(dir.path(), name, argv, 80, 25);
-        let transport = TestTransport::new();
-        let (tx, rx) = mpsc::channel();
-        let run_transport = transport.clone();
-        let handle = std::thread::spawn(move || {
-            let mut t = run_transport;
-            capsule_win::run(cfg, rx, &mut t)
-        });
-
-        // conn A attaches and takes -- the first driver ever, a pipe take.
-        const A: ConnId = 1;
-        transport.open(A);
-        transport.feed(A, frame::hello());
-        let mut watcher = FrameWatcher::new(&transport);
-        watcher.wait_for("A hello_ok", A, Duration::from_secs(10), |f| {
-            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-        });
-        transport.feed(A, frame::attach("alice"));
-        watcher.collect_checkpoint("A checkpoint", A, Duration::from_secs(10));
-        transport.feed(A, frame::take("alice"));
-        let epoch = watcher.wait_for("A take_ok", A, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => Some(*take_epoch),
-            _ => None,
-        });
-
-        // K1: fresh input while authorized -- recorded.
-        transport.feed(A, frame::input("alice", epoch, k1, b"echo one\r\n"));
-        let outcome1 = watcher.wait_for("A input K1 fresh outcome", A, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
-            _ => None,
-        });
-        assert!(outcome1, "expected the fresh K1 input to be recorded");
-
-        // K1 AGAIN, same idem_key: chain is already {input,intent,forwarded}
-        // -- must replay the SAME recorded outcome, appending nothing new
-        // (checked after this incarnation seals, via the sealed frame count
-        // for K1's idem_key, below).
-        transport.feed(A, frame::input("alice", epoch, k1, b"echo one\r\n"));
-        let outcome1_replay = watcher.wait_for("A input K1 replay outcome", A, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
-            _ => None,
-        });
-        assert!(outcome1_replay, "duplicate K1 must replay input_recorded");
-
-        // conn B attaches and takes, demoting A.
-        const B: ConnId = 2;
-        transport.open(B);
-        transport.feed(B, frame::hello());
-        watcher.wait_for("B hello_ok", B, Duration::from_secs(10), |f| {
-            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-        });
-        transport.feed(B, frame::attach("bob"));
-        watcher.collect_checkpoint("B checkpoint", B, Duration::from_secs(10));
-        transport.feed(B, frame::take("bob"));
-        watcher.wait_for("B take_ok", B, Duration::from_secs(10), |f| {
-            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { .. })).then_some(())
-        });
-
-        // A tries a NEW key (K2) with its now-stale claim: demoted, so this
-        // is refused -- folded into the SAME "stale" wire reply the ADR
-        // defines for a durable epoch mismatch (a demoted connection is
-        // indistinguishable from one on the wire).
-        transport.feed(A, frame::input("alice", epoch, k2, b"echo two\r\n"));
-        let outcome2 = watcher.wait_for("A input K2 stale outcome", A, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
-            _ => None,
-        });
-        assert!(!outcome2, "a demoted connection's input must be refused stale");
-
-        tx.send(Command::Kill).unwrap();
-        wait_for_join(handle, Duration::from_secs(30))
-            .expect("run did not return within the teardown bound")
-            .unwrap();
-        verify_voyage(&root, name).unwrap();
-    }
-
-    let frames = sealed_frames(&root, name);
-    let input_frames_for = |key: [u8; 16]| -> Vec<&Envelope> {
-        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
-        frames
-            .iter()
-            .filter(|f| f.class == Class::Input && f.payload.as_ref().unwrap()["idem_key"] == hex)
-            .collect()
-    };
-    assert_eq!(input_frames_for(k1).len(), 1, "K1's retry must not append a second `input` frame");
-    let k2_facts: Vec<&Envelope> = frames
-        .iter()
-        .filter(|f| {
-            f.class == Class::Lifecycle
-                && f.payload.as_ref().unwrap()["kind"] == "input_fact"
-                && f.payload.as_ref().unwrap()["fact"]["fact"] == "refused_stale_epoch"
-        })
-        .collect();
-    assert_eq!(k2_facts.len(), 1, "K2 must have exactly one refused_stale_epoch fact");
-
-    // --- Incarnation 2 (a "successor capsule") --------------------------
-    {
-        let argv = vec!["cmd.exe".to_string()];
-        let cfg = config(dir.path(), name, argv, 80, 25);
-        let transport = TestTransport::new();
-        let (tx, rx) = mpsc::channel();
-        let run_transport = transport.clone();
-        let handle = std::thread::spawn(move || {
-            let mut t = run_transport;
-            capsule_win::run(cfg, rx, &mut t)
-        });
-
-        const C: ConnId = 1;
-        transport.open(C);
-        transport.feed(C, frame::hello());
-        let mut watcher = FrameWatcher::new(&transport);
-        watcher.wait_for("C hello_ok", C, Duration::from_secs(10), |f| {
-            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-        });
-        transport.feed(C, frame::attach("carol"));
-        watcher.collect_checkpoint("C checkpoint", C, Duration::from_secs(10));
-        transport.feed(C, frame::take("carol"));
-        let epoch2 = watcher.wait_for("C take_ok", C, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => Some(*take_epoch),
-            _ => None,
-        });
-
-        // K1 again, from a BRAND NEW capsule incarnation, a brand new
-        // connection, and a brand new controller identity: the dedupe
-        // index was rebuilt from the RETAINED voyage at open, so this must
-        // still replay deterministically -- exactly decision 5's point ("a
-        // successor capsule starting with an empty index would let a
-        // pre-crash forwarded key re-forward").
-        transport.feed(C, frame::input("carol", epoch2, k1, b"echo one\r\n"));
-        let replay_after_restart = watcher.wait_for("C input K1 replay-after-restart outcome", C, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
-            _ => None,
-        });
-        assert!(replay_after_restart, "K1 must still replay input_recorded after a capsule restart");
-
-        tx.send(Command::Kill).unwrap();
-        wait_for_join(handle, Duration::from_secs(30))
-            .expect("run did not return within the teardown bound")
-            .unwrap();
-        verify_voyage(&root, name).unwrap();
-    }
-
-    // K1 must STILL have exactly one `input` frame across BOTH incarnations
-    // -- the restart never re-forwarded it.
-    let frames = sealed_frames(&root, name);
-    let input_frames_for = |key: [u8; 16]| -> Vec<Envelope> {
-        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
-        frames
-            .iter()
-            .filter(|f| f.class == Class::Input && f.payload.as_ref().unwrap()["idem_key"] == hex)
-            .cloned()
-            .collect()
-    };
-    assert_eq!(input_frames_for(k1).len(), 1, "K1 must never gain a second `input` frame across a restart");
-}
-
-/// Test 9: a slow (never-draining) watcher's queued live-output bytes
-/// overflow the 4 MiB per-subscriber budget and it is closed -- no wire
-/// frame exists for that eviction, by design -- while the DRIVER, a
-/// separate connection under the SAME flood, stays live and fully
-/// functional throughout.
-#[test]
-fn slow_watcher_overflow_closes_while_driver_stays_live() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let helper = env!("CARGO_BIN_EXE_sot-conpty-helper").to_string();
-    let total: usize = 6 * 1024 * 1024; // > the 4 MiB per-watcher budget
-    // --linger: the producer must OUTLIVE the post-eviction assertions.
-    // Without it, the flood's completion races the eviction wait: the
-    // producer can exit first, the run enters teardown, and the resize
-    // below is then (correctly) not served — observed as a deterministic
-    // 10 s timeout on the real windows legs while every protocol-level
-    // replay of this sequence passed.
-    let argv = vec![helper, "--flood".to_string(), total.to_string(), "--linger".to_string()];
-    let cfg = config(dir.path(), "slowwatcher1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
-    let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
-    let run_transport = transport.clone();
-    let handle = std::thread::spawn(move || {
-        let mut t = run_transport;
-        capsule_win::run(cfg, rx, &mut t)
-    });
-
-    const DRIVER: ConnId = 1;
-    const WATCHER: ConnId = 2;
-    let mut watcher = FrameWatcher::new(&transport);
-
-    transport.open(DRIVER);
-    transport.feed(DRIVER, frame::hello());
-    watcher.wait_for("driver hello_ok", DRIVER, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-    });
-    transport.feed(DRIVER, frame::attach("driver"));
-    watcher.collect_checkpoint("driver checkpoint", DRIVER, Duration::from_secs(10));
-    transport.feed(DRIVER, frame::take("driver"));
-    watcher.wait_for("driver take_ok", DRIVER, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { .. })).then_some(())
-    });
-
-    transport.open(WATCHER);
-    transport.feed(WATCHER, frame::hello());
-    watcher.wait_for("watcher hello_ok", WATCHER, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-    });
-    transport.feed(WATCHER, frame::attach("watcher"));
-    watcher.collect_checkpoint("watcher checkpoint", WATCHER, Duration::from_secs(10));
-    // Never drains from here on: every future send to WATCHER queues
-    // forever, simulating a client that stopped reading its pipe.
-    transport.set_hold_for(WATCHER, true);
-
-    // Bounded poll for the watcher's own close -- the flood alone drives
-    // this; no fixed sleep assumes when the budget actually trips.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if transport.closed_conns().contains(&WATCHER) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "watcher was never closed under a 6 MiB flood");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(!transport.closed_conns().contains(&DRIVER), "the driver must stay live");
-
-    // The driver is still fully functional: a resize still completes.
-    transport.feed(DRIVER, frame::resize(100, 40));
-    let resize_ok = watcher.wait_for("driver post-eviction resize outcome", DRIVER, Duration::from_secs(10), |f| match f {
-        wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeOk) => Some(true),
-        wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeRefused { .. }) => Some(false),
-        _ => None,
-    });
-    assert!(resize_ok, "the driver must still be able to resize after the watcher's eviction");
-
-    // The lingering producer is ended BY REQUEST — which is also the
-    // honest exit_kind for this scenario.
-    tx.send(Command::Kill).unwrap();
-    let summary = wait_for_join(handle, Duration::from_secs(60))
-        .expect("run did not return within the local deadline")
-        .unwrap();
-    assert_eq!(summary.exit_kind, ExitKind::Requested);
-    verify_voyage(&root, "slowwatcher1").unwrap();
-}
-
-/// Test 10: a refused `hello` (unsupported proto) closes only that
-/// connection -- mgmt stays available (a fresh mgmt connection, per the
-/// ADR: "the ADR's 'mgmt remains available' is satisfied by a fresh mgmt
-/// connection"), and a LATER, protocol-compatible attach on a separate
-/// connection still succeeds normally.
-#[test]
-fn hello_refusal_leaves_mgmt_and_later_attach_working() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string()];
-    let cfg = config(dir.path(), "hellorefuse1", argv, 80, 25);
-    let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
-    let run_transport = transport.clone();
-    let handle = std::thread::spawn(move || {
-        let mut t = run_transport;
-        capsule_win::run(cfg, rx, &mut t)
-    });
-    let mut watcher = FrameWatcher::new(&transport);
-
-    const MGMT: ConnId = 1;
-    const BAD_HELLO: ConnId = 2;
-    const GOOD: ConnId = 3;
-
-    transport.open(MGMT);
-    transport.feed(MGMT, frame::mgmt_probe());
-    watcher.wait_for("mgmt probe_ok (initial)", MGMT, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ProbeOk)).then_some(())
-    });
-
-    transport.open(BAD_HELLO);
-    transport.feed(
-        BAD_HELLO,
-        wire::encode_attach_client(&wire::AttachClient::Hello { proto: 999 }).unwrap(),
-    );
-    watcher.wait_for("bad_hello hello_refused", BAD_HELLO, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloRefused { .. })).then_some(())
-    });
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if transport.closed_conns().contains(&BAD_HELLO) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the refused hello connection was never closed");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-
-    // Mgmt still works on its own connection -- probe AND status, the
-    // latter carrying this process's own pid/creation-time/survival.
-    transport.feed(MGMT, frame::mgmt_probe());
-    watcher.wait_for("mgmt probe_ok (after bad hello)", MGMT, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ProbeOk)).then_some(())
-    });
-    transport.feed(MGMT, frame::mgmt_status());
-    let (pid, survival) = watcher.wait_for("mgmt status_ok", MGMT, Duration::from_secs(10), |f| match f {
-        wire::DecodedFrame::MgmtReply(wire::MgmtReply::StatusOk { pid, survival, .. }) => Some((*pid, *survival)),
-        _ => None,
-    });
-    assert_eq!(pid, std::process::id(), "status.pid must be the capsule's OWN process id");
-    assert_eq!(survival, wire::Survival::Normal);
-
-    // A fresh, compatible attach still succeeds.
-    transport.open(GOOD);
-    transport.feed(GOOD, frame::hello());
-    watcher.wait_for("good hello_ok", GOOD, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-    });
-    transport.feed(GOOD, frame::attach("late"));
-    watcher.collect_checkpoint("good checkpoint", GOOD, Duration::from_secs(10));
-
-    tx.send(Command::Kill).unwrap();
-    let summary = wait_for_join(handle, Duration::from_secs(30))
-        .expect("run did not return within the teardown bound")
-        .unwrap();
-    assert_eq!(summary.exit_kind, ExitKind::Requested);
-}
-
-/// Test 11 (REWRITTEN, Codex round-1 Blocker 1 discharge): the durable
-/// MARKER — not the ack — drives teardown. "Ack completion only
-/// ACCELERATES teardown" (ADR 0041 EndRun step 2): a stalled ack, a
-/// client that stops reading, a progress-deadline close, or a lost
-/// connection cannot unlatch it. Proven by holding the `shutdown_ok`
-/// ack's physical-send completion and NEVER RELEASING IT — confirming
-/// the marker is already durable on the still-open leg while the ack is
-/// held, then confirming `run` still completes and seals within a
-/// bounded time regardless (the ack-grace window still expires
-/// normally, exactly as `shutdown_ack_grace_expires_and_teardown_still_
-/// completes` proves for a Kill-driven teardown; this is the SAME
-/// mechanism with the wire request itself as the ONLY driver, no
-/// separate cause). The reason string still lands in `producer_dead`'s
-/// detail — recorded from the marker's own commit (see
-/// `commit_run_end_marker`'s call sites), never from the ack's
-/// completion, which here never happens at all.
-///
-/// The ORIGINAL version of this test asserted the opposite
-/// (`!handle.is_finished()` while the ack was held, released later) —
-/// that encoded the design Blocker 1 identifies as wrong: a stalled ack
-/// must never be able to leave a durable marker coexisting with a shell
-/// running on.
-#[test]
-fn teardown_completes_even_when_the_shutdown_ack_is_never_delivered() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string()]; // stays open until EndRun
-    let cfg = config(dir.path(), "neverack1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
-    let transport = TestTransport::new();
-    let (_tx, rx) = mpsc::channel();
-    let run_transport = transport.clone();
-    let handle = std::thread::spawn(move || {
-        let mut t = run_transport;
-        capsule_win::run(cfg, rx, &mut t)
-    });
-
-    const MGMT: ConnId = 1;
-    transport.open(MGMT);
-    transport.set_hold_for(MGMT, true); // held FOREVER -- never released below
-    transport.feed(MGMT, frame::mgmt_shutdown("never-delivered-ack"));
-
-    // The ack's bytes are constructed and queued...
-    let mut watcher = FrameWatcher::new(&transport);
-    watcher.wait_for("mgmt shutdown_ok queued", MGMT, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
-    });
-
-    // ...and the marker is ALREADY durable on the still-open leg, even
-    // though that ack's physical completion will NEVER be reported.
-    let seg_dir = root.join("seg");
-    let marker_deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if leg_carries_run_end_marker(&seg_dir, "neverack1", 1).unwrap_or(false) {
-            break;
-        }
-        assert!(Instant::now() < marker_deadline, "marker never became visible on the still-open leg");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    // `transport.release_held()` is deliberately NEVER called -- the
-    // whole point is that teardown does not need it.
-    let summary = wait_for_join(handle, Duration::from_secs(30))
-        .expect(
-            "run did not complete even though the durable marker should drive teardown \
-             regardless of the never-delivered ack",
-        )
-        .unwrap();
-    assert_eq!(summary.exit_kind, ExitKind::Requested);
-    verify_voyage(&root, "neverack1").unwrap();
-    assert!(leg_carries_run_end_marker(&seg_dir, "neverack1", 1).unwrap());
-
-    let frames = sealed_frames(&root, "neverack1");
-    let dead = assert_producer_dead_is_last(&frames);
-    assert_eq!(dead["reason"], "never-delivered-ack");
-}
-
-/// ADR 0041 step 6 U1b, acceptance matrix "the marker is the acceptance
-/// barrier": the marker is durable on the STILL-OPEN leg (before `run`
-/// has sealed anything) essentially as soon as the request is processed
-/// — and, distinctly from `teardown_completes_even_when_the_shutdown_
-/// ack_is_never_delivered` above (which proves teardown does NOT need
-/// the ack), this test proves the ack is still a working COURTESY when
-/// nothing prevents it: released promptly, its bytes still show up as a
-/// well-formed `ShutdownOk` reply on the same connection. "Ack completion
-/// only accelerates teardown" cuts both ways — it must never be
-/// REQUIRED, but it must still WORK.
-#[test]
-fn marker_is_durable_before_the_ack_completes_and_the_ack_still_works() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string()]; // stays open until EndRun
-    let cfg = config(dir.path(), "markerstall1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
-    let transport = TestTransport::new();
-    let (_tx, rx) = mpsc::channel();
-    let run_transport = transport.clone();
-    let handle = std::thread::spawn(move || {
-        let mut t = run_transport;
-        capsule_win::run(cfg, rx, &mut t)
-    });
-
-    const MGMT: ConnId = 1;
-    transport.open(MGMT);
-    transport.set_hold_for(MGMT, true); // held BEFORE the request that matters
-    transport.feed(MGMT, frame::mgmt_shutdown("marker-before-ack"));
-
-    let mut watcher = FrameWatcher::new(&transport);
-    watcher.wait_for("mgmt shutdown_ok queued", MGMT, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
-    });
-
-    // The ack is QUEUED but its physical-write completion is HELD -- the
-    // marker must already be durable regardless. Nothing is sealed yet
-    // (teardown may already be under way), so poll the STILL-OPEN leg
-    // directly.
-    let seg_dir = root.join("seg");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if leg_carries_run_end_marker(&seg_dir, "markerstall1", 1).unwrap_or(false) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "marker never became visible on the still-open leg");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    transport.release_held();
-    let summary = wait_for_join(handle, Duration::from_secs(30))
-        .expect("run did not return after the ack was released")
-        .unwrap();
-    assert_eq!(summary.exit_kind, ExitKind::Requested);
-    verify_voyage(&root, "markerstall1").unwrap();
-    assert!(leg_carries_run_end_marker(&seg_dir, "markerstall1", 1).unwrap());
-    // The courtesy still worked: the EARLIER `wait_for` already decoded a
-    // well-formed `ShutdownOk` reply queued for this connection, and
-    // `release_held` + the successful `wait_for_join` above prove its
-    // physical-send completion was processed normally through teardown --
-    // the ack is not required, but it is not broken either.
-}
-
-/// ADR 0041 step 6 U1b, acceptance matrix "the marker is the acceptance
-/// barrier", step 4: two concurrent callers get ONE marker and TWO acks.
-/// Real concurrency at the wire level (two mgmt connections, both
-/// requesting before either's ack physically completes) — the end-to-end
-/// proof that the WIRING (`attach_proto`'s `Action::RunEndRequested`
-/// ordering, `execute_actions!`'s dispatch) actually delivers the
-/// guarantee `commit_run_end_marker`'s own unit tests already prove in
-/// isolation against the pure function.
-#[test]
-fn two_concurrent_shutdown_requests_write_one_marker_and_ack_both() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string()];
-    let cfg = config(dir.path(), "concurrentshutdown1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
-    let transport = TestTransport::new();
-    let (_tx, rx) = mpsc::channel();
-    let run_transport = transport.clone();
-    let handle = std::thread::spawn(move || {
-        let mut t = run_transport;
-        capsule_win::run(cfg, rx, &mut t)
-    });
-
-    const MGMT_A: ConnId = 1;
-    const MGMT_B: ConnId = 2;
-    transport.open(MGMT_A);
-    transport.open(MGMT_B);
-    // Hold BOTH acks until both requests are already queued -- a genuine
-    // race between the two callers, not two sequential round trips.
-    transport.set_hold_for(MGMT_A, true);
-    transport.set_hold_for(MGMT_B, true);
-    transport.feed(MGMT_A, frame::mgmt_shutdown("caller-a"));
-    transport.feed(MGMT_B, frame::mgmt_shutdown("caller-b"));
-
-    let mut watcher = FrameWatcher::new(&transport);
-    watcher.wait_for("A shutdown_ok queued", MGMT_A, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
-    });
-    watcher.wait_for("B shutdown_ok queued", MGMT_B, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
-    });
-
-    transport.release_held();
-    let summary = wait_for_join(handle, Duration::from_secs(30))
-        .expect("run did not return after both acks were released")
-        .unwrap();
-    assert_eq!(summary.exit_kind, ExitKind::Requested);
-    verify_voyage(&root, "concurrentshutdown1").unwrap();
-
-    let frames = sealed_frames(&root, "concurrentshutdown1");
-    let marker_count = frames
-        .iter()
-        .filter(|f| {
-            f.class == Class::Lifecycle
-                && f.payload.as_ref().and_then(|p| p.get("kind")).and_then(|k| k.as_str())
-                    == Some("run_end_requested")
-        })
-        .count();
-    assert_eq!(marker_count, 1, "two concurrent callers must write exactly one marker");
-}
-
-/// Test 12 (finding 7, Codex review rework): `Transport::shutdown_all` is
-/// actually invoked before `run` returns, on every exit path -- the one
-/// piece of the teardown rework that is new wiring, not a restatement of
-/// something the pure-logic `AttachProto` tests already cover. The reduced
-/// legal action set teardown enforces (mgmt served, producer-bound
-/// admission revoked, no lockstep leak from an ignored request) is proven
-/// exhaustively and race-free at that level already
-/// (`attach_proto::teardown_ignores_producer_bound_requests_but_not_mgmt_or_attach`)
-/// — reproving it here against a real ConPTY would only buy a race between
-/// the test thread's writes and whichever loop iteration observes them
-/// first, without adding coverage `execute_teardown_actions!`'s own
-/// `unreachable!` arms don't already give at compile time.
-///
-/// U1a Codex round-1, minor cluster: asserts the exact count (2), not
-/// merely "at least once" -- `run` now calls `shutdown_all` explicitly
-/// once the (zero-iteration, on these paths) ack grace resolves, AND
-/// `ShutdownGuard::drop` calls it again unconditionally afterward. Proving
-/// the count is exactly 2 is what actually exercises `Transport::
-/// shutdown_all`'s documented idempotent contract, rather than merely
-/// trusting it.
-#[test]
-fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-
-    // Path 1: a natural producer exit.
-    {
-        let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
-        let cfg = config(dir.path(), "shutdownall1", argv, 80, 25);
-        let transport = TestTransport::new();
-        let (_tx, rx) = mpsc::channel();
-        let mut run_transport = transport.clone();
-        let summary = capsule_win::run(cfg, rx, &mut run_transport).unwrap();
-        assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
-        assert_eq!(
-            transport.shutdown_all_call_count(),
-            2,
-            "shutdown_all must be called exactly twice (the explicit ack-grace call, then ShutdownGuard::drop) even on a natural producer exit"
-        );
-    }
-
-    // Path 2: a requested kill, with an attached connection still open --
-    // proving `shutdown_all` runs even when the pipe has real state on it,
-    // not only in the no-connections-ever-opened case above.
-    {
-        let argv = vec!["cmd.exe".to_string()]; // stays open until killed
-        let cfg = config(dir.path(), "shutdownall2", argv, 80, 25);
-        let transport = TestTransport::new();
-        let (tx, rx) = mpsc::channel();
-        let run_transport = transport.clone();
-        let handle = std::thread::spawn(move || {
-            let mut t = run_transport;
-            capsule_win::run(cfg, rx, &mut t)
-        });
-
-        const CONN: ConnId = 1;
-        transport.open(CONN);
-        transport.feed(CONN, frame::hello());
-        let mut watcher = FrameWatcher::new(&transport);
-        watcher.wait_for("conn hello_ok", CONN, Duration::from_secs(10), |f| {
-            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-        });
-        transport.feed(CONN, frame::attach("watcher"));
-        watcher.collect_checkpoint("conn checkpoint", CONN, Duration::from_secs(10));
-
-        tx.send(Command::Kill).unwrap();
-        let summary = wait_for_join(handle, Duration::from_secs(30))
-            .expect("run did not return within the teardown bound")
-            .unwrap();
-        assert_eq!(summary.exit_kind, ExitKind::Requested);
-        assert_eq!(
-            transport.shutdown_all_call_count(),
-            2,
-            "shutdown_all must be called exactly twice on a requested kill too"
-        );
-    }
-}
-
-/// Codex round-1 Blocker 3 discharge: aggregate-teardown expiry is
-/// TERMINAL, not a "loud but successful" return. `run` must not seal the
-/// voyage or report `Ok(ExitSummary)` past a teardown whose transport
-/// could not prove every worker stopped within the shared deadline — the
-/// writer fence (`store`, dropped via this same early return) is the
-/// only thing that may release past it. Simulated via `TestTransport::
-/// force_shutdown_expiry` (a real Windows stalled-worker scenario is
-/// proven separately, at the transport level, by `pipe_win.rs`'s own
-/// `stalled_worker_does_not_block_teardown_of_healthy_connections` and
-/// the pure `join_within` expiry tests) — this test's job is specifically
-/// `capsule_win::run`'s OWN reaction to that report.
-#[test]
-fn aggregate_teardown_expiry_is_terminal_not_a_silent_seal() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string(), "/d".to_string(), "/c".to_string(), "exit 0".to_string()];
-    let cfg = config(dir.path(), "expiryterminal1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
-    let transport = TestTransport::new();
-    transport.force_shutdown_expiry();
-    let (_tx, rx) = mpsc::channel();
-    let mut run_transport = transport.clone();
-    let err = capsule_win::run(cfg, rx, &mut run_transport).unwrap_err();
-    assert!(
-        format!("{err}").contains("aggregate teardown"),
-        "expected a named aggregate-teardown failure, got: {err}"
-    );
-    // No seal, ever: the segment stays `.open`, never `.sotseg`, and the
-    // final `producer_dead` frame this path would otherwise have written
-    // never lands.
-    let seg_dir = root.join("seg");
-    let names: Vec<String> = std::fs::read_dir(&seg_dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    assert!(
-        names.iter().all(|n| !n.ends_with(".sotseg")),
-        "a terminal teardown failure must never seal a segment: {names:?}"
-    );
-    assert!(
-        names.iter().any(|n| n.ends_with(".open")),
-        "the survivor segment must remain unsealed: {names:?}"
-    );
-}
-
-/// Test 13 (U1a, ADR 0041 EndRun state machine item 4 / "ack grace"): a
-/// mgmt `shutdown` accepted during teardown (mirroring "a request accepted
-/// in the final service poll") must have its `ShutdownAck` physically
-/// written before this capsule's own transport disappears — proven by
-/// holding that ack's completion and observing `run` genuinely blocks
-/// rather than tearing the pipe down out from under it, then releasing it
-/// and observing `run` completes promptly.
-///
-/// U1a Codex round-1, Blocker 3 discharge: an EARLIER version of this test
-/// held the ack while running a persistent `cmd.exe` but never sent
-/// `Command::Kill` -- since `AttachAction::Shutdown` (which sets
-/// `shutdown_requested`) is only emitted once THIS SAME held ack is
-/// reported physically written, `run` never reached teardown AT ALL, let
-/// alone the grace loop, and the test could only time out. A SEPARATE
-/// cause (here, `Command::Kill`) must drive the primary into teardown
-/// independently of the held connection.
-///
-/// U1a Codex round-1, minor cluster: the "still blocked" observation is a
-/// CONTINUOUS poll against `shutdown_all_call_count` (the actual
-/// mechanism-relevant signal), not one sleep-then-check at an arbitrary
-/// point -- a single check at, say, 500ms can pass merely because
-/// ordinary Phase A/B teardown itself hadn't finished yet, proving
-/// nothing about the grace specifically. Polling continuously up to a
-/// GENEROUS floor (1.5s, safely under the 2s grace and safely over the
-/// sub-second teardown a trivial killed `cmd.exe` takes) means ANY early
-/// firing is caught the instant it happens, regardless of how long
-/// ordinary teardown took to get there.
-#[test]
-fn shutdown_ack_grace_defers_transport_shutdown_until_the_late_ack_completes() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string()]; // stays open until killed
-    let cfg = config(dir.path(), "ackgrace1", argv, 80, 25);
-    let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
-    let run_transport = transport.clone();
-    let handle = std::thread::spawn(move || {
-        let mut t = run_transport;
-        capsule_win::run(cfg, rx, &mut t)
-    });
-
-    // A SEPARATE cause drives the primary into teardown (an operator kill,
-    // mirroring a natural producer exit just as well) -- the late mgmt
-    // connection below is a RACING request, not what ends the run.
-    const LATE_MGMT: ConnId = 1;
-    transport.open(LATE_MGMT);
-    transport.set_hold_for(LATE_MGMT, true); // never completes on its own
-    transport.feed(LATE_MGMT, frame::mgmt_shutdown("late-in-teardown"));
-    let mut watcher = FrameWatcher::new(&transport);
-    watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
-    });
-    tx.send(Command::Kill).unwrap();
-
-    // The ack's bytes are already QUEUED (proven above via `wait_for`, which
-    // watches queued bytes, not completions) but its physical-write
-    // completion is HELD -- `run` must not let its transport disappear
-    // while that is true. Continuous poll, not one snapshot: an ORDER
-    // assertion that holds regardless of how long ordinary teardown itself
-    // happens to take.
-    let floor = Instant::now() + Duration::from_millis(1500);
-    while Instant::now() < floor {
-        assert!(!transport.shutdown_all_was_called(), "shutdown_all must not run before the grace resolves");
-        assert!(!handle.is_finished(), "the ack grace must hold the transport open until the late ack completes");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    transport.release_held();
-    let summary = wait_for_join(handle, Duration::from_secs(10))
-        .expect("run did not return after the late ack was released")
-        .unwrap();
-    assert_eq!(summary.exit_kind, ExitKind::Requested);
-    assert_eq!(
-        transport.shutdown_all_call_count(),
-        2,
-        "shutdown_all must run exactly twice: the explicit ack-grace call, then ShutdownGuard::drop"
-    );
-
-    let frames = sealed_frames(&dir.path().join("ackgrace1"), "ackgrace1");
-    let dead = assert_producer_dead_is_last(&frames);
-    assert_eq!(dead["reason"], "late-in-teardown");
-}
-
-/// Test 14 (U1a): the grace is a DEADLINE, not an indefinite wait — if the
-/// late ack's completion never arrives, `run` still completes once
-/// `SHUTDOWN_ACK_GRACE` (2s) elapses, and `shutdown_all` still runs
-/// afterward.
-///
-/// U1a Codex round-1, Blocker 3 discharge: as in the test above, a
-/// SEPARATE `Command::Kill` drives teardown -- the held connection's own
-/// `shutdown` request never completes its ack, so it can never itself
-/// trigger `AttachAction::Shutdown`/`shutdown_requested`.
-///
-/// U1a Codex round-1, minor cluster: no clock-injection seam exists for
-/// `SHUTDOWN_ACK_GRACE` inside `run` (it is a real integration test
-/// against a real ConPTY producer, so real time is unavoidable at this
-/// level regardless) — the continuous pre-deadline poll below is the
-/// ORDER assertion the review asked for, layered ON TOP of (not instead
-/// of) confirming the pinned 2s bound itself: the lower-bound duration
-/// check only fires if the deadline expired too early, which real-clock
-/// scheduler jitter can only ever make LARGER, never smaller, so it is
-/// not a source of flake in this direction.
-#[test]
-fn shutdown_ack_grace_expires_and_teardown_still_completes() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string()]; // stays open until killed
-    let cfg = config(dir.path(), "ackgrace2", argv, 80, 25);
-    let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
-    let run_transport = transport.clone();
-    let handle = std::thread::spawn(move || {
-        let mut t = run_transport;
-        capsule_win::run(cfg, rx, &mut t)
-    });
-
-    const LATE_MGMT: ConnId = 1;
-    transport.open(LATE_MGMT);
-    transport.set_hold_for(LATE_MGMT, true); // NEVER released -- proves the deadline, not the release
-    transport.feed(LATE_MGMT, frame::mgmt_shutdown("never-acked"));
-    let mut watcher = FrameWatcher::new(&transport);
-    watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
-    });
-    tx.send(Command::Kill).unwrap();
-
-    let started = Instant::now();
-    // ORDER assertion: continuously poll a floor safely under the 2s
-    // grace, asserting it has NOT expired early.
-    let floor = started + Duration::from_millis(1500);
-    while Instant::now() < floor {
-        assert!(!transport.shutdown_all_was_called(), "must not expire the grace early");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    let summary = wait_for_join(handle, Duration::from_secs(15))
-        .expect("run did not return even after the ack grace should have expired")
-        .unwrap();
-    let elapsed = started.elapsed();
-    assert!(elapsed >= Duration::from_secs(2), "must honor the full grace before giving up: {elapsed:?}");
-    assert_eq!(summary.exit_kind, ExitKind::Requested);
-    assert_eq!(
-        transport.shutdown_all_call_count(),
-        2,
-        "shutdown_all must run exactly twice even when the grace expires unattended"
-    );
-}
-
-/// Test 15 (U1a Codex round-1, Major 6 discharge): the grace drains only
-/// what is ALREADY pending — a brand new connection arriving squarely
-/// inside the grace window must be closed outright, with NO reply ever
-/// sent for its request, rather than admitted and given almost none of
-/// the 2s the "final service poll" guarantee actually promises.
-#[test]
-fn shutdown_ack_grace_admits_no_new_connections_or_bytes() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let argv = vec!["cmd.exe".to_string()]; // stays open until killed
-    let cfg = config(dir.path(), "ackgrace3", argv, 80, 25);
-    let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
-    let run_transport = transport.clone();
-    let handle = std::thread::spawn(move || {
-        let mut t = run_transport;
-        capsule_win::run(cfg, rx, &mut t)
-    });
-
-    const LATE_MGMT: ConnId = 1;
-    transport.open(LATE_MGMT);
-    transport.set_hold_for(LATE_MGMT, true); // held throughout -- keeps the grace open for this whole test
-    transport.feed(LATE_MGMT, frame::mgmt_shutdown("late-in-teardown"));
-    let mut watcher = FrameWatcher::new(&transport);
-    watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
-    });
-    tx.send(Command::Kill).unwrap();
-
-    // Confirm we are GENUINELY mid-grace (not merely "still doing ordinary
-    // Phase A/B teardown") before probing the new-admission behavior --
-    // the same continuous-poll proof the other ack-grace tests use.
-    let floor = Instant::now() + Duration::from_millis(500);
-    while Instant::now() < floor {
-        assert!(!handle.is_finished(), "the ack grace must still be holding at this point");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    // A brand NEW connection, opened squarely inside the confirmed-active
-    // grace window: it must be closed outright, and no reply may ever be
-    // sent to it.
-    const NEW_CONN: ConnId = 2;
-    transport.open(NEW_CONN);
-    transport.feed(NEW_CONN, frame::mgmt_probe());
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline && !transport.closed_conns().contains(&NEW_CONN) {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(
-        transport.closed_conns().contains(&NEW_CONN),
-        "a connection opened during the ack grace must be closed, never left admitted"
-    );
-    assert!(
-        transport.sent_frames().iter().all(|(c, _)| *c != NEW_CONN),
-        "no reply may ever be sent to a connection admitted during the ack grace"
-    );
-
-    transport.release_held();
-    let summary = wait_for_join(handle, Duration::from_secs(10))
-        .expect("run did not return after the late ack was released")
-        .unwrap();
-    assert_eq!(summary.exit_kind, ExitKind::Requested);
 }
