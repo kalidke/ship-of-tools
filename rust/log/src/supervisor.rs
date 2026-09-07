@@ -1121,6 +1121,17 @@ fn finish_end_run_with_process(
             matches!(process.wait(KILL_WAIT_BOUND), Ok(true))
         }
     };
+    // Single-owner reaping (review round), Linux only: whichever `wait`
+    // call above actually confirmed the exit (the graceful one, or the
+    // terminate-then-wait fallback), `process` is never read again past
+    // this point — reap it now, explicitly (see `ChallengedProcess::reap`'s
+    // own doc). A Windows process HANDLE has no zombie/reap concept at
+    // all — `Drop`'s own `CloseHandle` is the whole cleanup there, so the
+    // Windows `Process` type gains nothing from a call here.
+    #[cfg(target_os = "linux")]
+    if confirmed_exit {
+        process.reap();
+    }
     if !confirmed_exit {
         let detail = bounded_detail("the leg's process did not exit even after a hard stop");
         if let Some(op_id) = op_id {
@@ -2656,6 +2667,17 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             },
             Lifecycle::Ready { process } => match process.wait(Duration::ZERO) {
                 Ok(true) => {
+                    // Single-owner reaping (review round), Linux only:
+                    // `wait` just confirmed this leg's exit and nothing
+                    // below reads `process` again — reap it now,
+                    // explicitly, here rather than relying on an implicit
+                    // `Drop` (see `ChallengedProcess::reap`'s own doc).
+                    // This is the natural-exit transition F1's own doc
+                    // used to describe. A Windows process HANDLE has no
+                    // zombie/reap concept — `Drop`'s own `CloseHandle` is
+                    // the whole cleanup there.
+                    #[cfg(target_os = "linux")]
+                    process.reap();
                     // N1 (Codex review round 3): stability is judged on
                     // the PRODUCER's own recorded lifetime
                     // (`leg_was_stable`), never on a wall-clock interval

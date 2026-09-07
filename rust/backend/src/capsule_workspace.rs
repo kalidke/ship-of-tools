@@ -1202,131 +1202,98 @@ mod runtime {
     /// Waits for `leg` to end and classifies the result — the SAME
     /// classification whether the leg is a child this daemon just
     /// spawned or one it adopted. A spawned child is awaited async, the
-    /// normal way; an adopted process has no async-awaitable primitive
-    /// (`ChallengedProcess::wait` is a synchronous, bounded wait), so it
-    /// is waited on ONE blocking task that owns it for the wait's whole
-    /// duration, looping [`ADOPTED_LEG_WAIT_POLL`] at a time until it
-    /// reports exit, then its exit code is read the same way each
-    /// platform's own `ChallengedProcess` documents its own precondition:
-    /// only after `wait` has already confirmed death. The THIRD of
-    /// decision 22's three forks lives here: Windows'
-    /// `exit_code_after_confirmed_exit` always yields a `u32` code;
-    /// Linux's `exit_status_after_confirmed_exit` yields `Option<i32>` —
-    /// `None` (decision 8's "exited, status unknown" tolerance, e.g. a
+    /// normal way — `tokio::process::Child::wait` is trusted outright:
+    /// the daemon is the sole, unambiguous OWNER of a supervisor it
+    /// spawned itself, and single-owner reaping (review round: `Child`
+    /// reaps a spawned supervisor; `ChallengedProcess` never reaps
+    /// implicitly at all, only its owner ever calls `PeerProcess::reap`
+    /// explicitly — see that method's own doc in `sot_log::client`) is
+    /// exactly what makes that trust safe now. An adopted process has no
+    /// async-awaitable primitive (`ChallengedProcess::wait` is a
+    /// synchronous, bounded wait), so it is waited on ONE blocking task
+    /// that owns it for the wait's whole duration, looping
+    /// [`ADOPTED_LEG_WAIT_POLL`] at a time until it reports exit, then
+    /// its exit code is read the same way each platform's own
+    /// `ChallengedProcess` documents its own precondition: only after
+    /// `wait` has already confirmed death. The THIRD of decision 22's
+    /// three forks lives here: Windows' `exit_code_after_confirmed_exit`
+    /// always yields a `u32` code; Linux's
+    /// `exit_status_after_confirmed_exit` yields `Option<i32>` — `None`
+    /// (decision 8's "exited, status unknown" tolerance, e.g. a
     /// pre-6.15 kernel without `PIDFD_GET_INFO`) is logged at warn with
     /// the pid and folds into [`LegOutcome::Crash`] below, never a panic.
-    ///
-    /// Linux-only tolerance (found during LU4 verification, not one of
-    /// decision 22's three named forks): a `ChallengedProcess`'s `Drop`
-    /// opportunistically reaps via a non-blocking `waitid(P_PIDFD,
-    /// WNOHANG)` the instant it observes exit (decision 21's own
-    /// reaper-of-last-resort for the supervisor-watches-ITS-OWN-leg
-    /// relationship) — but `sot_log::supervisor_client::stop`'s own
-    /// confirmed-exit wait constructs exactly such a handle for the
-    /// SUPERVISOR's OWN pid too (the wire challenge proves the peer's
-    /// identity via its own pid), so a `workspace.destroy` (or any other
-    /// direct `stop`) racing this watchdog's `child.wait()` can reap the
-    /// SAME pid first, leaving `child.wait()` here to fail `ECHILD` ("No
-    /// child processes") for a leg that in fact exited perfectly
-    /// cleanly. Rather than trust that race, an `ECHILD` here triggers
-    /// ONE follow-up `query_status`: a lane that has ALSO gone silent
-    /// confirms the process really is gone (reaped by that concurrent
-    /// caller, not a crash) and this reports [`LegOutcome::Clean`]
-    /// (`Some(EXIT_CLEAN)`); a lane that still answers means `ECHILD` was
-    /// a genuine anomaly, kept as a crash. Windows has no such hazard — a
-    /// process HANDLE is a reference-counted kernel object; any number of
-    /// holders may wait on or query it independently with no
-    /// "consumption" side effect — so this check is Linux-only.
-    async fn wait_and_classify(leg: WatchedLeg, workspace_id: &str, state_dir: &Path) -> LegOutcome {
-        // Windows never reads `state_dir` here (its `Spawned` arm has no
-        // ECHILD hazard to check for — see this function's own doc) —
-        // `&Path` is `Copy`, so this no-ops harmlessly on Linux, where the
-        // Spawned arm below still binds and uses it normally.
-        let _ = state_dir;
+    /// This daemon-side handle only ever PROVES the adopted peer's
+    /// identity — it never calls `reap()`, since a daemon holding it is
+    /// never that pid's owner of record (ADR 0043 decision 21, review
+    /// round: the supervisor that spawned it, or its own OS parent once
+    /// that supervisor is gone, is).
+    async fn wait_and_classify(leg: WatchedLeg, workspace_id: &str) -> LegOutcome {
         let code = match leg {
             WatchedLeg::Spawned(mut child) => match child.wait().await {
                 Ok(status) => status.code(),
-                #[cfg(target_os = "linux")]
-                Err(e) if e.raw_os_error() == Some(libc::ECHILD) => {
-                    let dir = state_dir.to_path_buf();
-                    let still_answers =
-                        tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&dir).is_ok())
-                            .await
-                            .unwrap_or(false);
-                    if still_answers {
-                        tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: wait() failed (lane still answers); treating as a crash");
-                        return LegOutcome::Crash;
-                    }
-                    tracing::info!(
-                        workspace_id = %workspace_id,
-                        "capsule supervisor watchdog: wait() got ECHILD but the lane is silent -- \
-                         reaped by a concurrent stop/end_run call, not a crash"
-                    );
-                    Some(EXIT_CLEAN)
-                }
                 Err(e) => {
                     tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: wait() failed; treating as a crash");
                     return LegOutcome::Crash;
                 }
             },
             WatchedLeg::Adopted(process) => {
-                    let pid = process.pid();
-                    let result = tokio::task::spawn_blocking(move || loop {
-                        match process.wait(ADOPTED_LEG_WAIT_POLL) {
-                            Ok(true) => {
-                                #[cfg(windows)]
-                                {
-                                    return process
-                                        .exit_code_after_confirmed_exit()
-                                        .map(|c| Some(c as i32))
-                                        .map_err(|e| e.to_string());
-                                }
-                                #[cfg(target_os = "linux")]
-                                {
-                                    return process
-                                        .exit_status_after_confirmed_exit()
-                                        .map_err(|e| e.to_string());
-                                }
+                let pid = process.pid();
+                let result = tokio::task::spawn_blocking(move || loop {
+                    match process.wait(ADOPTED_LEG_WAIT_POLL) {
+                        Ok(true) => {
+                            #[cfg(windows)]
+                            {
+                                return process
+                                    .exit_code_after_confirmed_exit()
+                                    .map(|c| Some(c as i32))
+                                    .map_err(|e| e.to_string());
                             }
-                            Ok(false) => continue,
-                            Err(e) => return Err(e.to_string()),
+                            #[cfg(target_os = "linux")]
+                            {
+                                return process
+                                    .exit_status_after_confirmed_exit()
+                                    .map_err(|e| e.to_string());
+                            }
                         }
-                    })
-                    .await;
-                    match result {
-                        Ok(Ok(Some(c))) => Some(c),
-                        Ok(Ok(None)) => {
-                            // Linux only (Windows's arm above always yields
-                            // `Some`) -- decision 8's own tolerance for
-                            // "exited, status unknown." Never a panic: the
-                            // leg is treated as a crash (the watchdog's
-                            // restart sequence applies), with the pid named
-                            // so an operator can correlate it with the
-                            // system's own logs if they want to know more.
-                            tracing::warn!(
-                                workspace_id = %workspace_id, pid,
-                                "capsule supervisor watchdog: adopted leg exited with unknown status (decision 8 tolerance); treating as a crash"
-                            );
-                            None
-                        }
-                        Ok(Err(e)) => {
-                            tracing::warn!(
-                                workspace_id = %workspace_id, error = %e,
-                                "capsule supervisor watchdog: waiting on the adopted process failed; treating as a crash"
-                            );
-                            None
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                workspace_id = %workspace_id, error = %e,
-                                "capsule supervisor watchdog: adopted-process wait task did not complete; treating as a crash"
-                            );
-                            None
-                        }
+                        Ok(false) => continue,
+                        Err(e) => return Err(e.to_string()),
+                    }
+                })
+                .await;
+                match result {
+                    Ok(Ok(Some(c))) => Some(c),
+                    Ok(Ok(None)) => {
+                        // Linux only (Windows's arm above always yields
+                        // `Some`) -- decision 8's own tolerance for
+                        // "exited, status unknown." Never a panic: the
+                        // leg is treated as a crash (the watchdog's
+                        // restart sequence applies), with the pid named
+                        // so an operator can correlate it with the
+                        // system's own logs if they want to know more.
+                        tracing::warn!(
+                            workspace_id = %workspace_id, pid,
+                            "capsule supervisor watchdog: adopted leg exited with unknown status (decision 8 tolerance); treating as a crash"
+                        );
+                        None
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            workspace_id = %workspace_id, error = %e,
+                            "capsule supervisor watchdog: waiting on the adopted process failed; treating as a crash"
+                        );
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            workspace_id = %workspace_id, error = %e,
+                            "capsule supervisor watchdog: adopted-process wait task did not complete; treating as a crash"
+                        );
+                        None
                     }
                 }
-            };
-            classify_exit_code(code)
+            }
+        };
+        classify_exit_code(code)
     }
 
     /// Bound on how long [`install_watchdog`] keeps re-probing a
@@ -1400,7 +1367,7 @@ mod runtime {
             let mut restart_times: Vec<Instant> = Vec::new();
             loop {
                 let outcome = match leg_opt.take() {
-                    Some(l) => wait_and_classify(l, &workspace_id, &state_dir).await,
+                    Some(l) => wait_and_classify(l, &workspace_id).await,
                     // A previous restart/adoption attempt itself found
                     // nothing to wait on -- counts as another crash
                     // against the same budget.
