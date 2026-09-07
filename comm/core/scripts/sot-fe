@@ -139,8 +139,20 @@
 #                  output streams to the FE drawer, not collected here. Without
 #                  --fresh, `repl run` uses repl.execute (no reset, collects
 #                  output) in the REPL's CURRENT project.
-#   --endpoint     daemon address; else $SOT_FE_ENDPOINT / $SOT_SPAWN_ENDPOINT /
-#                  $SOT_SOCKET / auto-detected from the running sotd daemon.
+#   --endpoint     daemon address — unix:/path, tcp:HOST:PORT, or (Windows
+#                  only) pipe:\\.\pipe\name / pipe:name; else
+#                  $SOT_FE_ENDPOINT / $SOT_SPAWN_ENDPOINT / $SOT_SOCKET /
+#                  auto-detected from the running sotd daemon. On a Windows
+#                  box, auto-detection prefers THAT BOX'S OWN local daemon
+#                  (its named pipe) when one answers — so with no --endpoint
+#                  a session reaches its own box's rows. To reach the
+#                  BACKEND instead (its rows are a different daemon,
+#                  ADR 0042 amendment decision 5), pass
+#                  --endpoint tcp:127.0.0.1:$SOT_TCP_PORT explicitly — the
+#                  box's own loopback tunnel to it. There is no
+#                  auto-routing by workspace name (a Windows box's local
+#                  rows are not reachable from the backend at all; only the
+#                  P4 bridge, not built here, could add that).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
@@ -245,7 +257,7 @@ sot_send() {
 send_fe_command() {
     local fe_cmd="$1" args_json="$2"
     if ! ENDPOINT="$(resolve_endpoint)"; then
-        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
+        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path, tcp:HOST:PORT, or (Windows) pipe:name (or \$SOT_FE_ENDPOINT)." >&2
         exit 1
     fi
     # $FE (--fe <handle>) and fe_cmd are both id/handle-shaped tokens (a
@@ -321,7 +333,7 @@ send_fe_command() {
 send_repl_execute() {
     local input_json="$1" ws="$2"
     if ! ENDPOINT="$(resolve_endpoint)"; then
-        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
+        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path, tcp:HOST:PORT, or (Windows) pipe:name (or \$SOT_FE_ENDPOINT)." >&2
         exit 1
     fi
     ws="$(_ws_id_or_passthrough "$ws")"
@@ -379,7 +391,7 @@ send_repl_execute() {
 send_repl_run_file() {
     local file="$1" ws="$2"
     if ! ENDPOINT="$(resolve_endpoint)"; then
-        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT)." >&2
+        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path, tcp:HOST:PORT, or (Windows) pipe:name (or \$SOT_FE_ENDPOINT)." >&2
         exit 1
     fi
     ws="$(_ws_id_or_passthrough "$ws")"
@@ -425,7 +437,7 @@ send_repl_run_file() {
 # the kernel. A stale tcp: endpoint aimed at a dead port lands here.
 _need_endpoint() {
     if ! ENDPOINT="$(resolve_endpoint)"; then
-        echo "ERROR: could not find the sotd daemon — this is a TRANSPORT problem, not a REPL problem. Set --endpoint unix:/path or tcp:HOST:PORT (or \$SOT_FE_ENDPOINT). A stale tcp: endpoint pointing at a dead port fails exactly like this." >&2
+        echo "ERROR: could not find the sotd daemon — this is a TRANSPORT problem, not a REPL problem. Set --endpoint unix:/path, tcp:HOST:PORT, or (Windows) pipe:name (or \$SOT_FE_ENDPOINT). A stale tcp: endpoint pointing at a dead port fails exactly like this." >&2
         exit 1
     fi
 }

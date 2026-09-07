@@ -11,6 +11,13 @@
 # Requires a daemon built with agent.send/agent.message support (workspace push +
 # this relay land together).
 #
+# ENDPOINT (SOT_RELAY_ENDPOINT, or auto-detected): unix:/path, tcp:HOST:PORT,
+# or — Windows only, ADR 0042 amendment decision 5 — pipe:\\.\pipe\name /
+# pipe:name, reaching that box's OWN local daemon over its named pipe via
+# comm-pipe-request.ps1 (PowerShell; git-bash cannot open a named pipe
+# itself). `send`/`ask` work over a pipe: endpoint; `bridge` refuses one
+# (no persistent bridge loop on Windows, ever — see that subcommand).
+#
 # Usage:
 #   comm-relay.sh send @to "message"        # fire-and-forget, instant
 #   comm-relay.sh send --all "message"      # broadcast to all clients
@@ -43,13 +50,21 @@ resolve_endpoint() {
 }
 # nc preferred; on hosts without it (e.g. git-bash on Windows, which ships no
 # nc) fall back to bash's /dev/tcp for tcp endpoints. unix-socket endpoints
-# still require nc -U (/dev/tcp can't speak AF_UNIX).
+# still require nc -U (/dev/tcp can't speak AF_UNIX). A pipe: endpoint uses
+# neither — see the EP_PIPE branches in nc_send/nc_hold below, which drive
+# comm-pipe-request.ps1 (PowerShell) instead, since git-bash cannot open a
+# named pipe itself.
 HAVE_NC=0; command -v nc >/dev/null 2>&1 && HAVE_NC=1
-ENDPOINT="$(resolve_endpoint)" || { echo "ERROR: no sotd daemon found; set SOT_RELAY_ENDPOINT=unix:/path or tcp:HOST:PORT" >&2; exit 1; }
-EP_HOST=""; EP_PORT=""; EP_UNIX=""
+ENDPOINT="$(resolve_endpoint)" || { echo "ERROR: no sotd daemon found; set SOT_RELAY_ENDPOINT=unix:/path, tcp:HOST:PORT, or (Windows) pipe:name" >&2; exit 1; }
+EP_HOST=""; EP_PORT=""; EP_UNIX=""; EP_PIPE=""
 case "$ENDPOINT" in
     tcp:*)  hp="${ENDPOINT#tcp:}"; EP_HOST="${hp%:*}"; EP_PORT="${hp##*:}" ;;
     unix:*) EP_UNIX="${ENDPOINT#unix:}" ;;
+    # ADR 0042 amendment (2026-09-07): a Windows box's LOCAL daemon only
+    # listens on a named pipe. Accepts either the full \\.\pipe\<name> form
+    # sot_daemon_endpoint prints or a bare pipe:<name> — both reduce to the
+    # trailing NAME (NamedPipeClientStream never takes the \\.\pipe\ prefix).
+    pipe:*) EP_PIPE="${ENDPOINT#pipe:}"; EP_PIPE="${EP_PIPE##*\\}" ;;
     *) echo "ERROR: bad endpoint '$ENDPOINT'" >&2; exit 1 ;;
 esac
 
@@ -66,6 +81,16 @@ _sot_hello() {
 
 # nc_out: send the single frame on stdin, return immediately (capture any reply line)
 nc_send() {
+    if [ -n "$EP_PIPE" ]; then
+        command -v powershell.exe >/dev/null 2>&1 || {
+            echo "ERROR: powershell.exe not found and endpoint is a named pipe" >&2; return 1; }
+        local ps1="$SCRIPT_DIR/comm-pipe-request.ps1"
+        [ -f "$ps1" ] || {
+            echo "ERROR: comm-pipe-request.ps1 not found next to comm-relay.sh ($SCRIPT_DIR)" >&2; return 1; }
+        { _sot_hello; cat; } | timeout 5 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+            -File "$ps1" -PipeName "$EP_PIPE" -Mode Oneshot -Op agent.send -TimeoutSec 5
+        return
+    fi
     if [ "$HAVE_NC" = 1 ]; then
         if [ -n "$EP_UNIX" ]; then { _sot_hello; cat; } | timeout 5 nc -U "$EP_UNIX"; else { _sot_hello; cat; } | timeout 5 nc "$EP_HOST" "$EP_PORT"; fi
     elif [ -n "$EP_HOST" ]; then
@@ -101,6 +126,25 @@ nc_send() {
 # Unix-socket endpoints can't use /dev/tcp (AF_UNIX) so they keep nc -U.
 nc_hold() {
     local secs="${1:-}"
+    if [ -n "$EP_PIPE" ]; then
+        # No unbounded hold over a pipe: endpoint — a Windows box never
+        # runs a persistent bridge loop (ADR 0042 amendment decision 5;
+        # see comm-listen.sh's own no-bridge-on-Windows rule). `ask`
+        # always passes a concrete $SECS; only a bare `listen`/`bridge`
+        # (no seconds) would hit this, and both are refused rather than
+        # silently substituting some arbitrary bound.
+        [ -n "$secs" ] || {
+            echo "ERROR: an unbounded hold is not supported over a pipe: endpoint (no bridge loop on Windows) -- pass an explicit number of seconds" >&2
+            return 1; }
+        command -v powershell.exe >/dev/null 2>&1 || {
+            echo "ERROR: powershell.exe not found and endpoint is a named pipe" >&2; return 1; }
+        local ps1="$SCRIPT_DIR/comm-pipe-request.ps1"
+        [ -f "$ps1" ] || {
+            echo "ERROR: comm-pipe-request.ps1 not found next to comm-relay.sh ($SCRIPT_DIR)" >&2; return 1; }
+        _sot_hello | timeout "$secs" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+            -File "$ps1" -PipeName "$EP_PIPE" -Mode Hold -TimeoutSec "$secs"
+        return
+    fi
     if [ -n "$EP_HOST" ]; then
         if exec 9<>"/dev/tcp/$EP_HOST/$EP_PORT" 2>/dev/null; then
             _sot_hello >&9   # authenticate the connection before holding it open
@@ -234,6 +278,16 @@ case "$SUB" in
     bridge)
         [ "${1:-}" = "--name" ] && { NAME="$2"; shift 2; }
         [ -z "$NAME" ] && { echo "ERROR: not joined and no --name; run comm-join.sh first" >&2; exit 1; }
+        # ADR 0042 amendment decision 5: no bridge loop on Windows, ever —
+        # a persistent `comm-relay.sh bridge` pins this script open and
+        # blocks update_comm's replace-in-place (the same reason
+        # comm-listen.sh starts no bridge there). A pipe: endpoint only
+        # ever means "this box's own local daemon"; that box's receive
+        # path is the FE inbox, not a bridge.
+        if [ -n "$EP_PIPE" ]; then
+            echo "ERROR: comm-relay.sh bridge does not support a pipe: endpoint -- a Windows box's receive path is the FE inbox (fe-inbox.jsonl), never a bridge loop. Use 'comm-relay.sh ask' or 'sot-fe type/screen' for direct pipe requests instead." >&2
+            exit 1
+        fi
         echo "bridge: relaying inbound agent.messages for @$NAME into $INBOX_DIR/$NAME.jsonl (Ctrl-C to stop)"
         nc_hold | filter_inbound | while IFS= read -r m; do
             # `to` is preserved so the inbox Monitor can rank: direct (to==me)

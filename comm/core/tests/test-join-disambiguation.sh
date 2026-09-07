@@ -40,6 +40,14 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
+# Re-point SCRIPT_DIR at the real scripts dir (it starts out as THIS test
+# file's own dir, comm/core/tests) — LU6e's pipe: cases below call
+# sot_oneshot_request directly, and that function looks up
+# comm-pipe-request.ps1 next to it via ${SCRIPT_DIR:-.}, exactly like every
+# real caller (sot-fe, comm-relay.sh) does after their own
+# `SCRIPT_DIR="$(cd "$(dirname ...)" && pwd)"`. Not read again after this
+# point for anything else in this file.
+SCRIPT_DIR="$SCRIPTS_DIR"
 JOIN="$SCRIPTS_DIR/comm-join.sh"
 SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 CONTEXT="$SCRIPTS_DIR/comm-context.sh"
@@ -220,6 +228,15 @@ registry_has_root_key() {  # NAME -> "yes" if the row has a `root` KEY at all (e
 }
 
 contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
+
+# _sot_hello — a minimal hello frame for the LU6e pipe: cases below, which
+# call sot_oneshot_request DIRECTLY (not through sot-fe/comm-relay.sh, each
+# of which defines its own copy of this function after sourcing
+# comm-lib.sh — sot_oneshot_request calls it unqualified, relying on
+# whatever the caller's scope defines).
+_sot_hello() {
+    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm-test","last_seen_revision":0,"protocol":1,"app_version":"test","token":""}}\n'
+}
 
 # --- cases -----------------------------------------------------------
 
@@ -1766,6 +1783,169 @@ FAKEUNAME
     return 0
 }
 
+# --- LU6e: the pipe: endpoint (ADR 0042 amendment, decision 5) ----------
+# This box has no real Windows/PowerShell to test against, so these cases
+# prove the BASH side only — dispatch on the pipe: prefix, the argv shape
+# handed to powershell.exe, capture into sot_oneshot_request's own $tmp
+# poll loop (unchanged for pipe:), and the clean-failure paths — via a
+# STUB powershell.exe on PATH standing in for a live named pipe. What the
+# real comm-pipe-request.ps1's own NamedPipeClientStream/JSON-filtering
+# logic does is NOT exercised here (no pwsh on this box); see the LU6e
+# implementation report for the static review of that file.
+
+case_pipe_endpoint_oneshot_request_matches_reply() {
+    local fakebin argvlog frame out
+    fakebin="$WORK/fake-powershell-oneshot"
+    mkdir -p "$fakebin"
+    # Echoes a canned res line for whatever -Op/-PipeName it was invoked
+    # with, and logs its own argv so the test can assert the invocation
+    # shape sot_oneshot_request's pipe: arm produces.
+    argvlog="$WORK/fake-powershell-oneshot-argv.log"
+    rm -f "$argvlog"
+    cat > "$fakebin/powershell.exe" <<FAKEPS
+#!/bin/sh
+op=""
+pipename=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        -Op) op="\$2"; shift 2 ;;
+        -PipeName) pipename="\$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+printf '%s %s\n' "\$pipename" "\$op" >> "$argvlog"
+printf '{"v":1,"id":9,"kind":"res","op":"%s","payload":{"ok":true,"stub":true}}\n' "\$op"
+FAKEPS
+    chmod +x "$fakebin/powershell.exe"
+
+    frame='{"v":1,"id":2,"kind":"req","op":"workspace.list","payload":{}}'
+
+    # Full \\.\pipe\<name> form (what sot_daemon_endpoint actually prints).
+    out="$(PATH="$fakebin:$PATH" SCRIPT_DIR="$SCRIPTS_DIR" \
+        ENDPOINT='pipe:\\.\pipe\sot-testuser-local' SOT_SEND_TIMEOUT=5 \
+        sot_oneshot_request "$frame" workspace.list)"
+    contains "$out" '"op":"workspace.list"' \
+        || { echo "  full-path pipe: endpoint didn't return the stub's matching reply: got '$out'"; return 1; }
+    contains "$out" '"stub":true' \
+        || { echo "  reply missing the stub marker: $out"; return 1; }
+    contains "$(cat "$argvlog" 2>/dev/null)" "sot-testuser-local workspace.list" \
+        || { echo "  argv didn't carry the normalised bare pipe name + op: $(cat "$argvlog" 2>/dev/null)"; return 1; }
+
+    # Bare pipe:<name> form must normalise identically (a no-op strip).
+    rm -f "$argvlog"
+    out="$(PATH="$fakebin:$PATH" SCRIPT_DIR="$SCRIPTS_DIR" \
+        ENDPOINT='pipe:sot-testuser-local' SOT_SEND_TIMEOUT=5 \
+        sot_oneshot_request "$frame" workspace.list)"
+    contains "$out" '"op":"workspace.list"' \
+        || { echo "  bare pipe: endpoint didn't return the stub's matching reply: got '$out'"; return 1; }
+    contains "$(cat "$argvlog" 2>/dev/null)" "sot-testuser-local workspace.list" \
+        || { echo "  bare-name argv mismatch: $(cat "$argvlog" 2>/dev/null)"; return 1; }
+    return 0
+}
+
+case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_powershell() {
+    # No powershell.exe anywhere on PATH -- must fail FAST (the check runs
+    # before anything is backgrounded) and CLEANLY: empty stdout, nonzero
+    # return, never a hang for the full SOT_SEND_TIMEOUT window.
+    local emptybin frame out rc
+    emptybin="$WORK/no-powershell-bin"
+    mkdir -p "$emptybin"
+    frame='{"v":1,"id":2,"kind":"req","op":"workspace.list","payload":{}}'
+    out="$(PATH="$emptybin:/usr/bin:/bin" SCRIPT_DIR="$SCRIPTS_DIR" \
+        ENDPOINT='pipe:sot-testuser-local' SOT_SEND_TIMEOUT=5 \
+        sot_oneshot_request "$frame" workspace.list)"
+    rc=$?
+    [ -z "$out" ] || { echo "  expected no reply with no powershell.exe on PATH, got: $out"; return 1; }
+    [ "$rc" -ne 0 ] || { echo "  expected a nonzero return with no powershell.exe on PATH"; return 1; }
+    return 0
+}
+
+case_pipe_endpoint_oneshot_request_fails_cleanly_with_missing_ps1() {
+    # comm-pipe-request.ps1 absent from SCRIPT_DIR (a broken/partial
+    # deploy) -- must fail before ever invoking powershell.exe, not with a
+    # cryptic failure from inside a backgrounded job.
+    local fakebin emptyscriptdir frame out rc err
+    fakebin="$WORK/fake-powershell-missing-ps1"
+    mkdir -p "$fakebin"
+    cat > "$fakebin/powershell.exe" <<'FAKEPS'
+#!/bin/sh
+echo "should never run" >&2
+exit 1
+FAKEPS
+    chmod +x "$fakebin/powershell.exe"
+    emptyscriptdir="$WORK/empty-script-dir"
+    mkdir -p "$emptyscriptdir"
+
+    frame='{"v":1,"id":2,"kind":"req","op":"workspace.list","payload":{}}'
+    out="$(PATH="$fakebin:$PATH" SCRIPT_DIR="$emptyscriptdir" \
+        ENDPOINT='pipe:sot-testuser-local' SOT_SEND_TIMEOUT=5 \
+        sot_oneshot_request "$frame" workspace.list 2>"$WORK/missing-ps1.err")"
+    rc=$?
+    err="$(cat "$WORK/missing-ps1.err" 2>/dev/null || true)"
+    [ -z "$out" ] || { echo "  expected no reply with comm-pipe-request.ps1 missing, got: $out"; return 1; }
+    [ "$rc" -ne 0 ] || { echo "  expected a nonzero return with comm-pipe-request.ps1 missing"; return 1; }
+    contains "$err" "comm-pipe-request.ps1" \
+        || { echo "  missing a diagnostic naming comm-pipe-request.ps1: $err"; return 1; }
+    return 0
+}
+
+case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep() {
+    # sot_daemon_endpoint, on a simulated Windows host (faked via `uname`
+    # exactly like case_comm_listen_windows_no_bridge_started does, since
+    # $OS/$OSTYPE are unset here): must ask the local daemon for its pipe
+    # FIRST (the same query scripts/sot-local-daemon.ps1 makes), prove it
+    # live with a bounded connect probe, and return pipe:<path> -- all
+    # before ever reaching for pgrep, which is not on a stock git-bash
+    # PATH. A fake sotd.exe answers `session-socket-path local`; a fake
+    # powershell.exe simulates a live connect probe (exit 0); a fake pgrep
+    # records whether it was ever invoked at all.
+    local fakebin pgreplog appdata out
+    fakebin="$WORK/win-discovery-bin"
+    mkdir -p "$fakebin"
+    cat > "$fakebin/uname" <<'FAKEUNAME'
+#!/bin/sh
+echo "MINGW64_NT-10.0-19045"
+FAKEUNAME
+    cat > "$fakebin/powershell.exe" <<'FAKEPS3'
+#!/bin/sh
+exit 0
+FAKEPS3
+    pgreplog="$WORK/win-discovery-pgrep.log"
+    rm -f "$pgreplog"
+    cat > "$fakebin/pgrep" <<FAKEPGREP
+#!/bin/sh
+echo "pgrep called: \$*" >> "$pgreplog"
+exit 1
+FAKEPGREP
+    chmod +x "$fakebin/uname" "$fakebin/powershell.exe" "$fakebin/pgrep"
+
+    appdata="$WORK/win-discovery-localappdata"
+    mkdir -p "$appdata/sot/bin"
+    cat > "$appdata/sot/bin/sotd.exe" <<'FAKESOTD'
+#!/bin/sh
+if [ "$1" = "session-socket-path" ] && [ "$2" = "local" ]; then
+    printf '%s\n' '\\.\pipe\sot-fakeuser-local'
+    exit 0
+fi
+exit 1
+FAKESOTD
+    chmod +x "$appdata/sot/bin/sotd.exe"
+
+    out="$(
+        unset OS OSTYPE SOT_SOCKET SOTD_BIN
+        PATH="$fakebin:$PATH"
+        LOCALAPPDATA="$appdata"
+        sot_daemon_endpoint
+    )"
+    contains "$out" 'pipe:' \
+        || { echo "  expected a pipe: endpoint on a simulated Windows host, got: $out"; return 1; }
+    contains "$out" 'sot-fakeuser-local' \
+        || { echo "  pipe endpoint missing the resolved pipe path: $out"; return 1; }
+    [ ! -s "$pgreplog" ] \
+        || { echo "  pgrep was invoked during Windows discovery (must never be): $(cat "$pgreplog")"; return 1; }
+    return 0
+}
+
 # --- run, in order (later cases depend on earlier ones' registry state) --
 
 check "fresh claim records root"                            case_fresh_claim
@@ -1816,6 +1996,10 @@ check "sot_jq_rawfile round-trips a leading-slash value through jq --rawfile" ca
 check "every jq --arg binding in the comm scripts + hooks is on the slash-safe allowlist" case_jq_arg_names_are_allowlisted_against_slash_prone_values
 check "comm-listen.sh starts no bridge on a Windows host (start/status/selftest all report the FE-inbox receive path)" case_comm_listen_windows_no_bridge_started
 check "comm-listen.sh's Windows receive-path line resolves under LOCALAPPDATA/HOME, never a bare /" case_comm_listen_windows_receive_path_never_bare_slash
+check "sot_oneshot_request over a pipe: endpoint dispatches to the stub powershell.exe and returns its matching reply (LU6e)" case_pipe_endpoint_oneshot_request_matches_reply
+check "sot_oneshot_request over a pipe: endpoint fails cleanly with no powershell.exe on PATH (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_powershell
+check "sot_oneshot_request over a pipe: endpoint fails cleanly with comm-pipe-request.ps1 missing (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_missing_ps1
+check "sot_daemon_endpoint on a simulated Windows host returns pipe: first and never calls pgrep (LU6e)" case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

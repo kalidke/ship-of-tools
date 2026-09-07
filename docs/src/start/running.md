@@ -26,6 +26,18 @@ hotkey `h`) resolved against `.sot/hosts.toml`; environment overrides
 (`SOT_HOST`, `SOT_REMOTE_REPO`, `SOT_TCP_PORT`, `SOT_REMOTE_SOCKET`) win over both. See
 [Per-Machine Setup](setup.md).
 
+A **comm-tooling session** (a Claude Code session driving `sot-fe`/
+`comm-relay.sh` from a shell on the Windows box, not the frontend app itself)
+sees the same two daemons and must pick between them explicitly. With no
+`--endpoint`, those scripts prefer the box's OWN local daemon — reached over
+its named pipe (`\\.\pipe\sot-<user>-local`), never a loopback port — so an
+unqualified `sot-fe screen <workspace>` reaches that box's own rows. To reach
+the **backend** instead (a different daemon, with its own, separate set of
+rows), pass `--endpoint tcp:127.0.0.1:$SOT_TCP_PORT` explicitly: that loopback
+port is the SSH tunnel the launcher already opened, not a second local
+listener. There is no auto-routing by workspace name between the two — only
+the (unbuilt) remote-attach bridge could add that.
+
 ## Windows Taskbar Launch Looks Dead
 
 The Windows shortcut runs the launcher hidden, so an early failure can look like

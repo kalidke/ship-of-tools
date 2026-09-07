@@ -125,6 +125,58 @@ sot_tmux_socket() {
     printf '%s\n' "$sock"
 }
 
+# _sot_is_windows — true under git-bash/MSYS/Cygwin on a Windows host.
+# comm-listen.sh and comm-session-skill.sh each keep their own copy of this
+# same 3-line check ("two call sites don't earn a shared helper" was the
+# standing call there — see comm-listen.sh's own comment). Both of THIS
+# file's new call sites (the pipe-discovery tier and its pgrep guard,
+# below) live inside comm-lib.sh itself, so a third copy pasted into this
+# file is exactly what a shared helper here avoids, at no cost to those
+# other two scripts (neither sources this one for the check).
+_sot_is_windows() {
+    case "${OS:-}" in Windows_NT) return 0 ;; esac
+    case "${OSTYPE:-}" in msys*|cygwin*|win32) return 0 ;; esac
+    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
+    return 1
+}
+
+# _sot_windows_local_pipe — the LOCAL daemon's named pipe, resolved and
+# proven live (ADR 0042 amendment, decision 5, corrected 2026-09-07): asks
+# the daemon binary itself for its pipe path — the SAME query
+# scripts/sot-local-daemon.ps1 makes (`sotd.exe session-socket-path local`)
+# — so this can never derive a different name than the one the launcher's
+# own daemon binds. Then proves it live with a bounded connect-then-close
+# probe, mirroring that script's Test-SotPipeOpen exactly: a pipe NAME can
+# persist under \\.\pipe\ while a dead client still holds a handle to it,
+# so a resolvable name alone is not evidence anything is listening. Prints
+# the \\.\pipe\... path and returns 0 only when both checks pass; nothing
+# printed, nonzero return otherwise. Windows-only — callers gate with
+# _sot_is_windows first.
+_sot_windows_local_pipe() {
+    command -v powershell.exe >/dev/null 2>&1 || return 1
+    local daemon_exe="${SOTD_BIN:-}"
+    if [ -z "$daemon_exe" ] || [ ! -f "$daemon_exe" ]; then
+        daemon_exe="${LOCALAPPDATA:-}/sot/bin/sotd.exe"
+    fi
+    [ -f "$daemon_exe" ] || return 1
+    local raw
+    raw="$("$daemon_exe" session-socket-path local 2>/dev/null | head -n1 | tr -d '\r')"
+    case "$raw" in
+        '\\'*'pipe'*) : ;;
+        *) return 1 ;;
+    esac
+    local name="${raw##*\\}"
+    [ -n "$name" ] || return 1
+    # The name is interpolated into a PowerShell single-quoted literal:
+    # refuse anything outside the daemon's own charset rather than escape it.
+    case "$name" in *[!A-Za-z0-9._-]*) return 1 ;; esac
+    powershell.exe -NoProfile -NonInteractive -Command "
+        \$c = New-Object System.IO.Pipes.NamedPipeClientStream('.', '$name', [System.IO.Pipes.PipeDirection]::InOut)
+        try { \$c.Connect(500); exit 0 } catch { exit 1 } finally { \$c.Dispose() }
+    " >/dev/null 2>&1 || return 1
+    printf '%s\n' "$raw"
+}
+
 # sot_daemon_endpoint [EXPLICIT] — resolve the control socket endpoint used by
 # comm relay/spawn/FE commands. Explicit endpoints keep their old behavior; the
 # socket-only default is discovered by asking sotd for the label-derived socket.
@@ -133,24 +185,42 @@ sot_daemon_endpoint() {
     [ -n "$explicit" ] && { printf '%s\n' "$explicit"; return 0; }
     [ -n "${SOT_SOCKET:-}" ] && { printf 'unix:%s\n' "$SOT_SOCKET"; return 0; }
 
+    # ADR 0042 amendment (2026-09-07): on a Windows box the LOCAL daemon
+    # only ever listens on its named pipe — the box's loopback port is the
+    # SSH tunnel OUT to the backend, never a second local listener — so
+    # discovery asks for the pipe FIRST, before any tier below (all of
+    # which are Unix-socket-shaped and would silently miss a Windows
+    # daemon anyway). Falls through to those tiers on a probe miss (no
+    # local daemon running yet) rather than failing outright.
+    if _sot_is_windows; then
+        local pipe_path
+        if pipe_path="$(_sot_windows_local_pipe)"; then
+            printf 'pipe:%s\n' "$pipe_path"
+            return 0
+        fi
+    fi
+
     # Keep compatibility with development daemons launched with explicit
-    # transport flags.
-    local line
-    while IFS= read -r line; do
-        case "$line" in
-            *comm-relay*|*comm-spawn*|*comm-despawn*|*comm-listen*|*comm-watch*|*comm-poll*|*sot-fe*|*sot-nav*)
-                continue
-                ;;
-        esac
-        if [[ "$line" =~ --tcp[[:space:]]+([^[:space:]]+) ]]; then
-            printf 'tcp:%s\n' "${BASH_REMATCH[1]}"
-            return 0
-        fi
-        if [[ "$line" =~ --socket[[:space:]]+([^[:space:]]+) ]]; then
-            printf 'unix:%s\n' "${BASH_REMATCH[1]}"
-            return 0
-        fi
-    done < <(pgrep -af 'sotd' 2>/dev/null || true)
+    # transport flags. pgrep is not on a stock git-bash PATH and must never
+    # be reached for on Windows regardless of whether it happens to exist.
+    if ! _sot_is_windows; then
+        local line
+        while IFS= read -r line; do
+            case "$line" in
+                *comm-relay*|*comm-spawn*|*comm-despawn*|*comm-listen*|*comm-watch*|*comm-poll*|*sot-fe*|*sot-nav*)
+                    continue
+                    ;;
+            esac
+            if [[ "$line" =~ --tcp[[:space:]]+([^[:space:]]+) ]]; then
+                printf 'tcp:%s\n' "${BASH_REMATCH[1]}"
+                return 0
+            fi
+            if [[ "$line" =~ --socket[[:space:]]+([^[:space:]]+) ]]; then
+                printf 'unix:%s\n' "${BASH_REMATCH[1]}"
+                return 0
+            fi
+        done < <(pgrep -af 'sotd' 2>/dev/null || true)
+    fi
 
     # Normal socket-only mode: the daemon may have only --label on argv, so
     # there is no transport flag to scrape. Query the same binary family the
@@ -174,13 +244,15 @@ sot_daemon_endpoint() {
     _try_sotd_socket_bin "$HOME/.local/share/sot/bin/sotd" && return 0
     _try_sotd_socket_bin "$HOME/.local/bin/sotd" && return 0
 
-    while IFS= read -r line; do
-        local pid="${line%% *}"
-        case "$pid" in ''|*[!0-9]*) continue ;; esac
-        [ -r "/proc/$pid/exe" ] || continue
-        bin="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-        _try_sotd_socket_bin "$bin" && return 0
-    done < <(pgrep -af 'sotd' 2>/dev/null || true)
+    if ! _sot_is_windows; then
+        while IFS= read -r line; do
+            local pid="${line%% *}"
+            case "$pid" in ''|*[!0-9]*) continue ;; esac
+            [ -r "/proc/$pid/exe" ] || continue
+            bin="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+            _try_sotd_socket_bin "$bin" && return 0
+        done < <(pgrep -af 'sotd' 2>/dev/null || true)
+    fi
 
     return 1
 }
@@ -899,7 +971,9 @@ claim_derived_handle() {  # MODE ROOT HOST OBJ_JSON
 #     nothing, holds nothing.
 # Read window: SOT_SEND_TIMEOUT, else the caller's SEND_TIMEOUT (sot-fe's
 # repl paths set --timeout up to minutes — the window MUST honor it), else
-# 10s. Uses ENDPOINT (unix:/path or tcp:host:port) from the caller's scope.
+# 10s. Uses ENDPOINT (unix:/path, tcp:host:port, or pipe:name — the last one
+# a Windows-only named-pipe transport, see the pipe: arm below) from the
+# caller's scope.
 sot_oneshot_request() {
     local frame="$1" op="$2"
     local timeout_s="${SOT_SEND_TIMEOUT:-${SEND_TIMEOUT:-10}}"
@@ -932,6 +1006,30 @@ sot_oneshot_request() {
                 ) > "$tmp" 2>/dev/null &
                 ncpid=$!
             fi
+            ;;
+        pipe:*)
+            # ADR 0042 amendment (2026-09-07): a Windows box's LOCAL daemon
+            # only listens on a named pipe, which git-bash cannot open
+            # itself — comm-pipe-request.ps1 is the transport, invoked
+            # exactly the way nc is above (hello + frame piped to its
+            # stdin, never argv). Accepts either the full \\.\pipe\<name>
+            # form sot_daemon_endpoint prints or a bare pipe:<name> — both
+            # reduce to the trailing NAME (NamedPipeClientStream never
+            # takes the \\.\pipe\ prefix itself).
+            local pipename="${ENDPOINT#pipe:}"
+            pipename="${pipename##*\\}"
+            command -v powershell.exe >/dev/null 2>&1 || {
+                echo "ERROR: powershell.exe not found and endpoint is a named pipe (pipe: needs PowerShell)" >&2
+                rm -f "$tmp"; return 1; }
+            local ps1="${SCRIPT_DIR:-.}/comm-pipe-request.ps1"
+            [ -f "$ps1" ] || {
+                echo "ERROR: comm-pipe-request.ps1 not found next to the comm scripts (looked in ${SCRIPT_DIR:-.})" >&2
+                rm -f "$tmp"; return 1; }
+            { _sot_hello; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
+                | timeout "$timeout_s" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+                    -File "$ps1" -PipeName "$pipename" -Mode Oneshot -Op "$op" -TimeoutSec "$timeout_s" \
+                    > "$tmp" 2>/dev/null &
+            ncpid=$!
             ;;
         *) rm -f "$tmp"; return 1 ;;
     esac
