@@ -1,6 +1,6 @@
 ---
 name: sot-comm
-description: Use Ship of Tools comms from Codex: send/poll messages, coordinate with Claude Code or Codex peers, use socket-only daemon relay, report work-state, and show results through the frontend. Use when asked to message agents, check backlog, repair comms, use @handles, or drive the FE from a Codex session.
+description: "Use Ship of Tools comms from Codex: send/poll messages, coordinate with peers over the daemon relay, report work-state, show results in the frontend. Use when asked to message agents, check backlog, use @handles, or drive the FE from a Codex session."
 ---
 
 # sot-comm
@@ -71,4 +71,14 @@ show-result <path>
 ```
 
 For files inside a workspace, `sot-fe preview <workspace> <path>` badges the FE
-without force-switching the user's current view.
+without force-switching the user's current view. Full verb/flag list:
+`sot-fe --help` (`goto`, `mode`, `notify`, `open-url`, `repl run|eval|
+interrupt|status`, `type`, `screen`, ...).
+
+## Typing into / reading a sibling row
+
+`sot-fe type <workspace> [<text>] [--stdin] [--enter]` sends literal bytes
+into another session's pane (`pty.input`); `sot-fe screen <workspace>` prints
+its current screen, no scrollback (`pty.screen`). **Read before you write:**
+never send `type` — not even a bare Enter — to a pane you haven't just read
+with `screen`; a blind keystroke can end a session instead of advancing it.

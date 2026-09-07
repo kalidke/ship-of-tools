@@ -1,24 +1,23 @@
 ---
 name: release
-description: Cut a Ship of Tools release — stamp the product version everywhere, tag, and let CI build+publish the GitHub Release (ADR 0030 Phase B). Activates for "cut a release", "release vX.Y.Z", "tag a release", "publish a release", "new release" in the ship-of-tools repo.
+description: Cut a Ship of Tools release — stamp the product version everywhere, tag, and let CI build+publish the GitHub Release (ADR 0030 Phase B). Activates for "cut a release", "release vX.Y.Z", "tag a release", "publish a release".
 ---
 
 # release — cut a Ship of Tools release
 
 One product version across all components (ADR 0030 §1): the release unit is
 the whole ship, released as a git tag that CI turns into platform binaries +
-a published GitHub Release (installs clone the repo at the tag — the julia
-bundle is retired, ADR 0030 amendment 2026-07-04). Read
+a published GitHub Release (installs clone the repo at the tag — there is no
+separate julia bundle). Read
 `docs/adr/0030-versioning-release-and-auto-update.md` §1–3 before your first
 release from a fresh context.
 
 ## Preflight (do all four, report anything amiss instead of proceeding)
 
 1. **main is green**: latest `Rust` workflow run on main succeeded
-   (`gh run list --workflow Rust --limit 1`), and check the Julia `CI`
-   workflow too — green since 2026-07-02 (the docs-job fix); a red Julia CI
-   is no longer expected and should be investigated, though only the Rust
-   gate hard-blocks a release.
+   (`gh run list --workflow Rust --limit 1`); check the Julia `CI` workflow
+   too — a red Julia CI should be investigated, though only the Rust gate
+   hard-blocks a release.
 2. **Tree clean + synced**: `git status --porcelain` empty, HEAD ==
    origin/main. Coordinate over sot-comm if an FE session announced pending
    pushes (sync-before-push convention).
