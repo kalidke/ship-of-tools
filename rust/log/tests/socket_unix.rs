@@ -33,15 +33,21 @@
 //! (since each one that touches real I/O runs in its own isolated child
 //! process, per above) never race another test's own env var mutation.
 
+#[cfg(target_os = "linux")]
+use sot_log::socket_unix::connect_voyage_socket;
 use sot_log::socket_unix::{
-    voyage_socket_path, ClosedReason, ConnId, SocketError, SocketServer, TransportEvent,
+    voyage_socket_path, ClosedReason, ConnId, SocketClient, SocketError, SocketServer,
+    TransportEvent,
 };
 use sot_log::state_dir::current_uid;
+#[cfg(target_os = "linux")]
+use sot_log::transport::CONNECT_BOUND;
 use sot_log::transport::TEARDOWN_AGGREGATE_DEADLINE;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(target_os = "linux")]
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A per-event bound used throughout (well inside `ISOLATION_TIMEOUT`, so
@@ -957,5 +963,343 @@ fn capacity_excess_connection_is_closed_immediately() {
 
     drop(first);
     drop(second);
+    drop(server);
+}
+
+// ---------------------------------------------------------------------
+// L1-unix LU1c: `SocketClient` (`write_all`/`read`/`cancel`, and the
+// bounded connect retry loop). Mirrors the analogous section of
+// `tests/pipe_win.rs`. `SocketClient::from_stream_for_test` builds a
+// client around a plain `UnixStream::connect` — the `pub(crate)`
+// unchallenged constructors are not reachable from this separate
+// integration-test crate, exactly like `pipe_win::
+// connect_voyage_pipe_unchallenged` is not reachable from
+// `tests/pipe_win.rs` either.
+// ---------------------------------------------------------------------
+
+/// A `SocketClient::read` blocked on one thread is unblocked by
+/// `cancel()` called from another, returning `SocketError::Cancelled`.
+#[test]
+fn client_read_cancel_unblocks_from_another_thread() {
+    if !run_isolated("client_read_cancel_unblocks_from_another_thread") {
+        return;
+    }
+    let _rt = isolated_runtime_dir();
+    let id = fresh_voyage_id();
+    let path = voyage_socket_path(&id).unwrap();
+    let server = SocketServer::bind(&id, 2).unwrap();
+    let client = Arc::new(SocketClient::from_stream_for_test(
+        UnixStream::connect(&path).unwrap(),
+        0,
+    ));
+    let _conn_id = expect_accepted(&server, TIMEOUT);
+
+    let reader_client = Arc::clone(&client);
+    let reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 16];
+        reader_client.read(&mut buf) // blocks -- the server never sends anything
+    });
+
+    std::thread::sleep(Duration::from_millis(300)); // let the read actually become pending
+    client.cancel();
+
+    let result = reader.join().unwrap();
+    assert!(
+        matches!(result, Err(SocketError::Cancelled)),
+        "expected Cancelled, got {result:?}"
+    );
+
+    drop(server);
+}
+
+/// A `SocketClient::write_all` blocked on one thread (the kernel send
+/// buffer saturated because nobody drains it) is unblocked by `cancel()`
+/// called from another.
+#[test]
+fn client_write_cancel_unblocks_from_another_thread() {
+    if !run_isolated("client_write_cancel_unblocks_from_another_thread") {
+        return;
+    }
+    let _rt = isolated_runtime_dir();
+    let id = fresh_voyage_id();
+    let path = voyage_socket_path(&id).unwrap();
+    let server = SocketServer::bind(&id, 2).unwrap();
+    let client = Arc::new(SocketClient::from_stream_for_test(
+        UnixStream::connect(&path).unwrap(),
+        0,
+    ));
+    let _conn_id = expect_accepted(&server, TIMEOUT);
+    // Deliberately never drain `server.events()` from here on -- that is
+    // what eventually stalls the server's reader and lets the raw socket
+    // buffer fill up behind it, giving the client's own `write_all`
+    // something real to block on.
+
+    let writer_client = Arc::clone(&client);
+    let writer = std::thread::spawn(move || {
+        let payload = vec![0xCDu8; 65_536];
+        loop {
+            match writer_client.write_all(&payload) {
+                Ok(()) => {}
+                Err(e) => return e,
+            }
+        }
+    });
+
+    std::thread::sleep(Duration::from_secs(2)); // let the flood saturate the events channel + socket buffer
+    client.cancel();
+
+    let result = writer.join().unwrap();
+    assert!(
+        matches!(result, SocketError::Cancelled),
+        "expected Cancelled, got {result:?}"
+    );
+
+    drop(server);
+}
+
+/// A SECOND concurrent same-direction `SocketClient::read` returns
+/// `SocketError::ConcurrentSubmit` rather than racing the first caller.
+#[test]
+fn concurrent_same_direction_client_read_returns_distinct_error() {
+    if !run_isolated("concurrent_same_direction_client_read_returns_distinct_error") {
+        return;
+    }
+    let _rt = isolated_runtime_dir();
+    let id = fresh_voyage_id();
+    let path = voyage_socket_path(&id).unwrap();
+    let server = SocketServer::bind(&id, 2).unwrap();
+    let client = Arc::new(SocketClient::from_stream_for_test(
+        UnixStream::connect(&path).unwrap(),
+        0,
+    ));
+    let _conn_id = expect_accepted(&server, TIMEOUT);
+
+    let a = Arc::clone(&client);
+    let reader_a = std::thread::spawn(move || {
+        let mut buf = [0u8; 16];
+        a.read(&mut buf) // blocks -- nobody ever sends
+    });
+
+    // Review round fix: WAIT on the OBSERVED precondition (A's read has
+    // genuinely taken the read slot) rather than a fixed sleep guessing
+    // at how long that takes.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !client.read_slot_held_for_test() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for A's read to genuinely hold the read slot"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let mut buf_b = [0u8; 16];
+    let result_b = client.read(&mut buf_b);
+    assert!(
+        matches!(result_b, Err(SocketError::ConcurrentSubmit)),
+        "expected ConcurrentSubmit, got {result_b:?}"
+    );
+
+    client.cancel();
+    let result_a = reader_a.join().unwrap();
+    assert!(
+        matches!(result_a, Err(SocketError::Cancelled)),
+        "expected Cancelled, got {result_a:?}"
+    );
+
+    drop(server);
+}
+
+/// Property 34: once cancelled, a `SocketClient` permanently rejects
+/// EVERY later submission -- `read` and `write_all` alike -- without
+/// ever touching the OS again. Cancelling twice is idempotent.
+#[test]
+fn cancelled_client_rejects_later_submissions() {
+    if !run_isolated("cancelled_client_rejects_later_submissions") {
+        return;
+    }
+    let _rt = isolated_runtime_dir();
+    let id = fresh_voyage_id();
+    let path = voyage_socket_path(&id).unwrap();
+    let server = SocketServer::bind(&id, 2).unwrap();
+    let client = SocketClient::from_stream_for_test(UnixStream::connect(&path).unwrap(), 0);
+    let _conn_id = expect_accepted(&server, TIMEOUT);
+
+    client.cancel();
+
+    let mut buf = [0u8; 16];
+    assert!(
+        matches!(client.read(&mut buf), Err(SocketError::Cancelled)),
+        "a cancelled client must permanently reject a later read"
+    );
+    assert!(
+        matches!(client.write_all(b"x"), Err(SocketError::Cancelled)),
+        "a cancelled client must permanently reject a later write"
+    );
+
+    // Idempotent: cancelling again must not panic or change the outcome.
+    client.cancel();
+    assert!(matches!(client.read(&mut buf), Err(SocketError::Cancelled)));
+
+    drop(server);
+}
+
+/// ADR 0043 decision 7 (review round): a failed send latches the
+/// connection closed, the same rule the server's own `writer_loop`
+/// already follows — the peer (the server) closes after reading only
+/// PART of a large write, so the client's own in-flight `write_all` fails
+/// terminally partway through; THAT call returns its own real error
+/// (never `Cancelled` — nobody called `cancel()`), but the latch it sets
+/// means every LATER call on the SAME client is rejected with
+/// `Cancelled`, exactly as if `cancel()` had been called.
+#[test]
+fn a_terminal_write_failure_latches_the_connection_closed() {
+    if !run_isolated("a_terminal_write_failure_latches_the_connection_closed") {
+        return;
+    }
+    let _rt = isolated_runtime_dir();
+    let id = fresh_voyage_id();
+    let path = voyage_socket_path(&id).unwrap();
+    let server = SocketServer::bind(&id, 2).unwrap();
+    let client = Arc::new(SocketClient::from_stream_for_test(
+        UnixStream::connect(&path).unwrap(),
+        0,
+    ));
+    let conn_id = expect_accepted(&server, TIMEOUT);
+
+    // A payload the kernel's own socket buffers cannot absorb in one
+    // gulp, so this write genuinely blocks partway through, waiting for
+    // the server side to keep draining it.
+    let writer_client = Arc::clone(&client);
+    let writer = std::thread::spawn(move || {
+        let payload = vec![0xABu8; 8 * 1024 * 1024];
+        writer_client.write_all(&payload)
+    });
+
+    // Read SOME of it -- proving data is genuinely flowing (a partial
+    // delivery, not an instantly-severed connection) -- then sever the
+    // connection out from under the still-in-flight write.
+    match next_event(&server, TIMEOUT) {
+        TransportEvent::Bytes(cid, bytes) => {
+            assert_eq!(cid, conn_id, "Bytes for the wrong connection");
+            assert!(!bytes.is_empty());
+        }
+        other => panic!("expected Bytes, got {other:?}"),
+    }
+    server.close(conn_id);
+
+    let result = writer.join().unwrap();
+    assert!(
+        matches!(result, Err(SocketError::Io { .. })),
+        "expected the terminal write failure to surface as its OWN Io error \
+         (never Cancelled -- nobody called cancel()), got {result:?}"
+    );
+
+    let mut buf = [0u8; 16];
+    assert!(
+        matches!(client.read(&mut buf), Err(SocketError::Cancelled)),
+        "a client whose write already failed terminally must reject a later read"
+    );
+    assert!(
+        matches!(client.write_all(b"x"), Err(SocketError::Cancelled)),
+        "a client whose write already failed terminally must reject a later write"
+    );
+
+    drop(server);
+}
+
+/// ADR 0043 decision 4, property 18: with nothing ever listening at all
+/// (no socket file exists), every `connect(2)` attempt sees `ENOENT`,
+/// retried within [`CONNECT_BOUND`] before failing loudly. Exercised
+/// through the fully public `connect_voyage_socket` -- since connect
+/// never succeeds, the subsequent challenge step is never reached, so
+/// this proves the CONNECT retry loop specifically, not the challenge.
+#[test]
+#[cfg(target_os = "linux")]
+fn connect_retries_within_the_bound_then_fails_when_nothing_listens() {
+    if !run_isolated("connect_retries_within_the_bound_then_fails_when_nothing_listens") {
+        return;
+    }
+    let _rt = isolated_runtime_dir();
+    let id = fresh_voyage_id();
+
+    let started = Instant::now();
+    let err = connect_voyage_socket(&id).unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(err, SocketError::Io { op, .. } if op.contains("connect")),
+        "expected a connect-family error, got {err}"
+    );
+    assert!(
+        elapsed >= CONNECT_BOUND,
+        "expected the retry loop to actually run out the {CONNECT_BOUND:?} bound, took {elapsed:?}"
+    );
+    // "one attempt may overrun the bound by a single sleep" -- a generous
+    // upper margin, not a tight one, so CI scheduling jitter can't flake
+    // this.
+    assert!(
+        elapsed < CONNECT_BOUND + Duration::from_secs(5),
+        "retry loop ran far longer than the bound plus one overrun sleep: {elapsed:?}"
+    );
+}
+
+/// ADR 0043 decision 4, property 18: a socket special file that exists
+/// but has nobody listening behind it (bound, then the listener dropped
+/// without unlinking) makes every `connect(2)` see `ECONNREFUSED`,
+/// retried the same way `ENOENT` is.
+#[test]
+#[cfg(target_os = "linux")]
+fn connect_refused_by_a_stale_socket_file_retries_then_fails() {
+    if !run_isolated("connect_refused_by_a_stale_socket_file_retries_then_fails") {
+        return;
+    }
+    let _rt = isolated_runtime_dir();
+    let id = fresh_voyage_id();
+    let path = voyage_socket_path(&id).unwrap();
+    // `std`'s own `UnixListener` does not unlink its socket file on
+    // `Drop` -- binding then immediately dropping leaves a stale special
+    // file on disk with nobody behind it, so a real client's `connect(2)`
+    // sees `ECONNREFUSED`, not `ENOENT`.
+    drop(UnixListener::bind(&path).unwrap());
+
+    let started = Instant::now();
+    let err = connect_voyage_socket(&id).unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(err, SocketError::Io { op, .. } if op.contains("connect")),
+        "expected a connect-family error, got {err}"
+    );
+    assert!(
+        elapsed >= CONNECT_BOUND,
+        "expected the retry loop to actually run out the {CONNECT_BOUND:?} bound, took {elapsed:?}"
+    );
+}
+
+/// ADR 0043 decision 4: at capacity the acceptor accepts and closes
+/// immediately -- from a real `SocketClient`'s own perspective (not a raw
+/// `UnixStream`, see `capacity_excess_connection_is_closed_immediately`
+/// above for that variant), the excess connection's first `read` sees an
+/// early, ordinary `Ok(0)`.
+#[test]
+fn excess_connection_at_capacity_is_seen_as_early_eof() {
+    if !run_isolated("excess_connection_at_capacity_is_seen_as_early_eof") {
+        return;
+    }
+    let _rt = isolated_runtime_dir();
+    let id = fresh_voyage_id();
+    let path = voyage_socket_path(&id).unwrap();
+    let server = SocketServer::bind(&id, 1).unwrap();
+
+    let _first = UnixStream::connect(&path).unwrap();
+    let _first_conn = expect_accepted(&server, TIMEOUT);
+
+    let second = SocketClient::from_stream_for_test(UnixStream::connect(&path).unwrap(), 0);
+    let mut buf = [0u8; 16];
+    let n = second
+        .read(&mut buf)
+        .expect("read should observe an ordered EOF, not an error");
+    assert_eq!(n, 0, "expected the excess connection to see EOF promptly");
+
     drop(server);
 }

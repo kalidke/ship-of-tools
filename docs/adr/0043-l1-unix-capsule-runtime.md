@@ -230,10 +230,18 @@ submissions.
    peer's pidfd comes straight from the socket, race-free, and its pid is
    cross-checked against `SO_PEERCRED`; on older kernels (the backend hosts run
    5.15) `pidfd_open(pid)` is followed by a validation that closes the window —
-   the pidfd's process must have started strictly BEFORE this connection was
-   accepted (`/proc/<pid>/stat` start time against an accept timestamp on the
-   same clock; a tie is `Undetermined`), because a recycled pid can only belong
-   to a process created after the original peer died, i.e. after it connected.
+   the pidfd's process must have started strictly BEFORE the CLIENT's own
+   pre-attempt anchor — `CLOCK_BOOTTIME`, sampled by the connecting client
+   itself immediately BEFORE issuing that `connect(2)` attempt, never after it
+   returns (a post-connect sample leaves the window open between `connect(2)`
+   succeeding and the sample actually running, during which a recycled pid
+   could satisfy the strict inequality even though it raced this very
+   attempt) — compared against `/proc/<pid>/stat`'s own start time on the same
+   clock; a tie is `Undetermined`, because a recycled pid can only belong to a
+   process created after the original peer died, i.e. after this connection's
+   own attempt began. A legitimate peer that happens to start in that narrow
+   anchor-to-connect gap is `Undetermined` for this one attempt and proven on
+   a later retry, which re-anchors.
    Once validated, the retained pidfd makes every later `wait`/`terminate`
    race-free; there is NO numeric-pid signalling path and NO "re-check /proc
    before kill" fallback — a host without `pidfd_open` (< 5.3) fails closed.
