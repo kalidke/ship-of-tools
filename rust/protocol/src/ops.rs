@@ -1134,6 +1134,21 @@ pub struct WorkspaceCreateReq {
     /// empty string when absent).
     #[serde(default)]
     pub task: String,
+    /// ADR 0043 decision 22: which runtime hosts this workspace's agent
+    /// pane — `""` (absent on the wire; `#[serde(default)]`) means this
+    /// host's platform default (`"capsule"` on Windows, `"tmux"`
+    /// elsewhere); `"capsule"` asks for a capsule row explicitly on
+    /// either platform; `"tmux"` is refused on Windows (the no-knob
+    /// rule — Windows has no tmux runtime at all). The Linux platform
+    /// default stays `"tmux"` even now that the capsule runtime compiles
+    /// and runs there (LU4): a capsule row's attach is `attach_direct` —
+    /// same-machine only, since the frontend connects to the supervisor
+    /// lane directly — so a Linux backend's capsule rows have no attach
+    /// path from a remote frontend until the bridge lands. This field is
+    /// the honest way for a same-machine test, a local Linux frontend,
+    /// or later the bridge to ask for one anyway.
+    #[serde(default)]
+    pub runtime: String,
     // NOTE (ADR 0023 §3): the daemon-boot trigger travels as an extra wire field
     // `boot: bool` on this op's payload, but is intentionally NOT a struct field
     // here — `handle_workspace_create` reads it straight off the raw JSON. Adding

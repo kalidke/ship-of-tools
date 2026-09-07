@@ -395,17 +395,21 @@ pub async fn run(opts: Opts) -> Result<()> {
     // does not exist yet at all ("no leg at all -> spawn a new leg").
     // Codex review finding 10: runs OFF the startup critical path (a
     // detached task, never awaited) with its own bounded concurrency —
-    // see `capsule_workspace::resume_all`'s own doc. Windows-only:
-    // `workspace.create` never marks a workspace `"capsule"` on any
-    // other host in this unit (see `handlers.rs`), so there is nothing
-    // to resume there.
-    #[cfg(windows)]
+    // see `capsule_workspace::resume_all`'s own doc. Gated to Windows and
+    // Linux only (ADR 0043 decision 22): on any other host
+    // `workspace.create` never marks a workspace `"capsule"` (see
+    // `handlers.rs`), so there is nothing to resume there. On Linux this
+    // naturally resumes nothing on a fresh install either (the Linux
+    // platform default stays "tmux" until the bridge) — it only ever
+    // finds candidates a caller explicitly asked to be `"capsule"`.
+    #[cfg(any(windows, target_os = "linux"))]
     if let Some(state_root) = sot_log::state_dir::sot_state_dir() {
         tokio::spawn(crate::capsule_workspace::resume_all(state_root, workspaces.clone()));
     } else {
         tracing::warn!(
             "capsule workspace resume-scan skipped: could not resolve this machine's state root \
-             (neither %LOCALAPPDATA% is set)"
+             ({} unset)",
+            crate::capsule_workspace::STATE_ROOT_HINT
         );
     }
 
@@ -1504,24 +1508,25 @@ where
                         // default row's own anchor semantics make "no
                         // agent" mean "nothing to start" here (the anchor
                         // is the same on every runtime, 2026-09-06; this
-                        // branch sits inside `ws.runtime == "capsule"` only
-                        // because the capsule start path is Windows-only in
-                        // this unit). The frontend never sends
+                        // branch sits inside `ws.runtime == "capsule"`
+                        // regardless — ADR 0043 decision 22: the capsule
+                        // start path is gated to Windows and Linux only,
+                        // not Windows alone). The frontend never sends
                         // `pty.open` for this row at all (it isn't even
                         // listed), so this is belt-and-suspenders against a
                         // stale/other client — falls through to the SAME
                         // `attach_direct` answer an unstarted row gets
                         // today, naming a `state_dir` nothing has published
                         // to yet.
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "linux"))]
                         let is_inert_default_anchor = workspaces.is_inert_default_anchor(&ws);
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "linux"))]
                         if !is_inert_default_anchor {
                             let ensure_result = match state_root.clone() {
-                                None => Err(
-                                    "could not resolve this machine's state root (%LOCALAPPDATA% unset)"
-                                        .to_string(),
-                                ),
+                                None => Err(format!(
+                                    "could not resolve this machine's state root ({} unset)",
+                                    crate::capsule_workspace::STATE_ROOT_HINT
+                                )),
                                 Some(root) => {
                                     let workspace_id = ws.workspace_id.clone();
                                     let agent_kind = ws.agent.clone();

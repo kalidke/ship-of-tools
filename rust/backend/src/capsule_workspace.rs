@@ -1,22 +1,42 @@
-// capsule_workspace.rs — ADR 0042 slice L1a: the daemon's capsule
-// workspace runtime (Windows-first). Every NEW workspace on Windows is a
-// capsule: one `sot-capsule supervise <state-dir>` authority per
-// workspace, spawned DETACHED so it survives the daemon's own exit — the
-// daemon is never its kill domain. `runtime: "tmux"` rows stay exactly
-// what they are today; this module never touches them.
+// capsule_workspace.rs — ADR 0042 slice L1a / ADR 0043 decision 22: the
+// daemon's capsule workspace runtime, on Windows AND Linux. One
+// `sot-capsule supervise <state-dir>` authority per capsule workspace,
+// spawned DETACHED so it survives the daemon's own exit — the daemon is
+// never its kill domain. Which platform is chosen is exactly THREE
+// forks inside `mod runtime` (the capsule executable's name, the detach
+// mechanism, and the adopted leg's exit-status read) — everything else
+// in that module is byte-identical on both platforms. `runtime: "tmux"`
+// rows stay exactly what they are today; this module never touches
+// them, and the Linux default row is STILL "tmux" (ADR 0043 decision
+// 22: attach for a capsule row is same-machine-only until the bridge) —
+// `workspace.create`'s own explicit `runtime` field is the only way to
+// ask for a capsule row there today.
 //
 // Split deliberately into PURE helpers (no OS call: the state-dir path
 // arithmetic, the phase-to-wire-string mapping, the agent argv choice)
-// and the WINDOWS-ONLY runtime (spawning, watching, querying, ending a
+// and the platform runtime (spawning, watching, querying, ending a
 // supervisor over `sot_log::supervisor_client`). The pure half is
 // compiled and unit-tested on every platform — ADR 0042 L1a's own gate
 // runs `cargo test --workspace` on Linux, and gating path/string
 // arithmetic behind `#[cfg(windows)]` would only prevent that gate from
-// ever exercising it. On non-Windows hosts nothing in this module is
-// called at all: `workspace.create` keeps today's tmux path unchanged
-// (see `workspaces.rs`/`handlers.rs`).
+// ever exercising it. On a host that is neither Windows nor Linux
+// nothing in this module is called at all: `workspace.create` keeps
+// today's tmux path unchanged (see `workspaces.rs`/`handlers.rs`).
 
 use std::path::{Path, PathBuf};
+
+/// The env-var hint named in every "could not resolve this machine's
+/// state root" error text (`server.rs`'s boot resume-scan and `pty.open`
+/// start-on-attach; `handlers.rs`'s create/destroy/list capsule gates) —
+/// ONE shared constant so the two platforms' wording can never drift out
+/// of step with `sot_log::state_dir::sot_state_dir`'s own actual
+/// resolution order (`%LOCALAPPDATA%` on Windows; `$XDG_STATE_HOME` or
+/// `$HOME` elsewhere). Gated the same as `mod runtime` below — nothing
+/// off Windows/Linux ever resolves a capsule state root at all.
+#[cfg(windows)]
+pub(crate) const STATE_ROOT_HINT: &str = "%LOCALAPPDATA%";
+#[cfg(target_os = "linux")]
+pub(crate) const STATE_ROOT_HINT: &str = "$XDG_STATE_HOME or $HOME";
 
 /// `<state-root>/workspaces/<workspace_id>/` — the capsule's own state
 /// directory (ADR 0041/0042: `supervisor.lock`, `drawer.voyage`, the
@@ -41,31 +61,124 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 /// not yet wired to any launcher either — U4, the drawer cutover, is
 /// still unbuilt). `"claude"` gets the closest honest equivalent: the
 /// same flags `ccb` itself execs with (`claude --permission-mode auto
-/// /sot-session-start`), relying on `claude` being on the
-/// daemon's own PATH — a detached child inherits it, same as any spawned
-/// process. `"none"` is the explicit bare platform shell. Every other
-/// kind (`"codex"` included — no known Windows launcher exists) is
-/// REFUSED (ADR 0042 L1a, Codex review finding 9): silently substituting
-/// `cmd.exe` for a kind the caller explicitly asked for would launch
-/// something the caller never requested and never learn about it.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// /sot-session-start`); on Windows this relies on `claude` being on the
+/// daemon's own PATH (a detached child inherits it, same as any spawned
+/// process), on Linux it is resolved to an ABSOLUTE path first
+/// ([`resolve_claude`] — the tmux launchers' own full-path rule: a
+/// daemon-spawned process inherits the SERVICE's PATH, which lacks
+/// `~/.local/bin`). `"none"` is the explicit bare platform shell. Every
+/// other kind (`"codex"` included — no known launcher exists on either
+/// platform) is REFUSED (ADR 0042 L1a, Codex review finding 9): silently
+/// substituting a bare shell for a kind the caller explicitly asked for
+/// would launch something the caller never requested and never learn
+/// about it.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn agent_argv(agent_kind: &str) -> Result<Vec<String>, String> {
     match agent_kind {
-        "none" => Ok(vec!["cmd.exe".to_string()]),
-        "claude" => Ok(vec![
-            "claude".to_string(),
-            "--permission-mode".to_string(),
-            "auto".to_string(),
-            "/sot-session-start".to_string(),
-        ]),
+        "none" => Ok(vec![none_argv()]),
+        "claude" => claude_argv(),
         other => Err(format!(
-            "agent {other:?} has no Windows capsule launcher yet (only \"claude\" and \"none\" are supported on this host)"
+            "agent {other:?} has no capsule launcher yet (only \"claude\" and \"none\" are supported on this host)"
         )),
     }
 }
 
+/// The bare platform shell — Windows' own `cmd.exe`, or the user's login
+/// shell (`$SHELL`, falling back to `/bin/sh`) everywhere else. One
+/// shared "not Windows" arm rather than a Linux-only one: a bare shell
+/// is equally the honest "no agent" placeholder on any other Unix this
+/// crate happens to compile on (only [`claude_argv`]'s resolution is
+/// scoped narrower, to Linux specifically).
+#[cfg(windows)]
+fn none_argv() -> String {
+    "cmd.exe".to_string()
+}
+#[cfg(not(windows))]
+fn none_argv() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+}
+
+#[cfg(windows)]
+fn claude_argv() -> Result<Vec<String>, String> {
+    Ok(vec![
+        "claude".to_string(),
+        "--permission-mode".to_string(),
+        "auto".to_string(),
+        "/sot-session-start".to_string(),
+    ])
+}
+#[cfg(target_os = "linux")]
+fn claude_argv() -> Result<Vec<String>, String> {
+    let claude = resolve_claude(
+        std::env::var_os("PATH").as_deref(),
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    )?;
+    Ok(vec![
+        claude,
+        "--permission-mode".to_string(),
+        "auto".to_string(),
+        "/sot-session-start".to_string(),
+    ])
+}
+/// ADR 0043 decision 22: no known Windows-style launcher exists for
+/// `claude` on any Unix other than Linux either — macOS stays
+/// experimental (ADR 0043 §"Open for the maintainer"), so this refuses
+/// rather than guessing a resolution rule nothing has validated there.
+#[cfg(not(any(windows, target_os = "linux")))]
+fn claude_argv() -> Result<Vec<String>, String> {
+    Err("claude has no capsule launcher on this host".to_string())
+}
+
+/// Linux only: search `path_var` (a `PATH`-shaped env value), then
+/// `<home>/.local/bin` and `<home>/.claude/local`, for an executable
+/// file named `claude` — the tmux launchers' own full-path rule (a
+/// daemon-spawned process inherits the SERVICE's PATH, which lacks
+/// `~/.local/bin`; CLAUDE.md's own documented gotcha). Returns the
+/// ABSOLUTE path so the eventual capsule producer never repeats a PATH
+/// search of its own (`sot_log::producer_pty`'s own
+/// `executable_is_resolvable` treats an absolute path as a direct
+/// existence+executable check, never a second PATH walk). Takes its
+/// inputs explicitly (never reads `std::env` itself) so it is testable
+/// without mutating global process state — [`claude_argv`] is the one
+/// real caller, which supplies the process's own `PATH`/`HOME`.
+#[cfg(target_os = "linux")]
+fn resolve_claude(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<String, String> {
+    let mut dirs: Vec<PathBuf> = path_var.map(std::env::split_paths).into_iter().flatten().collect();
+    if let Some(home) = home {
+        dirs.push(home.join(".local/bin"));
+        dirs.push(home.join(".claude/local"));
+    }
+    let mut searched: Vec<PathBuf> = Vec::with_capacity(dirs.len());
+    for dir in dirs {
+        let candidate = dir.join("claude");
+        if is_executable_file(&candidate) {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
+        searched.push(candidate);
+    }
+    Err(format!(
+        "claude not found (searched: {})",
+        searched.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+    ))
+}
+
+/// `true` iff `path` resolves to a file `access(2)` reports as executable
+/// by THIS process — mirrors `sot_log::producer_pty`'s own
+/// `is_executable_file` exactly (the same check the eventual pty
+/// producer performs before ever forking), so a path this returns is
+/// never rejected there for a reason this check could have caught first.
+/// A duplicated ~6 lines rather than a cross-crate refactor — not worth
+/// it for this one call site.
+#[cfg(target_os = "linux")]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    unsafe { libc::access(c_path.as_ptr(), libc::X_OK) == 0 }
+}
+
 /// `sot-capsule supervise`'s own start-mode flag.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub fn mode_flag(mode: StartMode) -> &'static str {
     match mode {
         StartMode::Start => "--start",
@@ -74,10 +187,10 @@ pub fn mode_flag(mode: StartMode) -> &'static str {
 }
 
 /// Mirrors `sot_log::supervisor::StartMode` (portable re-statement: that
-/// type lives in a `#![cfg(windows)]` module, and this crate's own pure
-/// tests need to name a mode without pulling in a Windows-only type).
+/// type lives in a platform-gated module, and this crate's own pure
+/// tests need to name a mode without pulling in a platform-specific
+/// type).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(windows), allow(dead_code))]
 pub enum StartMode {
     Start,
     Resume,
@@ -253,8 +366,8 @@ fn capsule_comm_home_str() -> Option<String> {
 /// handle and writes it there; the daemon later reads that same file's
 /// first line back to learn it (`handlers::capsule_comm_handle`). Pure
 /// (no I/O beyond env reads): exercised by the cross-platform test suite
-/// even though [`windows_runtime::spawn_detached_supervisor`], its only
-/// caller, is Windows-only.
+/// even though [`runtime::spawn_detached_supervisor`], its only caller,
+/// is gated to Windows and Linux only.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
     let mut env = crate::pty::awareness_env(Some(slug), Some(cwd));
@@ -270,12 +383,12 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
     env
 }
 
-/// Outcome of [`windows_runtime::end_run`] — the daemon's own portable
+/// Outcome of [`runtime::end_run`] — the daemon's own portable
 /// vocabulary over `sot_log::supervisor_client::EndRunOutcome` (never
-/// that raw, Windows-only type crossing into `handlers.rs`). Defined
-/// here, outside `windows_runtime`, so `handlers.rs`'s outcome→response
+/// that raw, platform-specific type crossing into `handlers.rs`). Defined
+/// here, outside `runtime`, so `handlers.rs`'s outcome→response
 /// mapping stays plain and unit-testable on every platform; `end_run`'s
-/// own real lane call is the only Windows-only step.
+/// own real lane call is the only step gated to Windows and Linux only.
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub enum EndRunOutcome {
@@ -341,8 +454,15 @@ pub(crate) fn pair_verdict(reported: Option<&str>, own: &str) -> Result<(), Stri
     }
 }
 
-#[cfg(windows)]
-mod windows_runtime {
+/// The daemon's capsule runtime — spawning, watching, querying, and
+/// ending a supervisor over `sot_log::supervisor_client`. Platform
+/// chosen by exactly THREE forks inside (ADR 0043 decision 22): the
+/// capsule executable's name ([`CAPSULE_EXE`]), the detach mechanism
+/// ([`spawn_detached`]'s two twins), and the adopted leg's exit-status
+/// read ([`wait_and_classify`]'s `WatchedLeg::Adopted` arm) — everything
+/// else below is byte-identical on both platforms.
+#[cfg(any(windows, target_os = "linux"))]
+mod runtime {
     use super::{
         agent_argv, capsule_supervisor_env, mode_flag, phase_str, StartMode, LANE_CONCURRENCY,
         LIST_LANE_DEADLINE, MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB, NEVER_STARTED_PHASE,
@@ -359,22 +479,28 @@ mod windows_runtime {
     /// `DETACHED_PROCESS` (Win32): the child gets no console of its own —
     /// right for a background authority that is never an interactive
     /// console session.
+    #[cfg(windows)]
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     /// `CREATE_NEW_PROCESS_GROUP`: the supervisor becomes its own process
     /// group, so a Ctrl+C delivered to the daemon's own console (if any)
     /// never propagates to a process the daemon just detached from itself.
+    #[cfg(windows)]
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     /// `CREATE_BREAKAWAY_FROM_JOB`: per MSDN, ignored when the calling
     /// process is not itself in a job — so there is nothing to probe
     /// first for the common case. When the daemon IS in a job whose limit
     /// flags lack `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, `CreateProcess` fails
     /// `ERROR_ACCESS_DENIED` rather than silently dropping the flag —
-    /// exactly the signal [`spawn_detached_supervisor`] uses to fall back
+    /// exactly the signal [`spawn_detached`] uses to fall back
     /// to a DEGRADED, still-in-job spawn (ADR 0042 L1a: "breakaway attempt
-    /// if the daemon is in a job, DEGRADED otherwise").
+    /// if the daemon is in a job, DEGRADED otherwise"). No Linux analogue:
+    /// there are no job objects to break away from — [`spawn_detached`]'s
+    /// Linux twin is never degraded (ADR 0043 decision 22).
+    #[cfg(windows)]
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
     /// Win32 `ERROR_ACCESS_DENIED` — what a denied breakaway attempt
     /// reports on `CreateProcess`.
+    #[cfg(windows)]
     const ERROR_ACCESS_DENIED: i32 = 5;
     /// `sot-capsule supervise`'s own clean-exit code (`EXIT_CLEAN`).
     const EXIT_CLEAN: i32 = 0;
@@ -392,38 +518,50 @@ mod windows_runtime {
     /// teardown) currently holds the fence.
     const EXIT_CONTENDED: i32 = 70;
 
-    /// `sot-capsule[.exe]`, resolved next to the daemon's own executable —
-    /// "the `sot-capsule` binary path: next to the daemon's own
-    /// executable (`current_exe().parent()`), which is where the install
-    /// layout puts it" (ADR 0042 L1a).
+    /// The capsule executable's own file name — the FIRST of the three
+    /// forks decision 22 names. Resolved next to the daemon's own
+    /// executable ("the `sot-capsule` binary path: next to the daemon's
+    /// own executable (`current_exe().parent()`), which is where the
+    /// install layout puts it", ADR 0042 L1a) on both platforms.
+    #[cfg(windows)]
+    const CAPSULE_EXE: &str = "sot-capsule.exe";
+    #[cfg(target_os = "linux")]
+    const CAPSULE_EXE: &str = "sot-capsule";
+
     pub fn sot_capsule_exe() -> std::io::Result<PathBuf> {
         let exe = std::env::current_exe()?;
         let dir = exe.parent().ok_or_else(|| {
             std::io::Error::new(ErrorKind::NotFound, "daemon executable has no parent directory")
         })?;
-        Ok(dir.join("sot-capsule.exe"))
+        Ok(dir.join(CAPSULE_EXE))
     }
 
     /// Refuse to spawn a capsule from a binary of another build -- see
-    /// `super::pair_verdict`. Runs `sot-capsule.exe build-id` (one line,
-    /// exits at once; no window) under a hard bound: the probe is killed
-    /// and reaped if it has not exited within `PAIR_PROBE_BOUND`, so a
-    /// wedged binary can never hold a runtime worker or a `starting`
-    /// claim open. A mismatch is `ErrorKind::Unsupported` -- the one kind
-    /// the watchdog treats as terminal at once rather than a crash to
-    /// retry. Spawns are rare (attach, boot resume, watchdog restart), so
-    /// the extra process per spawn is not worth a cache.
+    /// `super::pair_verdict`. Runs `sot-capsule build-id` (one line,
+    /// exits at once; no window on Windows) under a hard bound: the probe
+    /// is killed and reaped if it has not exited within
+    /// `PAIR_PROBE_BOUND`, so a wedged binary can never hold a runtime
+    /// worker or a `starting` claim open. A mismatch is
+    /// `ErrorKind::Unsupported` -- the one kind the watchdog treats as
+    /// terminal at once rather than a crash to retry. Spawns are rare
+    /// (attach, boot resume, watchdog restart), so the extra process per
+    /// spawn is not worth a cache. `CREATE_NO_WINDOW` is the one
+    /// Windows-only piece of this call — the rest is portable as is.
     const PAIR_PROBE_BOUND: Duration = Duration::from_secs(5);
     fn check_pair(sot_capsule_exe: &Path) -> std::io::Result<()> {
-        use std::os::windows::process::CommandExt as _;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let mut child = std::process::Command::new(sot_capsule_exe)
+        let mut command = std::process::Command::new(sot_capsule_exe);
+        command
             .arg("build-id")
-            .creation_flags(CREATE_NO_WINDOW)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = command.spawn()?;
         let deadline = Instant::now() + PAIR_PROBE_BOUND;
         let status = loop {
             if let Some(s) = child.try_wait()? {
@@ -434,7 +572,7 @@ mod windows_runtime {
                 let _ = child.wait();
                 return Err(std::io::Error::new(
                     ErrorKind::TimedOut,
-                    format!("sot-capsule.exe build-id did not answer within {PAIR_PROBE_BOUND:?}"),
+                    format!("{CAPSULE_EXE} build-id did not answer within {PAIR_PROBE_BOUND:?}"),
                 ));
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -452,7 +590,7 @@ mod windows_runtime {
             // Not the pre-`build-id` binary answering with its usage line:
             // a real failure to run the probe -- report it as such.
             return Err(std::io::Error::other(format!(
-                "sot-capsule.exe build-id failed ({status}): {}",
+                "{CAPSULE_EXE} build-id failed ({status}): {}",
                 stderr.trim()
             )));
         }
@@ -474,7 +612,7 @@ mod windows_runtime {
         degraded: bool,
     }
 
-    /// Spawn `sot-capsule.exe supervise <state_dir> <--start|--resume>
+    /// Spawn `sot-capsule supervise <state_dir> <--start|--resume>
     /// --survival <normal|degraded> --assume-no-rollback-target --
     /// <agent argv>` DETACHED, so the supervisor authority survives the
     /// daemon's own exit — the daemon must not be its kill domain (ADR
@@ -483,14 +621,9 @@ mod windows_runtime {
     /// it pre-U4. The nesting env vars are scrubbed and `SOT_COMM_NAME`
     /// exported (Codex review finding 9) — the same contract
     /// `boot_wrapper_command`'s tmux path already gives every autostart
-    /// workspace.
-    ///
-    /// Attempts `CREATE_BREAKAWAY_FROM_JOB` unconditionally alongside
-    /// `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`: a denied breakaway
-    /// reports `ERROR_ACCESS_DENIED` distinctly from every other spawn
-    /// failure (a missing binary, an invalid argv, …), which is exactly
-    /// the signal that separates "retry without it, DEGRADED" from
-    /// "propagate the real error".
+    /// workspace. Builds the SAME `Command` on both platforms (this
+    /// function); only how it is actually detached — [`spawn_detached`],
+    /// the second of decision 22's three forks — differs.
     fn spawn_detached_supervisor(
         sot_capsule_exe: &Path,
         state_dir: &Path,
@@ -502,11 +635,7 @@ mod windows_runtime {
         slug: &str,
     ) -> std::io::Result<SpawnedSupervisor> {
         check_pair(sot_capsule_exe)?;
-        let base_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
-        let build = |flags: u32, survival: &str| -> Command {
-            // `tokio::process::Command` re-exposes `.creation_flags()`
-            // natively (no `std::os::windows::process::CommandExt`
-            // import needed, unlike `std::process::Command`).
+        let build = |survival: &str| -> Command {
             let mut cmd = Command::new(sot_capsule_exe);
             cmd.arg("supervise")
                 .arg(state_dir)
@@ -517,7 +646,6 @@ mod windows_runtime {
                 .arg("--")
                 .args(agent_argv)
                 .current_dir(cwd)
-                .creation_flags(flags)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
@@ -529,18 +657,65 @@ mod windows_runtime {
             }
             cmd
         };
-        match build(base_flags | CREATE_BREAKAWAY_FROM_JOB, "normal").spawn() {
+        spawn_detached(build, state_dir)
+    }
+
+    /// Decision 22's second fork: how a built `Command` is actually
+    /// detached from the daemon so the supervisor authority survives the
+    /// daemon's own exit.
+    ///
+    /// Windows: attempts `CREATE_BREAKAWAY_FROM_JOB` unconditionally
+    /// alongside `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` —
+    /// `tokio::process::Command` re-exposes `.creation_flags()` natively
+    /// (no `std::os::windows::process::CommandExt` import needed, unlike
+    /// `std::process::Command`). A denied breakaway reports
+    /// `ERROR_ACCESS_DENIED` distinctly from every other spawn failure (a
+    /// missing binary, an invalid argv, …), which is exactly the signal
+    /// that separates "retry without it, DEGRADED" from "propagate the
+    /// real error".
+    #[cfg(windows)]
+    fn spawn_detached(build: impl Fn(&str) -> Command, state_dir: &Path) -> std::io::Result<SpawnedSupervisor> {
+        let base_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+        let mut cmd = build("normal");
+        cmd.creation_flags(base_flags | CREATE_BREAKAWAY_FROM_JOB);
+        match cmd.spawn() {
             Ok(child) => Ok(SpawnedSupervisor { child, degraded: false }),
             Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
                 tracing::warn!(
                     state_dir = ?state_dir,
                     "capsule supervisor breakaway denied — spawning DEGRADED (still in the daemon's job)"
                 );
-                let child = build(base_flags, "degraded").spawn()?;
+                let mut cmd = build("degraded");
+                cmd.creation_flags(base_flags);
+                let child = cmd.spawn()?;
                 Ok(SpawnedSupervisor { child, degraded: true })
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Linux: `pre_exec(setsid)` (a failure here means this process is
+    /// ALREADY a session leader — not a real error, the detachment
+    /// property already holds) plus `Stdio::null()` on all three
+    /// streams — set by [`spawn_detached_supervisor`]'s own `build`
+    /// closure already, nothing further needed here. NEVER degraded
+    /// (`survival` is always `"normal"`): there are no job objects on
+    /// Linux to break away from — this leg's own `setsid` IS the whole
+    /// detachment (ADR 0043 decision 22/14). `state_dir` is unused here
+    /// (only Windows's degraded-retry arm logs it) — kept as a shared
+    /// parameter so both platform twins have the same signature.
+    #[cfg(target_os = "linux")]
+    fn spawn_detached(build: impl Fn(&str) -> Command, state_dir: &Path) -> std::io::Result<SpawnedSupervisor> {
+        let _ = state_dir;
+        let mut cmd = build("normal");
+        unsafe {
+            cmd.pre_exec(|| {
+                let _ = libc::setsid();
+                Ok(())
+            });
+        }
+        let child = cmd.spawn()?;
+        Ok(SpawnedSupervisor { child, degraded: false })
     }
 
     /// One capsule workspace's supervisor-lane status, as the daemon's
@@ -1012,66 +1187,146 @@ mod windows_runtime {
     /// means fewer wasted wakeups, never slower death detection.
     const ADOPTED_LEG_WAIT_POLL: Duration = Duration::from_secs(300);
 
-    /// Waits for `leg` to end and classifies the result — the SAME
-    /// classification whether the leg is a child this daemon just
-    /// spawned or one it adopted. A spawned child is awaited async, the
-    /// normal way; an adopted process has no async-awaitable primitive
-    /// (`ChallengedProcess::wait` is a synchronous, bounded
-    /// `WaitForSingleObject`), so it is waited on ONE blocking task that
-    /// owns it for the wait's whole duration, looping
-    /// [`ADOPTED_LEG_WAIT_POLL`] at a time until it reports exit, then
-    /// its exit code is read the same way
-    /// `sot_log::challenge_win::ChallengedProcess::exit_code_after_confirmed_exit`
-    /// documents its own precondition: only after `wait` has already
-    /// confirmed death.
-    async fn wait_and_classify(leg: WatchedLeg, workspace_id: &str) -> LegOutcome {
-        let code = match leg {
-            WatchedLeg::Spawned(mut child) => match child.wait().await {
-                Ok(status) => status.code(),
-                Err(e) => {
-                    tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: wait() failed; treating as a crash");
-                    return LegOutcome::Crash;
-                }
-            },
-            WatchedLeg::Adopted(process) => {
-                let result = tokio::task::spawn_blocking(move || loop {
-                    match process.wait(ADOPTED_LEG_WAIT_POLL) {
-                        Ok(true) => {
-                            return process
-                                .exit_code_after_confirmed_exit()
-                                .map(|c| c as i32)
-                                .map_err(|e| e.to_string());
-                        }
-                        Ok(false) => continue,
-                        Err(e) => return Err(e.to_string()),
-                    }
-                })
-                .await;
-                match result {
-                    Ok(Ok(code)) => Some(code),
-                    Ok(Err(e)) => {
-                        tracing::warn!(
-                            workspace_id = %workspace_id, error = %e,
-                            "capsule supervisor watchdog: waiting on the adopted process failed; treating as a crash"
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            workspace_id = %workspace_id, error = %e,
-                            "capsule supervisor watchdog: adopted-process wait task did not complete; treating as a crash"
-                        );
-                        None
-                    }
-                }
-            }
-        };
+    /// Maps a confirmed (or absent) exit code to the watchdog's own
+    /// outcome vocabulary — shared by both [`WatchedLeg`] arms in
+    /// [`wait_and_classify`].
+    fn classify_exit_code(code: Option<i32>) -> LegOutcome {
         match code {
             Some(EXIT_CLEAN) => LegOutcome::Clean,
             Some(EXIT_TERMINAL) => LegOutcome::Terminal,
             Some(EXIT_CONTENDED) => LegOutcome::Contended,
             _ => LegOutcome::Crash,
         }
+    }
+
+    /// Waits for `leg` to end and classifies the result — the SAME
+    /// classification whether the leg is a child this daemon just
+    /// spawned or one it adopted. A spawned child is awaited async, the
+    /// normal way; an adopted process has no async-awaitable primitive
+    /// (`ChallengedProcess::wait` is a synchronous, bounded wait), so it
+    /// is waited on ONE blocking task that owns it for the wait's whole
+    /// duration, looping [`ADOPTED_LEG_WAIT_POLL`] at a time until it
+    /// reports exit, then its exit code is read the same way each
+    /// platform's own `ChallengedProcess` documents its own precondition:
+    /// only after `wait` has already confirmed death. The THIRD of
+    /// decision 22's three forks lives here: Windows'
+    /// `exit_code_after_confirmed_exit` always yields a `u32` code;
+    /// Linux's `exit_status_after_confirmed_exit` yields `Option<i32>` —
+    /// `None` (decision 8's "exited, status unknown" tolerance, e.g. a
+    /// pre-6.15 kernel without `PIDFD_GET_INFO`) is logged at warn with
+    /// the pid and folds into [`LegOutcome::Crash`] below, never a panic.
+    ///
+    /// Linux-only tolerance (found during LU4 verification, not one of
+    /// decision 22's three named forks): a `ChallengedProcess`'s `Drop`
+    /// opportunistically reaps via a non-blocking `waitid(P_PIDFD,
+    /// WNOHANG)` the instant it observes exit (decision 21's own
+    /// reaper-of-last-resort for the supervisor-watches-ITS-OWN-leg
+    /// relationship) — but `sot_log::supervisor_client::stop`'s own
+    /// confirmed-exit wait constructs exactly such a handle for the
+    /// SUPERVISOR's OWN pid too (the wire challenge proves the peer's
+    /// identity via its own pid), so a `workspace.destroy` (or any other
+    /// direct `stop`) racing this watchdog's `child.wait()` can reap the
+    /// SAME pid first, leaving `child.wait()` here to fail `ECHILD` ("No
+    /// child processes") for a leg that in fact exited perfectly
+    /// cleanly. Rather than trust that race, an `ECHILD` here triggers
+    /// ONE follow-up `query_status`: a lane that has ALSO gone silent
+    /// confirms the process really is gone (reaped by that concurrent
+    /// caller, not a crash) and this reports [`LegOutcome::Clean`]
+    /// (`Some(EXIT_CLEAN)`); a lane that still answers means `ECHILD` was
+    /// a genuine anomaly, kept as a crash. Windows has no such hazard — a
+    /// process HANDLE is a reference-counted kernel object; any number of
+    /// holders may wait on or query it independently with no
+    /// "consumption" side effect — so this check is Linux-only.
+    async fn wait_and_classify(leg: WatchedLeg, workspace_id: &str, state_dir: &Path) -> LegOutcome {
+        // Windows never reads `state_dir` here (its `Spawned` arm has no
+        // ECHILD hazard to check for — see this function's own doc) —
+        // `&Path` is `Copy`, so this no-ops harmlessly on Linux, where the
+        // Spawned arm below still binds and uses it normally.
+        let _ = state_dir;
+        let code = match leg {
+            WatchedLeg::Spawned(mut child) => match child.wait().await {
+                Ok(status) => status.code(),
+                #[cfg(target_os = "linux")]
+                Err(e) if e.raw_os_error() == Some(libc::ECHILD) => {
+                    let dir = state_dir.to_path_buf();
+                    let still_answers =
+                        tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&dir).is_ok())
+                            .await
+                            .unwrap_or(false);
+                    if still_answers {
+                        tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: wait() failed (lane still answers); treating as a crash");
+                        return LegOutcome::Crash;
+                    }
+                    tracing::info!(
+                        workspace_id = %workspace_id,
+                        "capsule supervisor watchdog: wait() got ECHILD but the lane is silent -- \
+                         reaped by a concurrent stop/end_run call, not a crash"
+                    );
+                    Some(EXIT_CLEAN)
+                }
+                Err(e) => {
+                    tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: wait() failed; treating as a crash");
+                    return LegOutcome::Crash;
+                }
+            },
+            WatchedLeg::Adopted(process) => {
+                    let pid = process.pid();
+                    let result = tokio::task::spawn_blocking(move || loop {
+                        match process.wait(ADOPTED_LEG_WAIT_POLL) {
+                            Ok(true) => {
+                                #[cfg(windows)]
+                                {
+                                    return process
+                                        .exit_code_after_confirmed_exit()
+                                        .map(|c| Some(c as i32))
+                                        .map_err(|e| e.to_string());
+                                }
+                                #[cfg(target_os = "linux")]
+                                {
+                                    return process
+                                        .exit_status_after_confirmed_exit()
+                                        .map_err(|e| e.to_string());
+                                }
+                            }
+                            Ok(false) => continue,
+                            Err(e) => return Err(e.to_string()),
+                        }
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(Some(c))) => Some(c),
+                        Ok(Ok(None)) => {
+                            // Linux only (Windows's arm above always yields
+                            // `Some`) -- decision 8's own tolerance for
+                            // "exited, status unknown." Never a panic: the
+                            // leg is treated as a crash (the watchdog's
+                            // restart sequence applies), with the pid named
+                            // so an operator can correlate it with the
+                            // system's own logs if they want to know more.
+                            tracing::warn!(
+                                workspace_id = %workspace_id, pid,
+                                "capsule supervisor watchdog: adopted leg exited with unknown status (decision 8 tolerance); treating as a crash"
+                            );
+                            None
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                workspace_id = %workspace_id, error = %e,
+                                "capsule supervisor watchdog: waiting on the adopted process failed; treating as a crash"
+                            );
+                            None
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                workspace_id = %workspace_id, error = %e,
+                                "capsule supervisor watchdog: adopted-process wait task did not complete; treating as a crash"
+                            );
+                            None
+                        }
+                    }
+                }
+            };
+            classify_exit_code(code)
     }
 
     /// Bound on how long [`install_watchdog`] keeps re-probing a
@@ -1145,7 +1400,7 @@ mod windows_runtime {
             let mut restart_times: Vec<Instant> = Vec::new();
             loop {
                 let outcome = match leg_opt.take() {
-                    Some(l) => wait_and_classify(l, &workspace_id).await,
+                    Some(l) => wait_and_classify(l, &workspace_id, &state_dir).await,
                     // A previous restart/adoption attempt itself found
                     // nothing to wait on -- counts as another crash
                     // against the same budget.
@@ -1521,8 +1776,8 @@ mod windows_runtime {
     }
 }
 
-#[cfg(windows)]
-pub use windows_runtime::*;
+#[cfg(any(windows, target_os = "linux"))]
+pub use runtime::*;
 
 #[cfg(test)]
 mod tests {
@@ -1538,6 +1793,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn agent_argv_claude_matches_ccbs_own_flags() {
         assert_eq!(
             agent_argv("claude").unwrap(),
@@ -1546,14 +1802,124 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_argv_claude_fails_closed_when_nothing_resolves() {
+        // No PATH, no HOME: nothing to search, so this must refuse
+        // rather than hand `sot-capsule` an unresolved bare "claude" it
+        // would only fail to spawn later, one layer down. `agent_argv`
+        // reads the REAL process PATH/HOME (unlike `resolve_claude`'s own
+        // dependency-injected tests below), and a real dev box typically
+        // DOES have a real `claude` installed somewhere on one of them —
+        // so both are cleared here, under the shared env-test lock, to
+        // make the "nothing resolves" precondition true regardless of
+        // the host running this test.
+        let _guard = self_file_env_guarded();
+        let prior_path = std::env::var_os("PATH");
+        let prior_home = std::env::var_os("HOME");
+        std::env::remove_var("PATH");
+        std::env::remove_var("HOME");
+        let result = agent_argv("claude");
+        match prior_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        match prior_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[cfg(not(any(windows, target_os = "linux")))]
+    fn agent_argv_claude_is_refused_off_windows_and_linux() {
+        assert!(agent_argv("claude").is_err());
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn agent_argv_none_is_the_bare_shell() {
         assert_eq!(agent_argv("none").unwrap(), vec!["cmd.exe"]);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn agent_argv_none_is_the_login_shell_or_bin_sh() {
+        // `self_file_env_guarded` doesn't itself save/restore SHELL (it
+        // guards a different, fixed set of vars) — still acquired here
+        // for its SERIALIZATION lock, shared with every other env-var
+        // test in this file; SHELL is saved/restored by hand around it.
+        let _guard = self_file_env_guarded();
+        let prior_shell = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", "/bin/zsh");
+        assert_eq!(agent_argv("none").unwrap(), vec!["/bin/zsh"]);
+        std::env::remove_var("SHELL");
+        assert_eq!(agent_argv("none").unwrap(), vec!["/bin/sh"]);
+        match prior_shell {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
     }
 
     #[test]
     fn agent_argv_rejects_unsupported_kinds() {
         assert!(agent_argv("codex").is_err());
         assert!(agent_argv("bogus").is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn resolve_claude_finds_an_executable_on_path() {
+        let dir = tempfile_test_dir();
+        let claude = dir.path().join("claude");
+        std::fs::write(&claude, b"#!/bin/sh\nexit 0\n").unwrap();
+        set_executable(&claude);
+        let path_var = std::ffi::OsString::from(dir.path());
+        let resolved = resolve_claude(Some(&path_var), None).unwrap();
+        assert_eq!(resolved, claude.to_string_lossy());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn resolve_claude_falls_back_to_local_bin_under_home() {
+        let dir = tempfile_test_dir();
+        let local_bin = dir.path().join(".local/bin");
+        std::fs::create_dir_all(&local_bin).unwrap();
+        let claude = local_bin.join("claude");
+        std::fs::write(&claude, b"#!/bin/sh\nexit 0\n").unwrap();
+        set_executable(&claude);
+        // An empty PATH still finds it via the HOME-derived fallback dirs.
+        let resolved = resolve_claude(None, Some(dir.path())).unwrap();
+        assert_eq!(resolved, claude.to_string_lossy());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn resolve_claude_ignores_a_non_executable_file() {
+        let dir = tempfile_test_dir();
+        let claude = dir.path().join("claude");
+        std::fs::write(&claude, b"not a real program").unwrap(); // no +x
+        let path_var = std::ffi::OsString::from(dir.path());
+        let err = resolve_claude(Some(&path_var), None).unwrap_err();
+        assert!(err.contains("claude not found"), "{err}");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn resolve_claude_names_every_directory_it_searched() {
+        let err = resolve_claude(None, None).unwrap_err();
+        assert!(err.contains("claude not found"), "{err}");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn tempfile_test_dir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     #[test]
