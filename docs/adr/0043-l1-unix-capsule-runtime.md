@@ -324,22 +324,35 @@ and sealing — is platform-neutral and moves unchanged.
 14. **The Unix kill domain is the process group, and the leader is reaped LAST.** `spawn`
     keeps `capsule.rs`'s `pre_exec` (`setsid`, `TIOCSCTTY`, `dup2`, `close_range`) and
     arms `PR_SET_PDEATHSIG(SIGKILL)` FIRST, then checks `getppid()` against the parent
-    recorded before the fork and exits if the parent already died — the arm-then-verify
-    order closes the fork-to-arm window (the death signal fires on the death of the
-    spawning thread, which is the loop's). Exit is OBSERVED, not reaped: `wait` polls
-    `waitid(WEXITED | WNOHANG | WNOWAIT)` and caches `si_code`/`si_status`, so the exit
-    status is answered without freeing the pid; the leader (alive or zombie) therefore
-    pins the process-group id through `terminate_domain` (`killpg(pgid, SIGKILL)`;
-    `ESRCH` is success) and `domain_is_empty`, which on Linux is "no `/proc` entry in our
-    pgid is in a live (non-`Z`/`X`) state" — zombie descendants are dead and are their
-    reaper's business, matching ConPTY's active-process count; other Unixes fall back
-    to `killpg(pgid, 0) == ESRCH`. The leader is reaped exactly once, in `Drop`, after a
-    final `killpg(SIGKILL)` whether or not it already exited, so an early return kills
-    survivors and never signals a recycled group. A grandchild that changes its process
+    recorded before the fork and exits if the parent already died. The death signal is
+    the spawning THREAD's; in the capsule that is the main thread, whose death is the
+    process's exit, so the ppid check covers the fork-to-arm gap — a thread-only death of
+    the spawner is not a state this binary has. Exit is OBSERVED, not reaped: `wait`
+    polls `waitid(WEXITED | WNOHANG | WNOWAIT)` and caches `si_code`/`si_status`, so the
+    exit status is answered without freeing the pid; the leader (alive or zombie)
+    therefore pins the process-group id through `terminate_domain` (`killpg(pgid,
+    SIGKILL)`; `ESRCH` is success) and `domain_is_empty`. The pin needs a RETAINED
+    zombie, so `spawn` sets `SIGCHLD` back to `SIG_DFL` first (an ignored `SIGCHLD`
+    auto-reaps and is inherited across `exec` from any supervisor): the producer
+    establishes the disposition it relies on. `domain_is_empty` on Linux reads
+    `/proc/<pid>/stat` as bytes for every process in our pgid and calls a member live iff
+    any of its TASKS (`/proc/<pid>/task/*/stat`) is in a non-`Z`/`X` state — a zombie
+    leader, a zombie descendant, or a main thread that exited under live workers are
+    all judged honestly, matching ConPTY's active-process count; it assumes the capsule
+    and its producer share a PID namespace and a `/proc` (they are its fork children);
+    other Unixes fall back to `killpg(pgid, 0) == ESRCH`. The leader is reaped exactly
+    once, in `Drop`, after a final `killpg(SIGKILL)` whether or not it already exited,
+    with a bounded poll (`EINTR` retried; two seconds — after `SIGKILL` only a task in an
+    uninterruptible kernel wait outlives that, and leaving it unreaped is safe because
+    nothing addresses the pgid after `Drop`), so an early return kills survivors and
+    never signals a recycled group. A grandchild that changes its process
     group escapes the domain — the same documented carve-out as ConPTY's broker.
-    `openpty` takes the geometry; `resize` is `TIOCSWINSZ`. (An earlier draft reaped via
-    `try_wait` before `killpg` and skipped the kill when the leader had exited — replaced
-    2026-09-07 after the LU2b review.)
+    `openpty` takes the geometry; `resize` is `TIOCSWINSZ`. The loop's reader retries an
+    `Interrupted` read on every platform — a signal-interrupted read is not an end of
+    stream. (An earlier draft reaped via `try_wait` before `killpg` and skipped the kill
+    when the leader had exited; a second draft pinned the pid without owning the
+    `SIGCHLD` disposition, judged emptiness per process, and reaped with an unbounded
+    wait — both replaced 2026-09-07 after the LU2b review rounds.)
 15. **The parent-death lease becomes an inherited pipe.** Three properties survive from
     the Windows named mutex: the signal is the kernel's, produced by supervisor death by
     ANY means; the capsule observes it with one non-blocking check at one exact point
