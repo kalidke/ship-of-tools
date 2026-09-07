@@ -1,7 +1,8 @@
 # ADR 0043: L1-unix — the capsule runtime on Unix hosts
 
 **Status:** Proposed (2026-09-06; amended the same day after one Codex design
-round — twelve findings, every one discharged in the text below). Design pass for the lane series that makes
+round — twelve findings, every one discharged in the text below; LU1b's landed
+mechanism folded into decisions 1–3; the LU2 decisions 11–16 added 2026-09-07). Design pass for the lane series that makes
 ADR 0042's rule — "the capsule is the default runtime for every NEW session on
 EVERY host" — true on the Linux backend hosts, where today every row is still
 a tmux row and no session leaves a Ship's Log record. Builds on ADR 0037 (P1:
@@ -269,6 +270,100 @@ submissions.
     for the name-freeing test; `/proc/self/fd` count for the handle-leak test;
     `SO_PEERCRED.pid` of a real child listener for the cross-process test. The
     blanket `ubuntu-latest` job runs them; the budgeted Linux job waits for LU4.
+
+## Decisions for LU2 (one producer loop) — added 2026-09-07
+
+The two capsule loops (`capsule_win::run`, Windows, ConPTY + the wire; `capsule::run`,
+Linux, `openpty`, no wire, no commands) become ONE loop parameterized over a `Producer`.
+The producer coupling in the Windows loop is nine call sites, all already destructured
+out of `ConptySpawn`; everything else in it — the frame factory, the output budget, the
+input WAL, the run-end marker, the `AttachProto` service path, `ShutdownGuard`, rotation
+and sealing — is platform-neutral and moves unchanged.
+
+11. **The `Producer` trait is exactly the loop's nine verbs, nothing invented.**
+    `spawn(argv, cols, rows)` (geometry validated by the loop, 2x2..512x256, before the
+    call); `take_output() -> impl Read + Send` (taken once, for the reader thread);
+    `input() -> &mut dyn Write` (the WAL already takes `&mut dyn Write`); `resize`;
+    `wait(timeout) -> Result<bool>` (non-blocking poll each iteration, bounded confirm at
+    teardown); `exit_status_after_confirmed_exit() -> Result<ExitStatus>`;
+    `terminate_domain()`; `domain_is_empty() -> Result<bool>`;
+    `close_output_side(&mut self) -> JoinHandle<()>` (the producer spawns the closer
+    thread itself and hands back its join handle — it cannot be consumed, because the
+    drain that follows still answers the host handshake through `input()` and the
+    exit status is read after the close; "resize is unreachable during teardown" is
+    therefore no longer a compile-time fact but the runtime assertion the loop already
+    carries, backed by `AttachProto` never emitting a resize after `begin_teardown`);
+    and one associated function `pre_spawn_detail() ->
+    serde_json::Value` merged into `producer_spawn.detail` BEFORE spawn is attempted
+    (Windows contributes `spawning_process_was_jobbed`; Unix contributes nothing). No
+    `kind()` on the trait: `producer_kind` stays a config string the caller sets.
+12. **EOF before close stays fatal, on every platform, with no knob.** ConPTY keeps its
+    output handle open regardless of the child, so a pre-close EOF is an anomaly the
+    Windows loop treats as capsule-fatal; a Unix pty master returns EIO precisely when
+    the child dies. Rather than a trait constant that flips fatal into normal — a state
+    serving no invariant — the Unix producer's output reader HOLDS the EIO/EOF (flag +
+    condvar) until `close_output_side` runs, so the contract "the output side reports
+    EOF only after the loop closed it" is universal. The child's death is still noticed
+    within one main-loop window by `wait(ZERO)`; teardown then runs Phase A (terminate
+    the domain, reap) and Phase B (close, which releases the held EOF; drain) exactly as
+    on Windows. `close_output_side` closes no fd on Unix: the slave was dropped at spawn.
+13. **`ExitStatus` is `Code(u32) | Signal(i32)`.** Windows always yields `Code` and keeps
+    the unsigned DWORD end-to-end (a high-bit NTSTATUS is never sign-flipped; that test
+    stays). Unix yields `Code` for a normal exit and `Signal` for a signal death, which
+    has no code. `ExitSummary.exit_code: Option<ExitStatus>` (`None` only for a failed
+    spawn). In the durable record, `producer_dead.detail` carries `exit_code` (u32) for
+    `Code` and `signal` (i32) for `Signal` — an ADDITIVE field; both readers treat
+    `detail` as free-form today (`verify.rs`; `julia/sotlog` reads neither), and a golden
+    fixture for a Unix signal death lands with LU2b. `producer_spawn.detail.
+    spawning_process_was_jobbed` becomes Windows-only (absent on Unix).
+14. **The Unix kill domain is the process group.** `spawn` keeps `capsule.rs`'s
+    `pre_exec` verbatim (`setsid`, `TIOCSCTTY`, `dup2`, `close_range`) and adds
+    `PR_SET_PDEATHSIG(SIGKILL)` so a hard-killed capsule never orphans its producer;
+    `terminate_domain` is `killpg(pid, SIGKILL)` (`ESRCH` is success); `domain_is_empty`
+    is "the child is reaped (`try_wait`) and `killpg(pid, 0)` says `ESRCH`". A grandchild
+    that changes its process group escapes the domain — the same documented carve-out as
+    ConPTY's broker. `openpty` takes the geometry; `resize` is `TIOCSWINSZ`.
+15. **The parent-death lease becomes an inherited pipe.** Three properties survive from
+    the Windows named mutex: the signal is the kernel's, produced by supervisor death by
+    ANY means; the capsule observes it with one non-blocking check at one exact point
+    (right after the writer fence); an unavailable channel is indistinguishable from a
+    broken one. The supervisor keeps the pipe's write end open and never writes; the
+    capsule inherits the read end at a fixed fd passed as `--parent-lease-fd <n>` and
+    does one non-blocking `read`: `EAGAIN` means alive, `Ok(0)` or any error or a missing
+    fd means broken → release the fence, exit without binding. `parent_lease_name:
+    Option<String>` becomes `parent_lease: Option<ParentLease>` with a per-platform
+    variant. Only a real descendant can hold the fd — one property the pipe has that the
+    late-bound mutex name did not.
+16. **Per-platform siblings, not knobs.** `self_status` (the capsule's own `MgmtStatus`
+    for the adoption challenge) is cfg-selected: Windows `GetProcessTimes`, Linux
+    `(getpid, challenge_unix::self_start_ticks())`, other Unix `Unsupported`. `Survival`
+    is always `Normal` on Unix (no job breakaway exists). The Linux loop's `echo` and its
+    stdin thread are DELETED with it (wire subscribers replaced echo; "run owns stdin"
+    was removed on review); `--no-echo` leaves the Linux `run` arm; `run_claude` (ADR
+    0040) is untouched, it drives a different producer. `host_handshake` stays in the
+    shared loop and is inert on Unix (a pty child never emits the conhost DA1 query).
+
+The terminal parser (`vt100-ctt`) becomes an unconditional dependency of `sot-log`: it has no
+Windows code and was gated only because its sole caller was.
+
+Layout after LU2: `capsule.rs` is the unified loop (the Windows file renamed; the config
+is `CapsuleConfig`), `producer_conpty.rs` (Windows) and `producer_pty.rs` (Unix) are the
+two implementations, `conpty.rs` stays as Windows machinery, `lease.rs` stays Windows-only,
+the old Linux `capsule.rs` is deleted. `sot-pty-helper` is the Unix twin of
+`sot-conpty-helper` (shared `SCRIPT_BLOCK`, same modes and exit codes); `tests/capsule.rs`
+runs the sixteen portable tests on every platform (they drive `TestTransport` and
+`AttachProto`, not the producer) with the five Windows-mechanism tests in a gated section;
+`tests/e2e_socket.rs` twins `e2e_pipe.rs`. The CI step that names `--test capsule_win`
+is renamed with it.
+
+Two sub-lanes, each behaviour-preserving where it can be proven: **LU2a** — the trait,
+`producer_conpty`, the loop parameterized and renamed, `ExitStatus`, `ParentLease`, the
+test file moved with its Windows-only section; Windows CI proves no behaviour change,
+Linux compiles the neutral loop for the first time, the legacy Linux file is renamed
+`capsule_legacy.rs` and still serves the Linux `run` arm. **LU2b** — `producer_pty`,
+`sot-pty-helper`, the inherited-fd lease, the Linux `self_status`, the Linux `run` arm on
+the unified loop with a `SocketTransport`, `e2e_socket.rs`, the portable tests ungated,
+the signal-death golden fixture, and the legacy file deleted.
 
 ## What this deletes
 

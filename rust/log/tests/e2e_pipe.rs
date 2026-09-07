@@ -17,8 +17,9 @@
 //! concurrently with this one, and this file may grow more than the one
 //! test below over time).
 
-use sot_log::capsule_win::{self, CapsuleWinConfig, ExitKind};
+use sot_log::capsule::{self, CapsuleConfig, ExitKind};
 use sot_log::pipe_transport::PipeTransport;
+use sot_log::producer_conpty::ConptyProducer;
 use sot_log::pipe_win::{connect_voyage_pipe, PipeClient};
 use sot_log::segment::{RetentionClass, SegmentReader};
 use sot_log::verify::verify_voyage;
@@ -48,8 +49,8 @@ fn config(
     argv: Vec<String>,
     cols: u16,
     rows: u16,
-) -> CapsuleWinConfig {
-    CapsuleWinConfig {
+) -> CapsuleConfig {
+    CapsuleConfig {
         voyage_root: dir.join(voyage_id),
         voyage_id: voyage_id.to_string(),
         retention: RetentionClass::Discard,
@@ -63,8 +64,8 @@ fn config(
         // transaction would (see `rollout::RolloutEvidence`'s own doc).
         rollout_evidence: sot_log::rollout::RolloutEvidence::NoRollbackTarget,
         // No supervisor in this end-to-end harness -- see
-        // `CapsuleWinConfig::parent_lease_name`'s own doc.
-        parent_lease_name: None,
+        // `CapsuleConfig::parent_lease`'s own doc.
+        parent_lease: None,
     }
 }
 
@@ -418,7 +419,7 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
 
     let mut transport = PipeTransport::new(8);
     let (_cmd_tx, cmd_rx) = mpsc::channel();
-    let handle = std::thread::spawn(move || capsule_win::run(cfg, cmd_rx, &mut transport));
+    let handle = std::thread::spawn(move || capsule::run::<ConptyProducer>(cfg, cmd_rx, &mut transport));
 
     // The pipe is created INSIDE `run` (`Transport::bind` runs right after
     // `open_for_writing` — see `capsule_win.rs`'s own doc at that call
@@ -576,7 +577,7 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
     );
     match status_reply {
         wire::MgmtReply::StatusOk { pid, .. } => {
-            // This test runs the capsule IN-PROCESS (`capsule_win::run` on
+            // This test runs the capsule IN-PROCESS (`capsule::run` on
             // a spawned THREAD of this same test binary, not a separate
             // OS process), so the pid `self_status` reports IS this test
             // process's own — the real cross-process identity check

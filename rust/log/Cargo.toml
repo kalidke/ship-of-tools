@@ -24,18 +24,22 @@ crc32c = { workspace = true }
 uuid = { workspace = true }
 thiserror = "2"
 getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From impl
+# The live vt100 parser the unified capsule runtime keeps across the run
+# (ADR 0041 "Terminal state"). Ungated as of ADR 0043 "Decisions for LU2"
+# (L1-unix LU2a): `capsule.rs` (formerly `capsule_win.rs`) is no longer
+# Windows-only — the writer loop is generic over `Producer` and its own
+# checkpoint tracking is platform-neutral, so the dependency moves here
+# from the Windows-only target table below, matching "a dependency should
+# live where the thing that needs it lives" now that the thing that needs
+# it lives everywhere. Unaliased, matching the workspace patch
+# (`[patch.crates-io] vt100-ctt = { path = "vt100" }`); this crate has no
+# existing `vt100` name to collide with, so no `package =` rename either.
+vt100-ctt = "0.17"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-# The live vt100 parser the capsule runtime keeps across the run (ADR 0041
-# "Terminal state"): windows-gated because capsule_win.rs is its only
-# consumer — the fork builds everywhere, but a dependency should live where
-# the thing that needs it lives. Unaliased, matching the workspace patch
-# (`[patch.crates-io] vt100-ctt = { path = "vt100" }`); this crate has no
-# existing `vt100` name to collide with, so no `package =` rename either.
-vt100-ctt = "0.17"
 # Raw Win32 for the durability arms (ADR 0041 §store port): MoveFileExW,
 # GetVolumeInformationByHandleW, FILE_FLAG_BACKUP_SEMANTICS. Plus the
 # atomic-DACL-at-birth arm (ADR 0041 "attach protocol" §Security split):

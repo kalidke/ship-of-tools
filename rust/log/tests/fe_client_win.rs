@@ -264,7 +264,7 @@ fn poll_screen(client: &mut FeAttachClient, timeout: Duration, pred: impl Fn(&st
 /// (`supervisor::voyage_root_path`'s own convention; not the bespoke
 /// per-test root `tests/e2e_pipe.rs`'s own harness uses, since THIS file
 /// goes through the real supervisor rather than configuring
-/// `CapsuleWinConfig` directly).
+/// `capsule::CapsuleConfig` directly).
 fn sealed_frames(state_dir: &Path, voyage: &str) -> Vec<sot_log::envelope::Envelope> {
     let seg_dir = state_dir.join("voyages").join(voyage).join("seg");
     let mut out = Vec::new();

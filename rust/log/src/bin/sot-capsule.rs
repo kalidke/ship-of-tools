@@ -31,7 +31,7 @@ fn main() {
     }
     let argv: Vec<String> = rest[1..].to_vec();
 
-    let config = sot_log::capsule::CapsuleConfig {
+    let config = sot_log::capsule_legacy::CapsuleConfig {
         voyage_root,
         voyage_id,
         retention: sot_log::segment::RetentionClass::Archive,
@@ -39,7 +39,7 @@ fn main() {
         argv,
         echo,
     };
-    match sot_log::capsule::run(config) {
+    match sot_log::capsule_legacy::run(config) {
         Ok(s) => {
             eprintln!(
                 "sot-capsule: producer exited {:?}; {} frames, {} segments sealed",
@@ -114,8 +114,10 @@ fn cmd_run(args: &[String]) {
     // below for what it actually asserts.
     let mut assume_no_rollback_target = false;
     // ADR 0041 step 6 U2: `Some(name)` only when a supervisor spawned
-    // this process — see `CapsuleWinConfig::parent_lease_name`'s own doc.
-    let mut parent_lease_name: Option<String> = None;
+    // this process — see `capsule::CapsuleConfig::parent_lease`'s own doc.
+    // Held here as the raw CLI string; wrapped into the per-platform
+    // `ParentLease::NamedMutex` variant (ADR 0043 decision 15) below.
+    let mut parent_lease_mutex_name: Option<String> = None;
     // ADR 0042 slice L1a (Codex review finding 7): supplied by the
     // spawner (`--start`/`--resume`'s own supervisor, via
     // `build_run_command`'s `--survival`), never inferred — defaults to
@@ -139,7 +141,7 @@ fn cmd_run(args: &[String]) {
                 rest = &rest[2..];
             }
             Some("--parent-lease-name") if rest.len() > 1 => {
-                parent_lease_name = Some(rest[1].clone());
+                parent_lease_mutex_name = Some(rest[1].clone());
                 rest = &rest[2..];
             }
             Some("--survival") if rest.len() > 1 => {
@@ -192,7 +194,7 @@ fn cmd_run(args: &[String]) {
     }
     let rollout_evidence = sot_log::rollout::RolloutEvidence::NoRollbackTarget;
 
-    let config = sot_log::capsule_win::CapsuleWinConfig {
+    let config = sot_log::capsule::CapsuleConfig {
         voyage_root,
         voyage_id,
         retention: sot_log::segment::RetentionClass::Archive,
@@ -205,7 +207,7 @@ fn cmd_run(args: &[String]) {
         // still defaults to the honest `Normal`.
         survival,
         rollout_evidence,
-        parent_lease_name,
+        parent_lease: parent_lease_mutex_name.map(sot_log::producer::ParentLease::NamedMutex),
     };
     // No command source yet (Ctrl+C kills the process instead — see the
     // doc above). The pipe IS real now (U3 round 2): `PipeTransport::bind`
@@ -214,7 +216,7 @@ fn cmd_run(args: &[String]) {
     // attach/mgmt clients to connect to.
     let (_cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let mut transport = sot_log::pipe_transport::PipeTransport::new(MAX_PIPE_INSTANCES);
-    match sot_log::capsule_win::run(config, cmd_rx, &mut transport) {
+    match sot_log::capsule::run::<sot_log::producer_conpty::ConptyProducer>(config, cmd_rx, &mut transport) {
         Ok(s) => {
             eprintln!(
                 "sot-capsule: producer exited {:?} ({:?}); {} frames, {} segments sealed \
@@ -232,8 +234,15 @@ fn cmd_run(args: &[String]) {
             // this crate the value stays a raw, unsigned DWORD (review
             // finding: an earlier version cast it to i32 well before this
             // point, which would have turned a high-bit NTSTATUS-shaped
-            // code negative for no reason).
-            std::process::exit(s.exit_code.map(|c| c as i32).unwrap_or(1));
+            // code negative for no reason). ADR 0043 decision 13:
+            // `Signal` is unreachable on Windows but mapped honestly
+            // (`128 + n`, the POSIX shell convention) for the day this
+            // binary's exit-mapping is shared with a Unix caller.
+            std::process::exit(match s.exit_code {
+                Some(sot_log::producer::ExitStatus::Code(c)) => c as i32,
+                Some(sot_log::producer::ExitStatus::Signal(n)) => 128 + n,
+                None => 1,
+            });
         }
         Err(e) => {
             eprintln!("sot-capsule: {e}");

@@ -2,7 +2,7 @@
 //! transport and [`crate::transport`]'s `Transport` trait — the deferred
 //! half of unit U3 (round 2). Neither side knows about the other:
 //! `pipe_win` is a byte transport with no opinion on what rides over it;
-//! `capsule_win::run` drives `AttachProto` against an abstract `Transport`.
+//! `capsule::run` drives `AttachProto` against an abstract `Transport`.
 //! This module is the thin adapter that makes the real pipe satisfy that
 //! trait — nothing here decides protocol behavior, it only moves bytes and
 //! translates event/id shapes.
@@ -23,7 +23,7 @@
 //! # This bridge OWNS the `PipeServer` directly — no actor thread
 //!
 //! Round-2 e2e review's own deletion pressure: an earlier version of this
-//! module could not let `capsule_win::run`'s thread touch `PipeServer`
+//! module could not let `capsule::run`'s thread touch `PipeServer`
 //! directly, because it wrongly assumed sharing was necessary and
 //! `PipeServer` is `Send` but not `Sync` (it holds an `mpsc::Receiver`
 //! internally). But nothing here ever needs to SHARE it — `run`'s thread
@@ -110,7 +110,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 /// A `Transport` over a real `PipeServer`. Constructed UNBOUND (see
-/// [`PipeTransport::new`]); `Transport::bind` is what `capsule_win::run`
+/// [`PipeTransport::new`]); `Transport::bind` is what `capsule::run`
 /// calls, at the exact point ADR 0041's pipe-lifetime invariant requires,
 /// to actually create the pipe.
 pub struct PipeTransport {
@@ -123,7 +123,7 @@ pub struct PipeTransport {
 }
 
 impl PipeTransport {
-    /// An unbound transport ready to hand to `capsule_win::run` —
+    /// An unbound transport ready to hand to `capsule::run` —
     /// `max_instances` is the RAW total simultaneous pipe-instance ceiling
     /// `PipeServer::bind`'s own doc requires (subscribers plus separately
     /// bounded pre-hello/mgmt connections; computing that combination is
