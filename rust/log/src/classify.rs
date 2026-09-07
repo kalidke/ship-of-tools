@@ -12,7 +12,7 @@
 //! This module is generic over [`ProbeOps`] exactly like `probe.rs`
 //! itself, so the SAME transition logic is driven scripted-only by a
 //! model test (no real OS object touched) and for real by
-//! `crate::probe_win::RealProbeOps` — see `tests/supervisor_win.rs`.
+//! `crate::probe_win::RealProbeOps` (Windows) / `crate::probe_unix::RealProbeOps` (Linux) — see `tests/supervisor.rs`.
 //! Portable (L1-unix LU1a): this module makes no OS call of its own —
 //! everything platform-specific is behind [`ProbeOps`] — so its unit
 //! tests (against `ScriptedProbeOps`) now run on every CI platform, not

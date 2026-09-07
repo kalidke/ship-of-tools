@@ -465,6 +465,27 @@ pub enum TransportError {
     Unsupported(&'static str),
 }
 
+impl TransportError {
+    /// L1-unix LU3c (ADR 0043 decision 21): true iff this error means
+    /// "the endpoint is not there right now" — a pipe name that does not
+    /// exist (Windows: `NotFound`) or a Unix domain socket path with no
+    /// listener (`ConnectionRefused` — the kernel refuses a connect
+    /// against a bound but unlistened, or unlinked, path; a path that was
+    /// never created at all is `NotFound` there too). The supervisor's
+    /// own `end_run_over_mgmt_lane`/`probe_writer_liveness` use this ONE
+    /// predicate on both platforms instead of the former inline
+    /// `NotFound`-only guard: Windows behavior is unchanged (a named
+    /// pipe connect never yields `ConnectionRefused`), so this widens
+    /// nothing there.
+    pub fn is_endpoint_absent(&self) -> bool {
+        matches!(
+            self,
+            TransportError::Io { source, .. }
+                if matches!(source.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused)
+        )
+    }
+}
+
 /// Why a connection ended, reported once per connection on
 /// [`LaneEvent::Closed`] — hoisted (ADR 0043 decision 19) from
 /// `pipe_win`/`socket_unix`'s own byte-for-byte identical copies.
@@ -545,3 +566,13 @@ pub trait LaneServer: Sized {
     /// budget; `false` — LOUD, terminal — on expiry.
     fn join_workers(&mut self, deadline: Instant) -> bool;
 }
+
+/// L1-unix LU3c: the server twin of `client::PlatformEndpoint` — the
+/// lane a step-6 supervisor binds on the platform it runs on, chosen
+/// ONCE by this alias (never by threading a type parameter through
+/// `supervisor.rs`'s own state machine). Windows speaks `PipeServer`;
+/// Linux speaks `SocketServer`.
+#[cfg(windows)]
+pub type PlatformLaneServer = crate::pipe_win::PipeServer;
+#[cfg(target_os = "linux")]
+pub type PlatformLaneServer = crate::socket_unix::SocketServer;

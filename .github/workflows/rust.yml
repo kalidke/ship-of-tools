@@ -173,21 +173,23 @@ jobs:
   # budgeted job, not folded anonymously into the general `windows-latest`
   # matrix's blanket `cargo test --workspace`. This is the FULL adoption of
   # the ADR's pinned five-command table (conpty/capsule_win/pipe_win/
-  # e2e_pipe/supervisor_win, ~75 min total incl. checkout+build), each at
-  # its own ADR-pinned per-step cap, PLUS step 6 U3's own `fe_client_win`
+  # e2e_pipe/supervisor, ~75 min total incl. checkout+build), each at
+  # its own ADR-pinned per-step cap, PLUS step 6 U3's own `fe_client`
   # addition below (~95 min total incl. checkout+build); the job-level
   # timeout leaves headroom for checkout+build plus every step's worst
   # case. `pipe_win`/`e2e_pipe` ALSO still run via the main `test` job's
   # blanket `cargo test --workspace` on `windows-latest` — the duplication
   # is deliberate, not yet worth a special-case exclusion.
   #
-  # ADR 0041 step 6, unit U2: `supervisor_win` spawns the real
-  # `sot-capsule` binary and drives it as a real client (the supervisor
-  # lane, a real cross-process authority) — belongs here for the identical
-  # "real named pipes, a real cross-process server" reason `pipe_win`/
-  # `e2e_pipe` do, at the ADR's own pinned 15-minute cap.
+  # ADR 0041 step 6, unit U2 (L1-unix LU3c: `supervisor_win.rs` renamed
+  # `supervisor.rs` and ungated to run on Linux too): `supervisor` spawns
+  # the real `sot-capsule` binary and drives it as a real client (the
+  # supervisor lane, a real cross-process authority) — belongs here for
+  # the identical "real named pipes, a real cross-process server" reason
+  # `pipe_win`/`e2e_pipe` do, at the ADR's own pinned 15-minute cap.
   #
-  # ADR 0041 step 6, unit U3: `fe_client_win` drives the FE attach-only
+  # ADR 0041 step 6, unit U3 (L1-unix LU3c: `fe_client_win.rs` renamed
+  # `fe_client.rs`, same ungating): `fe_client` drives the FE attach-only
   # client against a real supervisor + real capsule the identical way —
   # belongs here for the same reason, budgeted separately (20 min) since
   # its reconnect case spawns a SECOND real supervisor process.
@@ -239,14 +241,19 @@ jobs:
       - name: Test e2e_pipe (real-pipe end-to-end)
         timeout-minutes: 10
         run: cargo test -p sot-log --test e2e_pipe -- --nocapture
-      # --test supervisor_win: the real-process supervisor authority --
+      # --test supervisor: the real-process supervisor authority --
       # spawn/adopt, the anti-flap bound, end_run's record_closed then
       # record_verified, and the version-skew refusal, all against a real
-      # `sot-capsule supervise` child.
-      - name: Test supervisor_win (the supervisor authority, real process)
+      # `sot-capsule supervise` child. L1-unix LU3c: renamed from
+      # `tests/supervisor_win.rs` when the suite ungated to run on Linux
+      # too (over a real socket lane, a real `/bin/sh` producer) -- this
+      # job proves Windows behavior is unchanged; the ubuntu matrix job's
+      # blanket `cargo test --workspace` picks the Linux half up on its
+      # own.
+      - name: Test supervisor (the supervisor authority, real process)
         timeout-minutes: 15
-        run: cargo test -p sot-log --test supervisor_win -- --nocapture
-      # --test fe_client_win: ADR 0041 step 6 U3, the FE attach-only
+        run: cargo test -p sot-log --test supervisor -- --nocapture
+      # --test fe_client: ADR 0041 step 6 U3, the FE attach-only
       # client -- attach as a watcher and receive the checkpoint;
       # take-on-first-input's resize-before-flush ordering (proven via
       # the sealed voyage record); end_run from the quit dispatcher
@@ -254,10 +261,12 @@ jobs:
       # killed and a fresh supervisor takes over restoring the screen
       # from the new checkpoint -- the last of which spawns a SECOND
       # real supervisor process and rides the client's own real
-      # 250ms-to-4s backoff, hence the generous budget.
-      - name: Test fe_client_win (FE attach-only client, real process)
+      # 250ms-to-4s backoff, hence the generous budget. L1-unix LU3c:
+      # renamed from `tests/fe_client_win.rs`, same reason as
+      # `supervisor` above.
+      - name: Test fe_client (FE attach-only client, real process)
         timeout-minutes: 20
-        run: cargo test -p sot-log --test fe_client_win -- --nocapture
+        run: cargo test -p sot-log --test fe_client -- --nocapture
       # ADR 0042 slice L1a: `sot-capsule` lives in the sot-log package, a
       # DIFFERENT crate than `sotd` (sot-backend) — `cargo test -p
       # sot-backend` builds `sotd.exe` itself (CARGO_BIN_EXE_sotd, same

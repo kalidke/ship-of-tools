@@ -28,11 +28,11 @@ pub struct SpawnedChild {
 }
 
 impl SpawnedChild {
-    // U1a Codex round-1, Blocker 2: `RealProbeOps` (the only caller of
-    // this constructor) is now `pub(crate)` with no in-crate consumer
-    // yet either -- deliberate scaffolding for U2's classifier, not dead
-    // code to delete (see `RealProbeOps`'s own doc).
-    #[allow(dead_code)]
+    // L1-unix LU3c: `RealProbeOps` has had a real in-crate consumer
+    // (`supervisor.rs`) since U2 landed -- the `#[allow(dead_code)]` this
+    // constructor and `RealProbeOps` itself carried, pending that
+    // consumer, is stale and removed on both (this lane gives
+    // `probe_unix::RealProbeOps` the identical real consumer on Linux).
     fn from_child(child: std::process::Child) -> Self {
         use std::os::windows::io::IntoRawHandle;
         // `into_raw_handle` consumes `child`, transferring ownership of
@@ -114,8 +114,10 @@ impl SpawnedChild {
 /// trait (`ProbeOps`) and the scripted implementation (`ScriptedProbeOps`,
 /// already gated behind `cfg(test)`/`test-support`) at their current
 /// visibility is unaffected: neither one hands back a real, unauthenticated
-/// `PipeClient` to anything outside this crate.
-#[allow(dead_code)] // deliberate scaffolding, no consumer until U2 -- see this type's own doc
+/// `PipeClient` to anything outside this crate. L1-unix LU3c: `sot-capsule
+/// supervise` (`supervisor.rs`) is that consumer, on Windows exactly as
+/// on Linux — the `#[allow(dead_code)]` this type carried pending it is
+/// stale and removed.
 pub(crate) struct RealProbeOps;
 
 impl ProbeOps for RealProbeOps {

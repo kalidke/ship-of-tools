@@ -10,28 +10,6 @@
 //! recorded redacted by default, and the voyage verifies with
 //! `sot-log verify` afterward.
 
-/// `sot-capsule run <voyage_root> <voyage_id> [--claude ...]` (Linux):
-/// `run` on a real pty (`producer_pty::PtyProducer`) over a real Unix
-/// socket transport; `claude` is ADR 0040's own, unrelated producer,
-/// untouched by LU2b (see `run_claude`'s own doc).
-#[cfg(target_os = "linux")]
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--cols <n>] [--rows <n>] \
-[--parent-lease-fd <n>] [--assume-no-rollback-target] -- <cmd> [args...]\n       \
-sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-version>";
-    if args.first().map(String::as_str) == Some("claude") {
-        return run_claude(&args[1..], usage);
-    }
-    if args.first().map(String::as_str) != Some("run") {
-        eprintln!("{usage}");
-        std::process::exit(2);
-    }
-    cmd_run::<sot_log::producer_pty::PtyProducer, _, _>(&args[1..], |n| {
-        sot_log::socket_transport::SocketTransport::new(n)
-    });
-}
-
 /// The RAW total simultaneous connection ceiling this harness passes to
 /// each platform's own transport constructor (ADR 0041: subscribers plus
 /// separately bounded pre-hello/mgmt connections — the exact combined
@@ -45,19 +23,36 @@ sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-vers
 const MAX_TRANSPORT_CONNECTIONS: u32 = 8;
 
 /// `run`, plus (ADR 0041 step 6 U2) `supervise`/`endrun`/`reset` — see
-/// each subcommand's own function for its usage line.
-#[cfg(windows)]
+/// each subcommand's own function for its usage line. L1-unix LU3c: ONE
+/// `main` for both platforms now (collapsing the former Windows-only
+/// `supervise`/`endrun`/`reset`/`build-id` main and the separate
+/// Linux-only `run`/`claude` main into one dispatch) — `claude` (ADR
+/// 0040's own, unrelated producer) is the ONLY Linux-only subcommand,
+/// since it has no Windows counterpart.
+#[cfg(any(windows, target_os = "linux"))]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let top_usage = "usage: sot-capsule <run|supervise|endrun|reset|build-id> ...";
+    let top_usage = "usage: sot-capsule <run|supervise|endrun|reset|build-id> ...\n       \
+sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-version>  (Linux only)";
+    #[cfg(target_os = "linux")]
+    {
+        if args.first().map(String::as_str) == Some("claude") {
+            return run_claude(&args[1..], top_usage);
+        }
+    }
     match args.first().map(String::as_str) {
         // The lane build id this binary will answer the supervisor hello
         // with -- the daemon reads it before every spawn (`sot-backend`'s
         // `check_pair`) so a sotd/sot-capsule pair from two builds is
         // refused up front instead of failing every attach as `Foreign`.
         Some("build-id") => println!("{}", sot_log::exchange::SUPERVISOR_LANE_BUILD_ID),
+        #[cfg(windows)]
         Some("run") => cmd_run::<sot_log::producer_conpty::ConptyProducer, _, _>(&args[1..], |n| {
             sot_log::pipe_transport::PipeTransport::new(n)
+        }),
+        #[cfg(target_os = "linux")]
+        Some("run") => cmd_run::<sot_log::producer_pty::PtyProducer, _, _>(&args[1..], |n| {
+            sot_log::socket_transport::SocketTransport::new(n)
         }),
         Some("supervise") => cmd_supervise(&args[1..]),
         Some("endrun") => cmd_endrun(&args[1..]),
@@ -327,7 +322,7 @@ where
 /// 0041 step 6 U2): the authority. `--assume-no-rollback-target` is
 /// mandatory here for the exact reason `run`'s own copy of it is — see
 /// `sot_log::supervisor`'s own module doc.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn cmd_supervise(args: &[String]) {
     let usage = "usage: sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
 [--rows <n>] [--survival <normal|degraded>] --assume-no-rollback-target -- <cmd> [args...]";
@@ -409,7 +404,7 @@ fn cmd_supervise(args: &[String]) {
 /// (ADR 0041 step 6 U2): the no-supervisor path's own fence-acquiring
 /// EndRun. Fails loudly (never terminates blind) if a real supervisor is
 /// already the authority — see `sot_log::supervisor::endrun`'s own doc.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn cmd_endrun(args: &[String]) {
     let usage = "usage: sot-capsule endrun <state_dir> [--voyage <id>] [--reason <text>]";
     if args.is_empty() {
@@ -443,7 +438,7 @@ fn cmd_endrun(args: &[String]) {
 /// `sot-capsule reset <state_dir> [--voyage <id>]` (ADR 0041 step 6 U2):
 /// the no-supervisor path's own fence-acquiring reset — proceeds ONLY on
 /// a classifier ABSENT taken while holding the fence.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn cmd_reset(args: &[String]) {
     let usage = "usage: sot-capsule reset <state_dir> [--voyage <id>]";
     if args.is_empty() {
@@ -481,8 +476,11 @@ fn main() {
 // one Cargo.toml, so a `pub fn` hidden inside a private library module (the
 // ORIGINAL `fsutil::lock_supervisor`) was invisible here. This test is the
 // actual proof: it calls the public facade from the real consumer Codex
-// named, not merely from the library's own test suite.
-#[cfg(all(test, windows))]
+// named, not merely from the library's own test suite. L1-unix LU3c:
+// `fence::lock_supervisor` is portable (no `#[cfg(windows)]` of its own)
+// and always was, so this test's former `windows` gate was never load-
+// bearing -- ungated to plain `cfg(test)`, proven on Linux too now.
+#[cfg(test)]
 mod tests {
     #[test]
     fn supervisor_lock_facade_is_reachable_and_works_from_this_binary_crate() {

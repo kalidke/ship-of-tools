@@ -232,8 +232,11 @@ const PIDFD_GET_INFO: libc::Ioctl = {
 
 /// `pidfd_open(2)`: no safe wrapper function exists in `libc` (only the
 /// syscall NUMBER is exported), so this goes through the raw `syscall(2)`
-/// the ADR names.
-fn pidfd_open(pid: u32) -> io::Result<OwnedFd> {
+/// the ADR names. `pub(crate)` (ADR 0043 decision 21): `probe_unix.rs`'s
+/// own `SpawnedChild` reuses this SAME helper for the freshly spawned,
+/// not-yet-challenged child, rather than duplicating the syscall
+/// encoding a second time.
+pub(crate) fn pidfd_open(pid: u32) -> io::Result<OwnedFd> {
     let rc = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0 as libc::c_uint) };
     if rc < 0 {
         return Err(io::Error::last_os_error());
@@ -241,6 +244,25 @@ fn pidfd_open(pid: u32) -> io::Result<OwnedFd> {
     // SAFETY: a non-negative return from pidfd_open(2) is a freshly
     // opened, valid, uniquely-owned fd.
     Ok(unsafe { OwnedFd::from_raw_fd(rc as RawFd) })
+}
+
+/// Poll a pidfd for readability — it becomes readable exactly when the
+/// process it identifies has exited (POSIX pidfd semantics), bounded,
+/// never infinite. `pub(crate)` (ADR 0043 decision 21): shared by
+/// [`ChallengedProcess::wait`] above and `probe_unix.rs`'s own
+/// `SpawnedChild::wait` — one poll loop, not two copies.
+pub(crate) fn poll_pidfd_readable(fd: RawFd, timeout: Duration) -> io::Result<bool> {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    let rc = unsafe { libc::poll(&mut pfd, 1, ms) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(rc > 0)
 }
 
 /// The pidfd's own reported pid, read via `/proc/self/fdinfo/<fd>`'s
@@ -459,18 +481,14 @@ impl ChallengedProcess {
     /// The death signal a supervisor waits on rather than sampling
     /// process absence: `poll(2)` on the pidfd, which becomes readable
     /// exactly when the process has exited. Bounded, never infinite.
+    /// Deliberately does NOT reap (ADR 0043 decision 21): a leg this
+    /// `ChallengedProcess` identifies may be ADOPTED (not this
+    /// supervisor's own child at all), and reaping is only safe once the
+    /// caller has read everything it needs — see
+    /// [`Self::exit_status_after_confirmed_exit`], which reaps right
+    /// after its own read.
     pub fn wait(&self, timeout: Duration) -> io::Result<bool> {
-        let mut pfd = libc::pollfd {
-            fd: self.pidfd.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-        let rc = unsafe { libc::poll(&mut pfd, 1, ms) };
-        if rc < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(rc > 0)
+        poll_pidfd_readable(self.pidfd.as_raw_fd(), timeout)
     }
 
     /// The KILL half of the probe's own KILL+WAIT row:
@@ -513,17 +531,35 @@ impl ChallengedProcess {
                 std::ptr::addr_of_mut!(info),
             )
         };
-        if rc != 0 {
+        let result = if rc != 0 {
             let err = io::Error::last_os_error();
-            return match err.raw_os_error() {
+            match err.raw_os_error() {
                 Some(libc::ENOTTY) | Some(libc::EINVAL) | Some(libc::ENOSYS) => Ok(None),
                 _ => Err(err),
-            };
+            }
+        } else if info.mask & PIDFD_INFO_EXIT == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(info.exit_code))
+        };
+        // ADR 0043 decision 21: THIS is the one place a leg identified by
+        // this `ChallengedProcess` gets reaped — always right here,
+        // after the read above, regardless of that read's own outcome
+        // (a pre-6.15 kernel's ENOTTY/EINVAL/ENOSYS fallback still means
+        // the process is a confirmed-exited zombie this call must still
+        // reap, exactly like a successful `PIDFD_GET_INFO` read does).
+        // `self.pid` is either this supervisor's OWN child — a retained
+        // zombie because `SIGCHLD` stays `SIG_DFL` for this process's
+        // whole life, never auto-reaped out from under us — or a leg
+        // ADOPTED from a different, earlier supervisor, which is not our
+        // child at all: `ECHILD` there is expected and ignored, exactly
+        // like every other "not ours to reap" case this crate already
+        // treats as success (`killpg`'s own `ESRCH`).
+        unsafe {
+            let mut status: libc::c_int = 0;
+            libc::waitpid(self.pid as libc::pid_t, &mut status, libc::WNOHANG);
         }
-        if info.mask & PIDFD_INFO_EXIT == 0 {
-            return Ok(None);
-        }
-        Ok(Some(info.exit_code))
+        result
     }
 }
 
