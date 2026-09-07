@@ -18,6 +18,13 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+/// F4 (Codex review round): bounds [`SpawnedChild::from_child`]'s own
+/// failure-path reap — matches `producer_pty::PtyProducer`'s own `Drop`
+/// bound (`REAP_BOUND`), the same shape for the same reason (a leader
+/// stuck in an uninterruptible kernel wait must never block the caller
+/// forever).
+const FAILURE_CLEANUP_REAP_BOUND: Duration = Duration::from_secs(2);
+
 /// A just-spawned, NOT YET CHALLENGED child process handle. Stage A's
 /// A1-A3 observations are about THIS type, never `ChallengedProcess`:
 /// nothing has proven this handle's identity — it's ours only because we
@@ -25,11 +32,12 @@ use std::time::{Duration, Instant};
 ///
 /// # Reaping (ADR 0043 decision 21)
 ///
-/// `SIGCHLD` stays `SIG_DFL` for this whole process (the supervisor's own
-/// module doc, `supervisor.rs`) — an ignored `SIGCHLD` would auto-reap
-/// and re-open the pid-reuse window `pidfd_open` right after `spawn`
-/// depends on staying closed. This type's own `pidfd` is what makes that
-/// safe: the child stays a retained zombie, its pid unrecycled, until
+/// `SIGCHLD` is set to `SIG_DFL` at the start of `supervisor::
+/// supervise_inner` (F2, Codex review round — never merely assumed) and
+/// stays there for this whole process's life — an ignored `SIGCHLD`
+/// would auto-reap and re-open the pid-reuse window `pidfd_open` right
+/// after `spawn` depends on staying closed. This type's own `pidfd` is
+/// what makes that safe: the child stays a retained zombie, its pid unrecycled, until
 /// [`Self::wait`] observes the exit and reaps it THEN — "reaps on the
 /// exit it observes", the moment there is nothing further Stage A needs
 /// to read off it (unlike a [`ChallengedProcess`], whose own reap is
@@ -72,11 +80,42 @@ impl SpawnedChild {
                 // process, then report the ORIGINAL failure — the
                 // classifier's own SPAWN-FAILED row already covers "we
                 // could not obtain a usable handle for what we just
-                // spawned".
+                // spawned". The numeric kill is safe (F2 guarantees
+                // `SIGCHLD` is `SIG_DFL` here, so this pid is still
+                // pinned, unrecycled), but the REAP that follows must
+                // never block unboundedly: a leader stuck in an
+                // uninterruptible kernel wait can outlive `SIGKILL`
+                // entirely, and this runs on the classifier's own spawn
+                // worker thread, not a destructor with nothing else
+                // waiting on it. Same shape as `producer_pty::PtyProducer`'s
+                // own `Drop` — poll `waitpid(pid, WNOHANG)` every 10ms,
+                // retrying `EINTR`, stopping on a real reap or `ECHILD`
+                // (already reaped, harmless), bounded by
+                // `FAILURE_CLEANUP_REAP_BOUND`. Past that bound this
+                // simply gives up: a pinned zombie left behind is
+                // harmless (nothing else addresses this pid), and the
+                // ORIGINAL error is what actually matters to the caller.
                 unsafe {
                     libc::kill(pid, libc::SIGKILL);
+                }
+                let deadline = Instant::now() + FAILURE_CLEANUP_REAP_BOUND;
+                loop {
                     let mut status: libc::c_int = 0;
-                    libc::waitpid(pid, &mut status, 0);
+                    let rc = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+                    if rc == pid {
+                        break; // reaped
+                    }
+                    if rc < 0 {
+                        match std::io::Error::last_os_error().raw_os_error() {
+                            Some(libc::EINTR) => continue, // retry immediately
+                            _ => break, // ECHILD (already reaped) or anything else -- nothing more to do
+                        }
+                    }
+                    // rc == 0: not yet reapable -- keep polling until the bound.
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(e)
             }

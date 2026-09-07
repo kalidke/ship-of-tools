@@ -188,12 +188,16 @@
 //!
 //! On Linux the supervisor's legs are its OWN CHILDREN, so someone must
 //! reap them — a role Windows' job-object/handle model has no analogue
-//! for. Rule: **`SIGCHLD` stays `SIG_DFL` for this whole process (never
-//! `SIG_IGN` — an ignored `SIGCHLD` auto-reaps, which re-opens the
-//! pid-reuse window `pidfd_open` right after `Command::spawn` depends on
-//! staying closed, and would be inherited by the leg across `exec`), and
-//! a leg is reaped EXACTLY ONCE, after this process has read everything
-//! it needs from the dead process — never eagerly, never via a global
+//! for. Rule: **`SIGCHLD` is SET to `SIG_DFL` here, at the very start of
+//! [`supervise_inner`] (never merely assumed — whatever launched this
+//! process may have inherited `SIG_IGN` across `exec`, which auto-reaps
+//! every child immediately and silently breaks the pid pin below; never
+//! `SIG_IGN` ourselves either, for the identical reason: an ignored
+//! `SIGCHLD` re-opens the pid-reuse window `pidfd_open` right after
+//! `Command::spawn` depends on staying closed, and would be inherited by
+//! the leg across `exec`), and a leg is reaped exactly once per handle
+//! that observes its exit, after this process has read everything it
+//! needs from the dead process — never eagerly, never via a global
 //! `waitpid(-1, ..)` reaper.** `probe_unix::SpawnedChild::wait` reaps the
 //! moment it observes the exit (nothing further Stage A needs to read
 //! off it); a leg identified by a [`challenge_unix::ChallengedProcess`]
@@ -201,7 +205,12 @@
 //! answers) instead reaps inside `exit_status_after_confirmed_exit`,
 //! right after that call's own `PIDFD_GET_INFO` read — deferred that far
 //! because reaping any earlier would destroy the exit-status information
-//! the read needs. `ECHILD` there is ignored: a leg inherited from a
+//! the read needs — and, as the reaper of LAST RESORT for a leg that
+//! reached `Ready` and was never asked for its exit status at all (the
+//! supervisor's own main loop only ever calls `wait`, never the exit-
+//! status accessor, once a leg simply ends on its own), the
+//! `ChallengedProcess`'s own `Drop` impl reaps it too, non-blocking,
+//! never a kill. `ECHILD` at every one of these is ignored: a leg inherited from a
 //! DIFFERENT, earlier supervisor is not this process's child at all —
 //! its own parent reaps it, not us.
 //!
@@ -2390,6 +2399,22 @@ fn respawn_or_terminal(
 }
 
 fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
+    // ADR 0043 decision 21 (Codex review round, F2): SIGCHLD is SET to
+    // SIG_DFL here, as the very first thing this function does -- never
+    // merely assumed. Whatever launched this process (a daemon, a shell)
+    // may have inherited `SIG_IGN` across `exec`, which auto-reaps every
+    // child immediately and silently breaks the pid pin
+    // `SpawnedChild::from_child`'s own `pidfd_open` relies on (a reaped
+    // pid can be recycled before `pidfd_open` ever runs) -- reproduced.
+    // This process OWNS the disposition it depends on, the same line
+    // `producer_pty`'s own `spawn` already draws for its forked child.
+    #[cfg(target_os = "linux")]
+    {
+        if unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) } == libc::SIG_ERR {
+            return Err(crate::Error::Io(std::io::Error::last_os_error()));
+        }
+    }
+
     std::fs::create_dir_all(voyages_dir(&config.state_dir))?;
 
     // ONE AUTHORITY.

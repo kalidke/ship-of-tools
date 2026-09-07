@@ -573,6 +573,40 @@ impl ChallengedProcess {
     }
 }
 
+/// F1 (Codex review round): the reaper of LAST RESORT. A leg that reaches
+/// `Ready` has its `wait` called (which deliberately does NOT reap — see
+/// that method's own doc) and then its handle simply dropped: nothing in
+/// the supervisor ever calls [`ChallengedProcess::exit_status_after_confirmed_exit`]
+/// for a leg that exited cleanly on its own, so without this every such
+/// leg left a zombie behind for the rest of THIS process's life
+/// (reproduced). Whoever is dropping this handle has, by construction,
+/// already read everything about this process it ever intended to — a
+/// caller that still wanted the exit status would still be holding the
+/// handle — so reaping unconditionally here is safe by the exact same
+/// rule `exit_status_after_confirmed_exit`'s own reap already follows.
+/// Non-blocking (`WNOHANG`) and never a kill: a caller that drops a
+/// handle to a STILL-LIVE process (an ordinary "I decided not to wait
+/// after all") leaves it alone — the leg outliving this handle, or this
+/// whole process, is by design (ADR 0043 decision 14's detached kill
+/// domain); this only ever reaps what has ALREADY exited. `ECHILD` (an
+/// ADOPTED leg, not our own child) is ignored, exactly like the
+/// accessor's own reap — and a second `waitid` after an already-reaped
+/// exit (this Drop running after that accessor already reaped it) is
+/// equally harmless.
+impl Drop for ChallengedProcess {
+    fn drop(&mut self) {
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::waitid(
+                libc::P_PIDFD,
+                self.pidfd.as_raw_fd() as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG,
+            );
+        }
+    }
+}
+
 /// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
 /// `ChallengedProcess` implements — `pid`/`created`/`reverify`/`wait`/
 /// `terminate` already have these exact signatures, so this is pure
@@ -690,7 +724,9 @@ pub fn pin_peer_for_test(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_start_ticks;
+    use super::{parse_start_ticks, ChallengedProcess};
+    use std::io;
+    use std::time::Duration;
 
     /// A literal `/proc/pid/stat`-shaped line whose `comm` field (the
     /// second, parenthesized field) contains BOTH a space and a nested
@@ -715,5 +751,91 @@ mod tests {
     #[test]
     fn rejects_a_line_with_too_few_fields_after_comm() {
         assert_eq!(parse_start_ticks("1234 (comm) S 1 1"), None);
+    }
+
+    /// F1 (Codex review round): `ChallengedProcess::drop` reaps an
+    /// already-exited child through its pidfd. Spawns `/bin/sh -c "exit
+    /// 0"` directly (never through `std::process::Child::wait`/
+    /// `try_wait`, which would reap it themselves and defeat the very
+    /// thing this test proves) so the child is still an unreaped zombie
+    /// when the freshly built `ChallengedProcess` observes its exit via
+    /// `wait`, then drops it: a further `waitpid(pid, WNOHANG)` must now
+    /// report `ECHILD` (already reaped by THIS process), never `0`
+    /// (still a live zombie) or a real block.
+    #[test]
+    fn drop_reaps_an_already_exited_child_through_the_pidfd() {
+        let child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            // Never inherit this test binary's own stdout/stderr: an
+            // inherited fd held open by the CHILD keeps any pipe reading
+            // this process's own output from ever seeing EOF, regardless
+            // of how promptly the child itself is reaped.
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let pidfd = super::pidfd_open(pid).expect("pidfd_open");
+        let start = super::process_start_ticks(pid).expect("process_start_ticks");
+        let proof = ChallengedProcess::from_pinned_for_test(pidfd, pid, start);
+        assert!(
+            proof.wait(Duration::from_secs(5)).expect("wait"),
+            "expected the child to exit within 5s"
+        );
+        drop(proof);
+        let mut status: libc::c_int = 0;
+        let rc = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) };
+        let err = io::Error::last_os_error();
+        assert_eq!(rc, -1, "expected waitpid to report the child already reaped (rc={rc})");
+        assert_eq!(
+            err.raw_os_error(),
+            Some(libc::ECHILD),
+            "expected ECHILD (already reaped by Drop), got {err:?}"
+        );
+    }
+
+    /// F1's sibling: dropping the handle of a STILL-LIVE child must never
+    /// reap (or kill) it — only an already-exited process is ever reaped
+    /// by `Drop` (`WNOHANG`, non-blocking, checked here via a `kill(pid,
+    /// 0)` existence probe immediately after the drop). Cleans up by
+    /// killing and reaping the child directly, never through
+    /// `std::process::Child`, mirroring the sibling test above.
+    ///
+    /// Spawns `sleep` DIRECTLY, never via `/bin/sh -c "sleep 600"`
+    /// (review round, reproduced): `/bin/sh` on this host does NOT
+    /// exec-optimize a lone simple command -- it forks `sleep` as a
+    /// GRANDCHILD and stays around itself as an intermediary, so
+    /// `child.id()` would name the SHELL, not the sleeper, and killing
+    /// the shell leaves the actual `sleep` orphaned and running for its
+    /// full 600s (confirmed live: a bare `sleep 600`, ppid reparented to
+    /// the init/subreaper, survived exactly this test's own kill). One
+    /// process, one pid, no intermediary.
+    #[test]
+    fn drop_leaves_a_still_live_child_alive() {
+        let child = std::process::Command::new("sleep")
+            .arg("600")
+            // Same reasoning as the sibling test above -- this one lives
+            // far longer, so an inherited stdout/stderr fd here is a real
+            // hang risk for anything downstream reading this process's
+            // own output, not merely a theoretical one.
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let pidfd = super::pidfd_open(pid).expect("pidfd_open");
+        let start = super::process_start_ticks(pid).expect("process_start_ticks");
+        let proof = ChallengedProcess::from_pinned_for_test(pidfd, pid, start);
+        assert!(
+            !proof.wait(Duration::from_millis(100)).expect("wait"),
+            "expected the child to still be alive"
+        );
+        drop(proof);
+        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        assert_eq!(rc, 0, "Drop must never kill (or otherwise disturb) a still-live process");
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        let mut status: libc::c_int = 0;
+        unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
     }
 }

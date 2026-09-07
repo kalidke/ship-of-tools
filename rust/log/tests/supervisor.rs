@@ -43,11 +43,18 @@ const SHELL: &[&str] = &["/bin/sh"];
 
 /// The one scripted producer that exits shortly after reaching Ready —
 /// `a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound`'s
-/// own leg.
+/// own leg. F5 (Codex review round): ~2s of life, not ~1 -- a loaded
+/// runner can miss the ONLY status poll that would ever observe Ready
+/// before a ~1s-lived leg self-exits, failing the test while the
+/// supervisor correctly reaches its anti-flap terminal state anyway
+/// (reproduced). ~2s is wide enough for the poll to observe Ready even
+/// under load, far shorter than `STABILITY_INTERVAL` (60s in
+/// `supervisor.rs`), so the leg is still unstable and three of them
+/// still trip the anti-flap bound.
 #[cfg(windows)]
-const SELF_EXITING_PRODUCER: &[&str] = &["cmd.exe", "/d", "/c", "ping -n 2 127.0.0.1 >nul & exit 1"];
+const SELF_EXITING_PRODUCER: &[&str] = &["cmd.exe", "/d", "/c", "ping -n 3 127.0.0.1 >nul & exit 1"];
 #[cfg(target_os = "linux")]
-const SELF_EXITING_PRODUCER: &[&str] = &["/bin/sh", "-c", "sleep 1; exit 1"];
+const SELF_EXITING_PRODUCER: &[&str] = &["/bin/sh", "-c", "sleep 2; exit 1"];
 
 /// Points `SOT_RUNTIME_DIR` at a fresh, mode-0700 tempdir under `/tmp`
 /// for the lifetime of the returned guard, so this process's own socket
@@ -513,6 +520,18 @@ fn a_second_supervisor_adopts_a_leg_left_behind_by_a_killed_first_one() {
 
 /// ADR 0041 Lifecycle "Build boundary": a mismatched build is answered
 /// `refused {version_skew}` and the connection is closed.
+///
+/// F3 (Codex review round): the wrong-build connection is refused and
+/// closed, but the SUPERVISOR (and the leg it already spawned) are both
+/// still alive afterward -- reproduced as a real harness defect (pre-
+/// existing on Windows too, carried over by the ungating, not new to
+/// Linux): the version-skew probe alone never ends the run, so a
+/// `KillGuard` that only kills the SUPERVISOR at scope exit strands the
+/// leg (a live `SHELL`) for however long it takes the temp state dir to
+/// be reclaimed. Fixed the same way every other test in this file that
+/// starts a real leg does: reconnect with the RIGHT build, wait for
+/// Ready, then end the run and stop the authority before the guard ever
+/// runs.
 #[test]
 fn a_mismatched_build_id_is_refused_and_the_connection_closes() {
     let _serial = serial();
@@ -523,7 +542,7 @@ fn a_mismatched_build_id_is_refused_and_the_connection_closes() {
     let h = state_dir_hash(&state_dir);
 
     let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let _guard = KillGuard(Some(child));
+    let mut guard = KillGuard(Some(child));
     let (conn, outcome) = poll_until(
         || sot_log::supervisor::connect_and_challenge_with_build_for_test(&h, "some-other-build").ok(),
         Duration::from_secs(30),
@@ -534,6 +553,18 @@ fn a_mismatched_build_id_is_refused_and_the_connection_closes() {
         "a wrong build must be classified Foreign (refused{{version_skew}}), got {outcome:?}"
     );
     expect_connection_closes(conn, Duration::from_secs(5));
+
+    // F3: the authority itself must still be alive and serving after the
+    // version-skew refusal -- a FRESH connection with the RIGHT build
+    // proves it, then ends the run and stops the authority before the
+    // guard kills anything, so no leg is stranded.
+    let conn2 = wait_for_lane(&h, Duration::from_secs(10));
+    let (voyage, _leg) = wait_for_ready(&conn2, Duration::from_secs(90));
+    end_run_and_expect_record_closed(&conn2, "cleanup-end", "cleanup", voyage);
+    let _ = poll_to_terminal(&conn2, "cleanup-end", Duration::from_secs(60));
+    assert_eq!(command(&conn2, "cleanup-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
+    let child = guard.0.take().unwrap();
+    let _ = wait_for_exit(child, Duration::from_secs(30));
 }
 
 /// ADR 0041 no-supervisor capability matrix: "proven ABSENT: reset only"
