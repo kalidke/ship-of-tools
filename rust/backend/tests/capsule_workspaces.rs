@@ -40,6 +40,12 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
 use interprocess::local_socket::GenericFilePath;
 use sot_protocol::{codec, op, Frame, HelloReq, Kind};
+// LU5a: only the Linux-only unqualified-state-root refusal test below
+// needs this -- Windows has no tmpfs-as-state-root concern (its own
+// NTFS-only preflight is unrelated and unchanged), so an unguarded import
+// here would warn unused on that leg.
+#[cfg(target_os = "linux")]
+use sot_protocol::slug;
 
 /// Real-process tests share one CI runner; serialize them like
 /// `supervisor_win.rs`'s own `SERIAL` — a spawned `sotd` plus a spawned
@@ -165,6 +171,12 @@ struct Env {
     /// on Windows (named pipes have no such path-length concern) but kept
     /// unconditional — one `Env` shape on both platforms.
     _runtime_tmp: tempfile::TempDir,
+    /// LU5a: `Some` only for [`Env::new_with_state_root_on_tmpfs`] — a
+    /// SEPARATE tempdir (under `/dev/shm`, never under `_tmp`) that
+    /// `state_root` itself lives in for that constructor, kept alive here
+    /// for this `Env`'s whole lifetime. `None` for the ordinary
+    /// [`Env::new`], where `state_root` is just a subdirectory of `_tmp`.
+    _state_root_tmp: Option<tempfile::TempDir>,
     daemon_project_root: PathBuf,
     workspace_project_root: PathBuf,
     state_root: PathBuf,
@@ -189,6 +201,25 @@ struct Env {
 
 impl Env {
     fn new(tag: &str) -> Self {
+        Self::new_with_state_root_base(tag, None)
+    }
+
+    /// LU5a (ADR 0043 decision 23): the SAME environment, but `state_root`
+    /// is minted under `/dev/shm` (tmpfs) instead of under the ordinary
+    /// `_tmp` tempdir — for the daemon's own VOLATILE-type refusal test.
+    /// Smallest-change shape: every other path (project roots, config
+    /// root, runtime dir, socket) stays exactly what [`Env::new`] already
+    /// gives them; only the one directory `qualified_state_root` actually
+    /// judges moves.
+    #[cfg(target_os = "linux")]
+    fn new_with_state_root_on_tmpfs(tag: &str) -> Self {
+        Self::new_with_state_root_base(tag, Some(Path::new("/dev/shm")))
+    }
+
+    /// Shared by [`Env::new`] (`state_root_base: None`, a subdirectory of
+    /// `_tmp`) and [`Env::new_with_state_root_on_tmpfs`] (`Some(dir)`, a
+    /// fresh tempdir directly under `dir`).
+    fn new_with_state_root_base(tag: &str, state_root_base: Option<&Path>) -> Self {
         // `_tmp` (project/state/config) has no socket path deriving from
         // it directly — a real supervisor/voyage socket's own name is a
         // FIXED-LENGTH hash of the state dir path (`state_dir_hash`),
@@ -245,14 +276,33 @@ impl Env {
         std::fs::create_dir_all(&daemon_project_root).expect("mkdir daemon_project_root");
         let workspace_project_root = tmp.path().join("workspace-project");
         std::fs::create_dir_all(&workspace_project_root).expect("mkdir workspace_project_root");
-        let state_root = tmp.path().join("state");
-        std::fs::create_dir_all(&state_root).expect("mkdir state_root");
+        // LU5a: `state_root_base` overrides where `state_root` itself
+        // lives — `None` is the ordinary case (a subdirectory of `_tmp`,
+        // on whatever filesystem the system temp dir happens to sit on);
+        // `Some(base)` mints a fresh tempdir directly under `base`
+        // instead (the tmpfs refusal test's own `/dev/shm`).
+        let (state_root, state_root_tmp) = match state_root_base {
+            None => {
+                let p = tmp.path().join("state");
+                std::fs::create_dir_all(&p).expect("mkdir state_root");
+                (p, None)
+            }
+            Some(base) => {
+                let d = tempfile::Builder::new()
+                    .prefix("sotcw-state-")
+                    .tempdir_in(base)
+                    .unwrap_or_else(|e| panic!("tempdir under {base:?} (is it mounted?): {e}"));
+                let p = d.path().to_path_buf();
+                (p, Some(d))
+            }
+        };
         let config_root = tmp.path().join("config");
         std::fs::create_dir_all(&config_root).expect("mkdir config_root");
         let socket_path = test_socket_path(runtime_tmp.path(), tag);
         Self {
             _tmp: tmp,
             _runtime_tmp: runtime_tmp,
+            _state_root_tmp: state_root_tmp,
             daemon_project_root,
             workspace_project_root,
             state_root,
@@ -1859,6 +1909,24 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
+    // LU5a (ADR 0043 decision 25, Linux leg): the supervisor's own stderr
+    // is the daemon's own log -- by the time this row is terminal, its
+    // supervisor has necessarily written at least one diagnostic line
+    // (the anti-flap/watchdog trail this whole test exercises), prefixed
+    // with THIS workspace's own id so concurrent rows sharing the one
+    // daemon log stay distinguishable.
+    #[cfg(target_os = "linux")]
+    {
+        let log_path = env.state_root.join("sot").join("sotd.log");
+        let log_contents = std::fs::read_to_string(&log_path)
+            .unwrap_or_else(|e| panic!("could not read the daemon's own log {log_path:?}: {e}"));
+        let wanted = format!("sot-capsule supervise[{default_workspace_id}]");
+        assert!(
+            log_contents.contains(&wanted),
+            "expected {log_path:?} to contain a line with {wanted:?}; got:\n{log_contents}"
+        );
+    }
+
     // (2) `workspace.destroy` on a terminal row now succeeds (never the
     // typed `capsule_end_not_reached` error this gap used to produce
     // forever) -- the default row's own branch: kept (never deleted),
@@ -2003,4 +2071,82 @@ async fn capsule_backend_test_env_drop_cleans_up_legs_daemon_and_tmux() {
         !runtime_root.exists(),
         "the cleanup guard must remove the env's own SOT_RUNTIME_DIR temp dir: {runtime_root:?}"
     );
+}
+
+/// ADR 0043 decision 23 (LU5a): `workspace.create` with `"runtime":
+/// "capsule"` is refused OUTRIGHT — before any row persists — when the
+/// state root resolves onto a VOLATILE filesystem (tmpfs here; ramfs is
+/// the same code path, untested for lack of an easy-to-mount ramfs in
+/// CI). Linux only: tmpfs-as-state-root is a Linux-specific concern here,
+/// and Windows keeps its existing, unrelated NTFS-only preflight.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn capsule_create_is_refused_on_an_unqualified_state_root() {
+    if !Path::new("/dev/shm").is_dir() {
+        eprintln!(
+            "skipping capsule_create_is_refused_on_an_unqualified_state_root: /dev/shm is not mounted here"
+        );
+        return;
+    }
+    let _serial = SERIAL.lock().await;
+
+    let env = Env::new_with_state_root_on_tmpfs("cur");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let label = "cur-workspace";
+    let create_req = serde_json::json!({
+        "label": label,
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert_eq!(
+        create_res.payload["code"], "state_root_unqualified",
+        "payload: {:?}", create_res.payload
+    );
+    let error_text = create_res.payload["error"].as_str().expect("error text");
+    assert!(error_text.contains("XDG_STATE_HOME"), "{error_text}");
+    assert!(error_text.contains("tmpfs"), "{error_text}");
+    assert!(
+        create_res.payload.get("workspace_id").is_none(),
+        "a refused create must mint no workspace_id: {:?}", create_res.payload
+    );
+
+    // workspace.list: no row for this (never-created) workspace.
+    let ws_slug = slug(label);
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let has_row = list_payload["workspaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|w| w["slug"] == ws_slug);
+    assert!(!has_row, "a refused create must not appear in workspace.list: {list_payload:?}");
+
+    // No toml persisted for it either.
+    let toml_path = env
+        .app_config_dir()
+        .join(format!("workspaces-{TEST_STATE_HOST}"))
+        .join(format!("{ws_slug}.toml"));
+    assert!(!toml_path.exists(), "a refused create must not persist a toml: {toml_path:?}");
+
+    // The daemon stays healthy: a tmux-runtime create on the SAME daemon
+    // still succeeds (the refusal above is per-request, never a
+    // daemon-wide wedge).
+    let tmux_project_root = env._tmp.path().join("tmux-workspace-project");
+    std::fs::create_dir_all(&tmux_project_root).expect("mkdir tmux_project_root");
+    let tmux_create_req = serde_json::json!({
+        "label": "cur-tmux-workspace",
+        "project_root": tmux_project_root.to_string_lossy(),
+        "runtime": "tmux",
+    });
+    let tmux_create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, tmux_create_req).await;
+    assert!(
+        tmux_create_res.payload.get("error").is_none(),
+        "tmux create on the same daemon failed: {:?}", tmux_create_res.payload
+    );
+
+    env.kill_daemon_bounded().await;
 }

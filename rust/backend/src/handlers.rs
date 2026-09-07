@@ -3922,6 +3922,34 @@ pub async fn handle_workspace_create(
     } else {
         Vec::new()
     };
+    // ADR 0043 decision 23: refuse an unqualified state root at the SAME
+    // "before any state mutation" moment `capsule_argv` above already
+    // established — before `ws_seed`, before `workspaces.insert`, before
+    // any toml. Gated identically to the capsule runtime's own
+    // availability check further down (`#[cfg(any(windows, target_os =
+    // "linux"))]`): a platform with no capsule runtime AT ALL (macOS)
+    // keeps its existing "runtime not available" refusal below instead of
+    // a state-root diagnosis that would be beside the point there.
+    #[cfg(any(windows, target_os = "linux"))]
+    let capsule_state_root: Option<std::path::PathBuf> = if runtime == "capsule" {
+        match crate::capsule_workspace::qualified_state_root() {
+            Ok(root) => Some(root),
+            Err(detail) => {
+                let payload = json!({
+                    "error": detail,
+                    "code": "state_root_unqualified",
+                });
+                return Ok(vec![(
+                    Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                    None,
+                )]);
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let capsule_state_root: Option<std::path::PathBuf> = None;
     let mut ws_seed = crate::workspaces::Workspace::from_label(
         &req.label,
         project_root.clone(),
@@ -3963,7 +3991,14 @@ pub async fn handle_workspace_create(
         // going forward (finding 6). On ANY failure to reach a running
         // supervisor, roll back the registry row and its persisted toml
         // and refuse the op with the real error text.
-        let spawn_result: std::result::Result<bool, String> = match sot_log::state_dir::sot_state_dir() {
+        // ADR 0043 decision 23: `capsule_state_root` was already resolved
+        // and qualified ABOVE, before this row (or its toml) ever existed
+        // — reuse it rather than re-resolving a second time. Always
+        // `Some` here in practice (this arm only runs when
+        // `ws_handle.runtime == "capsule"`, which is exactly when the
+        // earlier check ran and would have already returned on failure);
+        // the `None` arm stays as a defensive fallback, never actually hit.
+        let spawn_result: std::result::Result<bool, String> = match capsule_state_root {
             None => Err(format!(
                 "could not resolve this machine's state root ({} unset)",
                 crate::capsule_workspace::STATE_ROOT_HINT
@@ -4030,6 +4065,7 @@ pub async fn handle_workspace_create(
         #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = &capsule_argv;
+            let _ = &capsule_state_root;
             tracing::warn!(workspace_id = %ws_handle.workspace_id, "workspace.create: capsule runtime requested but not available on this host; rolling back");
             let _ = workspaces.remove_by_id(&ws_handle.workspace_id);
             for toml_path in [

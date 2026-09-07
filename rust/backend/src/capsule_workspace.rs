@@ -31,11 +31,21 @@ use std::path::{Path, PathBuf};
 /// ONE shared constant so the two platforms' wording can never drift out
 /// of step with `sot_log::state_dir::sot_state_dir`'s own actual
 /// resolution order (`%LOCALAPPDATA%` on Windows; `$XDG_STATE_HOME` or
-/// `$HOME` elsewhere). Gated the same as `mod runtime` below — nothing
-/// off Windows/Linux ever resolves a capsule state root at all.
+/// `$HOME` elsewhere). LU5a: the non-Windows arm is `not(windows)`, not
+/// `target_os = "linux"` — [`qualified_state_root`]'s own BODY is
+/// portable (it must at least TYPECHECK on every host `mod
+/// capsule_workspace` compiles for, macOS included) and references this
+/// constant unconditionally, so it must exist wherever that function's
+/// body does; the text is identical to what the Linux-only arm already
+/// said, since `sot_state_dir`'s own resolution order is the same on
+/// every non-Windows host. Every ACTUAL caller stays gated to Windows and
+/// Linux (`#[cfg(any(windows, target_os = "linux"))]`, matching the
+/// capsule runtime's own availability) — macOS never reaches this text at
+/// all, hence the `allow(dead_code)` below on the arm that serves it.
 #[cfg(windows)]
 pub(crate) const STATE_ROOT_HINT: &str = "%LOCALAPPDATA%";
-#[cfg(target_os = "linux")]
+#[cfg(not(windows))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) const STATE_ROOT_HINT: &str = "$XDG_STATE_HOME or $HOME";
 
 /// `<state-root>/workspaces/<workspace_id>/` — the capsule's own state
@@ -49,6 +59,115 @@ pub(crate) const STATE_ROOT_HINT: &str = "$XDG_STATE_HOME or $HOME";
 /// resolve it once; a test supplies a tempdir root).
 pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
     state_root.join("workspaces").join(workspace_id)
+}
+
+/// ADR 0043 decision 23: the ONE seam a capsule launch passes through
+/// before it is ever allowed to touch disk on the row's behalf — called by
+/// `handlers.rs`'s `workspace.create` so it can refuse an unqualified root
+/// BEFORE any row persists, and again by [`runtime::spawn_detached_supervisor`]
+/// beside its own `check_pair`, the one mechanism every later launch
+/// (attach start-on-attach, boot resume, the watchdog's own restart)
+/// shares. This FUNCTION is portable (no platform gate on the item
+/// itself — every host `mod capsule_workspace` compiles for must be able
+/// to typecheck it), but every real CALLER stays gated to Windows and
+/// Linux exactly like the capsule runtime's own availability elsewhere in
+/// this module — macOS never actually calls this (`allow(dead_code)`
+/// below). Three steps:
+///
+/// 1. [`sot_log::state_dir::sot_state_dir`] resolves the root at all —
+///    else the same [`STATE_ROOT_HINT`] wording every other "could not
+///    resolve this machine's state root" caller already uses.
+/// 2. Created if missing (this daemon's OWN private-dir helper — rule C
+///    is about per-CAPSULE directories, never the daemon's own root) and
+///    canonicalized: everything downstream judges the RESOLVED
+///    destination, a symlink or a nested mount included, never `$HOME` by
+///    inference.
+/// 3. On Linux, `statfs` the resolved root and refuse VOLATILE types
+///    (tmpfs, ramfs) — a SECOND, daemon-side deny list answering a
+///    different question than [`sot_log::state_dir::preflight_volume`]'s own
+///    remote-fs one: that one asks whether the store's primitives work at
+///    all (tmpfs passes — see its own doc); this one asks whether the
+///    root is durable enough to keep RESUMING capsule rows from across a
+///    daemon restart, which tmpfs/ramfs answer no to regardless of how
+///    well they support rename/fsync. Then `preflight_volume` itself,
+///    mapped to its `Display` text. Windows: unchanged — the existing
+///    NTFS-only arm already refuses everything this would and more.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+pub fn qualified_state_root() -> Result<PathBuf, String> {
+    let root = sot_log::state_dir::sot_state_dir()
+        .ok_or_else(|| format!("could not resolve this machine's state root ({STATE_ROOT_HINT} unset)"))?;
+    crate::paths::ensure_private_dir(&root)
+        .map_err(|e| format!("could not create the state root {root:?}: {e}"))?;
+    let root = std::fs::canonicalize(&root)
+        .map_err(|e| format!("could not resolve the state root {root:?}: {e}"))?;
+    #[cfg(target_os = "linux")]
+    {
+        let f_type = linux_only::statfs_type(&root)
+            .map_err(|e| format!("could not statfs the state root {root:?}: {e}"))?;
+        if let Some(name) = linux_only::volatile_fs_name(f_type) {
+            return Err(format!(
+                "state root {root:?} is on {name}: capsule records need durable, non-volatile \
+                 storage (set XDG_STATE_HOME to a local disk; ADR 0043 decision 23)"
+            ));
+        }
+    }
+    sot_log::state_dir::preflight_volume(&root).map_err(|e| e.to_string())?;
+    Ok(root)
+}
+
+/// LU5a: the daemon's OWN volatile-filesystem deny list plus the raw
+/// `statfs` call it is judged against — split into its own tiny module so
+/// [`qualified_state_root`] above (portable) can gate just this one
+/// `#[cfg(target_os = "linux")]` block rather than the whole function.
+#[cfg(target_os = "linux")]
+mod linux_only {
+    use std::path::Path;
+
+    /// Volatile filesystem magic numbers `statfs(2)` can report — refused
+    /// on the state root itself regardless of how well they support the
+    /// store's own primitives (tmpfs/ramfs support `RENAME_NOREPLACE`
+    /// and directory fsync fine — [`sot_log::state_dir::preflight_volume`]'s
+    /// own remote-fs deny list does NOT refuse them, deliberately, since
+    /// developer `/tmp` is often tmpfs). A durable capsule RECORD ROOT is
+    /// a different, stricter question this second list answers.
+    const VOLATILE_FS_TYPES: &[(i64, &str)] = &[
+        (0x0102_1994, "tmpfs"),
+        (0x8584_58F6u32 as i64, "ramfs"),
+    ];
+
+    /// Pure lookup, mirroring `sot_log::fsutil`'s own `remote_fs_name` —
+    /// unit-tested directly against the constants above.
+    pub(super) fn volatile_fs_name(f_type: i64) -> Option<&'static str> {
+        VOLATILE_FS_TYPES.iter().find(|(magic, _)| *magic == f_type).map(|(_, name)| *name)
+    }
+
+    pub(super) fn statfs_type(dir: &Path) -> std::io::Result<i64> {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let c_dir = CString::new(dir.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "nul byte in state root path"))?;
+        let mut buf: std::mem::MaybeUninit<libc::statfs> = std::mem::MaybeUninit::uninit();
+        // SAFETY: `buf` is a valid out-param for `statfs(2)`, read back
+        // only once the call itself has reported success.
+        let rc = unsafe { libc::statfs(c_dir.as_ptr(), buf.as_mut_ptr()) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let buf = unsafe { buf.assume_init() };
+        Ok(buf.f_type as i64)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn volatile_fs_name_matches_the_constants_only() {
+            assert_eq!(volatile_fs_name(0x0102_1994), Some("tmpfs"));
+            assert_eq!(volatile_fs_name(0x8584_58F6u32 as i64), Some("ramfs"));
+            assert_eq!(volatile_fs_name(0x6969), None, "NFS is fsutil's own remote-fs list, not this one");
+        }
+    }
 }
 
 /// The agent argv `sot-capsule supervise` spawns as its producer (ADR
@@ -635,6 +754,28 @@ mod runtime {
         degraded: bool,
     }
 
+    /// ADR 0043 decision 25: the supervisor's stderr is the daemon's OWN
+    /// log — a FRESH `O_APPEND` open onto it per spawn (the daemon need
+    /// not share its handle; `main.rs`'s `open_private_log_file` already
+    /// creates the file in append mode, untouched here), so an inherited
+    /// descriptor keeps its original inode across a daemon restart or an
+    /// `XDG_STATE_HOME` change — a long-lived supervisor keeps writing to
+    /// the log it was born with. When the daemon has no log file at all
+    /// (or this open fails for any other reason), the supervisor inherits
+    /// the daemon's OWN stderr instead — a daemon run by hand in a
+    /// terminal shows the supervisor's lines there. Called fresh from
+    /// INSIDE `build` below (never hoisted out) because `build` itself
+    /// runs more than once per launch on Windows (the degraded-breakaway
+    /// retry) and each attempt needs its own descriptor.
+    fn supervisor_stderr() -> Stdio {
+        let log_path = crate::paths::state_dir().join("sotd.log");
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_path)
+            .map(Stdio::from)
+            .unwrap_or_else(|_| Stdio::inherit())
+    }
+
     /// Spawn `sot-capsule supervise <state_dir> <--start|--resume>
     /// --survival <normal|degraded> --assume-no-rollback-target --
     /// <agent argv>` DETACHED, so the supervisor authority survives the
@@ -647,6 +788,17 @@ mod runtime {
     /// workspace. Builds the SAME `Command` on both platforms (this
     /// function); only how it is actually detached — [`spawn_detached`],
     /// the second of decision 22's three forks — differs.
+    ///
+    /// ADR 0043 decision 23: [`super::qualified_state_root`] runs beside
+    /// [`check_pair`], BEFORE the build — this is the ONE mechanism every
+    /// capsule launch shares (create, attach start-on-attach, boot resume,
+    /// the watchdog's own restart), so each of those paths refuses an
+    /// unqualified root exactly here rather than needing its own copy of
+    /// the check. `state_dir` (a subdirectory of the qualified root) is
+    /// deliberately NOT what gets checked — the root itself is, via a
+    /// fresh resolution matching `handlers.rs`'s own earlier check for a
+    /// `workspace.create` (both resolve the SAME env-derived root, so they
+    /// agree by construction, not by sharing a value across the wire).
     fn spawn_detached_supervisor(
         sot_capsule_exe: &Path,
         state_dir: &Path,
@@ -658,6 +810,7 @@ mod runtime {
         slug: &str,
     ) -> std::io::Result<SpawnedSupervisor> {
         check_pair(sot_capsule_exe)?;
+        super::qualified_state_root().map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
         let build = |survival: &str| -> Command {
             let mut cmd = Command::new(sot_capsule_exe);
             cmd.arg("supervise")
@@ -671,7 +824,7 @@ mod runtime {
                 .current_dir(cwd)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null());
+                .stderr(supervisor_stderr());
             for var in NESTING_ENV_VARS_TO_SCRUB {
                 cmd.env_remove(var);
             }
@@ -1493,10 +1646,14 @@ mod runtime {
                         ) {
                             Ok(spawned) => leg_opt = Some(WatchedLeg::Spawned(spawned.child)),
                             Err(e) if e.kind() == ErrorKind::Unsupported => {
-                                // `check_pair` refused: the binary next to this daemon
-                                // is another build. No retry can change that -- mark
-                                // terminal now (the error names the recovery).
-                                tracing::error!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: pair mismatch -- marking terminal, no restart");
+                                // `check_pair` refused (another build next to this
+                                // daemon) OR `qualified_state_root` refused (ADR
+                                // 0043 decision 23: the state root went unqualified
+                                // out from under a live row -- an `XDG_STATE_HOME`
+                                // change, a remounted volume). No retry can change
+                                // either without operator action -- mark terminal
+                                // now (the error names the recovery).
+                                tracing::error!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: pair mismatch or unqualified state root -- marking terminal, no restart");
                                 workspaces.mark_capsule_terminal(&workspace_id);
                                 return;
                             }

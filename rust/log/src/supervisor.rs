@@ -280,12 +280,15 @@ use crate::wire::{
     SupervisorRequest,
 };
 use std::collections::HashMap;
+use std::fmt;
+use std::io::Write as _;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::OnceLock;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -496,18 +499,17 @@ pub struct SuperviseConfig {
 /// to [`EXIT_CLEAN`].
 pub fn supervise(config: SuperviseConfig) -> i32 {
     if !config.assume_no_rollback_target {
-        eprintln!(
-            "sot-capsule supervise: no rollout evidence available — this build cannot open a \
-             feature-bearing segment until U4's release-apply transaction supplies real evidence \
-             (ADR 0041 \"Upgrade and version skew\"). Pass --assume-no-rollback-target to \
-             override for pre-U4 operation."
-        );
+        note(format_args!(
+            "no rollout evidence available — this build cannot open a feature-bearing segment \
+             until U4's release-apply transaction supplies real evidence (ADR 0041 \"Upgrade and \
+             version skew\"). Pass --assume-no-rollback-target to override for pre-U4 operation."
+        ));
         return EXIT_TERMINAL;
     }
     match supervise_inner(config) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("sot-capsule supervise: {e}");
+            note(format_args!("{e}"));
             EXIT_TERMINAL
         }
     }
@@ -656,7 +658,7 @@ fn mint_aside_name() -> crate::Result<String> {
 
 fn join_and_warn(handle: JoinHandle<()>, what: &str) {
     if let Err(panic) = handle.join() {
-        eprintln!("sot-capsule supervise: the {what} worker thread panicked: {panic:?}");
+        note(format_args!("the {what} worker thread panicked: {panic:?}"));
     }
 }
 
@@ -673,10 +675,10 @@ fn join_and_warn(handle: JoinHandle<()>, what: &str) {
 /// makes the watchdog an actual DEADLINE rather than a number that gets
 /// silently defeated by the very `.join()` meant to enforce it.
 fn abandon_worker(handle: JoinHandle<()>, what: &str) {
-    eprintln!(
-        "sot-capsule supervise: the {what} worker's own watchdog expired; abandoning its thread \
-         WITHOUT waiting for it (N7) — it will exit on its own or be torn down with the process"
-    );
+    note(format_args!(
+        "the {what} worker's own watchdog expired; abandoning its thread WITHOUT waiting for it \
+         (N7) — it will exit on its own or be torn down with the process"
+    ));
     drop(handle);
 }
 
@@ -750,10 +752,10 @@ fn leg_was_stable(state_dir: &Path, voyage_id: &str) -> bool {
         Ok(LatestLegState::Sealed { epoch } | LatestLegState::Unsealed { epoch }) => epoch,
         Ok(LatestLegState::NoLeg) => return false,
         Err(e) => {
-            eprintln!(
-                "sot-capsule supervise: could not read this leg's own state to judge stability \
-                 ({e}); counting it unstable (N1 fail-safe)"
-            );
+            note(format_args!(
+                "could not read this leg's own state to judge stability ({e}); counting it \
+                 unstable (N1 fail-safe)"
+            ));
             return false;
         }
     };
@@ -761,10 +763,10 @@ fn leg_was_stable(state_dir: &Path, voyage_id: &str) -> bool {
         Ok(Some(ms)) => Duration::from_millis(ms) >= STABILITY_INTERVAL,
         Ok(None) => false,
         Err(e) => {
-            eprintln!(
-                "sot-capsule supervise: could not read this leg's own producer_uptime_ms ({e}); \
-                 counting it unstable (N1 fail-safe)"
-            );
+            note(format_args!(
+                "could not read this leg's own producer_uptime_ms ({e}); counting it unstable \
+                 (N1 fail-safe)"
+            ));
             false
         }
     }
@@ -1784,10 +1786,10 @@ fn reissue_and_reconcile_end_run(
                 // retry delivery rather than falling back to a
                 // wait-only reconcile that would never re-send the
                 // request this attempt never actually delivered.
-                eprintln!(
-                    "sot-capsule supervise: end_run_over_mgmt_lane failed ({e}); retrying delivery \
-                     rather than falling back to a wait-only reconcile (B4)"
-                );
+                note(format_args!(
+                    "end_run_over_mgmt_lane failed ({e}); retrying delivery rather than falling \
+                     back to a wait-only reconcile (B4)"
+                ));
             }
         }
         std::thread::sleep(ATTEMPT_INTERVAL);
@@ -1846,10 +1848,10 @@ fn do_reset(state_dir: &Path, operation_id: &str, new_voyage: &str, aside: Optio
             let detail = bounded_detail(format!("{e}"));
             let t = journal::TerminalRecord::Failed { detail: detail.clone() };
             if let Err(finish_err) = journal::finish(state_dir, operation_id, &t) {
-                eprintln!(
-                    "sot-capsule supervise: reset {operation_id} failed ({detail}), and recording that \
-                     failure in the journal ALSO failed ({finish_err})"
-                );
+                note(format_args!(
+                    "reset {operation_id} failed ({detail}), and recording that failure in the \
+                     journal ALSO failed ({finish_err})"
+                ));
             }
             ResetWorkerResult::Fatal(detail)
         }
@@ -2167,7 +2169,7 @@ fn is_journal_unreadable(reply: &SupervisorOperationState) -> bool {
 
 fn encode_reply_or_fallback(reply: &SupervisorReply) -> Vec<u8> {
     wire::encode_supervisor_reply(reply).unwrap_or_else(|e| {
-        eprintln!("sot-capsule supervise: a reply failed to encode ({e}); substituting a minimal failure reply");
+        note(format_args!("a reply failed to encode ({e}); substituting a minimal failure reply"));
         wire::encode_supervisor_reply(&SupervisorReply::Operation(SupervisorOperationState::Failed {
             detail: "internal error".into(),
         }))
@@ -2199,10 +2201,10 @@ fn encode_reply_or_fallback(reply: &SupervisorReply) -> Vec<u8> {
 /// its own doc.
 fn force_terminal(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>, detail: String) {
     if let Some(handle) = take_worker_handle(lifecycle, retired_legs) {
-        eprintln!(
-            "sot-capsule supervise: abandoning an in-flight worker thread while forcing a terminal \
-             state ({detail}) — its thread will exit on its own or be torn down with the process"
-        );
+        note(format_args!(
+            "abandoning an in-flight worker thread while forcing a terminal state ({detail}) — its \
+             thread will exit on its own or be torn down with the process"
+        ));
         drop(handle);
     }
     *lifecycle = Lifecycle::Terminal { detail, entered_at: Instant::now() };
@@ -2286,7 +2288,7 @@ fn service_lane(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, ctx: &mut LaneCt
                 }
             }
             LaneEvent::AcceptError(e) => {
-                eprintln!("sot-capsule supervise: supervisor lane accept loop failed permanently: {e}");
+                note(format_args!("supervisor lane accept loop failed permanently: {e}"));
                 accept_loop_dead = true;
             }
         }
@@ -2297,7 +2299,7 @@ fn service_lane(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, ctx: &mut LaneCt
         let close_due = match &conn.pending_close {
             Some(PendingClose::AwaitingSent { deadline }) => {
                 if now >= *deadline {
-                    eprintln!("sot-capsule supervise: a refusal reply was never confirmed sent; closing anyway");
+                    note(format_args!("a refusal reply was never confirmed sent; closing anyway"));
                 }
                 now >= *deadline
             }
@@ -2506,9 +2508,10 @@ fn respawn_or_terminal(
     authority: &AuthorityState,
 ) -> Lifecycle {
     if *consecutive_unstable_legs >= FLAP_THRESHOLD {
-        eprintln!(
-            "sot-capsule supervise: anti-flap bound reached (consecutive_unstable_legs={consecutive_unstable_legs} >= {FLAP_THRESHOLD}); entering Terminal"
-        );
+        note(format_args!(
+            "anti-flap bound reached (consecutive_unstable_legs={consecutive_unstable_legs} >= \
+             {FLAP_THRESHOLD}); entering Terminal"
+        ));
         return Lifecycle::Terminal { detail: "the anti-flap bound was reached".into(), entered_at: Instant::now() };
     }
     // ADR 0043 decision 21: a fresh handle for THIS spawn attempt --
@@ -2540,7 +2543,40 @@ fn respawn_or_terminal(
     Lifecycle::Spawning { rx, handle, started_at: Instant::now() }
 }
 
+/// ADR 0043 decision 25: one process-global prefix, set ONCE (the first
+/// statement of [`supervise_inner`], ahead of everything else including
+/// the SIGCHLD reset) to `"sot-capsule supervise[<state dir basename>]"`
+/// — the workspace id, so concurrent legs sharing the daemon's ONE log
+/// file (many workspaces, one `sotd.log`) are distinguishable. Read by
+/// [`note`] below; unset for a bare `sot-capsule endrun`/`reset`
+/// invocation (no supervisor authority ever runs in that process), which
+/// falls back to the bare `"sot-capsule supervise"` text — the literal,
+/// pre-existing wording [`do_reset`]'s own diagnostic already used
+/// regardless of caller, preserved verbatim rather than invented.
+static NOTE_PREFIX: OnceLock<String> = OnceLock::new();
+
+/// Format one complete diagnostic line and issue it as ONE `write_all` on
+/// stderr — never `eprintln!`'s own piecewise writes. `O_APPEND` (the
+/// daemon's `sotd.log`, opened fresh per spawn by
+/// `capsule_workspace::spawn_detached_supervisor`) keeps a single
+/// `write(2)` intact between processes appending to the SAME file;
+/// nothing else does, so every line from the supervise path goes through
+/// this instead of `eprintln!`. Best-effort (a write failure here has no
+/// further fallback — the same posture `eprintln!` itself has).
+fn note(args: fmt::Arguments<'_>) {
+    let prefix = NOTE_PREFIX.get().map(String::as_str).unwrap_or("sot-capsule supervise");
+    let line = format!("{prefix}: {args}\n");
+    let _ = std::io::stderr().write_all(line.as_bytes());
+}
+
 fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
+    // ADR 0043 decision 25: set before ANYTHING else in this function —
+    // every diagnostic below, including the SIGCHLD-reset failure two
+    // lines down, goes through `note`, which reads this.
+    let _ = NOTE_PREFIX.set(format!(
+        "sot-capsule supervise[{}]",
+        config.state_dir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+    ));
     // ADR 0043 decision 21 (Codex review round, F2): SIGCHLD is SET to
     // SIG_DFL here, as the very first thing this function does -- never
     // merely assumed. Whatever launched this process (a daemon, a shell)
@@ -2567,13 +2603,11 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         // the only path that produces it here) -- distinct from a genuine
         // bootstrap/IO failure (`Error::Io`), which stays EXIT_TERMINAL.
         Err(e @ crate::Error::State(_)) => {
-            eprintln!(
-                "sot-capsule supervise: authority fence already held by a live supervisor: {e}"
-            );
+            note(format_args!("authority fence already held by a live supervisor: {e}"));
             return Ok(EXIT_CONTENDED);
         }
         Err(e) => {
-            eprintln!("sot-capsule supervise: could not become the authority: {e}");
+            note(format_args!("could not become the authority: {e}"));
             return Ok(EXIT_TERMINAL);
         }
     };
@@ -2584,7 +2618,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     let lane = match Lane::bind_supervisor(&h, MAX_LANE_INSTANCES) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("sot-capsule supervise: could not bind the supervisor lane: {e}");
+            note(format_args!("could not bind the supervisor lane: {e}"));
             return Ok(EXIT_TERMINAL);
         }
     };
@@ -2594,7 +2628,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     let lease = match LegLease::create(&h) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("sot-capsule supervise: could not create the parent-death lease: {e}");
+            note(format_args!("could not create the parent-death lease: {e}"));
             return Ok(EXIT_TERMINAL);
         }
     };
@@ -2753,17 +2787,17 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                 Ok(ProbeOutcome::SpawnFailed(e)) => {
                     join_and_warn(handle, "spawn");
                     consecutive_unstable_legs += 1;
-                    eprintln!(
-                        "sot-capsule supervise: leg failed to spawn: {e} (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}"
-                    );
+                    note(format_args!(
+                        "leg failed to spawn: {e} (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}"
+                    ));
                     respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
                 }
                 Ok(ProbeOutcome::KilledAfterTimeout | ProbeOutcome::LegEnded) => {
                     join_and_warn(handle, "spawn");
                     consecutive_unstable_legs += 1;
-                    eprintln!(
-                        "sot-capsule supervise: leg ended before reaching Ready (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}"
-                    );
+                    note(format_args!(
+                        "leg ended before reaching Ready (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}"
+                    ));
                     respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
                 }
                 Ok(ProbeOutcome::Foreign) => {
@@ -2829,9 +2863,9 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     } else {
                         consecutive_unstable_legs = 0;
                     }
-                    eprintln!(
-                        "sot-capsule supervise: leg ended (unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
-                    );
+                    note(format_args!(
+                        "leg ended (unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
+                    ));
                     respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
                 }
                 Ok(false) => Lifecycle::Ready { process },
@@ -2888,9 +2922,9 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     } else {
                         consecutive_unstable_legs = 0;
                     }
-                    eprintln!(
-                        "sot-capsule supervise: leg ended (end_run not durably accepted; unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
-                    );
+                    note(format_args!(
+                        "leg ended (end_run not durably accepted; unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
+                    ));
                     respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
                 }
                 Ok(EndingProgress::Final(EndRunWorkerResult::Fatal(detail))) => {
@@ -3025,14 +3059,14 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
 
     let exit_code = match (&lifecycle, &authority.stop_requested) {
         (Lifecycle::Terminal { detail, .. }, _) => {
-            eprintln!("sot-capsule supervise: exiting terminal: {detail}");
+            note(format_args!("exiting terminal: {detail}"));
             EXIT_TERMINAL
         }
         (_, Some(stop)) if stop.terminal_severity => {
-            eprintln!(
-                "sot-capsule supervise: exiting terminal (a stop was accepted while already terminal, \
-                 or its own journal write failed)"
-            );
+            note(format_args!(
+                "exiting terminal (a stop was accepted while already terminal, or its own journal \
+                 write failed)"
+            ));
             EXIT_TERMINAL
         }
         _ => EXIT_CLEAN,

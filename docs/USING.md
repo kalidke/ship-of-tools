@@ -50,6 +50,50 @@ in the published docs: shortest install, first launch, connecting, opening a
 project, and the handful of keys that get you moving. (Locally, that's
 `docs/src/start/quickstart.md`.)
 
+## Where the daemon keeps its state
+
+The backend daemon's state root is `${XDG_STATE_HOME:-~/.local/state}/sot` —
+capsule session records (Ship's Log voyages) and the daemon's own `sotd.log`
+live there. It must be a local, durable filesystem: the daemon refuses to
+start a capsule row on a REMOTE filesystem (NFS, SMB/CIFS, 9p, an
+unqualified FUSE mount) or a VOLATILE one (tmpfs, ramfs), answering
+`state_root_unqualified` and naming the filesystem.
+
+On a shared home (the same `$HOME` mounted on multiple backend hosts over
+NFS), point the state root at each host's own local disk with one drop-in,
+verbatim, per host:
+
+```
+~/.config/systemd/user/sotd.service.d/state.conf
+```
+
+```ini
+[Service]
+Environment=XDG_STATE_HOME=/scratch/<user>/state
+```
+
+then, on that host:
+
+```
+systemctl --user daemon-reload && systemctl --user restart sotd
+```
+
+The daemon's log moves with the root — a fresh `sotd.log` at the new
+location; the old one stays where it was, as history.
+
+**Relocation does not migrate rows.** Changing `XDG_STATE_HOME` points the
+daemon at a different (and initially empty) state root — it does not move
+anything there for you. Before changing it on a host that already has
+capsule rows: end that host's capsule runs first; if any complete state
+directories need to survive, move them yourself (their ids are the
+directory names, and must be preserved); then verify the daemon's actual
+environment after the change (`systemctl --user show sotd -p Environment`)
+and that the destination has the retention you expect.
+
+`SOT_STATE_HOST`, when set, must equal the short hostname sot-comm's own
+registry stamps on that host's rows (case-insensitive) — the registry's
+ownership check compares them.
+
 ## Extending it
 
 Ship of Tools is built to be extended with Julia multiple dispatch, not Rust

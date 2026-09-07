@@ -62,6 +62,18 @@ pub fn sot_state_dir() -> Option<std::path::PathBuf> {
     Some(dir.join("sot"))
 }
 
+/// LU5a (ADR 0043 decision 23): the store's own volume preflight
+/// (`fsutil::preflight_volume`), exposed here as the narrow public seam
+/// the daemon's own `qualified_state_root` needs — `fsutil` itself stays
+/// a private, internal-primitives module (see `lib.rs`'s own doc: "fsutil
+/// itself is a private module, invisible..."), the same pattern
+/// `fence::lock_supervisor` already uses for a different `fsutil`
+/// primitive. Lives here (this module, not `fence`) because it is a
+/// STATE-ROOT check, not a fence one.
+pub fn preflight_volume(dir: &std::path::Path) -> crate::Result<()> {
+    crate::fsutil::preflight_volume(dir)
+}
+
 /// L1-unix LU3b: moved here from `supervisor.rs` (a pure hash of a path,
 /// with no OS-facing mechanism of its own) — the supervisor lane's own
 /// per-state-dir pipe/socket name, shared by every caller that connects

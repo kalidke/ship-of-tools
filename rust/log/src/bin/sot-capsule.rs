@@ -93,6 +93,24 @@ where
         std::process::exit(2);
     }
     let voyage_root = std::path::PathBuf::from(&args[0]);
+    // ADR 0043 decision 25: this leg's stderr is now whatever its parent
+    // (`sot-capsule supervise`, spawned by the daemon) is writing to —
+    // the daemon's own shared `sotd.log` when supervised, inherited
+    // straight through with no redirection of its own. A tag naming the
+    // voyage root is the ONLY identifying context this process alone can
+    // add to a line in a file every OTHER workspace's own leg writes into
+    // too; `run_note` issues each diagnostic as ONE complete write, same
+    // reasoning as `supervisor.rs`'s own `note` (a piecewise `eprintln!`
+    // has no atomicity guarantee once two processes append to the same
+    // `O_APPEND` file).
+    let run_note_prefix = format!(
+        "sot-capsule run[{}]",
+        voyage_root.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+    );
+    let run_note = |args: std::fmt::Arguments<'_>| {
+        let line = format!("{run_note_prefix}: {args}\n");
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+    };
     let voyage_id = args[1].clone();
     let mut rest = &args[2..];
     // Matches vt100_ctt::Parser's own Default (80x24) — a reasonable
@@ -217,15 +235,14 @@ where
     // passes the SAME flag down to every leg it spawns — see that
     // subcommand's own doc.
     if !assume_no_rollback_target {
-        eprintln!(
-            "sot-capsule: no rollout evidence available -- this binary cannot open a \
-             feature-bearing segment until U4's release-apply transaction supplies real \
-             evidence (ADR 0041 \"Upgrade and version skew\"). Pass \
-             --assume-no-rollback-target to override for manual testing -- that flag \
-             ASSERTS, without proof, that there is no installed rollback target to \
-             protect; a real supervisor must never pass it, and must construct real \
-             evidence from its own transaction instead."
-        );
+        run_note(format_args!(
+            "no rollout evidence available -- this binary cannot open a feature-bearing segment \
+             until U4's release-apply transaction supplies real evidence (ADR 0041 \"Upgrade and \
+             version skew\"). Pass --assume-no-rollback-target to override for manual testing -- \
+             that flag ASSERTS, without proof, that there is no installed rollback target to \
+             protect; a real supervisor must never pass it, and must construct real evidence from \
+             its own transaction instead."
+        ));
         std::process::exit(2);
     }
     let rollout_evidence = sot_log::rollout::RolloutEvidence::NoRollbackTarget;
@@ -245,10 +262,10 @@ where
     #[cfg(unix)]
     let survival = {
         if let Some(v) = survival_flag {
-            eprintln!(
-                "sot-capsule: --survival {v:?} has no effect on unix -- survival is always Normal \
-                 there (ADR 0043 decision 16: no job-breakaway concept exists to report)"
-            );
+            run_note(format_args!(
+                "--survival {v:?} has no effect on unix -- survival is always Normal there (ADR \
+                 0043 decision 16: no job-breakaway concept exists to report)"
+            ));
         }
         sot_log::wire::Survival::Normal
     };
@@ -284,9 +301,9 @@ where
     let mut transport = make_transport(MAX_TRANSPORT_CONNECTIONS);
     match sot_log::capsule::run::<P>(config, cmd_rx, &mut transport) {
         Ok(s) => {
-            eprintln!(
-                "sot-capsule: producer exited {:?} ({:?}); {} frames, {} segments sealed \
-                 (handshake_answered={}, handshake_suppressed={}, resize_os_calls={})",
+            run_note(format_args!(
+                "producer exited {:?} ({:?}); {} frames, {} segments sealed (handshake_answered={}, \
+                 handshake_suppressed={}, resize_os_calls={})",
                 s.exit_code,
                 s.exit_kind,
                 s.frames_written,
@@ -294,7 +311,7 @@ where
                 s.handshake_answered,
                 s.handshake_suppressed_matches,
                 s.resize_os_calls
-            );
+            ));
             // Reinterpretation to a process exit code happens ONLY here,
             // at the actual OS process-exit boundary — everywhere else in
             // this crate the value stays a raw, unsigned DWORD on Windows
@@ -311,7 +328,7 @@ where
             });
         }
         Err(e) => {
-            eprintln!("sot-capsule: {e}");
+            run_note(format_args!("{e}"));
             std::process::exit(1);
         }
     }

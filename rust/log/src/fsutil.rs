@@ -23,16 +23,242 @@ fn io_ctx(e: std::io::Error, what: std::fmt::Arguments<'_>) -> Error {
     Error::Io(std::io::Error::new(e.kind(), format!("{what}: {e}")))
 }
 
-/// Volume preflight (ADR 0041): the durability contract holds on local NTFS
-/// only — the Windows mirror of "requires renameat2". Runs BEFORE any
-/// `.creating` mutation in bootstrap and again on the resolved voyage dir at
-/// `open_for_writing`. SMB failing the handle-info call is usefully
-/// fail-closed; no fallback. ReFS stays refused until it passes the same
-/// suite (ADR 0041 scope). On unix this is a no-op: `renameat2` itself
-/// refusing (EINVAL on filesystems without RENAME_NOREPLACE) is the guard.
-#[cfg(unix)]
-pub fn preflight_volume(_dir: &Path) -> Result<()> {
+/// Volume preflight (ADR 0041 Windows arm; ADR 0043 decision 23 Linux arm):
+/// proves the store's OWN primitives work on `dir`'s filesystem BEFORE any
+/// `.creating` mutation in bootstrap, and again on the resolved voyage dir
+/// at `open_for_writing` (so the Claude producer and every direct store
+/// user get it too). This checks two things and ONLY two things: known
+/// EXCLUSIONS (a `statfs` denylist of remote filesystem types on Linux;
+/// local NTFS by allowlist on Windows) and the filesystem OPERATIONS this
+/// crate actually depends on (`RENAME_NOREPLACE`, a directory fsync).
+/// Durable, host-exclusive backing and retention are deployment
+/// prerequisites this cannot observe from a live probe (ADR 0043 decision
+/// 23's own open item 4) — proving them is out of scope by design, not an
+/// oversight.
+#[cfg(target_os = "linux")]
+pub fn preflight_volume(dir: &Path) -> Result<()> {
+    let f_type = statfs_type(dir)?;
+    if let Some(name) = remote_fs_name(f_type) {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!(
+                "state root {dir:?} is on {name}: capsule records need a local filesystem \
+                 (set XDG_STATE_HOME to a local disk; ADR 0043 decision 23)"
+            ),
+        )));
+    }
+    // The store's own two primitives, proven directly rather than
+    // inferred from the filesystem type — tmpfs (developer `/tmp`, which
+    // every suite must keep running on) is not on the denylist above but
+    // DOES support both, so it passes here; a type this denylist doesn't
+    // know about but that genuinely lacks RENAME_NOREPLACE fails HERE
+    // instead of silently proceeding.
+    probe_rename_noreplace_pair(dir, PreflightEntryKind::Dir)?;
+    probe_rename_noreplace_pair(dir, PreflightEntryKind::File)?;
+    fsync_dir(dir).map_err(|e| preflight_refusal(dir, format_args!("could not fsync the directory after the probes ({e})")))?;
     Ok(())
+}
+
+/// Every other unix fails closed here too — one refusal at the same seam
+/// `rename_noreplace_raw`'s own non-Linux-unix arm already refuses at,
+/// named identically, so a caller sees the SAME diagnosis preflight would
+/// have given it two steps earlier rather than a second, differently
+/// worded one.
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn preflight_volume(_dir: &Path) -> Result<()> {
+    Err(Error::Unsupported("capsule records need Linux renameat2"))
+}
+
+/// `dir`'s filesystem type magic number (`statfs(2)`'s own `f_type`),
+/// resolved on the path directly — this IS the "on the resolved
+/// destination" check for a caller (`voyage.rs`) that already canonicalized
+/// `dir` before calling here; `preflight_volume` does no canonicalization
+/// of its own (the daemon's own `qualified_state_root` does that once,
+/// ahead of calling this).
+#[cfg(target_os = "linux")]
+fn statfs_type(dir: &Path) -> Result<i64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let c_dir =
+        CString::new(dir.as_os_str().as_bytes()).map_err(|_| Error::State("nul in path".into()))?;
+    let mut buf: std::mem::MaybeUninit<libc::statfs> = std::mem::MaybeUninit::uninit();
+    // SAFETY: `buf` is a valid out-param for `statfs(2)`, written only on
+    // success (rc == 0), which is the only case this reads it back.
+    let rc = unsafe { libc::statfs(c_dir.as_ptr(), buf.as_mut_ptr()) };
+    if rc != 0 {
+        let e = std::io::Error::last_os_error();
+        return Err(Error::Io(std::io::Error::new(e.kind(), format!("statfs {dir:?}: {e}"))));
+    }
+    let buf = unsafe { buf.assume_init() };
+    Ok(buf.f_type as i64)
+}
+
+/// Remote filesystem magic numbers `statfs(2)` can report (ADR 0043
+/// decision 23's own deny list) — one name per magic, checked with
+/// [`remote_fs_name`] below. tmpfs is deliberately ABSENT: developer
+/// `/tmp` is often tmpfs and every suite must keep running there; the
+/// DAEMON's own, separate volatile-type refusal
+/// (`capsule_workspace::qualified_state_root`) is what refuses tmpfs, on
+/// the resolved destination, not this probe. Unknown types are not
+/// refused by this list at all — the two `RENAME_NOREPLACE` probes below
+/// are what actually decides an unlisted type.
+#[cfg(target_os = "linux")]
+const REMOTE_FS_TYPES: &[(i64, &str)] = &[
+    (0x6969, "NFS"),
+    (0x517B, "SMB"),
+    (0xFF534D42u32 as i64, "CIFS"),
+    (0xFE534D42u32 as i64, "SMB2"),
+    (0x01021997, "9p"),
+    (0x65735546, "FUSE"),
+];
+
+/// Pure lookup, unit-tested directly against [`REMOTE_FS_TYPES`] — never by
+/// faking `statfs`.
+#[cfg(target_os = "linux")]
+fn remote_fs_name(f_type: i64) -> Option<&'static str> {
+    REMOTE_FS_TYPES.iter().find(|(magic, _)| *magic == f_type).map(|(_, name)| *name)
+}
+
+/// One `Error::Io(Unsupported)` shape shared by every preflight refusal —
+/// the fs-type check above builds its own (the wording is pinned
+/// verbatim), every probe failure below goes through this instead so a
+/// caller matching on `ErrorKind::Unsupported` sees the identical kind
+/// regardless of which check inside `preflight_volume` actually failed.
+#[cfg(target_os = "linux")]
+fn preflight_refusal(dir: &Path, detail: std::fmt::Arguments<'_>) -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!(
+            "state root {dir:?}: preflight {detail} — capsule records need a local filesystem \
+             (set XDG_STATE_HOME to a local disk; ADR 0043 decision 23)"
+        ),
+    ))
+}
+
+/// Which kind of filesystem entry a probe pair creates — a directory pair
+/// and a file pair are both required (decision 23: "a temp directory pair
+/// AND a temp file pair"), since a store publishes both kinds and a
+/// filesystem could in principle support `RENAME_NOREPLACE` for one but
+/// not the other.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum PreflightEntryKind {
+    Dir,
+    File,
+}
+
+#[cfg(target_os = "linux")]
+impl PreflightEntryKind {
+    fn label(self) -> &'static str {
+        match self {
+            PreflightEntryKind::Dir => "dir",
+            PreflightEntryKind::File => "file",
+        }
+    }
+    fn create(self, path: &Path, content: &[u8]) -> std::io::Result<()> {
+        match self {
+            PreflightEntryKind::Dir => std::fs::create_dir(path),
+            PreflightEntryKind::File => std::fs::write(path, content),
+        }
+    }
+    /// `true` iff `path` names a live entry of THIS kind with `content`
+    /// (files only — a directory has no content to compare, only its own
+    /// presence and type).
+    fn intact(self, path: &Path, content: &[u8]) -> bool {
+        match self {
+            PreflightEntryKind::Dir => path.is_dir(),
+            PreflightEntryKind::File => std::fs::read(path).map(|got| got == content).unwrap_or(false),
+        }
+    }
+    fn remove(self, path: &Path) {
+        let _ = match self {
+            PreflightEntryKind::Dir => std::fs::remove_dir(path),
+            PreflightEntryKind::File => std::fs::remove_file(path),
+        };
+    }
+}
+
+/// The probe itself (decision 23, item 2): create `a`; `rename_noreplace_raw(a,
+/// b)` must be `Ok`; create `a` again; `rename_noreplace_raw(a, b)` must
+/// FAIL with `AlreadyExists`, with both `a` (the fresh recreation) and `b`
+/// (the original, UNCLOBBERED) still present with their own contents.
+/// Temp names are removed on EVERY path — success, refusal, or an
+/// unexpected outcome partway through — EXCEPT `b` when the very first
+/// rename is what failed: that means `b` was already occupied by
+/// something this probe never created (an unrelated pre-existing entry,
+/// or — the whitebox unit test below — a deliberately seeded collision),
+/// which this has no business deleting. `own_b` tracks exactly that: it
+/// flips true only once THIS probe's own first rename has actually landed
+/// `b`, which is also the earliest point `b` is safe to remove.
+///
+/// The nonce is this PROCESS's own id (8 hex digits): concurrent
+/// DIFFERENT processes preflighting the same directory never collide with
+/// each other; a single process's own repeat calls never collide with
+/// themselves either, since cleanup runs every time before the next call
+/// could re-mint the same name — which is also what lets a unit test
+/// "seed b" deterministically (this exact name, via [`preflight_pair_paths`])
+/// and prove the refusal without any internal seam exposed for it.
+#[cfg(target_os = "linux")]
+fn probe_rename_noreplace_pair(dir: &Path, kind: PreflightEntryKind) -> Result<()> {
+    let (a, b) = preflight_pair_paths(dir, kind);
+    let first = b"sot-preflight-first";
+    let second = b"sot-preflight-second";
+    let mut own_b = false;
+    let result = (|| -> Result<()> {
+        kind.create(&a, first)
+            .map_err(|e| preflight_refusal(dir, format_args!("could not create the {} probe entry ({e})", kind.label())))?;
+        rename_noreplace_raw(&a, &b)
+            .map_err(|e| preflight_refusal(dir, format_args!("could not rename the {} probe entry into place ({e})", kind.label())))?;
+        own_b = true;
+        kind.create(&a, second).map_err(|e| {
+            preflight_refusal(dir, format_args!("could not recreate a colliding {} probe entry ({e})", kind.label()))
+        })?;
+        match rename_noreplace_raw(&a, &b) {
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                return Err(preflight_refusal(
+                    dir,
+                    format_args!("a colliding {} rename failed for the wrong reason ({e})", kind.label()),
+                ))
+            }
+            Ok(()) => {
+                return Err(preflight_refusal(
+                    dir,
+                    format_args!(
+                        "a colliding {} rename was NOT refused — capsule records need RENAME_NOREPLACE",
+                        kind.label()
+                    ),
+                ))
+            }
+        }
+        if !kind.intact(&a, second) || !kind.intact(&b, first) {
+            return Err(preflight_refusal(
+                dir,
+                format_args!("a refused {} rename left an entry missing or altered", kind.label()),
+            ));
+        }
+        Ok(())
+    })();
+    kind.remove(&a);
+    if own_b {
+        kind.remove(&b);
+    }
+    result
+}
+
+/// `dir/.sot-preflight-<pid, 8 hex>-<dir|file>.{a,b}` — the exact pair of
+/// paths [`probe_rename_noreplace_pair`] uses for `kind`, factored out so
+/// this module's own unit tests can reconstruct the identical name and
+/// pre-seed `b` (see that function's own doc) without any test-only seam
+/// into the probe itself.
+#[cfg(target_os = "linux")]
+fn preflight_pair_paths(dir: &Path, kind: PreflightEntryKind) -> (PathBuf, PathBuf) {
+    let nonce = format!("{:08x}", std::process::id());
+    let label = kind.label();
+    (
+        dir.join(format!(".sot-preflight-{nonce}-{label}.a")),
+        dir.join(format!(".sot-preflight-{nonce}-{label}.b")),
+    )
 }
 
 #[cfg(windows)]
@@ -1211,5 +1437,100 @@ mod tests {
             .collect();
         assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
         assert!(lock_path.is_file());
+    }
+
+    // -----------------------------------------------------------------
+    // ADR 0043 decision 23: `preflight_volume` on Linux
+    // -----------------------------------------------------------------
+
+    #[cfg(target_os = "linux")]
+    fn no_preflight_residue(dir: &Path) -> bool {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .all(|e| !e.file_name().to_string_lossy().starts_with(".sot-preflight-"))
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn remote_fs_name_matches_the_deny_list_constants_only() {
+        for &(magic, name) in REMOTE_FS_TYPES {
+            assert_eq!(remote_fs_name(magic), Some(name));
+        }
+        // A magic not on the list is not refused BY THIS FUNCTION — the
+        // rename/fsync probes are what judges an unlisted type.
+        assert_eq!(remote_fs_name(0x0102_3456), None);
+        // tmpfs is deliberately not on the deny list (developer `/tmp`).
+        const TMPFS_MAGIC: i64 = 0x0102_1994;
+        assert_eq!(remote_fs_name(TMPFS_MAGIC), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn preflight_volume_passes_on_an_ordinary_tempdir_and_leaves_no_residue() {
+        let dir = tempfile::tempdir().unwrap();
+        preflight_volume(dir.path()).unwrap();
+        assert!(no_preflight_residue(dir.path()), "preflight must remove its own temp entries");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn preflight_volume_passes_on_tmpfs() {
+        // tmpfs is ALLOWED here (decision 23: developer `/tmp` is often
+        // tmpfs, and every suite must keep running there) — this is the
+        // daemon's own, separate volatile-type refusal to make
+        // (`capsule_workspace::qualified_state_root`), never this probe's.
+        // Skipped, not failed, when `/dev/shm` isn't mounted (some
+        // container images omit it).
+        let base = Path::new("/dev/shm");
+        if !base.is_dir() {
+            eprintln!("skipping preflight_volume_passes_on_tmpfs: /dev/shm is not mounted here");
+            return;
+        }
+        let dir = tempfile::Builder::new().prefix("sot-fsutil-tmpfs-").tempdir_in(base).unwrap();
+        preflight_volume(dir.path()).unwrap();
+        assert!(no_preflight_residue(dir.path()), "preflight must remove its own temp entries");
+    }
+
+    /// The whitebox half of "seed `b` yourself and run the public
+    /// function": this test reconstructs the exact `b` path
+    /// [`probe_rename_noreplace_pair`] will use for `kind` (the same
+    /// private [`preflight_pair_paths`] the probe itself calls — no
+    /// separate seam exposed for this) and pre-occupies it BEFORE ever
+    /// calling the public [`preflight_volume`]. `RENAME_NOREPLACE`'s own
+    /// atomicity means the very first (otherwise-unconditional) rename now
+    /// collides too, so this also proves the refusal fires even outside
+    /// the probe's own self-generated second-attempt collision, and that
+    /// cleanup never deletes an entry the probe did not itself create —
+    /// [`probe_rename_noreplace_pair`]'s own `own_b` tracking.
+    #[cfg(target_os = "linux")]
+    fn assert_preflight_volume_refuses_a_seeded_collision(kind: PreflightEntryKind) {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = preflight_pair_paths(dir.path(), kind);
+        let seeded = b"seeded-before-preflight-ran";
+        kind.create(&b, seeded).unwrap();
+
+        let err = preflight_volume(dir.path()).unwrap_err();
+        assert!(format!("{err}").contains("could not rename"), "{err}");
+
+        // Not ours to delete: the seeded entry must survive untouched.
+        assert!(kind.intact(&b, seeded), "a pre-existing, un-owned `b` must survive a refused preflight");
+        // But OUR OWN dangling `a` (created before the refused rename)
+        // must still be cleaned up.
+        assert!(!a.exists(), "preflight must still remove its own `a` even when `b` was never its own");
+
+        kind.remove(&b);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn preflight_volume_refuses_a_seeded_collision_for_the_dir_pair() {
+        assert_preflight_volume_refuses_a_seeded_collision(PreflightEntryKind::Dir);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn preflight_volume_refuses_a_seeded_collision_for_the_file_pair() {
+        assert_preflight_volume_refuses_a_seeded_collision(PreflightEntryKind::File);
     }
 }
