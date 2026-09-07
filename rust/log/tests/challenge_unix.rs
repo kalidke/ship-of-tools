@@ -21,8 +21,10 @@ use sot_log::socket_unix::{
     connect_voyage_socket, voyage_socket_path, ConnId, SocketClient, SocketServer, TransportEvent,
 };
 use sot_log::wire::{self, MgmtReply, MgmtRequest, Survival};
+use std::io::{BufRead, BufReader, Write};
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// A per-event bound used throughout (well inside `ISOLATION_TIMEOUT`, so
@@ -357,6 +359,26 @@ fn cross_process_challenge_server_role() {
         std::thread::sleep(Duration::from_millis(1));
     }
     let server = SocketServer::bind(&voyage_id, 1).expect("server role: bind");
+    // Review round 2 fix: the tick-wait alone only orders THIS process's
+    // own start tick against boot time -- it says nothing about WHEN the
+    // parent's own connect anchor gets sampled relative to `bind` above.
+    // Announce readiness explicitly, only now that both the tick-wait AND
+    // a successful bind have happened, so the parent can wait for this
+    // exact line (bounded) before it ever samples its own anchor or
+    // starts its connect loop -- ordering the two processes properly
+    // instead of relying on incidental timing margin. A LEADING newline
+    // matters: the test harness itself has already written
+    // "test <name> ... " to this same stdout with NO trailing newline of
+    // its own (it only appends "ok"/"FAILED" once this function
+    // returns, which it never does before the parent kills it) -- a bare
+    // `println!("ready")` would land on that SAME incomplete line
+    // (verified: it reads back as "test ... ... ready", never "ready"
+    // alone) and the parent's own line-by-line reader would never see a
+    // line that equals "ready". The leading `\n` here closes out the
+    // harness's own pending line first, so "ready" arrives as its own,
+    // separate, matchable line.
+    println!("\nready");
+    std::io::stdout().flush().expect("flush the ready line");
     let conn_id = expect_accepted(&server, Duration::from_secs(30));
     await_status_request(&server, conn_id, Duration::from_secs(30));
     let reply = wire::encode_mgmt_reply(&MgmtReply::StatusOk {
@@ -384,16 +406,18 @@ fn cross_process_challenge_proves_a_real_child_server() {
     let _rt = isolated_runtime_dir();
     let voyage_id = fresh_voyage_id();
     let exe = std::env::current_exe().expect("current_exe");
-    let child = std::process::Command::new(&exe)
+    let mut child = std::process::Command::new(&exe)
         .arg("--exact")
         .arg("cross_process_challenge_server_role")
         .arg("--nocapture")
         .arg("--test-threads=1")
         .env("CHALLENGE_UNIX_XPROC_VOYAGE_ID", &voyage_id)
         .env_remove("CHALLENGE_UNIX_TEST_CHILD")
+        .stdout(Stdio::piped())
         .spawn()
         .expect("failed to spawn the cross-process server child");
     let child_pid = child.id();
+    let child_stdout = child.stdout.take().expect("piped stdout");
 
     struct KillGuard(Option<std::process::Child>);
     impl Drop for KillGuard {
@@ -406,9 +430,52 @@ fn cross_process_challenge_proves_a_real_child_server() {
     }
     let mut guard = KillGuard(Some(child));
 
-    // `connect_voyage_socket`'s own bounded connect retry (ENOENT/
-    // ECONNREFUSED) absorbs the child's own startup race (it hasn't
-    // bound yet) -- no extra synchronization needed.
+    // Review round 2 fix: wait for the child's own explicit "ready" line
+    // (printed only after ITS OWN tick-wait AND a successful bind — see
+    // `cross_process_challenge_server_role`'s own doc) BEFORE starting
+    // our connect loop, exactly so the parent's own pre-connect anchor
+    // cannot be sampled before the child has bound at all. Bounded via a
+    // helper thread + channel (10s, loud on expiry) rather than a bare
+    // blocking `read_line`, which could hang forever against a genuinely
+    // wedged child. Any OTHER line the test harness itself prints first
+    // (e.g. "running 1 test") is skipped, not mistaken for readiness.
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let reader_thread = std::thread::spawn(move || {
+        let mut reader = BufReader::new(child_stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => {
+                    let _ = ready_tx.send(Err(
+                        "child stdout closed before printing its own \"ready\" line".to_string(),
+                    ));
+                    return;
+                }
+                Ok(_) => {
+                    if line.trim() == "ready" {
+                        let _ = ready_tx.send(Ok(()));
+                        return;
+                    }
+                    // Test-harness noise (e.g. "running 1 test") --
+                    // ignore and keep reading.
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(format!(
+                        "reading the child's own readiness line: {e}"
+                    )));
+                    return;
+                }
+            }
+        }
+    });
+    match ready_rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(())) => {}
+        Ok(Err(msg)) => panic!("{msg}"),
+        Err(_) => panic!("timed out after 10s waiting for the child's own \"ready\" line"),
+    }
+    reader_thread.join().expect("readiness reader thread panicked");
+
     let client = connect_voyage_socket(&voyage_id).expect("connect to the cross-process server");
     let mut exchange = VoyageMgmtExchange::default();
     let outcome = challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30));

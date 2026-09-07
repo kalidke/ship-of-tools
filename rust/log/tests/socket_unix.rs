@@ -1080,14 +1080,16 @@ fn concurrent_same_direction_client_read_returns_distinct_error() {
         a.read(&mut buf) // blocks -- nobody ever sends
     });
 
-    // Review round fix: WAIT on the OBSERVED precondition (A's read has
-    // genuinely taken the read slot) rather than a fixed sleep guessing
-    // at how long that takes.
+    // Review round fix (amended round 2): WAIT on the OBSERVED
+    // precondition (A's read has genuinely ENTERED its critical section)
+    // rather than a fixed sleep guessing at how long that takes -- a
+    // PASSIVE flag read, never a `try_lock` that would itself momentarily
+    // contend for the same slot A holds.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !client.read_slot_held_for_test() {
+    while !client.read_slot_entered_for_test() {
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for A's read to genuinely hold the read slot"
+            "timed out waiting for A's read to genuinely enter the read slot"
         );
         std::thread::sleep(Duration::from_millis(10));
     }

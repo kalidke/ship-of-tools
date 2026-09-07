@@ -1701,6 +1701,21 @@ pub struct SocketClient {
     cancelled: AtomicBool,
     read_slot: Mutex<()>,
     write_slot: Mutex<()>,
+    /// TEST-SUPPORT ONLY (review round 2): set `true`, never cleared,
+    /// the instant [`read`](Self::read) has genuinely ENTERED its
+    /// critical section (immediately after `read_slot`'s lock succeeds)
+    /// — a PASSIVE observation a test can wait on, unlike
+    /// `read_slot.try_lock()` itself, which would momentarily contend
+    /// for the SAME slot a real in-flight `read` holds and could make it
+    /// see a spurious `ConcurrentSubmit`. Mirrors LU1b's own `Probes`:
+    /// zero-cost outside a test build (the field and every store to it
+    /// are `cfg`'d out).
+    #[cfg(any(test, feature = "test-support"))]
+    read_slot_entered: AtomicBool,
+    /// The write twin of `read_slot_entered`, set inside
+    /// [`write_all`](Self::write_all).
+    #[cfg(any(test, feature = "test-support"))]
+    write_slot_entered: AtomicBool,
     /// `CLOCK_BOOTTIME` sampled immediately BEFORE this connection's own
     /// `connect(2)` attempt began — NOT after it completed (review round
     /// fix: a post-connect sample left a pid-reuse window open between
@@ -1751,6 +1766,13 @@ impl SocketClient {
             .write_slot
             .try_lock()
             .map_err(|_| SocketError::ConcurrentSubmit)?;
+        // TEST-SUPPORT ONLY (review round 2): a PASSIVE record that this
+        // call has genuinely entered its critical section -- set once
+        // the slot lock has already succeeded, so observing it costs a
+        // real in-flight call nothing and never contends for the slot
+        // itself (unlike a test calling `try_lock` directly would).
+        #[cfg(any(test, feature = "test-support"))]
+        self.write_slot_entered.store(true, Ordering::SeqCst);
         if bytes.is_empty() {
             return Err(SocketError::EmptyPayload);
         }
@@ -1821,6 +1843,10 @@ impl SocketClient {
             .read_slot
             .try_lock()
             .map_err(|_| SocketError::ConcurrentSubmit)?;
+        // TEST-SUPPORT ONLY (review round 2): see `write_all`'s own
+        // identical comment on its write twin.
+        #[cfg(any(test, feature = "test-support"))]
+        self.read_slot_entered.store(true, Ordering::SeqCst);
         if buf.is_empty() {
             return Err(SocketError::EmptyPayload);
         }
@@ -1865,22 +1891,27 @@ impl SocketClient {
         }
     }
 
-    /// TEST-SUPPORT ONLY (review round): `true` iff a `read` is
-    /// genuinely in flight on this client RIGHT NOW — `try_lock` the same
-    /// `read_slot` a real `read` call holds, exactly like `read`'s own
-    /// `ConcurrentSubmit` check. Lets a test WAIT on an OBSERVED
-    /// precondition ("thread A's read has genuinely reached the blocking
-    /// call") instead of a fixed sleep guessing at how long that takes.
+    /// TEST-SUPPORT ONLY (review round 2, replacing an earlier
+    /// `try_lock`-based version): `true` once a `read` has genuinely
+    /// ENTERED its critical section at any point in this client's life —
+    /// a PASSIVE read of `read_slot_entered`, never itself contending for
+    /// `read_slot`. The earlier version called `read_slot.try_lock()`
+    /// directly, which itself momentarily takes the slot and could make
+    /// a real, concurrently in-flight `read` see a spurious
+    /// `ConcurrentSubmit` it never actually raced. Lets a test WAIT on an
+    /// OBSERVED precondition ("thread A's read has genuinely reached the
+    /// blocking call") instead of a fixed sleep guessing at how long
+    /// that takes.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn read_slot_held_for_test(&self) -> bool {
-        self.read_slot.try_lock().is_err()
+    pub fn read_slot_entered_for_test(&self) -> bool {
+        self.read_slot_entered.load(Ordering::SeqCst)
     }
 
-    /// TEST-SUPPORT ONLY (review round): the write twin of
-    /// [`read_slot_held_for_test`](Self::read_slot_held_for_test).
+    /// The write twin of
+    /// [`read_slot_entered_for_test`](Self::read_slot_entered_for_test).
     #[cfg(any(test, feature = "test-support"))]
-    pub fn write_slot_held_for_test(&self) -> bool {
-        self.write_slot.try_lock().is_err()
+    pub fn write_slot_entered_for_test(&self) -> bool {
+        self.write_slot_entered.load(Ordering::SeqCst)
     }
 
     /// TEST-SUPPORT ONLY: build a client around an already-connected
@@ -1895,6 +1926,10 @@ impl SocketClient {
             cancelled: AtomicBool::new(false),
             read_slot: Mutex::new(()),
             write_slot: Mutex::new(()),
+            #[cfg(any(test, feature = "test-support"))]
+            read_slot_entered: AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-support"))]
+            write_slot_entered: AtomicBool::new(false),
             connect_anchor_boot_ticks,
         }
     }
@@ -2004,8 +2039,14 @@ fn set_blocking(fd: RawFd) -> io::Result<()> {
 /// never the server's own `/proc/self/fd` bind trick — a client always
 /// dials the real name). A FRESH socket every call: a failed `connect(2)`
 /// on `AF_UNIX` leaves the fd in an unspecified state for a further
-/// attempt, so retrying reuses nothing.
-fn one_connect_attempt(addr_bytes: &[u8]) -> Result<UnixStream, ConnectAttempt> {
+/// attempt, so retrying reuses nothing. `deadline` is the SAME absolute
+/// bound the caller's own outer retry loop shares (review round 2 fix):
+/// the `EINPROGRESS` path's own `poll_writable` call polls only for
+/// `deadline.saturating_duration_since(Instant::now())`, never the full
+/// [`CONNECT_BOUND`] on every attempt — an interrupted poll near the
+/// deadline must not be able to overrun it by another whole
+/// `CONNECT_BOUND`.
+fn one_connect_attempt(addr_bytes: &[u8], deadline: Instant) -> Result<UnixStream, ConnectAttempt> {
     let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
     if raw < 0 {
         return Err(ConnectAttempt::Fatal(io::Error::last_os_error()));
@@ -2059,11 +2100,29 @@ fn one_connect_attempt(addr_bytes: &[u8]) -> Result<UnixStream, ConnectAttempt> 
                 // if it ever did, wait for writability then read
                 // SO_ERROR, exactly like a portable non-blocking TCP
                 // connect would.
-                if let Err(e) = poll_writable(fd.as_raw_fd(), CONNECT_BOUND) {
-                    // Review round fix: an interrupted `poll(2)` (EINTR)
-                    // is the SAME "this attempt didn't finish, try again"
-                    // case as `connect`'s own EINTR above -- Retryable
-                    // within the SAME outer deadline, never Fatal.
+                //
+                // Review round 2 fix: poll only for whatever remains of
+                // the SAME absolute `deadline` the outer retry loop
+                // shares -- not a fresh `CONNECT_BOUND` every time, which
+                // could let an interrupted poll near the deadline overrun
+                // it by another whole `CONNECT_BOUND`. An already-expired
+                // deadline is classified `Retryable` without ever calling
+                // `poll(2)` at all, so the outer loop's own
+                // `Instant::now() >= deadline` check converts it into the
+                // standard bounded-retry-exhaustion error -- never a
+                // `Fatal` surfaced merely because the clock ran out.
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(ConnectAttempt::Retryable(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "connect bound already exhausted before the pending connect could be polled",
+                    )));
+                }
+                if let Err(e) = poll_writable(fd.as_raw_fd(), remaining) {
+                    // An interrupted `poll(2)` (EINTR) is the SAME "this
+                    // attempt didn't finish, try again" case as
+                    // `connect`'s own EINTR above -- Retryable within the
+                    // SAME outer deadline, never Fatal.
                     return if e.kind() == io::ErrorKind::Interrupted {
                         Err(ConnectAttempt::Retryable(e))
                     } else {
@@ -2149,13 +2208,17 @@ fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, SocketE
     let deadline = Instant::now() + CONNECT_BOUND;
     loop {
         let connect_anchor_boot_ticks = capture_connect_anchor_boot_ticks();
-        match one_connect_attempt(addr_bytes) {
+        match one_connect_attempt(addr_bytes, deadline) {
             Ok(stream) => {
                 return Ok(SocketClient {
                     stream,
                     cancelled: AtomicBool::new(false),
                     read_slot: Mutex::new(()),
                     write_slot: Mutex::new(()),
+                    #[cfg(any(test, feature = "test-support"))]
+                    read_slot_entered: AtomicBool::new(false),
+                    #[cfg(any(test, feature = "test-support"))]
+                    write_slot_entered: AtomicBool::new(false),
                     connect_anchor_boot_ticks,
                 });
             }
