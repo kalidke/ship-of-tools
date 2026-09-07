@@ -1072,6 +1072,10 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
 /// own handles are suffixed with, so `capsule_workspace::capsule_supervisor_env`
 /// reuses this SAME resolution for the capsule's `SOT_COMM_SELF_FILE`
 /// path rather than re-deriving a host string that could drift from it.
+///
+/// `SOT_STATE_HOST`, when set, must equal the short hostname sot-comm
+/// stamps on registry rows (comm-lib.sh's `HOST`), compared case-
+/// insensitively — the registry predicate depends on it.
 pub(crate) fn state_host() -> String {
     if let Ok(h) = std::env::var("SOT_STATE_HOST") {
         if !h.is_empty() {

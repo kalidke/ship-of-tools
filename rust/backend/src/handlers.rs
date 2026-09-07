@@ -4653,16 +4653,32 @@ fn read_comm_agents() -> Option<serde_json::Value> {
     root.get("agents").cloned()
 }
 
+/// Does this sot-comm registry row's `host` field match `host` (case-
+/// insensitive)? An absent or empty `host` is UNKNOWN ownership, never a
+/// match — comm-join.sh has stamped `host` (the raw `hostname -s`, case
+/// preserved) on every row since the registry existed, so a row without
+/// one is not evidence it's ours (LU5d2, Codex text round finding 3: the
+/// prior "no host = legacy, matches on session alone" clause let a
+/// hand-edited or foreign-tool row bind here on name/session alone).
+/// Factored out of `comm_row_owned_here` so the `by_name` term in
+/// `remove_comm_agents_for_workspace` and the plain field reads in
+/// `handle_workspace_list`'s `agent_str` apply the same strict rule as the
+/// tmux-based match below.
+fn host_matches(entry: &serde_json::Value, host: &str) -> bool {
+    entry
+        .get("host")
+        .and_then(|v| v.as_str())
+        .map(|h| !h.is_empty() && h.eq_ignore_ascii_case(host))
+        .unwrap_or(false)
+}
+
 /// Does this sot-comm registry row belong to `host`'s occupant of
 /// `tmux_session`? `~/.sot-comm/registry.json` is ONE file shared by every
-/// host on an NFS-homed cluster (comm-lib.sh's own derivation stamps each
-/// row's `host` as the raw `hostname -s`, case preserved), so two hosts can
-/// each run a session with the same slug — matching on the tmux session part
-/// alone let one host's `workspace.list` show, and one host's destroy
-/// delete, another host's row. A row with no `host` (or an empty one) is a
-/// legacy row from before comm-join.sh stamped it, and still matches on
-/// session alone. `host` is `state_host()`, resolved ONCE by the caller
-/// (not per row).
+/// host on an NFS-homed cluster, so two hosts can each run a session with
+/// the same slug — matching on the tmux session part alone let one host's
+/// `workspace.list` show, and one host's destroy delete, another host's
+/// row. `host` is `state_host()`, resolved ONCE by the caller (not per
+/// row).
 fn comm_row_owned_here(entry: &serde_json::Value, tmux_session: &str, host: &str) -> bool {
     if tmux_session.is_empty() {
         return false;
@@ -4672,14 +4688,7 @@ fn comm_row_owned_here(entry: &serde_json::Value, tmux_session: &str, host: &str
         .and_then(|v| v.as_str())
         .map(|t| t.split(':').next().unwrap_or("") == tmux_session)
         .unwrap_or(false);
-    if !same_session {
-        return false;
-    }
-    match entry.get("host").and_then(|v| v.as_str()) {
-        None => true,
-        Some(h) if h.is_empty() => true,
-        Some(h) => h.eq_ignore_ascii_case(host),
-    }
+    same_session && host_matches(entry, host)
 }
 
 /// Remove the sot-comm registry rows owned by a workspace that is being
@@ -4689,8 +4698,11 @@ fn comm_row_owned_here(entry: &serde_json::Value, tmux_session: &str, host: &str
 /// `resolve_handle` matching — a row belongs to this workspace when
 /// `comm_row_owned_here` matches (its `tmux` session-part equals
 /// `tmux_session` AND it's this `host`'s row), or (fallback for not-yet-joined
-/// `spawning` rows) when its handle equals the stored `agent_name`. ALL
-/// matching rows are dropped, including stale duplicates on the same session.
+/// `spawning` rows) when its handle equals the stored `agent_name` AND
+/// `host_matches` too (LU5d2: the stored name is caller-supplied, not proof
+/// of ownership — a same-named row stamped by another host must survive).
+/// ALL matching rows are dropped, including stale duplicates on the same
+/// session.
 ///
 /// Fully best-effort: a missing registry, malformed JSON, or any I/O failure
 /// yields an empty result and never propagates — the destroy must not fail
@@ -4756,7 +4768,8 @@ fn remove_comm_agents_for_workspace(tmux_session: &str, agent_name: &str, host: 
         let to_remove: Vec<String> = agents
             .iter()
             .filter_map(|(handle, entry)| {
-                let by_name = !agent_name.is_empty() && handle == agent_name;
+                let by_name =
+                    !agent_name.is_empty() && handle == agent_name && host_matches(entry, host);
                 let by_tmux = comm_row_owned_here(entry, tmux_session, host);
                 (by_name || by_tmux).then(|| handle.clone())
             })
@@ -4802,8 +4815,14 @@ pub async fn handle_workspace_list(
     // owning agents' latest `comm-status.sh` writes). `None` when the file is
     // absent/malformed; every lookup below then falls back to empty strings.
     let comm_agents = read_comm_agents();
+    let host = crate::workspaces::state_host();
     // Pull `.agents[agent_name].<field>` as an owned String, "" if anything is
-    // missing or not a string.
+    // missing or not a string. LU5d2: `agent_name` here is a handle the caller
+    // (below) already bound to THIS workspace — by live tmux match or by the
+    // stored `agent_name` fallback — never proof it's this host's row, so
+    // filter the entry through `host_matches` too: a same-named handle
+    // stamped by another host on the shared registry must read as empty, not
+    // leak its summary/status_at/state into this host's list.
     let agent_str = |agent_name: &str, field: &str| -> String {
         if agent_name.is_empty() {
             return String::new();
@@ -4811,6 +4830,7 @@ pub async fn handle_workspace_list(
         comm_agents
             .as_ref()
             .and_then(|a| a.get(agent_name))
+            .filter(|entry| host_matches(entry, &host))
             .and_then(|entry| entry.get(field))
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -4825,7 +4845,6 @@ pub async fn handle_workspace_list(
     // same-slug session on another host must never bind here. Falls back to the
     // stored `agent_name` when there's no live tmux match (e.g. a `spawning` row
     // whose `tmux` is still "").
-    let host = crate::workspaces::state_host();
     let resolve_handle = |tmux_session: &str, stored: &str| -> String {
         if !tmux_session.is_empty() {
             if let Some(agents) = comm_agents.as_ref().and_then(|a| a.as_object()) {
@@ -6018,7 +6037,12 @@ mod comm_row_owned_here_tests {
     // another host's row on that session. `comm_row_owned_here` is the one
     // predicate both call sites (`resolve_handle` and
     // `remove_comm_agents_for_workspace`) now share.
-    use super::comm_row_owned_here;
+    //
+    // LU5d2 (Codex text round finding 3): a row with no `host` field is
+    // UNKNOWN ownership, not a "legacy" free pass — comm-join.sh has
+    // stamped `host` since the registry existed, so an absent field is not
+    // evidence the row is ours.
+    use super::{comm_row_owned_here, host_matches};
     use serde_json::json;
 
     fn row(tmux: &str, host: Option<&str>) -> serde_json::Value {
@@ -6047,10 +6071,10 @@ mod comm_row_owned_here_tests {
     }
 
     #[test]
-    fn legacy_row_with_no_host_matches_on_session_alone() {
+    fn row_with_no_host_never_matches() {
         let entry = row("sot-be-x:0.0", None);
-        assert!(comm_row_owned_here(&entry, "sot-be-x", "kitt"));
-        assert!(comm_row_owned_here(&entry, "sot-be-x", "descent"));
+        assert!(!comm_row_owned_here(&entry, "sot-be-x", "kitt"));
+        assert!(!comm_row_owned_here(&entry, "sot-be-x", "descent"));
     }
 
     #[test]
@@ -6064,13 +6088,26 @@ mod comm_row_owned_here_tests {
         let entry = row("sot-be-x:0.0", Some("kitt"));
         assert!(!comm_row_owned_here(&entry, "sot-be-y", "kitt"));
     }
+
+    #[test]
+    fn host_matches_rejects_absent_and_empty_host() {
+        assert!(!host_matches(&json!({}), "kitt"));
+        assert!(!host_matches(&json!({ "host": "" }), "kitt"));
+    }
+
+    #[test]
+    fn host_matches_is_case_insensitive() {
+        assert!(host_matches(&json!({ "host": "KITT" }), "kitt"));
+        assert!(!host_matches(&json!({ "host": "descent" }), "kitt"));
+    }
 }
 
 #[cfg(test)]
 mod remove_comm_agents_for_workspace_host_tests {
     // Same shared-registry scenario, exercised through the real prune path:
-    // a destroy on host A must remove only host A's (and any legacy,
-    // host-less) row on a session, never host B's same-session row.
+    // a destroy on host A must remove only host A's row on a session —
+    // never host B's same-session row, and never a host-less row (LU5d2:
+    // absent `host` is unknown ownership, not a free pass).
     use super::remove_comm_agents_for_workspace;
 
     struct EnvGuard {
@@ -6117,25 +6154,179 @@ mod remove_comm_agents_for_workspace_host_tests {
                 "agents": {
                     "kitt-be-x": {"tmux": "sot-be-x:0.0", "host": "kitt"},
                     "descent-be-x": {"tmux": "sot-be-x:0.0", "host": "descent"},
-                    "legacy-be-x": {"tmux": "sot-be-x:0.0"},
+                    "hostless-be-x": {"tmux": "sot-be-x:0.0"},
                 }
             }))
             .unwrap(),
         )
         .unwrap();
 
-        let mut removed = remove_comm_agents_for_workspace("sot-be-x", "", "kitt");
-        removed.sort();
-        assert_eq!(removed, vec!["kitt-be-x", "legacy-be-x"]);
+        let removed = remove_comm_agents_for_workspace("sot-be-x", "", "kitt");
+        assert_eq!(removed, vec!["kitt-be-x"]);
 
         let after: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
         let agents = after.get("agents").unwrap().as_object().unwrap();
         assert!(!agents.contains_key("kitt-be-x"));
-        assert!(!agents.contains_key("legacy-be-x"));
         assert!(
             agents.contains_key("descent-be-x"),
             "host B's row must survive host A's destroy"
+        );
+        assert!(
+            agents.contains_key("hostless-be-x"),
+            "a row with no host is unknown ownership, never ours — it must survive too"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn by_name_requires_host() {
+        // The `by_name` fallback (for a not-yet-joined `spawning` row whose
+        // `tmux` is still "") matches on the caller-supplied `agent_name`
+        // alone before LU5d2 — a row on another host that happens to share
+        // that handle string must survive.
+        let _guard = guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-comm-registry-by-name-host-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOT_COMM_HOME", &dir);
+        let registry_path = dir.join("registry.json");
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "agents": {
+                    "same-name": {"tmux": "", "host": "descent"},
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // No live tmux row for this session, so only the `by_name` term is in
+        // play; the stored handle matches, but the row's host does not.
+        let removed = remove_comm_agents_for_workspace("sot-be-x", "same-name", "kitt");
+        assert!(removed.is_empty());
+
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        assert!(after
+            .get("agents")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("same-name"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod agent_str_host_filter_tests {
+    // LU5d2: `handle_workspace_list`'s `agent_str` closure read
+    // `.agents[handle].<field>` by handle name alone. The handle it's
+    // called with here is bound via the stored `agent_name` fallback (no
+    // live tmux row for the session) — a caller-supplied name, not proof
+    // of ownership — so a same-named row stamped by ANOTHER host on the
+    // shared registry must read as empty, never leak its
+    // summary/status_at into this host's `workspace.list`.
+    use super::*;
+
+    struct EnvGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        sot_comm_home: Option<std::ffi::OsString>,
+        sot_state_host: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, val) in [
+                ("SOT_COMM_HOME", &self.sot_comm_home),
+                ("SOT_STATE_HOST", &self.sot_state_host),
+            ] {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn guarded() -> EnvGuard {
+        let serial = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        EnvGuard {
+            sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
+            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            _serial: serial,
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_str_never_reads_another_hosts_same_named_row() {
+        let _guard = guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-agent-str-host-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOT_COMM_HOME", &dir);
+        std::env::set_var("SOT_STATE_HOST", "kitt");
+        std::fs::write(
+            dir.join("registry.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "agents": {
+                    "same-name": {
+                        "tmux": "",
+                        "host": "descent",
+                        "state": "working",
+                        "summary": "leaked",
+                        "status_at": "2026-01-01T00:00:00Z"
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let workspaces = Workspaces::new();
+        let ws = Workspace::from_label(
+            "myws",
+            std::path::PathBuf::from("/p/myws"),
+            false,
+            "none".into(),
+            "same-name".into(),
+            String::new(),
+        );
+        workspaces.insert(ws);
+
+        let out = handle_workspace_list(1, json!({}), &workspaces)
+            .await
+            .expect("handler must not error");
+        let payload = out[0].0.payload.clone();
+        let entries = payload.get("workspaces").unwrap().as_array().unwrap();
+        let entry = entries
+            .iter()
+            .find(|e| e.get("slug").and_then(|v| v.as_str()) == Some("myws"))
+            .expect("the workspace we inserted must be in the list");
+        assert_eq!(
+            entry.get("agent_summary").and_then(|v| v.as_str()),
+            Some("")
+        );
+        assert_eq!(
+            entry.get("agent_status_at").and_then(|v| v.as_str()),
+            Some("")
         );
 
         let _ = std::fs::remove_dir_all(&dir);
