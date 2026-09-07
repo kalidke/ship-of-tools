@@ -1109,8 +1109,19 @@ fn accept_loop(shared: Arc<ServerShared>, listener: UnixListener, wake_read: Own
             }
             continue;
         }
+        if fds[0].revents & (libc::POLLERR | libc::POLLNVAL | libc::POLLHUP) != 0 {
+            // The listener itself is bad. `poll` would report this again
+            // immediately, so `continue` here would spin the acceptor hot
+            // forever: treat it as the permanent accept failure it is
+            // (property 32) — one `AcceptError`, then stop accepting.
+            terminalize_accept_loop(
+                &shared,
+                format!("poll: listener reported revents {:#x}", fds[0].revents),
+            );
+            return;
+        }
         if fds[0].revents & libc::POLLIN == 0 {
-            continue; // spurious wakeup (e.g. POLLERR/POLLHUP with nothing to accept yet)
+            continue; // nothing to accept yet
         }
         match listener.accept() {
             Ok((stream, _addr)) => {
