@@ -2605,6 +2605,86 @@ fn fresh_workspace_caches(
     out
 }
 
+/// Activity tier for the bottom strip's within-host ordering (owner ask
+/// 2026-09-08): a LIVE agent — working, waiting (delegated, still owed a
+/// result), blocked (needs the user) — ranks above every resting state
+/// (idle, done, and an empty/unknown state alike). Two tiers on purpose,
+/// not five: the strip is scanned for "who is busy / who needs me", and
+/// inside the live tier the freshest `agent_status_at` stamp is a better
+/// signal than any fixed working-vs-blocked precedence would be.
+fn activity_rank(state: &str) -> u8 {
+    match state {
+        "working" | "waiting" | "blocked" => 0,
+        _ => 1,
+    }
+}
+
+/// Reorder `fresh_workspace_caches`' union so each HOST BLOCK lists its
+/// rows most-active-first, LEFT to right in the strip (owner ask
+/// 2026-09-08). Host blocks stay contiguous and in their incoming order —
+/// this only permutes rows *within* a block, so `strip_items`' dividers
+/// land exactly where they did. Pure: the result is a function of the
+/// rows, their `(agent_state, agent_status_at)` pairs, the PREVIOUS strip
+/// order and the pinned row alone — never the clock — which is what makes
+/// it jitter-free: `rebuild_workspace_caches` only runs on a
+/// `workspace.list` arrival, and an arrival that changed no state or stamp
+/// reproduces the previous order byte-for-byte.
+///
+/// Sort key within a block, ascending: `activity_rank`, then the stamp
+/// (newest first — RFC 3339, parsed; an unparseable/empty stamp sorts
+/// last), then the row's position in `prev` (so full ties keep their
+/// standing order instead of following whatever order the daemon happened
+/// to list them in), then daemon order for a brand-new row. `pinned` — the
+/// selected row — keeps the index it had within its block in `prev`
+/// (clamped if the block shrank), so it never slides under the cursor
+/// while the rows around it re-rank; once the user moves off it, it settles
+/// into rank order at the next state change. A pinned row with no previous
+/// standing (first appearance) just ranks like any other.
+fn activity_order(
+    slugs: &[WsKey],
+    states: &HashMap<WsKey, (String, String)>,
+    prev: &[WsKey],
+    pinned: Option<&WsKey>,
+) -> Vec<WsKey> {
+    let prev_pos = |k: &WsKey| prev.iter().position(|p| p == k).unwrap_or(usize::MAX);
+    let sort_key = |k: &WsKey| {
+        let (state, at) = states
+            .get(k)
+            .map(|(s, a)| (s.as_str(), a.as_str()))
+            .unwrap_or(("", ""));
+        let stamp = chrono::DateTime::parse_from_rfc3339(at)
+            .ok()
+            .map(|t| t.timestamp_millis())
+            .unwrap_or(i64::MIN);
+        (activity_rank(state), std::cmp::Reverse(stamp), prev_pos(k))
+    };
+    let mut out: Vec<WsKey> = Vec::with_capacity(slugs.len());
+    let mut start = 0;
+    while start < slugs.len() {
+        let host = &slugs[start].0;
+        let end = start + slugs[start..].iter().take_while(|k| k.0 == *host).count();
+        let block = &slugs[start..end];
+        let pin = pinned.filter(|p| block.contains(p)).and_then(|p| {
+            prev.iter()
+                .filter(|k| k.0 == *host)
+                .position(|k| k == p)
+                .map(|slot| (p, slot.min(block.len() - 1)))
+        });
+        let mut ranked: Vec<&WsKey> = block
+            .iter()
+            .filter(|k| pin.map_or(true, |(p, _)| *k != p))
+            .collect();
+        // Stable: rows tied on every key keep daemon order.
+        ranked.sort_by_cached_key(|k| sort_key(k));
+        if let Some((p, slot)) = pin {
+            ranked.insert(slot, p);
+        }
+        out.extend(ranked.into_iter().cloned());
+        start = end;
+    }
+    out
+}
+
 /// A stored (non-active) tree: the view plus the state that must travel
 /// with it.
 #[derive(Default)]
@@ -7745,7 +7825,21 @@ impl State {
             self.prev_workspace_states
                 .insert(key.clone(), state.clone());
         }
-        self.workspace_slugs = fresh.workspace_slugs;
+        // Strip order = activity order within each host block (owner ask
+        // 2026-09-08); the selected row is pinned to its previous slot.
+        // The fallback default slug comes from `fresh`, not `self` — the
+        // old one may name a row this rebuild just dropped.
+        let selected: Option<WsKey> = self
+            .active_workspace_id
+            .clone()
+            .or_else(|| fresh.default_workspace_slug.clone())
+            .map(|s| (self.active_host.clone(), s));
+        self.workspace_slugs = activity_order(
+            &fresh.workspace_slugs,
+            &fresh.workspace_states,
+            &self.workspace_slugs,
+            selected.as_ref(),
+        );
         self.workspace_labels = fresh.workspace_labels;
         self.workspace_project_roots = fresh.workspace_project_roots;
         self.workspace_states = fresh.workspace_states;
@@ -26126,6 +26220,137 @@ mod tests {
             session_ids.iter().any(|id| id.contains("survivor")),
             "the surviving workspace's row must still be present: {session_ids:?}"
         );
+    }
+
+    // ---- activity_order (bottom strip within-host ordering) ----
+
+    fn ak(host: &str, slug: &str) -> WsKey {
+        (host.to_string(), slug.to_string())
+    }
+
+    fn astates(rows: &[(&WsKey, &str, &str)]) -> HashMap<WsKey, (String, String)> {
+        rows.iter()
+            .map(|(k, st, at)| ((*k).clone(), (st.to_string(), at.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn activity_order_live_tier_left_then_newest_stamp() {
+        let a = ak("h", "a");
+        let b = ak("h", "b");
+        let c = ak("h", "c");
+        let d = ak("h", "d");
+        let e = ak("h", "e");
+        let slugs = vec![a.clone(), b.clone(), c.clone(), d.clone(), e.clone()];
+        let states = astates(&[
+            (&a, "idle", "2026-09-08T09:00:00Z"),
+            (&b, "working", "2026-09-08T08:00:00Z"),
+            (&c, "done", "2026-09-08T09:30:00Z"),
+            (&d, "blocked", "2026-09-08T08:30:00Z"),
+            (&e, "", ""),
+        ]);
+        let got = activity_order(&slugs, &states, &[], None);
+        // live tier (d newer than b) first; resting tier by stamp (c, a),
+        // the stampless row last.
+        assert_eq!(got, vec![d, b, c, a, e]);
+    }
+
+    #[test]
+    fn activity_order_never_mixes_host_blocks() {
+        let a1 = ak("alpha", "one");
+        let a2 = ak("alpha", "two");
+        let b1 = ak("beta", "one");
+        let b2 = ak("beta", "two");
+        let slugs = vec![a1.clone(), a2.clone(), b1.clone(), b2.clone()];
+        let states = astates(&[
+            (&a1, "idle", "2026-09-08T09:00:00Z"),
+            (&a2, "idle", "2026-09-08T10:00:00Z"),
+            (&b1, "idle", "2026-09-08T09:00:00Z"),
+            (&b2, "working", "2026-09-08T09:00:00Z"),
+        ]);
+        let got = activity_order(&slugs, &states, &[], None);
+        assert_eq!(got, vec![a2, a1, b2, b1]);
+        assert_eq!(
+            strip_items(&got).iter().filter(|i| **i == StripItem::HostDivider).count(),
+            1,
+            "still exactly one host divider"
+        );
+    }
+
+    #[test]
+    fn activity_order_is_stable_across_unchanged_rebuilds_and_daemon_shuffles() {
+        let a = ak("h", "a");
+        let b = ak("h", "b");
+        let c = ak("h", "c");
+        let states = astates(&[
+            (&a, "idle", "2026-09-08T09:00:00Z"),
+            (&b, "idle", "2026-09-08T09:00:00Z"),
+            (&c, "idle", "2026-09-08T09:00:00Z"),
+        ]);
+        let first = activity_order(&[a.clone(), b.clone(), c.clone()], &states, &[], None);
+        assert_eq!(first, vec![a.clone(), b.clone(), c.clone()], "full ties keep daemon order");
+        let again = activity_order(&first, &states, &first, None);
+        assert_eq!(again, first, "an unchanged rebuild is byte-identical");
+        // The daemon lists the same tied rows in a different order: the
+        // previous standing wins, so nothing jitters.
+        let shuffled = activity_order(&[c.clone(), a.clone(), b.clone()], &states, &first, None);
+        assert_eq!(shuffled, first);
+    }
+
+    #[test]
+    fn activity_order_pins_the_selected_row_to_its_slot() {
+        let a = ak("h", "a");
+        let b = ak("h", "b");
+        let c = ak("h", "c");
+        let prev = vec![a.clone(), b.clone(), c.clone()];
+        // c goes working: it should leapfrog to the front, but the selected
+        // row b must stay where the cursor has it (index 1).
+        let states = astates(&[
+            (&a, "idle", "2026-09-08T09:00:00Z"),
+            (&b, "idle", "2026-09-08T09:00:00Z"),
+            (&c, "working", "2026-09-08T09:05:00Z"),
+        ]);
+        let got = activity_order(&prev, &states, &prev, Some(&b));
+        assert_eq!(got, vec![c.clone(), b.clone(), a.clone()]);
+        // Unpinned, the same change re-ranks b too.
+        let free = activity_order(&prev, &states, &prev, None);
+        assert_eq!(free, vec![c, a, b]);
+    }
+
+    #[test]
+    fn activity_order_pin_clamps_when_the_block_shrinks() {
+        let a = ak("h", "a");
+        let b = ak("h", "b");
+        let c = ak("h", "c");
+        let prev = vec![a.clone(), b.clone(), c.clone()];
+        let states = astates(&[
+            (&a, "working", "2026-09-08T09:00:00Z"),
+            (&c, "idle", "2026-09-08T09:00:00Z"),
+        ]);
+        // b vanished; the selected c sat at index 2, now clamped to 1.
+        let got = activity_order(&[a.clone(), c.clone()], &states, &prev, Some(&c));
+        assert_eq!(got, vec![a, c]);
+    }
+
+    #[test]
+    fn activity_order_new_rows_rank_and_a_first_seen_pin_ranks_too() {
+        let a = ak("h", "a");
+        let b = ak("h", "b");
+        let n = ak("h", "new");
+        let prev = vec![a.clone(), b.clone()];
+        let states = astates(&[
+            (&a, "idle", "2026-09-08T09:00:00Z"),
+            (&b, "idle", "2026-09-08T09:00:00Z"),
+            (&n, "waiting", "2026-09-08T09:01:00Z"),
+        ]);
+        let slugs = vec![a.clone(), b.clone(), n.clone()];
+        assert_eq!(
+            activity_order(&slugs, &states, &prev, None),
+            vec![n.clone(), a.clone(), b.clone()]
+        );
+        // Selecting the brand-new row (no previous standing) doesn't pin it
+        // to a phantom slot — it ranks like any other row.
+        assert_eq!(activity_order(&slugs, &states, &prev, Some(&n)), vec![n, a, b]);
     }
 
     #[test]
