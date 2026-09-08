@@ -5211,6 +5211,53 @@ fn comm_row_owned_here(entry: &serde_json::Value, tmux_session: &str, host: &str
     same_session && host_matches(entry, host)
 }
 
+/// Resolve the sot-comm handle ACTUALLY running in a workspace's tmux
+/// session, so manually-joined / pre-state-nav agents (whose stored
+/// `agent_name` was never set — only the spawn path writes it) still bind.
+/// The registry `tmux` field is `"<session>:<win>.<pane>"`; match its
+/// session part against `tmux_session`, filtered through
+/// `comm_row_owned_here` so a same-slug session on another host never
+/// binds here. Falls back to `stored_agent_name` when there's no live tmux
+/// match (e.g. a `spawning` row whose `tmux` is still `""`, or a capsule
+/// row — capsules have no tmux pane at all and are resolved by their own
+/// caller via `capsule_comm_handle` before this is ever reached).
+///
+/// Lifted out of `handle_workspace_list` (it used to be a private closure
+/// there) so `clear_comm_unread` binds a `workspace.activate` request to
+/// the same registry row `workspace.list` would show — one matching rule,
+/// not a copy that could drift from it.
+fn resolve_comm_handle(
+    agents: Option<&serde_json::Value>,
+    tmux_session: &str,
+    stored_agent_name: &str,
+    host: &str,
+) -> String {
+    if !tmux_session.is_empty() {
+        if let Some(agents) = agents.and_then(|a| a.as_object()) {
+            // Several rows can share a session (different panes, or a stale
+            // duplicate handle); prefer the most-recently-seen so we bind the
+            // live occupant, not a dead row. ISO `last_seen` compares lexically.
+            let mut best: Option<(&str, &str)> = None;
+            for (handle, entry) in agents {
+                if !comm_row_owned_here(entry, tmux_session, host) {
+                    continue;
+                }
+                let seen = entry
+                    .get("last_seen")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if best.map_or(true, |(_, bseen)| seen > bseen) {
+                    best = Some((handle.as_str(), seen));
+                }
+            }
+            if let Some((h, _)) = best {
+                return h.to_string();
+            }
+        }
+    }
+    stored_agent_name.to_string()
+}
+
 /// Remove the sot-comm registry rows owned by a workspace that is being
 /// destroyed, returning the handles removed (for logging). A killed agent can't
 /// run `comm-leave` for itself, so its row would otherwise persist and show as
@@ -5324,6 +5371,158 @@ fn remove_comm_agents_for_workspace(tmux_session: &str, agent_name: &str, host: 
     removed
 }
 
+/// Clear a `done` row's blue after a PERSON switched the view onto it
+/// (`workspace.activate { read: true }` — ADR 0044 "Viewing clears blue").
+/// Flips `.agents[<handle>].state` from `"done"` to `"idle"` and writes
+/// NOTHING else: the summary survives (the row reads `idle · last: …`) and
+/// `status_at` is untouched, so reading a parked row doesn't make it look
+/// recently active. `blocked`, `waiting`, `working`, and an already-`idle`
+/// row are never touched — viewing is not answering, and it is not
+/// finishing a job.
+///
+/// Two phases, both filtered through the SAME `resolve_comm_handle` /
+/// `host_matches` rule `handle_workspace_list` uses to bind a row to this
+/// workspace:
+///
+/// 1. **Unlocked pre-check** — read the registry once, resolve the handle,
+///    require the row to pass `host_matches` and have `state == "done"`.
+///    Anything else returns with no lock taken and no write — the common
+///    activate (nothing to clear, or no registry at all) costs one file
+///    read, same as the `workspace.list` call that follows every activate
+///    on the wire.
+/// 2. **Lock, then re-read and re-decide inside it.** ADR 0044 round 2:
+///    read-decide-write is one critical section; the pre-check is only a
+///    filter and can never itself cause a write.
+///
+/// Lock protocol mirrors `remove_comm_agents_for_workspace` above (same
+/// mkdir-spinlock at `<comm home>/.registry.lock`, same temp-file + atomic
+/// rename) with two deltas:
+///
+/// - **Bounded at ~1s (20 × 50ms), then give up silently** (debug log, no
+///   clear). `server.rs`'s `handle_connection` awaits every handler
+///   inline, so a long spin on a contended shared home would stall the
+///   whole activate reply.
+/// - **Fails CLOSED — never force-breaks the lock**, matching
+///   `comm-lib.sh`'s `with_lock` since its own fail-closed fix. A missed
+///   read-clear is cosmetic (the next activate, or the next
+///   `comm-status.sh`, tries again); a forced takeover risks corrupting a
+///   concurrent shell writer's in-flight temp file. (The prune above still
+///   force-breaks — out of scope here, worth a follow-up.)
+///
+/// Best-effort throughout: a missing registry, malformed JSON, or any I/O
+/// failure is a silent no-op — the activate's ack is unaffected either
+/// way (the caller sends it regardless of what this does).
+fn clear_comm_unread(tmux_session: &str, agent_name: &str, host: &str) {
+    // --- Unlocked pre-check ---
+    let pre_agents = read_comm_agents();
+    let handle = resolve_comm_handle(pre_agents.as_ref(), tmux_session, agent_name, host);
+    if handle.is_empty() {
+        return;
+    }
+    let is_done = pre_agents
+        .as_ref()
+        .and_then(|a| a.get(&handle))
+        .filter(|entry| host_matches(entry, host))
+        .and_then(|entry| entry.get("state"))
+        .and_then(|v| v.as_str())
+        .map(|s| s == "done")
+        .unwrap_or(false);
+    if !is_done {
+        return;
+    }
+
+    let Some(reg_path) = comm_registry_path() else {
+        return;
+    };
+    let Some(dir) = reg_path.parent().map(|p| p.to_path_buf()) else {
+        return;
+    };
+    let lock_dir = dir.join(".registry.lock");
+    let tmp_path = dir.join("registry.json.tmp");
+
+    // mkdir-spinlock, matching comm-lib.sh `with_lock` — bounded, and
+    // fails CLOSED (never force-break: a missed clear is cosmetic, a
+    // forced takeover is not).
+    let mut acquired = false;
+    for _ in 0..20 {
+        match std::fs::create_dir(&lock_dir) {
+            Ok(()) => {
+                acquired = true;
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, lock = ?lock_dir, "comm registry lock error — skipping read-clear");
+                return;
+            }
+        }
+    }
+    if !acquired {
+        tracing::debug!(lock = ?lock_dir, "comm registry lock contended — skipping read-clear");
+        return;
+    }
+
+    // Critical section — always release the lock on the way out.
+    (|| {
+        let bytes = match std::fs::read(&reg_path) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let mut root: serde_json::Value = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        // Re-resolve and re-decide against the freshly-read registry — it
+        // may have changed since the pre-check above.
+        let handle = resolve_comm_handle(root.get("agents"), tmux_session, agent_name, host);
+        if handle.is_empty() {
+            return;
+        }
+        let Some(agents) = root.get_mut("agents").and_then(|a| a.as_object_mut()) else {
+            return;
+        };
+        let Some(entry) = agents.get_mut(&handle) else {
+            return;
+        };
+        let still_done = host_matches(entry, host)
+            && entry.get("state").and_then(|v| v.as_str()) == Some("done");
+        if !still_done {
+            return;
+        }
+        let Some(entry_obj) = entry.as_object_mut() else {
+            return;
+        };
+        // ONLY `state`. Not `status_at`, `last_seen`, `summary`, or
+        // `turn_origin` — reading is not activity and must not make a
+        // parked row look recently touched.
+        entry_obj.insert(
+            "state".to_string(),
+            serde_json::Value::String("idle".to_string()),
+        );
+
+        let mut serialized = match serde_json::to_vec_pretty(&root) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "comm registry serialize failed");
+                return;
+            }
+        };
+        serialized.push(b'\n');
+        if let Err(e) = std::fs::write(&tmp_path, &serialized) {
+            tracing::warn!(error = %e, "comm registry tmp write failed");
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &reg_path) {
+            tracing::warn!(error = %e, "comm registry rename failed");
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+    })();
+
+    let _ = std::fs::remove_dir(&lock_dir);
+}
+
 pub async fn handle_workspace_list(
     req_id: u64,
     _payload_json: serde_json::Value,
@@ -5358,39 +5557,9 @@ pub async fn handle_workspace_list(
     };
     // Resolve the comm handle ACTUALLY running in a workspace's tmux session, so
     // manually-joined / pre-state-nav agents (whose `ws.agent_name` was never set
-    // — only the spawn path writes it) still bind. The registry `tmux` field is
-    // "<session>:<win>.<pane>"; match its session part against the workspace's
-    // `tmux_session`, AND require the row be this host's (`comm_row_owned_here`)
-    // — the registry is one file shared across an NFS-homed cluster, so a
-    // same-slug session on another host must never bind here. Falls back to the
-    // stored `agent_name` when there's no live tmux match (e.g. a `spawning` row
-    // whose `tmux` is still "").
-    let resolve_handle = |tmux_session: &str, stored: &str| -> String {
-        if !tmux_session.is_empty() {
-            if let Some(agents) = comm_agents.as_ref().and_then(|a| a.as_object()) {
-                // Several rows can share a session (different panes, or a stale
-                // duplicate handle); prefer the most-recently-seen so we bind the
-                // live occupant, not a dead row. ISO `last_seen` compares lexically.
-                let mut best: Option<(&str, &str)> = None;
-                for (handle, entry) in agents {
-                    if !comm_row_owned_here(entry, tmux_session, &host) {
-                        continue;
-                    }
-                    let seen = entry
-                        .get("last_seen")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if best.map_or(true, |(_, bseen)| seen > bseen) {
-                        best = Some((handle.as_str(), seen));
-                    }
-                }
-                if let Some((h, _)) = best {
-                    return h.to_string();
-                }
-            }
-        }
-        stored.to_string()
-    };
+    // — only the spawn path writes it) still bind. `resolve_comm_handle` does the
+    // actual matching (shared with `clear_comm_unread` below — one rule, not a
+    // copy).
     let ws_list = workspaces.list();
     // ADR 0042 slice L1a, Codex review finding 11: query every capsule
     // workspace's supervisor lane under FIXED-WIDTH concurrency (a
@@ -5445,7 +5614,7 @@ pub async fn handle_workspace_list(
         .into_iter()
         .map(|ws| {
             // Prefer the live occupant; fall back to the stored agent_name.
-            // A capsule row has no tmux pane at all, so `resolve_handle`'s
+            // A capsule row has no tmux pane at all, so `resolve_comm_handle`'s
             // tmux-session match can never discover it (Codex round
             // finding 2/companion) — read its OWN pinned self-file back
             // instead (`capsule_comm_handle`).
@@ -5453,7 +5622,7 @@ pub async fn handle_workspace_list(
                 let h = capsule_comm_handle(&ws.workspace_id);
                 if h.is_empty() { ws.agent_name.clone() } else { h }
             } else {
-                resolve_handle(&ws.tmux_session, &ws.agent_name)
+                resolve_comm_handle(comm_agents.as_ref(), &ws.tmux_session, &ws.agent_name, &host)
             };
             // Work-state merge: the registry `state` is what the agent *declared*
             // (set by the work-state hooks: UserPromptSubmit → "working",
@@ -5571,12 +5740,26 @@ pub async fn handle_workspace_activate(
     use sot_protocol::{WorkspaceActivateReq, WorkspaceActivateRes};
     let req: WorkspaceActivateReq =
         serde_json::from_value(payload_json).context("workspace.activate payload")?;
-    let resolved = workspaces
-        .resolve(req.workspace_id.as_deref())
-        .map(|ws| ws.workspace_id.clone());
+    let resolved_ws = workspaces.resolve(req.workspace_id.as_deref());
+    let resolved = resolved_ws.as_ref().map(|ws| ws.workspace_id.clone());
+    // `read: true` = a PERSON switched the view here (Sessions-Enter,
+    // Shift+Left/Right cycling) — clear this row's blue (ADR 0044). The ack
+    // below is sent unconditionally, whatever this does or doesn't clear.
+    if req.read {
+        if let Some(ws) = resolved_ws.as_ref() {
+            let tmux_session = ws.tmux_session.clone();
+            let agent_name = ws.agent_name.clone();
+            let host = crate::workspaces::state_host();
+            let _ = tokio::task::spawn_blocking(move || {
+                clear_comm_unread(&tmux_session, &agent_name, &host)
+            })
+            .await;
+        }
+    }
     tracing::info!(
         requested = req.workspace_id.as_deref().unwrap_or("<default>"),
         resolved = resolved.as_deref().unwrap_or("<unresolved>"),
+        read = req.read,
         "workspace.activate"
     );
     let res = WorkspaceActivateRes {
@@ -6742,6 +6925,354 @@ mod remove_comm_agents_for_workspace_host_tests {
             .as_object()
             .unwrap()
             .contains_key("same-name"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod clear_comm_unread_tests {
+    // ADR 0044 "Viewing clears blue": `workspace.activate { read: true }`
+    // flips a `done` row to `idle` and touches NOTHING else. Same
+    // guarded()/SOT_COMM_HOME pattern as
+    // `remove_comm_agents_for_workspace_host_tests` above —
+    // `clear_comm_unread` shares its lock protocol and its
+    // `resolve_comm_handle`/`host_matches` row-binding rule (so these
+    // tests also stand in for `resolve_comm_handle` itself: it has no
+    // other caller-facing behaviour beyond what binds a row here).
+    use super::clear_comm_unread;
+
+    struct EnvGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        sot_comm_home: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.sot_comm_home {
+                Some(v) => std::env::set_var("SOT_COMM_HOME", v),
+                None => std::env::remove_var("SOT_COMM_HOME"),
+            }
+        }
+    }
+
+    fn guarded() -> EnvGuard {
+        let serial = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        EnvGuard {
+            sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
+            _serial: serial,
+        }
+    }
+
+    fn temp_home(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "sot-clear-comm-unread-test-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn write_registry(dir: &std::path::Path, agents: serde_json::Value) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        std::env::set_var("SOT_COMM_HOME", dir);
+        let registry_path = dir.join("registry.json");
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&serde_json::json!({ "agents": agents })).unwrap(),
+        )
+        .unwrap();
+        registry_path
+    }
+
+    #[test]
+    fn done_row_for_this_host_flips_to_idle_summary_and_status_at_untouched() {
+        let _guard = guarded();
+        let dir = temp_home("done");
+        let registry_path = write_registry(
+            &dir,
+            serde_json::json!({
+                "kitt-be-x": {
+                    "tmux": "sot-be-x:0.0",
+                    "host": "kitt",
+                    "state": "done",
+                    "summary": "probe summary",
+                    "status_at": "2026-09-08T00:00:00Z",
+                    "last_seen": "2026-09-08T00:00:01Z",
+                },
+            }),
+        );
+
+        clear_comm_unread("sot-be-x", "", "kitt");
+
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let row = &after["agents"]["kitt-be-x"];
+        assert_eq!(row["state"], "idle");
+        assert_eq!(row["summary"], "probe summary", "summary must survive the clear");
+        assert_eq!(
+            row["status_at"], "2026-09-08T00:00:00Z",
+            "status_at must be untouched — reading is not activity"
+        );
+        assert_eq!(row["last_seen"], "2026-09-08T00:00:01Z");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn same_session_row_on_another_host_survives_untouched() {
+        let _guard = guarded();
+        let dir = temp_home("otherhost");
+        let registry_path = write_registry(
+            &dir,
+            serde_json::json!({
+                "descent-be-x": {
+                    "tmux": "sot-be-x:0.0",
+                    "host": "descent",
+                    "state": "done",
+                    "summary": "not yours",
+                    "status_at": "2026-09-08T00:00:00Z",
+                },
+            }),
+        );
+        let before = std::fs::read(&registry_path).unwrap();
+
+        clear_comm_unread("sot-be-x", "", "kitt");
+
+        let after = std::fs::read(&registry_path).unwrap();
+        assert_eq!(before, after, "a foreign host's row must never be touched");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_done_states_are_never_touched() {
+        let _guard = guarded();
+        for state in ["blocked", "waiting", "working", "idle"] {
+            let dir = temp_home(&format!("state-{state}"));
+            let registry_path = write_registry(
+                &dir,
+                serde_json::json!({
+                    "kitt-be-x": {
+                        "tmux": "sot-be-x:0.0",
+                        "host": "kitt",
+                        "state": state,
+                        "summary": "unchanged",
+                        "status_at": "2026-09-08T00:00:00Z",
+                    },
+                }),
+            );
+            let before = std::fs::read(&registry_path).unwrap();
+
+            clear_comm_unread("sot-be-x", "", "kitt");
+
+            let after = std::fs::read(&registry_path).unwrap();
+            assert_eq!(before, after, "state {state} must never be rewritten");
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn missing_registry_is_a_silent_no_op() {
+        let _guard = guarded();
+        let dir = temp_home("missing");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOT_COMM_HOME", &dir);
+        // No registry.json written at all.
+
+        clear_comm_unread("sot-be-x", "agent", "kitt");
+        assert!(!dir.join("registry.json").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn malformed_registry_is_a_silent_no_op() {
+        let _guard = guarded();
+        let dir = temp_home("malformed");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOT_COMM_HOME", &dir);
+        let registry_path = dir.join("registry.json");
+        std::fs::write(&registry_path, b"not json{{{").unwrap();
+        let before = std::fs::read(&registry_path).unwrap();
+
+        clear_comm_unread("sot-be-x", "agent", "kitt");
+
+        let after = std::fs::read(&registry_path).unwrap();
+        assert_eq!(before, after);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn contended_lock_gives_up_bounded_and_leaves_registry_unchanged() {
+        let _guard = guarded();
+        let dir = temp_home("locked");
+        let registry_path = write_registry(
+            &dir,
+            serde_json::json!({
+                "kitt-be-x": {
+                    "tmux": "sot-be-x:0.0",
+                    "host": "kitt",
+                    "state": "done",
+                    "summary": "probe summary",
+                    "status_at": "2026-09-08T00:00:00Z",
+                },
+            }),
+        );
+        let before = std::fs::read(&registry_path).unwrap();
+        // Pre-create the lock dir so the mkdir-spinlock inside
+        // `clear_comm_unread` can never acquire it.
+        std::fs::create_dir(dir.join(".registry.lock")).unwrap();
+
+        let start = std::time::Instant::now();
+        clear_comm_unread("sot-be-x", "", "kitt");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "bounded ~1s spin must not stall the caller: took {elapsed:?}"
+        );
+        let after = std::fs::read(&registry_path).unwrap();
+        assert_eq!(before, after, "a contended lock must fail closed with no write");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod workspace_activate_read_tests {
+    // End-to-end through the real async handler: `read: true` clears a
+    // `done` row via the SAME workspace binding `workspace.list` uses;
+    // `read: false` (an old frontend, or any programmatic switch) leaves
+    // the registry untouched. The ack echoes the canonical workspace_id
+    // regardless of what the clear did.
+    use super::*;
+
+    struct EnvGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        sot_comm_home: Option<std::ffi::OsString>,
+        sot_state_host: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.sot_comm_home {
+                Some(v) => std::env::set_var("SOT_COMM_HOME", v),
+                None => std::env::remove_var("SOT_COMM_HOME"),
+            }
+            match &self.sot_state_host {
+                Some(v) => std::env::set_var("SOT_STATE_HOST", v),
+                None => std::env::remove_var("SOT_STATE_HOST"),
+            }
+        }
+    }
+
+    fn guarded() -> EnvGuard {
+        let serial = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        EnvGuard {
+            sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
+            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            _serial: serial,
+        }
+    }
+
+    fn seed_workspace(label: &str) -> (Workspaces, String, String) {
+        let reg = Workspaces::new();
+        let ws = Workspace::from_label(
+            label,
+            std::path::PathBuf::from("/p/x"),
+            false,
+            "none".into(),
+            String::new(),
+            String::new(),
+        );
+        let id = ws.workspace_id.clone();
+        let tmux_session = ws.tmux_session.clone();
+        reg.insert(ws);
+        (reg, id, tmux_session)
+    }
+
+    async fn activate(
+        workspaces: &Workspaces,
+        workspace_id: &str,
+        read: bool,
+    ) -> serde_json::Value {
+        let payload = serde_json::json!({ "workspace_id": workspace_id, "read": read });
+        let out = handle_workspace_activate(1, payload, workspaces)
+            .await
+            .expect("handler must not error");
+        assert_eq!(
+            out.len(),
+            1,
+            "workspace.activate always answers with exactly one frame"
+        );
+        out[0].0.payload.clone()
+    }
+
+    #[tokio::test]
+    async fn read_true_clears_the_row_read_false_does_not() {
+        let _guard = guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-workspace-activate-read-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOT_COMM_HOME", &dir);
+        std::env::set_var("SOT_STATE_HOST", "kitt");
+        let registry_path = dir.join("registry.json");
+
+        let (reg, id, tmux_session) = seed_workspace("activate-read-x");
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "agents": {
+                    "kitt-activate-read-x": {
+                        "tmux": format!("{tmux_session}:0.0"),
+                        "host": "kitt",
+                        "state": "done",
+                        "summary": "probe summary",
+                        "status_at": "2026-09-08T00:00:00Z",
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // read: false — untouched, ack still names the resolved workspace.
+        let ack = activate(&reg, &id, false).await;
+        assert_eq!(
+            ack.get("workspace_id").and_then(|v| v.as_str()),
+            Some(id.as_str())
+        );
+        let after_false: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        assert_eq!(after_false["agents"]["kitt-activate-read-x"]["state"], "done");
+
+        // read: true — clears it; summary and status_at survive.
+        let ack = activate(&reg, &id, true).await;
+        assert_eq!(
+            ack.get("workspace_id").and_then(|v| v.as_str()),
+            Some(id.as_str())
+        );
+        let after_true: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let row = &after_true["agents"]["kitt-activate-read-x"];
+        assert_eq!(row["state"], "idle");
+        assert_eq!(row["summary"], "probe summary");
+        assert_eq!(row["status_at"], "2026-09-08T00:00:00Z");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

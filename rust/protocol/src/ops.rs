@@ -1364,6 +1364,12 @@ pub struct WorkspaceListRes {
 pub struct WorkspaceActivateReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// A person switched the view to this workspace (Sessions-Enter,
+    /// Shift+Left/Right cycling) rather than the frontend or an agent
+    /// moving the view programmatically. An old frontend omits this field
+    /// (defaults to `false`); an old daemon ignores it. See ADR 0044.
+    #[serde(default)]
+    pub read: bool,
 }
 
 /// `workspace.activate` response. `workspace_id` is the CANONICAL id the

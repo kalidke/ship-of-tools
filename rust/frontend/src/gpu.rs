@@ -7058,7 +7058,8 @@ impl State {
             .clamp(-WHEEL_MAX_VEL, WHEEL_MAX_VEL);
         self.dirty = true;
         self.window.request_redraw();
-        self.switch_to_workspace(next_host, Some(next_slug), Some(tmux_session));
+        // Shift+Left/Right cycling is person-driven: clear this row's blue.
+        self.switch_to_workspace(next_host, Some(next_slug), Some(tmux_session), true);
     }
 
     /// Switch the nav mode and fire that mode's data fetch. Shared by the
@@ -7410,7 +7411,8 @@ impl State {
                     }
                 }
                 tracing::info!(?slug, boot, "fe-command: switch workspace");
-                self.switch_to_workspace(self.active_host.clone(), slug, tmux);
+                // Agent-driven, not a person looking: leave blue as-is.
+                self.switch_to_workspace(self.active_host.clone(), slug, tmux, false);
             }
             FeCommand::CycleWs { dir } => {
                 let dir = if dir == 0 { 1 } else { dir };
@@ -7590,7 +7592,9 @@ impl State {
                     } else {
                         (Some(workspace.clone()), Some(format!("sot-be-{workspace}")))
                     };
-                    self.switch_to_workspace(self.active_host.clone(), slug, tmux);
+                    // Focus capture is honoring the AGENT's --urgent request,
+                    // not a person switching the view: leave blue as-is.
+                    self.switch_to_workspace(self.active_host.clone(), slug, tmux, false);
                 } else {
                     // Badge floor: record + badge; the pending preview (body +
                     // nav-cursor reveal) is driven when the user next switches
@@ -8417,11 +8421,20 @@ impl State {
     /// every `self.send(...)` in this function and in the
     /// `attach_session_to_bl` it calls already routes to the NEW host.
     /// This is the one choke point: callers don't need `send_to`.
+    ///
+    /// `read` is `true` only for the two person-driven switches
+    /// (Sessions-Enter, Shift+Left/Right cycling) — it rides the
+    /// `workspace.activate` signal below and tells the daemon a person
+    /// looked at this workspace, clearing a `done` row's blue (ADR 0044).
+    /// Every other caller (agent-driven `switch`, cross-workspace
+    /// `--urgent` preview, `workspace.create`'s auto-switch, the destroy
+    /// bounce) passes `false`.
     fn switch_to_workspace(
         &mut self,
         host: HostKey,
         slug: Option<String>,
         tmux_session: Option<String>,
+        read: bool,
     ) {
         self.snapshot_current_workspace_ui();
         self.snapshot_current_workspace_repl();
@@ -8452,6 +8465,7 @@ impl State {
         // just above), so this routes correctly even on a cross-host switch.
         if let Err(e) = self.send(crate::transport::OutgoingReq::WorkspaceActivate {
             workspace_id: slug.clone(),
+            read,
         }) {
             tracing::warn!(error = %e, "drop workspace.activate on switch — channel closed");
         }
@@ -12128,10 +12142,13 @@ impl State {
                         // still learn the resumed workspace so its
                         // `preview.changed` fan-out filter doesn't sit on
                         // the default workspace indefinitely (Codex review).
+                        // Re-announcing the resumed view after a reconnect,
+                        // not a person switching: leave blue as-is.
                         let _ = self.send_to(
                             &event_host,
                             crate::transport::OutgoingReq::WorkspaceActivate {
                                 workspace_id: self.active_workspace_id.clone(),
+                                read: false,
                             },
                         );
                         let had_batch = self.upload_batch.take().is_some();
@@ -14384,10 +14401,13 @@ impl State {
                             // The reply arrived over the same connection the
                             // `workspace.create` request targeted (ADR 0042
                             // L2a) — `event_host` IS the new workspace's host.
+                            // Auto-switch after create, not a person
+                            // arriving at an existing row: leave blue as-is.
                             self.switch_to_workspace(
                                 event_host.clone(),
                                 Some(info.slug.clone()),
                                 Some(info.tmux_session.clone()),
+                                false,
                             );
                             // Land focus in the LLM pane so the freshly
                             // spawned agent is immediately interactive —
@@ -14491,7 +14511,9 @@ impl State {
                                     .map(|s| s == info.slug || s == info.workspace_id)
                                     .unwrap_or(false)
                             {
-                                self.switch_to_workspace(event_host.clone(), None, None);
+                                // Forced bounce off a destroyed row, not a
+                                // person choosing to view it: leave blue as-is.
+                                self.switch_to_workspace(event_host.clone(), None, None, false);
                             }
                             // Clean up per-workspace snapshot maps so a
                             // recreated workspace with the same slug
@@ -20373,10 +20395,14 @@ impl ApplicationHandler for App {
                                                         .unwrap_or_else(|| {
                                                             state.active_host.clone()
                                                         });
+                                                    // Sessions-Enter is
+                                                    // person-driven: clear
+                                                    // this row's blue.
                                                     state.switch_to_workspace(
                                                         host,
                                                         slug,
                                                         Some(session_name),
+                                                        true,
                                                     );
                                                 } else {
                                                     // Foreign tmux session

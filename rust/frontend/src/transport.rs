@@ -918,7 +918,14 @@ pub enum OutgoingReq {
     /// indefinitely (Codex review). Response echoes back the canonical id
     /// the daemon resolved to, but the FE doesn't act on it today — no
     /// PendingKind is stamped, mirroring `ToggleHidden` above.
-    WorkspaceActivate { workspace_id: Option<String> },
+    ///
+    /// `read` is `true` only for the two person-driven view switches
+    /// (Sessions-Enter, Shift+Left/Right cycling) — it tells the daemon a
+    /// person looked at this workspace, which clears a `done` row's blue
+    /// (ADR 0044). Every other caller (agent-driven switches, `create`'s
+    /// auto-switch, the destroy bounce, reconnect re-announce) sends
+    /// `false`.
+    WorkspaceActivate { workspace_id: Option<String>, read: bool },
     /// Ask the kernel for its loaded-modules list. Response surfaces as
     /// `IncomingEvt::ModulesList`. Currently the only kernel.request the
     /// frontend issues directly; expand the enum as more land.
@@ -2186,14 +2193,17 @@ where
                         // with the tree.root re-fetch gpu.rs fires right after,
                         // and an unmatched response id is silently ignored.
                     }
-                    OutgoingReq::WorkspaceActivate { workspace_id } => {
-                        tracing::debug!(?workspace_id, id, "→ workspace.activate");
+                    OutgoingReq::WorkspaceActivate { workspace_id, read } => {
+                        tracing::debug!(?workspace_id, read, id, "→ workspace.activate");
                         codec::write_frame(
                             &mut tx,
                             &Frame::req(
                                 id,
                                 op::WORKSPACE_ACTIVATE,
-                                serde_json::to_value(WorkspaceActivateReq { workspace_id })?,
+                                serde_json::to_value(WorkspaceActivateReq {
+                                    workspace_id,
+                                    read,
+                                })?,
                             ),
                             None,
                         )
