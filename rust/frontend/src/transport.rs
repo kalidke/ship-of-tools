@@ -1647,6 +1647,162 @@ async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
         .with_context(|| format!("connect {path:?}"))
 }
 
+/// Coalesces `crate::state::save` calls behind a `rev`-bearing frame so a
+/// burst of replies doesn't turn into a burst of synchronous disk writes.
+/// `crate::state::save` does a blocking `write`+`rename`; calling it inline
+/// from EVERY `rev`-bearing frame (near enough all of them — see `Frame`'s
+/// own doc on `rev`) is what stalled the transport task's read future for
+/// the length of a reply burst in the field (2026-09-08: a workspace-switch
+/// storm of ~2s-each `workspace.list` replies queued 50+ synchronous writes
+/// onto this one async task, long enough that the daemon's own write side
+/// gave up: "frame write exceeded 10s; dropping connection (peer not
+/// draining)"). The reconnect invariant this file exists to serve (ADR
+/// 0010: hand the backend `last_seen_revision` so it can replay whatever we
+/// missed) tolerates a value on disk that lags what's truly been seen — a
+/// crash before the next flush just costs the backend a little redundant
+/// replay of events it already sent, never a gap — so throttling the writes
+/// to at most one per `MIN_INTERVAL` gives up nothing the design promised.
+struct StateSaveGate {
+    last_saved_at: Option<std::time::Instant>,
+}
+
+impl StateSaveGate {
+    /// A fresh connection's early frames (hello / first tree.root / first
+    /// preview.get) still save immediately (`last_saved_at` starts `None`,
+    /// always due) — only a later BURST within this window of the previous
+    /// write gets coalesced.
+    const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+    fn new() -> Self {
+        Self { last_saved_at: None }
+    }
+
+    fn due(&self, now: std::time::Instant) -> bool {
+        match self.last_saved_at {
+            None => true,
+            Some(t) => now.duration_since(t) >= Self::MIN_INTERVAL,
+        }
+    }
+
+    fn mark_saved(&mut self, now: std::time::Instant) {
+        self.last_saved_at = Some(now);
+    }
+}
+
+/// Bumps `memory.last_seen_revision` from a frame's `rev` (if present) and,
+/// when `gate` says it's due, persists it. Shared by the connect-time
+/// preamble (tree.root, preview.get) and the steady-state loop so there is
+/// exactly one place that decides when a `rev`-bearing frame reaches disk.
+fn note_revision(
+    rev: Option<u64>,
+    memory: &mut crate::state::SessionMemory,
+    host: &HostKey,
+    gate: &mut StateSaveGate,
+) {
+    note_revision_with(rev, memory, host, gate, |h, m| {
+        crate::state::save(h, m).ok();
+    });
+}
+
+/// `note_revision`'s real logic, with the persist step as a parameter so a
+/// test can substitute a counting/slow stand-in for `crate::state::save`
+/// without touching a real state file — see the `note_revision_with` tests
+/// below for the burst-of-50 measurement this fix was asked to prove.
+fn note_revision_with(
+    rev: Option<u64>,
+    memory: &mut crate::state::SessionMemory,
+    host: &HostKey,
+    gate: &mut StateSaveGate,
+    persist: impl FnOnce(&HostKey, &crate::state::SessionMemory),
+) {
+    let Some(r) = rev else { return };
+    memory.last_seen_revision = memory.last_seen_revision.max(r);
+    let now = std::time::Instant::now();
+    if gate.due(now) {
+        persist(host, memory);
+        gate.mark_saved(now);
+    }
+}
+
+/// Liveness-probe cadence for the steady-state loop's LOCAL-connection-only
+/// select! arm (gated on `!via_tcp` at the call site) — never more than once
+/// per this interval, per the project's no-chatty-timers rule. A TCP
+/// connection's close already surfaces as a normal socket EOF/RST
+/// (`codec::read_frame` turns that into an `Err` that `?` propagates
+/// straight out of `run_protocol`), so it skips this arm entirely.
+const LIVENESS_TICK: std::time::Duration = std::time::Duration::from_secs(5);
+/// No frame read at all (of any kind, not just a probe reply) for this long
+/// on a local connection is worth checking: fire an unsolicited `hello`.
+/// The backend already re-handles `hello` on an established connection
+/// (`server.rs`: "a reconnect re-sends hello on the same connection — keep
+/// the original guard") and, sent with our current `last_seen_revision`,
+/// asks it to replay nothing new — cheap even when the connection is merely
+/// slow, not dead.
+const LIVENESS_PROBE_IDLE: std::time::Duration = std::time::Duration::from_secs(6);
+/// Still no frame at all this long after crossing `LIVENESS_PROBE_IDLE`
+/// (i.e. the probe itself went unanswered too) — field incident
+/// (2026-09-08): the daemon had already dropped its end of a local pipe
+/// ("frame write exceeded 10s ... peer not draining") and the frontend sat
+/// on the dead connection for 8+ minutes because nothing ever forced a read
+/// to fail. Treat this much sustained silence as dead so `run_protocol`
+/// returns an error and `spawn`'s reconnect loop takes over. Set well above
+/// the backend's own per-request stalls observed in the field (~2s under a
+/// capsule-adoption-probe burst) so a merely-slow-but-alive backend never
+/// trips a false reconnect.
+const LIVENESS_DEAD_IDLE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// What the liveness-probe select! arm should do this tick — see
+/// `LivenessTracker::on_tick`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LivenessAction {
+    /// Recently active (or a probe is already outstanding) — nothing to do.
+    None,
+    /// Idle past `LIVENESS_PROBE_IDLE` with no probe outstanding yet: send
+    /// one unsolicited `hello`.
+    Probe,
+    /// Idle past `LIVENESS_DEAD_IDLE` — even a sent probe went unanswered.
+    /// Treat the connection as dead.
+    Dead,
+}
+
+/// Decision logic for the LOCAL-connection-only liveness probe, split out
+/// from `run_protocol`'s socket I/O so the state machine (when to probe,
+/// when to give up) is unit-testable without a real connection or a real
+/// wall-clock wait — see the `liveness_tracker_*` tests below.
+struct LivenessTracker {
+    last_frame_at: std::time::Instant,
+    probe_pending: bool,
+}
+
+impl LivenessTracker {
+    fn new(now: std::time::Instant) -> Self {
+        Self {
+            last_frame_at: now,
+            probe_pending: false,
+        }
+    }
+
+    /// Call on every successful read — any frame, not just a probe reply,
+    /// counts as proof the connection is alive.
+    fn on_frame(&mut self, now: std::time::Instant) {
+        self.last_frame_at = now;
+        self.probe_pending = false;
+    }
+
+    /// Call on every `LIVENESS_TICK`. Returns what the caller should do.
+    fn on_tick(&mut self, now: std::time::Instant) -> LivenessAction {
+        let idle = now.duration_since(self.last_frame_at);
+        if idle >= LIVENESS_DEAD_IDLE {
+            return LivenessAction::Dead;
+        }
+        if idle >= LIVENESS_PROBE_IDLE && !self.probe_pending {
+            self.probe_pending = true;
+            return LivenessAction::Probe;
+        }
+        LivenessAction::None
+    }
+}
+
 /// Read exactly one frame while *owning* the reader, handing it back with the
 /// result. This lets the steady-state select! loop keep a single in-flight
 /// read future across iterations (cancel-safe: a cancelled select! pauses it
@@ -1710,6 +1866,9 @@ where
     // produces fresh values and the backend assigns a session_id we'll
     // remember for next time.
     let mut memory = crate::state::load(&host);
+    // See `StateSaveGate`'s doc: throttles `crate::state::save` so a burst of
+    // `rev`-bearing replies can't stall this task's read future on disk I/O.
+    let mut state_save_gate = StateSaveGate::new();
     tracing::info!(
         %host,
         client_id = %memory.client_id,
@@ -1857,10 +2016,7 @@ where
     )
     .await?;
     let (frame, _) = codec::read_frame(&mut rx).await?;
-    if let Some(r) = frame.rev {
-        memory.last_seen_revision = memory.last_seen_revision.max(r);
-        crate::state::save(&host, &memory).ok();
-    }
+    note_revision(frame.rev, &mut memory, &host, &mut state_save_gate);
     // Hold the root node id so preview.get can target it without hardcoding
     // the backend's id-format conventions in the frontend. Today files mode
     // uses `files:` for the root; that may change.
@@ -1902,10 +2058,7 @@ where
     )
     .await?;
     let (frame, blob) = codec::read_frame(&mut rx).await?;
-    if let Some(r) = frame.rev {
-        memory.last_seen_revision = memory.last_seen_revision.max(r);
-        crate::state::save(&host, &memory).ok();
-    }
+    note_revision(frame.rev, &mut memory, &host, &mut state_save_gate);
     if frame.id == prev_id {
         let res: PreviewGetRes =
             serde_json::from_value(frame.payload).context("preview.get res")?;
@@ -1950,6 +2103,12 @@ where
     // the borrow checker never sees an external `&mut rx` re-borrowed across
     // iterations.
     let mut read_fut = Some(Box::pin(read_owned(rx)));
+    // Liveness bookkeeping for the LOCAL-only probe arm below (ADR 0042
+    // field incident, 2026-09-08: a dead local pipe went unnoticed for 8+
+    // minutes) — see `LivenessTracker`.
+    let mut liveness = LivenessTracker::new(std::time::Instant::now());
+    let mut liveness_tick = tokio::time::interval(LIVENESS_TICK);
+    liveness_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             // Bias to reads so an avalanche of GPU-thread requests can't
@@ -1961,12 +2120,45 @@ where
                 let (rx_back, read) = done;
                 read_fut = Some(Box::pin(read_owned(rx_back)));
                 let (frame, blob) = read?;
-                if let Some(r) = frame.rev {
-                    memory.last_seen_revision = memory.last_seen_revision.max(r);
-                    crate::state::save(&host, &memory).ok();
-                }
+                liveness.on_frame(std::time::Instant::now());
+                note_revision(frame.rev, &mut memory, &host, &mut state_save_gate);
                 handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                 window.request_redraw();
+            }
+
+            // LOCAL-connection-only liveness probe — see `LivenessTracker`
+            // and the `LIVENESS_*` consts' doc. Disabled entirely for the
+            // TCP control tunnel, whose close already surfaces as a normal
+            // read error.
+            _ = liveness_tick.tick(), if !via_tcp => {
+                match liveness.on_tick(std::time::Instant::now()) {
+                    LivenessAction::None => {}
+                    LivenessAction::Dead => {
+                        anyhow::bail!(
+                            "local connection idle for {:?} with no reply to a \
+                             liveness probe — treating as dead",
+                            liveness.last_frame_at.elapsed()
+                        );
+                    }
+                    LivenessAction::Probe => {
+                        let probe_id = take_id(&mut next_id);
+                        let probe = HelloReq {
+                            client_id: memory.client_id.clone(),
+                            session_id: memory.session_id.clone(),
+                            last_seen_revision: memory.last_seen_revision,
+                            token: token.map(|s| s.to_string()),
+                            protocol: sot_protocol::PROTOCOL_VERSION,
+                            app_version: sot_protocol::app_version(),
+                        };
+                        codec::write_frame(
+                            &mut tx,
+                            &Frame::req(probe_id, op::HELLO, serde_json::to_value(&probe)?),
+                            None,
+                        )
+                        .await?;
+                        tracing::debug!(%host, "sent liveness probe on an idle local connection");
+                    }
+                }
             }
 
             req = out_rx.recv() => {
@@ -1982,18 +2174,12 @@ where
                     let fut = read_fut.take().expect("read_fut is always Some here");
                     let (mut rx, read) = fut.await;
                     let (frame, blob) = read?;
-                    if let Some(r) = frame.rev {
-                        memory.last_seen_revision = memory.last_seen_revision.max(r);
-                        crate::state::save(&host, &memory).ok();
-                    }
+                    note_revision(frame.rev, &mut memory, &host, &mut state_save_gate);
                     handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                     window.request_redraw();
                     loop {
                         let (frame, blob) = codec::read_frame(&mut rx).await?;
-                        if let Some(r) = frame.rev {
-                            memory.last_seen_revision = memory.last_seen_revision.max(r);
-                            crate::state::save(&host, &memory).ok();
-                        }
+                        note_revision(frame.rev, &mut memory, &host, &mut state_save_gate);
                         handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                         window.request_redraw();
                     }
@@ -4017,6 +4203,252 @@ fn parse_scan_entity(v: &Value) -> ScanEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Field incident 2026-09-08, defect (b): the read path must never
+    // stall on synchronous per-frame disk I/O. ---
+
+    #[test]
+    fn state_save_gate_is_due_on_a_fresh_connection() {
+        // A brand-new connection's first `rev`-bearing frame (hello / first
+        // tree.root / first preview.get) must still save immediately, same
+        // as before this fix — only a later burst gets coalesced.
+        let gate = StateSaveGate::new();
+        assert!(gate.due(std::time::Instant::now()));
+    }
+
+    #[test]
+    fn state_save_gate_coalesces_within_min_interval_then_fires_again() {
+        let t0 = std::time::Instant::now();
+        let mut gate = StateSaveGate::new();
+        gate.mark_saved(t0);
+        assert!(
+            !gate.due(t0 + std::time::Duration::from_millis(50)),
+            "a save 50ms after the last one must be coalesced"
+        );
+        assert!(
+            !gate.due(t0 + StateSaveGate::MIN_INTERVAL - std::time::Duration::from_millis(1)),
+            "still coalesced 1ms short of MIN_INTERVAL"
+        );
+        assert!(
+            gate.due(t0 + StateSaveGate::MIN_INTERVAL),
+            "due again once MIN_INTERVAL has fully elapsed"
+        );
+    }
+
+    /// The manager's literal measurement: a synthetic burst of 50
+    /// `workspace.list`-sized replies (each carrying a `rev`) must drain in
+    /// well under a second. Drives the REAL `note_revision_with` (the same
+    /// function `note_revision` — and so the read arm — calls) with a
+    /// stand-in `persist` that sleeps 50ms, standing in for the blocking
+    /// `write`+`rename` `crate::state::save` performs: uncoalesced, 50
+    /// frames would cost 2.5s; the gate must bring that down to one write.
+    #[test]
+    fn note_revision_coalesces_a_burst_of_fifty_replies_onto_one_slow_write() {
+        let mut memory = crate::state::SessionMemory::fresh();
+        let host = "burst-test-host".to_string();
+        let mut gate = StateSaveGate::new();
+        let mut persisted_revisions: Vec<u64> = Vec::new();
+        let start = std::time::Instant::now();
+        for rev in 1..=50u64 {
+            note_revision_with(Some(rev), &mut memory, &host, &mut gate, |_h, m| {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                persisted_revisions.push(m.last_seen_revision);
+            });
+        }
+        let elapsed = start.elapsed();
+        assert_eq!(
+            memory.last_seen_revision, 50,
+            "the in-memory revision must still bump on every frame, coalescing or not"
+        );
+        assert_eq!(
+            persisted_revisions,
+            vec![1],
+            "a tight burst must coalesce onto exactly the FIRST (immediate) save"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "burst of 50 replies must drain in well under a second, took {elapsed:?}"
+        );
+    }
+
+    // --- Field incident 2026-09-08, defect (a): a silently dead LOCAL
+    // connection must be noticed within a few seconds. ---
+
+    #[test]
+    fn liveness_tracker_is_quiet_while_recently_active() {
+        let t0 = std::time::Instant::now();
+        let mut tracker = LivenessTracker::new(t0);
+        assert_eq!(
+            tracker.on_tick(t0 + std::time::Duration::from_secs(1)),
+            LivenessAction::None
+        );
+    }
+
+    #[test]
+    fn liveness_tracker_probes_once_then_stays_quiet_until_a_frame_or_the_dead_deadline() {
+        let t0 = std::time::Instant::now();
+        let mut tracker = LivenessTracker::new(t0);
+        let probe_at = t0 + LIVENESS_PROBE_IDLE;
+        assert_eq!(
+            tracker.on_tick(probe_at),
+            LivenessAction::Probe,
+            "must probe once idle crosses LIVENESS_PROBE_IDLE"
+        );
+        assert_eq!(
+            tracker.on_tick(probe_at + std::time::Duration::from_secs(1)),
+            LivenessAction::None,
+            "must not pile a second probe onto an already-outstanding one"
+        );
+    }
+
+    #[test]
+    fn liveness_tracker_declares_dead_after_a_probe_goes_unanswered() {
+        let t0 = std::time::Instant::now();
+        let mut tracker = LivenessTracker::new(t0);
+        assert_eq!(tracker.on_tick(t0 + LIVENESS_PROBE_IDLE), LivenessAction::Probe);
+        assert_eq!(
+            tracker.on_tick(t0 + LIVENESS_DEAD_IDLE),
+            LivenessAction::Dead,
+            "sustained silence past LIVENESS_DEAD_IDLE must be treated as dead \
+             even though a probe was already sent"
+        );
+    }
+
+    #[test]
+    fn liveness_tracker_on_frame_resets_the_clock_and_clears_a_pending_probe() {
+        let t0 = std::time::Instant::now();
+        let mut tracker = LivenessTracker::new(t0);
+        assert_eq!(tracker.on_tick(t0 + LIVENESS_PROBE_IDLE), LivenessAction::Probe);
+        // A reply (to the probe, or to anything else) arrives — proof of life.
+        let frame_at = t0 + LIVENESS_PROBE_IDLE + std::time::Duration::from_millis(10);
+        tracker.on_frame(frame_at);
+        assert_eq!(
+            tracker.on_tick(frame_at + std::time::Duration::from_secs(1)),
+            LivenessAction::None,
+            "the clock must restart from the frame, not from t0"
+        );
+        assert_eq!(
+            tracker.on_tick(frame_at + LIVENESS_PROBE_IDLE),
+            LivenessAction::Probe,
+            "a fresh idle period must be able to probe again"
+        );
+    }
+
+    /// End-to-end regression for defect (a)'s first half: when the PEER
+    /// closes its end of the local connection, the transport's read path
+    /// must surface that as an `Err` promptly — never hang — so
+    /// `run_protocol`'s `read?` (see the steady-state loop's read arm)
+    /// propagates it and `spawn`'s reconnect loop ("transport task ended;
+    /// reconnecting") takes over. Drives a REAL `interprocess` local-socket
+    /// listener/stream pair — the exact `connect_pipe`/`read_owned`
+    /// functions `run_protocol` itself calls (a Unix domain socket on this
+    /// platform, a Windows named pipe there, same code path) — not a mock.
+    #[tokio::test]
+    async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
+        use interprocess::local_socket::{tokio::prelude::*, GenericFilePath, ListenerOptions};
+
+        let sock_path = std::env::temp_dir().join(format!(
+            "sot-transport-test-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&sock_path);
+        let name = sock_path
+            .to_str()
+            .unwrap()
+            .to_fs_name::<GenericFilePath>()
+            .unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .create_tokio()
+            .expect("bind test socket");
+
+        // Server: accept once, answer the hello handshake (so this exercises
+        // a connection that was genuinely live, not merely refused), then
+        // DROP the connection — standing in for the daemon closing its end
+        // ("frame write exceeded 10s; dropping connection (peer not
+        // draining)") in the field incident.
+        let server = tokio::spawn(async move {
+            let conn = listener.accept().await.expect("accept");
+            let (rx, mut tx) = conn.split();
+            let mut rx = codec::buffered(rx);
+            let (hello, _) = codec::read_frame(&mut rx).await.expect("read hello");
+            let hello_res = serde_json::json!({
+                "session_id": "sess-1",
+                "revision": 0,
+                "snapshot_pending": false,
+            });
+            codec::write_frame(
+                &mut tx,
+                &Frame::res(hello.id, op::HELLO, hello_res).with_rev(0),
+                None,
+            )
+            .await
+            .expect("write hello res");
+            // Connection drops here (both halves go out of scope) — the
+            // simulated server-side close.
+        });
+
+        let stream = connect_pipe(&sock_path).await.expect("client connect");
+        let (client_rx, mut client_tx) = stream.split();
+        let mut client_rx = codec::buffered(client_rx);
+        codec::write_frame(
+            &mut client_tx,
+            &Frame::req(
+                1,
+                op::HELLO,
+                serde_json::to_value(HelloReq {
+                    client_id: "test-client".into(),
+                    session_id: None,
+                    last_seen_revision: 0,
+                    token: None,
+                    protocol: sot_protocol::PROTOCOL_VERSION,
+                    app_version: sot_protocol::app_version(),
+                })
+                .unwrap(),
+            ),
+            None,
+        )
+        .await
+        .expect("write hello req");
+        let (hello_frame, _) = codec::read_frame(&mut client_rx).await.expect("read hello res");
+        assert_eq!(hello_frame.id, 1);
+        server.await.expect("server task must not panic");
+
+        // The peer has now closed. `read_owned` is EXACTLY what the
+        // steady-state select! loop polls (see `run_protocol`) — its next
+        // completion must be an `Err` (EOF), bounded by a short timeout so
+        // this test itself proves "promptly", not just "eventually".
+        let (_rx_back, result) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_owned(client_rx),
+        )
+        .await
+        .expect("the read must complete promptly once the peer has closed, not hang");
+
+        assert!(
+            result.is_err(),
+            "a closed peer connection must surface as an Err, not hang forever"
+        );
+
+        let _ = std::fs::remove_file(&sock_path);
+    }
+
+    #[test]
+    fn note_revision_with_ignores_a_frame_with_no_rev() {
+        let mut memory = crate::state::SessionMemory::fresh();
+        let host = "no-rev-test-host".to_string();
+        let mut gate = StateSaveGate::new();
+        let mut save_calls = 0u32;
+        note_revision_with(None, &mut memory, &host, &mut gate, |_h, _m| {
+            save_calls += 1;
+        });
+        assert_eq!(memory.last_seen_revision, 0);
+        assert_eq!(save_calls, 0, "no rev means nothing to persist");
+    }
 
     /// Real-seam regression for the round-1 fix: an `{error, code}` reply to
     /// a `figure.get` must produce EXACTLY one `FigureGetFailed`, driven
