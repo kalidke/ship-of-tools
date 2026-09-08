@@ -1656,14 +1656,18 @@ async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
 /// storm of ~2s-each `workspace.list` replies queued 50+ synchronous writes
 /// onto this one async task, long enough that the daemon's own write side
 /// gave up: "frame write exceeded 10s; dropping connection (peer not
-/// draining)"). The reconnect invariant this file exists to serve (ADR
-/// 0010: hand the backend `last_seen_revision` so it can replay whatever we
-/// missed) tolerates a value on disk that lags what's truly been seen — a
-/// crash before the next flush just costs the backend a little redundant
-/// replay of events it already sent, never a gap — so throttling the writes
-/// to at most one per `MIN_INTERVAL` gives up nothing the design promised.
+/// draining)"). Throttling to at most one write per `MIN_INTERVAL` loses
+/// nothing durability-sensitive: `SessionState`'s `Drop` flushes whatever
+/// this held back the moment the connection ends (see `flush_revision`), so
+/// only a hard crash (not a clean disconnect/reconnect) can ever leave the
+/// on-disk value behind the truly-seen one — and even then, ADR 0010's
+/// replay-from-`last_seen_revision` already tolerates that gap by design.
 struct StateSaveGate {
     last_saved_at: Option<std::time::Instant>,
+    /// The revision the last actual disk write covered. Lets
+    /// `flush_revision` tell whether the throttle is currently holding back
+    /// something newer than what's on disk.
+    last_saved_revision: u64,
 }
 
 impl StateSaveGate {
@@ -1674,7 +1678,10 @@ impl StateSaveGate {
     const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
     fn new() -> Self {
-        Self { last_saved_at: None }
+        Self {
+            last_saved_at: None,
+            last_saved_revision: 0,
+        }
     }
 
     fn due(&self, now: std::time::Instant) -> bool {
@@ -1684,8 +1691,15 @@ impl StateSaveGate {
         }
     }
 
-    fn mark_saved(&mut self, now: std::time::Instant) {
+    fn mark_saved(&mut self, now: std::time::Instant, revision: u64) {
         self.last_saved_at = Some(now);
+        self.last_saved_revision = revision;
+    }
+
+    /// Whether `revision` is newer than what the last actual disk write
+    /// covered — the question `flush_revision` asks at end-of-connection.
+    fn is_stale(&self, revision: u64) -> bool {
+        revision > self.last_saved_revision
     }
 }
 
@@ -1720,86 +1734,52 @@ fn note_revision_with(
     let now = std::time::Instant::now();
     if gate.due(now) {
         persist(host, memory);
-        gate.mark_saved(now);
+        gate.mark_saved(now, memory.last_seen_revision);
     }
 }
 
-/// Liveness-probe cadence for the steady-state loop's LOCAL-connection-only
-/// select! arm (gated on `!via_tcp` at the call site) — never more than once
-/// per this interval, per the project's no-chatty-timers rule. A TCP
-/// connection's close already surfaces as a normal socket EOF/RST
-/// (`codec::read_frame` turns that into an `Err` that `?` propagates
-/// straight out of `run_protocol`), so it skips this arm entirely.
-const LIVENESS_TICK: std::time::Duration = std::time::Duration::from_secs(5);
-/// No frame read at all (of any kind, not just a probe reply) for this long
-/// on a local connection is worth checking: fire an unsolicited `hello`.
-/// The backend already re-handles `hello` on an established connection
-/// (`server.rs`: "a reconnect re-sends hello on the same connection — keep
-/// the original guard") and, sent with our current `last_seen_revision`,
-/// asks it to replay nothing new — cheap even when the connection is merely
-/// slow, not dead.
-const LIVENESS_PROBE_IDLE: std::time::Duration = std::time::Duration::from_secs(6);
-/// Still no frame at all this long after crossing `LIVENESS_PROBE_IDLE`
-/// (i.e. the probe itself went unanswered too) — field incident
-/// (2026-09-08): the daemon had already dropped its end of a local pipe
-/// ("frame write exceeded 10s ... peer not draining") and the frontend sat
-/// on the dead connection for 8+ minutes because nothing ever forced a read
-/// to fail. Treat this much sustained silence as dead so `run_protocol`
-/// returns an error and `spawn`'s reconnect loop takes over. Set well above
-/// the backend's own per-request stalls observed in the field (~2s under a
-/// capsule-adoption-probe burst) so a merely-slow-but-alive backend never
-/// trips a false reconnect.
-const LIVENESS_DEAD_IDLE: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// What the liveness-probe select! arm should do this tick — see
-/// `LivenessTracker::on_tick`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LivenessAction {
-    /// Recently active (or a probe is already outstanding) — nothing to do.
-    None,
-    /// Idle past `LIVENESS_PROBE_IDLE` with no probe outstanding yet: send
-    /// one unsolicited `hello`.
-    Probe,
-    /// Idle past `LIVENESS_DEAD_IDLE` — even a sent probe went unanswered.
-    /// Treat the connection as dead.
-    Dead,
+/// The flush half of `StateSaveGate`'s throttle — NOT a timer, a one-shot
+/// called exactly once when the transport task ends (`SessionState`'s
+/// `Drop`, below). Persists `memory` if `gate` says the last actual disk
+/// write is behind the in-memory revision, so a `rev` that landed just
+/// inside the `MIN_INTERVAL` coalescing window is never lost to the
+/// connection ending before the next periodic write would have happened.
+fn flush_revision(memory: &crate::state::SessionMemory, host: &HostKey, gate: &mut StateSaveGate) {
+    flush_revision_with(memory, host, gate, |h, m| {
+        crate::state::save(h, m).ok();
+    });
 }
 
-/// Decision logic for the LOCAL-connection-only liveness probe, split out
-/// from `run_protocol`'s socket I/O so the state machine (when to probe,
-/// when to give up) is unit-testable without a real connection or a real
-/// wall-clock wait — see the `liveness_tracker_*` tests below.
-struct LivenessTracker {
-    last_frame_at: std::time::Instant,
-    probe_pending: bool,
+/// `flush_revision`'s real logic, with the persist step as a parameter —
+/// same testability shape as `note_revision`/`note_revision_with`.
+fn flush_revision_with(
+    memory: &crate::state::SessionMemory,
+    host: &HostKey,
+    gate: &mut StateSaveGate,
+    persist: impl FnOnce(&HostKey, &crate::state::SessionMemory),
+) {
+    if gate.is_stale(memory.last_seen_revision) {
+        persist(host, memory);
+        gate.mark_saved(std::time::Instant::now(), memory.last_seen_revision);
+    }
 }
 
-impl LivenessTracker {
-    fn new(now: std::time::Instant) -> Self {
-        Self {
-            last_frame_at: now,
-            probe_pending: false,
-        }
-    }
+/// Owns one connection's reconnect-memory bookkeeping (`SessionMemory` +
+/// its `StateSaveGate`) and flushes it exactly once when the connection
+/// ends. `run_protocol` has many exit paths — EOF, a write/parse error, a
+/// clean return, the drain loop that follows the outgoing channel closing —
+/// but every one of them ends the function, which drops `session`, which
+/// flushes: the same "flush on any exit" idiom `PendingGuard` already uses
+/// in this file for the same reason.
+struct SessionState {
+    host: HostKey,
+    memory: crate::state::SessionMemory,
+    gate: StateSaveGate,
+}
 
-    /// Call on every successful read — any frame, not just a probe reply,
-    /// counts as proof the connection is alive.
-    fn on_frame(&mut self, now: std::time::Instant) {
-        self.last_frame_at = now;
-        self.probe_pending = false;
-    }
-
-    /// Call on every `LIVENESS_TICK`. Returns what the caller should do.
-    fn on_tick(&mut self, now: std::time::Instant) -> LivenessAction {
-        let idle = now.duration_since(self.last_frame_at);
-        if idle >= LIVENESS_DEAD_IDLE {
-            return LivenessAction::Dead;
-        }
-        if idle >= LIVENESS_PROBE_IDLE && !self.probe_pending {
-            self.probe_pending = true;
-            return LivenessAction::Probe;
-        }
-        LivenessAction::None
+impl Drop for SessionState {
+    fn drop(&mut self) {
+        flush_revision(&self.memory, &self.host, &mut self.gate);
     }
 }
 
@@ -1865,15 +1845,21 @@ where
     // last_seen_revision feed the backend's replay path. First-ever launch
     // produces fresh values and the backend assigns a session_id we'll
     // remember for next time.
-    let mut memory = crate::state::load(&host);
-    // See `StateSaveGate`'s doc: throttles `crate::state::save` so a burst of
-    // `rev`-bearing replies can't stall this task's read future on disk I/O.
-    let mut state_save_gate = StateSaveGate::new();
+    // `session` bundles the memory with its `StateSaveGate` (see
+    // `StateSaveGate`'s doc: throttles `crate::state::save` so a burst of
+    // `rev`-bearing replies can't stall this task's read future on disk
+    // I/O) and, via its `Drop`, flushes whatever the throttle held back the
+    // moment this connection ends — see `SessionState`.
+    let mut session = SessionState {
+        host: host.clone(),
+        memory: crate::state::load(&host),
+        gate: StateSaveGate::new(),
+    };
     tracing::info!(
         %host,
-        client_id = %memory.client_id,
-        ?memory.session_id,
-        last_seen_revision = memory.last_seen_revision,
+        client_id = %session.memory.client_id,
+        ?session.memory.session_id,
+        last_seen_revision = session.memory.last_seen_revision,
         token_set = token.is_some(),
         "loaded session memory"
     );
@@ -1881,9 +1867,9 @@ where
     // hello
     let hello_id = take_id(&mut next_id);
     let hello = HelloReq {
-        client_id: memory.client_id.clone(),
-        session_id: memory.session_id.clone(),
-        last_seen_revision: memory.last_seen_revision,
+        client_id: session.memory.client_id.clone(),
+        session_id: session.memory.session_id.clone(),
+        last_seen_revision: session.memory.last_seen_revision,
         token: token.map(|s| s.to_string()),
         // ADR 0030 §2: advertise our wire-contract protocol + product version
         // so the backend can gate on protocol equality and name both sides in
@@ -1903,7 +1889,7 @@ where
         anyhow::bail!("hello reply id mismatch: got {}, want {hello_id}", frame.id);
     }
     if let Some(r) = frame.rev {
-        memory.last_seen_revision = memory.last_seen_revision.max(r);
+        session.memory.last_seen_revision = session.memory.last_seen_revision.max(r);
     }
     // Inspect the frame for an error envelope first — the backend rejects
     // bad auth (and any other hello-time refusal) with `{error, code}`,
@@ -1969,12 +1955,12 @@ where
             "connected to a pre-versioning backend (protocol 0) — update the backend (ADR 0030)"
         );
     }
-    if memory.session_id.as_deref() != Some(hello_res.session_id.as_str()) {
+    if session.memory.session_id.as_deref() != Some(hello_res.session_id.as_str()) {
         // First run, or backend restarted with a new session — record the
         // assigned id so the next reconnect is on the live session.
-        memory.session_id = Some(hello_res.session_id.clone());
+        session.memory.session_id = Some(hello_res.session_id.clone());
     }
-    crate::state::save(&host, &memory).ok();
+    crate::state::save(&host, &session.memory).ok();
     // Hello round-trip succeeded — reset backoff to the floor so any
     // *future* disconnect in this session restarts the exponential
     // climb from 200ms rather than picking up wherever the previous
@@ -2016,7 +2002,7 @@ where
     )
     .await?;
     let (frame, _) = codec::read_frame(&mut rx).await?;
-    note_revision(frame.rev, &mut memory, &host, &mut state_save_gate);
+    note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
     // Hold the root node id so preview.get can target it without hardcoding
     // the backend's id-format conventions in the frontend. Today files mode
     // uses `files:` for the root; that may change.
@@ -2058,7 +2044,7 @@ where
     )
     .await?;
     let (frame, blob) = codec::read_frame(&mut rx).await?;
-    note_revision(frame.rev, &mut memory, &host, &mut state_save_gate);
+    note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
     if frame.id == prev_id {
         let res: PreviewGetRes =
             serde_json::from_value(frame.payload).context("preview.get res")?;
@@ -2103,12 +2089,6 @@ where
     // the borrow checker never sees an external `&mut rx` re-borrowed across
     // iterations.
     let mut read_fut = Some(Box::pin(read_owned(rx)));
-    // Liveness bookkeeping for the LOCAL-only probe arm below (ADR 0042
-    // field incident, 2026-09-08: a dead local pipe went unnoticed for 8+
-    // minutes) — see `LivenessTracker`.
-    let mut liveness = LivenessTracker::new(std::time::Instant::now());
-    let mut liveness_tick = tokio::time::interval(LIVENESS_TICK);
-    liveness_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             // Bias to reads so an avalanche of GPU-thread requests can't
@@ -2120,45 +2100,9 @@ where
                 let (rx_back, read) = done;
                 read_fut = Some(Box::pin(read_owned(rx_back)));
                 let (frame, blob) = read?;
-                liveness.on_frame(std::time::Instant::now());
-                note_revision(frame.rev, &mut memory, &host, &mut state_save_gate);
+                note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
                 handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                 window.request_redraw();
-            }
-
-            // LOCAL-connection-only liveness probe — see `LivenessTracker`
-            // and the `LIVENESS_*` consts' doc. Disabled entirely for the
-            // TCP control tunnel, whose close already surfaces as a normal
-            // read error.
-            _ = liveness_tick.tick(), if !via_tcp => {
-                match liveness.on_tick(std::time::Instant::now()) {
-                    LivenessAction::None => {}
-                    LivenessAction::Dead => {
-                        anyhow::bail!(
-                            "local connection idle for {:?} with no reply to a \
-                             liveness probe — treating as dead",
-                            liveness.last_frame_at.elapsed()
-                        );
-                    }
-                    LivenessAction::Probe => {
-                        let probe_id = take_id(&mut next_id);
-                        let probe = HelloReq {
-                            client_id: memory.client_id.clone(),
-                            session_id: memory.session_id.clone(),
-                            last_seen_revision: memory.last_seen_revision,
-                            token: token.map(|s| s.to_string()),
-                            protocol: sot_protocol::PROTOCOL_VERSION,
-                            app_version: sot_protocol::app_version(),
-                        };
-                        codec::write_frame(
-                            &mut tx,
-                            &Frame::req(probe_id, op::HELLO, serde_json::to_value(&probe)?),
-                            None,
-                        )
-                        .await?;
-                        tracing::debug!(%host, "sent liveness probe on an idle local connection");
-                    }
-                }
             }
 
             req = out_rx.recv() => {
@@ -2174,12 +2118,12 @@ where
                     let fut = read_fut.take().expect("read_fut is always Some here");
                     let (mut rx, read) = fut.await;
                     let (frame, blob) = read?;
-                    note_revision(frame.rev, &mut memory, &host, &mut state_save_gate);
+                    note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
                     handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                     window.request_redraw();
                     loop {
                         let (frame, blob) = codec::read_frame(&mut rx).await?;
-                        note_revision(frame.rev, &mut memory, &host, &mut state_save_gate);
+                        note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
                         handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                         window.request_redraw();
                     }
@@ -4220,7 +4164,7 @@ mod tests {
     fn state_save_gate_coalesces_within_min_interval_then_fires_again() {
         let t0 = std::time::Instant::now();
         let mut gate = StateSaveGate::new();
-        gate.mark_saved(t0);
+        gate.mark_saved(t0, 1);
         assert!(
             !gate.due(t0 + std::time::Duration::from_millis(50)),
             "a save 50ms after the last one must be coalesced"
@@ -4233,6 +4177,63 @@ mod tests {
             gate.due(t0 + StateSaveGate::MIN_INTERVAL),
             "due again once MIN_INTERVAL has fully elapsed"
         );
+    }
+
+    /// The lossless-flush guarantee that makes the throttle safe to keep: a
+    /// frame lands INSIDE the 2s coalescing window (so `note_revision_with`
+    /// bumps the in-memory revision but does not persist it — `gate` is
+    /// still fresh from a prior save), then the connection ends. The
+    /// end-of-connection `flush_revision_with` (what `SessionState::drop`
+    /// calls in production) must still get the latest revision onto disk —
+    /// this is the flush, not a timer, `SessionState`'s `Drop` performs.
+    #[test]
+    fn flush_revision_with_persists_a_revision_the_throttle_held_back() {
+        let mut memory = crate::state::SessionMemory::fresh();
+        let host = "flush-test-host".to_string();
+        let mut gate = StateSaveGate::new();
+
+        // An earlier frame already saved revision 1 (gate now fresh — the
+        // very next `due()` check is inside MIN_INTERVAL).
+        note_revision_with(Some(1), &mut memory, &host, &mut gate, |_h, m| {
+            assert_eq!(m.last_seen_revision, 1);
+        });
+        assert_eq!(gate.last_saved_revision, 1);
+
+        // A second frame, revision 2, arrives well inside MIN_INTERVAL — so
+        // it must NOT persist on its own.
+        let mut persisted_during_note = false;
+        note_revision_with(Some(2), &mut memory, &host, &mut gate, |_h, _m| {
+            persisted_during_note = true;
+        });
+        assert!(
+            !persisted_during_note,
+            "a frame inside the throttle window must not save on its own"
+        );
+        assert_eq!(memory.last_seen_revision, 2, "the in-memory value still bumps");
+        assert_eq!(
+            gate.last_saved_revision, 1,
+            "disk is still behind — this is exactly what the flush must catch"
+        );
+
+        // The connection ends here. The flush must catch the gap.
+        let mut flushed_revision = None;
+        flush_revision_with(&memory, &host, &mut gate, |_h, m| {
+            flushed_revision = Some(m.last_seen_revision);
+        });
+        assert_eq!(
+            flushed_revision,
+            Some(2),
+            "revision 2 must reach disk on connection end, not be lost to the throttle"
+        );
+        assert_eq!(gate.last_saved_revision, 2);
+
+        // A second flush with nothing new must be a no-op — nothing to lose
+        // by calling it more than once (e.g. an exit path racing a save).
+        let mut second_flush_ran = false;
+        flush_revision_with(&memory, &host, &mut gate, |_h, _m| {
+            second_flush_ran = true;
+        });
+        assert!(!second_flush_ran, "flushing twice with nothing new must not re-save");
     }
 
     /// The manager's literal measurement: a synthetic burst of 50
@@ -4271,72 +4272,12 @@ mod tests {
         );
     }
 
-    // --- Field incident 2026-09-08, defect (a): a silently dead LOCAL
-    // connection must be noticed within a few seconds. ---
+    // --- Field incident 2026-09-08: a peer closing the LOCAL connection
+    // must surface as an error, not a silent hang. ---
 
-    #[test]
-    fn liveness_tracker_is_quiet_while_recently_active() {
-        let t0 = std::time::Instant::now();
-        let mut tracker = LivenessTracker::new(t0);
-        assert_eq!(
-            tracker.on_tick(t0 + std::time::Duration::from_secs(1)),
-            LivenessAction::None
-        );
-    }
-
-    #[test]
-    fn liveness_tracker_probes_once_then_stays_quiet_until_a_frame_or_the_dead_deadline() {
-        let t0 = std::time::Instant::now();
-        let mut tracker = LivenessTracker::new(t0);
-        let probe_at = t0 + LIVENESS_PROBE_IDLE;
-        assert_eq!(
-            tracker.on_tick(probe_at),
-            LivenessAction::Probe,
-            "must probe once idle crosses LIVENESS_PROBE_IDLE"
-        );
-        assert_eq!(
-            tracker.on_tick(probe_at + std::time::Duration::from_secs(1)),
-            LivenessAction::None,
-            "must not pile a second probe onto an already-outstanding one"
-        );
-    }
-
-    #[test]
-    fn liveness_tracker_declares_dead_after_a_probe_goes_unanswered() {
-        let t0 = std::time::Instant::now();
-        let mut tracker = LivenessTracker::new(t0);
-        assert_eq!(tracker.on_tick(t0 + LIVENESS_PROBE_IDLE), LivenessAction::Probe);
-        assert_eq!(
-            tracker.on_tick(t0 + LIVENESS_DEAD_IDLE),
-            LivenessAction::Dead,
-            "sustained silence past LIVENESS_DEAD_IDLE must be treated as dead \
-             even though a probe was already sent"
-        );
-    }
-
-    #[test]
-    fn liveness_tracker_on_frame_resets_the_clock_and_clears_a_pending_probe() {
-        let t0 = std::time::Instant::now();
-        let mut tracker = LivenessTracker::new(t0);
-        assert_eq!(tracker.on_tick(t0 + LIVENESS_PROBE_IDLE), LivenessAction::Probe);
-        // A reply (to the probe, or to anything else) arrives — proof of life.
-        let frame_at = t0 + LIVENESS_PROBE_IDLE + std::time::Duration::from_millis(10);
-        tracker.on_frame(frame_at);
-        assert_eq!(
-            tracker.on_tick(frame_at + std::time::Duration::from_secs(1)),
-            LivenessAction::None,
-            "the clock must restart from the frame, not from t0"
-        );
-        assert_eq!(
-            tracker.on_tick(frame_at + LIVENESS_PROBE_IDLE),
-            LivenessAction::Probe,
-            "a fresh idle period must be able to probe again"
-        );
-    }
-
-    /// End-to-end regression for defect (a)'s first half: when the PEER
-    /// closes its end of the local connection, the transport's read path
-    /// must surface that as an `Err` promptly — never hang — so
+    /// End-to-end regression: when the PEER closes its end of the local
+    /// connection, the transport's read path must surface that as an `Err`
+    /// promptly — never hang — so
     /// `run_protocol`'s `read?` (see the steady-state loop's read arm)
     /// propagates it and `spawn`'s reconnect loop ("transport task ended;
     /// reconnecting") takes over. Drives a REAL `interprocess` local-socket
