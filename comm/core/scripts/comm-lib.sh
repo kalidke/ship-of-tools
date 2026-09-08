@@ -230,28 +230,6 @@ sot_daemon_endpoint() {
         return 0
     fi
 
-    # Keep compatibility with development daemons launched with explicit
-    # transport flags. pgrep is not on a stock git-bash PATH and must never
-    # be reached for on Windows regardless of whether it happens to exist.
-    if ! _sot_is_windows; then
-        local line
-        while IFS= read -r line; do
-            case "$line" in
-                *comm-relay*|*comm-spawn*|*comm-despawn*|*comm-listen*|*comm-watch*|*comm-poll*|*sot-fe*|*sot-nav*)
-                    continue
-                    ;;
-            esac
-            if [[ "$line" =~ --tcp[[:space:]]+([^[:space:]]+) ]]; then
-                printf 'tcp:%s\n' "${BASH_REMATCH[1]}"
-                return 0
-            fi
-            if [[ "$line" =~ --socket[[:space:]]+([^[:space:]]+) ]]; then
-                printf 'unix:%s\n' "${BASH_REMATCH[1]}"
-                return 0
-            fi
-        done < <(pgrep -af 'sotd' 2>/dev/null || true)
-    fi
-
     # Normal socket-only mode: the daemon may have only --label on argv, so
     # there is no transport flag to scrape. Query the same binary family the
     # installer/launcher uses. The default label is the product backend label;
@@ -281,6 +259,33 @@ sot_daemon_endpoint() {
             [ -r "/proc/$pid/exe" ] || continue
             bin="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
             _try_sotd_socket_bin "$bin" && return 0
+        done < <(pgrep -af 'sotd' 2>/dev/null || true)
+    fi
+
+    # LAST resort — development daemons launched with explicit transport
+    # flags. Below the canonical session socket on purpose (2026-09-08): a
+    # lane's test daemon (`--socket /tmp/sotrt-*/...`) scraped from argv
+    # hijacked every comm script's discovery while the real daemon sat on
+    # its label-derived socket, so despawn "found no workspace" and the
+    # row survived. A scratch daemon is targeted explicitly (SOT_RELAY_ENDPOINT
+    # / --endpoint), never by luck of process order. pgrep is not on a stock
+    # git-bash PATH and must never be reached for on Windows.
+    if ! _sot_is_windows; then
+        local line
+        while IFS= read -r line; do
+            case "$line" in
+                *comm-relay*|*comm-spawn*|*comm-despawn*|*comm-listen*|*comm-watch*|*comm-poll*|*sot-fe*|*sot-nav*)
+                    continue
+                    ;;
+            esac
+            if [[ "$line" =~ --tcp[[:space:]]+([^[:space:]]+) ]]; then
+                printf 'tcp:%s\n' "${BASH_REMATCH[1]}"
+                return 0
+            fi
+            if [[ "$line" =~ --socket[[:space:]]+([^[:space:]]+) ]]; then
+                printf 'unix:%s\n' "${BASH_REMATCH[1]}"
+                return 0
+            fi
         done < <(pgrep -af 'sotd' 2>/dev/null || true)
     fi
 
