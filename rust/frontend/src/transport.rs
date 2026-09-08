@@ -1647,6 +1647,142 @@ async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
         .with_context(|| format!("connect {path:?}"))
 }
 
+/// Coalesces `crate::state::save` calls behind a `rev`-bearing frame so a
+/// burst of replies doesn't turn into a burst of synchronous disk writes.
+/// `crate::state::save` does a blocking `write`+`rename`; calling it inline
+/// from EVERY `rev`-bearing frame (near enough all of them — see `Frame`'s
+/// own doc on `rev`) is what stalled the transport task's read future for
+/// the length of a reply burst in the field (2026-09-08: a workspace-switch
+/// storm of ~2s-each `workspace.list` replies queued 50+ synchronous writes
+/// onto this one async task, long enough that the daemon's own write side
+/// gave up: "frame write exceeded 10s; dropping connection (peer not
+/// draining)"). Throttling to at most one write per `MIN_INTERVAL` loses
+/// nothing durability-sensitive: `SessionState`'s `Drop` flushes whatever
+/// this held back the moment the connection ends (see `flush_revision`), so
+/// only a hard crash (not a clean disconnect/reconnect) can ever leave the
+/// on-disk value behind the truly-seen one — and even then, ADR 0010's
+/// replay-from-`last_seen_revision` already tolerates that gap by design.
+struct StateSaveGate {
+    last_saved_at: Option<std::time::Instant>,
+    /// The revision the last actual disk write covered. Lets
+    /// `flush_revision` tell whether the throttle is currently holding back
+    /// something newer than what's on disk.
+    last_saved_revision: u64,
+}
+
+impl StateSaveGate {
+    /// A fresh connection's early frames (hello / first tree.root / first
+    /// preview.get) still save immediately (`last_saved_at` starts `None`,
+    /// always due) — only a later BURST within this window of the previous
+    /// write gets coalesced.
+    const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+    fn new() -> Self {
+        Self {
+            last_saved_at: None,
+            last_saved_revision: 0,
+        }
+    }
+
+    fn due(&self, now: std::time::Instant) -> bool {
+        match self.last_saved_at {
+            None => true,
+            Some(t) => now.duration_since(t) >= Self::MIN_INTERVAL,
+        }
+    }
+
+    fn mark_saved(&mut self, now: std::time::Instant, revision: u64) {
+        self.last_saved_at = Some(now);
+        self.last_saved_revision = revision;
+    }
+
+    /// Whether `revision` is newer than what the last actual disk write
+    /// covered — the question `flush_revision` asks at end-of-connection.
+    fn is_stale(&self, revision: u64) -> bool {
+        revision > self.last_saved_revision
+    }
+}
+
+/// Bumps `memory.last_seen_revision` from a frame's `rev` (if present) and,
+/// when `gate` says it's due, persists it. Shared by the connect-time
+/// preamble (tree.root, preview.get) and the steady-state loop so there is
+/// exactly one place that decides when a `rev`-bearing frame reaches disk.
+fn note_revision(
+    rev: Option<u64>,
+    memory: &mut crate::state::SessionMemory,
+    host: &HostKey,
+    gate: &mut StateSaveGate,
+) {
+    note_revision_with(rev, memory, host, gate, |h, m| {
+        crate::state::save(h, m).ok();
+    });
+}
+
+/// `note_revision`'s real logic, with the persist step as a parameter so a
+/// test can substitute a counting/slow stand-in for `crate::state::save`
+/// without touching a real state file — see the `note_revision_with` tests
+/// below for the burst-of-50 measurement this fix was asked to prove.
+fn note_revision_with(
+    rev: Option<u64>,
+    memory: &mut crate::state::SessionMemory,
+    host: &HostKey,
+    gate: &mut StateSaveGate,
+    persist: impl FnOnce(&HostKey, &crate::state::SessionMemory),
+) {
+    let Some(r) = rev else { return };
+    memory.last_seen_revision = memory.last_seen_revision.max(r);
+    let now = std::time::Instant::now();
+    if gate.due(now) {
+        persist(host, memory);
+        gate.mark_saved(now, memory.last_seen_revision);
+    }
+}
+
+/// The flush half of `StateSaveGate`'s throttle — NOT a timer, a one-shot
+/// called exactly once when the transport task ends (`SessionState`'s
+/// `Drop`, below). Persists `memory` if `gate` says the last actual disk
+/// write is behind the in-memory revision, so a `rev` that landed just
+/// inside the `MIN_INTERVAL` coalescing window is never lost to the
+/// connection ending before the next periodic write would have happened.
+fn flush_revision(memory: &crate::state::SessionMemory, host: &HostKey, gate: &mut StateSaveGate) {
+    flush_revision_with(memory, host, gate, |h, m| {
+        crate::state::save(h, m).ok();
+    });
+}
+
+/// `flush_revision`'s real logic, with the persist step as a parameter —
+/// same testability shape as `note_revision`/`note_revision_with`.
+fn flush_revision_with(
+    memory: &crate::state::SessionMemory,
+    host: &HostKey,
+    gate: &mut StateSaveGate,
+    persist: impl FnOnce(&HostKey, &crate::state::SessionMemory),
+) {
+    if gate.is_stale(memory.last_seen_revision) {
+        persist(host, memory);
+        gate.mark_saved(std::time::Instant::now(), memory.last_seen_revision);
+    }
+}
+
+/// Owns one connection's reconnect-memory bookkeeping (`SessionMemory` +
+/// its `StateSaveGate`) and flushes it exactly once when the connection
+/// ends. `run_protocol` has many exit paths — EOF, a write/parse error, a
+/// clean return, the drain loop that follows the outgoing channel closing —
+/// but every one of them ends the function, which drops `session`, which
+/// flushes: the same "flush on any exit" idiom `PendingGuard` already uses
+/// in this file for the same reason.
+struct SessionState {
+    host: HostKey,
+    memory: crate::state::SessionMemory,
+    gate: StateSaveGate,
+}
+
+impl Drop for SessionState {
+    fn drop(&mut self) {
+        flush_revision(&self.memory, &self.host, &mut self.gate);
+    }
+}
+
 /// Read exactly one frame while *owning* the reader, handing it back with the
 /// result. This lets the steady-state select! loop keep a single in-flight
 /// read future across iterations (cancel-safe: a cancelled select! pauses it
@@ -1709,12 +1845,21 @@ where
     // last_seen_revision feed the backend's replay path. First-ever launch
     // produces fresh values and the backend assigns a session_id we'll
     // remember for next time.
-    let mut memory = crate::state::load(&host);
+    // `session` bundles the memory with its `StateSaveGate` (see
+    // `StateSaveGate`'s doc: throttles `crate::state::save` so a burst of
+    // `rev`-bearing replies can't stall this task's read future on disk
+    // I/O) and, via its `Drop`, flushes whatever the throttle held back the
+    // moment this connection ends — see `SessionState`.
+    let mut session = SessionState {
+        host: host.clone(),
+        memory: crate::state::load(&host),
+        gate: StateSaveGate::new(),
+    };
     tracing::info!(
         %host,
-        client_id = %memory.client_id,
-        ?memory.session_id,
-        last_seen_revision = memory.last_seen_revision,
+        client_id = %session.memory.client_id,
+        ?session.memory.session_id,
+        last_seen_revision = session.memory.last_seen_revision,
         token_set = token.is_some(),
         "loaded session memory"
     );
@@ -1722,9 +1867,9 @@ where
     // hello
     let hello_id = take_id(&mut next_id);
     let hello = HelloReq {
-        client_id: memory.client_id.clone(),
-        session_id: memory.session_id.clone(),
-        last_seen_revision: memory.last_seen_revision,
+        client_id: session.memory.client_id.clone(),
+        session_id: session.memory.session_id.clone(),
+        last_seen_revision: session.memory.last_seen_revision,
         token: token.map(|s| s.to_string()),
         // ADR 0030 §2: advertise our wire-contract protocol + product version
         // so the backend can gate on protocol equality and name both sides in
@@ -1744,7 +1889,7 @@ where
         anyhow::bail!("hello reply id mismatch: got {}, want {hello_id}", frame.id);
     }
     if let Some(r) = frame.rev {
-        memory.last_seen_revision = memory.last_seen_revision.max(r);
+        session.memory.last_seen_revision = session.memory.last_seen_revision.max(r);
     }
     // Inspect the frame for an error envelope first — the backend rejects
     // bad auth (and any other hello-time refusal) with `{error, code}`,
@@ -1810,12 +1955,12 @@ where
             "connected to a pre-versioning backend (protocol 0) — update the backend (ADR 0030)"
         );
     }
-    if memory.session_id.as_deref() != Some(hello_res.session_id.as_str()) {
+    if session.memory.session_id.as_deref() != Some(hello_res.session_id.as_str()) {
         // First run, or backend restarted with a new session — record the
         // assigned id so the next reconnect is on the live session.
-        memory.session_id = Some(hello_res.session_id.clone());
+        session.memory.session_id = Some(hello_res.session_id.clone());
     }
-    crate::state::save(&host, &memory).ok();
+    crate::state::save(&host, &session.memory).ok();
     // Hello round-trip succeeded — reset backoff to the floor so any
     // *future* disconnect in this session restarts the exponential
     // climb from 200ms rather than picking up wherever the previous
@@ -1857,10 +2002,7 @@ where
     )
     .await?;
     let (frame, _) = codec::read_frame(&mut rx).await?;
-    if let Some(r) = frame.rev {
-        memory.last_seen_revision = memory.last_seen_revision.max(r);
-        crate::state::save(&host, &memory).ok();
-    }
+    note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
     // Hold the root node id so preview.get can target it without hardcoding
     // the backend's id-format conventions in the frontend. Today files mode
     // uses `files:` for the root; that may change.
@@ -1902,10 +2044,7 @@ where
     )
     .await?;
     let (frame, blob) = codec::read_frame(&mut rx).await?;
-    if let Some(r) = frame.rev {
-        memory.last_seen_revision = memory.last_seen_revision.max(r);
-        crate::state::save(&host, &memory).ok();
-    }
+    note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
     if frame.id == prev_id {
         let res: PreviewGetRes =
             serde_json::from_value(frame.payload).context("preview.get res")?;
@@ -1961,10 +2100,7 @@ where
                 let (rx_back, read) = done;
                 read_fut = Some(Box::pin(read_owned(rx_back)));
                 let (frame, blob) = read?;
-                if let Some(r) = frame.rev {
-                    memory.last_seen_revision = memory.last_seen_revision.max(r);
-                    crate::state::save(&host, &memory).ok();
-                }
+                note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
                 handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                 window.request_redraw();
             }
@@ -1982,18 +2118,12 @@ where
                     let fut = read_fut.take().expect("read_fut is always Some here");
                     let (mut rx, read) = fut.await;
                     let (frame, blob) = read?;
-                    if let Some(r) = frame.rev {
-                        memory.last_seen_revision = memory.last_seen_revision.max(r);
-                        crate::state::save(&host, &memory).ok();
-                    }
+                    note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
                     handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                     window.request_redraw();
                     loop {
                         let (frame, blob) = codec::read_frame(&mut rx).await?;
-                        if let Some(r) = frame.rev {
-                            memory.last_seen_revision = memory.last_seen_revision.max(r);
-                            crate::state::save(&host, &memory).ok();
-                        }
+                        note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
                         handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                         window.request_redraw();
                     }
@@ -4017,6 +4147,249 @@ fn parse_scan_entity(v: &Value) -> ScanEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Field incident 2026-09-08, defect (b): the read path must never
+    // stall on synchronous per-frame disk I/O. ---
+
+    #[test]
+    fn state_save_gate_is_due_on_a_fresh_connection() {
+        // A brand-new connection's first `rev`-bearing frame (hello / first
+        // tree.root / first preview.get) must still save immediately, same
+        // as before this fix — only a later burst gets coalesced.
+        let gate = StateSaveGate::new();
+        assert!(gate.due(std::time::Instant::now()));
+    }
+
+    #[test]
+    fn state_save_gate_coalesces_within_min_interval_then_fires_again() {
+        let t0 = std::time::Instant::now();
+        let mut gate = StateSaveGate::new();
+        gate.mark_saved(t0, 1);
+        assert!(
+            !gate.due(t0 + std::time::Duration::from_millis(50)),
+            "a save 50ms after the last one must be coalesced"
+        );
+        assert!(
+            !gate.due(t0 + StateSaveGate::MIN_INTERVAL - std::time::Duration::from_millis(1)),
+            "still coalesced 1ms short of MIN_INTERVAL"
+        );
+        assert!(
+            gate.due(t0 + StateSaveGate::MIN_INTERVAL),
+            "due again once MIN_INTERVAL has fully elapsed"
+        );
+    }
+
+    /// The lossless-flush guarantee that makes the throttle safe to keep: a
+    /// frame lands INSIDE the 2s coalescing window (so `note_revision_with`
+    /// bumps the in-memory revision but does not persist it — `gate` is
+    /// still fresh from a prior save), then the connection ends. The
+    /// end-of-connection `flush_revision_with` (what `SessionState::drop`
+    /// calls in production) must still get the latest revision onto disk —
+    /// this is the flush, not a timer, `SessionState`'s `Drop` performs.
+    #[test]
+    fn flush_revision_with_persists_a_revision_the_throttle_held_back() {
+        let mut memory = crate::state::SessionMemory::fresh();
+        let host = "flush-test-host".to_string();
+        let mut gate = StateSaveGate::new();
+
+        // An earlier frame already saved revision 1 (gate now fresh — the
+        // very next `due()` check is inside MIN_INTERVAL).
+        note_revision_with(Some(1), &mut memory, &host, &mut gate, |_h, m| {
+            assert_eq!(m.last_seen_revision, 1);
+        });
+        assert_eq!(gate.last_saved_revision, 1);
+
+        // A second frame, revision 2, arrives well inside MIN_INTERVAL — so
+        // it must NOT persist on its own.
+        let mut persisted_during_note = false;
+        note_revision_with(Some(2), &mut memory, &host, &mut gate, |_h, _m| {
+            persisted_during_note = true;
+        });
+        assert!(
+            !persisted_during_note,
+            "a frame inside the throttle window must not save on its own"
+        );
+        assert_eq!(memory.last_seen_revision, 2, "the in-memory value still bumps");
+        assert_eq!(
+            gate.last_saved_revision, 1,
+            "disk is still behind — this is exactly what the flush must catch"
+        );
+
+        // The connection ends here. The flush must catch the gap.
+        let mut flushed_revision = None;
+        flush_revision_with(&memory, &host, &mut gate, |_h, m| {
+            flushed_revision = Some(m.last_seen_revision);
+        });
+        assert_eq!(
+            flushed_revision,
+            Some(2),
+            "revision 2 must reach disk on connection end, not be lost to the throttle"
+        );
+        assert_eq!(gate.last_saved_revision, 2);
+
+        // A second flush with nothing new must be a no-op — nothing to lose
+        // by calling it more than once (e.g. an exit path racing a save).
+        let mut second_flush_ran = false;
+        flush_revision_with(&memory, &host, &mut gate, |_h, _m| {
+            second_flush_ran = true;
+        });
+        assert!(!second_flush_ran, "flushing twice with nothing new must not re-save");
+    }
+
+    /// The manager's literal measurement: a synthetic burst of 50
+    /// `workspace.list`-sized replies (each carrying a `rev`) must drain in
+    /// well under a second. Drives the REAL `note_revision_with` (the same
+    /// function `note_revision` — and so the read arm — calls) with a
+    /// stand-in `persist` that sleeps 50ms, standing in for the blocking
+    /// `write`+`rename` `crate::state::save` performs: uncoalesced, 50
+    /// frames would cost 2.5s; the gate must bring that down to one write.
+    #[test]
+    fn note_revision_coalesces_a_burst_of_fifty_replies_onto_one_slow_write() {
+        let mut memory = crate::state::SessionMemory::fresh();
+        let host = "burst-test-host".to_string();
+        let mut gate = StateSaveGate::new();
+        let mut persisted_revisions: Vec<u64> = Vec::new();
+        let start = std::time::Instant::now();
+        for rev in 1..=50u64 {
+            note_revision_with(Some(rev), &mut memory, &host, &mut gate, |_h, m| {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                persisted_revisions.push(m.last_seen_revision);
+            });
+        }
+        let elapsed = start.elapsed();
+        assert_eq!(
+            memory.last_seen_revision, 50,
+            "the in-memory revision must still bump on every frame, coalescing or not"
+        );
+        assert_eq!(
+            persisted_revisions,
+            vec![1],
+            "a tight burst must coalesce onto exactly the FIRST (immediate) save"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "burst of 50 replies must drain in well under a second, took {elapsed:?}"
+        );
+    }
+
+    // --- Field incident 2026-09-08: a peer closing the LOCAL connection
+    // must surface as an error, not a silent hang. ---
+
+    /// End-to-end regression: when the PEER closes its end of the local
+    /// connection, the transport's read path must surface that as an `Err`
+    /// promptly — never hang — so
+    /// `run_protocol`'s `read?` (see the steady-state loop's read arm)
+    /// propagates it and `spawn`'s reconnect loop ("transport task ended;
+    /// reconnecting") takes over. Drives a REAL `interprocess` local-socket
+    /// listener/stream pair — the exact `connect_pipe`/`read_owned`
+    /// functions `run_protocol` itself calls (a Unix domain socket on this
+    /// platform, a Windows named pipe there, same code path) — not a mock.
+    #[tokio::test]
+    async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
+        use interprocess::local_socket::{tokio::prelude::*, GenericFilePath, ListenerOptions};
+
+        let sock_path = std::env::temp_dir().join(format!(
+            "sot-transport-test-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&sock_path);
+        let name = sock_path
+            .to_str()
+            .unwrap()
+            .to_fs_name::<GenericFilePath>()
+            .unwrap();
+        let listener = ListenerOptions::new()
+            .name(name)
+            .create_tokio()
+            .expect("bind test socket");
+
+        // Server: accept once, answer the hello handshake (so this exercises
+        // a connection that was genuinely live, not merely refused), then
+        // DROP the connection — standing in for the daemon closing its end
+        // ("frame write exceeded 10s; dropping connection (peer not
+        // draining)") in the field incident.
+        let server = tokio::spawn(async move {
+            let conn = listener.accept().await.expect("accept");
+            let (rx, mut tx) = conn.split();
+            let mut rx = codec::buffered(rx);
+            let (hello, _) = codec::read_frame(&mut rx).await.expect("read hello");
+            let hello_res = serde_json::json!({
+                "session_id": "sess-1",
+                "revision": 0,
+                "snapshot_pending": false,
+            });
+            codec::write_frame(
+                &mut tx,
+                &Frame::res(hello.id, op::HELLO, hello_res).with_rev(0),
+                None,
+            )
+            .await
+            .expect("write hello res");
+            // Connection drops here (both halves go out of scope) — the
+            // simulated server-side close.
+        });
+
+        let stream = connect_pipe(&sock_path).await.expect("client connect");
+        let (client_rx, mut client_tx) = stream.split();
+        let mut client_rx = codec::buffered(client_rx);
+        codec::write_frame(
+            &mut client_tx,
+            &Frame::req(
+                1,
+                op::HELLO,
+                serde_json::to_value(HelloReq {
+                    client_id: "test-client".into(),
+                    session_id: None,
+                    last_seen_revision: 0,
+                    token: None,
+                    protocol: sot_protocol::PROTOCOL_VERSION,
+                    app_version: sot_protocol::app_version(),
+                })
+                .unwrap(),
+            ),
+            None,
+        )
+        .await
+        .expect("write hello req");
+        let (hello_frame, _) = codec::read_frame(&mut client_rx).await.expect("read hello res");
+        assert_eq!(hello_frame.id, 1);
+        server.await.expect("server task must not panic");
+
+        // The peer has now closed. `read_owned` is EXACTLY what the
+        // steady-state select! loop polls (see `run_protocol`) — its next
+        // completion must be an `Err` (EOF), bounded by a short timeout so
+        // this test itself proves "promptly", not just "eventually".
+        let (_rx_back, result) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_owned(client_rx),
+        )
+        .await
+        .expect("the read must complete promptly once the peer has closed, not hang");
+
+        assert!(
+            result.is_err(),
+            "a closed peer connection must surface as an Err, not hang forever"
+        );
+
+        let _ = std::fs::remove_file(&sock_path);
+    }
+
+    #[test]
+    fn note_revision_with_ignores_a_frame_with_no_rev() {
+        let mut memory = crate::state::SessionMemory::fresh();
+        let host = "no-rev-test-host".to_string();
+        let mut gate = StateSaveGate::new();
+        let mut save_calls = 0u32;
+        note_revision_with(None, &mut memory, &host, &mut gate, |_h, _m| {
+            save_calls += 1;
+        });
+        assert_eq!(memory.last_seen_revision, 0);
+        assert_eq!(save_calls, 0, "no rev means nothing to persist");
+    }
 
     /// Real-seam regression for the round-1 fix: an `{error, code}` reply to
     /// a `figure.get` must produce EXACTLY one `FigureGetFailed`, driven
