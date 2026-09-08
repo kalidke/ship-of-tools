@@ -2007,6 +2007,23 @@ pub fn run<P: Producer>(
             // arm empty rather than tracking "stop trying".
             Err(mpsc::TryRecvError::Disconnected) => {}
         }
+        // Switch-latency Phase 1 finding (left as a documented gap, not a
+        // half-built mechanism): a `Transport` event arriving DURING this
+        // wait is invisible until it returns — `service_transport_events!`
+        // above already drained everything queued at the TOP of this tick,
+        // non-blockingly, and `Transport::try_recv_event` is contractually
+        // forbidden from blocking (see that method's own doc) — so an
+        // attach request or a `Sent` completion landing right after that
+        // drain waits out the FULL window below before this loop ever
+        // looks again. Waking this wait on real transport activity (the
+        // same technique `supervisor.rs`'s own main loop now uses on its
+        // lane) needs a receiver this loop can actually block on, and the
+        // concrete one (`PipeServer`/`SocketServer`'s own `events()`)
+        // is reachable only from `pipe_transport.rs`/`socket_transport.rs`
+        // — the `Transport` impls bridging it to this loop's `&mut dyn
+        // Transport` — never from here, and out of this change's file
+        // scope. `GROUP_COMMIT_WINDOW` unchanged in the meantime: still the
+        // one bound on both producer-output batching and this gap.
         match output_rx.recv_timeout(GROUP_COMMIT_WINDOW) {
             Ok(ReaderEvent::Output(bytes)) => {
                 pace_output!(bytes);

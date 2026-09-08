@@ -415,6 +415,66 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_CLEAN), "a clean EndRun+Stop must exit 0");
 }
 
+/// Switch-latency Phase 1 (b): once a supervisor's own main loop has had
+/// nothing to do for well over `MAIN_LOOP_POLL` (its own 100ms idle
+/// cadence) -- so it is genuinely parked in the loop's own tail wait, not
+/// mid-tick -- a status probe through the SAME production entry point
+/// `capsule_workspace::phase_of`/`ensure_started` use
+/// (`supervisor_client::query_status`: a fresh connect, the identity
+/// challenge, one status exchange) must complete near-instantly rather
+/// than risk paying the OLD worst case (a connection landing right after
+/// a tick, sitting unaccepted until the next `sleep(MAIN_LOOP_POLL)`
+/// wakes the loop). The bound asserted here (200ms) is generous and
+/// CI-safe, but comfortably proves the fix is real: it is only reachable
+/// at all if the main loop wakes on the incoming connection itself,
+/// rather than solely on its own periodic tick.
+#[test]
+fn a_status_probe_against_an_idle_supervisor_is_not_poll_bound() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let child = spawn_supervisor(&state_dir, "--start", SHELL); // stays open until EndRun
+    let mut guard = KillGuard(Some(child));
+
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    drop(conn); // only the FRESH probe below is timed
+
+    // Let the lane go genuinely idle -- comfortably longer than
+    // `MAIN_LOOP_POLL` -- so the main loop is parked in its own tail
+    // wait when the timed probe below connects, not mid-tick from
+    // `wait_for_ready`'s own polling just above.
+    std::thread::sleep(Duration::from_millis(500));
+
+    let started = Instant::now();
+    let (report, _process) =
+        sot_log::supervisor_client::query_status(&state_dir).expect("status probe against an idle supervisor");
+    let elapsed = started.elapsed();
+    println!("idle-supervisor query_status took {elapsed:?} (phase={:?})", report.phase);
+    assert_eq!(report.phase, SupervisorPhase::Ready);
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "query_status against an idle supervisor took {elapsed:?}, expected well under 200ms -- the \
+         main loop should wake on the incoming connection immediately rather than waiting out its \
+         own MAIN_LOOP_POLL cadence"
+    );
+
+    // End the run (never just kill the authority out from under it) so
+    // the shell leg this test spawned is not stranded once `guard` drops.
+    let conn = wait_for_lane(&h, Duration::from_secs(5));
+    end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
+    let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
+    let stop_reply = command(&conn, "cleanup-stop", SupervisorOp::Stop);
+    assert_eq!(stop_reply, SupervisorOperationState::Stopping);
+    let child = guard.0.take().unwrap();
+    let status = wait_for_exit(child, Duration::from_secs(30));
+    assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_CLEAN), "a clean EndRun+Stop must exit 0");
+}
+
 /// F2 (review round), reproduced: `Lifecycle::Ready { process }` →
 /// `Ending { .. }` used to drop the ONLY handle able to reap a leg that
 /// exits on its OWN while `end_run` is in flight — the worker's own
