@@ -34,17 +34,20 @@ already done.
 
 ## Work-state (mostly automatic)
 
-Hooks set **working** (turn start), **idle** (turn end), and **blocked** (an
-open `AskUserQuestion`) for you. Self-report the two cases hooks can't see:
+Hooks set **working** (turn start), **done** (turn end — blue = "finished a
+turn the user asked for, unread"; a machine-started turn floors to gray
+**idle** instead), and **blocked** (an open `AskUserQuestion`) for you.
+Self-report the two cases hooks can't see:
 
 ```bash
 comm-status.sh blocked "the question you're asking"   # plain-text question, no AskUserQuestion tool
 comm-status.sh waiting "what you're waiting on"        # turn ended with a background job/subagent still running
 ```
 
-**Precedence: blocked > waiting > idle.** **Waiting is sticky** — set it once;
-it survives intervening turns until you report `working`/`idle`, or self-heals
-after 2h. Mechanics + fixture-testing rule + turn-end auditor: `references/work-state.md`.
+**Precedence: blocked > waiting > done > idle.** **Waiting is sticky** — set it
+once; it survives intervening turns until you report `working`/`idle`/`done`, or
+self-heals after 2h. Blue clears on the user's next genuine prompt — never by
+age. Mechanics + fixture-testing rule + turn-end auditor: `references/work-state.md`.
 
 ## After you send — trust your Monitor
 

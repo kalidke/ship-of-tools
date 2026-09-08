@@ -48,8 +48,12 @@ if [ -n "$prompt" ]; then
                 # flip a finished row to green; a genuine human prompt still does.
                 { [ "$cur" = blocked ] || [ "$cur" = done ]; } && exit 0
             fi
+            # Not a human prompt: the row may go green, but the turn-end floor
+            # must not paint it blue afterwards (blue = a HUMAN-requested turn
+            # finished unread -- owner decision 2026-09-08).
+            ORIGIN=machine
             ;;
     esac
 fi
-COMM_STATUS_SOFT=1 "$STATUS" working >/dev/null 2>&1 || true
+COMM_STATUS_SOFT=1 COMM_STATUS_ORIGIN="${ORIGIN:-user}" "$STATUS" working >/dev/null 2>&1 || true
 exit 0

@@ -67,7 +67,8 @@ harness **Monitor** wake (codex has no equivalent primitive).
 - **Hooks** (`hooks.json`, deployed beside `~/.codex/config.toml` by
   `update_comm()`): UserPromptSubmit → `comm-status working` **with the same
   machine-turn/blocked hierarchy guard** (red > green > purple, 2360fca);
-  Stop → soft idle (sticky demote applies); PostToolUse → heartbeat
+  Stop → soft turn-end floor (`done` for a human-started turn, else idle —
+  ADR 0044; sticky demote applies); PostToolUse → heartbeat
   (waiting→working promotion applies); **PermissionRequest → blocked** (codex
   has no AskUserQuestion; a permission prompt is the nearest "needs the
   user"). Identical bin scripts — zero new state logic.

@@ -19,8 +19,23 @@
 # Two writers by design (state-nav design note):
 #   - the model runs `comm-status.sh working "<one-liner>"` when it judges the
 #     upcoming work will run >~30s (pre-announce — model decides "is it long");
-#   - a global Stop hook runs `comm-status.sh idle` at every turn-end (the
+#   - a global Stop hook runs a SOFT `comm-status.sh done` at every turn-end (the
 #     deterministic floor) so the glance never lies if the model stays quiet.
+#
+# BLUE/GRAY = UNREAD/READ (owner decision 2026-09-08). Before this, `done` was
+# written only when the model remembered to report it, and the Stop floor
+# dropped every turn end to `idle` -- so gray meant "not mid-turn" (true of
+# every session you aren't typing into) and blue meant "the model remembered".
+# Now the floor itself writes `done`, but ONLY for a row that was `working`
+# from a GENUINE human prompt (`turn_origin == user`, stamped by the soft
+# working write): "this session finished a turn you asked for and you have not
+# been back since". Anything else floors to `idle` as before: a machine wake
+# (relay message, Monitor event, task notification) that never went green, or
+# whose green came from a machine turn -- so a peer's ack can't paint a parked
+# row blue. A machine turn that did REAL work still ends gray; the model reports
+# `done "<summary>"` explicitly when a job lands (the skill rule), which is the
+# accurate signal. Blue clears on the next genuine prompt (the working hook)
+# or any explicit report; there is no time-based decay (owner: honest, no aging).
 #
 # STICKY WAITING (2026-07-02, "why are you not showing purple"): a deliberate
 # `waiting` must survive TURN CYCLES, not just the turn it was set in. Before
@@ -117,7 +132,10 @@ fi
 # waiting (purple, sticky summary restored) instead of going green — this is
 # what makes `waiting` survive turn cycles (see header). An expired marker is
 # cleared and falls through to plain idle.
-if [ "$STATE" = idle ] && [ "$SOFT" = 1 ]; then
+# The Stop hook sends a soft `done` (2026-09-08); a soft `idle` is the same
+# floor minus the blue (kept for older callers).
+soft_floor() { [ "$SOFT" = 1 ] && { [ "$STATE" = idle ] || [ "$STATE" = done ]; }; }
+if soft_floor; then
     cur="$(jq -r --arg n "$NAME" '.agents[$n].state // ""' "$REGISTRY" 2>/dev/null)"
     [ "$cur" = blocked ] && exit 0
     [ "$cur" = done ] && exit 0
@@ -133,7 +151,13 @@ if [ "$STATE" = idle ] && [ "$SOFT" = 1 ]; then
         STATE=waiting
         set -- waiting "$(jq -r --arg n "$NAME" '.agents[$n].sticky // ""' "$REGISTRY" 2>/dev/null)"
     fi
-    # expired/absent marker: fall through as idle; STICKY_OP=clear removes it.
+    # Blue only for a row that was actually running a turn a HUMAN asked for
+    # (see the header's BLUE/GRAY note); everything else floors to gray.
+    if [ "$STATE" = done ]; then
+        origin="$(jq -r --arg n "$NAME" '.agents[$n].turn_origin // "user"' "$REGISTRY" 2>/dev/null)"
+        { [ "$cur" = working ] && [ "$origin" = user ]; } || STATE=idle
+    fi
+    # expired/absent marker: fall through; STICKY_OP=clear removes it.
 fi
 
 # Sticky marker lifecycle: explicit `waiting` sets it; explicit idle/done/
@@ -150,7 +174,7 @@ if [ "$SOFT" = 0 ]; then
         *)       STICKY_OP=clear ;;
     esac
 fi
-if [ "$STATE" = idle ] && [ "$SOFT" = 1 ]; then STICKY_OP=clear; fi   # only reached when marker absent/expired
+if soft_floor; then STICKY_OP=clear; fi   # only reached when marker absent/expired
 
 # registry_status NAME STATE HAVE_SUMMARY SUMMARY STICKY_OP — merge the
 # work-state into the row (only if present), mirroring registry_touch's
@@ -165,6 +189,11 @@ registry_status() {
     else
         base='{state:$st, status_at:$t, last_seen:$t}'
     fi
+    # turn_origin: who started the turn now running -- "user" (a genuine
+    # prompt) or "machine" (a wake). Written by the SOFT working write only
+    # (the UserPromptSubmit hook is the one writer that knows), read by the
+    # soft done floor: blue is reserved for a human-requested turn.
+    if [ -n "$TURN_ORIGIN" ]; then base="($base + {turn_origin:\$o})"; fi
     case "$sticky_op" in
         set)   sticky=' + {sticky: (if $sum != "" then $sum else (.agents[$n].summary // "") end), sticky_at: $t}' ;;
         clear) sticky=' | if .agents[$n] then .agents[$n] |= del(.sticky, .sticky_at) else . end' ;;
@@ -174,17 +203,19 @@ registry_status() {
     # free-text work-state summary and must never reach jq via --arg.
     local sum_file; sum_file="$(sot_jq_rawfile "$sum")" || return 1
     if [ "$sticky_op" = clear ]; then
-        jq --arg n "$n" --arg st "$st" --rawfile sum "$sum_file" --arg t "$ts" \
+        jq --arg n "$n" --arg st "$st" --rawfile sum "$sum_file" --arg t "$ts" --arg o "$TURN_ORIGIN" \
            "(if .agents[\$n] then .agents[\$n] += $base else . end) $sticky" \
            "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
     else
-        jq --arg n "$n" --arg st "$st" --rawfile sum "$sum_file" --arg t "$ts" \
+        jq --arg n "$n" --arg st "$st" --rawfile sum "$sum_file" --arg t "$ts" --arg o "$TURN_ORIGIN" \
            "if .agents[\$n] then .agents[\$n] += ($base$sticky) else . end" \
            "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
     fi
     rm -f "$sum_file"
 }
 
+TURN_ORIGIN=""
+if [ "$STATE" = working ] && [ "$SOFT" = 1 ]; then TURN_ORIGIN="${COMM_STATUS_ORIGIN:-user}"; fi
 # ${2+set}: distinguish an omitted summary (keep prior) from an explicit "" (clear).
 HAVE=0; [ "${2+set}" = set ] && HAVE=1
 with_lock registry_status "$NAME" "$STATE" "$HAVE" "${2-}" "$STICKY_OP"

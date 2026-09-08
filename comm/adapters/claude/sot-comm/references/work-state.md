@@ -11,10 +11,10 @@ behave differently while it's live:
 
 - `UserPromptSubmit` writes a *soft* `working` (you show green while actively
   processing — true in the moment).
-- `Stop` writes a *soft* `idle`, but the sticky marker **demotes you straight
-  back to purple**, restoring your `waiting` summary. You do NOT need to
-  re-assert `waiting` at every turn end — it survives intervening turns on
-  its own.
+- `Stop` writes a *soft* `done` (the turn-end floor, below), but the sticky
+  marker **demotes you straight back to purple**, restoring your `waiting`
+  summary. You do NOT need to re-assert `waiting` at every turn end — it
+  survives intervening turns on its own.
 - An explicit `blocked` also preserves the marker underneath it (precedence:
   blocked > waiting > idle); answering the question drops you back to
   purple, not green.
@@ -26,6 +26,28 @@ The marker clears two ways:
 2. **Self-heal**: a marker older than **2h** is dropped by the next turn-end,
    so a forgotten purple can't lie forever. Re-assert `waiting` yourself for
    a genuinely longer job.
+
+## Blue / gray — the turn-end floor (owner decision 2026-09-08)
+
+Blue and gray are an **unread / read** pair, stamped by hooks, not by you:
+
+- The `Stop` hook floors every turn end with a *soft* `done`. `comm-status.sh`
+  turns it **blue** only when the row was `working` from a **genuine human
+  prompt** (`turn_origin == user`, written by the `UserPromptSubmit` hook's soft
+  `working`): "this session finished a turn you asked for and you have not
+  been back since".
+- A turn a **machine** started — a relay message, a Monitor event, a task
+  notification — floors to **gray** `idle`, whatever it did: a peer's ack must
+  not paint a parked row blue. If such a turn landed a real result, report
+  `comm-status.sh done "<summary>"` yourself — that explicit blue is the
+  accurate signal and the skill rule already asks for it.
+- Blue clears on the user's **next genuine prompt** (→ green) or any explicit
+  report. There is **no time-based decay**: a parked blue row is an honest
+  "you never came back", not a bug. A `blocked`/`waiting`/explicit `done` row
+  is never touched by the floor (same guards as the old soft idle).
+
+`turn_origin` is a registry field on the row, written only by the soft
+`working` write; nothing else reads it.
 
 ## Testing the state machinery — never against your live row
 
