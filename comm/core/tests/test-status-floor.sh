@@ -71,7 +71,9 @@ case_user_turn_ends_blue() { seed idle; W "$GENUINE"; expect working/user/- star
 case_machine_turn_ends_gray() { seed idle; W "$RELAY"; expect working/machine/- start && I && expect idle/machine/- end; }
 case_soft_done_holds_blue() { seed done; COMM_STATUS_SOFT=1 "$ST" done; expect done/-/- held; }
 case_soft_done_holds_red() { seed blocked; COMM_STATUS_SOFT=1 "$ST" done; expect blocked/-/- held; }
-case_sticky_waiting_survives_user_turn() { seed idle; "$ST" waiting "job"; W "$GENUINE"; expect waiting/user/sticky prompt && I && expect waiting/user/sticky end; }
+# A live sticky marker: a HUMAN prompt paints green for the turn (marker kept),
+# and the turn-end floor restores purple while the marker lives (2026-09-08).
+case_sticky_waiting_survives_user_turn() { seed idle; "$ST" waiting "job"; W "$GENUINE"; expect working/user/sticky prompt && I && expect waiting/user/sticky end; }
 case_explicit_idle_then_floor_is_gray() { seed idle; W "$GENUINE"; "$ST" idle; I; expect idle/user/- end; }
 case_machine_wake_on_blue_stays_blue() { seed idle; W "$GENUINE"; I; W "$RELAY"; expect done/machine/- wake && HB && expect done/machine/- tool && I && expect done/machine/- end; }
 case_machine_wake_on_red_stays_red() { seed idle; W "$GENUINE"; "$ST" blocked "q?"; W "$RELAY"; expect blocked/machine/- wake && HB && expect blocked/machine/- tool && I && expect blocked/machine/- end; }
@@ -79,7 +81,7 @@ case_explicit_working_in_machine_turn_on_red_ends_gray() { seed idle; W "$GENUIN
 case_blocked_answered_ends_blue() { seed blocked; W "$GENUINE"; expect working/user/- answer && I && expect done/user/- end; }
 case_blue_cleared_by_next_prompt() { seed idle; "$ST" done "shipped"; expect done/-/- explicit && W "$GENUINE"; expect working/user/- next; }
 case_machine_wake_on_sticky_then_explicit_working_ends_gray() { seed idle; W "$GENUINE"; "$ST" waiting "job"; W "$RELAY"; expect waiting/machine/sticky wake && "$ST" working "finishing"; expect working/machine/- explicit && I && expect idle/machine/- end; }
-case_user_prompt_on_sticky_then_explicit_working_ends_blue() { seed idle; W "$RELAY"; "$ST" waiting "job"; W "$GENUINE"; expect waiting/user/sticky prompt && "$ST" working "finishing"; I; expect done/user/- end; }
+case_user_prompt_on_sticky_then_explicit_working_ends_blue() { seed idle; W "$RELAY"; "$ST" waiting "job"; W "$GENUINE"; expect working/user/sticky prompt && "$ST" working "finishing"; expect working/user/- explicit && I; expect done/user/- end; }
 case_machine_turn_with_tool_work_ends_gray() { seed idle; W "$RELAY"; HB; expect working/machine/- tool && I && expect idle/machine/- end; }
 case_pre_field_working_row_floors_gray() { seed working; I; expect idle/-/- end; }
 case_originless_soft_working_floors_gray() { seed idle; COMM_STATUS_SOFT=1 "$ST" working; expect working/machine/- start && I && expect idle/machine/- end; }
@@ -148,7 +150,7 @@ check "a genuine user turn ends blue" case_user_turn_ends_blue
 check "a machine-started turn ends gray" case_machine_turn_ends_gray
 check "the floor holds an explicit done" case_soft_done_holds_blue
 check "the floor holds blocked" case_soft_done_holds_red
-check "sticky waiting survives a user turn" case_sticky_waiting_survives_user_turn
+check "sticky waiting paints green through a user turn and returns to purple at the floor" case_sticky_waiting_survives_user_turn
 check "explicit idle then the floor stays gray" case_explicit_idle_then_floor_is_gray
 check "a machine wake on a blue row stays blue through tool work and Stop" case_machine_wake_on_blue_stays_blue
 check "a machine wake on a red row stays red through tool work and Stop" case_machine_wake_on_red_stays_red

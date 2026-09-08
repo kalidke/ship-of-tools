@@ -137,7 +137,18 @@ status_txn() {
     if [ "$st" = working ] && [ "$SOFT" = 1 ]; then
         local hold=0
         case "$cur" in
-            waiting)      age="$(sticky_age_s)"; { [ -z "$age" ] || marker_live "$age"; } && hold=1 ;;
+            waiting)
+                age="$(sticky_age_s)"
+                if [ -z "$age" ]; then
+                    hold=1   # legacy marker-less waiting: nothing to restore at turn end
+                elif marker_live "$age"; then
+                    # A live sticky marker: a HUMAN prompt paints green for the
+                    # turn (the marker stays; the turn-end floor restores purple
+                    # while it lives -- see soft_floor below); a machine wake
+                    # stays purple (owner, 2026-09-08: "aren't you supposed to
+                    # be green?" while a sticky waiting held through the turn).
+                    [ "$TURN_ORIGIN" = user ] || hold=1
+                fi ;;
             blocked|done) [ "$TURN_ORIGIN" = machine ] && hold=1 ;;
         esac
         if [ "$hold" = 1 ]; then write_origin "$TURN_ORIGIN"; return; fi
