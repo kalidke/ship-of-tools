@@ -533,6 +533,39 @@ killing a foreign supervisor, or rebuilding itself) — that is the pinned U4
 upgrade transaction; this amendment makes skew *visible*, and must not also
 make it silently disappear.
 
+## Amendment 2026-09-08 — the channel is implied by the installed version
+
+Field incident: a release install pinned to a prerelease tag (e.g.
+`v0.6.0-rc.11`) never saw its own successor rc. `Fetcher::latest` asked
+GitHub for `releases/latest`, which by GitHub's own definition excludes
+every prerelease — an rc install was permanently stuck reporting the newest
+*stable* as "latest" (`update_available: false` against a release two rcs
+behind), and since the owner cuts rc.N releases daily across several
+installed boxes, every one of them needed a manual reinstall.
+
+**Decision: there is no separate channel setting — the channel is implied
+by the installed version.** A prerelease install (any semver with a
+pre-release identifier) considers stable **and** prerelease releases and
+tracks the newest one by semver; a stable install considers stable releases
+only, exactly as before. Never a downgrade: a candidate only counts when it
+compares strictly greater than what's running (`0.6.0-rc.13 > 0.6.0-rc.11`;
+a final `0.6.0` also outranks every `0.6.0-rc.N`, so an rc install rides
+straight onto the release that supersedes it). `-dev`-stamped builds are
+unaffected — their hard self-update guard (§4) still fires before this
+logic ever runs.
+
+Mechanically: discovery is no longer the single documented
+`releases/latest/download/SHA256SUMS` request. Both fetch backends now list
+recent releases first (`GET /repos/<repo>/releases?per_page=20` for `Curl`,
+`gh api repos/<repo>/releases?per_page=20` for `Gh` — the same public,
+unauthenticated JSON shape) and hand `(tag, prerelease)` pairs to one pure,
+unit-tested decision function, `sot_updater::select_target`, which is the
+only place "is this an update, and for which channel" is decided. The
+selected tag's `SHA256SUMS` is then fetched exactly like any other named
+release file. This trades one HTTPS request for two per check — an accepted
+cost; a public update check still runs at most daily plus on-demand, well
+under the unauthenticated `api.github.com` rate limit for a single host.
+
 ## Public baseline hygiene
 
 For the sanitized public baseline, operational content lives in the private

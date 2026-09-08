@@ -1,11 +1,13 @@
 //! `SHA256SUMS` parsing and release discovery.
 //!
 //! The sums file doubles as the discovery document (Codex review, SHOULD-FIX
-//! 1): `GET releases/latest/download/SHA256SUMS` is one documented request
-//! that yields both the released version (derivable from the deterministic
+//! 1): downloading one tag's `SHA256SUMS` (see `fetch::Fetcher::latest`,
+//! which picks the tag via `select::select_target`) yields both the
+//! released version (derivable from the deterministic
 //! `sot-<ver>-<platform>.<ext>` asset names it lists) and the digests needed
-//! to verify the platform archive. No Releases API call, no rate limit, no
-//! redirect-header grammar to depend on.
+//! to verify the platform archive — no redirect-header grammar to depend on,
+//! and every later fetch for this release is pinned to the same explicit
+//! tag.
 
 use anyhow::{anyhow, bail, Result};
 

@@ -7,8 +7,10 @@
 //! frontend gains its own thin layer in Phase C2). What lives HERE is the part
 //! both sides must agree on:
 //!
-//! - release discovery from `SHA256SUMS` (one documented HTTPS request, no
-//!   Releases API) pinned into a full [`identity::ReleaseIdentity`],
+//! - release discovery: list releases, pick a tag via [`select::select_target`]
+//!   (channel implied by the installed version — ADR 0030 §4 amendment
+//!   2026-09-08), then pin the chosen tag's `SHA256SUMS` into a full
+//!   [`identity::ReleaseIdentity`],
 //! - fetch backends (`curl` default / `gh` for private forks / local dir for
 //!   tests and sideload),
 //! - cross-process staging: filesystem lock → unique temp dir → download →
@@ -27,6 +29,7 @@ pub mod manifest;
 pub mod pending;
 pub mod platform;
 pub mod prepare;
+pub mod select;
 pub mod semver;
 pub mod sums;
 
@@ -39,6 +42,7 @@ use anyhow::{bail, Context, Result};
 pub use fetch::Fetcher;
 pub use identity::ReleaseIdentity;
 pub use manifest::{resolve_updates_root, InstallManifest, ReadyManifest};
+pub use select::select_target;
 
 /// How long a stage will wait for another process's stage to finish before
 /// giving up on the lock. Must exceed a worst-case stage hold (a 900s
@@ -84,9 +88,10 @@ fn outcome_err(status: String) -> CheckOutcome {
     }
 }
 
-/// Query the latest release and pin this platform's identity. Deliberately
-/// takes no staging root: a check must work (and report availability) even
-/// on hosts where no updates root resolves.
+/// Query the release this installed version's channel should track and pin
+/// this platform's identity. Deliberately takes no staging root: a check
+/// must work (and report availability) even on hosts where no updates root
+/// resolves.
 pub async fn check_release(repo: &str, current_version: &str, fetcher: &Fetcher) -> CheckOutcome {
     let Some(target) = platform::this_platform() else {
         return outcome_err(format!(
@@ -95,8 +100,18 @@ pub async fn check_release(repo: &str, current_version: &str, fetcher: &Fetcher)
             platform::TARGET_ARCH
         ));
     };
-    let latest = match fetcher.latest(repo).await {
-        Ok(l) => l,
+    let latest = match fetcher.latest(repo, current_version).await {
+        Ok(Some(l)) => l,
+        // Nothing in this install's channel beats `current_version` — a
+        // normal, non-error "already current" outcome, not a fetch failure.
+        Ok(None) => {
+            return CheckOutcome {
+                identity: None,
+                latest: String::new(),
+                update_available: false,
+                status: "ok".into(),
+            }
+        }
         Err(e) => return outcome_err(format!("check unavailable: {e}")),
     };
     let entries = match sums::parse_sums(&latest.sums_text) {
