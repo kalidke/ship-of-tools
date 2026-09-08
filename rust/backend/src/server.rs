@@ -886,6 +886,12 @@ async fn read_owned<R: AsyncRead + Unpin>(
 /// `expected_token` is always `None` since 0.4.0 removed the TCP listener —
 /// the local socket's access check happened at the socket path; the param and
 /// the hello `token` wire field survive for cross-version compat.
+/// A request whose handler held the connection loop at least this long is
+/// logged at info with its op and service time (see the dispatch timer in
+/// `handle_connection`). 50 ms is well above any cheap op and well below a
+/// switch the user can feel.
+const SLOW_REQUEST_MS: u64 = 50;
+
 async fn handle_connection<R, W>(
     rx: R,
     mut tx: W,
@@ -1235,6 +1241,12 @@ where
         // request instead of letting it bubble out of `handle_connection` and
         // tear down the whole connection (pre-fix, one malformed payload for
         // any op dropped the socket and forced a full FE reconnect).
+        // Per-request service time (switch-latency Phase 1, 2026-09-08): the
+        // loop below awaits every handler inline, so one slow request delays
+        // every later frame on this connection. Logged at info above
+        // SLOW_REQUEST_MS so the culprit op is identified, never inferred
+        // from a neighbouring log line.
+        let dispatch_started = std::time::Instant::now();
         let dispatched: Result<handlers::HandlerOutput> = match frame.op.as_str() {
             op::HELLO => {
                 // Register this connection in the client roster the first
@@ -1876,6 +1888,13 @@ where
                 Ok(vec![(Frame::res(frame.id, other, payload), None)])
             }
         };
+
+        let service_ms = dispatch_started.elapsed().as_millis() as u64;
+        if service_ms >= SLOW_REQUEST_MS {
+            tracing::info!(op = %frame.op, id = frame.id, service_ms, transport, "slow request");
+        } else {
+            tracing::debug!(op = %frame.op, id = frame.id, service_ms, "request served");
+        }
 
         // Per-request error containment: answer the failed request with an
         // error frame and keep serving. Wire-write failures below still end
