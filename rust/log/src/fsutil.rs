@@ -53,8 +53,9 @@ pub fn preflight_volume(dir: &Path) -> Result<()> {
     // DOES support both, so it passes here; a type this denylist doesn't
     // know about but that genuinely lacks RENAME_NOREPLACE fails HERE
     // instead of silently proceeding.
-    probe_rename_noreplace_pair(dir, PreflightEntryKind::Dir)?;
-    probe_rename_noreplace_pair(dir, PreflightEntryKind::File)?;
+    let nonce = preflight_nonce();
+    probe_rename_noreplace_pair(dir, PreflightEntryKind::Dir, &nonce)?;
+    probe_rename_noreplace_pair(dir, PreflightEntryKind::File, &nonce)?;
     fsync_dir(dir).map_err(|e| preflight_refusal(dir, format_args!("could not fsync the directory after the probes ({e})")))?;
     Ok(())
 }
@@ -191,16 +192,17 @@ impl PreflightEntryKind {
 /// flips true only once THIS probe's own first rename has actually landed
 /// `b`, which is also the earliest point `b` is safe to remove.
 ///
-/// The nonce is this PROCESS's own id (8 hex digits): concurrent
-/// DIFFERENT processes preflighting the same directory never collide with
-/// each other; a single process's own repeat calls never collide with
-/// themselves either, since cleanup runs every time before the next call
-/// could re-mint the same name — which is also what lets a unit test
-/// "seed b" deterministically (this exact name, via [`preflight_pair_paths`])
-/// and prove the refusal without any internal seam exposed for it.
+/// The nonce ([`preflight_nonce`]) is this process's id plus a
+/// per-process sequence number: concurrent DIFFERENT processes
+/// preflighting the same directory never collide, and neither do
+/// concurrent THREADS of one process — two capsule rows starting at once
+/// on one daemon, or the concurrent-bootstrap test — which a pid-only
+/// nonce let collide on `b` ("File exists") and refuse a perfectly good
+/// root. A unit test proves the seeded refusal by calling this probe with
+/// a nonce of its own choosing and pre-occupying that `b`.
 #[cfg(target_os = "linux")]
-fn probe_rename_noreplace_pair(dir: &Path, kind: PreflightEntryKind) -> Result<()> {
-    let (a, b) = preflight_pair_paths(dir, kind);
+fn probe_rename_noreplace_pair(dir: &Path, kind: PreflightEntryKind, nonce: &str) -> Result<()> {
+    let (a, b) = preflight_pair_paths(dir, kind, nonce);
     let first = b"sot-preflight-first";
     let second = b"sot-preflight-second";
     let mut own_b = false;
@@ -246,14 +248,23 @@ fn probe_rename_noreplace_pair(dir: &Path, kind: PreflightEntryKind) -> Result<(
     result
 }
 
-/// `dir/.sot-preflight-<pid, 8 hex>-<dir|file>.{a,b}` — the exact pair of
-/// paths [`probe_rename_noreplace_pair`] uses for `kind`, factored out so
-/// this module's own unit tests can reconstruct the identical name and
-/// pre-seed `b` (see that function's own doc) without any test-only seam
-/// into the probe itself.
+/// `<pid, 8 hex>-<per-process sequence, hex>`: unique per
+/// [`preflight_volume`] call across processes AND threads (see
+/// [`probe_rename_noreplace_pair`]'s own doc for why both matter).
 #[cfg(target_os = "linux")]
-fn preflight_pair_paths(dir: &Path, kind: PreflightEntryKind) -> (PathBuf, PathBuf) {
-    let nonce = format!("{:08x}", std::process::id());
+fn preflight_nonce() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{:08x}-{seq:x}", std::process::id())
+}
+
+/// `dir/.sot-preflight-<nonce>-<dir|file>.{a,b}` — the exact pair of
+/// paths [`probe_rename_noreplace_pair`] uses for `kind` and `nonce`,
+/// factored out so this module's own unit tests can reconstruct the
+/// identical name and pre-seed `b` (see that function's own doc) without
+/// any test-only seam into the probe itself.
+#[cfg(target_os = "linux")]
+fn preflight_pair_paths(dir: &Path, kind: PreflightEntryKind, nonce: &str) -> (PathBuf, PathBuf) {
     let label = kind.label();
     (
         dir.join(format!(".sot-preflight-{nonce}-{label}.a")),
@@ -1492,25 +1503,28 @@ mod tests {
         assert!(no_preflight_residue(dir.path()), "preflight must remove its own temp entries");
     }
 
-    /// The whitebox half of "seed `b` yourself and run the public
-    /// function": this test reconstructs the exact `b` path
-    /// [`probe_rename_noreplace_pair`] will use for `kind` (the same
-    /// private [`preflight_pair_paths`] the probe itself calls — no
-    /// separate seam exposed for this) and pre-occupies it BEFORE ever
-    /// calling the public [`preflight_volume`]. `RENAME_NOREPLACE`'s own
-    /// atomicity means the very first (otherwise-unconditional) rename now
-    /// collides too, so this also proves the refusal fires even outside
-    /// the probe's own self-generated second-attempt collision, and that
-    /// cleanup never deletes an entry the probe did not itself create —
-    /// [`probe_rename_noreplace_pair`]'s own `own_b` tracking.
+    /// The whitebox half of "seed `b` yourself and run the probe": this
+    /// test reconstructs the exact `b` path [`probe_rename_noreplace_pair`]
+    /// will use for `kind` under a nonce of the test's own choosing (the
+    /// same private [`preflight_pair_paths`] the probe itself calls — no
+    /// separate seam exposed for this) and pre-occupies it BEFORE calling
+    /// the probe. `RENAME_NOREPLACE`'s own atomicity means the very first
+    /// (otherwise-unconditional) rename now collides too, so this also
+    /// proves the refusal fires even outside the probe's own
+    /// self-generated second-attempt collision, and that cleanup never
+    /// deletes an entry the probe did not itself create —
+    /// [`probe_rename_noreplace_pair`]'s own `own_b` tracking. (The public
+    /// [`preflight_volume`] mints a fresh per-call nonce precisely so no
+    /// outside party can predict or collide with it.)
     #[cfg(target_os = "linux")]
     fn assert_preflight_volume_refuses_a_seeded_collision(kind: PreflightEntryKind) {
         let dir = tempfile::tempdir().unwrap();
-        let (a, b) = preflight_pair_paths(dir.path(), kind);
+        let nonce = "seeded-test";
+        let (a, b) = preflight_pair_paths(dir.path(), kind, nonce);
         let seeded = b"seeded-before-preflight-ran";
         kind.create(&b, seeded).unwrap();
 
-        let err = preflight_volume(dir.path()).unwrap_err();
+        let err = probe_rename_noreplace_pair(dir.path(), kind, nonce).unwrap_err();
         assert!(format!("{err}").contains("could not rename"), "{err}");
 
         // Not ours to delete: the seeded entry must survive untouched.
