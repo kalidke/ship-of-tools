@@ -90,6 +90,16 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $frontendStdout = Join-Path $logDir 'frontend.stdout.log'
 $frontendStderr = Join-Path $logDir 'frontend.stderr.log'
 $supervisorLog  = Join-Path $logDir 'supervisor.log'
+# The frontend's stdout/stderr are TRUNCATED by Start-Process on every spawn,
+# which erased the evidence of a pane freeze the moment the user relaunched to
+# recover from it. Keep exactly one previous generation as .prev (both spawn
+# sites below call this first); a crash-loop still overwrites .prev each time,
+# which is the right bound for a log that is only ever read by hand.
+function Rotate-FrontendLogs {
+    foreach ($f in @($frontendStdout, $frontendStderr)) {
+        if (Test-Path $f) { Move-Item -Path $f -Destination "$f.prev" -Force }
+    }
+}
 function Write-SupLog {
     param([string]$Message)
     try {
@@ -1170,6 +1180,7 @@ if ($Local) {
     # No --socket: the frontend derives the local connection itself
     # (hosts::resolve_connections, ADR 0042 L2b design B) from the exact
     # same function sot-local-daemon.ps1 just used to start it on.
+    Rotate-FrontendLogs
     Start-Process -FilePath $frontendExe `
         -RedirectStandardOutput $frontendStdout `
         -RedirectStandardError $frontendStderr `
@@ -1292,6 +1303,7 @@ try {
         $frontendArgs = @('--tcp', "127.0.0.1:$tcpPort")
         if ($relaunchNext) { $frontendArgs += '--relaunched' }
         $feStartedAt = Get-Date
+        Rotate-FrontendLogs
         $frontend = Start-Process -FilePath $stagedExe `
             -ArgumentList $frontendArgs `
             -RedirectStandardOutput $frontendStdout `
