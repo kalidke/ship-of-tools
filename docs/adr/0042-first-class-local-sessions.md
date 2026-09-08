@@ -436,6 +436,17 @@ semantics to a second kind of client. Six decisions:
    proxies over an existing connection and creates no reverse route, so this is not the
    bridge's to fix and is not designed here.
 
+   *Corrected 2026-09-08 — two resolvers, one invariant.* A handle lives on the BACKEND
+   daemon: its listener connection registers it there, and only there. So relay traffic
+   (`comm-relay send`/`ask`, `comm-listen` and its selftest) resolves to the backend — on a
+   Windows box the tunnel, never the local pipe, which has no route to a handle and drops
+   the frame silently — through `sot_relay_endpoint`; workspace ops, spawn and `sot-fe`
+   resolve pipe-first through `sot_daemon_endpoint` because they really do target the local
+   daemon. The day discovery became pipe-first for everything, every cross-host send from a
+   Windows session went dark while the loopback selftest kept passing (it reaches yourself
+   through whichever daemon it asks). A change to discovery is verified on every route
+   class — local verb, cross-host send, listen — not on the one it was written for.
+
 6. **Identity is attribution, not authentication.** The controller id is the caller's CLAIMED
    handle; hello's `client_id` is caller-supplied too (`server.rs`, `clients.register`), so
    substituting it would authenticate nothing. The record's input frames (`capsule.rs`
