@@ -7169,14 +7169,19 @@ mod clear_comm_unread_tests {
     // registry `"tmux": "sot-be-<label>:0.0"` binds via the live-occupant
     // match, same as production) and the given stored `agent_name`.
     fn mk_ws(label: &str, agent_name: &str) -> Workspace {
-        Workspace::from_label(
+        let mut ws = Workspace::from_label(
             label,
             std::path::PathBuf::from("/p"),
             false,
             "none".into(),
             agent_name.to_string(),
             String::new(),
-        )
+        );
+        // These rows are tmux rows on every platform: a label-built
+        // workspace defaults to "capsule" on Windows, which would route the
+        // clear through the self-file branch instead of the seeded tmux row.
+        ws.runtime = "tmux".to_string();
+        ws
     }
 
     #[test]
@@ -7457,7 +7462,7 @@ mod workspace_activate_read_tests {
 
     fn seed_workspace(label: &str) -> (Workspaces, String, String) {
         let reg = Workspaces::new();
-        let ws = Workspace::from_label(
+        let mut ws = Workspace::from_label(
             label,
             std::path::PathBuf::from("/p/x"),
             false,
@@ -7465,6 +7470,9 @@ mod workspace_activate_read_tests {
             String::new(),
             String::new(),
         );
+        // A tmux row on every platform (Windows defaults a label-built
+        // workspace to "capsule").
+        ws.runtime = "tmux".to_string();
         let id = ws.workspace_id.clone();
         let tmux_session = ws.tmux_session.clone();
         reg.insert(ws);
