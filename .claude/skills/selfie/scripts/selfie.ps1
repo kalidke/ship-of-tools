@@ -24,10 +24,18 @@ Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @"
 using System; using System.Runtime.InteropServices;
 public class SelfieWin {
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 }
 "@
+
+# DPI: this PowerShell process is DPI-unaware by default, so on a scaled
+# display GetWindowRect reports virtualized (shrunken) coordinates and
+# CopyFromScreen grabs only the top-left fraction of the window (a 200%
+# box returned 1440x900 of a 2880x1800 window). Opt in before any
+# window/screen call so both see physical pixels.
+[void][SelfieWin]::SetProcessDPIAware()
 
 $p = Get-Process sot -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 if (-not $p) { Write-Output "no FE window"; exit 1 }
